@@ -989,7 +989,7 @@ describe('HUD tabs', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Close PR #12 tab' }))
       await waitFor(() => expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument())
       expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
-      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', signature: `open|false|${pr.updatedAt}` }) }))
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', signature: `open|false|${pr.updatedAt}`, nextKey: 'session' }) }))
       if (action === 'menu') {
         fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
         expect(screen.getByRole('heading', { name: 'Closed PRs' })).toBeVisible()
@@ -1002,8 +1002,44 @@ describe('HUD tabs', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       const calls = vi.mocked(fetch).mock.calls
       const restoredAt = calls.findIndex(([url]) => String(url) === '/api/web-panes/pr-tabs/restore')
-      expect(calls[restoredAt][1]).toEqual(expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12' }) }))
-      expect(calls.slice(restoredAt + 1).some(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))).toBe(true)
+      expect(calls[restoredAt][1]).toEqual(expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', select: true }) }))
+      expect(calls.slice(restoredAt + 1).some(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))).toBe(false)
+    })
+
+    it.each(['Session', 'web'] as const)('selects the %s neighbour immediately when dismissing a maximized PR, with one POST', async (neighbour) => {
+      const pr = stubPr()
+      await renderAppWithSnapshot()
+      const web = { ...openWebPane, anchorPaneId: adjacentPane.id, dock: 'panel' as const, activeTab: false, unseen: false }
+      if (neighbour === 'web') act(() => daemonMessage?.({ type: 'web_panes', webPanes: [web] }))
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel('Description') }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' }))
+      expect(screen.getByRole('button', { name: 'Restore panel tab' })).toBeInTheDocument()
+      const callsBefore = vi.mocked(fetch).mock.calls.length
+      const fetchPr = vi.mocked(fetch).getMockImplementation()!
+      let finish!: (value: Response) => void
+      vi.mocked(fetch).mockImplementation((input, init) => String(input) === '/api/web-panes/pr-tabs/dismiss'
+        ? new Promise((resolve) => { finish = resolve }) : fetchPr(input, init))
+      fireEvent.click(screen.getByRole('button', { name: 'Close PR #12 tab' }))
+      const nextLabel = neighbour === 'web' ? '127.0.0.1:41300/plan' : 'Session'
+      expect(screen.getByRole('tab', { name: nextLabel })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('button', { name: 'Restore panel tab' })).toBeInTheDocument()
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({
+        anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', signature: `open|false|${pr.updatedAt}`,
+        nextKey: neighbour === 'web' ? web.id : 'session',
+      }) }))
+      const posts = () => vi.mocked(fetch).mock.calls.slice(callsBefore).filter(([url]) => String(url).includes('/api/web-panes/'))
+      expect(posts()).toHaveLength(1)
+      const activeKey = neighbour === 'web' ? web.id : 'session'
+      await act(async () => {
+        daemonMessage?.({ type: 'web_panes', webPanes: neighbour === 'web' ? [{ ...web, activeTab: true }] : [],
+          activeTabs: { [adjacentPane.id]: activeKey }, dismissedPrTabs: { [adjacentPane.id]: { 'pr:acme:widgets:12': `open|false|${pr.updatedAt}` } } })
+        finish(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+      })
+      expect(screen.getByRole('tab', { name: nextLabel })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument()
+      expect(posts()).toHaveLength(1)
     })
 
     it.each(['normal', 'terminal', 'other built-in'] as const)('opens owning PR tab from both HUD actions while %s is maximized', async (maximized) => {

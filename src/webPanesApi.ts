@@ -17,8 +17,8 @@ export interface WebPanesApiClient {
     engine?: WebPaneEngine,
   ): Promise<{ webPaneId: string; status: 'open' | 'pending'; reused?: boolean }>
   setActiveTab(webPaneId: string, anchorPaneId?: string): Promise<void>
-  dismissPrTab(anchorPaneId: string, key: string, signature: string): Promise<void>
-  restorePrTab(anchorPaneId: string, key: string): Promise<void>
+  dismissPrTab(anchorPaneId: string, key: string, signature: string, nextKey?: string): Promise<void>
+  restorePrTab(anchorPaneId: string, key: string, select?: boolean): Promise<void>
   clearUnseen(webPaneId: string): Promise<void>
   confirm(webPaneId: string, allowOrigin: boolean): Promise<void>
   close(webPaneId: string): Promise<void>
@@ -146,8 +146,8 @@ export function createWebPanesApi(
       }) as { webPaneId: string; status: 'open' | 'pending' }
       return body
     },
-    dismissPrTab: async (anchorPaneId, key, signature) => { await request('/pr-tabs/dismiss', { method: 'POST', body: JSON.stringify({ anchorPaneId, key, signature }) }) },
-    restorePrTab: async (anchorPaneId, key) => { await request('/pr-tabs/restore', { method: 'POST', body: JSON.stringify({ anchorPaneId, key }) }) },
+    dismissPrTab: async (anchorPaneId, key, signature, nextKey) => { await request('/pr-tabs/dismiss', { method: 'POST', body: JSON.stringify({ anchorPaneId, key, signature, ...(nextKey !== undefined ? { nextKey } : {}) }) }) },
+    restorePrTab: async (anchorPaneId, key, select) => { await request('/pr-tabs/restore', { method: 'POST', body: JSON.stringify({ anchorPaneId, key, ...(select !== undefined ? { select } : {}) }) }) },
     setActiveTab: async (id, anchorPaneId) => { await request(`/${encodeURIComponent(id)}/active-tab`, { method: 'POST', ...(anchorPaneId ? { body: JSON.stringify({ anchorPaneId }) } : {}) }) },
     clearUnseen: async (id) => { await request(`/${encodeURIComponent(id)}/seen`, { method: 'POST' }) },
     confirm: async (webPaneId, allowOrigin) => {

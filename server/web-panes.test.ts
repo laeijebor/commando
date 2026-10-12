@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_WEB_PANES, MAX_WEB_PANE_TITLE_LENGTH, type WebPane } from '../shared/protocol.js'
 import {
+  buildWebPanesMessage,
   WebPaneError,
   WebPaneService,
   classifyWebPaneUrl,
@@ -1201,5 +1202,79 @@ describe('PR tab dismissals', () => {
     await owner.load()
     expect(owner.prune(snapshot)).toBe(false)
     expect(owner.panelDismissedPrTabs()['%12'][key]).toBe('')
+  })
+  it.each(['session', 'changes', 'pr:acme:widgets:13'])('dismisses the active PR directly to %s and persists that selection', async (nextKey) => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    service.setActiveTab(key, '%12', exists)
+    service.dismissPrTab('%12', key, 'old', exists, nextKey)
+    expect(buildWebPanesMessage(service)).toMatchObject({ activeTabs: { '%12': nextKey }, dismissedPrTabs: { '%12': { [key]: 'old' } } })
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelActiveTabs()['%12']).toBe(nextKey)
+  })
+  it('accepts only a panel web tab belonging to the dismissal anchor', async () => {
+    const service = track(new WebPaneService(await temporaryStatePath()))
+    const next = service.open({ ...anchor, url: 'http://localhost/next' })
+    const foreign = service.open({ ...anchor, anchorPaneId: '%13', url: 'http://localhost/foreign' })
+    const split = service.open({ ...anchor, dock: 'split', url: 'http://localhost/split' })
+    service.setActiveTab(key, '%12', exists)
+    for (const invalid of [foreign.id, split.id, 'w-00000000', 'pr', key, '', 42, null]) {
+      expect(() => service.dismissPrTab('%12', key, 'old', exists, invalid as string)).toThrow('Invalid next panel tab')
+      expect(service.panelDismissedPrTabs()).toEqual({})
+      expect(service.panelActiveTabs()['%12']).toBe(key)
+    }
+    service.dismissPrTab('%12', key, 'old', exists, next.id)
+    expect(service.panelActiveTabs()['%12']).toBe(next.id)
+    expect(service.list().find((pane) => pane.activeTab)?.id).toBe(next.id)
+  })
+  it.each(['session', 'changes', 'pr:other:widgets:12', 'pr', 'pr:12'])('does not change an unrelated or legacy active selection (%s)', async (active) => {
+    const path = await temporaryStatePath()
+    await writeFile(path, JSON.stringify({ version: 1, activeTabs: { '%12': active }, allowedOrigins: [], panes: [] }))
+    const service = track(new WebPaneService(path))
+    await service.load()
+    service.dismissPrTab('%12', key, 'old', exists, 'changes')
+    expect(service.panelActiveTabs()['%12']).toBe(active)
+  })
+  it('preserves the active PR on reload despite a stale dismissal entry', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    service.dismissPrTab('%12', key, 'old', exists)
+    service.setActiveTab(key, '%12', exists)
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelActiveTabs()['%12']).toBe(key)
+    expect(restored.panelDismissedPrTabs()['%12'][key]).toBe('old')
+  })
+  it('restores without selecting by default and optionally restores and selects together', async () => {
+    const path = await temporaryStatePath()
+    const service = track(new WebPaneService(path))
+    service.setActiveTab('changes', '%12', exists)
+    service.dismissPrTab('%12', key, 'old', exists)
+    service.restorePrTab('%12', key, exists)
+    expect(service.panelActiveTabs()['%12']).toBe('changes')
+    service.dismissPrTab('%12', key, 'old', exists)
+    service.restorePrTab('%12', key, exists, true)
+    expect(buildWebPanesMessage(service)).toMatchObject({ activeTabs: { '%12': key }, dismissedPrTabs: {} })
+    await service.flush()
+    const restored = track(new WebPaneService(path))
+    await restored.load()
+    expect(restored.panelActiveTabs()['%12']).toBe(key)
+    expect(restored.panelDismissedPrTabs()).toEqual({})
+  })
+
+})
+
+
+it('builds the web_panes broadcast with stored selection, dismissals and the remaining live state', async () => {
+  const service = track(new WebPaneService(await temporaryStatePath()))
+  const pane = service.open({ ...anchor, url: 'http://localhost/' })
+  service.dismissPrTab('%12', 'pr:acme:widgets:12', 'old', (id) => id === '%12')
+  const state = { feedback: {}, navigateRequests: {}, spotlightRequests: {}, reloads: { [pane.id]: 2 } }
+  expect(buildWebPanesMessage(service, state)).toEqual({
+    type: 'web_panes', webPanes: service.list(), activeTabs: { '%12': pane.id },
+    dismissedPrTabs: { '%12': { 'pr:acme:widgets:12': 'old' } }, ...state,
   })
 })

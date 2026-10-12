@@ -41,7 +41,7 @@ import { TmuxClient } from './tmux.js'
 import { normalizeCaptureLineEndings } from './tmux-control.js'
 import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
-import { WebPaneService } from './web-panes.js'
+import { buildWebPanesMessage, WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { WebPaneAgentRequests } from './web-pane-agent-requests.js'
@@ -594,11 +594,7 @@ async function main(): Promise<void> {
     service: webPanes,
     pendingNotes: (webPaneId) => webPanePending.snapshot(webPaneId),
   })
-  const webPanesMessage = (): ServerMessage => ({
-    type: 'web_panes',
-    webPanes: webPanes.list(),
-    activeTabs: webPanes.panelActiveTabs(),
-    dismissedPrTabs: webPanes.panelDismissedPrTabs(),
+  const webPanesMessage = (): ServerMessage => buildWebPanesMessage(webPanes, {
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
     spotlightRequests: canvasSpotlight.pending(),

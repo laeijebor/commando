@@ -8,6 +8,7 @@ import {
   MAX_WEB_PANE_TITLE_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
+  type ServerMessage,
   type WebPane,
   type WebPaneEngine,
   type WebPanePlacement,
@@ -250,7 +251,6 @@ function parseState(value: unknown): StateFile {
         if (pr && typeof signature === 'string' && signature.length <= 256) valid[prPanelKey(pr.repo, pr.number)] = signature
       }
       dismissedPrTabs[anchor] = Object.fromEntries(Object.entries(valid).slice(-MAX_DISMISSED_PR_TABS))
-      if (dismissedPrTabs[anchor][activeTabs[anchor]] !== undefined) activeTabs[anchor] = 'session'
     }
   }
   return { version: 1, allowedOrigins, panes, activeTabs, dismissedPrTabs }
@@ -557,25 +557,30 @@ export class WebPaneService {
     return prPanelKey(pr.repo, pr.number)
   }
 
-  dismissPrTab(anchorPaneId: string, key: string, signature: string, paneExists: (id: string) => boolean): void {
+  dismissPrTab(anchorPaneId: string, key: string, signature: string, paneExists: (id: string) => boolean, nextKey?: string): void {
     key = this.dismissedPrKey(anchorPaneId, key, paneExists)
     if (typeof signature !== 'string' || signature.length > 256) throw new WebPaneError(400, 'Invalid PR tab signature')
+    if (nextKey !== undefined) {
+      const pane = typeof nextKey === 'string' ? this.panes.get(nextKey) : undefined
+      if (typeof nextKey !== 'string' || nextKey === key || (!isBuiltinPanelKey(nextKey) && !(pane?.dock === 'panel' && pane.anchorPaneId === anchorPaneId))) {
+        throw new WebPaneError(400, 'Invalid next panel tab')
+      }
+    }
     const entries = { ...this.dismissedPrTabs[anchorPaneId] }
     delete entries[key]
     entries[key] = signature
     this.dismissedPrTabs[anchorPaneId] = Object.fromEntries(Object.entries(entries).slice(-MAX_DISMISSED_PR_TABS))
-    const active = this.activeTabs[anchorPaneId]
-    const identity = active ? parsePrPanelKey(active) : undefined
-    if ((identity && prPanelKey(identity.repo, identity.number) === key) || active === 'pr' || active === `pr:${parsePrPanelKey(key)!.number}`) this.activeTabs[anchorPaneId] = 'session'
+    if (this.activeTabs[anchorPaneId] === key) this.activeTabs[anchorPaneId] = nextKey ?? 'session'
     this.persist()
   }
 
-  restorePrTab(anchorPaneId: string, key: string, paneExists: (id: string) => boolean): void {
+  restorePrTab(anchorPaneId: string, key: string, paneExists: (id: string) => boolean, select = false): void {
     key = this.dismissedPrKey(anchorPaneId, key, paneExists)
     const entries = { ...this.dismissedPrTabs[anchorPaneId] }
     delete entries[key]
     if (Object.keys(entries).length) this.dismissedPrTabs[anchorPaneId] = entries
     else delete this.dismissedPrTabs[anchorPaneId]
+    if (select) this.activeTabs[anchorPaneId] = key
     this.persist()
   }
 
@@ -898,5 +903,18 @@ export class WebPaneService {
       await rm(temporaryPath, { force: true }).catch(() => undefined)
       throw error
     }
+  }
+}
+
+export function buildWebPanesMessage(
+  service: WebPaneService,
+  state: Pick<Extract<ServerMessage, { type: 'web_panes' }>, 'feedback' | 'navigateRequests' | 'spotlightRequests' | 'reloads'> = {},
+): Extract<ServerMessage, { type: 'web_panes' }> {
+  return {
+    type: 'web_panes',
+    webPanes: service.list(),
+    activeTabs: service.panelActiveTabs(),
+    dismissedPrTabs: service.panelDismissedPrTabs(),
+    ...state,
   }
 }

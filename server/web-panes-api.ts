@@ -400,8 +400,11 @@ export class WebPanesApi {
         if (caller !== 'owner') throw new HttpError(403, 'Only the owner can dismiss or restore PR tabs')
         const body = await readJson(request)
         const paneExists = (id: string) => Boolean(this.dependencies.paneForId(id))
-        if (route.action === 'dismiss') this.dependencies.service.dismissPrTab(body.anchorPaneId as string, body.key as string, body.signature as string, paneExists)
-        else this.dependencies.service.restorePrTab(body.anchorPaneId as string, body.key as string, paneExists)
+        if (route.action === 'dismiss') this.dependencies.service.dismissPrTab(body.anchorPaneId as string, body.key as string, body.signature as string, paneExists, body.nextKey as string | undefined)
+        else {
+          if (body.select !== undefined && typeof body.select !== 'boolean') throw new HttpError(400, 'select must be a boolean')
+          this.dependencies.service.restorePrTab(body.anchorPaneId as string, body.key as string, paneExists, body.select === true)
+        }
         this.dependencies.onChange()
         writeJson(response, 200, { ok: true })
         return true

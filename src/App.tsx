@@ -1721,7 +1721,7 @@ export function App() {
     setFocusedPaneId((current) => effectiveFocusedPane(current, allVisiblePaneIds, tmuxActivePaneId) ?? null)
   }, [snapshot, activeGroup?.windowId, focusedPaneId])
 
-  const selectPanelTab = useCallback(async (tab: PanelTab) => {
+  const selectPanelTabLocally = useCallback((tab: PanelTab) => {
     const maximized = maximizedBuiltinTab?.anchorPaneId === tab.anchorPaneId || webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split' && pane.anchorPaneId === tab.anchorPaneId)
     if (maximized) {
       setMaximizedBuiltinTab(isBuiltinTab(tab) ? tab : null)
@@ -1731,10 +1731,14 @@ export function App() {
     setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
       ? { ...pane, activeTab: pane.id === tab.id }
       : pane))
+  }, [webPanes, maximizedPaneId, maximizedBuiltinTab])
+
+  const selectPanelTab = useCallback(async (tab: PanelTab) => {
+    selectPanelTabLocally(tab)
     try { await createWebPanesApi(token).setActiveTab(panelTabKey(tab), tab.anchorPaneId) } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
     }
-  }, [webPanes, maximizedPaneId, maximizedBuiltinTab, token])
+  }, [selectPanelTabLocally, token])
 
   useEffect(() => {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
@@ -1991,17 +1995,18 @@ export function App() {
     jumpToPane(matches[0].id, targetId, true)
   }
 
-  const revealBuiltinTab = (paneId: string, key: BuiltinPanelKey) => {
+  const revealBuiltinTab = (paneId: string, key: BuiltinPanelKey, persistSelection = true) => {
     const tab = builtinPanelTab(paneId, key)
     setMaximizedPaneId((current) => webPanes.some((pane) => pane.id === current && pane.dock !== 'split' && pane.anchorPaneId === paneId) ? current : null)
     setMaximizedBuiltinTab((current) => current?.id === tab.id ? current : null)
     setFocusedPaneId(paneId)
-    void selectPanelTab(tab)
+    if (persistSelection) void selectPanelTab(tab)
+    else selectPanelTabLocally(tab)
     setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
   }
 
   const restorePanePrTab = async (tab: BuiltinPanelTab) => {
-    await webPanesApi.restorePrTab(tab.anchorPaneId, tab.key)
+    await webPanesApi.restorePrTab(tab.anchorPaneId, tab.key, true)
     setDismissedPrTabs((current) => {
       const entries = { ...current[tab.anchorPaneId] }
       delete entries[tab.key]
@@ -2020,14 +2025,14 @@ export function App() {
     if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
     const key = prPanelKey(repo, pr.number)
     const tab = builtinPanelTab(pane.id, key)
-    const open = () => {
+    const open = (selected = false) => {
       setPrSelections((current) => ({ ...current, [tab.id]: { tab: subTab, revision: (current[tab.id]?.revision ?? 0) + 1 } }))
-      revealBuiltinTab(pane.id, key)
+      revealBuiltinTab(pane.id, key, !selected)
       if (refresh) void refreshPanePrs(prsApi, pane.id)
       return true
     }
     if (dismissedPrTabs[pane.id]?.[key] === undefined) return open()
-    return restorePanePrTab(tab).then(open).catch((error: unknown) => {
+    return restorePanePrTab(tab).then(() => open(true)).catch((error: unknown) => {
       setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')
       return true
     })
@@ -2607,10 +2612,10 @@ export function App() {
 
   const dismissPanePrTab = async (tab: BuiltinPanelTab, signature: string, next?: PanelTab) => {
     setPaneActionError('')
+    if (next) selectPanelTabLocally(next)
     try {
-      await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature)
+      await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature, next ? panelTabKey(next) : undefined)
       setDismissedPrTabs((current) => ({ ...current, [tab.anchorPaneId]: { ...current[tab.anchorPaneId], [tab.key]: signature } }))
-      if (next) await selectPanelTab(next)
     } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not close PR tab')
     }
@@ -3617,7 +3622,7 @@ export function App() {
                     panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
                     activeTabs={panelActiveTabs} dismissedPrTabs={dismissedPrTabs}
                     onDismissPr={(tab, signature, next) => { void dismissPanePrTab(tab, signature, next) }}
-                    onRestorePr={(tab) => { void restorePanePrTab(tab).then(() => revealBuiltinTab(tab.anchorPaneId, tab.key)).catch((error: unknown) => setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')) }}
+                    onRestorePr={(tab) => { void restorePanePrTab(tab).then(() => revealBuiltinTab(tab.anchorPaneId, tab.key, false)).catch((error: unknown) => setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')) }}
                     sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
                     onMaximize={(tab) => {
                       clearLayoutTimers()
