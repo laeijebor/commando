@@ -1,4 +1,4 @@
-import type { ChatItem } from './agent-chat.js'
+import type { ChatItem, ExternalAgentRun } from './agent-chat.js'
 
 export type WorkItem = Extract<ChatItem, { kind: 'command' | 'file_change' | 'tool' | 'request' }>
 export type ReasoningItem = Extract<ChatItem, { kind: 'reasoning' }>
@@ -14,6 +14,45 @@ export type TimelineRow =
   | { kind: 'plan'; id: string; item: PlanItem }
   /** Subagents started next to each other in a turn, as t3code groups them. */
   | { kind: 'subagents'; id: string; items: SubagentItem[]; live: boolean }
+
+/** External runs join the command that launched them, even when snapshots arrive later. */
+export function withExternalAgentRuns(items: readonly ChatItem[], runs: readonly ExternalAgentRun[]): ChatItem[] {
+  const after = new Map<number, SubagentItem[]>()
+  const invocation = {
+    codex: /(?:^|[\s/"'])codex(?:\.js)?["']?\s+exec\b/,
+    claude: /(?:^|[\s/"'])claude["']?\s+[^\n]*(?:--print\b|-p\b)/,
+    opencode: /(?:^|[\s/"'])opencode["']?\s+run\b/,
+    cursor: /(?:^|[\s/"'])(?:cursor-agent|agent)["']?\s+[^\n]*(?:--print\b|-p\b)/,
+  }
+  for (const run of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
+    let anchor = -1
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index]!
+      if (!item.parentToolUseId && item.kind === 'command' && item.createdAt <= run.startedAt + 10_000 && invocation[run.runtime].test(item.command)
+        && (anchor < 0 || item.createdAt >= items[anchor]!.createdAt)) anchor = index
+    }
+    if (anchor < 0) {
+      for (let index = 0; index < items.length; index += 1) {
+        if (!items[index]!.parentToolUseId && items[index]!.createdAt <= run.startedAt) anchor = index
+      }
+    }
+    const live = run.state === 'running' || run.state === 'quiet'
+    const item: SubagentItem = {
+      id: run.id, kind: 'subagent', toolUseId: run.id,
+      turnId: items[anchor]?.turnId ?? `external-turn-${run.id}`,
+      status: live ? 'running' : run.state === 'failed' ? 'failed' : run.state === 'stopped' ? 'interrupted' : 'completed',
+      createdAt: run.startedAt, updatedAt: run.finishedAt ?? run.updatedAt,
+      description: run.label, runtime: run.runtime, state: run.state,
+      model: run.model, effort: run.effort, toolUses: run.toolUses,
+      lastEventAt: run.lastEventAt, lastAction: run.lastAction,
+      runningCommand: run.runningCommand, durationMs: run.durationMs, summary: run.summary,
+    }
+    const group = after.get(anchor) ?? []
+    group.push(item)
+    after.set(anchor, group)
+  }
+  return [...(after.get(-1) ?? []), ...items.flatMap((item, index) => [item, ...(after.get(index) ?? [])])]
+}
 
 function isWork(item: ChatItem): item is WorkItem {
   return item.kind === 'command' || item.kind === 'file_change' || item.kind === 'tool' || item.kind === 'request'
@@ -72,6 +111,7 @@ export function deriveTimelineRows(items: readonly ChatItem[], scope?: string): 
   const rows: TimelineRow[] = []
   let group: WorkItem[] = []
   let agents: SubagentItem[] = []
+  const externalGroups = new Map<string, Extract<TimelineRow, { kind: 'subagents' }>>()
   const flush = () => {
     if (group.length) {
       rows.push({
@@ -84,7 +124,19 @@ export function deriveTimelineRows(items: readonly ChatItem[], scope?: string): 
       group = []
     }
     if (agents.length) {
-      rows.push({ kind: 'subagents', id: `subagents-${agents[0]!.id}`, items: agents, live: agents.some((item) => item.state === 'running') })
+      // Separate Bash calls in the same turn still form one external-run card.
+      const remaining = agents.filter((agent) => {
+        const existing = agent.runtime ? externalGroups.get(agent.turnId) : undefined
+        if (!existing) return true
+        existing.items.push(agent)
+        existing.live ||= agent.state === 'running' || agent.state === 'quiet'
+        return false
+      })
+      if (remaining.length) {
+        const row: Extract<TimelineRow, { kind: 'subagents' }> = { kind: 'subagents', id: `subagents-${remaining[0]!.id}`, items: remaining, live: remaining.some((item) => item.state === 'running' || item.state === 'quiet') }
+        rows.push(row)
+        for (const agent of remaining) { if (agent.runtime) externalGroups.set(agent.turnId, row) }
+      }
       agents = []
     }
   }

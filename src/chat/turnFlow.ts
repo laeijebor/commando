@@ -61,14 +61,14 @@ export function subagentActivity(agent: SubagentItem, items: readonly ChatItem[]
   const lastWork = last
     ? last.kind === 'command' ? `$ ${last.command}` : last.kind === 'file_change' ? `Edited ${last.path}` : last.kind === 'subagent' ? `Subagent: ${last.description}` : last.title
     : null
-  const running = agent.state === 'running'
+  const running = agent.state === 'running' || agent.state === 'quiet'
   const spanMs = agent.updatedAt - agent.createdAt
   return {
     toolUses: agent.toolUses !== undefined || work.length ? Math.max(agent.toolUses ?? 0, work.length) : null,
     // Live elapsed time ticks from when Claude started it. Afterwards, Claude's own
     // total; a stopped subagent's last progress report undercounts, so never less than it ran.
     elapsedMs: running ? now - agent.createdAt : agent.durationMs !== undefined || spanMs >= 1000 ? Math.max(agent.durationMs ?? 0, spanMs) : null,
-    lastAction: running ? agent.summary ?? lastWork ?? (agent.lastToolName ? `Using ${agent.lastToolName}` : null) : agent.summary ?? lastWork,
+    lastAction: agent.runtime ? (running ? agent.lastAction ?? agent.summary : agent.summary ?? agent.lastAction) ?? null : running ? agent.summary ?? lastWork ?? (agent.lastToolName ? `Using ${agent.lastToolName}` : null) : agent.summary ?? lastWork,
   }
 }
 
@@ -86,7 +86,15 @@ export function findSubagent(items: readonly ChatItem[], toolUseId: string): Sub
 export function switcherSubagents(items: readonly ChatItem[], viewing?: string): SubagentItem[] {
   const subagents = items.filter((item): item is SubagentItem => item.kind === 'subagent' && !item.parentToolUseId)
   const latestTurn = subagents.at(-1)?.turnId
-  return subagents.filter((item) => item.state === 'running' || item.turnId === latestTurn || item.id === viewing)
+  return subagents.filter((item) => item.state === 'running' || item.state === 'quiet' || item.turnId === latestTurn || item.id === viewing)
+}
+
+/** Runtime, model and effort occupy the SDK subagent type slot. */
+export function subagentTypeLabel(agent: SubagentItem): string {
+  if (!agent.runtime) return agent.subagentType ?? ''
+  const names = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode', cursor: 'Cursor' }
+  const model = [agent.model, agent.effort].filter(Boolean).join(' ')
+  return `${names[agent.runtime]}${model ? ` · ${model}` : ''}`
 }
 
 /** A short name for a subagent in labels: its description, else its type. */
@@ -101,6 +109,7 @@ export function subagentLabel(agent: SubagentItem): string {
  * its Agent call, so the relay would only arrive after it ends.
  */
 export function relayAvailability(agent: SubagentItem): { ok: true } | { ok: false; reason: string } {
+  if (agent.runtime) return { ok: false, reason: 'External runs have no message relay or transcript' }
   if (!agent.agentId) return { ok: false, reason: "Claude hasn't reported this subagent's id yet" }
   if (agent.state === 'running' && !agent.background) return { ok: false, reason: 'Background this subagent to message it while it runs' }
   return { ok: true }

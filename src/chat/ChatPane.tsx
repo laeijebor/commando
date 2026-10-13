@@ -3,6 +3,7 @@ import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
   hostTakesTurnFlow,
   planImplementationPrompt,
+  type ExternalAgentRun,
   type ChatAnswer,
   type ChatClaudeCodeSwitch,
   type ChatImageRef,
@@ -23,13 +24,14 @@ import { ChatTimeline, Markdown } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 import { Button } from './ui/button'
-import { latestTodos, pendingRequests, type SubagentItem } from '../../shared/chat-timeline'
+import { latestTodos, pendingRequests, withExternalAgentRuns, type SubagentItem } from '../../shared/chat-timeline'
 import { findSubagent, implementPermissionMode, planAwaitingFollowUp, subagentLabel, switcherSubagents } from './turnFlow'
 import './chat.css'
 
 /** What a chat pane asks of the app for queueing, subagents and plans. */
 export interface ChatFlowServices {
   queue: (change: ChatQueueAction) => void
+  stopExternal?: (runId: string) => void
   task: (action: ChatTaskAction, agentId: string, toolUseId: string) => void
   subagentTranscript: (agentId: string) => Promise<ChatSubagentTranscript>
   savePlan: SavePlan
@@ -44,6 +46,8 @@ export interface ChatFlowServices {
   /** The composer has an image still uploading, which a switch would leave behind. */
   setUploading?: (uploading: boolean) => void
 }
+
+const EMPTY_EXTERNAL_RUNS: readonly ExternalAgentRun[] = []
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
 
@@ -71,7 +75,8 @@ export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
 }
 
 function ChatColumn({
-  chat,
+  chat: hostChat,
+  externalRuns = EMPTY_EXTERNAL_RUNS,
   paneId,
   prsApi,
   connected,
@@ -91,6 +96,7 @@ function ChatColumn({
   flow,
 }: {
   chat: ChatState
+  externalRuns?: readonly ExternalAgentRun[]
   paneId?: string
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
@@ -116,6 +122,8 @@ function ChatColumn({
   onDismissActionError?: () => void
   flow?: ChatFlowServices
 }) {
+  const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
+  const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])
   const working = chat.session.status === 'running'
@@ -126,8 +134,8 @@ function ChatColumn({
   const [transcripts, setTranscripts] = useState<Record<string, TranscriptState>>({})
   const [flowError, setFlowError] = useState<string | null>(null)
   const agent = viewing ? findSubagent(chat.items, viewing) : undefined
-  const agents = useMemo(() => (turnFlow ? switcherSubagents(chat.items, viewing) : []), [turnFlow, chat.items, viewing])
-  const now = useNow(agents.some((entry) => entry.state === 'running'))
+  const agents = useMemo(() => (flow ? switcherSubagents(chat.items, viewing).filter((item) => turnFlow || item.runtime) : []), [turnFlow, flow, chat.items, viewing])
+  const now = useNow(agents.some((entry) => entry.state === 'running' || entry.state === 'quiet'))
   // Implement goes once per plan; the banner stays until Claude's turn starts.
   const [implemented, setImplemented] = useState<{ planId: string; itemCount: number } | null>(null)
   const awaiting = turnFlow && !viewing ? planAwaitingFollowUp(chat.items, chat.session) : null
@@ -158,6 +166,7 @@ function ChatColumn({
   }, [viewing, agent])
 
   const select = useCallback((toolUseId: string | undefined) => {
+    if (toolUseId && findSubagent(chat.items, toolUseId)?.runtime) return
     setViewing(toolUseId)
     setRelay(undefined)
     if (toolUseId) {
@@ -173,6 +182,10 @@ function ChatColumn({
     }
   }, [chat.items])
   const task = (action: ChatTaskAction, target: SubagentItem) => {
+    if (target.runtime) {
+      if (action === 'stop') flow?.stopExternal?.(target.id)
+      return
+    }
     if (target.agentId) flow?.task(action, target.agentId, target.toolUseId)
   }
   const implement = () => {
@@ -248,13 +261,15 @@ function ChatColumn({
           items={chat.items}
           cwd={chat.session.cwd}
           working={working}
+          onTask={task}
+          controlsDisabled={!connected || !flow?.stopExternal}
           {...(turnFlow ? { onOpenSubagent: select } : {})}
           {...(flow ? { onSavePlan: flow.savePlan } : {})}
         />
       )}
       {agents.length ? (
         <div className="px-4">
-          <AgentSwitcher agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} onSelect={select} onTask={task} />
+          <AgentSwitcher agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} externalDisabled={!connected || !flow?.stopExternal} onSelect={select} onTask={task} />
         </div>
       ) : null}
       {chat.session.claudeCodeSwitch ? (
