@@ -109,6 +109,9 @@ import type { LineageSnapshot } from './chatLineage'
 import { SessionIdeView } from './SessionIdeView'
 import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
+import { createChatConversationsApi } from './chatConversationsApi'
+import { ConversationPicker, openConversationPanes } from './ConversationPicker'
+import { chatConversationKey } from '../shared/chat-conversations'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
 import { PANE_MARK_PRESETS } from './paneMarks'
@@ -1155,6 +1158,8 @@ export function App() {
   const [draggedPane, setDraggedPane] = useState<DraggedItem | null>(null)
   const [dropPreview, setDropPreview] = useState<{ paneId: string; placement: 'right' | 'below' } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  /** The chat pane whose ⌘P conversation picker is open. */
+  const [conversationPaneId, setConversationPaneId] = useState<string | null>(null)
   const [paletteQuery, setPaletteQuery] = useState('')
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [themeName, setThemeName] = useState<ThemeName>(() => storedTheme())
@@ -2472,6 +2477,8 @@ export function App() {
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
+  const chatConversationsApi = useMemo(() => createChatConversationsApi(token), [token])
+  const loadConversations = useCallback(() => chatConversationsApi.list(), [chatConversationsApi])
   const paneManagementApi = createPaneManagementApi(token)
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
@@ -2934,6 +2941,21 @@ export function App() {
     }
   }
 
+  // ⌘P in a chat pane lists past conversations to switch to (instead of printing the page).
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p') return
+      const target = event.target instanceof Element ? event.target.closest('[data-pane-id]')?.getAttribute('data-pane-id') : undefined
+      const paneId = target ?? focusedPaneId
+      if (!connected || !paneId || !chats[paneId] || (chatViews[paneId] ?? 'chat') !== 'chat') return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!event.repeat) setConversationPaneId((current) => (current ? null : paneId))
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  })
+
   useEffect(() => {
     const runPaneShortcut = (key: string) => {
       if (!connected || area !== 'workspace' || paletteOpen || paneMenu || renamingPaneId || screenshotLightbox) return
@@ -2962,6 +2984,30 @@ export function App() {
     }
   })
 
+  const conversationPane = conversationPaneId ? paneMap.get(conversationPaneId) : undefined
+  const conversationChat = conversationPaneId ? chats[conversationPaneId] : undefined
+  const conversationPicker = conversationPane && conversationChat ? (
+    <ConversationPicker
+      pane={conversationPane}
+      {...(conversationChat.session.sessionId ? { current: chatConversationKey(conversationChat.session.provider, conversationChat.session.sessionId) } : {})}
+      open={openConversationPanes(chats, agentStatuses, (paneId) => {
+        const pane = paneMap.get(paneId)
+        return (pane && sessionMap.get(pane.sessionId)?.name) ?? paneId
+      })}
+      busy={conversationChat.session.status === 'running' || conversationChat.session.status === 'waiting'}
+      load={loadConversations}
+      onPick={async (conversation, placement) => {
+        const paneId = await chatConversationsApi.resume({ paneId: conversationPane.id, provider: conversation.provider, sessionId: conversation.sessionId, placement })
+        setConversationPaneId(null)
+        setPendingPaneFocus({ paneId })
+      }}
+      onJump={(paneId) => {
+        setConversationPaneId(null)
+        jumpToPane(paneId, undefined, true)
+      }}
+      onClose={() => setConversationPaneId(null)}
+    />
+  ) : null
   const paletteWebPaneUrl = webPaneUrlFromQuery(paletteQuery)
   const paletteRunCommand = runCommandFromQuery(paletteQuery)
   const paletteRunPane = currentPrPane && !currentPrPane.dead ? currentPrPane : undefined
@@ -4288,6 +4334,7 @@ export function App() {
           </section>
         </div>
       ) : null}
+      {conversationPicker}
     </div>
     </PlanUsageContext.Provider>
     </ChatStashContext.Provider>

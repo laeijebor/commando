@@ -1,0 +1,95 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import '@testing-library/jest-dom/vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import type { ChatState } from '../shared/agent-chat'
+import type { ChatConversation } from '../shared/chat-conversations'
+import type { AgentStatus, TmuxPane } from '../shared/protocol'
+import { ConversationPicker, openConversationPanes } from './ConversationPicker'
+
+beforeAll(() => { Element.prototype.scrollIntoView = vi.fn() })
+afterEach(cleanup)
+
+const NOW = Date.UTC(2026, 9, 13, 21)
+const pane = { id: '%1', path: '/Users/me/app-worktrees/feature', repo: { root: '/Users/me/app', name: 'app', branch: 'feature', isWorktree: true, worktreeRoot: '/Users/me/app-worktrees/feature' } } as TmuxPane
+const conversation = (sessionId: string, title: string, cwd: string, minutesAgo: number, extra: Partial<ChatConversation> = {}): ChatConversation => ({
+  provider: 'claude', sessionId, title, cwd, updatedAt: NOW - minutesAgo * 60_000, repoRoot: cwd.startsWith('/Users/me/app') ? '/Users/me/app' : '/Users/me/other', checkoutRoot: cwd, ...extra,
+})
+const conversations = [
+  conversation('aaaaaaaa-0001', 'Elsewhere work', '/Users/me/other', 1),
+  conversation('aaaaaaaa-0002', 'Main checkout work', '/Users/me/app', 5),
+  conversation('aaaaaaaa-0003', 'Feature work', '/Users/me/app-worktrees/feature', 90, { branch: 'feature' }),
+  conversation('aaaaaaaa-0004', 'Open elsewhere', '/Users/me/app-worktrees/feature', 2),
+]
+
+function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0]> = {}) {
+  const props = {
+    pane,
+    open: new Map([['claude:aaaaaaaa-0004', { paneId: '%7', label: 'Review' }]]),
+    busy: false,
+    load: vi.fn(async () => conversations),
+    onPick: vi.fn(async () => {}),
+    onJump: vi.fn(),
+    onClose: vi.fn(),
+    now: NOW,
+    ...overrides,
+  }
+  render(<ConversationPicker {...props} />)
+  return { ...props, input: screen.getByRole('textbox', { name: 'Search conversations' }) }
+}
+
+describe('ConversationPicker', () => {
+  it('groups this worktree, then this repo, then everything else, newest first', async () => {
+    renderPicker()
+    const groups = await screen.findAllByRole('group')
+    expect(groups.map((group) => group.getAttribute('aria-label'))).toEqual(['This worktree', 'This repo', 'Everything else'])
+    expect(within(groups[0]!).getAllByRole('option').map((option) => option.querySelector('strong')?.textContent)).toEqual(['Open elsewhere', 'Feature work'])
+    expect(within(groups[0]!).getAllByRole('option')[1]).toHaveTextContent('2h ago · ~/app-worktrees/feature · feature')
+    expect(within(groups[0]!).getAllByRole('option')[0]).toHaveTextContent('Open in Review')
+  })
+
+  it('switches this pane with Enter, opens beside with ⌘Enter, and jumps to an open one', async () => {
+    const { input, onPick, onJump } = renderPicker()
+    await screen.findAllByRole('group')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onJump).toHaveBeenCalledWith('%7')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter', metaKey: true })
+    await waitFor(() => expect(onPick).toHaveBeenCalledWith(conversations[2], 'split'))
+  })
+
+  it('filters by every word, closes on its own conversation, and keeps errors in view', async () => {
+    const onPick = vi.fn(async () => { throw new Error('Its folder no longer exists: /Users/me/other') })
+    const { input, onClose } = renderPicker({ onPick, current: 'claude:aaaaaaaa-0002' })
+    await screen.findAllByRole('group')
+    fireEvent.change(input, { target: { value: 'main work' } })
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('This chat')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onClose).toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: 'me/other' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Its folder no longer exists')
+  })
+
+  it('says when the switch would stop a running turn', async () => {
+    renderPicker({ busy: true, open: new Map() })
+    await screen.findAllByRole('group')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('Enter Switch (stops this turn)')
+  })
+})
+
+describe('openConversationPanes', () => {
+  it('maps chat conversations and hook-reported terminal sessions to their panes', () => {
+    const chats = { '%1': { session: { provider: 'codex', sessionId: 'cccccccc-0001' } } } as unknown as Record<string, ChatState>
+    const statuses = {
+      '%2': { provider: 'claude', source: 'hook', agentSessionId: 'aaaaaaaa-0001' },
+      '%3': { provider: 'claude', source: 'heuristic', agentSessionId: 'aaaaaaaa-0002' },
+    } as unknown as Record<string, AgentStatus>
+    expect([...openConversationPanes(chats, statuses, (paneId) => `pane ${paneId}`)]).toEqual([
+      ['claude:aaaaaaaa-0001', { paneId: '%2', label: 'pane %2' }],
+      ['codex:cccccccc-0001', { paneId: '%1', label: 'pane %1' }],
+    ])
+  })
+})

@@ -3912,6 +3912,21 @@ body.is-resizing-hud-pinned-note {
   font-size: 7px;
 }
 
+.conversation-picker-group {
+  padding: 9px 12px 4px;
+  color: var(--muted-dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.conversation-picker-error {
+  margin: 6px 12px 0;
+  color: var(--red);
+  font-size: 12px;
+}
+
 .command-results {
   min-height: 0;
   overflow-y: auto;
