@@ -125,6 +125,17 @@ describe('CodexChatSession', () => {
     expect(turns()).toEqual(['priority', null])
     expect(session.snapshot().session.fast).toBeUndefined()
   })
+  it('shows a fast tier Codex already runs the thread on as fast mode', async () => {
+    const { session, client } = harness()
+    const request = client.request.getMockImplementation()!
+    client.request.mockImplementation(async (method, params) => {
+      const result = await request(method, params)
+      return method === 'thread/start' ? { ...(result as object), serviceTier: 'priority' } : result
+    })
+    await session.start()
+    expect(session.snapshot().session.fast).toBe(true)
+    session.close()
+  })
   it('drops fast mode on a model without it, and refuses to turn it on there', async () => {
     const { session } = await running({ fast: true })
     await session.configure({ model: 'other-model' })
