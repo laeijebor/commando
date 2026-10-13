@@ -145,6 +145,16 @@ describe('CodexChatSession', () => {
     expect(resumed.session.snapshot().session.fast).toBeUndefined()
     resumed.session.close()
   })
+  it('names the standard tier for the Codex TUI once fast mode is off, so a fast config default stays off', async () => {
+    const { session } = await running({ fast: true })
+    const tui = () => session.tui.command('/c/commando-agent', [], 'thread-123')
+    expect(tui()).toContain(`-c '"'"'service_tier="priority"'"'"'`)
+    await session.configure({ fast: false })
+    expect(tui()).toContain(`-c '"'"'service_tier="default"'"'"'`)
+    await session.configure({ model: 'other-model' })
+    expect(tui()).not.toContain('service_tier')
+    session.close()
+  })
   it('drops fast mode on a model without it, and refuses to turn it on there', async () => {
     const { session } = await running({ fast: true })
     await session.configure({ model: 'other-model' })
