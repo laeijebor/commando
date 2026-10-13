@@ -69,6 +69,8 @@ export const PANE_FORMAT = [
   `#{${EMPTY_PANE_OPTION}}`,
   '#{pane_pid}',
   '#{@commando_target}',
+  '#{@commando_opened_by}',
+  '#{@commando_chat_title}',
 ].join(TMUX_FIELD_SEPARATOR)
 
 const SESSION_ID = /^\$\d+$/
@@ -84,7 +86,7 @@ export const PANE_IDENTITY_DISCOVERY_FORMAT = [
 export function parsePaneIdentityDiscovery(output: string): {
   paneOutput: string; serverId: string; identities: PaneIdentityObservation[]
 } {
-  const fields = rows(output, 15 + PANE_TERMINAL_STATE_FIELDS.length)
+  const fields = rows(output, 17 + PANE_TERMINAL_STATE_FIELDS.length, 15 + PANE_TERMINAL_STATE_FIELDS.length)
   if (fields.length !== output.split(/\r?\n/).filter(Boolean).length) throw new Error('Incomplete tmux pane identity snapshot')
   const serverId = fields[0]?.at(-3) ?? ''
   if (!/^\d+:\d+$/.test(serverId) || fields.some((row) => row.at(-3) !== serverId)) {
@@ -96,17 +98,17 @@ export function parsePaneIdentityDiscovery(output: string): {
     if (!PANE_ID.test(row[0]) || paneIndex === null || windowIndex === null || !row.at(-2) || !row[6].startsWith('/')) {
       throw new Error('Incomplete tmux pane identity snapshot')
     }
-    return { paneId: row[0], storedValue: row.at(-4) ?? '', sessionName: row.at(-2)!, windowIndex, paneIndex, path: row[6] }
+    return { paneId: row[0], storedValue: row[11 + PANE_TERMINAL_STATE_FIELDS.length] ?? '', sessionName: row.at(-2)!, windowIndex, paneIndex, path: row[6] }
   })
   return { serverId, identities, paneOutput: fields.map((row) => row.slice(0, -3).join(TMUX_FIELD_SEPARATOR)).join('\n') }
 }
 
-function rows(output: string, fieldCount: number): string[][] {
+function rows(output: string, fieldCount: number, legacyFieldCount?: number): string[][] {
   return output
     .split(/\r?\n/)
     .filter((line) => line.length > 0)
     .map((line) => line.split(TMUX_FIELD_SEPARATOR))
-    .filter((fields) => fields.length === fieldCount)
+    .filter((fields) => fields.length === fieldCount || fields.length === legacyFieldCount)
 }
 
 function integer(value: string): number | null {
@@ -296,9 +298,9 @@ export function parseWindows(output: string): TmuxWindow[] {
 }
 
 export function parsePaneTargetObservations(output: string): PaneTargetObservation[] {
-  return rows(output, 12 + PANE_TERMINAL_STATE_FIELDS.length)
+  return rows(output, 14 + PANE_TERMINAL_STATE_FIELDS.length, 12 + PANE_TERMINAL_STATE_FIELDS.length)
     .filter(([paneId]) => PANE_ID.test(paneId))
-    .map((fields) => ({ paneId: fields[0], storedValue: fields.at(-1) ?? '' }))
+    .map((fields) => ({ paneId: fields[0], storedValue: fields[11 + PANE_TERMINAL_STATE_FIELDS.length] ?? '' }))
 }
 
 export function parsePanes(
@@ -307,7 +309,7 @@ export function parsePanes(
 ): TmuxPane[] {
   const panes: TmuxPane[] = []
 
-  for (const fields of rows(output, 12 + PANE_TERMINAL_STATE_FIELDS.length)) {
+  for (const fields of rows(output, 14 + PANE_TERMINAL_STATE_FIELDS.length, 12 + PANE_TERMINAL_STATE_FIELDS.length)) {
     const [
       id,
       indexValue,
@@ -320,7 +322,7 @@ export function parsePanes(
       deadValue,
     ] = fields
     const index = integer(indexValue)
-    const processId = integer(fields.at(-2) ?? '')
+    const processId = integer(fields[10 + PANE_TERMINAL_STATE_FIELDS.length] ?? '')
     const targetId = targetIds.get(id)
     const active = flag(activeValue)
     const dead = flag(deadValue)
@@ -329,7 +331,9 @@ export function parsePanes(
     )
     // Empty only while the idle process that set the marker is still the pane's process.
     const emptyMarker = fields[9 + PANE_TERMINAL_STATE_FIELDS.length]
-    const empty = Boolean(emptyMarker) && emptyMarker === fields.at(-2)
+    const empty = Boolean(emptyMarker) && emptyMarker === fields[10 + PANE_TERMINAL_STATE_FIELDS.length]
+    const openedBy = fields[12 + PANE_TERMINAL_STATE_FIELDS.length]
+    const chatTitle = fields[13 + PANE_TERMINAL_STATE_FIELDS.length]
 
     if (
       !PANE_ID.test(id) ||
@@ -359,6 +363,8 @@ export function parsePanes(
       active,
       dead,
       ...(empty ? { empty } : {}),
+      ...(openedBy ? { openedBy } : {}),
+      ...(chatTitle ? { chatTitle } : {}),
       ...terminalState,
     })
   }
@@ -374,10 +380,10 @@ export type TmuxPaneProcess = {
 
 export function parsePaneProcesses(output: string): TmuxPaneProcess[] {
   const processes: TmuxPaneProcess[] = []
-  for (const fields of rows(output, 12 + PANE_TERMINAL_STATE_FIELDS.length)) {
+  for (const fields of rows(output, 14 + PANE_TERMINAL_STATE_FIELDS.length, 12 + PANE_TERMINAL_STATE_FIELDS.length)) {
     const paneId = fields[0]
     const sessionId = fields[3]
-    const processId = integer(fields.at(-2) ?? '')
+    const processId = integer(fields[10 + PANE_TERMINAL_STATE_FIELDS.length] ?? '')
     if (
       !PANE_ID.test(paneId) ||
       !SESSION_ID.test(sessionId) ||

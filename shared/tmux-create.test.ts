@@ -15,14 +15,14 @@ describe('interactive agent arguments', () => {
     expect(claude[2].trimStart()).toBe(prompt)
     expect(sessionAgentArgv({ provider: 'codex', prompt })).toEqual(['codex', '--', prompt])
     expect(sessionAgentArgv({ provider: 'cursor', prompt })).toEqual(['agent', 'agent', '--', prompt])
-    expect(sessionAgentArgv({ provider: 'opencode', prompt })).toEqual(['opencode'])
+    expect(sessionAgentArgv({ provider: 'opencode', prompt })).toEqual(['opencode', `--prompt=${prompt}`])
   })
   it('treats command-like and flag-like prompts as literal data and preserves newlines', () => {
     expect(sessionAgentArgv({ provider: 'cursor', prompt: 'login' })).toEqual(['agent', 'agent', '--', 'login'])
     expect(sessionAgentArgv({ provider: 'cursor', prompt: '--force\nsecond line' })).toEqual(['agent', 'agent', '--', '--force\nsecond line'])
     expect(sessionAgentArgv({ provider: 'claude', prompt: 'Fix' })).toEqual(['claude', '--', ' Fix'])
     expect(sessionAgentArgv({ provider: 'codex', prompt: 'Fix' })).toEqual(['codex', '--', 'Fix'])
-    expect(sessionAgentArgv({ provider: 'opencode', prompt: 'Fix' })).toEqual(['opencode'])
+    expect(sessionAgentArgv({ provider: 'opencode', prompt: 'Fix' })).toEqual(['opencode', '--prompt=Fix'])
   })
 })
 
@@ -85,5 +85,14 @@ describe('chat launch arguments', () => {
     expect(sessionAgentArgv({ provider: 'claude-chat', permissionMode: 'acceptEdits', readableDir: dir, prompt: 'PLEASE IMPLEMENT --now' })).toEqual([
       'commando-agent', 'claude', '--permission-mode', 'acceptEdits', '--readable-dir', dir, '--prompt', 'PLEASE IMPLEMENT --now',
     ])
+  })
+})
+
+describe('Codex chat launch', () => {
+  it('launches the host with Codex and literal prompt text, without Claude flags', () => {
+    expect(sessionAgentArgv({ provider: 'codex-chat', permissionMode: 'plan', prompt: '--model malicious\nhello' }))
+      .toEqual(['commando-agent', 'codex', '--permission-mode', 'plan', '--prompt', '--model malicious\nhello'])
+    expect(sessionAgentArgv({ provider: 'codex-chat', configDir: '/unused/.claude', readableDir: '/unused' }))
+      .toEqual(['commando-agent', 'codex', '--permission-mode', 'default'])
   })
 })

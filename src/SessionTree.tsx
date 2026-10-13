@@ -10,6 +10,9 @@ import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { SessionCreateDialog } from './SessionCreateDialog'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
 import './session-tree.css'
+import { OpenedByMarker } from './OpenedByMarker'
+import { AgentChatRequestBadge } from './AgentChatRequestBadge'
+import type { AgentChatRequest } from '../shared/agent-chats'
 import './session-ide.css'
 import type { PrsApiClient } from './prsApi'
 import { SessionPrCount } from './SessionPrCount'
@@ -26,6 +29,7 @@ type Props = {
   displayedPaneIds: string[]
   statuses: Record<string, AgentStatus>
   marks?: Record<string, PaneMark>
+  agentChatRequests?: Record<string, AgentChatRequest>
   /** Leased simulators keyed by pane id. */
   simulators?: Record<string, SimulatorClaim>
   selectedSessionId: string | null
@@ -105,6 +109,7 @@ export function SessionTree(props: Props) {
   const sessionCreateTrigger = useRef<HTMLElement | null>(null)
   const preferenceSaveVersion = useRef(0)
   const marks = props.marks ?? {}
+  const lineageSnapshot = { panes: props.panes, sessions: props.sessions }
   const displayedPaneOrder = new Map(props.displayedPaneIds.map((paneId, index) => [paneId, index]))
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
   const mode: SessionGroupingMode = preferences.groupingMode ?? DEFAULT_GROUPING_MODE
@@ -421,6 +426,8 @@ export function SessionTree(props: Props) {
                   <span className="session-row-meta">
                     {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} previewApi={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
                     {ide ? <button type="button" className={`session-ide-glyph state-${ide.state}`} aria-pressed={props.ideSessionId === session.id} aria-label={`Open attached IDE for ${session.name}`} title={`${ide.state === 'ready' ? 'IDE attached' : ide.state === 'starting' ? 'IDE starting' : 'IDE failed'} · ${ide.workspacePath}`} onClick={() => props.onOpenIde?.(session.id)}><Code2 /></button> : null}
+                    {Object.values(props.agentChatRequests ?? {}).filter((request) => sessionPanes.some((pane) => pane.id === request.callerPaneId && pane.targetId === request.callerTargetId)).map((request) => <AgentChatRequestBadge key={request.id} request={request} onSelect={props.onSelectPane} />)}
+                    {sessionPanes[0] ? <OpenedByMarker pane={sessionPanes[0]} snapshot={lineageSnapshot} statuses={props.statuses} onSelect={props.onSelectPane} /> : null}
                     {simulator && simulatorPane ? <button type="button" className={`session-sim-glyph${simulator.idle ? ' idle' : ''}`} aria-label={`Show leased simulator for ${session.name}`} title={`Simulator · ${simulator.label}${simulator.task ? ` · ${simulator.task}` : ''}`} onClick={() => props.onShowSimulator?.(simulator.udid, simulatorPane.id)}><Smartphone /></button> : null}
                   </span>
                   <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
@@ -442,6 +449,7 @@ export function SessionTree(props: Props) {
         </div>)}</div> : null}
       </section> : null}
       {props.creation ? <TmuxCreateControls
+        token={props.token}
         disabled={props.creation.disabled}
         onCreateSession={props.creation.onCreateSession}
         probeRepo={props.creation.probeRepo}
@@ -450,6 +458,7 @@ export function SessionTree(props: Props) {
       /> : null}
       {props.creation && sessionCreateRequest ? <SessionCreateDialog
         request={sessionCreateRequest}
+        token={props.token}
         disabled={props.creation.disabled}
         onCreateSession={props.creation.onCreateSession}
         probeRepo={props.creation.probeRepo}

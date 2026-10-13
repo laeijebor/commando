@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
@@ -27,6 +27,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ command: '' })))
   vi.clearAllMocks()
   sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
@@ -835,5 +836,43 @@ describe('SessionTree', () => {
       })
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     })
+  })
+})
+
+describe('agent chat sidebar', () => {
+  it('shows a lineage glyph for a session opened from another session and a request badge in the row meta', async () => {
+    const parent = { ...pane('%1', 0, 'Parent'), sessionId: '$1' }
+    const child = { ...pane('%2', 0, 'Child'), sessionId: '$2', windowId: '@2', openedBy: parent.targetId }
+    const sibling = { ...pane('%3', 1, 'Sibling'), openedBy: parent.targetId }
+    const onSelectPane = vi.fn(), onSelectSession = vi.fn()
+    const props = {
+      token: '', sessions: [{ id: '$1', name: 'main', attached: true, activeWindowId: '@1', windowIds: ['@1'] }, { id: '$2', name: 'child', attached: false, activeWindowId: '@2', windowIds: ['@2'] }],
+      windows: [{ id: '@1', sessionId: '$1', name: 'shell', index: 0, active: true, layout: '', paneIds: ['%1', '%3'] }, { id: '@2', sessionId: '$2', name: 'shell', index: 0, active: true, layout: '', paneIds: ['%2'] }],
+      panes: [parent, child, sibling], displayedPaneIds: ['%1', '%3'], statuses: { '%1': { ...agentStatus('%1', 'claude', 'working'), agentSessionName: 'implementation' } },
+      selectedSessionId: '$1', focusedPaneId: '%1', onSelectPane, onSelectSession, onSelectWindow: vi.fn(), onOpenPaneMaximized: vi.fn(), onWindowDeleting: vi.fn(), onSessionsChanged: vi.fn(), onPreferencesChanged: vi.fn(),
+      agentChatRequests: { 'cr-123': { id: 'cr-123', callerPaneId: '%2', callerTargetId: child.targetId, requestedBy: 'claude', reason: 'rate' as const, requestedAt: 0, summary: { location: 'pane' as const, title: 'Review', provider: 'claude' as const, promptPreview: 'brief' } } },
+    }
+    const { rerender } = render(<SessionTree {...props} />)
+    await act(async () => {})
+    // Only a session opened from another session gets the glyph; a sibling pane is attributed in its own pane.
+    const marker = screen.getByRole('button', { name: 'Opened by claude · implementation in main' })
+    expect(marker).toHaveClass('opened-by-marker')
+    expect(marker.closest('.session-row-meta')).toBeTruthy()
+    expect(marker.closest('.managed-session-row')).toHaveTextContent('child')
+    fireEvent.click(marker)
+    expect(onSelectPane).toHaveBeenLastCalledWith('%1')
+    expect(onSelectSession).not.toHaveBeenCalled()
+    const badge = screen.getByRole('button', { name: 'claude wants to open a chat' })
+    expect(badge.textContent).toBe('')
+    expect(badge.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+    expect(badge.closest('.session-row-meta')).toBeTruthy()
+    expect(badge.closest('.managed-session-row')).toHaveTextContent('child')
+    expect(document.querySelector('button button')).toBeNull()
+    fireEvent.click(badge)
+    expect(onSelectPane).toHaveBeenLastCalledWith('%2')
+    expect(onSelectSession).not.toHaveBeenCalled()
+    rerender(<SessionTree {...props} panes={[child, sibling]} agentChatRequests={{}} />)
+    expect(screen.queryByRole('button', { name: /^Opened by/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'claude wants to open a chat' })).not.toBeInTheDocument()
   })
 })

@@ -926,7 +926,7 @@ export class WebPaneService {
 
 export function buildWebPanesMessage(
   service: WebPaneService,
-  state: Pick<Extract<ServerMessage, { type: 'web_panes' }>, 'feedback' | 'navigateRequests' | 'spotlightRequests' | 'reloads'> = {},
+  state: Pick<Extract<ServerMessage, { type: 'web_panes' }>, 'feedback' | 'navigateRequests' | 'spotlightRequests' | 'reloads' | 'agentChatRequests'> = {},
 ): Extract<ServerMessage, { type: 'web_panes' }> {
   return {
     type: 'web_panes',

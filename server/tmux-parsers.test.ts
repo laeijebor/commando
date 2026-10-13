@@ -76,6 +76,14 @@ function paneRow(
 }
 
 describe('tmux format parsers', () => {
+  it('reads chat lineage without shifting process or stable target identity fields', () => {
+    const original = paneRow('%8', '1', '@3', '$1', 'Agent', 'sh', '/repo', '1', '0', '120', '40', '0', '0')
+    const lineage = row(original, 'parent-target', 'Fix bug')
+    expect(parsePanes(lineage, targetIds)[0]).toMatchObject({ id: '%8', targetId: targetIds.get('%8'), processId: 1234, openedBy: 'parent-target', chatTitle: 'Fix bug' })
+    expect(parsePaneTargetObservations(lineage)[0]).toEqual({ paneId: '%8', storedValue: `v1:%8:${targetIds.get('%8')}` })
+    expect(parsePaneProcesses(lineage)[0]).toMatchObject({ paneId: '%8', processId: 1234 })
+    expect(parsePaneIdentityDiscovery(row(lineage, '1234:5678', 'saved-work', '2')).identities[0].storedValue).toBe(`v1:%8:${targetIds.get('%8')}`)
+  })
   it('captures server identity and restored coordinates with the original pane observation', () => {
     const original = paneRow('%8', '1', '@3', '$1', 'Agent', 'sh', '/repo', '1', '0', '120', '40', '0', '0')
     expect(parsePaneIdentityDiscovery(row(original, '1234:5678', 'saved-work', '2'))).toEqual({

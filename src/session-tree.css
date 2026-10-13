@@ -102,3 +102,6 @@ button.session-indicator::before { width: 6px; height: 6px; content: ''; border-
 .session-indicator.mark.tone-red { color: var(--red); }
 .session-indicator.mark.tone-purple { color: var(--accent); }
 .session-indicator.mark.has-activity::before { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+
+/* Agent-opened chats: lineage glyph and a pending open request (needs attention). */
+.session-row-meta .agent-chat-request-badge { color: var(--accent) !important; }
