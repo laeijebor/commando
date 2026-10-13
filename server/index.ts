@@ -894,7 +894,7 @@ async function main(): Promise<void> {
   const externalAgents = new ExternalAgentWatcher({
     panes: () => {
       const hosts = new Map(agentHosts.states().map((chat) => [chat.paneId, chat.session]))
-      return snapshot.panes.map((pane) => ({ paneId: pane.id, panePid: pane.processId, hostPid: hosts.get(pane.id)?.hostPid, sessionId: hosts.get(pane.id)?.sessionId, status: hosts.get(pane.id)?.status, cwd: hosts.get(pane.id)?.cwd }))
+      return snapshot.panes.map((pane) => ({ paneId: pane.id, panePid: pane.processId, hostPid: hosts.get(pane.id)?.hostPid, sessionId: hosts.get(pane.id)?.sessionId, status: hosts.get(pane.id)?.status, cwd: hosts.get(pane.id)?.cwd, configDir: hosts.get(pane.id)?.configDir }))
     },
     publish: (paneId, runs) => broadcast({ type: 'chat_external_runs', paneId, runs }),
   })

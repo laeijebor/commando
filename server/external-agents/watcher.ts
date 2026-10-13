@@ -19,6 +19,7 @@ export interface WatchedPane {
   sessionId?: string
   status?: ChatSessionStatus
   cwd?: string
+  configDir?: string
 }
 
 interface TrackedRun {
@@ -160,7 +161,9 @@ export class ExternalAgentWatcher {
       const chatTranscripts = panes.flatMap((pane) => pane.sessionId ? [`${pane.sessionId}.jsonl`] : [])
       let candidates: ReturnType<typeof rolloutCandidates> | undefined
       const home = this.dependencies.home ?? homedir()
-      const configDirs = this.dependencies.configDirs ?? [join(home, '.claude'), join(home, '.claudep'), join(home, '.claudew'), ...(process.env.CLAUDE_CONFIG_DIR ? [process.env.CLAUDE_CONFIG_DIR] : [])]
+      // A claude -p run inherits its chat's profile, which can be any ~/.claude* dir.
+      const configDirs = this.dependencies.configDirs ?? [...new Set([join(home, '.claude'), join(home, '.claudep'), join(home, '.claudew'),
+        ...(process.env.CLAUDE_CONFIG_DIR ? [process.env.CLAUDE_CONFIG_DIR] : []), ...panes.flatMap((pane) => pane.configDir ? [pane.configDir] : [])])]
       for (const pane of panes) {
         const entries = this.runs.get(pane.paneId) ?? []
         const found = pane.panePid && pane.hostPid ? findAgentProcesses(rows, pane.panePid, pane.hostPid, processIndex) : []
@@ -205,7 +208,7 @@ export class ExternalAgentWatcher {
                     }
                     if (candidate) entry.source = await codexSource(candidate, entry.process)
                   } else {
-                    const path = await findClaudeTranscript(configDirs, entry.cwd, entry.process.startedAt, new Set([...claimed, ...chatTranscripts]), entry.process.prompt, entry.process)
+                    const path = await findClaudeTranscript(configDirs, entry.cwd, entry.process.startedAt, new Set([...claimed, ...chatTranscripts]), entry.process.prompt ? { prompt: entry.process.prompt, command: entry.process.command } : undefined, entry.process)
                     if (path) entry.source = claudeSource(path, entry.process)
                   }
                   if (entry.source) claimed.add(entry.source.path)

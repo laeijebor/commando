@@ -73,7 +73,7 @@ export async function matchRollout(candidates: readonly RolloutCandidate[], run:
       const prompt = !run.resume && candidate.prompt !== undefined ? candidate.prompt
         : await firstUserMessage(candidate.path, codexUserText, run.resume ? run.startedAt - 1_000 : undefined).catch(() => undefined)
       if (!run.resume && prompt) candidate.prompt = prompt
-      if (promptMatches(prompt, run.prompt)) return candidate
+      if (promptMatches(prompt, run.prompt, run.command)) return candidate
     }
   }
   return eligible[0]

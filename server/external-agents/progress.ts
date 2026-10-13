@@ -31,10 +31,22 @@ export function textContent(value: unknown): string {
   }).filter(Boolean).join('\n') : ''
 }
 
-export function promptMatches(text: string | undefined, prompt: string): boolean {
-  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().slice(0, 200)
-  const expected = normalize(prompt)
-  return Boolean(expected && text && normalize(text).startsWith(expected))
+const normalizeText = (value: string) => value.replace(/\s+/g, ' ').trim()
+/** macOS ps prints control characters in argv as octal escapes (a newline is `\012`). */
+const normalizeCommand = (value: string) => normalizeText(value.replace(/\\0[0-7]{2}/g, ' '))
+
+/**
+ * Whether a transcript's first user message is this run's prompt. The message starts with the parsed
+ * prompt when stdin was appended to it. ps drops quotes and argv boundaries, so the parsed prompt can
+ * also pick up neighbouring option values; then the whole message must appear as words in the command line.
+ */
+export function promptMatches(text: string | undefined, prompt: string, command: string): boolean {
+  const message = normalizeText(text ?? '')
+  if (!message) return false
+  const head = message.slice(0, 200)
+  const expected = normalizeText(prompt).slice(0, 200)
+  if (expected && head.startsWith(expected) && (head.length === expected.length || head[expected.length] === ' ')) return true
+  return message.length >= 12 && ` ${normalizeCommand(command)} `.includes(` ${message} `)
 }
 
 export async function firstUserMessage(path: string, userText: (value: unknown) => string, notBefore = -Infinity): Promise<string | undefined> {

@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { firstLine, type AgentProcess } from './process-scan.js'
 import { firstUserMessage, JsonlTail, promptMatches, record, textContent, type AgentProgress, type ProgressSource } from './progress.js'
 
-export async function findClaudeTranscript(configDirs: readonly string[], cwd: string, startedAt: number, claimed: ReadonlySet<string>, prompt?: string, run?: Pick<AgentProcess, 'resume' | 'resumeId'>): Promise<string | undefined> {
+export async function findClaudeTranscript(configDirs: readonly string[], cwd: string, startedAt: number, claimed: ReadonlySet<string>, invocation?: { prompt: string; command: string }, run?: Pick<AgentProcess, 'resume' | 'resumeId'>): Promise<string | undefined> {
   const project = cwd.replace(/[^a-zA-Z0-9]/g, '-')
   const candidates = await Promise.all([...new Set(configDirs)].map(async (configDir) => {
     const dir = join(configDir, 'projects', project)
@@ -20,13 +20,13 @@ export async function findClaudeTranscript(configDirs: readonly string[], cwd: s
   const eligible = candidates.flat().filter((value) => value !== null)
     .sort((a, b) => run?.resume ? b.createdAt - a.createdAt : Math.abs(a.createdAt - startedAt) - Math.abs(b.createdAt - startedAt))
   if (run?.resumeId) return eligible[0]?.path
-  if (prompt) {
+  if (invocation) {
     for (const candidate of eligible) {
       const text = await firstUserMessage(candidate.path, (value) => {
         const line = record(value)
         return line.type === 'user' ? textContent(record(line.message).content) : ''
       }, run?.resume ? startedAt - 1_000 : -Infinity).catch(() => undefined)
-      if (promptMatches(text, prompt)) return candidate.path
+      if (promptMatches(text, invocation.prompt, invocation.command)) return candidate.path
     }
     if (run?.resume) return undefined
   }

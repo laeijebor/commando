@@ -509,6 +509,27 @@ describe('external watcher', () => {
     } finally { await rm(config, { recursive: true, force: true }) }
   })
 
+  it("finds a claude -p transcript in its chat's custom profile directory", async () => {
+    const home = await mkdtemp(join(tmpdir(), 'external-claude-profile-'))
+    try {
+      const config = join(home, '.claude-work')
+      const project = join(config, 'projects', '-work-example')
+      await mkdir(project, { recursive: true })
+      await writeFile(join(project, 'old-session.jsonl'), [
+        { type: 'user', timestamp: new Date(3_000).toISOString(), message: { content: 'Review new changes' } },
+        { type: 'assistant', timestamp: new Date(3_000).toISOString(), message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } },
+      ].map((line) => JSON.stringify(line) + '\n').join(''))
+      const watcher = new ExternalAgentWatcher({
+        home, panes: () => [{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle', configDir: config }], publish: vi.fn(),
+        processes: async () => [...roots, row(50, 40, 'claude -p --resume old-session "Review new changes"', 2_000)],
+        cwd: async () => '/work/example', now: () => 3_000,
+      })
+      watchers.push(watcher)
+      await watcher.poll()
+      expect(watcher.snapshots()[0]!.runs[0]).toMatchObject({ runtime: 'claude', toolUses: 1, lastAction: '$ npm test' })
+    } finally { await rm(home, { recursive: true, force: true }) }
+  })
+
   it('excludes every pane chat session from Claude continuation matching', async () => {
     const config = await mkdtemp(join(tmpdir(), 'external-claude-continue-'))
     try {

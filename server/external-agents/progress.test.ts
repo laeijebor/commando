@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { claudeSource, findClaudeTranscript, parseClaudeLine } from './claude-transcript.js'
 import { codexSource, findResumeRollout, matchRollout, parseCodexLine, RESUME_LOOKUP_BACKOFF_MS, rolloutCandidates, type ResumeRolloutLookup, type RolloutCandidate } from './codex-rollout.js'
-import { JsonlTail, type AgentProgress } from './progress.js'
+import { JsonlTail, promptMatches, type AgentProgress } from './progress.js'
 import { recognizeAgent, type AgentProcess } from './process-scan.js'
 
 const dirs: string[] = []
@@ -15,6 +15,8 @@ const run: AgentProcess = { pid: 50, ppid: 40, pgid: 50, tty: '??', startedAt: s
 const candidate = (path: string, overrides: Partial<RolloutCandidate> = {}): RolloutCandidate => ({ path, cwd: '/work/example', originator: 'codex_exec', startedAt: start, ...overrides })
 const fixture = (name: string) => readFile(new URL(`./fixtures/${name}.jsonl`, import.meta.url), 'utf8')
 const event = (text: string) => JSON.stringify({ timestamp: '2026-10-13T06:31:00Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', content: [{ type: 'Text', text }] } } }) + '\n'
+
+const said = (prompt: string) => ({ prompt, command: `claude -p ${prompt}` })
 
 describe('Codex rollouts', () => {
   it('matches cwd, exec origin and start window, preferring an unclaimed file', async () => {
@@ -34,10 +36,12 @@ describe('Codex rollouts', () => {
     for (const [file, prompt] of [[first, 'Review parser.\nCheck edge cases.'], [second, 'Review scanner. Check progress.']] as const) {
       await writeFile(file.path, JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: prompt }] } } }) + '\n')
     }
-    const selected = await matchRollout([first, second], { ...run, prompt: 'Review scanner.   Check progress.' }, '/work/example', new Set())
+    const selected = await matchRollout([first, second], { ...run, prompt: 'Review scanner.   Check progress.', command: `codex exec -m gpt-6.1-sol ${'Review scanner.   Check progress.'}` }, '/work/example', new Set())
     expect(selected?.path).toBe(second.path)
-    expect((await matchRollout([first, second], { ...run, prompt: 'Review parser. Check edge cases.' }, '/work/example', new Set([second.path])))?.path).toBe(first.path)
-    expect((await matchRollout([first, second], { ...run, prompt: 'No matching prompt' }, '/work/example', new Set()))?.path).toBe(first.path)
+    expect((await matchRollout([first, second], { ...run, prompt: 'Review parser. Check edge cases.', command: `codex exec -m gpt-6.1-sol ${'Review parser. Check edge cases.'}` }, '/work/example', new Set([second.path])))?.path).toBe(first.path)
+    // ps drops quotes and argv boundaries, so other options may surround the prompt.
+    expect((await matchRollout([first, second], { ...run, prompt: 'x', command: 'codex exec --cd /work/example Review parser. Check edge cases. --json' }, '/work/example', new Set()))?.path).toBe(first.path)
+    expect((await matchRollout([first, second], { ...run, prompt: 'No matching prompt', command: `codex exec -m gpt-6.1-sol ${'No matching prompt'}` }, '/work/example', new Set()))?.path).toBe(first.path)
   })
 
   it('reads today and yesterday metadata while ignoring other days and malformed files', async () => {
@@ -189,8 +193,8 @@ describe('Claude print transcripts', () => {
     await writeFile(first, userLine('Review parser.\nCheck edge cases.'))
     await writeFile(second, userLine('Review scanner. Check progress.'))
     const startedAt = (await stat(first)).birthtimeMs - 1_000
-    expect(await findClaudeTranscript([config], cwd, startedAt, new Set(), 'Review scanner.   Check progress.')).toBe(second)
-    expect(await findClaudeTranscript([config], cwd, startedAt, new Set([second]), 'Review parser. Check edge cases.')).toBe(first)
+    expect(await findClaudeTranscript([config], cwd, startedAt, new Set(), said('Review scanner.   Check progress.'))).toBe(second)
+    expect(await findClaudeTranscript([config], cwd, startedAt, new Set([second]), said('Review parser. Check edge cases.'))).toBe(first)
     expect(await findClaudeTranscript([config], cwd, startedAt, new Set())).toBe(first)
   })
 
@@ -204,9 +208,9 @@ describe('Claude print transcripts', () => {
     const startedAt = Date.now() + 60_000
     const resumed = { ...run, ...recognizeAgent(`claude -p ${flag} ${id} "Review new changes"`)!, startedAt }
     expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set())).toBeUndefined()
-    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set(), resumed.prompt, resumed)).toBe(path)
-    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([path]), resumed.prompt, resumed)).toBeUndefined()
-    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([`${id}.jsonl`]), resumed.prompt, resumed)).toBeUndefined()
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set(), said(resumed.prompt!), resumed)).toBe(path)
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([path]), said(resumed.prompt!), resumed)).toBeUndefined()
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([`${id}.jsonl`]), said(resumed.prompt!), resumed)).toBeUndefined()
   })
 
   it.each(['-c', '--continue'])('selects the existing transcript most recently modified after start for %s', async (flag) => {
@@ -220,8 +224,8 @@ describe('Claude print transcripts', () => {
       await utimes(path, new Date(startedAt + offset), new Date(startedAt + offset))
     }
     const continued = recognizeAgent(`claude ${flag} -p "Review new changes"`)!
-    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set(), continued.prompt, continued)).toBe(join(project, 'latest.jsonl'))
-    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([join(project, 'latest.jsonl')]), continued.prompt, continued)).toBe(join(project, 'recent.jsonl'))
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set(), said(continued.prompt!), continued)).toBe(join(project, 'latest.jsonl'))
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([join(project, 'latest.jsonl')]), said(continued.prompt!), continued)).toBe(join(project, 'recent.jsonl'))
   })
 
   it('matches only the current continuation prompt and excludes known chat session filenames', async () => {
@@ -242,8 +246,10 @@ describe('Claude print transcripts', () => {
     }
     const excluded = new Set(['parent-chat.jsonl'])
     const continued = { resume: true }
-    expect(await findClaudeTranscript([config], '/work/example', startedAt, excluded, 'Review new changes.   Check edge cases.', continued)).toBe(join(project, 'matching.jsonl'))
-    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([...excluded, 'matching.jsonl']), 'Review new changes. Check edge cases.', continued)).toBeUndefined()
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, excluded, said('Review new changes.   Check edge cases.'), continued)).toBe(join(project, 'matching.jsonl'))
+    // ps output loses quotes, so neighbouring option values surround the prompt.
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, excluded, { prompt: 'Review new changes. Check edge cases. concise', command: 'claude -c -p Review new changes.\\012Check edge cases. --system-prompt Be concise' }, continued)).toBe(join(project, 'matching.jsonl'))
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([...excluded, 'matching.jsonl']), said('Review new changes. Check edge cases.'), continued)).toBeUndefined()
     expect(await findClaudeTranscript([config], '/work/example', startedAt, excluded, undefined, continued)).toBe(join(project, 'terminal.jsonl'))
   })
 
@@ -274,5 +280,29 @@ describe('Claude print transcripts', () => {
     expect(path).toBe(paths[3])
     expect(await findClaudeTranscript(configDirs, '/work/example.repo', Date.now() + 60_000, new Set())).toBeUndefined()
     expect(await claudeSource(path!).poll()).toMatchObject({ label: 'Review the sample change.', toolUses: 2 })
+  })
+})
+
+describe('prompt matching', () => {
+  it('accepts a message that starts with the prompt even when stdin was appended', () => {
+    expect(promptMatches('Review this diff\n<stdin>\ndiff --git a/x b/x', 'Review this diff', 'codex exec Review this diff')).toBe(true)
+  })
+
+  it('finds a multi-line prompt in ps output that escapes newlines as \\012', () => {
+    expect(promptMatches('Review parser.\nCheck edge cases.', 'Review parser. Check edge cases. --json', 'codex exec Review parser.\\012Check edge cases. --json')).toBe(true)
+  })
+
+  it('rejects short or partial-word messages that merely occur in the command line', () => {
+    expect(promptMatches('continue', 'Fix lint errors', 'claude --continue -p Fix lint errors')).toBe(false)
+    expect(promptMatches('lint', 'Fix lint errors', 'claude -p Fix lint errors')).toBe(false)
+    expect(promptMatches('Fix lint error', 'Something else', 'claude -p Fix lint errors --model m')).toBe(false)
+  })
+})
+
+describe('prompt matching boundaries', () => {
+  it('matches long prompts by the whole message and needs a word boundary after the parsed prompt', () => {
+    const long = Array.from({ length: 40 }, (_, index) => `step${index}`).join(' ')
+    expect(promptMatches(long, `${long} --model`, `codex exec ${long} --model gpt`)).toBe(true)
+    expect(promptMatches('fixture cleanup in the scanner', 'fix', 'claude -p fix')).toBe(false)
   })
 })
