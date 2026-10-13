@@ -6,8 +6,8 @@ import type { AgentStatus, WebPane, WebPaneFeedbackNote } from '../shared/protoc
 
 export const canvasRepoRoot = fileURLToPath(new URL('../', import.meta.url))
 
-const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
-const clip = (text: string, limit: number) => text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
+export const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
+export const clip = (text: string, limit: number) => text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
 
 export function canvasPushPrompt(title: string, id: string, notes: readonly WebPaneFeedbackNote[], repoRoot = canvasRepoRoot): string {
   id = singleLine(id)

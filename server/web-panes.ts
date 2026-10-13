@@ -14,6 +14,7 @@ import {
   type WebPanePlacement,
 } from '../shared/protocol.js'
 import { canvasRelativePath } from '../shared/canvas-manifest.js'
+import { guideRelativePath } from '../shared/guide.js'
 import { parsePrPanelKey, prPanelKey, isLegacyPrPanelKey, isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
 
 const SESSION_ID = /^\$\d+$/
@@ -127,6 +128,10 @@ export function parseWebPaneContent(value: unknown): WebPane['content'] | null {
   if (value.kind === 'canvas' && typeof value.artifactId === 'string' && /^[0-9a-f]{16}$/.test(value.artifactId)) {
     const manifest = canvasRelativePath(value.manifest === undefined ? 'canvas.json' : value.manifest)
     if (manifest) return { kind: 'canvas', artifactId: value.artifactId, manifest }
+  }
+  if (value.kind === 'guide' && typeof value.artifactId === 'string' && /^[0-9a-f]{16}$/.test(value.artifactId)) {
+    const file = guideRelativePath(value.file)
+    if (file) return { kind: 'guide', artifactId: value.artifactId, file }
   }
   return null
 }
@@ -424,7 +429,7 @@ export class WebPaneService {
 
   open(input: OpenWebPaneInput): WebPane {
     const content = parseWebPaneContent(input.content)
-    if (content === null) throw new WebPaneError(400, input.content?.kind === 'canvas' ? 'Invalid canvas content' : 'Invalid simulator udid')
+    if (content === null) throw new WebPaneError(400, input.content?.kind === 'canvas' ? 'Invalid canvas content' : input.content?.kind === 'guide' ? 'Invalid guide content' : 'Invalid simulator udid')
     const simulator = content?.kind === 'simulator' ? content : undefined
     const canvas = content?.kind === 'canvas' ? content : undefined
     if (simulator) {
@@ -433,6 +438,10 @@ export class WebPaneService {
     }
     if (canvas) {
       const existing = [...this.panes.values()].find((pane) => pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'canvas' && pane.content.artifactId === canvas.artifactId && pane.content.manifest === canvas.manifest)
+      if (existing) { this.setActiveTab(existing.id); return existing }
+    }
+    if (content?.kind === 'guide') {
+      const existing = [...this.panes.values()].find((pane) => pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'guide' && pane.content.artifactId === content.artifactId && pane.content.file === content.file)
       if (existing) { this.setActiveTab(existing.id); return existing }
     }
     const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(input.url, this.allowedOrigins)
@@ -516,7 +525,7 @@ export class WebPaneService {
   repend(id: string, url: string): WebPane | undefined {
     const pane = this.panes.get(id)
     if (!pane) return undefined
-    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
+    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : pane.content.kind === 'guide' ? 'Guide tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind !== 'confirm') return pane
     const pended: WebPane = { ...pane, url: decision.url, status: 'pending' }
@@ -714,7 +723,7 @@ export class WebPaneService {
   ): WebPane {
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
-    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
+    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : pane.content.kind === 'guide' ? 'Guide tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind === 'invalid') throw new WebPaneError(400, decision.reason)
     const navigated: WebPane = {
