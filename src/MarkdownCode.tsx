@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ComponentPropsWithoutRef } from 'react'
+import { useEffect, useId, useRef, useState, type ComponentPropsWithoutRef } from 'react'
 import type { ExtraProps } from 'react-markdown'
 import './markdown-code.css'
 
@@ -15,6 +15,8 @@ function fenceLanguage(node: HastNode | undefined): string | undefined {
   return language ? String(language).slice('language-'.length) : undefined
 }
 
+const RENDER_DELAY_MS = 150
+
 let mermaidLoader: Promise<typeof import('mermaid').default> | undefined
 
 function loadMermaid() {
@@ -26,18 +28,25 @@ function loadMermaid() {
 }
 
 export function MermaidDiagram({ source }: { source: string }) {
-  const id = `mermaid-${useId().replace(/[^a-zA-Z0-9-]/g, '')}`
+  const baseId = `mermaid-${useId().replace(/[^a-zA-Z0-9-]/g, '')}`
+  const renders = useRef(0)
   const [svg, setSvg] = useState<string>()
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     let cancelled = false
-    setFailed(false)
-    loadMermaid()
-      .then((mermaid) => mermaid.render(id, source))
-      .then(({ svg }) => { if (!cancelled) setSvg(svg) })
-      .catch(() => { if (!cancelled) { setSvg(undefined); setFailed(true) } })
-    return () => { cancelled = true }
-  }, [id, source])
+    // Debounced so streamed chat text doesn't queue a render per token, and a
+    // fresh id each time because mermaid first removes any element with the
+    // id it is given — which would be the diagram on screen.
+    const timer = setTimeout(() => {
+      const id = `${baseId}-${renders.current++}`
+      loadMermaid()
+        .then((mermaid) => mermaid.render(id, source))
+        .then(({ svg }) => { if (!cancelled) { setSvg(svg); setFailed(false) } })
+        .catch(() => { if (!cancelled) setFailed(true) })
+    }, RENDER_DELAY_MS)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [baseId, source])
+  // A half-streamed source often fails to parse; keep the last good diagram.
   if (svg) return <div className="markdown-mermaid" role="img" aria-label="Mermaid diagram" dangerouslySetInnerHTML={{ __html: svg }} />
   return (
     <div className="markdown-mermaid-fallback">

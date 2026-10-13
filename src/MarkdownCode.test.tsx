@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import Markdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MarkdownPre } from './MarkdownCode'
+import { MarkdownPre, MermaidDiagram } from './MarkdownCode'
 
 const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }))
 vi.mock('mermaid', () => ({ default: mermaid }))
@@ -41,6 +41,24 @@ describe('MarkdownPre', () => {
 
     expect(await screen.findByText("Couldn't render this Mermaid diagram.")).toBeInTheDocument()
     expect(screen.getByText('not a diagram')).toBeInTheDocument()
+  })
+
+  it('keeps the last good diagram while an edited source fails, and renders each change under a fresh id', async () => {
+    mermaid.render.mockResolvedValueOnce({ svg: '<svg data-testid="first"></svg>' })
+    const { rerender } = render(<MermaidDiagram source="graph LR\n  A --> B" />)
+    expect(await screen.findByTestId('first')).toBeInTheDocument()
+
+    mermaid.render.mockRejectedValueOnce(new Error('Parse error'))
+    rerender(<MermaidDiagram source="graph LR\n  A --> B[Lab" />)
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('first')).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't render this Mermaid diagram.")).not.toBeInTheDocument()
+
+    mermaid.render.mockResolvedValueOnce({ svg: '<svg data-testid="second"></svg>' })
+    rerender(<MermaidDiagram source="graph LR\n  A --> B[Label]" />)
+    expect(await screen.findByTestId('second')).toBeInTheDocument()
+    const ids = mermaid.render.mock.calls.map(([id]) => id)
+    expect(new Set(ids).size).toBe(3)
   })
 
   it('colours diff fences line by line', () => {
