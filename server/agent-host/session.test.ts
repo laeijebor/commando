@@ -44,6 +44,11 @@ function fakeQuery() {
     ],
     totalTokens: 42_000, maxTokens: 1_000_000, autoCompactThreshold: 967_000, isAutoCompactEnabled: true,
   }))
+  const planUsage = vi.fn(async (_options?: { skipBehaviors?: boolean }): Promise<unknown> => ({
+    subscription_type: 'max',
+    rate_limits_available: true,
+    rate_limits: { limits: [{ kind: 'session', group: 'session', percent: 38, severity: 'normal', resets_at: '2026-10-13T15:00:00Z' }] },
+  }))
   const run = ((params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => {
     options = params.options
     void (async () => { for await (const message of params.prompt) prompts.push(message) })()
@@ -55,7 +60,7 @@ function fakeQuery() {
       }
     }
     const handle = stream() as unknown as Query
-    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, stopTask, backgroundTasks, supportedModels, supportedCommands, getSettings, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
+    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, stopTask, backgroundTasks, supportedModels, supportedCommands, getSettings, getContextUsage: contextUsage, usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: planUsage, close: () => { done = true; wake?.() } })
     return handle
   }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query
   return {
@@ -71,6 +76,7 @@ function fakeQuery() {
     supportedCommands,
     getSettings,
     contextUsage,
+    planUsage,
     get options() { return options! },
     push(message: SDKMessage) { outbox.push(message); wake?.(); wake = null },
     canUseTool: (...args: Parameters<CanUseTool>) => options!.canUseTool!(...args),
@@ -360,6 +366,48 @@ describe('AgentSession state from Claude', () => {
     fake.push(system('session_state_changed', { state: 'idle' }))
     await tick()
     expect(fake.contextUsage).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads plan limits at start, follows rate-limit events, and re-reads after turns at most once a minute', async () => {
+    const fake = fakeQuery()
+    let now = 1_000
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledWith({ skipBehaviors: true })
+    expect(sessions.at(-1)?.planUsage).toEqual({ plan: 'max', updatedAt: 1_000, limits: [{ kind: 'session', title: 'Current session', percent: 38, severity: 'normal', resetsAt: Date.parse('2026-10-13T15:00:00Z') }] })
+    now = 2_000
+    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.81, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
+    await tick()
+    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 81, severity: 'warning', resetsAt: 1_800_000_000_000 })
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(1)
+    now = 62_000
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(2)
+    session.close()
+  })
+
+  it('leaves the meter out, and stops asking, for a login without plan limits', async () => {
+    const fake = fakeQuery()
+    fake.planUsage.mockResolvedValueOnce({ subscription_type: null, rate_limits_available: false, rate_limits: null })
+    let now = 1_000
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    now = 100_000
+    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.5, resetsAt: 1 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(1)
+    expect(sessions.some((info) => info.planUsage)).toBe(false)
+    session.close()
   })
 
   it('logs, rather than shows, a model list or meter it cannot read', async () => {

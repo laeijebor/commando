@@ -33,6 +33,7 @@ import {
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
+import { applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 export interface AgentSessionSpec {
   paneId: string
@@ -107,6 +108,10 @@ export const PLAN_CAPTURED_MESSAGE = "The client captured your proposed plan. St
 
 /** Turn results that only mean the turn was cut short (a steer or Stop), not that it failed. */
 const ABORTED_REASONS = new Set(['aborted_streaming', 'aborted_tools'])
+/** Experimental in the SDK: a rename shows up as a type error here when the SDK is upgraded. */
+const PLAN_USAGE_METHOD = 'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET' satisfies keyof Query
+const PLAN_USAGE_TURN_REFRESH_MS = 60_000
+const PLAN_USAGE_IDLE_REFRESH_MS = 5 * 60_000
 
 /** The picker's value for "no explicit model": Claude Code's own default. */
 const DEFAULT_MODEL = 'default'
@@ -263,6 +268,12 @@ export class AgentSession {
   /** Set once Claude reports session_state_changed; it then decides idle and running. */
   private stateEvents = false
   private contextReads = 0
+  private planUsageReads = 0
+  /** When the plan limits were last asked for; turns closer together than a minute reuse the reading. */
+  private planUsageAskedAt = 0
+  /** Set when the account has no plan limits (API key, Bedrock) or the SDK lost the method. */
+  private planUsageOff = false
+  private planUsageTimer: NodeJS.Timeout | undefined
   /** Set by interrupt(); the turn's error result then reads as interrupted. */
   private interruptRequested = false
   /**
@@ -301,7 +312,7 @@ export class AgentSession {
   constructor(
     private readonly spec: AgentSessionSpec,
     private readonly runQuery: typeof query = query,
-    now: () => number = Date.now,
+    private readonly now: () => number = Date.now,
     private readonly store: SessionStore = sdkSessionStore,
   ) {
     this.mapper = new ClaudeItemMapper(now, spec.images)
@@ -403,6 +414,10 @@ export class AgentSession {
     void this.loadStartingModel(this.queryHandle)
     void this.loadCommands(this.queryHandle)
     void this.refreshContext()
+    void this.refreshPlanUsage()
+    // Windows reset and other chats spend the same plan while this one sits idle.
+    this.planUsageTimer = setInterval(() => void this.refreshPlanUsage(), PLAN_USAGE_IDLE_REFRESH_MS)
+    this.planUsageTimer.unref?.()
     const held = this.heldSends ?? []
     this.heldSends = null
     if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
@@ -851,6 +866,7 @@ export class AgentSession {
   }
 
   close(): void {
+    this.stopPlanUsage()
     this.input.end()
     this.queryHandle?.close()
   }
@@ -933,9 +949,47 @@ export class AgentSession {
     }
   }
 
+  /** Reads the plan's rate limits (Claude's `/usage`), for the composer's usage meter. */
+  private async refreshPlanUsage(): Promise<void> {
+    const handle = this.queryHandle
+    if (!handle || this.planUsageOff) return
+    const readUsage = handle[PLAN_USAGE_METHOD]
+    if (typeof readUsage !== 'function') {
+      this.stopPlanUsage()
+      return
+    }
+    const read = ++this.planUsageReads
+    this.planUsageAskedAt = this.now()
+    try {
+      const report = await readUsage.call(handle, { skipBehaviors: true })
+      if (read !== this.planUsageReads) return
+      const usage = toPlanUsage(report, this.now())
+      if (!usage) {
+        // No plan limits apply to this login; they won't start mid-session.
+        this.stopPlanUsage()
+        if (!this.info.planUsage) return
+        const { planUsage: _gone, ...rest } = this.info
+        this.info = rest
+      } else {
+        this.info = { ...this.info, planUsage: usage }
+      }
+      this.emitSession()
+    } catch (error) {
+      // The meter keeps the last reading, which shows as stale once it ages.
+      if (this.info.status !== 'closed' && this.info.status !== 'error') this.spec.log?.(`Couldn't read plan usage: ${errorText(error)}`)
+    }
+  }
+
+  private stopPlanUsage(): void {
+    this.planUsageOff = true
+    if (this.planUsageTimer) clearInterval(this.planUsageTimer)
+    this.planUsageTimer = undefined
+  }
+
   /** After a turn: the meter changed, and a model list that failed to load gets another try. */
   private refreshBetweenTurns(): void {
     void this.refreshContext()
+    if (this.now() - this.planUsageAskedAt >= PLAN_USAGE_TURN_REFRESH_MS) void this.refreshPlanUsage()
     if (!this.info.models && this.queryHandle) void this.loadModels(this.queryHandle)
   }
 
@@ -1018,6 +1072,7 @@ export class AgentSession {
         this.setQueue([])
         this.emitItems(this.mapper.notice('error', `The session ended with messages still queued, so they weren't sent: ${texts}`))
       }
+      this.stopPlanUsage()
       for (const listener of this.listeners.closed) listener()
     }
   }
@@ -1081,6 +1136,15 @@ export class AgentSession {
       // Background subagents keep Claude from reporting idle, so the queue goes at the turn's end.
       else this.closeTurn()
       void this.refreshTitle()
+      return
+    }
+    if (message.type === 'rate_limit_event') {
+      if (this.planUsageOff) return
+      const usage = applyRateLimitEvent(this.info.planUsage, message.rate_limit_info, this.now())
+      if (usage && usage !== this.info.planUsage) {
+        this.info = { ...this.info, planUsage: usage }
+        this.emitSession()
+      }
       return
     }
     if (message.type === 'assistant' && !message.parent_tool_use_id) {
