@@ -273,6 +273,8 @@ export interface ChatModelOption {
   resolvedModel?: string
   efforts?: ChatEffort[]
   supportsAutoMode?: boolean
+  /** Offers fast mode: quicker output at a higher price. */
+  supportsFast?: boolean
 }
 
 /** How full the context window is, from `getContextUsage({detail: 'summary'})`. */
@@ -290,6 +292,7 @@ export interface ChatContextUsage {
 export interface ChatSettingsChange {
   model?: string
   effort?: ChatEffort
+  fast?: boolean
   permissionMode?: ChatSessionPermissionMode
 }
 
@@ -306,6 +309,8 @@ export interface ChatSessionInfo {
   selectedModel?: string
   /** The effort picked in the chat or at launch (Claude does not report its default). */
   effort?: ChatEffort
+  /** Fast mode, picked in the chat or at launch; only kept while the model offers it. */
+  fast?: boolean
   permissionMode?: string
   /** Bypass needs a flag at launch, so only a chat started with it can switch to it. */
   bypassAllowed?: boolean
@@ -524,8 +529,9 @@ export function parseChatSettingsChange(value: unknown): ChatSettingsChange | nu
   if (!isRecord(value)) return null
   if (value.model !== undefined && !isModelValue(value.model)) return null
   if (value.effort !== undefined && !isChatEffort(value.effort)) return null
+  if (value.fast !== undefined && typeof value.fast !== 'boolean') return null
   if (value.permissionMode !== undefined && !isChatPermissionMode(value.permissionMode)) return null
-  const change = withOptional({} as ChatSettingsChange, { model: value.model, effort: value.effort, permissionMode: value.permissionMode })
+  const change = withOptional({} as ChatSettingsChange, { model: value.model, effort: value.effort, fast: value.fast, permissionMode: value.permissionMode })
   return Object.keys(change).length ? change : null
 }
 
@@ -543,6 +549,7 @@ function parseModels(value: unknown): ChatModelOption[] | undefined {
       resolvedModel: isModelValue(model.resolvedModel) ? model.resolvedModel : undefined,
       efforts: efforts?.length ? efforts : undefined,
       supportsAutoMode: model.supportsAutoMode === true ? true : undefined,
+      supportsFast: model.supportsFast === true ? true : undefined,
     })]
   })
 }
@@ -833,6 +840,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(typeof value.resumeCommand === 'string' ? { resumeCommand: value.resumeCommand } : {}),
     ...(typeof value.selectedModel === 'string' ? { selectedModel: value.selectedModel } : {}),
     ...(isChatEffort(value.effort) ? { effort: value.effort } : {}),
+    ...(value.fast === true ? { fast: true } : {}),
     ...(value.bypassAllowed === true ? { bypassAllowed: true } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),

@@ -6,7 +6,7 @@ import { CodexChatSession, codexContextUsage, codexModels, codexPermissions, cod
 import type { AgentSessionSpec } from '../session.js'
 import { MAX_CHAT_ITEMS, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 
-const model = (id: string, efforts = ['low', 'medium', 'high']) => ({ id, model: id, upgrade: null, upgradeInfo: null, availabilityNux: null, displayName: id, description: 'Test model', modelSpecialty: null, hidden: false, supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], supportsPersonality: false, multiAgentVersion: null, additionalSpeedTiers: [], serviceTiers: [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: id === 'test-model' })
+const model = (id: string, efforts = ['low', 'medium', 'high'], fast = false) => ({ id, model: id, upgrade: null, upgradeInfo: null, availabilityNux: null, displayName: id, description: 'Test model', modelSpecialty: null, hidden: false, supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], supportsPersonality: false, multiAgentVersion: null, additionalSpeedTiers: fast ? ['fast'] : [], serviceTiers: fast ? [{ id: 'priority', name: 'Fast', description: '2x speed, increased usage' }] : [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: id === 'test-model' })
 const thread = { id: 'thread-123', sessionId: 'thread-123', forkedFromId: null, parentThreadId: null, preview: '', ephemeral: false, section: null, sectionEnteredAt: null, projectId: null, historyMode: 'legacy', modelProvider: 'openai', model: 'test-model', reasoningEffort: 'medium', createdAt: 1, updatedAt: 1, recencyAt: null, status: { type: 'idle' }, path: null, cwd: '/tmp', cliVersion: '0.159.3', originator: 'commando', source: 'appServer', threadSource: null, agentNickname: null, agentRole: null, gitInfo: null, name: null, turns: [] }
 const turn = (id: string, status = 'inProgress', items: unknown[] = []) => ({ id, items, itemsView: 'full', status, error: null, startedAt: 1, completedAt: status === 'inProgress' ? null : 2, durationMs: null })
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -24,7 +24,7 @@ class FakeClient implements CodexTransport {
   onClose(listener: (error?: Error) => void) { this.closes.push(listener) }
   request = vi.fn(async <M extends keyof ClientMethods>(method: M, params: ClientMethods[M]): Promise<unknown> => {
     this.requests.push({ method, params })
-    if (method === 'model/list') return { data: [model('test-model'), model('other-model', ['low'])], nextCursor: null }
+    if (method === 'model/list') return { data: [model('test-model', undefined, true), model('other-model', ['low'])], nextCursor: null }
     if (method === 'thread/start' || method === 'thread/resume') return { thread, model: 'test-model', modelProvider: 'openai', serviceTier: null, disabledPluginIds: [], cwd: '/tmp', instructionSources: [], approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: codexPermissions('default', '/tmp').sandboxPolicy, reasoningEffort: 'medium' }
     if (method === 'thread/read') return { thread: { ...thread, name: 'Old chat', turns: [turn('history', 'completed', [{ type: 'agentMessage', id: 'h', text: 'Earlier', phase: null, memoryCitation: null, delivery: null, questions: null }])] } }
     if (method === 'turn/start') {
@@ -111,6 +111,27 @@ describe('CodexChatSession', () => {
     await session.configure({ effort: 'high' })
     expect(session.snapshot().session.effort).toBe('low')
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error' })
+    session.close()
+  })
+  it('runs turns on the fast tier while fast mode is on, and back on standard once it is off', async () => {
+    const { session, client } = await running({ fast: true })
+    const turns = () => client.requests.filter((request) => request.method === 'turn/start').map((request) => (request.params as ClientMethods['turn/start']).serviceTier)
+    expect(session.snapshot().session.models?.map((option) => option.supportsFast)).toEqual([true, undefined])
+    expect(turns()).toEqual(['priority'])
+    client.notify('turn/completed', { turn: turn('turn-1', 'completed') })
+    await session.configure({ fast: false })
+    session.send('Standard')
+    await tick()
+    expect(turns()).toEqual(['priority', null])
+    expect(session.snapshot().session.fast).toBeUndefined()
+  })
+  it('drops fast mode on a model without it, and refuses to turn it on there', async () => {
+    const { session } = await running({ fast: true })
+    await session.configure({ model: 'other-model' })
+    expect(session.snapshot().session.fast).toBeUndefined()
+    await session.configure({ fast: true })
+    expect(session.snapshot().session.fast).toBeUndefined()
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: expect.stringContaining('fast mode') })
     session.close()
   })
   it('rejects a mid-turn permission change without applying it to settings or the next turn', async () => {
@@ -292,6 +313,9 @@ describe('Codex controls', () => {
     expect(command).toContain('resume --no-daemon --model test-model')
     expect(command).toContain('--sandbox read-only')
     expect(command).toContain('commando-agent codex --permission-mode plan --resume thread-123 --from-claude-code')
+    expect(command).not.toContain('service_tier')
+    expect(codexTuiSwitchCommand({ cwd: '/tmp', permissionMode: 'default', serviceTier: 'priority' }, '/bin/codex', '/c/commando-agent', 'thread-123', ['--fast']))
+      .toContain(`--no-daemon -c '"'"'service_tier="priority"'"'"' --ask-for-approval`)
   })
 })
 

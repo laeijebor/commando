@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { getSessionInfo, getSessionMessages, getSubagentMessages, query, type CanUseTool, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SlashCommand } from '@anthropic-ai/claude-agent-sdk'
+import { getSessionInfo, getSessionMessages, getSubagentMessages, query, type CanUseTool, type FastModeDisabledReason, type FastModeState, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
@@ -44,6 +44,8 @@ export interface AgentSessionSpec {
   resume?: string
   model?: string
   effort?: ChatEffort
+  /** Fast mode: quicker output on a model that offers it. */
+  fast?: boolean
   permissionMode: PermissionMode
   /** In plan mode, the mode it had before (carried across a restart or resume). */
   prePlanPermissionMode?: ChatSessionPermissionMode
@@ -77,16 +79,17 @@ export interface SessionImageStore extends ChatImageSink {
   stagedImage(path: string): { id: string; sessionId: string } | null
 }
 
-type ClaudeCodeSettings = Pick<AgentSessionSpec, 'model' | 'effort' | 'permissionMode' | 'bypassAllowed'> & { readableDir?: string }
+type ClaudeCodeSettings = Pick<AgentSessionSpec, 'model' | 'effort' | 'fast' | 'permissionMode' | 'bypassAllowed'> & { readableDir?: string }
 
 /**
  * Claude Code's own flags for this chat's settings, so the TUI runs the
- * conversation with the same model, effort and permission mode.
+ * conversation with the same model, effort, speed and permission mode.
  */
 export function claudeCodeFlags(args: ClaudeCodeSettings): string[] {
   return [
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
+    ...(args.fast ? ['--settings', JSON.stringify({ fastMode: true })] : []),
     ...(args.permissionMode === 'bypassPermissions'
       ? ['--dangerously-skip-permissions']
       : ['--permission-mode', args.permissionMode, ...(args.bypassAllowed ? ['--allow-dangerously-skip-permissions'] : [])]),
@@ -157,7 +160,22 @@ export function toModelOption(model: ModelInfo): ChatModelOption[] {
     ...(isModelValue(model.resolvedModel) ? { resolvedModel: model.resolvedModel } : {}),
     ...(model.supportsEffort && efforts?.length ? { efforts } : {}),
     ...(model.supportsAutoMode ? { supportsAutoMode: true } : {}),
+    ...(model.supportsFastMode ? { supportsFast: true } : {}),
   }]
+}
+
+/** Why Claude runs a fast-mode chat at standard speed, or null when it runs fast. */
+export function fastModeNotice(state: FastModeState | undefined, reason: FastModeDisabledReason | undefined): string | null {
+  if (state === 'cooldown') return 'Fast mode is cooling down after a rate limit; Claude replies at standard speed until it ends.'
+  switch (reason) {
+    case undefined: return null
+    case 'not_first_party': return 'Fast mode only works with the Anthropic API directly; Claude replies at standard speed.'
+    case 'model_not_allowed': return "Fast mode isn't allowed for this model in your organization; Claude replies at standard speed."
+    case 'free': return 'Fast mode needs a paid plan; Claude replies at standard speed.'
+    case 'extra_usage_disabled': return 'Fast mode needs extra usage turned on; Claude replies at standard speed.'
+    case 'pending': return null
+    default: return `Fast mode is unavailable (${reason}); Claude replies at standard speed.`
+  }
 }
 
 export function toContextUsage(usage: SDKControlGetContextUsageResponse): ChatContextUsage | undefined {
@@ -328,6 +346,8 @@ export class AgentSession implements ChatProviderSession {
   private files: WorkspaceFileIndex | null = null
   /** The queue went to the daemon with a switch to Claude Code. */
   private handedOver = false
+  /** The fast-mode notice last shown, so each turn's result doesn't repeat it. */
+  private fastNotice: string | null = null
   /**
    * Names the session's image folder. A new conversation is given this id up
    * front, so a resume (which keeps the id) finds the folder its notes name.
@@ -356,6 +376,7 @@ export class AgentSession implements ChatProviderSession {
       ...(spec.resume ? { sessionId: spec.resume } : {}),
       ...(spec.model ? { model: spec.model, selectedModel: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
+      ...(spec.fast ? { fast: true } : {}),
       ...(spec.bypassAllowed || spec.permissionMode === 'bypassPermissions' ? { bypassAllowed: true } : {}),
       ...(spec.configDir ? { configDir: spec.configDir } : {}),
       ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}),
@@ -421,6 +442,8 @@ export class AgentSession implements ChatProviderSession {
         ...(readableDirs.length ? { additionalDirectories: readableDirs } : {}),
         ...(this.spec.model ? { model: this.spec.model } : {}),
         ...(this.spec.effort ? { effort: this.spec.effort } : {}),
+        // The SDK only runs fast mode when the session itself opts in.
+        ...(this.spec.fast ? { settings: { fastMode: true } } : {}),
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
         thinking: { type: 'adaptive', display: 'summarized' },
         permissionMode: this.spec.permissionMode,
@@ -575,6 +598,7 @@ export class AgentSession implements ChatProviderSession {
     return claudeCodeSwitchCommand({
       ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}),
       ...(this.info.effort ? { effort: this.info.effort } : {}),
+      ...(this.info.fast ? { fast: true } : {}),
       permissionMode: isChatPermissionMode(this.info.permissionMode) ? this.info.permissionMode : this.spec.permissionMode,
       ...(this.info.bypassAllowed ? { bypassAllowed: true } : {}),
       ...(readableIndex >= 0 ? { readableDir: returnFlags[readableIndex + 1] } : {}),
@@ -815,7 +839,7 @@ export class AgentSession implements ChatProviderSession {
     return true
   }
 
-  /** Switches model, effort or permission mode for the rest of the session. */
+  /** Switches model, effort, speed or permission mode for the rest of the session. */
   async configure(change: ChatSettingsChange): Promise<void> {
     const handle = this.queryHandle
     if (!handle || this.info.status === 'closed' || this.info.status === 'error') {
@@ -831,14 +855,18 @@ export class AgentSession implements ChatProviderSession {
           // "default" means no explicit model, so a resume follows Claude Code's default too.
           const explicit = change.model === DEFAULT_MODEL ? undefined : change.model
           await handle.setModel(explicit)
-          const { selectedModel: _previous, effort, ...rest } = this.info
+          const { selectedModel: _previous, effort, fast, ...rest } = this.info
           // An effort the new model lacks runs as something else (or not at all), so stop claiming it.
           const keepEffort = effort && (!option || option.efforts?.includes(effort))
+          // Fast mode stays on only while the model offers it, so a later switch back doesn't turn it on unasked.
+          const keepFast = fast && (!option || option.supportsFast)
+          if (fast && !keepFast) await handle.applyFlagSettings({ fastMode: false })
           this.info = {
             ...rest,
             model: option?.resolvedModel ?? change.model,
             ...(explicit ? { selectedModel: explicit } : {}),
             ...(keepEffort ? { effort } : {}),
+            ...(keepFast ? { fast } : {}),
           }
         } catch (error) {
           this.emitItems(this.mapper.notice('error', `Couldn't switch the model: ${errorText(error)}`))
@@ -857,6 +885,18 @@ export class AgentSession implements ChatProviderSession {
         this.info = { ...this.info, effort: change.effort }
       } catch (error) {
         this.emitItems(this.mapper.notice('error', `Couldn't change the effort: ${errorText(error)}`))
+      }
+    }
+    if (change.fast && running && !running.supportsFast) {
+      this.emitItems(this.mapper.notice('error', `${running.displayName} doesn't offer fast mode.`))
+    } else if (change.fast !== undefined) {
+      try {
+        await handle.applyFlagSettings({ fastMode: change.fast })
+        const { fast: _previous, ...rest } = this.info
+        this.info = change.fast ? { ...rest, fast: true } : rest
+        this.fastNotice = null
+      } catch (error) {
+        this.emitItems(this.mapper.notice('error', `Couldn't change fast mode: ${errorText(error)}`))
       }
     }
     if (change.permissionMode !== undefined) {
@@ -906,6 +946,14 @@ export class AgentSession implements ChatProviderSession {
   close(): void {
     this.input.end()
     this.queryHandle?.close()
+  }
+
+  /** Says once when a chat set to fast mode runs at standard speed, and why. */
+  private reportFastMode(state: FastModeState | undefined, reason: FastModeDisabledReason | undefined): void {
+    if (!this.info.fast) return
+    const notice = fastModeNotice(state, reason)
+    if (notice && notice !== this.fastNotice) this.emitItems(this.mapper.notice('info', notice))
+    this.fastNotice = notice
   }
 
   private async loadModels(handle: Query): Promise<void> {
@@ -1109,6 +1157,7 @@ export class AgentSession implements ChatProviderSession {
     if (message.type === 'result') {
       const interrupted = this.interruptRequested
       this.interruptRequested = false
+      this.reportFastMode(message.fast_mode_state, message.fast_mode_disabled_reason)
       // A steer or Stop cuts the turn short; what it was doing ends, it didn't fail.
       const aborted = interrupted || ABORTED_REASONS.has(message.terminal_reason ?? '')
       const steered = this.steersPending > 0 && aborted
