@@ -135,6 +135,7 @@ import { PaneAgentSwitch } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   hostTakesSwitch,
   mergeChatItems,
@@ -2795,6 +2796,40 @@ export function App() {
     }
   }
 
+  /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */
+  const rememberedChatLaunch = async (path: string): Promise<SessionAgentLaunch> => {
+    const [repoRoot, profiles] = await Promise.all([
+      gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined),
+      tmuxCreateApi.claudeProfiles().catch((error: unknown) => {
+        console.warn('[commando] Claude profiles unavailable; using the remembered profile', error)
+        return null
+      }),
+    ])
+    const preference = loadChatLaunch(repoRoot ?? path)
+    // Check the remembered profile against the current ones, as the dialog does, so a
+    // stale or missing preference never falls back to the daemon's own login.
+    const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
+    if (!profiles && !configDir) throw new Error("Couldn't load your Claude profiles, so this chat's login is unknown. Try again, or start it from New session.")
+    return { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(configDir ? { configDir } : {}) }
+  }
+
+  const launchInEmptyPane = async (paneId: string, choice: EmptyPaneChoice) => {
+    const pane = paneMap.get(paneId)
+    if (!pane || paneActionPending) return
+    setPaneActionPending(true)
+    setPaneActionError('')
+    try {
+      const agent = choice === 'shell' ? undefined : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path) : { provider: choice }
+      await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
+      // Focus lands once the snapshot swaps the launcher for the running pane.
+      setPendingPaneFocus({ paneId })
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to start in this pane')
+    } finally {
+      setPaneActionPending(false)
+    }
+  }
+
   const splitPane = async (paneId: string, direction: PaneSplitDirection, chat = false) => {
     const pane = paneMap.get(paneId)
     if (!pane || paneActionPending) return
@@ -2803,23 +2838,7 @@ export function App() {
     clearLayoutTimers()
     try {
       const before = direction === 'left' || direction === 'up'
-      let agent: SessionAgentLaunch | undefined
-      if (chat) {
-        // The profile is remembered per repository, as in the new-session dialog.
-        const [repoRoot, profiles] = await Promise.all([
-          gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined),
-          tmuxCreateApi.claudeProfiles().catch((error: unknown) => {
-            console.warn('[commando] Claude profiles unavailable; using the remembered profile', error)
-            return null
-          }),
-        ])
-        const preference = loadChatLaunch(repoRoot ?? pane.path)
-        // Check the remembered profile against the current ones, as the dialog does, so a
-        // stale or missing preference never falls back to the daemon's own login.
-        const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
-        if (!profiles && !configDir) throw new Error("Couldn't load your Claude profiles, so this chat's login is unknown. Try again, or start it from New session.")
-        agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(configDir ? { configDir } : {}) }
-      }
+      const agent = chat ? await rememberedChatLaunch(pane.path) : undefined
       const created = await tmuxCreateApi.createPane({
         targetId: paneId,
         direction: direction === 'left' || direction === 'right' ? 'horizontal' : 'vertical',
@@ -3707,6 +3726,12 @@ export function App() {
                         const rendererControl = storedRendererControl?.identity === rendererIdentity
                           ? storedRendererControl
                           : undefined
+                        if (pane.empty) {
+                          return [
+                            pane.id,
+                            <EmptyPane key={rendererIdentity} pane={pane} pending={paneActionPending} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />,
+                          ] as const
+                        }
                         return [
                           pane.id,
                           <TerminalPaneCard
