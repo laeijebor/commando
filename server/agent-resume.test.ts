@@ -127,6 +127,25 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --resume ${SESSION}`)
   })
 
+  it('restores a Codex chat host instead of its app-server child, keeping permission flags and picker changes', async () => {
+    const host = 'node /c/server/agent-host/main.ts codex --permission-mode bypassPermissions'
+    let permissionMode = 'bypassPermissions'
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      chatSettings: () => ({ permissionMode, bypassAllowed: true }),
+      readProcessTable: vi.fn(async () => `  500 1 ${host}\n  700 500 /bin/codex app-server\n`),
+      readProcessEnvironment: vi.fn(async () => ''),
+    })
+    await resume.observeHookStatus(hookStatus({ provider: 'codex' }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)).toMatchObject({
+      provider: 'codex',
+      command: `/c/scripts/commando-agent codex --permission-mode bypassPermissions --resume ${SESSION}`,
+    })
+    permissionMode = 'plan'
+    await resume.observeHookStatus(hookStatus({ provider: 'codex' }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent codex --permission-mode plan --allow-dangerously-skip-permissions --resume ${SESSION}`)
+  })
+
   it('rebuilds a chat record when the chat\'s pickers change, so a resume keeps them', async () => {
     const host = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts claude --config-dir /Users/me/.claudew --model haiku --permission-mode default'
     let settings: { model?: string; effort?: string; permissionMode: string } | undefined
@@ -175,6 +194,24 @@ describe('AgentResumeService', () => {
     table = [`  500     1 /bin/bash -c set -m; ${CLAUDE} --resume ${SESSION}; exec /c/scripts/commando-agent claude`, `  700   500 ${CLAUDE} --resume ${SESSION}`].join('\n')
     await resume.observeHookStatus(hookStatus(), pane({ processId: 500 }), OLD_SERVER)
     expect(resume.get(TARGET)?.command).toBe(`env CLAUDE_CONFIG_DIR=/Users/me/.claudep ${CLAUDE} --resume ${SESSION}; ${chatReturn}`)
+  })
+
+  it.each([
+    { home: '/Users/me/.codex-work', prefix: 'env CODEX_HOME=/Users/me/.codex-work ' },
+    { home: "/Users/me/codex'work", prefix: `env 'CODEX_HOME=/Users/me/codex'"'"'work' ` },
+    { home: undefined, prefix: '' },
+  ])('restores a Codex TUI chat handoff with CODEX_HOME=$home on both halves', async ({ home, prefix }) => {
+    const codex = `/bin/codex resume ${SESSION}`
+    const chatReturn = `env COMMANDO_PORT=4410 /c/scripts/commando-agent codex --permission-mode default --resume ${SESSION} --from-claude-code`
+    const resume = service({
+      chatReturnCommand: () => chatReturn,
+      readProcessTable: vi.fn(async () => `  700 500 ${codex}\n`),
+      readProcessEnvironment: vi.fn(async () => `${codex}${home ? ` CODEX_HOME=${home}` : ''}\n`),
+    })
+
+    await resume.observeHookStatus(hookStatus({ provider: 'codex' }), pane(), OLD_SERVER)
+
+    expect(resume.get(TARGET)?.command).toBe(`${prefix}${codex}; ${prefix}${chatReturn}`)
   })
 
   it('reads the process table once per conversation, not per hook event', async () => {

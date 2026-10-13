@@ -34,6 +34,7 @@ import {
   mentionText,
   modelMenuAvailable,
   moveCommandToStart,
+  providerLabel,
   replaceRange,
   type ComposerTrigger,
 } from '../../shared/chat-composer'
@@ -43,7 +44,7 @@ import { useNow } from './Subagents'
 import { shortPath, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
-import { readDraft, saveDraft } from './draftStore'
+import { loadDraft, saveDraft } from './draftStore'
 
 /** What the composer asks of the app for `@`, `#` and images. */
 export interface ChatInputServices {
@@ -90,7 +91,7 @@ function ApprovalPanel({ request, pendingCount, cwd, disabled, onAnswer }: { req
 }
 
 // AskUserQuestion, after t3code's ComposerPendingUserInputPanel.
-function QuestionPanel({ request, disabled, onAnswer }: { request: RequestItem; disabled: boolean; onAnswer: (answer: ChatAnswer) => void }) {
+function QuestionPanel({ request, provider, disabled, onAnswer }: { request: RequestItem; provider: string; disabled: boolean; onAnswer: (answer: ChatAnswer) => void }) {
   const questions = request.questions ?? []
   const [selected, setSelected] = useState<Record<string, string[]>>({})
   const [other, setOther] = useState<Record<string, string>>({})
@@ -107,8 +108,8 @@ function QuestionPanel({ request, disabled, onAnswer }: { request: RequestItem; 
   }
   const complete = questions.every((question) => answerFor(question.question))
   return (
-    <div className="flex max-h-[50vh] flex-col gap-3 overflow-y-auto border-b border-border bg-warning-surface px-3 py-2.5" role="group" aria-label="Claude is asking">
-      <span className="text-2xs font-semibold uppercase tracking-wide text-warning">Claude is asking</span>
+    <div className="flex max-h-[50vh] flex-col gap-3 overflow-y-auto border-b border-border bg-warning-surface px-3 py-2.5" role="group" aria-label={`${provider} is asking`}>
+      <span className="text-2xs font-semibold uppercase tracking-wide text-warning">{provider} is asking</span>
       {questions.map((question) => {
         const chosen = selected[question.question] ?? []
         return (
@@ -181,6 +182,16 @@ function TodoChip({ todos }: { todos: TodoItem }) {
 }
 
 type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef }
+
+const uploadedRefs = (attachments: Attachment[]) => attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
+
+/** A saved draft's images, previewed from the daemon's copies. */
+const savedAttachments = (refs: ChatImageRef[]): Attachment[] => refs.map((ref, index) => ({
+  key: `saved-${index}-${ref.id}`,
+  name: ref.name ?? 'image',
+  previewUrl: chatImageUrl(ref.id),
+  ref,
+}))
 
 /** The draft a switch to Claude Code carries across: text and uploaded images. */
 export type ChatDraft = { text: string; images: ChatImageRef[] }
@@ -255,7 +266,7 @@ function menuGroups(
     const rest = matched.filter((command) => command.kind === 'command')
     const skillGroup: ComposerMenuGroup = {
       label: 'Skills',
-      ...(trigger.atStart ? {} : { note: 'Claude can run these mid-message' }),
+      ...(trigger.atStart ? {} : { note: `${providerLabel(session)} can run these mid-message` }),
       items: skills.map((command) => ({ key: `skill:${command.name}`, type: 'command' as const, command, runsHere: true })),
     }
     const commandGroup: ComposerMenuGroup = {
@@ -270,7 +281,7 @@ function menuGroups(
     const commandsFirst = Boolean(query) && (natives.some((native) => native.name.startsWith(query)) || matched[0]?.kind === 'command')
     return {
       groups: commandsFirst ? [commandGroup, skillGroup] : [skillGroup, commandGroup],
-      status: commands ? null : hostTakesInput(session) ? "Claude's commands appear once the session has started" : "Restart this chat to list Claude's commands",
+      status: commands ? null : hostTakesInput(session) ? `${providerLabel(session)}'s commands appear once the session has started` : `Restart this chat to list ${providerLabel(session)}'s commands`,
     }
   }
   if (trigger.kind === 'mention') {
@@ -356,22 +367,29 @@ export function ChatComposer({
   /** An image is still uploading: a switch now would leave it behind. */
   onUploadingChange?: (uploading: boolean) => void
 }) {
-  const [draft, setDraft] = useState(() => readDraft(session.sessionId))
+  const [initial] = useState(() => loadDraft(session.sessionId))
+  const [draft, setDraft] = useState(initial.text)
+  const [attachments, setAttachments] = useState<Attachment[]>(() => savedAttachments(initial.images))
   const [draftSessionId, setDraftSessionId] = useState(session.sessionId)
   const restoredDraft = useRef(draft)
   // The session id can arrive after mount; restore before an effect saves an empty draft.
   if (session.sessionId !== draftSessionId) {
     setDraftSessionId(session.sessionId)
-    if (!draft) {
-      const saved = readDraft(session.sessionId)
-      restoredDraft.current = saved
-      setDraft(saved)
+    const late = draft && attachments.length ? null : loadDraft(session.sessionId)
+    if (late && !draft) {
+      restoredDraft.current = late.text
+      setDraft(late.text)
     }
+    if (late && !attachments.length) setAttachments(savedAttachments(late.images))
   }
-  const storedDraft = useMemo(() => ({ text: draft }), [session.sessionId])
-  useLayoutEffect(() => { storedDraft.text = draft }, [storedDraft, draft])
+  const images = useMemo(() => uploadedRefs(attachments), [attachments])
+  const storedDraft = useMemo(() => ({ text: draft, images }), [session.sessionId])
+  useLayoutEffect(() => {
+    storedDraft.text = draft
+    storedDraft.images = images
+  }, [storedDraft, draft, images])
   useEffect(() => {
-    const flush = () => saveDraft(session.sessionId, storedDraft.text)
+    const flush = () => saveDraft(session.sessionId, storedDraft.text, storedDraft.images)
     window.addEventListener('pagehide', flush)
     return () => {
       window.removeEventListener('pagehide', flush)
@@ -379,17 +397,18 @@ export function ChatComposer({
     }
   }, [session.sessionId, storedDraft])
   useEffect(() => {
-    if (!draft) {
+    if (!draft && !images.length) {
       saveDraft(session.sessionId, '')
       return
     }
-    const timeout = window.setTimeout(() => saveDraft(session.sessionId, draft), 300)
+    const timeout = window.setTimeout(() => saveDraft(session.sessionId, draft, images), 300)
     return () => window.clearTimeout(timeout)
-  }, [session.sessionId, draft])
+  }, [session.sessionId, draft, images])
   const textarea = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const pendingCaret = useRef<number | null>(null)
   const menuId = useId()
+  const provider = providerLabel(session)
   const running = session.status === 'running' || session.status === 'waiting'
   const closed = session.status === 'closed' || session.status === 'error'
   // A switch to Claude Code takes the draft as it is; answers and Stop still work.
@@ -404,7 +423,6 @@ export function ChatComposer({
   const { trigger, update: updateTrigger, dismiss } = useTriggerState()
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
-  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [viewing, setViewing] = useState<ViewableImage | null>(null)
@@ -532,6 +550,7 @@ export function ChatComposer({
     setAttachError(null)
     // A send or stash can unmount the composer before its empty state commits.
     storedDraft.text = ''
+    storedDraft.images = []
     saveDraft(session.sessionId, '')
     restoredDraft.current = ''
     setDraft('')
@@ -562,7 +581,7 @@ export function ChatComposer({
   const stash = useComposerStash({
     session,
     draft,
-    images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])),
+    images,
     uploading: attachments.some((attachment) => !attachment.ref),
     clear: clearDraft,
     bringBack,
@@ -605,7 +624,7 @@ export function ChatComposer({
   }, [sendError])
 
   const latestDraft = useRef<ChatDraft>({ text: '', images: [] })
-  latestDraft.current = { text: draft, images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])) }
+  latestDraft.current = { text: draft, images }
   useEffect(() => {
     if (!registerDraft) return
     registerDraft(() => latestDraft.current)
@@ -620,11 +639,23 @@ export function ChatComposer({
     if (!carried || switching || reportedCarries.current.has(carried.id)) return
     let restored = takenCarries.get(carried.id)
     if (restored === undefined) {
-      const fit = fitAttachments(attachments.length, carried.images.length)
-      const waiting = carried.images.length - fit.accepted
-      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before Claude Code ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
-      if (!carried.text && fit.accepted === 0) return
-      restored = fit.accepted
+      // The saved draft may have brought some of the carried images back already.
+      const attached = new Set(images.map((ref) => ref.id))
+      let room = MAX_CHAT_IMAGES - attachments.length
+      const adding: ChatImageRef[] = []
+      let taken = 0
+      for (const ref of carried.images) {
+        if (!attached.has(ref.id)) {
+          if (room <= 0) break
+          room -= 1
+          adding.push(ref)
+        }
+        taken += 1
+      }
+      const waiting = carried.images.length - taken
+      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'} ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
+      if (!carried.text && taken === 0) return
+      restored = taken
       takenCarries.set(carried.id, restored)
       if (carried.text) {
         const saved = restoredDraft.current
@@ -636,13 +667,13 @@ export function ChatComposer({
           return [carried.text, included ? '' : text].filter(Boolean).join('\n\n')
         })
       }
-      const images = carried.images.slice(0, restored).map((ref, index) => ({
+      const back = adding.map((ref, index) => ({
         key: `carried-${carried.id}-${index}`,
         name: ref.name ?? 'image',
         previewUrl: chatImageUrl(ref.id),
         ref,
       }))
-      if (images.length) setAttachments((current) => [...images, ...current])
+      if (back.length) setAttachments((current) => [...back, ...current])
     }
     reportedCarries.current.add(carried.id)
     onCarriedTaken?.(carried.id, restored)
@@ -781,10 +812,11 @@ export function ChatComposer({
         onDrop={onDrop}
         data-testid="chat-composer"
       >
-        {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} /> : null}
-        {planFollowUp ? <PlanReadyBanner title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
+        {relayTarget && onClearRelay ? <RelayChip provider={provider} label={relayTarget.label} onClear={onClearRelay} /> : null}
+        {planFollowUp ? <PlanReadyBanner provider={provider} session={session} title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
         {queue.length && onQueue ? (
           <QueuedMessages
+            provider={provider}
             queue={queue}
             disabled={!hostConnected}
             onChange={onQueue}
@@ -796,7 +828,7 @@ export function ChatComposer({
         ) : null}
         {request ? (
           request.requestKind === 'question'
-            ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
+            ? <QuestionPanel provider={provider} key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
             : <ApprovalPanel request={request} pendingCount={requests.length} cwd={session.cwd} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
         ) : null}
         {stash.menuOpen ? (
@@ -867,15 +899,15 @@ export function ChatComposer({
           placeholder={!hostConnected
             ? 'Reconnecting to the agent host…'
             : switching
-              ? 'Switching to Claude Code…'
+              ? `Switching to ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'}…`
                 : closed
                 ? 'This session has ended'
                 : relayTarget
-                  ? `Message @${relayTarget.label} through main Claude…`
+                  ? `Message @${relayTarget.label} through main ${provider}…`
                   : running
                     ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
-                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
-          aria-label="Message Claude"
+                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : `Ask ${provider}… / for commands, @ for files`}
+          aria-label={`Message ${provider}`}
           aria-controls={stash.menuOpen ? stashMenuId : triggerMenuOpen ? menuId : undefined}
           aria-autocomplete="list"
           aria-activedescendant={stash.menuOpen ? (stash.activeId ? `${stashMenuId}-${stash.activeId}` : undefined) : triggerMenuOpen && active ? `${menuId}-${active.key}` : undefined}
@@ -925,7 +957,7 @@ export function ChatComposer({
             ) : null}
           </span>
           {session.contextUsage ? (
-            <ContextMeter usage={session.contextUsage} canCompact={!disabled && !running} onCompact={() => onSend('/compact')} />
+            <ContextMeter usage={session.contextUsage} canCompact={session.provider === 'claude' && !disabled && !running} onCompact={() => onSend('/compact')} />
           ) : null}
           {running ? (
             <Button size="icon-sm" variant="outline" aria-label="Stop" title={queue.length ? 'Stop (Esc): queued messages come back here' : 'Stop (Esc)'} onClick={interrupt} disabled={!hostConnected}>
@@ -933,19 +965,19 @@ export function ChatComposer({
             </Button>
           ) : null}
           {running && turnFlow && !relayTarget ? (
-            <Button size="icon-sm" variant="outline" aria-label="Steer now" title="Steer now (⌘Enter): ends Claude's turn at its next safe point and sends this" onClick={() => submit(true)} disabled={!canSend}>
+            <Button size="icon-sm" variant="outline" aria-label="Steer now" title={`Steer now (⌘Enter): ends ${provider}'s turn at its next safe point and sends this`} onClick={() => submit(true)} disabled={!canSend}>
               <Zap aria-hidden="true" />
             </Button>
           ) : null}
           {planFollowUp && onImplement && !refining ? (
             <ImplementButton disabled={disabled} onImplement={onImplement} {...(onImplementInNewPane ? { onImplementInNewPane } : {})} />
           ) : planFollowUp && refining ? (
-            <Button size="sm" onClick={() => submit()} disabled={!canSend} title="Send your notes; Claude stays in plan mode">Refine</Button>
+            <Button size="sm" onClick={() => submit()} disabled={!canSend} title={`Send your notes; ${provider} stays in plan mode`}>Refine</Button>
           ) : (
             <Button
               size="icon-sm"
               aria-label={running && turnFlow && !relayTarget ? 'Queue' : 'Send'}
-              title={uploading ? 'Waiting for images to upload' : running && turnFlow && !relayTarget ? 'Queue (Enter): sent when Claude finishes this turn' : 'Send (Enter)'}
+              title={uploading ? 'Waiting for images to upload' : running && turnFlow && !relayTarget ? `Queue (Enter): sent when ${provider} finishes this turn` : 'Send (Enter)'}
               onClick={() => submit()}
               disabled={!canSend}
             >

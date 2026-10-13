@@ -10,6 +10,7 @@ import {
   type ChatQueueAction,
   type ChatSendOptions,
   type ChatSessionPermissionMode,
+  type ChatProvider,
   type ChatSettingsChange,
   type ChatState,
   type ChatSubagentTranscript,
@@ -19,6 +20,7 @@ import {
 import type { PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
 import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError } from './ChatComposer'
+import { providerLabel } from './ComposerControls'
 import { ChatTimeline, Markdown } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
@@ -180,7 +182,7 @@ function ChatColumn({
     setImplemented({ planId: plan.id, itemCount: chat.items.length })
     onSend(planImplementationPrompt(plan.text), undefined, { permissionMode: implementPermissionMode(chat.session) })
   }
-  const implementInNewPane = flow?.implementInNewPane && plan
+  const implementInNewPane = chat.session.provider === 'claude' && flow?.implementInNewPane && plan
     ? () => {
         setFlowError(null)
         flow.implementInNewPane!(plan.text, implementPermissionMode(chat.session)).catch((error: unknown) => {
@@ -233,6 +235,7 @@ function ChatColumn({
       {agent ? (
         <>
           <SubagentHeader
+            provider={providerLabel(chat.session)}
             agent={agent}
             items={chat.items}
             now={now}
@@ -241,10 +244,11 @@ function ChatColumn({
             onTask={task}
             onMessage={() => agent.agentId && setRelay({ agentId: agent.agentId, label: subagentLabel(agent) })}
           />
-          <SubagentTimeline agent={agent} items={chat.items} ownItems={ownItems} transcript={transcript} cwd={chat.session.cwd} onOpenSubagent={select} onRetry={() => agent.agentId && retryTranscript(agent.agentId)} />
+          <SubagentTimeline provider={chat.session.provider} agent={agent} items={chat.items} ownItems={ownItems} transcript={transcript} cwd={chat.session.cwd} onOpenSubagent={select} onRetry={() => agent.agentId && retryTranscript(agent.agentId)} />
         </>
       ) : (
         <ChatTimeline
+          provider={chat.session.provider}
           items={chat.items}
           cwd={chat.session.cwd}
           working={working}
@@ -254,12 +258,13 @@ function ChatColumn({
       )}
       {agents.length ? (
         <div className="px-4">
-          <AgentSwitcher agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} onSelect={select} onTask={task} />
+          <AgentSwitcher provider={providerLabel(chat.session)} agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} onSelect={select} onTask={task} />
         </div>
       ) : null}
       {chat.session.claudeCodeSwitch ? (
         <ClaudeCodeSwitchBanner
           state={chat.session.claudeCodeSwitch}
+          provider={chat.session.provider}
           disabled={!connected || !chat.hostConnected}
           {...(flow?.switchToClaudeCode ? { onSwitch: flow.switchToClaudeCode } : {})}
         />
@@ -294,21 +299,23 @@ function ChatColumn({
 }
 
 /** A switch to Claude Code waiting for the turn to end (Cancel, or Switch now to interrupt it), or under way. */
-function ClaudeCodeSwitchBanner({ state, disabled, onSwitch }: {
+function ClaudeCodeSwitchBanner({ state, disabled, onSwitch, provider }: {
+  provider: 'claude' | 'codex'
   state: ChatClaudeCodeSwitch
   disabled: boolean
   onSwitch?: (action: ChatSwitchAction) => void
 }) {
+  const label = provider === 'codex' ? 'Codex TUI' : 'Claude Code'
   return (
     <div className="px-4 pt-2">
       <div className="mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-secondary-label" role="status" data-testid="claude-code-switch">
         <SquareTerminal className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-        <span className="min-w-40 flex-1">{state === 'after_turn' ? 'Switching to Claude Code when this turn ends…' : 'Switching to Claude Code…'}</span>
+        <span className="min-w-40 flex-1">{state === 'after_turn' ? `Switching to ${label} when this turn ends…` : `Switching to ${label}…`}</span>
         {state !== 'switching' && onSwitch ? (
           <>
             <Button size="xs" variant="outline" disabled={disabled} onClick={() => onSwitch('cancel')}>Cancel</Button>
             {state === 'after_turn' ? (
-              <Button size="xs" disabled={disabled} onClick={() => onSwitch('now')} title="Interrupt Claude's turn and switch">Switch now</Button>
+              <Button size="xs" disabled={disabled} onClick={() => onSwitch('now')} title={`Interrupt ${provider === 'codex' ? 'Codex' : 'Claude'}'s turn and switch`}>Switch now</Button>
             ) : null}
           </>
         ) : null}
@@ -321,7 +328,8 @@ function ClaudeCodeSwitchBanner({ state, disabled, onSwitch }: {
  * One subagent's own turns: live from items tagged with its Agent call, or
  * from its saved transcript when none are in the pane (after a resume).
  */
-function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubagent, onRetry }: {
+function SubagentTimeline({ provider, agent, items, ownItems, transcript, cwd, onOpenSubagent, onRetry }: {
+  provider: ChatProvider
   agent: SubagentItem
   items: readonly ChatItem[]
   ownItems: readonly ChatItem[]
@@ -337,7 +345,7 @@ function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubag
   const header = live || !transcript || transcript.loading || transcript.error || !transcript.items.length
     ? agent.prompt ? (
         <div className="mb-3 rounded-lg border border-border bg-card px-3 py-2 text-sm text-secondary-label">
-          <span className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground"><Bot className="size-3" aria-hidden="true" />Task from main Claude</span>
+          <span className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground"><Bot className="size-3" aria-hidden="true" />Task from main {providerLabel({ provider })}</span>
           <span className="whitespace-pre-wrap break-words">{agent.prompt}</span>
         </div>
       ) : null
@@ -346,6 +354,7 @@ function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubag
   const error = !live && transcript && !transcript.loading ? transcript.error : undefined
   return (
     <ChatTimeline
+      provider={provider}
       items={shown}
       cwd={cwd}
       working={agent.state === 'running'}

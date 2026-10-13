@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   CHAT_PERMISSION_MODES,
+  CODEX_CHAT_PERMISSION_MODES,
   defaultWorktreePath,
   EMPTY_PANE_OPTION,
   SESSION_AGENT_EXECUTABLES,
@@ -153,9 +154,11 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (provider !== 'claude-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
+  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
     throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
   }
+  if (provider === 'codex-chat' && (configDir !== undefined || readableDir !== undefined)) throw new Error('Codex chat does not accept a Claude profile or readable folder')
+  if (provider === 'codex-chat' && permissionMode !== undefined && !CODEX_CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) throw new Error('Unsupported Codex permission mode')
   // Only one stashed plan's own folder: a chat must not be handed any other path.
   if (readableDir !== undefined && !isChatPlanDir(readableDir)) {
     throw new Error('A chat can only be given a stashed plan folder to read')
@@ -502,7 +505,7 @@ export class TmuxCreator {
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
     const argv = sessionAgentArgv(agent)
-    argv[0] = agent.provider === 'claude-chat'
+    argv[0] = (agent.provider === 'claude-chat' || agent.provider === 'codex-chat')
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
     return argv

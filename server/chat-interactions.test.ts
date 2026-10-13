@@ -253,6 +253,55 @@ describe('chat requests in the approvals broker', () => {
 })
 
 describe('chat status for the HUD', () => {
+  it.each([
+    ['codex', 'Codex'],
+    ['claude', 'Claude'],
+  ] as const)('keeps the %s chat identity through host status updates and reconnects', async (provider, name) => {
+    const { registry, socket } = setup()
+    socket.host({ type: 'session_snapshot', session: session({ provider }), items: [] })
+    await settle()
+    expect(registry.get('%1')).toMatchObject({ provider, status: 'unknown', summary: `${name} is ready` })
+
+    socket.host({ type: 'items', paneId: '%1', items: [userMessage] })
+    socket.host({ type: 'session_update', session: session({ provider, status: 'running' }) })
+    await settle()
+    expect(registry.get('%1')).toMatchObject({ provider, status: 'working', summary: `${name} is working` })
+
+    socket.host({ type: 'session_update', session: session({ provider, status: 'idle' }) })
+    await settle()
+    expect(registry.get('%1')).toMatchObject({ provider, status: 'done', summary: `${name} is idle` })
+
+    const restarted = setup()
+    restarted.socket.host({ type: 'session_snapshot', session: session({ provider }), items: [userMessage] })
+    await settle()
+    expect(restarted.registry.get('%1')).toMatchObject({ provider, status: 'done', summary: `${name} is idle` })
+
+    socket.host({ type: 'session_update', session: session({ provider, status: 'waiting' }) })
+    socket.host({ type: 'items', paneId: '%1', items: [approval('r1')] })
+    await settle()
+    expect(registry.get('%1')).toMatchObject({ provider, status: 'needs_input', summary: `${name} needs input: Allow Bash?` })
+
+    socket.host({ type: 'items', paneId: '%1', items: [approval('r1', { status: 'completed', answer: { kind: 'approval', decision: 'allow' } })] })
+    socket.host({ type: 'session_update', session: session({ provider, status: 'error' }) })
+    await settle()
+    expect(registry.get('%1')).toMatchObject({ provider, status: 'failed', summary: `${name} failed` })
+
+    socket.host({ type: 'session_closed', paneId: '%1' })
+    await settle()
+    expect(registry.get('%1')).toBeUndefined()
+  })
+
+  it('updates the identity when only the chat provider changes', async () => {
+    const { registry, socket } = setup()
+    socket.host({ type: 'session_snapshot', session: session(), items: [] })
+    await settle()
+    expect(registry.get('%1')).toMatchObject({ provider: 'claude', summary: 'Claude is ready' })
+
+    socket.host({ type: 'session_update', session: session({ provider: 'codex' }) })
+    await settle()
+    expect(registry.get('%1')).toMatchObject({ provider: 'codex', summary: 'Codex is ready' })
+  })
+
   it('holds the host status with high confidence, and resends it after a daemon restart', async () => {
     const { registry, socket } = setup()
     socket.host({ type: 'session_snapshot', session: session({ status: 'idle' }), items: [] })
