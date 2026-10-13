@@ -1,3 +1,6 @@
+import { AgentChatsApi } from './agent-chats-api.js'
+import { AgentChatRequests } from './agent-chat-requests.js'
+import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { CanvasPush } from './canvas-push.js'
 import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
@@ -596,9 +599,11 @@ async function main(): Promise<void> {
     service: webPanes,
     pendingNotes: (webPaneId) => webPanePending.snapshot(webPaneId),
   })
+  const agentChatRequests = new AgentChatRequests(() => broadcast(webPanesMessage()))
   const webPanesMessage = (): ServerMessage => buildWebPanesMessage(webPanes, {
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
+    agentChatRequests: agentChatRequests.pending(),
     spotlightRequests: canvasSpotlight.pending(),
     reloads: webPaneAgentRequests.reloads(),
   })
@@ -1781,6 +1786,28 @@ async function main(): Promise<void> {
     sendTerminal: sendAgentTerminal,
     sending: agentPushes,
   })
+  const repoPrepareCommands = new RepoPrepareCommands(defaultRepoPrepareCommandsPath(port))
+  const agentChatsApi = new AgentChatsApi({
+    agentToken: agentHookToken,
+    ownerAuthorized: requestIsAuthorized,
+    snapshot: () => snapshot,
+    status: (paneId) => agentStatuses.get(paneId),
+    chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
+    chatOwns: (paneId) => agentHosts.owns(paneId),
+    sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId, [], { delivery: 'queue' }),
+    sendTerminal: sendAgentTerminal,
+    agentLabel: (paneId) => {
+      const status = agentStatuses.get(paneId)
+      if (!status || status.provider === 'unknown') return undefined
+      return status.agentSessionName ? `${status.provider} · ${status.agentSessionName}` : status.provider
+    },
+    creator: tmuxCreator,
+    plans: chatPlans,
+    prepareCommands: repoPrepareCommands,
+    requests: agentChatRequests,
+    beforePaneCreated: async (windowId) => { await tmux.releaseWindowPaneResizes(windowId) },
+    refreshSnapshot,
+  })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     guides,
@@ -2480,6 +2507,7 @@ async function main(): Promise<void> {
       if (await simLeaseApi.handle(request, response, url)) return
       if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
+      if (await agentChatsApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
       if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
       if (await handleChatImage(request, response, url, chatImages)) return
@@ -2531,6 +2559,7 @@ async function main(): Promise<void> {
         if (await handleChatImageUpload(request, response, url, chatImages)) return
         if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
+        if (await handleRepoPrepareCommands(request, response, url, repoPrepareCommands)) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await sessionIdeApi.handle(request, response, url)) return
