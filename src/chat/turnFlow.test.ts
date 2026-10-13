@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat'
-import { deriveTimelineRows, latestTodos, type SubagentItem } from './timelineRows'
+import { canCollapsePlan, collapsedPlanPreview, deriveTimelineRows, latestTodos, planBody, type SubagentItem } from '../../shared/chat-timeline'
 import {
-  canCollapsePlan,
-  collapsedPlanPreview,
   elapsedLabel,
   implementPermissionMode,
   launchPermissionMode,
   planAwaitingFollowUp,
-  planBody,
   relayAvailability,
   subagentActivity,
   switcherSubagents,

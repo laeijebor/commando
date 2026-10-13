@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowLeft, Bot, ChevronDown, CircleCheck, CircleSlash, CircleX, LoaderCircle, MessageSquareShare, MoveDownRight, Square } from 'lucide-react'
 import type { ChatItem, ChatTaskAction } from '../../shared/agent-chat'
 import { cn } from './cn'
-import type { SubagentItem, TimelineRow } from './timelineRows'
+import type { SubagentItem, TimelineRow } from '../../shared/chat-timeline'
 import { elapsedLabel, relayAvailability, subagentActivity, subagentLabel } from './turnFlow'
 import { Button } from './ui/button'
 

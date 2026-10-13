@@ -22,8 +22,9 @@ export function PaneNav({
 }: {
   title: string
   subtitle: string
-  fit: boolean
-  onToggleFit: () => void
+  /** Omitted for a chat pane, which has no terminal to fit. */
+  fit?: boolean
+  onToggleFit?: () => void
   /** Omitted in the iPad cockpit, where the pane is a column and not a screen. */
   onBack?: () => void
   /** Omitted when the Info sections are already beside the terminal. */
@@ -45,22 +46,24 @@ export function PaneNav({
           {subtitle}
         </Text>
       </View>
-      <Pressable
-        accessibilityLabel="Fit pane to phone"
-        accessibilityRole="switch"
-        accessibilityState={{ checked: fit }}
-        onPress={onToggleFit}
-        style={[
-          styles.fit,
-          {
-            backgroundColor: fit ? withAlpha(theme.accent, 0.2) : theme.surfaceSoft,
-            borderColor: fit ? withAlpha(theme.accent, 0.4) : theme.borderMid,
-          },
-        ]}
-      >
-        <Feather color={fit ? theme.accent : theme.muted} name="minimize-2" size={13} />
-        <Text style={[styles.fitLabel, { color: fit ? theme.accent : theme.muted }]}>Fit</Text>
-      </Pressable>
+      {onToggleFit ? (
+        <Pressable
+          accessibilityLabel="Fit pane to phone"
+          accessibilityRole="switch"
+          accessibilityState={{ checked: Boolean(fit) }}
+          onPress={onToggleFit}
+          style={[
+            styles.fit,
+            {
+              backgroundColor: fit ? withAlpha(theme.accent, 0.2) : theme.surfaceSoft,
+              borderColor: fit ? withAlpha(theme.accent, 0.4) : theme.borderMid,
+            },
+          ]}
+        >
+          <Feather color={fit ? theme.accent : theme.muted} name="minimize-2" size={13} />
+          <Text style={[styles.fitLabel, { color: fit ? theme.accent : theme.muted }]}>Fit</Text>
+        </Pressable>
+      ) : null}
       {onInfo ? (
         <Pressable accessibilityLabel="Pane info" accessibilityRole="button" onPress={onInfo}>
           <Text style={[styles.action, { color: theme.accent }]}>Info</Text>

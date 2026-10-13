@@ -19,6 +19,15 @@
       ],
       "@commando/tmux-create": [
         "../../shared/tmux-create.ts"
+      ],
+      "@commando/agent-chat": [
+        "../../shared/agent-chat.ts"
+      ],
+      "@commando/chat-timeline": [
+        "../../shared/chat-timeline.ts"
+      ],
+      "@commando/chat-composer": [
+        "../../shared/chat-composer.ts"
       ]
     }
   },
@@ -28,7 +37,10 @@
     ".expo/types/**/*.ts",
     "expo-env.d.ts",
     "../../shared/protocol.ts",
-    "../../shared/tmux-create.ts"
+    "../../shared/tmux-create.ts",
+    "../../shared/agent-chat.ts",
+    "../../shared/chat-timeline.ts",
+    "../../shared/chat-composer.ts"
   ],
   "exclude": [
     "node_modules"

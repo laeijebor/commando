@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ImageIcon, ListChecks, MessageSquareShare, Pencil, SplitSquareHorizontal, X, Zap } from 'lucide-react'
 import type { ChatQueueAction, ChatQueuedMessage, ChatSessionPermissionMode } from '../../shared/agent-chat'
-import { permissionLabel } from './ComposerControls'
+import { permissionLabel } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'

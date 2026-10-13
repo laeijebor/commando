@@ -3,7 +3,8 @@
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import type { ChatCommand } from '../../shared/agent-chat'
-import { detectTrigger, filterCommands, filterPullRequests, mentionText, moveCommandToStart, pullRequestText, replaceRange, useTriggerState } from './composerTriggers'
+import { detectTrigger, filterCommands, mentionText, moveCommandToStart, replaceRange } from '../../shared/chat-composer'
+import { filterPullRequests, pullRequestText, useTriggerState } from './composerTriggers'
 
 describe('detectTrigger', () => {
   it('opens / at the start and mid-message after any whitespace', () => {

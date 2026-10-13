@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fitAttachments, prepareImage, type ImageCodec } from './attachImages'
+import { fitAttachments } from '../../shared/chat-composer'
+import { prepareImage, type ImageCodec } from './attachImages'
 
 const MB = 1024 * 1024
 
