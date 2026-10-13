@@ -854,11 +854,16 @@ async function main(): Promise<void> {
     return hostBuildCache.build
   }
   const interactions = new AgentInteractionBroker()
+  // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
+  let noteChatBusy: ((paneId: string) => void) | undefined
   const agentHosts: AgentHostHub = new AgentHostHub({
     currentHostBuild,
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
-    broadcast,
+    broadcast: (message) => {
+      if (message.type === 'chat_session' && (message.session.status === 'running' || message.session.status === 'waiting')) noteChatBusy?.(message.paneId)
+      broadcast(message)
+    },
     verifyHost: async (paneId, hostPid) => {
       const rows = parseProcessTable(await readProcessTable())
       const known = paneForId(paneId)?.processId
@@ -898,6 +903,7 @@ async function main(): Promise<void> {
     },
     publish: (paneId, runs) => broadcast({ type: 'chat_external_runs', paneId, runs }),
   })
+  noteChatBusy = (paneId) => externalAgents.noteBusy(paneId)
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
   let publishedHandoffs = ''
   const chatHandoffsMessage = (): ServerMessage => ({ type: 'chat_handoffs', sessionIds: chatHandoffs.inClaudeCode() })

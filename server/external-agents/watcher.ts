@@ -108,6 +108,16 @@ export class ExternalAgentWatcher {
     this.dependencies.publish(paneId, runs)
   }
 
+  /** A chat turn started now: open the scan and orphan attribution windows even if no poll sees it busy. */
+  noteBusy(paneId: string): void {
+    const at = this.now()
+    this.busyAt = at
+    // Extend a window that is still open; an expired one must not stretch back over idle time.
+    const busy = this.paneBusyTimes.get(paneId)
+    const open = busy && at - busy.lastBusyAt <= SCAN_AFTER_BUSY_MS
+    this.paneBusyTimes.set(paneId, { since: open ? busy.since : at, lastBusyAt: at })
+  }
+
   async poll(): Promise<void> {
     if (this.polling || this.closed) return
     this.polling = true
@@ -137,7 +147,9 @@ export class ExternalAgentWatcher {
         }
         if (pane.hostPid && pane.hostPid !== previous?.hostPid) {
           this.busyAt = observedAt
-          this.paneBusyTimes.delete(pane.paneId)
+          // Keep a window noteBusy opened since the last poll: the new host's first turn may already be over.
+          const busy = this.paneBusyTimes.get(pane.paneId)
+          if (busy && busy.lastBusyAt <= (previous?.observedAt ?? -Infinity)) this.paneBusyTimes.delete(pane.paneId)
         }
         if (pane.hostPid && (pane.status === 'running' || pane.status === 'waiting')) {
           const busy = this.paneBusyTimes.get(pane.paneId)

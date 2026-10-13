@@ -168,6 +168,50 @@ describe('external watcher', () => {
     expect(env.runs()).toEqual([])
   })
 
+  it('attributes an orphan from a turn that started and finished between polls', async () => {
+    const env = setup()
+    env.setTable([...roots])
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    await env.watcher.poll()
+    env.setNow(2_000 + SCAN_AFTER_BUSY_MS * 3)
+    await env.watcher.poll()
+    const calls = env.processes.mock.calls.length
+    // The turn is only seen through its status update; both polls around it see an idle host.
+    env.setNow(2_000 + SCAN_AFTER_BUSY_MS * 4)
+    env.watcher.noteBusy('%1')
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000 + SCAN_AFTER_BUSY_MS * 4 + 500)])
+    env.setNow(2_000 + SCAN_AFTER_BUSY_MS * 4 + 2_000)
+    await env.watcher.poll()
+    expect(env.processes.mock.calls.length).toBe(calls + 1)
+    expect(env.runs()).toHaveLength(1)
+  })
+
+  it("keeps a window noted for a new host's first turn when the first poll sees it idle", async () => {
+    const env = setup()
+    env.setTable([...roots])
+    env.setPanes([{ paneId: '%1', panePid: 10 }])
+    await env.watcher.poll()
+    env.setNow(3_000)
+    env.watcher.noteBusy('%1')
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 3_500)])
+    env.setNow(4_000)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    await env.watcher.poll()
+    expect(env.runs()).toHaveLength(1)
+  })
+
+  it('does not stretch an expired busy window back over idle time', async () => {
+    const env = setup()
+    env.setTable([...roots])
+    await env.watcher.poll()
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    env.setNow(2_000 + SCAN_AFTER_BUSY_MS * 4)
+    env.watcher.noteBusy('%1')
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000 + SCAN_AFTER_BUSY_MS * 2)])
+    await env.watcher.poll()
+    expect(env.runs()).toEqual([])
+  })
+
   it('rejects an orphan with a controlling terminal in a busy pane cwd', async () => {
     const env = setup()
     env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000, 60, 'ttys001')])
