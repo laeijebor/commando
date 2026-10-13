@@ -19,6 +19,8 @@ import {
   type LaunchTmuxPaneRequest,
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
+  type TmuxCreatedWorktree,
+  type SessionAgentLaunchAcknowledgment,
 } from '../shared/tmux-create.js'
 import { isChatPlanDir } from './chat-plans-dir.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
@@ -627,7 +629,7 @@ export class TmuxCreator {
   async createPane(
     input: CreateTmuxPaneRequest,
     beforeCreate?: () => void | Promise<void>,
-  ): Promise<TmuxCreatedTarget> {
+  ): Promise<TmuxCreatedTarget & { worktree?: TmuxCreatedWorktree; agentLaunch?: SessionAgentLaunchAcknowledgment }> {
     if (
       typeof input.targetId !== 'string' ||
       (!WINDOW_ID.test(input.targetId) && !PANE_ID.test(input.targetId))
@@ -640,9 +642,27 @@ export class TmuxCreator {
     if (input.placement !== undefined && input.placement !== 'before' && input.placement !== 'after') {
       throw new Error('Invalid tmux split placement')
     }
-    const cwd = validatedPath(input.cwd)
+    let cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
     const agentArgv = agent ? await this.agentArgv(agent) : undefined
+    if (input.worktree !== undefined && (!input.worktree || typeof input.worktree !== 'object' || Array.isArray(input.worktree))) throw new Error('worktree must be an object')
+    const branch = input.worktree ? validatedName(input.worktree.branch, 'branch name') : undefined
+    const path = input.worktree ? validatedPath(input.worktree.path) : undefined
+    const prepareCommand = input.worktree ? optionalPrepareCommand(input.worktree.prepareCommand) : undefined
+    if (input.worktree && (!this.worktrees || !cwd)) throw new Error('A working directory and worktree service are required')
+    let worktree: TmuxCreatedWorktree | undefined
+    let rollback: (() => Promise<void>) | undefined
+    if (input.worktree) {
+      const repo = await this.worktrees!.probe(cwd!)
+      if (!repo.isRepo || !repo.mainRoot) throw new GitWorktreeError('not-repo', `${cwd} is not inside a git repository`)
+      const result = await this.worktrees!.createWorktree({
+        mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!),
+        ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
+      })
+      worktree = result.worktree
+      rollback = result.rollback
+      cwd = worktree.path
+    }
     const args = [
       ...this.socketArgs,
       'split-window',
@@ -656,8 +676,30 @@ export class TmuxCreator {
       input.targetId,
     ]
     if (cwd) args.push('-c', cwd)
-    if (agentArgv) args.push(...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv))
-    await beforeCreate?.()
-    return parseCreatedTarget(await this.run(args), 'pane')
+    if (agentArgv) args.push(...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, prepareCommand, this.launchEnv))
+    else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
+    let output: string
+    try {
+      await beforeCreate?.()
+      output = await this.run(args)
+    } catch (error) {
+      if (rollback) {
+        try { await rollback() } catch (rollbackError) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; worktree rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`, { cause: error })
+        }
+      }
+      throw error
+    }
+    // A successful split with malformed output still owns its worktree.
+    const created = parseCreatedTarget(output, 'pane')
+    return { ...created, ...(worktree ? { worktree } : {}), ...(agent ? {
+      agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' },
+    } : {}) }
+  }
+
+  async setChatLineage(paneId: string, parentTargetId: string, title: string): Promise<void> {
+    if (!PANE_ID.test(paneId) || CONTROL_CHARACTER.test(parentTargetId) || CONTROL_CHARACTER.test(title)) throw new Error('Invalid chat lineage')
+    await this.run([...this.socketArgs, 'set-option', '-p', '-t', paneId, '@commando_opened_by', parentTargetId])
+    await this.run([...this.socketArgs, 'set-option', '-p', '-t', paneId, '@commando_chat_title', title])
   }
 }

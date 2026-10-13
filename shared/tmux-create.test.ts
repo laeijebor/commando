@@ -15,14 +15,14 @@ describe('interactive agent arguments', () => {
     expect(claude[2].trimStart()).toBe(prompt)
     expect(sessionAgentArgv({ provider: 'codex', prompt })).toEqual(['codex', '--', prompt])
     expect(sessionAgentArgv({ provider: 'cursor', prompt })).toEqual(['agent', 'agent', '--', prompt])
-    expect(sessionAgentArgv({ provider: 'opencode', prompt })).toEqual(['opencode'])
+    expect(sessionAgentArgv({ provider: 'opencode', prompt })).toEqual(['opencode', `--prompt=${prompt}`])
   })
   it('treats command-like and flag-like prompts as literal data and preserves newlines', () => {
     expect(sessionAgentArgv({ provider: 'cursor', prompt: 'login' })).toEqual(['agent', 'agent', '--', 'login'])
     expect(sessionAgentArgv({ provider: 'cursor', prompt: '--force\nsecond line' })).toEqual(['agent', 'agent', '--', '--force\nsecond line'])
     expect(sessionAgentArgv({ provider: 'claude', prompt: 'Fix' })).toEqual(['claude', '--', ' Fix'])
     expect(sessionAgentArgv({ provider: 'codex', prompt: 'Fix' })).toEqual(['codex', '--', 'Fix'])
-    expect(sessionAgentArgv({ provider: 'opencode', prompt: 'Fix' })).toEqual(['opencode'])
+    expect(sessionAgentArgv({ provider: 'opencode', prompt: 'Fix' })).toEqual(['opencode', '--prompt=Fix'])
   })
 })
 

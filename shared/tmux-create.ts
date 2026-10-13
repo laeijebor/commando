@@ -78,7 +78,8 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]
   }
-  if (launch.provider === 'opencode' || !launch.prompt?.trim()) return [executable]
+  if (!launch.prompt?.trim()) return [executable]
+  if (launch.provider === 'opencode') return [executable, `--prompt=${launch.prompt}`]
   // Claude's Commander parser dispatches exact command names even after `--`.
   // An inert leading space keeps arbitrary prompts in the interactive action.
   if (launch.provider === 'claude') return [executable, '--', ` ${launch.prompt}`]
@@ -125,6 +126,7 @@ export type CreateTmuxPaneRequest = {
   direction: TmuxSplitDirection
   placement?: TmuxSplitPlacement
   cwd?: string
+  worktree?: CreateTmuxSessionWorktree
   /** Started interactively inside the new pane. */
   agent?: SessionAgentLaunch
 }
