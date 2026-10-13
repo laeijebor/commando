@@ -13,7 +13,10 @@ import { ChatPane, type ChatFlowServices } from './ChatPane'
 const imageId = `${'c'.repeat(64)}.png`
 const session: ChatSessionInfo = { paneId: '%5', provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 5, sessionId: 'abcd1234-0000', permissionMode: 'default' }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  localStorage.clear()
+})
 
 function composer(props: Partial<Parameters<typeof ChatComposer>[0]> = {}) {
   const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() }
@@ -47,9 +50,10 @@ describe('switching a chat to Claude Code', () => {
     expect(screen.getByRole('img', { name: 'shot.png' })).toBeInTheDocument()
     expect(onCarriedTaken).toHaveBeenCalledWith('carry-1', 1)
     cleanup()
-    // A remount before the daemon cleared it doesn't add it twice.
+    // A remount restores the persisted text once; the carry isn't appended again, and images aren't persisted.
     const again = composer({ carried, onCarriedTaken })
-    expect(again.input.value).toBe('')
+    expect(again.input.value).toBe('queued\n\ndraft')
+    expect(screen.queryByRole('img', { name: 'shot.png' })).not.toBeInTheDocument()
   })
 
   it('restores only the carried images that fit, and the rest once there is room', () => {
