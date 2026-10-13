@@ -554,7 +554,11 @@ export class TmuxCreator {
       } catch (error) {
         // The session exists either way: hand it back as a plain shell rather than orphan it.
         console.warn('[commando] Could not mark the new pane empty; starting a shell in it', error)
-        await this.run([...this.socketArgs, 'respawn-pane', '-k', '-t', created.paneId, LOGIN_SHELL_COMMAND]).catch(() => undefined)
+        try {
+          await this.run([...this.socketArgs, 'respawn-pane', '-k', '-t', created.paneId, LOGIN_SHELL_COMMAND])
+        } catch (respawnError) {
+          throw new Error(`Session ${created.sessionName} was created, but its pane could not be prepared. Close it and try again.`, { cause: respawnError })
+        }
       }
     }
     return created
@@ -565,8 +569,8 @@ export class TmuxCreator {
     await this.run([...this.socketArgs, 'set-option', '-p', '-F', '-t', paneId, EMPTY_PANE_OPTION, '#{pane_pid}'])
   }
 
-  private async unmarkPaneEmpty(paneId: string): Promise<void> {
-    await this.run([...this.socketArgs, 'set-option', '-p', '-u', '-t', paneId, EMPTY_PANE_OPTION])
+  private async setPaneEmptyMarker(paneId: string, idlePid: string | null): Promise<void> {
+    await this.run([...this.socketArgs, 'set-option', '-p', ...(idlePid ? ['-t', paneId, EMPTY_PANE_OPTION, idlePid] : ['-u', '-t', paneId, EMPTY_PANE_OPTION])])
   }
 
   /** Replaces an empty pane's idle process; a pane already running something is never touched. */
@@ -578,16 +582,20 @@ export class TmuxCreator {
     if (this.launching.has(input.paneId)) throw new Error('This pane is already starting something')
     this.launching.add(input.paneId)
     try {
-      const marker = await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{==:#{${EMPTY_PANE_OPTION}},#{pane_pid}}`])
-      if (marker.trim() !== '1') throw new Error('This pane is already running something')
-      await this.unmarkPaneEmpty(input.paneId)
+      const [marker, panePid] = (await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{${EMPTY_PANE_OPTION}} #{pane_pid}`])).trim().split(' ')
+      if (!marker || marker !== panePid) throw new Error('This pane is already running something')
+      await this.setPaneEmptyMarker(input.paneId, null)
       try {
         await this.run([
           ...this.socketArgs, 'respawn-pane', '-k', '-t', input.paneId,
           ...(agentArgv ? [...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv)] : [LOGIN_SHELL_COMMAND]),
         ])
       } catch (error) {
-        await this.markPaneEmpty(input.paneId).catch(() => undefined)
+        // Restore the idle pid itself: if a timed-out respawn did start something, its new
+        // pid will not match, so the pane is never offered for another (killing) launch.
+        await this.setPaneEmptyMarker(input.paneId, marker).catch((restoreError: unknown) => {
+          console.warn('[commando] Could not restore the empty-pane marker', input.paneId, restoreError)
+        })
         throw error
       }
     } finally {

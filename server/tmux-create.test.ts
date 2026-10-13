@@ -381,6 +381,15 @@ describe('empty sessions', () => {
     expect(run.mock.calls.at(-1)?.[0]).toEqual(['respawn-pane', '-k', '-t', '%12', 'exec "${SHELL:-/bin/sh}" -l'])
   })
 
+  it('reports a created session whose pane could neither be marked nor turned into a shell', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const run = vi.fn(async (args: readonly string[]): Promise<string> => {
+      if (args.includes('set-option') || args.includes('respawn-pane')) throw new Error('tmux create command timed out')
+      return output()
+    })
+    await expect(new TmuxCreator(run, []).createSession({ name: 'work', empty: true })).rejects.toThrow('Session work was created')
+  })
+
   it('rejects an empty session that also starts an agent', async () => {
     const run = runner()
     await expect(new TmuxCreator(run, []).createSession({ name: 'work', empty: true, agent: { provider: 'codex' } })).rejects.toThrow('cannot also start')
@@ -411,23 +420,23 @@ describe('empty sessions', () => {
 
 describe('launching into an empty pane', () => {
   const tmux = (marker: string, options: { respawnFails?: boolean } = {}) => vi.fn(async (args: readonly string[]): Promise<string> => {
-    if (args.includes('display-message')) return `${marker}\n`
+    if (args.includes('display-message')) return `${marker} 4321\n`
     if (args.includes('respawn-pane') && options.respawnFails) throw new Error('respawn failed')
     return ''
   })
 
   it('clears the marker, then replaces the idle process with a login shell', async () => {
-    const run = tmux('1')
+    const run = tmux('4321')
     await new TmuxCreator(run, ['-L', 'test']).launchInEmptyPane({ paneId: '%3' })
     expect(run.mock.calls.map(([args]) => args)).toEqual([
-      ['-L', 'test', 'display-message', '-p', '-t', '%3', '#{==:#{@commando_empty},#{pane_pid}}'],
+      ['-L', 'test', 'display-message', '-p', '-t', '%3', '#{@commando_empty} #{pane_pid}'],
       ['-L', 'test', 'set-option', '-p', '-u', '-t', '%3', '@commando_empty'],
       ['-L', 'test', 'respawn-pane', '-k', '-t', '%3', 'exec "${SHELL:-/bin/sh}" -l'],
     ])
   })
 
   it('starts an agent with the daemon environment scoped to the pane', async () => {
-    const run = tmux('1')
+    const run = tmux('4321')
     const env = { COMMANDO_PORT: '4410' }
     await new TmuxCreator(run, [], undefined, async () => '/host/bin/codex', env).launchInEmptyPane({ paneId: '%3', agent: { provider: 'codex', prompt: 'Hi' } })
     const respawn = run.mock.calls.map(([args]) => args).find((args) => args.includes('respawn-pane'))!
@@ -436,8 +445,9 @@ describe('launching into an empty pane', () => {
   })
 
   it('never touches a pane that is already running something', async () => {
-    const run = tmux('')
+    const run = tmux('999')
     await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('already running')
+    await expect(new TmuxCreator(tmux(''), []).launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('already running')
     expect(run).toHaveBeenCalledOnce()
     await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '3' })).rejects.toThrow('Invalid tmux pane id')
   })
@@ -450,15 +460,16 @@ describe('launching into an empty pane', () => {
     const creator = new TmuxCreator(run, [])
     const first = creator.launchInEmptyPane({ paneId: '%3' })
     await expect(creator.launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('already starting')
-    release('1\n')
+    release('4321 4321\n')
     await first
     expect(run.mock.calls.filter(([args]) => args.includes('respawn-pane'))).toHaveLength(1)
   })
 
   it('marks the pane empty again when the launch fails', async () => {
-    const run = tmux('1', { respawnFails: true })
+    const run = tmux('4321', { respawnFails: true })
     await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('respawn failed')
-    expect(run.mock.calls.at(-1)?.[0]).toEqual(['set-option', '-p', '-F', '-t', '%3', '@commando_empty', '#{pane_pid}'])
+    // The idle pid, not whatever runs now: a respawn that ran despite failing must not read as empty.
+    expect(run.mock.calls.at(-1)?.[0]).toEqual(['set-option', '-p', '-t', '%3', '@commando_empty', '4321'])
   })
 })
 
