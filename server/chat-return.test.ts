@@ -56,7 +56,29 @@ describe('returnToChat', () => {
   it("refuses panes that aren't Claude Code on a chat's conversation", async () => {
     expect(await returnToChat(deps({ handoff: () => undefined }).value, '%4')).toMatch(/isn't running Claude Code/)
     expect(await returnToChat(deps({ handoff: () => ({ ...handoff, returnedAt: 2 }) }).value, '%4')).toMatch(/isn't running Claude Code/)
-    expect(await returnToChat(deps({ status: () => status({ provider: 'codex' }) }).value, '%4')).toMatch(/isn't running Claude Code/)
+    expect(await returnToChat(deps({ status: () => status({ provider: 'cursor' }) }).value, '%4')).toMatch(/isn't running Claude Code/)
     expect(await returnToChat(deps({ chatOwnsPane: () => true }).value, '%4')).toMatch(/already shows the chat/)
+  })
+})
+
+
+describe('Codex return to chat', () => {
+  it('asks only the owned idle Codex process to exit and resumes Codex chat', async () => {
+    const { value, signals } = deps({
+      status: () => status({ provider: 'codex' }),
+      readProcessTable: async () => '  100 1 /bin/bash -c codex resume abcd1234-0000; exec /c/commando-agent codex\n  101 100 /bin/codex resume abcd1234-0000\n  999 1 /bin/codex app-server\n',
+      paneCommand: async () => 'zsh',
+      returnCommand: () => '/c/commando-agent codex --resume abcd1234-0000 --from-claude-code',
+    })
+    expect(await returnToChat(value, '%4')).toBeNull()
+    expect(signals[0]).toEqual([101, 'SIGTERM'])
+    expect(value.sendCommand).toHaveBeenCalledWith('%4', '/c/commando-agent codex --resume abcd1234-0000 --from-claude-code')
+  })
+  it('never stops Codex while working or waiting for approval', async () => {
+    for (const kind of ['working', 'needs_input'] as const) {
+      const { value, signals } = deps({ status: () => status({ provider: 'codex', status: kind }) })
+      expect(await returnToChat(value, '%4')).toMatch(/Codex TUI/)
+      expect(signals).toEqual([])
+    }
   })
 })

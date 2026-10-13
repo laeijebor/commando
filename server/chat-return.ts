@@ -39,21 +39,23 @@ export async function returnToChat(deps: ChatReturnDeps, paneId: string): Promis
   const sleep = deps.sleep ?? defaultSleep
   if (deps.chatOwnsPane(paneId)) return 'This pane already shows the chat'
   const status = deps.status(paneId)
-  const sessionId = status?.provider === 'claude' ? status.agentSessionId : undefined
+  const provider = status?.provider === 'codex' ? 'codex' : 'claude'
+  const label = provider === 'codex' ? 'Codex TUI' : 'Claude Code'
+  const sessionId = status?.provider === 'claude' || status?.provider === 'codex' ? status.agentSessionId : undefined
   const handoff = sessionId ? deps.handoff(sessionId) : undefined
-  if (!status || !handoff || handoff.returnedAt !== undefined) return "This pane isn't running Claude Code on a chat's conversation"
-  if (status.status === 'working') return 'Claude Code is working. Switch back to the chat once it finishes.'
-  if (status.status === 'needs_input') return 'Claude Code is waiting for an answer. Answer it, then switch back to the chat.'
+  if (!status || !handoff || handoff.returnedAt !== undefined) return `This pane isn't running ${label} on a chat's conversation`
+  if (status.status === 'working') return `${label} is working. Switch back to the chat once it finishes.`
+  if (status.status === 'needs_input') return `${label} is waiting for an answer. Answer it, then switch back to the chat.`
   const panePid = await deps.panePid(paneId)
   if (!panePid) return 'The pane is gone'
   const rows = parseProcessTable(await deps.readProcessTable())
   if (findChatHost(rows, panePid)) return 'This pane already runs the chat'
-  const agent = findAgentProcess(rows, panePid, 'claude')
-  if (!agent) return "Couldn't find Claude Code in this pane"
+  const agent = findAgentProcess(rows, panePid, provider)
+  if (!agent) return `Couldn't find ${label} in this pane`
   try {
     deps.signal(agent.pid, 'SIGTERM')
   } catch (error) {
-    return `Couldn't ask Claude Code to exit: ${error instanceof Error ? error.message : String(error)}`
+    return `Couldn't ask ${label} to exit: ${error instanceof Error ? error.message : String(error)}`
   }
   const alive = () => {
     try {
@@ -64,7 +66,7 @@ export async function returnToChat(deps: ChatReturnDeps, paneId: string): Promis
     }
   }
   for (let waited = 0; alive(); waited += POLL_MS) {
-    if (waited >= EXIT_TIMEOUT_MS) return "Claude Code didn't exit. Type /exit in the pane to return to the chat."
+    if (waited >= EXIT_TIMEOUT_MS) return `${label} didn't exit. Type /exit in the pane to return to the chat.`
     await sleep(POLL_MS)
   }
   // A switch's pane command starts the chat by itself; give it a moment.
@@ -75,14 +77,14 @@ export async function returnToChat(deps: ChatReturnDeps, paneId: string): Promis
     await sleep(POLL_MS)
   }
   const command = deps.returnCommand(handoff)
-  if (!command) return "Claude Code exited, but Commando couldn't build the command that resumes the chat"
+  if (!command) return `${label} exited, but Commando couldn't build the command that resumes the chat`
   // The chat may have started just now; typed into it, the command would go to Claude as a message.
   const current = await deps.paneCommand(paneId)
   if (deps.chatOwnsPane(paneId) || (current && !isShellCommand(current))) return null
   try {
     await deps.sendCommand(paneId, command)
   } catch (error) {
-    return `Claude Code exited, but the chat didn't start: ${error instanceof Error ? error.message : String(error)}`
+    return `${label} exited, but the chat didn't start: ${error instanceof Error ? error.message : String(error)}`
   }
   return null
 }

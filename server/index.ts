@@ -646,7 +646,7 @@ async function main(): Promise<void> {
   const chatHandoffs = new ChatHandoffStore(undefined, Date.now, (error) => console.error('[commando] chat handoff state failed', error))
   await chatHandoffs.load()
   const chatReturnCommand = (handoff: ChatHandoff): string | null => (
-    buildChatReturnCommand(handoff.sessionId, COMMANDO_AGENT_LAUNCHER, handoff.returnFlags, chatEnv)
+    buildChatReturnCommand(handoff.sessionId, COMMANDO_AGENT_LAUNCHER, handoff.returnFlags, chatEnv, agentStatuses.values().find((status) => status.agentSessionId === handoff.sessionId)?.provider === 'codex' ? 'codex' : 'claude')
   )
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
@@ -1427,7 +1427,7 @@ async function main(): Promise<void> {
           const live = agentStatuses.liveHookStatus(paneId, pane.command)
           if (live) return live
           const status = agentStatuses.get(paneId)
-          const switched = status?.source === 'hook' && status.provider === 'claude' && status.agentSessionId !== undefined
+          const switched = status?.source === 'hook' && (status.provider === 'claude' || status.provider === 'codex') && status.agentSessionId !== undefined
             && chatHandoffs.inClaudeCode().includes(status.agentSessionId)
           return switched ? status : undefined
         })

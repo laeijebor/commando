@@ -190,3 +190,13 @@ describe('buildChatReturnCommand', () => {
     expect(chatReturnCommand('bad id!', '/c/scripts/commando-agent', [])).toBeNull()
   })
 })
+
+describe('Codex chat resume and return', () => {
+  it('preserves Codex model/effort, never inheriting a Claude config directory', () => {
+    const args = 'node /c/server/agent-host/main.ts codex --model test-model --effort high --permission-mode default --prompt hi --model wrong'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: { CLAUDE_CONFIG_DIR: '/Users/dev/.claudep' } }))
+      .toBe('/c/launcher codex --model test-model --effort high --permission-mode default --resume abcdef12-3456')
+    expect(chatReturnCommand('abcdef12-3456', '/c/launcher', ['--permission-mode', 'plan'], {}, 'codex'))
+      .toBe('/c/launcher codex --permission-mode plan --resume abcdef12-3456 --from-claude-code')
+  })
+})
