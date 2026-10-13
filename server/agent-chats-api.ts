@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { AgentChatFailure, AgentChatInput, AgentChatLaunch, AgentChatResult } from '../shared/agent-chats.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
-import { CHAT_PERMISSION_MODES, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
+import { CHAT_PERMISSION_MODES, CODEX_CHAT_PERMISSION_MODES, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import type { ChatPlanStore } from './chat-plans.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
@@ -37,6 +37,11 @@ type Dependencies = {
   requests: AgentChatRequests
   chatCliPath?: string
   now?: () => number
+}
+
+/** Codex's default (workspace access) edits and runs commands without asking, like Claude's acceptEdits. */
+function effectiveRank(provider: string, mode: ChatPermissionMode): number {
+  return provider === 'codex-chat' && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
 }
 
 class HttpError extends Error {
@@ -130,17 +135,25 @@ export class AgentChatsApi {
 
   private launch(input: AgentChatInput, caller: TmuxPane): AgentChatLaunch {
     const chat = this.dependencies.chatSession(caller.id)
-    const provider = input.agent ?? (chat ? 'claude-chat' : this.dependencies.status(caller.id)?.provider)
+    const provider = input.agent ?? (chat ? (chat.provider === 'codex' ? 'codex-chat' : 'claude-chat') : this.dependencies.status(caller.id)?.provider)
     if (!provider || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) throw new HttpError(400, 'Unknown caller agent provider; specify --agent')
+    const hosted = provider === 'claude-chat' || provider === 'codex-chat'
     const callerMode = chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'
-    if (chat && PERMISSION_RANK[callerMode] < PERMISSION_RANK.default && provider !== 'claude-chat') throw new HttpError(403, 'A plan-mode chat can only open claude-chat chats')
-    const permissionMode = input.permissionMode ?? callerMode
-    if (PERMISSION_RANK[permissionMode] > PERMISSION_RANK[callerMode]) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
-    if (provider !== 'claude-chat' && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat accepts a permission mode')
-    return { provider: provider as SessionAgentProvider, ...(provider === 'claude-chat' ? {
-      permissionMode, ...(chat?.configDir ? { configDir: chat.configDir } : {}),
-    } : {}) }
+    const callerRank = chat ? effectiveRank(chat.provider === 'codex' ? 'codex-chat' : 'claude-chat', callerMode) : PERMISSION_RANK.default
+    if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open claude-chat or codex-chat chats')
+    if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat and codex-chat accept a permission mode')
+    const supported = provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
+    if (input.permissionMode !== undefined && !supported.some((mode) => mode.value === input.permissionMode)) throw new HttpError(400, `${provider} does not support permission mode ${input.permissionMode}`)
+    // Inherit the most permissive mode the child supports that does not exceed the caller.
+    const permissionMode = input.permissionMode ?? [...supported].map((mode) => mode.value)
+      .filter((mode) => effectiveRank(provider, mode) <= callerRank)
+      .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0] ?? 'plan'
+    if (effectiveRank(provider, permissionMode) > callerRank) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
+    if (!hosted) return { provider: provider as SessionAgentProvider }
+    return { provider, permissionMode, ...(provider === 'claude-chat' && chat?.provider !== 'codex' && chat?.configDir ? { configDir: chat.configDir } : {}) }
   }
+
+
 
   private take(buckets: Map<string, TokenBucketRateLimiter>, caller: TmuxPane, capacity: number, seconds: number): boolean {
     const live = new Set(this.dependencies.snapshot().panes.map((pane) => pane.targetId))
