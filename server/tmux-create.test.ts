@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chatProfileConfigDir, defaultClaudeProfile, sessionAgentArgv, type GitRepoInfo } from '../shared/tmux-create.js'
@@ -503,6 +504,29 @@ describe('empty sessions', () => {
     // A failed preparation leaves a shell to investigate in, not an empty launcher.
     expect(script.indexOf('pnpm i')).toBeLessThan(script.indexOf("'/opt/bin/tmux' set-option -p -t \"$TMUX_PANE\" @commando_empty \"$$\""))
     expect(script.indexOf('exec "${SHELL:-/bin/sh}" -l')).toBeLessThan(script.indexOf('set-option'))
+  })
+})
+
+describe('switching a chat pane to another conversation', () => {
+  it('respawns the pane in the conversation folder with a chat resuming it', async () => {
+    const run = vi.fn(async (_args: readonly string[]): Promise<string> => '')
+    const env = { COMMANDO_PORT: '4410' }
+    const agent = { provider: 'claude-chat' as const, configDir: `${homedir()}/.claudep`, permissionMode: 'plan' as const, resume: 'abcd1234-0000' }
+    await new TmuxCreator(run, ['-L', 'test'], undefined, undefined, env).respawnChatPane('%3', '/work/app', agent)
+    const args = run.mock.calls[0]![0]
+    expect(args.slice(0, 8)).toEqual(['-L', 'test', 'respawn-pane', '-k', '-t', '%3', '-c', '/work/app'])
+    expect(args).toContain('COMMANDO_PORT=4410')
+    expect(args.at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, ...sessionAgentArgv(agent).slice(1)], undefined, env))
+    expect(sessionAgentArgv(agent)).toEqual(['commando-agent', 'claude', '--config-dir', `${homedir()}/.claudep`, '--permission-mode', 'plan', '--resume', 'abcd1234-0000'])
+  })
+
+  it('only starts chats, on a valid conversation id', async () => {
+    const run = vi.fn(async (_args: readonly string[]): Promise<string> => '')
+    const creator = new TmuxCreator(run, [])
+    await expect(creator.respawnChatPane('%3', '/work', { provider: 'codex' })).rejects.toThrow('Only a chat')
+    await expect(creator.respawnChatPane('%3', '/work', { provider: 'claude-chat', resume: '$(rm -rf)' })).rejects.toThrow('Invalid conversation id')
+    await expect(creator.respawnChatPane('%3', 'relative', { provider: 'claude-chat' })).rejects.toThrow('absolute path')
+    expect(run).not.toHaveBeenCalled()
   })
 })
 

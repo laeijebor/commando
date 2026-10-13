@@ -23,6 +23,7 @@ import {
   type TmuxCreatedWorktree,
   type SessionAgentLaunchAcknowledgment,
 } from '../shared/tmux-create.js'
+import { isChatConversationSessionId } from '../shared/chat-conversations.js'
 import { isChatPlanDir } from './chat-plans-dir.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 
@@ -149,16 +150,17 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode, readableDir } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir, resume } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
+  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined || resume !== undefined)) {
     throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
   }
+  if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (provider === 'codex-chat' && (configDir !== undefined || readableDir !== undefined)) throw new Error('Codex chat does not accept a Claude profile or readable folder')
   if (provider === 'codex-chat' && permissionMode !== undefined && !CODEX_CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) throw new Error('Unsupported Codex permission mode')
   // Only one stashed plan's own folder: a chat must not be handed any other path.
@@ -177,6 +179,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     ...(typeof configDir === 'string' ? { configDir } : {}),
     ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
     ...(typeof readableDir === 'string' ? { readableDir } : {}),
+    ...(typeof resume === 'string' ? { resume } : {}),
   }
 }
 
@@ -619,6 +622,28 @@ export class TmuxCreator {
       }
     } finally {
       this.launching.delete(input.paneId)
+    }
+  }
+
+  /**
+   * Replaces a chat pane's host with a chat on another conversation, in that
+   * conversation's folder. The caller checks the pane runs a chat.
+   */
+  async respawnChatPane(paneId: string, cwd: string, launch: SessionAgentLaunch): Promise<void> {
+    if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
+    const agent = validatedAgent(launch)
+    if (!agent || (agent.provider !== 'claude-chat' && agent.provider !== 'codex-chat')) throw new Error('Only a chat can take over a chat pane')
+    const directory = validatedPath(cwd)
+    if (!directory) throw new Error('A folder is required')
+    if (this.launching.has(paneId)) throw new Error('This pane is already starting something')
+    this.launching.add(paneId)
+    try {
+      await this.run([
+        ...this.socketArgs, 'respawn-pane', '-k', '-t', paneId, '-c', directory,
+        ...this.agentEnvironmentArgs(), agentLaunchPaneCommand(await this.agentArgv(agent), undefined, this.launchEnv),
+      ])
+    } finally {
+      this.launching.delete(paneId)
     }
   }
 
