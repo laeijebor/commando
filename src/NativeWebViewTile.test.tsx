@@ -483,6 +483,32 @@ describe('NativeWebViewTile review integration', () => {
 
 
 describe('native panel tab visibility', () => {
+  it('follows the overlay drawer frame after transitions, ignores its enclosing occluder and parks immediately on close', async () => {
+    class Observer { observe() {} disconnect() {} }
+    vi.stubGlobal('ResizeObserver', Observer)
+    let top = 400
+    const bounds = () => ({ x: 0, y: top, left: 0, top, width: 600, height: 300, right: 600, bottom: top + 300, toJSON: () => ({}) })
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(bounds)
+    const { attachment, bridge } = nativeHarness()
+    const element = (visible: boolean) => <aside data-native-terminal-occluder="">
+      <NativeWebViewTile bridge={bridge} webPane={webPane} reloadKey={0} visible={visible} onFallback={() => undefined} />
+    </aside>
+    try {
+      const view = render(element(true))
+      await waitFor(() => expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ y: 400, visible: true })))
+      top = 250
+      fireEvent.transitionEnd(view.container.querySelector('aside')!, { propertyName: 'transform' })
+      await waitFor(() => expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ y: 250, visible: true })))
+      view.rerender(element(false))
+      expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false, visibleRegions: [], hitRegions: [] }))
+      top = 700
+      fireEvent.transitionEnd(view.container.querySelector('aside')!, { propertyName: 'transform' })
+      expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false }))
+      expect(attachment.detach).not.toHaveBeenCalled()
+      expect(bridge.attach).toHaveBeenCalledTimes(1)
+    } finally { rect.mockRestore() }
+  })
+
   it('publishes an invisible frame while retaining its native attachment', async () => {
     class Observer {
       observe() {}

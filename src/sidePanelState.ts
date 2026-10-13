@@ -4,6 +4,15 @@ import type { GitDiffSummary } from './gitApi'
 import type { PanePrSummary } from './prsApi'
 export { panelTabs }
 
+export function isNarrowPanel(width: number): boolean { return width <= 840 }
+export const DEFAULT_DRAWER_HEIGHT = 60
+export function clampDrawerHeight(height: number): number {
+  return Number.isFinite(height) ? Math.max(25, Math.min(90, height)) : DEFAULT_DRAWER_HEIGHT
+}
+export function rememberedDrawerHeight(remembered: string | null): number {
+  return remembered?.trim() ? clampDrawerHeight(Number(remembered)) : DEFAULT_DRAWER_HEIGHT
+}
+
 /** Prefer client focus, then fall back to the current tmux pane. */
 export function effectiveFocusedPane(
   focusedPaneId: string | null,

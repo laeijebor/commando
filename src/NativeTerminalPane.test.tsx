@@ -333,6 +333,38 @@ describe('NativeTerminalPane', () => {
     bridge.dispose()
   })
 
+  it('updates drawer occlusion after a slide without changing terminal dimensions', async () => {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props, getSink } = nativeProps(bridge)
+    const view = render(<NativeTerminalPane {...props} />)
+    const attach = messages.find((message) => message.type === 'pane.attach')!
+    const attachmentId = attach.payload.attachmentId as string
+    act(() => receive('pane.attached', { paneId: '%1', attachmentId }))
+    act(() => getSink()!.reset({ data: new Uint8Array(), cols: 80, rows: 24, terminalState, revision: 1 }))
+    act(() => receive('pane.seeded', { paneId: '%1', attachmentId, revision: 1 }))
+    const overlay = document.createElement('aside')
+    overlay.setAttribute('data-native-terminal-occluder', '')
+    let top = 90
+    // An own method leaves the shared placeholder bounds mock untouched.
+    Object.defineProperty(overlay, 'getBoundingClientRect', { value: () => rect(10, top, 90, top + 30) })
+    view.container.append(overlay)
+    await waitFor(() => expect(messages.filter((message) => message.type === 'pane.frame').at(-1)?.payload).toMatchObject({
+      width: 80, height: 70, visibleRegions: [{ x: 10, y: 10, width: 80, height: 70 }],
+    }))
+    top = 50
+    fireEvent.transitionEnd(overlay, { propertyName: 'transform' })
+    await waitFor(() => expect(messages.filter((message) => message.type === 'pane.frame').at(-1)?.payload).toMatchObject({
+      width: 80, height: 70, visibleRegions: [{ x: 10, y: 10, width: 80, height: 40 }],
+    }))
+    expect(props.onResize).not.toHaveBeenCalled()
+    expect(props.registerSink).toHaveBeenCalledTimes(1)
+    bridge.dispose()
+  })
+
   it('publishes through the timer fallback when WebKit suspends animation frames', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)

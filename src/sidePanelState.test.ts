@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
-import { prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { neighbouringTab, nextWebPaneOrder } from '../shared/web-pane-placement'
 
 function tab(id: string, anchorPaneId = '%12', order = 0): WebPane {
@@ -133,4 +133,27 @@ it('hides only matching PR signatures and lists closed PRs in tab order', () => 
   const reopened = { ...pr, state: 'closed' as const }
   expect(visiblePanePrs([pr], { 'pr:acme:widgets:40': prTabSignature(reopened) })).toEqual([pr])
   expect(visiblePanePrs([pr], {})).toEqual([pr])
+})
+
+
+describe('narrow drawer dimensions', () => {
+  it('includes 840px in narrow mode', () => {
+    expect(isNarrowPanel(840)).toBe(true)
+    expect(isNarrowPanel(800)).toBe(true)
+    expect(isNarrowPanel(841)).toBe(false)
+    expect(isNarrowPanel(1440)).toBe(false)
+  })
+  it('defaults to 60% and clamps to 25–90%', () => {
+    expect(DEFAULT_DRAWER_HEIGHT).toBe(60)
+    expect(clampDrawerHeight(12)).toBe(25)
+    expect(clampDrawerHeight(95)).toBe(90)
+    expect(clampDrawerHeight(67.5)).toBe(67.5)
+    for (const height of [NaN, Infinity, -Infinity]) expect(clampDrawerHeight(height)).toBe(60)
+  })
+  it('loads a remembered percentage, clamps it and tolerates invalid storage', () => {
+    expect(rememberedDrawerHeight('72.5')).toBe(72.5)
+    expect(rememberedDrawerHeight('10')).toBe(25)
+    expect(rememberedDrawerHeight('100')).toBe(90)
+    for (const height of [null, '', ' ', 'bad', 'Infinity']) expect(rememberedDrawerHeight(height)).toBe(60)
+  })
 })

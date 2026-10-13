@@ -398,6 +398,7 @@ export function NativeTerminalPane({
       childList: true,
       subtree: true,
     })
+    window.addEventListener('transitionend', schedule, true)
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
     const unsubscribePresenting = subscribeToPresenting((presenting) => {
@@ -409,6 +410,7 @@ export function NativeTerminalPane({
       resizeObserver.disconnect()
       unsubscribePresenting()
       mutationObserver.disconnect()
+      window.removeEventListener('transitionend', schedule, true)
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
       if (frame !== null) window.cancelAnimationFrame(frame)

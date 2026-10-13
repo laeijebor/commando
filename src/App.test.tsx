@@ -11,6 +11,7 @@ import { createPrsApi } from './prsApi'
 import { refreshPanePrs } from './prStore'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
+import * as nativeWebViewBridge from './nativeWebViewBridge'
 import { DESKTOP_WINDOW_ACTIVITY_EVENT } from './desktopWindowActivity'
 
 const appMocks = vi.hoisted(() => ({
@@ -97,16 +98,16 @@ vi.mock('./ResizablePaneLayout', () => ({
   ),
 }))
 vi.mock('./SimLiveView', () => ({
-  SimLiveView: ({ udid, active }: { udid: string; active: boolean }) => {
+  SimLiveView: ({ udid, active, visible }: { udid: string; active: boolean; visible: boolean }) => {
     const canvas = useRef<HTMLCanvasElement>(null)
     useEffect(() => { if (active) canvas.current?.focus() }, [active])
-    return <canvas ref={canvas} tabIndex={0} data-testid={`sim-${udid}`} data-active={String(active)} />
+    return <canvas ref={canvas} tabIndex={0} data-testid={`sim-${udid}`} data-active={String(active)} data-visible={String(visible)} />
   },
 }))
-vi.mock('./NativeWebViewTile', () => ({ NativeWebViewTile: () => null }))
+vi.mock('./NativeWebViewTile', () => ({ NativeWebViewTile: ({ webPane, visible }: { webPane: { id: string }; visible: boolean }) => <div data-testid={`native-web-${webPane.id}`} data-visible={String(visible)} /> }))
 vi.mock('./PaneGitStats', () => ({
   PaneGitStats: ({ onOpenChanges }: { onOpenChanges?: () => void }) => (
-    <button type="button" aria-label="Git changes vs main: 1 files, +3 -1" onClick={onOpenChanges}>+3 −1</button>
+    <button type="button" className="pane-git-stats" aria-label="Git changes vs main: 1 files, +3 -1" onClick={onOpenChanges}>+3 −1</button>
   ),
 }))
 vi.mock('./SessionTree', () => ({ SessionTree: () => null }))
@@ -887,6 +888,25 @@ describe('HUD tabs', () => {
     }
     const hudPrActionLabel = (subTab: 'Description' | 'Diff') => subTab === 'Description' ? 'Quick look at PR #12' : 'Open diff for PR #12: +379 -46'
     const prTabSelections = () => vi.mocked(fetch).mock.calls.filter(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))
+
+    it.each(['Description', 'Diff'] as const)('opens the narrow drawer from the HUD on %s and restores a closed PR from the menu', async (subTab) => {
+      vi.stubGlobal('innerWidth', 800)
+      stubPr()
+      await renderAppWithSnapshot()
+      expect(document.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
+      fireEvent.click(screen.getByRole('tab', { name: 'PRs' }))
+      fireEvent.click(await screen.findByRole('button', { name: hudPrActionLabel(subTab) }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      expect(document.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+      const panel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
+      await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
+      fireEvent.click(screen.getByRole('button', { name: 'Close PR #12 tab' }))
+      await waitFor(() => expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument())
+      fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
+      fireEvent.click(screen.getByRole('button', { name: /#12 ·/ }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      expect(document.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+    })
 
     it('opens a PR from the chat strip in the pane\'s PR tab instead of the browser', async () => {
       stubPr()
@@ -2605,5 +2625,182 @@ describe('side panel dock changes and reopens', () => {
     if (state === 'collapsed') expect(document.querySelector('.window-panel-layout')).toHaveClass('is-collapsed')
     else expect(document.querySelector('.window-panel-layout')).not.toHaveClass('is-collapsed')
     expect(fetch).not.toHaveBeenCalledWith(`/api/web-panes/${tile.id}/active-tab`, expect.anything())
+  })
+})
+
+
+describe('narrow pane tabs', () => {
+  const drawer = () => document.querySelector('.window-panel-layout') as HTMLElement
+  const chip = (owner = pane) => screen.getByRole('button', { name: `Open tabs for ${owner.title}` })
+  const closeButton = () => within(document.querySelector('.side-panel')!).getByRole('button', { name: 'Close tabs drawer' })
+
+  beforeEach(() => { vi.stubGlobal('innerWidth', 800) })
+
+  it('shows a button on every pane and preserves each pane active tab across toggle and pane switches', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, active: false }]))
+    expect(chip()).toHaveAttribute('aria-expanded', 'false')
+    expect(chip(adjacentPane)).toHaveAttribute('aria-expanded', 'false')
+    expect(chip()).not.toHaveTextContent(/\d/)
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    const tab = { ...openWebPane, dock: 'panel' as const, unseen: false, activeTab: true }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tab], activeTabs: { [pane.id]: tab.id } }))
+    fireEvent.click(chip())
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(screen.getByRole('tab', { name: /127.0.0.1:41300/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.pointerDown(chip(adjacentPane))
+    fireEvent.focus(chip(adjacentPane))
+    fireEvent.click(chip(adjacentPane))
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(chip(adjacentPane))
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+    fireEvent.click(chip())
+    expect(screen.getByRole('tab', { name: /127.0.0.1:41300/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('keeps agent opens and URL reuses closed, badges unseen and makes Chromium visible only on user open', async () => {
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = []
+      readyState = 0
+      close = vi.fn()
+      constructor(readonly url: string) { FakeWebSocket.instances.push(this) }
+      addEventListener() {}
+      removeEventListener() {}
+      send() {}
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    const tab = { ...openWebPane, dock: 'panel' as const, engine: 'chromium' as const, unseen: true, openRevision: 0 }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tab], activeTabs: { [pane.id]: 'session' } }))
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+    expect(chip()).toHaveClass('has-new')
+    expect(within(chip()).getByLabelText('New updates')).toBeInTheDocument()
+    const chromium = screen.getByLabelText(`Chromium tile: ${tab.url}`)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(chromium.closest('[role="tabpanel"]')).toHaveAttribute('hidden')
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [{ ...tab, openRevision: 1 }], activeTabs: { [pane.id]: 'session' } }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tab.id}/active-tab`, expect.anything()))
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+    expect(fetch).not.toHaveBeenCalledWith(`/api/web-panes/${tab.id}/seen`, expect.anything())
+    fireEvent.click(chip())
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(chromium.closest('[role="tabpanel"]')).not.toHaveAttribute('hidden')
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/web-panes/${tab.id}/seen`, expect.anything()))
+    fireEvent.click(closeButton())
+    expect(FakeWebSocket.instances[0].close).toHaveBeenCalledOnce()
+    expect(chromium.closest('[role="tabpanel"]')).toHaveAttribute('hidden')
+    expect(chip()).toHaveFocus()
+  })
+
+  it('badges session warnings on a pane without web tabs without opening the drawer', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    act(() => daemonMessage?.({ type: 'agent_resume', resume: {
+      targetId: pane.targetId, paneId: pane.id, provider: 'claude', command: 'claude --resume test',
+      state: 'failed', error: 'Resume failed', updatedAt: Date.now(),
+    } }))
+    await waitFor(() => expect(within(chip()).getByLabelText('Session resume failed')).toHaveClass('is-warning'))
+    expect(chip()).toHaveClass('has-new')
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+  })
+
+  it('keeps native tabs mounted and passes visible:false while the drawer is closed', async () => {
+    const spy = vi.spyOn(nativeWebViewBridge, 'getNativeWebViewBridge').mockReturnValue({ connect: async () => ({ available: true }) } as unknown as nativeWebViewBridge.NativeWebViewBridge)
+    try {
+      await renderAppWithSnapshot(snapshotWith([pane]))
+      const tab = { ...openWebPane, dock: 'panel' as const, url: 'https://example.com/', unseen: true }
+      act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tab], activeTabs: { [pane.id]: tab.id } }))
+      const native = await screen.findByTestId(`native-web-${tab.id}`)
+      expect(native).toHaveAttribute('data-visible', 'false')
+      fireEvent.click(chip())
+      expect(native).toHaveAttribute('data-visible', 'true')
+      fireEvent.click(closeButton())
+      expect(screen.getByTestId(`native-web-${tab.id}`)).toBe(native)
+      expect(native).toHaveAttribute('data-visible', 'false')
+    } finally { spy.mockRestore() }
+  })
+
+  it('opens Changes from the footer on the owning pane', async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const value = String(input).includes('/api/git/summary')
+        ? { isRepo: true, target: 'main', additions: 3, deletions: 1, files: [{ path: 'a.ts', status: 'M', additions: 3, deletions: 1, binary: false }] } : String(input).includes('/api/git/file-diff') ? { file: 'a.ts', diff: '' } : {}
+      return new Response(JSON.stringify(value), { status: 200 })
+    })
+    await renderAppWithSnapshot()
+    fireEvent.click(within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)!).getByRole('button', { name: /Git changes/ }))
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(await screen.findByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
+    expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
+    fireEvent.click(screen.getByRole('tab', { name: 'Session' }))
+    const changes = within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)!).getByRole('button', { name: /Git changes/ })
+    fireEvent.pointerDown(changes)
+    fireEvent.click(changes)
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(screen.getByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('opens the simulator from Show beside pane and hides it again on close', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    const simulator = { udid: '11111111-1111-1111-1111-111111111111', originalName: 'iPhone 17 Pro', label: 'Review', task: 'Review', sessionName: 'work', ports: [], idle: false }
+    const tile = { ...openWebPane, id: 'w-sim', dock: 'panel' as const, url: '', content: { kind: 'simulator' as const, udid: simulator.udid } }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [tile], activeTabs: { [pane.id]: 'session' } }))
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: 'work',
+      state: 'unknown', headline: 'Pane worklog', headlineSource: 'hook', updates: [], updatedAt: 0, simulator,
+    } }))
+    const live = screen.getByTestId(`sim-${simulator.udid}`)
+    expect(live).toHaveAttribute('data-visible', 'false')
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show beside pane', hidden: true }))
+    await waitFor(() => expect(live).toHaveFocus())
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(live).toHaveAttribute('data-visible', 'true')
+    fireEvent.click(closeButton())
+    expect(live).toHaveAttribute('data-visible', 'false')
+    expect(live).toHaveAttribute('data-active', 'false')
+  })
+
+  it('does not remount or change terminal measurements on toggle or breakpoint crossing, and restores wide collapse state', async () => {
+    localStorage.setItem('commando.side-panel.collapsed.@2', 'true')
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    const renderer = screen.getByTestId(`renderer-${pane.id}`)
+    const measurementKey = renderer.getAttribute('data-measurement-key')
+    appMocks.send.mockClear()
+    fireEvent.click(chip())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(chip()).toHaveFocus()
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+    fireEvent.click(chip())
+    vi.stubGlobal('innerWidth', 1440)
+    fireEvent.resize(window)
+    expect(drawer()).not.toHaveClass('is-narrow')
+    expect(drawer()).toHaveClass('is-collapsed')
+    expect(screen.queryByRole('button', { name: 'Open tabs for api' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Expand side panel' })).toBeInTheDocument()
+    vi.stubGlobal('innerWidth', 840)
+    fireEvent.resize(window)
+    expect(drawer()).toHaveClass('is-narrow', 'is-collapsed')
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+    expect(screen.getByTestId(`renderer-${pane.id}`)).toBe(renderer)
+    expect(renderer).toHaveAttribute('data-measurement-key', measurementKey)
+    expect(renderer).toHaveAttribute('data-resize-owner', 'true')
+    expect(appMocks.send.mock.calls.filter(([message]) => ['apply_window_layout', 'set_window_layout', 'resize'].includes(message.type))).toEqual([])
+  })
+
+  it('restores a maximized tab to the remembered drawer height and keeps split tiles in the grid', async () => {
+    localStorage.setItem('commando.side-panel.height.@2', '73')
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    fireEvent.click(chip())
+    const height = drawer().style.getPropertyValue('--side-panel-height')
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize panel tab' }))
+    expect(drawer()).toHaveClass('is-panel-maximized')
+    expect(document.querySelector('.window-terminal-grid')).toHaveAttribute('hidden')
+    fireEvent.click(screen.getByRole('button', { name: 'Restore panel tab' }))
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(drawer().style.getPropertyValue('--side-panel-height')).toBe(height)
+    const split = { ...openWebPane, dock: 'split' as const }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [split] }))
+    expect(document.querySelector(`[data-web-pane-id="${split.id}"]`)?.closest('.window-terminal-grid')).toBeInTheDocument()
   })
 })

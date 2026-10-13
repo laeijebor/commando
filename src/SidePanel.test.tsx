@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane, WebPane } from '../shared/protocol'
@@ -297,5 +297,124 @@ describe('SidePanel', () => {
     expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
     expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBe('false')
     expect(screen.queryByRole('separator')).toBeInTheDocument()
+  })
+})
+
+describe('narrow tabs drawer', () => {
+  function Drawer({ narrow = true, reveal = false, windowId = '@1', revision = 0, onSeen = vi.fn(), terminalClick = vi.fn(), terminalPointer = vi.fn() }: {
+    narrow?: boolean; reveal?: boolean; windowId?: string; revision?: number
+    onSeen?: (tab: WebPane) => void; terminalClick?: () => void; terminalPointer?: () => void
+  }) {
+    const [open, setOpen] = useState(false)
+    return <SidePanel windowId={windowId} tabs={[{ ...tabs[1], openRevision: revision }]} focusedPaneId="%13" paneLabel="Agent B"
+      narrowMode={narrow} drawerOpen={open} onDrawerOpen={() => setOpen(true)} onDrawerClose={() => setOpen(false)}
+      revealRequest={reveal ? { tabId: tabs[1].id, onVisible: () => undefined } : undefined}
+      simulatorNames={{}} titles={{}} onSelect={vi.fn()} onClose={vi.fn()} onOpen={vi.fn()} onSeen={onSeen}
+      renderTab={(tab, visible) => <div data-testid={tab.id} data-visible={String(visible)} />}>
+      <button data-panel-chip="%13" onClick={() => setOpen((value) => !value)}>Pane tabs</button>
+      <button onClick={terminalClick} onPointerDown={terminalPointer}>Terminal input</button>
+    </SidePanel>
+  }
+
+  it('opens the active tab and focuses it, closes by Escape, scrim, header and terminal tap without forwarding input', () => {
+    const terminalClick = vi.fn()
+    const terminalPointer = vi.fn()
+    const onSeen = vi.fn()
+    const view = render(<Drawer terminalClick={terminalClick} terminalPointer={terminalPointer} onSeen={onSeen} />)
+    const layout = view.container.querySelector('.window-panel-layout')!
+    const terminal = screen.getByRole('button', { name: 'Terminal input' })
+    const chip = screen.getByRole('button', { name: 'Pane tabs' })
+    const tabBody = screen.getByTestId(tabs[1].id)
+    expect(layout).toHaveClass('is-narrow', 'is-collapsed')
+    expect(tabBody).toHaveAttribute('data-visible', 'false')
+    expect(onSeen).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Expand side panel' })).not.toBeInTheDocument()
+    for (const close of ['escape', 'scrim', 'header', 'terminal', 'chip']) {
+      fireEvent.click(chip)
+      expect(layout).toHaveClass('is-drawer-open')
+      expect(screen.getByRole('tab', { name: /localhost\/1/ })).toHaveFocus()
+      expect(tabBody).toHaveAttribute('data-visible', 'true')
+      if (close === 'escape') fireEvent.keyDown(window, { key: 'Escape' })
+      if (close === 'scrim') fireEvent.click(view.container.querySelector('.side-panel-scrim')!)
+      if (close === 'header') fireEvent.click(within(view.container.querySelector('aside')!).getByRole('button', { name: 'Close tabs drawer' }))
+      if (close === 'terminal') { fireEvent.pointerDown(terminal); fireEvent.click(terminal) }
+      if (close === 'chip') { chip.focus(); fireEvent.click(chip) }
+      expect(layout).not.toHaveClass('is-drawer-open')
+      expect(tabBody).toHaveAttribute('data-visible', 'false')
+      expect(chip).toHaveFocus()
+      expect(screen.getByRole('button', { name: 'Terminal input' })).toBe(terminal)
+    }
+    expect(terminalClick).not.toHaveBeenCalled()
+    expect(terminalPointer).not.toHaveBeenCalled()
+    expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBeNull()
+  })
+
+  it('only reveals for an explicit request and keeps new revisions hidden and unseen while closed', () => {
+    const onSeen = vi.fn()
+    const view = render(<Drawer onSeen={onSeen} />)
+    const terminal = screen.getByRole('button', { name: 'Terminal input' })
+    view.rerender(<Drawer revision={1} onSeen={onSeen} />)
+    expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
+    expect(onSeen).not.toHaveBeenCalled()
+    view.rerender(<Drawer revision={1} reveal onSeen={onSeen} />)
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+    expect(onSeen).toHaveBeenCalledWith(expect.objectContaining({ id: tabs[1].id, openRevision: 1 }))
+    expect(screen.getByRole('button', { name: 'Terminal input' })).toBe(terminal)
+  })
+
+  it('remembers and clamps drawer height per window without changing wide width or collapse choice', () => {
+    localStorage.setItem('commando.side-panel.height.@1', '70')
+    localStorage.setItem('commando.side-panel.height.@2', '100')
+    localStorage.setItem('commando.side-panel.width.@1', '62')
+    localStorage.setItem('commando.side-panel.collapsed.@1', 'true')
+    const view = render(<Drawer />)
+    const terminal = screen.getByRole('button', { name: 'Terminal input' })
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const handle = screen.getByRole('separator', { name: 'Resize tabs drawer' })
+    expect(handle).toHaveAttribute('aria-valuenow', '70')
+    for (let i = 0; i < 8; i++) fireEvent.keyDown(handle, { key: 'ArrowUp' })
+    expect(localStorage.getItem('commando.side-panel.height.@1')).toBe('90')
+    for (let i = 0; i < 15; i++) fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    expect(localStorage.getItem('commando.side-panel.height.@1')).toBe('25')
+    view.rerender(<Drawer narrow={false} />)
+    expect(screen.getByRole('button', { name: 'Terminal input' })).toBe(terminal)
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-collapsed')
+    expect(localStorage.getItem('commando.side-panel.width.@1')).toBe('62')
+    expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBe('true')
+    view.rerender(<Drawer key="@2" windowId="@2" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    expect(screen.getByRole('separator', { name: 'Resize tabs drawer' })).toHaveAttribute('aria-valuenow', '90')
+  })
+
+  it('resizes from a captured pointer and stops on release', () => {
+    const view = render(<Drawer />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const handle = screen.getByRole('separator', { name: 'Resize tabs drawer' })
+    const capture = vi.fn()
+    Object.defineProperty(handle, 'setPointerCapture', { value: capture })
+    vi.spyOn(view.container.querySelector('.window-panel-layout')!, 'getBoundingClientRect').mockReturnValue({ height: 1000 } as DOMRect)
+    const pointer = (type: string, clientY: number) => {
+      const event = new Event(type, { bubbles: true })
+      Object.assign(event, { clientY, button: 0, pointerId: 7 })
+      fireEvent(handle, event)
+    }
+    pointer('pointerdown', 600)
+    expect(capture).toHaveBeenCalledWith(7)
+    pointer('pointermove', 0)
+    expect(handle).toHaveAttribute('aria-valuenow', '90')
+    pointer('pointermove', 1000)
+    expect(handle).toHaveAttribute('aria-valuenow', '25')
+    pointer('pointerup', 1000)
+    pointer('pointermove', 200)
+    expect(handle).toHaveAttribute('aria-valuenow', '25')
+    expect(localStorage.getItem('commando.side-panel.height.@1')).toBe('25')
+  })
+
+  it('tolerates unavailable localStorage', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('disabled') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('disabled') })
+    render(<Drawer />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    expect(screen.getByRole('separator', { name: 'Resize tabs drawer' })).toHaveAttribute('aria-valuenow', '60')
   })
 })

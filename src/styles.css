@@ -4717,11 +4717,41 @@ body.is-resizing-hud-pinned-note {
 .pane-tab-count.has-new { color: var(--accent); }
 
 @media (max-width: 840px) {
-  .window-panel-layout { flex-direction: column; }
-  .side-panel { flex: 0 0 340px; width: 100%; }
-  .window-panel-layout.is-collapsed .side-panel { flex-basis: 34px; }
+  .window-panel-layout { position: relative; isolation: isolate; overflow: hidden; }
+  .window-panel-layout .side-panel {
+    position: absolute;
+    inset: auto 0 0;
+    height: var(--side-panel-height, 60%);
+    z-index: 10;
+    border-top: 1px solid var(--border-mid);
+    transform: translateY(100%);
+    visibility: hidden;
+    transition: transform 160ms ease, visibility 160ms;
+  }
+  .window-panel-layout.is-drawer-open .side-panel { transform: translateY(0); visibility: visible; }
+  .window-panel-layout.is-panel-maximized .side-panel { height: 100%; transform: none; visibility: visible; }
   .side-panel-splitter { display: none; }
-  .side-panel-expand { height: 34px; }
+  .side-panel-scrim {
+    position: absolute;
+    inset: 0 0 var(--side-panel-height, 60%);
+    z-index: 8;
+    border: 0;
+    padding: 0;
+    background: color-mix(in srgb, var(--surface-deep) 15%, transparent);
+    /* Grid capture consumes the click while leaving header chips reachable. */
+    pointer-events: none;
+  }
+  .side-panel-drawer-handle { flex: 0 0 14px; cursor: row-resize; touch-action: none; display: grid; place-items: center; background: var(--surface-raised); }
+  .side-panel-drawer-handle::after { content: ''; width: 36px; height: 3px; border-radius: 2px; background: var(--border-mid); }
+  .side-panel-drawer-handle:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .side-panel-add-menu { top: 40px; }
+  .pane-tab-count.pane-tab-button { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; border: 0; border-radius: 3px; padding: 3px 5px; background: var(--surface-raised); cursor: pointer; }
+  .pane-tab-button svg { width: 13px; height: 13px; }
+  .pane-tab-button:focus-visible { outline: 1px solid var(--accent); }
+}
+
+@media (max-width: 840px) and (prefers-reduced-motion: reduce) {
+  .window-panel-layout .side-panel { transition: none; }
 }
 
 .window-terminal-grid[hidden], .side-panel-splitter[hidden], .side-panel[hidden] { display: none; }

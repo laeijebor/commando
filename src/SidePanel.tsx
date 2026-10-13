@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { FileDiff, GitPullRequest, LayoutDashboard, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
 import type { TmuxPane, WebPane, WebPaneEngine } from '../shared/protocol'
-import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrList, PrsApiClient } from './prsApi'
 import { usePaneGitSummary } from './paneGitStore'
@@ -36,6 +36,11 @@ function loadWidth(windowId: string): number {
   return 50
 }
 
+function loadDrawerHeight(windowId: string): number {
+  try { return rememberedDrawerHeight(localStorage.getItem(`commando.side-panel.height.${windowId}`)) }
+  catch { return rememberedDrawerHeight(null) }
+}
+
 function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string {
   if (tab.title) return tab.title
   if (title) return title
@@ -49,10 +54,14 @@ function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string 
 }
 
 export function SidePanel({
-  windowId, tabs, focusedPaneId, maximizedTabId, revealRequest, gridMaximized = false, paneLabel, simulatorNames, titles,
+  windowId, tabs, focusedPaneId, maximizedTabId, revealRequest, narrowMode = false, drawerOpen = false, onDrawerOpen, onDrawerClose, gridMaximized = false, paneLabel, simulatorNames, titles,
   onSelect, onSeen, onClose, onOpen, renderTab, children, panes = [], gitApi, prsApi, connected = false, renderBuiltin, activeTabs = {}, dismissedPrTabs = {}, onDismissPr, onRestorePr, sessionAttention = {}, sessionWarnings = {}, onMaximize, onTabSets,
 }: {
   windowId: string
+  narrowMode?: boolean
+  drawerOpen?: boolean
+  onDrawerOpen?: () => void
+  onDrawerClose?: () => void
   tabs: WebPane[]
   focusedPaneId?: string
   maximizedTabId?: string
@@ -81,6 +90,10 @@ export function SidePanel({
   renderTab: (tab: WebPane, visible: boolean) => ReactNode
   children: ReactNode
 }) {
+  const [drawerHeight, setDrawerHeight] = useState(() => loadDrawerHeight(windowId))
+  const drawerRef = useRef<HTMLElement>(null)
+  const drawerDragRef = useRef<{ startY: number; height: number; workspaceHeight: number } | null>(null)
+  const swallowedPointerRef = useRef(false)
   const [width, setWidth] = useState(() => loadWidth(windowId))
   const [collapseChoice, setCollapsed] = useState(() => loadCollapsed(windowId))
   const [hasHadWebTabs, setHasHadWebTabs] = useState(tabs.length > 0)
@@ -99,12 +112,19 @@ export function SidePanel({
   const [url, setUrl] = useState('')
   const [adding, setAdding] = useState<WebPaneEngine | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const closeDrawer = useCallback(() => {
+    onDrawerClose?.()
+    setAdding(null)
+    const chip = [...(bodyRef.current?.querySelectorAll<HTMLButtonElement>('[data-panel-chip]') ?? [])]
+      .find((node) => node.dataset.panelChip === focusedPaneId)
+    chip?.focus()
+  }, [onDrawerClose, focusedPaneId])
   const dragRef = useRef<{ startX: number; width: number; workspaceWidth: number } | null>(null)
   const paneIds = [...new Set([...panes.map((pane) => pane.id), ...tabs.map((tab) => tab.anchorPaneId), ...(focusedPaneId ? [focusedPaneId] : [])])]
   const allTabs = paneIds.flatMap((id) => combinedPanelTabs(id, tabs, paneData[id]?.summary ?? null, paneData[id]?.prs?.pullRequests ?? [], sessionAttention[id], sessionWarnings[id], dismissedPrTabs[id]))
   useEffect(() => { onTabSets?.(allTabs) }, [allTabs, onTabSets])
   const maximizedTab = allTabs.find((tab) => tab.id === maximizedTabId)
-  const expanded = Boolean(maximizedTab) || !collapsed
+  const expanded = Boolean(maximizedTab) || (narrowMode ? drawerOpen : !collapsed)
   const owner = maximizedTab?.anchorPaneId ?? focusedPaneId ?? ''
   const closedPrs = closedPanePrs(paneData[focusedPaneId ?? '']?.prs?.pullRequests ?? [], dismissedPrTabs[focusedPaneId ?? ''])
   const focusedTabs = allTabs.filter((tab) => tab.anchorPaneId === owner)
@@ -127,7 +147,29 @@ export function SidePanel({
     const pane = panes.find((pane) => revealRequest.tabId.startsWith(`panel:${pane.id}:pr:`))
     if (pane && paneData[pane.id]?.prs?.targetId === pane.targetId && !allTabs.some((tab) => tab.id === revealRequest.tabId)) revealRequest.onUnavailable()
   }, [revealRequest, paneData, allTabs])
-  useEffect(() => { if (revealRequest) changeCollapsed(false) }, [revealRequest])
+  useEffect(() => {
+    if (!revealRequest) return
+    if (narrowMode) onDrawerOpen?.()
+    else changeCollapsed(false)
+  }, [revealRequest, narrowMode])
+  useEffect(() => {
+    try { localStorage.setItem(`commando.side-panel.height.${windowId}`, String(drawerHeight)) } catch { /* Best effort. */ }
+  }, [windowId, drawerHeight])
+  useEffect(() => {
+    if (!narrowMode || !expanded || gridMaximized) return
+    drawerRef.current?.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.focus()
+  }, [narrowMode, expanded, gridMaximized, focusedPaneId])
+  useEffect(() => {
+    if (!narrowMode || !drawerOpen || maximizedTab || gridMaximized) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      closeDrawer()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [narrowMode, drawerOpen, Boolean(maximizedTab), gridMaximized, closeDrawer])
   useEffect(() => {
     if (!revealRequest || !expanded || gridMaximized || active?.id !== revealRequest.tabId) return
     const frame = window.requestAnimationFrame(revealRequest.onVisible)
@@ -141,11 +183,28 @@ export function SidePanel({
     setUrl('')
   }
   return (
-    <div ref={bodyRef} className={`window-panel-layout${!expanded ? ' is-collapsed' : ''}${maximizedTab ? ' is-panel-maximized' : ''}`}
-      style={{ '--side-panel-width': `${width}%` } as CSSProperties}>
-      <div className="window-terminal-grid" hidden={Boolean(maximizedTab)}>{children}</div>
+    <div ref={bodyRef} className={`window-panel-layout${!expanded ? ' is-collapsed' : ''}${maximizedTab ? ' is-panel-maximized' : ''}${narrowMode ? ' is-narrow' : ''}${narrowMode && expanded ? ' is-drawer-open' : ''}`}
+      style={{ '--side-panel-width': `${width}%`, '--side-panel-height': `${drawerHeight}%` } as CSSProperties}>
+      <div className="window-terminal-grid" hidden={Boolean(maximizedTab)}
+        onPointerDownCapture={(event) => {
+          if (!narrowMode || !drawerOpen || gridMaximized || (event.target as Element).closest('[data-panel-chip], .pane-git-stats')) return
+          event.preventDefault()
+          event.stopPropagation()
+          swallowedPointerRef.current = true
+          closeDrawer()
+        }}
+        onPointerCancel={() => { swallowedPointerRef.current = false }}
+        onClickCapture={(event) => {
+          if ((event.target as Element).closest('[data-panel-chip], .pane-git-stats')) return
+          if (!swallowedPointerRef.current && !(narrowMode && drawerOpen && !gridMaximized)) return
+          event.preventDefault()
+          event.stopPropagation()
+          swallowedPointerRef.current = false
+          if (drawerOpen) closeDrawer()
+        }}>{children}</div>
+      {narrowMode && expanded && !maximizedTab && !gridMaximized && <button type="button" className="side-panel-scrim" aria-label="Close tabs drawer" data-native-terminal-hit-blocker="" onClick={closeDrawer} />}
       {gitApi && prsApi && panes.map((pane) => <PanePanelSource key={pane.targetId} pane={pane} gitApi={gitApi} prsApi={prsApi} connected={connected} onData={onData} />)}
-      <div className="side-panel-splitter" hidden={!paneIds.length || Boolean(maximizedTab) || gridMaximized} role="separator" aria-label="Resize side panel"
+      <div className="side-panel-splitter" hidden={narrowMode || !paneIds.length || Boolean(maximizedTab) || gridMaximized} role="separator" aria-label="Resize side panel"
         aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(width)} tabIndex={collapsed ? -1 : 0}
         onKeyDown={(event) => {
           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -167,8 +226,32 @@ export function SidePanel({
         onPointerUp={() => { dragRef.current = null }}
         onPointerCancel={() => { dragRef.current = null }}
         onLostPointerCapture={() => { dragRef.current = null }} />
-      <aside className="side-panel" hidden={!paneIds.length || gridMaximized} aria-label="Pane tabs">
-        {!expanded ? <div className="side-panel-rail">
+      <aside ref={drawerRef} className="side-panel" hidden={!paneIds.length || gridMaximized} aria-label="Pane tabs"
+        aria-hidden={narrowMode && !expanded ? true : undefined} inert={narrowMode && !expanded}
+        data-native-terminal-occluder={narrowMode && expanded ? '' : undefined}>
+        {narrowMode && !maximizedTab && <div className="side-panel-drawer-handle" role="separator" aria-label="Resize tabs drawer"
+          aria-orientation="horizontal" aria-valuemin={25} aria-valuemax={90} aria-valuenow={Math.round(drawerHeight)} tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+            event.preventDefault()
+            setDrawerHeight((value) => clampDrawerHeight(value + (event.key === 'ArrowUp' ? 5 : -5)))
+          }}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            event.preventDefault()
+            const workspaceHeight = bodyRef.current?.getBoundingClientRect().height ?? 0
+            if (!workspaceHeight) return
+            drawerDragRef.current = { startY: event.clientY, height: drawerHeight, workspaceHeight }
+            event.currentTarget.setPointerCapture(event.pointerId)
+          }}
+          onPointerMove={(event) => {
+            const drag = drawerDragRef.current
+            if (drag) setDrawerHeight(clampDrawerHeight(drag.height - (event.clientY - drag.startY) / drag.workspaceHeight * 100))
+          }}
+          onPointerUp={() => { drawerDragRef.current = null }}
+          onPointerCancel={() => { drawerDragRef.current = null }}
+          onLostPointerCapture={() => { drawerDragRef.current = null }} />}
+        {!expanded && !narrowMode ? <div className="side-panel-rail">
           <button className="side-panel-expand" type="button" aria-label="Expand side panel" onClick={() => changeCollapsed(false)}><PanelRightOpen /></button>
           {focusedTabs.filter(isBuiltinTab).filter((tab, index, builtins) => !tab.prState || builtins.findIndex((candidate) => candidate.prState) === index).map((tab) => {
             const Icon = tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
@@ -207,7 +290,7 @@ export function SidePanel({
             </div>
             <span className="side-panel-owner" title={paneLabel}>{paneLabel}</span>
             {active && onMaximize && <button className="web-pane-button" type="button" aria-label={maximizedTab ? 'Restore panel tab' : 'Maximize panel tab'} onClick={() => onMaximize(active)}>{maximizedTab ? <Minimize2 /> : <Maximize2 />}</button>}
-            {!maximizedTab && <button className="web-pane-button" type="button" aria-label="Collapse side panel" onClick={() => changeCollapsed(true)}><PanelRightClose /></button>}
+            {!maximizedTab && <button className="web-pane-button" type="button" aria-label={narrowMode ? "Close tabs drawer" : "Collapse side panel"} onClick={() => narrowMode ? closeDrawer() : changeCollapsed(true)}>{narrowMode ? <X /> : <PanelRightClose />}</button>}
           </header>
         )}
         {expanded && adding && <div className="side-panel-add-menu">

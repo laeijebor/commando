@@ -110,7 +110,7 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
@@ -314,6 +314,11 @@ type TerminalPaneProps = {
   status?: AgentStatus
   brief?: SessionBrief
   panelTabs?: WebPane[]
+  narrowPanel?: boolean
+  drawerOpen?: boolean
+  panelAttention?: boolean
+  panelWarning?: boolean
+  onToggleDrawer?: () => void
   mark?: PaneMark
   resume?: AgentResume
   index: number
@@ -406,6 +411,11 @@ export function TerminalPaneCard({
   status,
   brief: suppliedBrief,
   panelTabs: paneTabs = [],
+  narrowPanel = false,
+  drawerOpen = false,
+  panelAttention = false,
+  panelWarning = false,
+  onToggleDrawer,
   mark,
   index,
   count,
@@ -554,8 +564,8 @@ export function TerminalPaneCard({
   return (
     <article
       className={`terminal-pane${focused ? ' is-focused' : ''}${jumpHighlighted ? ' is-jump-highlighted' : ''}${maximized ? ' is-maximized' : ''}${solo ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
-      onPointerDownCapture={onFocus}
-      onFocusCapture={onFocus}
+      onPointerDownCapture={(event) => { if (!(event.target as Element).closest('[data-panel-chip]')) onFocus() }}
+      onFocusCapture={(event) => { if (!(event.target as Element).closest('[data-panel-chip]')) onFocus() }}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -616,7 +626,12 @@ export function TerminalPaneCard({
           ) : <strong>{paneLabel}</strong>}
           <small title={brief?.headline || pane.command || pane.path}>{brief?.headline || pane.command || pane.path}</small>
         </span>
-        {paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
+        {narrowPanel ? <button type="button" className={`pane-tab-count pane-tab-button${paneTabs.some((tab) => tab.unseen) || panelAttention || panelWarning ? ' has-new' : ''}`}
+          data-panel-chip={pane.id} aria-label={`Open tabs for ${paneLabel}`} aria-expanded={drawerOpen}
+          onClick={(event) => { event.stopPropagation(); event.currentTarget.focus(); onFocus(); onToggleDrawer?.() }}>
+          <PanelTop aria-hidden="true" />{paneTabs.length > 0 && <span>{paneTabs.length}</span>}
+          {(paneTabs.some((tab) => tab.unseen) || panelAttention || panelWarning) && <i className={`side-panel-new${panelWarning ? ' is-warning' : ''}`} aria-label={panelWarning ? 'Session resume failed' : 'New updates'} />}
+        </button> : paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
           {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
         </span>}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
@@ -1026,6 +1041,14 @@ function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
 
 export function App() {
   const desktopWindowActive = useDesktopWindowActivity()
+  const [narrowPanel, setNarrowPanel] = useState(() => isNarrowPanel(window.innerWidth))
+  const [openDrawers, setOpenDrawers] = useState<Record<string, boolean>>({})
+  useEffect(() => {
+    const onResize = () => setNarrowPanel(isNarrowPanel(window.innerWidth))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  useEffect(() => { setOpenDrawers({}) }, [narrowPanel])
   const nativeWindowBridge = getNativeWindowBridge()
   const detachedWebPaneIds = useDetachedWebPaneIds()
   const [token, setToken] = useState(getInitialToken)
@@ -3654,6 +3677,9 @@ export function App() {
                   </header>
                   <SidePanel key={group.windowId} windowId={group.windowId} tabs={panelWebPanes}
                     focusedPaneId={panelPaneId}
+                    narrowMode={narrowPanel} drawerOpen={Boolean(openDrawers[group.windowId])}
+                    onDrawerOpen={() => setOpenDrawers((current) => current[group.windowId] ? current : { ...current, [group.windowId]: true })}
+                    onDrawerClose={() => setOpenDrawers((current) => ({ ...current, [group.windowId]: false }))}
                     maximizedTabId={builtinMaximized?.id ?? maximizedPanelTab?.id}
                     revealRequest={panelRevealRequest && (panelWebPanes.some((tab) => tab.id === panelRevealRequest.tabId) || groupPanes.some((pane) => panelRevealRequest.tabId.startsWith(`panel:${pane.id}:`))) ? panelRevealRequest : undefined}
                     gridMaximized={Boolean(maximizedGridPaneId)}
@@ -3740,6 +3766,9 @@ export function App() {
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}
                             panelTabs={panelTabs(panelWebPanes, pane.id)}
+                            narrowPanel={narrowPanel} drawerOpen={Boolean(openDrawers[group.windowId]) && panelPaneId === pane.id}
+                            panelAttention={sessionAttention[pane.id]} panelWarning={sessionWarnings[pane.id]}
+                            onToggleDrawer={() => setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))}
                             mark={paneMarks[pane.targetId]}
                             resume={agentResumes[pane.targetId]}
                             onRetryResume={() => retryAgentResume(pane.targetId)}
