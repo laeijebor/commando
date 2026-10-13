@@ -15,6 +15,7 @@ final class TerminalInputCutTests: XCTestCase {
             let cols: Int
             let cursorRow: Int
             let cursorCol: Int
+            let wrapped: [Bool]?
             let expected: Expected?
         }
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -24,7 +25,7 @@ final class TerminalInputCutTests: XCTestCase {
         for fixture in try JSONDecoder().decode([Fixture].self, from: data) {
             let result = TerminalInputCut.extract(
                 rows: fixture.rows, cols: fixture.cols,
-                cursorRow: fixture.cursorRow, cursorCol: fixture.cursorCol
+                cursorRow: fixture.cursorRow, cursorCol: fixture.cursorCol, wrapped: fixture.wrapped
             )
             XCTAssertEqual(result, fixture.expected.map { TerminalInputCut(text: $0.text, clear: $0.clear) }, fixture.name)
         }
@@ -102,6 +103,7 @@ final class TerminalInputCutTests: XCTestCase {
         surface.view.getTerminal().resetToInitialState()
         surface.view.feed(text: String(repeating: "─", count: 40) + "\r\n❯ \u{1b}[2mplaceholder\u{1b}[0m\r\n"
                           + String(repeating: "─", count: 40))
+        surface.view.feed(text: "\u{1b}[2;3H")
         XCTAssertTrue(surface.view.performKeyEquivalent(with: try key(7, "x")))
         XCTAssertTrue(inputs.isEmpty)
         XCTAssertEqual(pasteboard.string(forType: .string), selection)

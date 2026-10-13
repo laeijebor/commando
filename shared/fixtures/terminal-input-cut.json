@@ -100,7 +100,7 @@
     "cursorCol": 27,
     "expected": {
       "text": "typed text without a prompt",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -191,7 +191,7 @@
   {
     "name": "decorated rule is not a box",
     "rows": [
-      "label ────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "label ──────────────────────────────────────────────────────────────────────────────────────────    ",
       "❯ line",
       "────────────────────────────────────────────────────────────────────────────────────────────────────"
     ],
@@ -338,6 +338,283 @@
     "expected": {
       "text": "text",
       "clear": "\u000b\u000b\u000b\u0015\u0015\u0015"
+    }
+  },
+  {
+    "name": "stale Claude box above active shell prompt",
+    "rows": [
+      "────────────────────────────────────────",
+      "❯ old Claude input                      ",
+      "────────────────────────────────────────",
+      "user@host ~ % git status                "
+    ],
+    "cols": 40,
+    "cursorRow": 3,
+    "cursorCol": 24,
+    "expected": {
+      "text": "git status",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "cursor inside Claude box above shell prompt",
+    "rows": [
+      "────────────────────────────────────────",
+      "❯ old Claude input                      ",
+      "────────────────────────────────────────",
+      "user@host ~ % git status                "
+    ],
+    "cols": 40,
+    "cursorRow": 1,
+    "cursorCol": 8,
+    "expected": {
+      "text": "old Claude input",
+      "clear": "\u000b\u000b\u000b\u0015\u0015\u0015"
+    }
+  },
+  {
+    "name": "older box containing cursor beats newer stale box",
+    "rows": [
+      "────────────────────────────────────────",
+      "❯ active                                ",
+      "────────────────────────────────────────",
+      "output                                  ",
+      "────────────────────────────────────────",
+      "❯ stale                                 ",
+      "────────────────────────────────────────"
+    ],
+    "cols": 40,
+    "cursorRow": 1,
+    "cursorCol": 4,
+    "expected": {
+      "text": "active",
+      "clear": "\u000b\u000b\u000b\u0015\u0015\u0015"
+    }
+  },
+  {
+    "name": "wrapped shell command cursor on second row",
+    "rows": [
+      "$ echo abc",
+      "defgh     "
+    ],
+    "cols": 10,
+    "cursorRow": 1,
+    "cursorCol": 5,
+    "expected": {
+      "text": "echo abcdefgh",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "wrapped shell command cursor on first row",
+    "rows": [
+      "$ echo abc",
+      "defgh     "
+    ],
+    "cols": 10,
+    "cursorRow": 0,
+    "cursorCol": 5,
+    "expected": {
+      "text": "echo abcdefgh",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "wrapped shell command cursor on middle row",
+    "rows": [
+      "$ echo abc",
+      "defghijklm",
+      "nopq      "
+    ],
+    "cols": 10,
+    "cursorRow": 1,
+    "cursorCol": 5,
+    "expected": {
+      "text": "echo abcdefghijklmnopq",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "full width padded row does not continue",
+    "rows": [
+      "output    ",
+      "$ next    "
+    ],
+    "cols": 10,
+    "cursorRow": 1,
+    "cursorCol": 6,
+    "expected": {
+      "text": "next",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "shell command preserves leading space after prompt",
+    "rows": [
+      "$  secret-command                       "
+    ],
+    "cols": 40,
+    "cursorRow": 0,
+    "cursorCol": 17,
+    "expected": {
+      "text": " secret-command",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "no prompt still trims leading whitespace",
+    "rows": [
+      "  secret-command                        "
+    ],
+    "cols": 40,
+    "cursorRow": 0,
+    "cursorCol": 16,
+    "expected": {
+      "text": "secret-command",
+      "clear": ""
+    }
+  },
+  {
+    "name": "empty shell prompt with padding",
+    "rows": [
+      "$                                       "
+    ],
+    "cols": 40,
+    "cursorRow": 0,
+    "cursorCol": 2,
+    "expected": null
+  },
+  {
+    "name": "wrapped at a space cursor on first row",
+    "rows": [
+      "$ echo ab ",
+      "cdef      "
+    ],
+    "wrapped": [false, true],
+    "cols": 10,
+    "cursorRow": 0,
+    "cursorCol": 5,
+    "expected": {
+      "text": "echo ab cdef",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "wrapped at a space cursor on continuation row",
+    "rows": [
+      "$ echo ab ",
+      "cdef      "
+    ],
+    "wrapped": [false, true],
+    "cols": 10,
+    "cursorRow": 1,
+    "cursorCol": 4,
+    "expected": {
+      "text": "echo ab cdef",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "wide-character wrap with metadata",
+    "rows": [
+      "$ echo 你a",
+      "bcdef     "
+    ],
+    "wrapped": [false, true],
+    "cols": 10,
+    "cursorRow": 1,
+    "cursorCol": 5,
+    "expected": {
+      "text": "echo 你abcdef",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "wide-character wrap without metadata keeps the cell heuristic",
+    "rows": [
+      "$ echo 你a",
+      "bcdef     "
+    ],
+    "cols": 10,
+    "cursorRow": 0,
+    "cursorCol": 5,
+    "expected": {
+      "text": "echo 你a",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "three-row wrap cursor on last row",
+    "rows": [
+      "$ echo abc",
+      "defghijklm",
+      "nopq      "
+    ],
+    "wrapped": [false, true, true],
+    "cols": 10,
+    "cursorRow": 2,
+    "cursorCol": 4,
+    "expected": {
+      "text": "echo abcdefghijklmnopq",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "full-width output above prompt is not joined when metadata says hard break",
+    "rows": [
+      "1234567890",
+      "$ next    "
+    ],
+    "wrapped": [false, false],
+    "cols": 10,
+    "cursorRow": 1,
+    "cursorCol": 6,
+    "expected": {
+      "text": "next",
+      "clear": "\u0005\u0015"
+    }
+  },
+  {
+    "name": "continuation without prompt copies without clearing",
+    "rows": [
+      "abcdefghij",
+      "second    "
+    ],
+    "cols": 10,
+    "cursorRow": 1,
+    "cursorCol": 6,
+    "expected": {
+      "text": "abcdefghijsecond",
+      "clear": ""
+    }
+  },
+  {
+    "name": "cursor on Claude box bottom rule does not cut",
+    "rows": [
+      "────────────────────",
+      "❯ input             ",
+      "────────────────────"
+    ],
+    "cols": 20,
+    "cursorRow": 2,
+    "cursorCol": 0,
+    "expected": null
+  },
+  {
+    "name": "Claude status row is not a percent prompt",
+    "rows": [
+      "────────────────────────────────────────",
+      "❯ input                                ",
+      "────────────────────────────────────────",
+      "  Opus 5.5:high | ░░ 0% | wt:chat      "
+    ],
+    "wrapped": [false, false, false, false],
+    "cols": 40,
+    "cursorRow": 3,
+    "cursorCol": 32,
+    "expected": {
+      "text": "Opus 5.5:high | ░░ 0% | wt:chat",
+      "clear": ""
     }
   }
 ]

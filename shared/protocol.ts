@@ -328,6 +328,8 @@ export type TmuxPane = PaneTerminalState & {
   path: string
   active: boolean
   dead: boolean
+  /** Nothing has been launched yet: the pane idles and shows a launcher instead of a terminal. */
+  empty?: boolean
   /** Repository behind `path`, when the daemon could resolve one. */
   repo?: PaneRepo
 }

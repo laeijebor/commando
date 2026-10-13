@@ -6,6 +6,7 @@ import {
   type CreateTmuxSessionRequest,
   type ClaudeProfile,
   type CreateTmuxWindowRequest,
+  type LaunchTmuxPaneRequest,
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
 } from '../shared/tmux-create'
@@ -14,6 +15,8 @@ export type TmuxCreateApi = {
   createSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
   createWindow: (input: CreateTmuxWindowRequest) => Promise<TmuxCreatedTarget>
   createPane: (input: CreateTmuxPaneRequest) => Promise<TmuxCreatedTarget>
+  /** Starts a shell, or `agent`, in a pane that a session started empty. */
+  launchInEmptyPane: (input: LaunchTmuxPaneRequest) => Promise<void>
   /** Claude config dirs (profiles) that chat panes can use. */
   claudeProfiles: () => Promise<ClaudeProfile[]>
 }
@@ -40,7 +43,7 @@ async function responseError(response: Response): Promise<string> {
 }
 
 export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch): TmuxCreateApi {
-  const post = async (route: string, input: object): Promise<TmuxCreateResponse> => {
+  const send = async (route: string, input: object): Promise<unknown> => {
     const response = await fetcher(route, {
       method: 'POST',
       credentials: 'same-origin',
@@ -52,13 +55,15 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
       body: JSON.stringify(input),
     })
     if (!response.ok) throw new Error(await responseError(response))
-    return parseTmuxCreateResponse(await response.json())
+    return response.json()
   }
+  const post = async (route: string, input: object): Promise<TmuxCreateResponse> => parseTmuxCreateResponse(await send(route, input))
 
   return {
     createSession: async (input) => requireSessionAgentLaunch(input, await post(TMUX_CREATE_ROUTES.session, input)),
     createWindow: async (input) => (await post(TMUX_CREATE_ROUTES.window, input)).created,
     createPane: async (input) => (await post(TMUX_CREATE_ROUTES.pane, input)).created,
+    launchInEmptyPane: async (input) => { await send(TMUX_CREATE_ROUTES.launch, input) },
     claudeProfiles: async () => {
       const response = await fetcher(TMUX_CREATE_ROUTES.claudeProfiles, {
         credentials: 'same-origin',

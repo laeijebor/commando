@@ -72,6 +72,8 @@ export type TerminalInputScreen = {
   cols: number
   cursorRow: number
   cursorCol: number
+  /** `wrapped[i]` means row i is a soft-wrap continuation of row i - 1. */
+  wrapped?: boolean[]
 }
 
 export type TerminalInputCut = { text: string; clear: string }
@@ -85,11 +87,12 @@ function withoutSideBorders(row: string): string {
   return row.replace(/^│ ?/u, '').replace(/ *│ *$/u, '')
 }
 
-export function extractTerminalInput({ rows, cols, cursorRow, cursorCol }: TerminalInputScreen): TerminalInputCut | null {
+export function extractTerminalInput({ rows, cols, cursorRow, cursorCol, wrapped }: TerminalInputScreen): TerminalInputCut | null {
+  if (rows[cursorRow] === undefined || isInputRule(rows[cursorRow])) return null
   for (let start = rows.length - 1; start > 0; start -= 1) {
     if (!/^(?:│ )?[❯>][ \u00a0]/u.test(rows[start]) || !isInputRule(rows[start - 1])) continue
     const end = rows.findIndex((row, index) => index > start && isInputRule(row))
-    if (end === -1) continue
+    if (end === -1 || cursorRow < start || cursorRow >= end) continue
     const contentWidth = cols - 2 - (rows[start].startsWith('│ ') ? 4 : 0)
     const lines = rows.slice(start, end).map((row, index) => {
       const content = withoutSideBorders(row)
@@ -110,11 +113,19 @@ export function extractTerminalInput({ rows, cols, cursorRow, cursorCol }: Termi
     const repeats = 2 * lines.length + 1
     return { text, clear: '\x0b'.repeat(repeats) + '\x15'.repeat(repeats) }
   }
-  const row = rows[cursorRow]?.trimEnd()
-  if (row === undefined) return null
-  const prompt = row.match(/^.*?[$%#❯>][ \u00a0]/u)?.[0]
-  const text = (prompt && [...prompt].length <= cursorCol ? row.slice(prompt.length) : row).trim()
-  return text ? { text, clear: '\x05\x15' } : null
+  const continues = (row: string) => {
+    const lastCell = [...row][cols - 1]
+    return lastCell !== undefined && lastCell !== ' '
+  }
+  let firstRow = cursorRow
+  let lastRow = cursorRow
+  while (firstRow > 0 && (wrapped ? wrapped[firstRow] : continues(rows[firstRow - 1]))) firstRow -= 1
+  while (lastRow + 1 < rows.length && (wrapped ? wrapped[lastRow + 1] : continues(rows[lastRow]))) lastRow += 1
+  const row = rows.slice(firstRow, lastRow + 1).join('')
+  const cursorOffset = (cursorRow - firstRow) * cols + cursorCol
+  const prompt = row.match(/^.*?(?:[$#❯>]|(?<!\d)%)[ \u00a0]/u)?.[0]
+  const text = prompt && [...prompt].length <= cursorOffset ? row.slice(prompt.length).trimEnd() : row.trim()
+  return text ? { text, clear: prompt ? '\x05\x15' : '' } : null
 }
 
 export function semanticKeyForEvent(event: TerminalKeyEvent): SpecialKey | null {

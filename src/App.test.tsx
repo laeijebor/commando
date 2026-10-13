@@ -401,6 +401,23 @@ describe('pane close and create shortcuts', () => {
     })))
   })
 
+  it('shows a launcher instead of a terminal for an empty pane and launches into it', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, empty: true }]))
+    expect(screen.queryByTestId(`renderer-${adjacentPane.id}`)).not.toBeInTheDocument()
+    vi.mocked(fetch).mockResolvedValue(new Response('{"launched":true}', { status: 200 }))
+    const launcher = within(screen.getByRole('group', { name: 'Start in this pane' }))
+
+    fireEvent.click(launcher.getByRole('button', { name: 'Codex' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes/launch', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ paneId: adjacentPane.id, agent: { provider: 'codex' } }),
+    })))
+    await waitFor(() => expect(launcher.getByRole('button', { name: 'Shell' })).toBeEnabled())
+    fireEvent.click(launcher.getByRole('button', { name: 'Shell' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes/launch', expect.objectContaining({
+      body: JSON.stringify({ paneId: adjacentPane.id }),
+    })))
+  })
+
   it('reports failed closes and disables close controls while disconnected', async () => {
     vi.stubGlobal('confirm', vi.fn(() => true))
     const view = await renderAppWithSnapshot()
