@@ -26,6 +26,7 @@ Options:
   --resume ID                      Resume an existing provider session
   --model MODEL                    Model to use
   --effort LEVEL                   low | medium | high | xhigh | max
+  --fast                           Fast mode, on a model that offers it
   --permission-mode MODE           default | acceptEdits | plan | auto | dontAsk | bypassPermissions
   --pre-plan-permission-mode MODE  In plan mode: the mode Implement returns to
   --dangerously-skip-permissions   Same as --permission-mode bypassPermissions
@@ -49,6 +50,7 @@ export interface HostArgs {
   resume?: string
   model?: string
   effort?: ChatEffort
+  fast?: boolean
   permissionMode: ChatSessionPermissionMode
   /** In plan mode, the mode the chat had before it; Implement returns to it. */
   prePlanPermissionMode?: ChatSessionPermissionMode
@@ -96,6 +98,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
         }
         case '--prompt': args.prompt = needValue(true); break
         case '--from-claude-code': args.fromClaudeCode = true; break
+        case '--fast': args.fast = true; break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
         case '--allow-dangerously-skip-permissions': args.bypassAllowed = true; break
         case '--effort': {
@@ -146,6 +149,7 @@ export function sessionFlags(args: HostArgs): string[] {
     ...(args.configDir ? ['--config-dir', args.configDir] : []),
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
+    ...(args.fast ? ['--fast'] : []),
     '--permission-mode', args.permissionMode,
     ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
@@ -159,14 +163,15 @@ export function sessionFlags(args: HostArgs): string[] {
 
 /**
  * The launch arguments updated with what the chat's pickers changed, so a
- * restart or resume keeps this chat's model, effort and mode.
+ * restart or resume keeps this chat's model, effort, speed and mode.
  */
 export function withSessionSettings(args: HostArgs, info: ChatSessionInfo): HostArgs {
-  const { model: _model, effort: _effort, prePlanPermissionMode: _prePlan, ...rest } = args
+  const { model: _model, effort: _effort, fast: _fast, prePlanPermissionMode: _prePlan, ...rest } = args
   return {
     ...rest,
     ...(info.selectedModel ? { model: info.selectedModel } : {}),
     ...(info.effort ? { effort: info.effort } : {}),
+    ...(info.fast ? { fast: true } : {}),
     ...(info.prePlanPermissionMode ? { prePlanPermissionMode: info.prePlanPermissionMode } : {}),
     permissionMode: info.permissionMode && PERMISSION_MODES.has(info.permissionMode) ? info.permissionMode as ChatSessionPermissionMode : args.permissionMode,
   }
@@ -261,6 +266,7 @@ async function main(): Promise<void> {
       ...(parsed.resume ? { resume: parsed.resume } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),
       ...(parsed.effort ? { effort: parsed.effort } : {}),
+      ...(parsed.fast ? { fast: true } : {}),
       ...(parsed.bypassAllowed ? { bypassAllowed: true } : {}),
       ...(parsed.claudePath ? { claudePath: parsed.claudePath } : {}),
       ...(parsed.prompt ? { initialPrompt: parsed.prompt } : {}),

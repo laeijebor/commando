@@ -25,7 +25,7 @@ export interface ClientMethods {
   'thread/resume': ThreadSettings & { threadId: string }
   'thread/read': { threadId: string; includeTurns: boolean }
   'thread/turns/list': { threadId: string; cursor?: string; limit: number; sortDirection: 'asc' | 'desc'; itemsView: 'full' }
-  'turn/start': { threadId: string; input: UserInput[]; model?: string; effort?: string | null; approvalPolicy: ApprovalPolicy; approvalsReviewer: 'user'; sandboxPolicy: SandboxPolicy }
+  'turn/start': { threadId: string; input: UserInput[]; model?: string; effort?: string | null; serviceTier?: string | null; approvalPolicy: ApprovalPolicy; approvalsReviewer: 'user'; sandboxPolicy: SandboxPolicy }
   'turn/steer': { threadId: string; expectedTurnId: string; input: UserInput[] }
   'turn/interrupt': { threadId: string; turnId: string }
 }
@@ -50,6 +50,7 @@ export interface CodexModel {
   id: string; model: string; displayName: string; description: string; hidden: boolean; isDefault: boolean
   supportedReasoningEfforts: { reasoningEffort: string; description: string }[]
   defaultReasoningEffort: string
+  serviceTiers: { id: string; name: string; description: string }[]
 }
 export interface FileChange { path: string; kind: { type: 'add' | 'delete' | 'update'; move_path?: string | null }; diff: string }
 export interface CodexTurn { id: string; status: string; items: unknown[]; error?: { message: string } | null }
