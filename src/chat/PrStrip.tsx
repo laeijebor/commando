@@ -89,7 +89,7 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
   )
 }
 
-export function PrStrip({ paneId, api, connected }: { paneId: string; api: StripApi; connected: boolean }) {
+export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; api: StripApi; connected: boolean; onOpenPr?: (repo: string, number: number) => void }) {
   const list = usePanePullRequests(paneId, api, connected)
   const [expanded, setExpanded] = useState(false)
   if (!list?.pullRequests.length) return null
@@ -101,7 +101,13 @@ export function PrStrip({ paneId, api, connected }: { paneId: string; api: Strip
         return (
           <div key={`${pr.repo}#${pr.number}`} className={`chat-pr-row ${pr.state}`}>
             <Icon className="size-4 shrink-0" />
-            <a className="chat-pr-link" href={pr.url} target="_blank" rel="noopener noreferrer" title={`${pr.repo}#${pr.number}: ${pr.title}`}><span className="font-mono">#{pr.number}</span> <span className="truncate">{pr.title}</span></a>
+            <a className="chat-pr-link" href={pr.url} target="_blank" rel="noopener noreferrer" title={`${pr.repo}#${pr.number}: ${pr.title}`}
+              onClick={(event) => {
+                // Modified clicks keep the browser's open-in-new-tab behaviour.
+                if (!onOpenPr || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+                event.preventDefault()
+                onOpenPr(pr.repo, pr.number)
+              }}><span className="font-mono">#{pr.number}</span> <span className="truncate">{pr.title}</span></a>
             <span className="chat-pr-diff"><span className="text-success">+{pr.additions.toLocaleString('en-US')}</span> <span className="text-destructive">−{pr.deletions.toLocaleString('en-US')}</span></span>
             {pr.state === 'open' ? <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} /> : <span className="shrink-0">{pr.state === 'merged' ? 'Merged' : 'Closed'}</span>}
           </div>

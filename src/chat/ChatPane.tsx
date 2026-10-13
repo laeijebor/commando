@@ -82,6 +82,7 @@ function ChatColumn({
   onAnswer,
   onConfigure,
   onRestart,
+  onOpenPr,
   services,
   sendError,
   onDismissSendError,
@@ -103,6 +104,8 @@ function ChatColumn({
   onConfigure: (change: ChatSettingsChange) => void
   /** Restarts the host on the same conversation, to run the current code. */
   onRestart?: () => void
+  /** Opens a linked PR in this pane's side panel. */
+  onOpenPr?: (repo: string, number: number) => void
   /** File search, pull requests and image uploads for the composer's menus. */
   services?: ChatInputServices
   /** Why the daemon refused a send (e.g. an image it no longer has). */
@@ -261,7 +264,7 @@ function ChatColumn({
           {...(flow?.switchToClaudeCode ? { onSwitch: flow.switchToClaudeCode } : {})}
         />
       ) : null}
-      {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} /> : null}
+      {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
       <ChatComposer
         session={chat.session}
         hostConnected={connected && chat.hostConnected}

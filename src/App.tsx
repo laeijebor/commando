@@ -350,6 +350,7 @@ type TerminalPaneProps = {
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
+  onChatOpenPr?: (repo: string, number: number) => void
   chatServices?: ChatInputServices
   chatFlow?: ChatFlowServices
   /** Why the daemon refused one of this pane's chat sends. */
@@ -432,6 +433,7 @@ export function TerminalPaneCard({
   onChatAnswer,
   onChatConfigure,
   onChatRestart,
+  onChatOpenPr,
   chatServices,
   chatFlow,
   chatSendError,
@@ -723,6 +725,7 @@ export function TerminalPaneCard({
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
             onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
+            {...(onChatOpenPr ? { onOpenPr: onChatOpenPr } : {})}
             {...(chatServices ? { services: chatServices } : {})}
             {...(chatFlow ? { flow: chatFlow } : {})}
             {...(chatSendError ? { sendError: chatSendError } : {})}
@@ -1998,6 +2001,13 @@ export function App() {
     setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
   }
 
+  const revealPrTab = (paneId: string, repo: string, number: number, subTab: PrQuickLookTab) => {
+    const key = prPanelKey(repo, number)
+    const tabId = builtinPanelTab(paneId, key).id
+    setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
+    revealBuiltinTab(paneId, key)
+  }
+
   const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean => {
     const targetId = pr.commandoMarker?.targetId
     const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
@@ -2007,10 +2017,7 @@ export function App() {
     const list = cachedPanePrs(prsApi, pane.id)
     if (list?.targetId !== pane.targetId || !list.pullRequests.some((linked) => linked.repo.toLowerCase() === repo && linked.number === pr.number)) return false
     if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
-    const key = prPanelKey(repo, pr.number)
-    const tabId = builtinPanelTab(pane.id, key).id
-    setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
-    revealBuiltinTab(pane.id, key)
+    revealPrTab(pane.id, repo, pr.number, subTab)
     if (refresh) void refreshPanePrs(prsApi, pane.id)
     return true
   }
@@ -3679,6 +3686,7 @@ export function App() {
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
+                            onChatOpenPr={(repo, number) => revealPrTab(pane.id, repo, number, 'Description')}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
                             chatUploading={chatUploads.has(pane.id)}
                             onSwitchToClaudeCode={() => switchChat(pane.id, 'after_turn')}
