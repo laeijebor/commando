@@ -185,9 +185,9 @@ describe('AgentHostHub', () => {
     expect(hub.configure('%1', { model: 'sonnet', effort: 'high' }, 'q1')).toBe(true)
     expect(hub.configure('%2', { effort: 'low' }, 'q2')).toBe(false)
     expect(socket.sent).toEqual([{ type: 'configure', paneId: '%1', settings: { model: 'sonnet', effort: 'high' }, requestId: 'q1' }])
-    socket.host({ type: 'session_update', session: session('%1', { hostVersion: 2, permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits', selectedModel: 'sonnet', effort: 'high', bypassAllowed: true }) })
+    socket.host({ type: 'session_update', session: session('%1', { hostVersion: 2, permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits', selectedModel: 'sonnet', effort: 'high', fast: true, bypassAllowed: true }) })
     await settle()
-    expect(hub.resumeSettings('%1')).toEqual({ model: 'sonnet', effort: 'high', permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits', bypassAllowed: true })
+    expect(hub.resumeSettings('%1')).toEqual({ model: 'sonnet', effort: 'high', fast: true, permissionMode: 'plan', prePlanPermissionMode: 'acceptEdits', bypassAllowed: true })
     expect(hub.resumeSettings('%2')).toBeUndefined()
   })
 

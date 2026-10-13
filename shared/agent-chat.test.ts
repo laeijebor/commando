@@ -68,6 +68,8 @@ describe('chat settings', () => {
     expect(parseChatSettingsChange({ model: '--settings' })).toBeNull()
     expect(parseChatSettingsChange({ effort: 'extreme' })).toBeNull()
     expect(parseChatSettingsChange({ permissionMode: 'yolo' })).toBeNull()
+    expect(parseChatSettingsChange({ fast: false })).toEqual({ fast: false })
+    expect(parseChatSettingsChange({ fast: 'yes' })).toBeNull()
   })
 
   it('parses the configure message from the daemon', () => {

@@ -38,6 +38,23 @@ describe('ModelPicker', () => {
     expect(screen.getByRole('button', { name: 'Default' })).toBeInTheDocument()
   })
 
+  it('toggles fast mode on a model that offers it, and names it in the pill', async () => {
+    const onConfigure = vi.fn()
+    const fastModels = [{ ...models[1]!, supportsFast: true }, models[2]!]
+    const view = render(<ModelPicker session={{ ...fresh, models: fastModels, selectedModel: 'opus' }} disabled={false} onConfigure={onConfigure} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
+    const toggle = await screen.findByRole('menuitemcheckbox', { name: /Fast mode/ })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle)
+    expect(onConfigure).toHaveBeenCalledWith({ fast: true })
+    view.rerender(<ModelPicker session={{ ...fresh, models: fastModels, selectedModel: 'opus', fast: true }} disabled={false} onConfigure={onConfigure} />)
+    expect(screen.getByRole('button', { name: 'Opus 5.5 · Fast' })).toBeInTheDocument()
+    // A model without fast mode neither offers nor claims it.
+    view.rerender(<ModelPicker session={{ ...fresh, models: fastModels, selectedModel: 'sonnet', fast: true }} disabled={false} onConfigure={onConfigure} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sonnet 5.5' }))
+    expect(screen.queryByRole('menuitemcheckbox', { name: /Fast mode/ })).toBeNull()
+  })
+
   it('shows nothing until Claude lists its models', () => {
     const { container } = render(<ModelPicker session={{ ...fresh, models: undefined }} disabled={false} onConfigure={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()

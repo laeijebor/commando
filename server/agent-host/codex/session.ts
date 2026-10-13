@@ -47,6 +47,8 @@ import {
   type UserInput,
 } from './protocol.js'
 
+/** Codex's id for the standard (not fast) service tier. */
+export const STANDARD_TIER = 'default'
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 /**
  * Codex has no separate "ask before edits" policy. Both default and acceptEdits
@@ -68,7 +70,7 @@ export function codexPermissions(mode: ChatSessionPermissionMode, cwd: string): 
   }
 }
 export function codexTuiSwitchCommand(
-  spec: Pick<AgentSessionSpec, 'model' | 'effort' | 'permissionMode' | 'cwd'>,
+  spec: Pick<AgentSessionSpec, 'model' | 'effort' | 'permissionMode' | 'cwd'> & { serviceTier?: string },
   executable: string,
   launcher: string,
   threadId: string,
@@ -79,6 +81,7 @@ export function codexTuiSwitchCommand(
     executable, 'resume', '--no-daemon',
     ...(spec.model ? ['--model', spec.model] : []),
     ...(spec.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(spec.effort)}`] : []),
+    ...(spec.serviceTier ? ['-c', `service_tier=${JSON.stringify(spec.serviceTier)}`] : []),
     '--ask-for-approval', permissions.approvalPolicy, '--sandbox', permissions.sandbox, threadId,
   ].map(shellQuote).join(' ')
   // The existing return flag is a backwards-compatible host flag, shared by both providers.
@@ -97,6 +100,11 @@ export function codexContextUsage(value: unknown): ChatContextUsage | undefined 
   // Totals are cumulative billing usage, not the size of the current context.
   return { usedTokens: input + output, maxTokens: max, autoCompact: true, categories: [{ name: 'Input', tokens: input }, { name: 'Output', tokens: output }] }
 }
+/** The service tier a model lists as "Fast" (`priority` today), which fast mode runs on. */
+export function codexFastTier(value: unknown): string | undefined {
+  const tiers = list(record(value).serviceTiers).map(record)
+  return string(tiers.find((tier) => string(tier.id) && /^fast$/i.test(string(tier.name) ?? ''))?.id)
+}
 export function codexModels(value: unknown): ChatModelOption[] {
   return list(value).flatMap((value) => {
     const model = record(value)
@@ -105,7 +113,8 @@ export function codexModels(value: unknown): ChatModelOption[] {
       const effort = record(value).reasoningEffort
       return isChatEffort(effort) ? [effort] : []
     })
-    return [{ value: model.model, resolvedModel: model.model, displayName: model.displayName as string, description: string(model.description), efforts }]
+    return [{ value: model.model, resolvedModel: model.model, displayName: model.displayName as string, description: string(model.description), efforts,
+      ...(codexFastTier(model) ? { supportsFast: true } : {}) }]
   })
 }
 
@@ -118,6 +127,8 @@ export class CodexChatSession implements ChatProviderSession {
   private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
   private readonly readyListeners: (() => void)[] = []
   private readonly pending = new Map<string, RpcRequest>()
+  /** Each fast-capable model's fast service tier. */
+  private readonly fastTiers = new Map<string, string>()
   private info: ChatSessionInfo
   private startPromise?: Promise<void>
   private activeTurn?: string
@@ -154,6 +165,7 @@ export class CodexChatSession implements ChatProviderSession {
       bypassAllowed: spec.bypassAllowed || spec.permissionMode === 'bypassPermissions',
       ...(spec.model ? { selectedModel: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
+      ...(spec.fast ? { fast: true } : {}),
       ...(spec.prePlanPermissionMode ? { prePlanPermissionMode: spec.prePlanPermissionMode } : {}),
       ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}),
       ...(spec.resumeCommand ? { resumeCommand: spec.resumeCommand } : {}),
@@ -172,7 +184,7 @@ export class CodexChatSession implements ChatProviderSession {
       command: (launcher, flags, id) => {
         if (!launcher || !id) throw new Error('Switching to Codex TUI needs the launcher and a thread id')
         return codexTuiSwitchCommand({
-          cwd: spec.cwd, model: this.info.selectedModel, effort: this.info.effort,
+          cwd: spec.cwd, model: this.info.selectedModel, effort: this.info.effort, serviceTier: this.tuiServiceTier(),
           permissionMode: this.info.permissionMode as ChatSessionPermissionMode,
         }, executable, launcher, id, flags)
       },
@@ -199,6 +211,10 @@ export class CodexChatSession implements ChatProviderSession {
       do {
         const result = record(await this.client.request('model/list', { ...(cursor ? { cursor } : {}), limit: 100 }))
         models.push(...codexModels(result.data))
+        for (const model of list(result.data)) {
+          const tier = codexFastTier(model)
+          if (tier && isModelValue(record(model).model)) this.fastTiers.set(record(model).model as string, tier)
+        }
         cursor = string(result.nextCursor)
         if (cursor && cursors.has(cursor)) throw new Error('Codex repeated a model cursor')
         if (cursor) cursors.add(cursor)
@@ -209,8 +225,12 @@ export class CodexChatSession implements ChatProviderSession {
       const response = record(await (this.spec.resume ? this.client.request('thread/resume', { threadId: this.spec.resume, ...settings }) : this.client.request('thread/start', settings)))
       const thread = parseThread(response.thread)
       if (this.closing) return
-      this.update({ sessionId: thread.id, model: string(response.model), selectedModel: this.info.selectedModel ?? string(response.model),
+      const runningModel = this.info.selectedModel ?? string(response.model)
+      this.update({ sessionId: thread.id, model: string(response.model), selectedModel: runningModel,
         ...(isChatEffort(response.reasoningEffort) && !this.info.effort ? { effort: response.reasoningEffort } : {}),
+        // A new thread on a fast tier from Codex's config shows as fast mode, so turns keep it. A resumed
+        // thread reports the tier of its last turn, which an unsent fast-off pick (no --fast) overrides.
+        ...(!this.spec.resume && runningModel && response.serviceTier && response.serviceTier === this.fastTiers.get(runningModel) ? { fast: true } : {}),
         title: thread.name || thread.preview || undefined })
       if (this.spec.resume) {
         if (thread.historyMode === 'paginated') {
@@ -306,7 +326,8 @@ export class CodexChatSession implements ChatProviderSession {
     this.update({ status: 'running' })
     const result = record(await this.client.request('turn/start', {
       threadId, input, approvalPolicy, approvalsReviewer: 'user', sandboxPolicy,
-      ...(model ? { model } : {}), effort,
+      // Null puts a thread that ran fast back on the standard tier.
+      ...(model ? { model } : {}), effort, serviceTier: this.serviceTier() ?? null,
     }))
     const turnId = string(record(result.turn).id)
     if (!turnId) throw new Error('Codex returned a turn without an id')
@@ -481,6 +502,7 @@ export class CodexChatSession implements ChatProviderSession {
     if (change.model !== undefined && (!isModelValue(change.model) || !this.info.models?.some((model) => model.value === change.model))) throw new Error('Unknown Codex model')
     const model = this.info.models?.find((model) => model.value === (change.model ?? this.info.selectedModel))
     if (change.effort && !model?.efforts?.includes(change.effort)) throw new Error('This Codex model does not support that effort')
+    if (change.fast && !model?.supportsFast) throw new Error('This Codex model does not offer fast mode')
     if (change.permissionMode) {
       codexPermissions(change.permissionMode, this.spec.cwd)
       if (change.permissionMode === 'bypassPermissions' && !this.info.bypassAllowed) throw new Error('Full access must be allowed at launch')
@@ -492,7 +514,21 @@ export class CodexChatSession implements ChatProviderSession {
         : this.info.permissionMode as ChatSessionPermissionMode
       : mode ? undefined : this.info.prePlanPermissionMode
     const effort = change.effort ?? (this.info.effort && model?.efforts?.includes(this.info.effort) ? this.info.effort : undefined)
-    this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
+    const fast = (change.fast ?? this.info.fast) && model?.supportsFast ? true : undefined
+    this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, fast, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
+  }
+  /**
+   * The TUI's tier: named as standard too on a model with a fast tier, so a fast default in
+   * Codex's config can't override a fast-off pick. Models without tiers get no flag at all.
+   */
+  private tuiServiceTier(): string | undefined {
+    const model = this.info.selectedModel ?? this.info.model
+    return this.serviceTier() ?? (model && this.fastTiers.has(model) ? STANDARD_TIER : undefined)
+  }
+  /** The fast tier when the chat is in fast mode on a model that offers it. */
+  private serviceTier(): string | undefined {
+    const model = this.info.selectedModel ?? this.info.model
+    return this.info.fast && model ? this.fastTiers.get(model) : undefined
   }
   searchFiles(query: string): Promise<ChatFileSearchResult> { return this.files.search(query) }
   async controlTask(_action: ChatTaskAction, _agentId: string, _toolUseId: string): Promise<void> { throw new Error('Codex subagent controls are not available in this chat') }

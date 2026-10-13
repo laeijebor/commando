@@ -24,7 +24,7 @@ function fakeQuery() {
   const stopTask = vi.fn(async (_taskId: string) => undefined)
   const backgroundTasks = vi.fn(async (_toolUseId?: string) => true)
   const supportedModels = vi.fn(async () => [
-    { value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default (recommended)', description: 'Opus 5.5', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'max'], supportsAutoMode: true },
+    { value: 'default', resolvedModel: 'claude-opus-5-5', displayName: 'Default (recommended)', description: 'Opus 5.5', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'max'], supportsAutoMode: true, supportsFastMode: true },
     { value: 'sonnet', resolvedModel: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5', description: 'Fast', supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high'] },
     { value: 'bad model', displayName: 'Bad', description: '' },
   ])
@@ -215,6 +215,14 @@ describe('commando-agent arguments', () => {
     expect(chatResumeCommand('/c/commando-agent', args)).toBe('/c/commando-agent codex --model gpt-5.4 --effort high --permission-mode default')
   })
 
+  it('keeps fast mode across a restart only while the chat has it on', () => {
+    const args = parseHostArgs(['codex', '--model', 'gpt-6.1-sol', '--fast'], {})
+    if (typeof args === 'string') throw new Error(args)
+    const info = { paneId: '%1', provider: 'codex', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'default', selectedModel: 'gpt-6.1-sol' } as const
+    expect(sessionFlags(withSessionSettings(args, { ...info, fast: true }))).toContain('--fast')
+    expect(sessionFlags(withSessionSettings(args, info))).not.toContain('--fast')
+  })
+
   it('lists both providers in help and rejects unsupported subcommands', () => {
     expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex>/)
     expect(parseHostArgs(['cursor'], {})).toMatch(/^Usage/)
@@ -248,7 +256,7 @@ describe('chat provider sessions', () => {
   })
 
   it('keeps Claude TUI settings and readiness behind the optional capability', async () => {
-    const { session: claude, fake } = started({ claudePath: '/bin/claude', model: 'sonnet', effort: 'high', permissionMode: 'acceptEdits', bypassAllowed: true })
+    const { session: claude, fake } = started({ claudePath: '/bin/claude', model: 'sonnet', effort: 'high', fast: true, permissionMode: 'acceptEdits', bypassAllowed: true })
     const session: ChatProviderSession = claude
     await tick()
     const tui = session.tui!
@@ -555,6 +563,64 @@ describe('AgentSession settings', () => {
     await session.configure({ model: 'haiku' })
     expect(sessions.at(-1)).toMatchObject({ selectedModel: 'haiku' })
     expect(sessions.at(-1)?.effort).toBeUndefined()
+  })
+
+  it('opts a fast chat into fast mode at launch, and toggles it on the running query', async () => {
+    const { fake, session, sessions } = started({ fast: true })
+    await tick()
+    expect(fake.options.settings).toEqual({ fastMode: true })
+    expect(sessions.at(-1)).toMatchObject({ fast: true })
+    expect(sessions.at(-1)?.models?.[0]).toMatchObject({ value: 'default', supportsFast: true })
+    await session.configure({ fast: false })
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ fastMode: false })
+    expect(sessions.at(-1)?.fast).toBeUndefined()
+    await session.configure({ fast: true })
+    expect(fake.applyFlagSettings).toHaveBeenLastCalledWith({ fastMode: true })
+    expect(sessions.at(-1)?.fast).toBe(true)
+  })
+
+  it('turns fast mode off for a model without it, and refuses it there', async () => {
+    const { fake, session, sessions, items } = started({ fast: true })
+    await tick()
+    await session.configure({ model: 'sonnet' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ fastMode: false })
+    expect(sessions.at(-1)?.fast).toBeUndefined()
+    await session.configure({ fast: true })
+    expect(fake.applyFlagSettings).toHaveBeenCalledTimes(1)
+    expect([...items.values()].flatMap((item) => item.kind === 'notice' ? [item.text] : [])).toEqual(["Sonnet 5.5 doesn't offer fast mode."])
+    await session.configure({ model: 'default' })
+    expect(sessions.at(-1)?.fast).toBeUndefined()
+  })
+
+  it('records a model switch even when Claude refuses to turn fast mode off', async () => {
+    const { fake, session, sessions, items } = started({ fast: true })
+    await tick()
+    fake.applyFlagSettings.mockRejectedValueOnce(new Error('busy'))
+    await session.configure({ model: 'sonnet' })
+    expect(sessions.at(-1)).toMatchObject({ selectedModel: 'sonnet', model: 'claude-sonnet-5-5' })
+    expect(sessions.at(-1)?.fast).toBeUndefined()
+    expect([...items.values()].flatMap((item) => item.kind === 'notice' ? [item.text] : [])).toEqual(["Couldn't turn fast mode off: busy"])
+    // Claude's flag is still on, so switching back to a fast model retries the clear rather than running fast unasked.
+    await session.configure({ model: 'default' })
+    expect(fake.applyFlagSettings).toHaveBeenLastCalledWith({ fastMode: false })
+    expect(fake.applyFlagSettings).toHaveBeenCalledTimes(2)
+    await session.configure({ model: 'sonnet' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledTimes(2)
+  })
+
+  it('says once why a fast chat runs at standard speed', async () => {
+    const { fake, items } = started({ fast: true })
+    await tick()
+    const notices = () => [...items.values()].flatMap((item) => item.kind === 'notice' ? [item.text] : [])
+    fake.push(resultMessage({ fast_mode_state: 'off', fast_mode_disabled_reason: 'extra_usage_disabled' }))
+    fake.push(resultMessage({ fast_mode_state: 'off', fast_mode_disabled_reason: 'extra_usage_disabled' }))
+    await tick()
+    expect(notices()).toEqual(['Fast mode needs extra usage turned on; Claude replies at standard speed.'])
+    fake.push(resultMessage({ fast_mode_state: 'on' }))
+    fake.push(resultMessage({ fast_mode_state: 'cooldown' }))
+    await tick()
+    expect(notices()).toHaveLength(2)
+    expect(notices()[1]).toMatch(/cooling down/)
   })
 
   it('refuses an effort the current model does not offer', async () => {
@@ -1446,14 +1512,25 @@ describe('commando-agent switch command', () => {
     const args = parseHostArgs(['claude', '--config-dir', '/x/.claudep', '--model', 'sonnet', '--effort', 'high', '--permission-mode', 'acceptEdits', '--allow-dangerously-skip-permissions', '--resume', 'abcd1234-0000'], {})
     if (typeof args === 'string') throw new Error(args)
     expect(claudeCodeSwitchCommand(args, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toBe(
-      "exec /bin/bash -c 'set -m; /bin/claude --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000; "
+      "exec /bin/bash -c 'set -m; /bin/claude --model sonnet --effort high --settings '\"'\"'{\"fastMode\":false}'\"'\"' --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000; "
       + "exec /c/commando-agent claude --config-dir /x/.claudep --model sonnet --effort high --permission-mode acceptEdits --allow-dangerously-skip-permissions --resume abcd1234-0000 --from-claude-code'",
     )
     const bypass = parseHostArgs(['claude', '--dangerously-skip-permissions'], {})
     if (typeof bypass === 'string') throw new Error(bypass)
-    expect(claudeCodeSwitchCommand(bypass, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toContain('set -m; /bin/claude --dangerously-skip-permissions --resume')
+    expect(claudeCodeSwitchCommand(bypass, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')).toContain('--dangerously-skip-permissions --resume')
     expect(parseHostArgs(['claude', '--from-claude-code', '--resume', 'abcd1234-0000'], {})).toMatchObject({ fromClaudeCode: true })
     // A restart or resume of the returned chat doesn't claim to be back from Claude Code again.
     expect(sessionFlags({ ...args, fromClaudeCode: true })).not.toContain('--from-claude-code')
+  })
+
+  it('carries fast mode into Claude Code and back', () => {
+    const args = parseHostArgs(['claude', '--model', 'opus', '--fast', '--resume', 'abcd1234-0000'], {})
+    if (typeof args === 'string') throw new Error(args)
+    expect(args.fast).toBe(true)
+    const command = claudeCodeSwitchCommand(args, '/bin/claude', '/c/commando-agent', 'abcd1234-0000')
+    expect(command).toContain(`/bin/claude --model opus --settings '"'"'{"fastMode":true}'"'"' --permission-mode default --resume abcd1234-0000;`)
+    expect(command).toContain('exec /c/commando-agent claude --model opus --fast --permission-mode default --resume abcd1234-0000 --from-claude-code')
+    expect(claudeCodeSwitchCommand({ ...args, fast: false }, '/bin/claude', '/c/commando-agent', 'abcd1234-0000'))
+      .toContain(`--settings '"'"'{"fastMode":false}'"'"'`)
   })
 })
