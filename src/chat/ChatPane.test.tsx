@@ -235,6 +235,41 @@ describe('context meter', () => {
   })
 })
 
+describe('plan usage meter', () => {
+  const now = Date.now()
+  const planUsage = {
+    plan: 'max',
+    updatedAt: now,
+    limits: [
+      { kind: 'session', title: 'Current session', percent: 38, severity: 'normal' as const, resetsAt: now + 110 * 60_000 },
+      { kind: 'weekly_all', title: 'Weekly · all models', percent: 82, severity: 'warning' as const, resetsAt: now + 3 * 86_400_000 },
+      { kind: 'weekly_scoped', title: 'Weekly · Fable', percent: 9, severity: 'normal' as const },
+    ],
+  }
+
+  it('shows the 5h and weekly windows and lists every window with reset times', () => {
+    renderPane(pickerChat({ planUsage, configDir: '/home/me/.claudep' }))
+    const meter = screen.getByRole('button', { name: 'Plan usage: Current session 38% used, Weekly · all models 82% used' })
+    expect(meter).toHaveTextContent('5h38%wk82%')
+    fireEvent.click(meter)
+    const popup = screen.getByRole('dialog', { name: 'Plan usage' })
+    expect(popup).toHaveTextContent('Max · claudep')
+    expect(popup).toHaveTextContent('Weekly · Fable9% used')
+    expect(popup).toHaveTextContent(/Resets .* · in 1h \d+m/)
+    expect(within(popup).getByRole('progressbar', { name: 'Weekly · all models usage' })).toHaveAttribute('aria-valuenow', '82')
+  })
+
+  it('swaps the bars for the reset time once a limit is reached', () => {
+    renderPane(pickerChat({ planUsage: { ...planUsage, limits: [{ ...planUsage.limits[0]!, percent: 100, severity: 'critical', reached: true }] } }))
+    expect(screen.getByRole('button', { name: 'Current session limit reached' })).toHaveTextContent(/^5h limit reached · resets /)
+  })
+
+  it('stays out of the bar without a reading', () => {
+    renderPane(pickerChat({}))
+    expect(screen.queryByTestId('plan-usage-meter')).toBeNull()
+  })
+})
+
 describe('thinking rows', () => {
   const thought: ChatItem = { ...base, id: 'th', kind: 'reasoning', text: 'Checking how the hub routes chat_send.', createdAt: 1_000, updatedAt: 15_000 }
 
