@@ -19,11 +19,11 @@ export { claudeCodeFlags } from './session.js'
 const USAGE = `Usage: commando-agent <claude|codex> [options]
 
 Runs a provider session in this tmux pane and shows it as a chat in Commando.
-Codex chat is not available yet; the options below currently apply to Claude.
+Codex uses the local codex app-server and its existing login.
 
 Options:
   --config-dir DIR                 Claude config dir (default: $CLAUDE_CONFIG_DIR)
-  --resume ID                      Resume an existing Claude session
+  --resume ID                      Resume an existing provider session
   --model MODEL                    Model to use
   --effort LEVEL                   low | medium | high | xhigh | max
   --permission-mode MODE           default | acceptEdits | plan | auto | dontAsk | bypassPermissions
@@ -376,13 +376,16 @@ async function main(): Promise<void> {
 
   const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY })
   let lastInterrupt = 0
+  let quitting = false
   const quit = () => {
+    if (quitting) return
+    quitting = true
+    const ended = parsed.provider === 'codex' ? new Promise<void>((resolve) => session.on('closed', resolve)) : undefined
     session.close()
     host.remove(paneId)
-    setTimeout(() => {
-      host.stop()
-      process.exit(0)
-    }, 100)
+    const exit = () => { host.stop(); process.exit(0) }
+    if (ended) void Promise.race([ended, new Promise<void>((resolve) => setTimeout(resolve, 2000))]).then(exit)
+    else setTimeout(exit, 100)
   }
   prompt.on('line', (line) => session.send(line))
   prompt.on('SIGINT', () => {

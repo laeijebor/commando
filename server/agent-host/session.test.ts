@@ -233,13 +233,12 @@ describe('commando-agent arguments', () => {
 })
 
 describe('chat provider sessions', () => {
-  it('constructs Claude through the seam and refuses Codex before starting a session', async () => {
+  it('constructs Claude through the seam', async () => {
     const spec = { paneId: '%3', cwd: '/work', permissionMode: 'default' as const, env: {}, claudePath: '/bin/claude' }
     const session = await createChatProviderSession('claude', spec)
     expect(session.snapshot().session).toMatchObject({ provider: 'claude', status: 'starting' })
     expect(session.tui?.label).toBe('Claude Code')
     session.close()
-    await expect(createChatProviderSession('codex', spec)).rejects.toThrow('Codex chat is not available yet')
   })
 
   it('keeps Claude TUI settings and readiness behind the optional capability', async () => {
