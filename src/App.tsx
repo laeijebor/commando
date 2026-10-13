@@ -110,7 +110,7 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, NARROW_PANEL_QUERY, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
@@ -1041,12 +1041,14 @@ function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
 
 export function App() {
   const desktopWindowActive = useDesktopWindowActivity()
-  const [narrowPanel, setNarrowPanel] = useState(() => isNarrowPanel(window.innerWidth))
+  const [narrowPanel, setNarrowPanel] = useState(() => isNarrowPanel(window.matchMedia(NARROW_PANEL_QUERY)))
   const [openDrawers, setOpenDrawers] = useState<Record<string, boolean>>({})
   useEffect(() => {
-    const onResize = () => setNarrowPanel(isNarrowPanel(window.innerWidth))
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    const media = window.matchMedia(NARROW_PANEL_QUERY)
+    const onChange = () => setNarrowPanel(isNarrowPanel(media))
+    onChange()
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
   }, [])
   useEffect(() => { setOpenDrawers({}) }, [narrowPanel])
   const nativeWindowBridge = getNativeWindowBridge()
@@ -3768,7 +3770,13 @@ export function App() {
                             panelTabs={panelTabs(panelWebPanes, pane.id)}
                             narrowPanel={narrowPanel} drawerOpen={Boolean(openDrawers[group.windowId]) && panelPaneId === pane.id}
                             panelAttention={sessionAttention[pane.id]} panelWarning={sessionWarnings[pane.id]}
-                            onToggleDrawer={() => setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))}
+                            onToggleDrawer={() => {
+                              if (maximizedGridPaneId) {
+                                clearLayoutTimers()
+                                setMaximizedPaneId(null)
+                                setOpenDrawers((current) => ({ ...current, [group.windowId]: true }))
+                              } else setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))
+                            }}
                             mark={paneMarks[pane.targetId]}
                             resume={agentResumes[pane.targetId]}
                             onRetryResume={() => retryAgentResume(pane.targetId)}

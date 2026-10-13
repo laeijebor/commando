@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane, WebPane } from '../shared/protocol'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrSummary, PrsApiClient } from './prsApi'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { readFileSync } from 'node:fs'
 import { prTabSignature } from './sidePanelState'
 import { SidePanel } from './SidePanel'
+import { GitDiffView } from './GitDiffView'
 
 const tabs: WebPane[] = ['%12', '%13'].map((anchorPaneId, index) => ({
   id: `w-0000000${index}`, anchorPaneId, dock: 'panel', order: 0, activeTab: true,
@@ -302,8 +303,8 @@ describe('SidePanel', () => {
 })
 
 describe('narrow tabs drawer', () => {
-  function Drawer({ narrow = true, reveal = false, windowId = '@1', revision = 0, onSeen = vi.fn(), terminalClick = vi.fn(), terminalPointer = vi.fn() }: {
-    narrow?: boolean; reveal?: boolean; windowId?: string; revision?: number
+  function Drawer({ narrow = true, reveal = false, windowId = '@1', revision = 0, content, onSeen = vi.fn(), terminalClick = vi.fn(), terminalPointer = vi.fn() }: {
+    narrow?: boolean; reveal?: boolean; windowId?: string; revision?: number; content?: ReactNode
     onSeen?: (tab: WebPane) => void; terminalClick?: () => void; terminalPointer?: () => void
   }) {
     const [open, setOpen] = useState(false)
@@ -311,7 +312,7 @@ describe('narrow tabs drawer', () => {
       narrowMode={narrow} drawerOpen={open} onDrawerOpen={() => setOpen(true)} onDrawerClose={() => setOpen(false)}
       revealRequest={reveal ? { tabId: tabs[1].id, onVisible: () => undefined } : undefined}
       simulatorNames={{}} titles={{}} onSelect={vi.fn()} onClose={vi.fn()} onOpen={vi.fn()} onSeen={onSeen}
-      renderTab={(tab, visible) => <div data-testid={tab.id} data-visible={String(visible)} />}>
+      renderTab={(tab, visible) => <div data-testid={tab.id} data-visible={String(visible)}>{content}</div>}>
       <button data-panel-chip="%13" onClick={() => setOpen((value) => !value)}>Pane tabs</button>
       <button onClick={terminalClick} onPointerDown={terminalPointer}>Terminal input</button>
     </SidePanel>
@@ -348,6 +349,61 @@ describe('narrow tabs drawer', () => {
     expect(terminalClick).not.toHaveBeenCalled()
     expect(terminalPointer).not.toHaveBeenCalled()
     expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBeNull()
+  })
+
+  it('lets Escape clear the diff search without closing the drawer, then closes on an unhandled page Escape', async () => {
+    const summary: GitDiffSummary = { isRepo: true, root: '/repo', target: 'main', files: [{ path: 'a.ts', status: 'M', additions: 1, deletions: 0, binary: false }] }
+    const api = {
+      summary: vi.fn(async () => summary),
+      fileDiff: vi.fn(async () => ({ file: 'a.ts', diff: 'DIFF' })),
+      search: vi.fn(async (query: string) => ({ query, matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false })),
+      repo: vi.fn(async () => ({ isRepo: false })),
+      branches: vi.fn(async () => ({ isRepo: true, branches: ['main'] })),
+    } as unknown as GitDiffApiClient
+    const view = render(<Drawer content={<GitDiffView paneId="%13" panePath="/repo" api={api} initialSummary={summary} />} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const search = await screen.findByRole('searchbox', { name: 'Search diff contents' })
+    fireEvent.change(search, { target: { value: 'DIFF' } })
+    fireEvent.keyDown(search, { key: 'Escape' })
+    expect(search).toHaveValue('')
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
+  })
+
+  it('leaves an Escape consumed with preventDefault to the inner control', () => {
+    const view = render(<Drawer content={<input aria-label="Inner control" onKeyDown={(event) => event.preventDefault()} />} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Inner control' }), { key: 'Escape' })
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+  })
+
+  it.each(['xterm', 'terminal-find-shell', 'native'])('leaves Escape to %s terminal focus', (kind) => {
+    const view = render(<Drawer />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const wrapper = document.createElement('div')
+    if (kind === 'native') wrapper.setAttribute('data-native-terminal-pane', '%13')
+    else wrapper.className = kind
+    const input = document.createElement('input')
+    wrapper.append(input)
+    view.container.querySelector('.window-terminal-grid')!.append(wrapper)
+    input.focus()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+  })
+
+  it.each(['dialog', 'alertdialog', 'menu'])('leaves page Escape to an open %s overlay', (role) => {
+    const view = render(<Drawer />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const overlay = document.createElement('div')
+    overlay.setAttribute('role', role)
+    if (role === 'menu') overlay.className = 'pane-context-menu'
+    document.body.append(overlay)
+    try {
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+    } finally { overlay.remove() }
   })
 
   it('layers a clickable scrim above the terminal stacking context and below the drawer', () => {

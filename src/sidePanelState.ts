@@ -4,7 +4,8 @@ import type { GitDiffSummary } from './gitApi'
 import type { PanePrSummary } from './prsApi'
 export { panelTabs }
 
-export function isNarrowPanel(width: number): boolean { return width <= 840 }
+export const NARROW_PANEL_QUERY = '(max-width: 840px)'
+export function isNarrowPanel(media: Pick<MediaQueryList, 'matches'>): boolean { return media.matches }
 export const DEFAULT_DRAWER_HEIGHT = 60
 export function clampDrawerHeight(height: number): number {
   return Number.isFinite(height) ? Math.max(25, Math.min(90, height)) : DEFAULT_DRAWER_HEIGHT

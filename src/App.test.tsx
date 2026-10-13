@@ -11,6 +11,7 @@ import { createPrsApi } from './prsApi'
 import { refreshPanePrs } from './prStore'
 import { getAuthBootstrap, getAuthUser } from './authClient'
 import type { ConnectionState } from './useDaemon'
+import { NARROW_PANEL_QUERY } from './sidePanelState'
 import * as nativeWebViewBridge from './nativeWebViewBridge'
 import { DESKTOP_WINDOW_ACTIVITY_EVENT } from './desktopWindowActivity'
 
@@ -125,16 +126,19 @@ beforeEach(() => {
   window.sessionStorage.clear()
   window.localStorage.clear()
   window.__commandoDesktopWindowActive = true
-  window.matchMedia ??= ((query: string) => ({
-    matches: false,
-    media: query,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    onchange: null,
-    dispatchEvent: () => false,
-  })) as typeof window.matchMedia
+  const narrowMedia = new window.EventTarget() as MediaQueryList
+  Object.defineProperties(narrowMedia, {
+    matches: { configurable: true, get: () => window.innerWidth <= 840 },
+    media: { value: NARROW_PANEL_QUERY },
+  })
+  narrowMedia.onchange = null
+  narrowMedia.addListener = vi.fn()
+  narrowMedia.removeListener = vi.fn()
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => query === NARROW_PANEL_QUERY ? narrowMedia : {
+    matches: false, media: query, onchange: null,
+    addEventListener: () => undefined, removeEventListener: () => undefined,
+    addListener: () => undefined, removeListener: () => undefined, dispatchEvent: () => false,
+  }))
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -2636,6 +2640,49 @@ describe('narrow pane tabs', () => {
 
   beforeEach(() => { vi.stubGlobal('innerWidth', 800) })
 
+  it('follows the CSS media query even when the rounded innerWidth disagrees', async () => {
+    vi.stubGlobal('innerWidth', 841)
+    const media = window.matchMedia(NARROW_PANEL_QUERY)
+    Object.defineProperty(media, 'matches', { configurable: true, value: true })
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    expect(drawer()).toHaveClass('is-narrow')
+    expect(chip()).toBeInTheDocument()
+    Object.defineProperty(media, 'matches', { configurable: true, value: false })
+    act(() => media.dispatchEvent(new Event('change')))
+    expect(drawer()).not.toHaveClass('is-narrow')
+    expect(screen.queryByRole('button', { name: 'Open tabs for api' })).not.toBeInTheDocument()
+  })
+
+  it.each([false, true])('restores a maximized grid pane and visibly opens its drawer (previously opened=%s)', async (open) => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    if (open) {
+      fireEvent.click(chip())
+      fireEvent.click(closeButton())
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize pane' }))
+    expect(document.querySelector(`[data-pane-id="${pane.id}"]`)).toHaveClass('is-maximized')
+    expect(document.querySelector('.side-panel')).toHaveAttribute('hidden')
+    fireEvent.click(chip())
+    expect(document.querySelector(`[data-pane-id="${pane.id}"]`)).not.toHaveClass('is-maximized')
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(document.querySelector('.side-panel')).not.toHaveAttribute('hidden')
+    expect(screen.getByRole('tab', { name: 'Session' })).toBeVisible()
+    fireEvent.click(closeButton())
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+  })
+
+  it.each(['dialog', 'page'] as const)('Escape on the %s closes an overlaid command palette while keeping the drawer open', async (target) => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    fireEvent.click(chip())
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+    const palette = screen.getByRole('dialog', { name: 'Command palette' })
+    fireEvent.keyDown(target === 'dialog' ? palette.querySelector('input')! : window, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument()
+    expect(drawer()).toHaveClass('is-drawer-open')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+  })
+
   function mockControlBounds() {
     const rect = (left: number, top: number, width: number, height: number) => ({ left, top, right: left + width, bottom: top + height, x: left, y: top, width, height, toJSON: () => ({}) })
     return vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -2828,12 +2875,14 @@ describe('narrow pane tabs', () => {
     expect(drawer()).not.toHaveClass('is-drawer-open')
     fireEvent.click(chip())
     vi.stubGlobal('innerWidth', 1440)
+    act(() => window.matchMedia(NARROW_PANEL_QUERY).dispatchEvent(new Event('change')))
     fireEvent.resize(window)
     expect(drawer()).not.toHaveClass('is-narrow')
     expect(drawer()).toHaveClass('is-collapsed')
     expect(screen.queryByRole('button', { name: 'Open tabs for api' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Expand side panel' })).toBeInTheDocument()
     vi.stubGlobal('innerWidth', 840)
+    act(() => window.matchMedia(NARROW_PANEL_QUERY).dispatchEvent(new Event('change')))
     fireEvent.resize(window)
     expect(drawer()).toHaveClass('is-narrow', 'is-collapsed')
     expect(drawer()).not.toHaveClass('is-drawer-open')

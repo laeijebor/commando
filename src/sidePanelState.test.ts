@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
-import { panelScrimClipPath, clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { NARROW_PANEL_QUERY, panelScrimClipPath, clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { neighbouringTab, nextWebPaneOrder } from '../shared/web-pane-placement'
 
 function tab(id: string, anchorPaneId = '%12', order = 0): WebPane {
@@ -137,11 +137,10 @@ it('hides only matching PR signatures and lists closed PRs in tab order', () => 
 
 
 describe('narrow drawer dimensions', () => {
-  it('includes 840px in narrow mode', () => {
-    expect(isNarrowPanel(840)).toBe(true)
-    expect(isNarrowPanel(800)).toBe(true)
-    expect(isNarrowPanel(841)).toBe(false)
-    expect(isNarrowPanel(1440)).toBe(false)
+  it('uses the CSS breakpoint and follows its media query match', () => {
+    expect(NARROW_PANEL_QUERY).toBe('(max-width: 840px)')
+    expect(isNarrowPanel({ matches: true })).toBe(true)
+    expect(isNarrowPanel({ matches: false })).toBe(false)
   })
   it('defaults to 60% and clamps to 25–90%', () => {
     expect(DEFAULT_DRAWER_HEIGHT).toBe(60)

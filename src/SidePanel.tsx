@@ -163,13 +163,20 @@ export function SidePanel({
   useEffect(() => {
     if (!narrowMode || !drawerOpen || maximizedTab || gridMaximized) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      const target = event.target instanceof Element ? event.target : document.activeElement
+      if (target?.closest('[role="dialog"], [role="alertdialog"], .xterm, .terminal-find-shell, [data-native-terminal-pane]')) return
+      const overlayOpen = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], .command-palette, .pane-context-menu')].some((node) => {
+        const style = window.getComputedStyle(node)
+        return !node.closest('[hidden], [inert], [aria-hidden="true"]') && style.display !== 'none' && style.visibility !== 'hidden'
+      })
+      if (overlayOpen) return
       event.preventDefault()
       event.stopPropagation()
       closeDrawer()
     }
-    window.addEventListener('keydown', onKeyDown, true)
-    return () => window.removeEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [narrowMode, drawerOpen, Boolean(maximizedTab), gridMaximized, closeDrawer])
   useEffect(() => {
     if (!revealRequest || !expanded || gridMaximized || active?.id !== revealRequest.tabId) return
