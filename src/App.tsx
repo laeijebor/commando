@@ -2947,10 +2947,11 @@ export function App() {
       if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p') return
       const target = event.target instanceof Element ? event.target.closest('[data-pane-id]')?.getAttribute('data-pane-id') : undefined
       const paneId = target ?? focusedPaneId
-      if (!connected || !paneId || !chats[paneId] || (chatViews[paneId] ?? 'chat') !== 'chat') return
+      if (!connected || paletteOpen || !paneId || !chats[paneId] || (chatViews[paneId] ?? 'chat') !== 'chat') return
       event.preventDefault()
       event.stopPropagation()
-      if (!event.repeat) setConversationPaneId((current) => (current ? null : paneId))
+      // Closes only a picker that is showing; one whose pane went away opens afresh.
+      if (!event.repeat) setConversationPaneId((current) => (current && chats[current] && paneMap.has(current) ? null : paneId))
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)

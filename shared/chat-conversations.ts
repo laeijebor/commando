@@ -67,12 +67,16 @@ function within(path: string, root: string): boolean {
   return path === root || path.startsWith(root.endsWith('/') ? root : `${root}/`)
 }
 
-/** Where a conversation sits relative to a pane: its checkout, another checkout of its repo, or elsewhere. */
+/**
+ * Where a conversation sits relative to a pane: its checkout, another checkout of
+ * its repo, or elsewhere. Outside a repo only the pane's own folder counts as "this".
+ */
 export function chatConversationScope(conversation: ChatConversation, pane: { path: string; repo?: PaneRepo }): ChatConversationScope {
-  const checkout = pane.repo ? pane.repo.worktreeRoot ?? pane.repo.root : undefined
-  if (checkout ? conversation.checkoutRoot === checkout || within(conversation.cwd, checkout) : within(conversation.cwd, pane.path)) return 'worktree'
-  if (pane.repo && conversation.repoRoot === pane.repo.root) return 'repo'
-  return 'other'
+  if (!pane.repo) return conversation.cwd === pane.path ? 'worktree' : 'other'
+  const checkout = pane.repo.worktreeRoot ?? pane.repo.root
+  // A known checkout decides: a worktree nested inside the main checkout is still its own.
+  if (conversation.checkoutRoot ? conversation.checkoutRoot === checkout : within(conversation.cwd, checkout)) return 'worktree'
+  return conversation.repoRoot === pane.repo.root ? 'repo' : 'other'
 }
 
 /** Case-insensitive match of every word in the query against the title, folder and branch. */

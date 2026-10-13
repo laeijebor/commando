@@ -223,12 +223,16 @@ export class ChatConversationIndex {
   private async parse(candidate: Candidate, threadNames: ReadonlyMap<string, string>): Promise<Parsed> {
     const cached = this.parsed.get(candidate.file)
     if (cached && cached.mtimeMs === candidate.mtimeMs && cached.size === candidate.size) return cached.value
-    const value = await (candidate.provider === 'claude'
-      ? parseClaudeTranscript(candidate.file, candidate.size, candidate.configDir)
-      : parseCodexRollout(candidate.file, candidate.size, threadNames)
-    ).catch(() => null)
-    this.parsed.set(candidate.file, { mtimeMs: candidate.mtimeMs, size: candidate.size, value })
-    return value
+    try {
+      const value = await (candidate.provider === 'claude'
+        ? parseClaudeTranscript(candidate.file, candidate.size, candidate.configDir)
+        : parseCodexRollout(candidate.file, candidate.size, threadNames))
+      this.parsed.set(candidate.file, { mtimeMs: candidate.mtimeMs, size: candidate.size, value })
+      return value
+    } catch {
+      // Unreadable just now (deleted, mid-write): tried again next time.
+      return null
+    }
   }
 
   async list(): Promise<ChatConversation[]> {

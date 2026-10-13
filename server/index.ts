@@ -1864,7 +1864,9 @@ async function main(): Promise<void> {
     // A coalesced in-flight refresh can predate the new pane or its lineage options.
     refreshSnapshot: refreshSnapshotFresh,
   })
-  const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => paneRepos.resolve(paths) })
+  // Its own resolver: the panes' one forgets every folder a request doesn't name.
+  const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
+  const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
     snapshot: () => snapshot,
