@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access, readdir, stat } from 'node:fs/promises'
+import { access, readdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -496,6 +496,19 @@ export class TmuxCreator {
     }
   }
 
+  /** True when a pane's cwd is inside `directory`, or when tmux cannot say (so callers keep it). */
+  private async paneMayUseDirectory(directory: string): Promise<boolean> {
+    try {
+      const output = await this.run([...this.socketArgs, 'list-panes', '-a', '-F', '#{pane_current_path}'])
+      // tmux reports the real cwd; a typed path may carry a trailing slash or a symlink.
+      const trimmed = directory.replace(/\/+$/u, '') || '/'
+      const roots = new Set([trimmed, await realpath(trimmed).catch(() => trimmed)])
+      return output.split('\n').some((path) => [...roots].some((root) => path === root || path.startsWith(`${root}/`)))
+    } catch {
+      return true
+    }
+  }
+
   private async sessionExists(name: string): Promise<boolean> {
     try {
       await this.run([...this.socketArgs, 'has-session', '-t', `=${name}`])
@@ -687,9 +700,14 @@ export class TmuxCreator {
       await beforeCreate?.()
       output = await this.run(args)
     } catch (error) {
-      if (rollback) {
+      if (rollback && worktree) {
+        const detail = error instanceof Error ? error.message : String(error)
+        // An ambiguous failure may still have split: never delete a worktree a pane already runs in.
+        if (await this.paneMayUseDirectory(worktree.path)) {
+          throw new Error(`A pane in ${worktree.path} may have been created but tmux did not report it; the worktree was kept: ${detail}`, { cause: error })
+        }
         try { await rollback() } catch (rollbackError) {
-          throw new Error(`${error instanceof Error ? error.message : String(error)}; worktree rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`, { cause: error })
+          throw new Error(`${detail}; worktree rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`, { cause: error })
         }
       }
       throw error

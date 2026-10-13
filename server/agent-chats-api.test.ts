@@ -162,12 +162,44 @@ describe('AgentChatsApi', () => {
     const s = await setup()
     s.chats.set('%1', { permissionMode: 'plan' } as ChatSessionInfo)
     for (const extra of [{ agent }, { agent, permissionMode: 'plan' }]) {
-      expect(await s.call('POST', '', { ...s.input, ...extra })).toMatchObject({ status: 403, result: { ok: false, error: 'A plan-mode chat can only open claude-chat chats' } })
+      expect(await s.call('POST', '', { ...s.input, ...extra })).toMatchObject({ status: 403, result: { ok: false, error: 'A plan-mode chat can only open claude-chat or codex-chat chats' } })
     }
     expect(s.createSession).not.toHaveBeenCalled()
     for (let index = 0; index < 3; index++) {
       expect(await s.call('POST', '', s.input)).toMatchObject({ status: 200, result: { agent: { provider: 'claude-chat', permissionMode: 'plan' } } })
     }
+  })
+
+  it('inherits codex-chat and its permission mode from a hosted Codex caller', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'codex', permissionMode: 'bypassPermissions', configDir: '/Users/leo/.claudep' } as ChatSessionInfo)
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'bypassPermissions' })
+    expect(s.createSession).toHaveBeenLastCalledWith(expect.objectContaining({ agent: expect.objectContaining({ provider: 'codex-chat', permissionMode: 'bypassPermissions' }) }))
+    expect((await s.call('POST', '', { ...s.input, permissionMode: 'plan' })).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'plan' })
+    expect(await s.call('POST', '', { ...s.input, permissionMode: 'acceptEdits' })).toMatchObject({ status: 400, result: { error: 'codex-chat does not support permission mode acceptEdits' } })
+  })
+
+  it('applies chat permission rules to an explicit codex-chat child', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'claude', permissionMode: 'acceptEdits', configDir: '/Users/leo/.claudep' } as ChatSessionInfo)
+    // Codex has no acceptEdits: the inherited mode steps down rather than up, and no Claude profile carries over.
+    expect((await s.call('POST', '', { ...s.input, agent: 'codex-chat' })).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'default' })
+    expect(await s.call('POST', '', { ...s.input, agent: 'codex-chat', permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403 })
+    s.chats.set('%1', { provider: 'claude', permissionMode: 'plan' } as ChatSessionInfo)
+    expect((await s.call('POST', '', { ...s.input, agent: 'codex-chat' })).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'plan' })
+  })
+
+  it('treats Codex workspace access as unprompted edits when comparing with a Claude caller', async () => {
+    const s = await setup()
+    // A Claude chat that asks before edits cannot open a Codex chat that edits without asking.
+    s.chats.set('%1', { provider: 'claude', permissionMode: 'default' } as ChatSessionInfo)
+    expect((await s.call('POST', '', { ...s.input, agent: 'codex-chat' })).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'plan' })
+    expect(await s.call('POST', '', { ...s.input, agent: 'codex-chat', permissionMode: 'default' })).toMatchObject({ status: 403 })
+    // A Codex workspace-access chat may open a Claude chat that accepts edits, but not one that bypasses.
+    s.chats.set('%1', { provider: 'codex', permissionMode: 'default' } as ChatSessionInfo)
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'default' })
+    expect(await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403 })
   })
 
   it('rejects an unknown inherited provider and permission mode, unsafe input and arbitrary targets', async () => {
