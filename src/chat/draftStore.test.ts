@@ -32,6 +32,18 @@ describe('saved chat drafts', () => {
     expect(localStorage.getItem(key('second'))).toBeNull()
   })
 
+  it('keeps the age of a draft that is saved again unchanged', () => {
+    const now = Date.now()
+    const image = { id: `${'a'.repeat(64)}.png`, name: 'shot.png' }
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    saveDraft('first', 'look', [image])
+    clock.mockReturnValue(now + days(10))
+    saveDraft('first', 'look', [image])
+    expect(JSON.parse(localStorage.getItem(key('first'))!).updatedAt).toBe(now)
+    saveDraft('first', 'look again', [image])
+    expect(JSON.parse(localStorage.getItem(key('first'))!).updatedAt).toBe(now + days(10))
+  })
+
   it('restores the text but no images when the saved refs are malformed', () => {
     localStorage.setItem(key('bad'), JSON.stringify({ text: 'kept', images: [{ id: '../escape' }], updatedAt: Date.now() }))
     expect(loadDraft('bad')).toEqual({ text: 'kept', images: [] })

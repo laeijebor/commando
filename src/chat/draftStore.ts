@@ -10,6 +10,9 @@ type SavedDraft = { text: string; images?: ChatImageRef[]; updatedAt: number }
 
 const EMPTY: SavedDraftContent = { text: '', images: [] }
 
+const sameImages = (a: ChatImageRef[], b: ChatImageRef[]) =>
+  a.length === b.length && a.every((ref, index) => ref.id === b[index]!.id && ref.name === b[index]!.name)
+
 function parseDraft(raw: string | null, now: number): SavedDraft | null {
   if (!raw || raw.length * 2 > MAX_BYTES) return null
   try {
@@ -40,8 +43,9 @@ export function readDraft(sessionId: string | undefined): string {
 }
 
 /**
- * Images are saved as refs to the daemon's uploads. One pruned since comes back as a
- * broken thumbnail, and a send with it is refused with "attach it again".
+ * Images are saved as refs to the daemon's uploads, which it prunes after 30 days
+ * unused. One pruned anyway comes back as a broken thumbnail, and a send with it is
+ * refused with "attach it again".
  */
 export function saveDraft(sessionId: string | undefined, text: string, images: ChatImageRef[] = []): void {
   if (!sessionId) return
@@ -53,6 +57,10 @@ export function saveDraft(sessionId: string | undefined, text: string, images: C
       if (key?.startsWith(PREFIX) && !parseDraft(storage.getItem(key), now)) storage.removeItem(key)
     }
     const key = `${PREFIX}${sessionId}`
+    // Only a change restarts the expiry: a draft just reopened keeps its age, so it
+    // expires before its images are pruned.
+    const previous = parseDraft(storage.getItem(key), now)
+    if (previous && previous.text === text && sameImages(previous.images ?? [], images)) return
     const raw = JSON.stringify({ text, ...(images.length ? { images } : {}), updatedAt: now } satisfies SavedDraft)
     // localStorage counts UTF-16; skip oversized drafts instead of restoring a truncated message.
     if ((!text && !images.length) || raw.length * 2 > MAX_BYTES) storage.removeItem(key)
