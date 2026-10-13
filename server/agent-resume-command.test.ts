@@ -209,6 +209,16 @@ describe('Codex chat resume and return', () => {
       .toBe('env COMMANDO_PORT=4410 /c/launcher claude --config-dir /Users/dev/.claudep --permission-mode default --resume abcdef12-3456')
   })
 
+  it('carries fast mode only while the chat still has it on', () => {
+    const args = 'node /c/server/agent-host/main.ts codex --model gpt-6.1-sol --fast --permission-mode default'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }))
+      .toBe('/c/launcher codex --model gpt-6.1-sol --fast --permission-mode default --resume abcdef12-3456')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: {} }, {}, { model: 'gpt-6.1-sol', permissionMode: 'default' }))
+      .toBe('/c/launcher codex --model gpt-6.1-sol --permission-mode default --resume abcdef12-3456')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: args.filter((arg) => arg !== '--fast'), env: {} }, {}, { model: 'gpt-6.1-sol', fast: true, permissionMode: 'default' }))
+      .toBe('/c/launcher codex --model gpt-6.1-sol --fast --permission-mode default --resume abcdef12-3456')
+  })
+
   it('preserves Codex model/effort, never inheriting a Claude config directory', () => {
     const args = 'node /c/server/agent-host/main.ts codex --model test-model --effort high --permission-mode default --prompt hi --model wrong'.split(' ')
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: { CLAUDE_CONFIG_DIR: '/Users/dev/.claudep' } }))

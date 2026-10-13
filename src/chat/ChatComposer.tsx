@@ -30,6 +30,8 @@ import { usePlanUsage } from './planUsage'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
 import {
   detectTrigger,
+  fastModeAvailable,
+  fastModeOn,
   filterCommands,
   fitAttachments,
   mentionText,
@@ -258,6 +260,7 @@ function menuGroups(
     const query = trigger.query.toLowerCase()
     const natives = [
       ...(modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
+      ...(fastModeAvailable(session) ? [{ name: 'fast', description: fastModeOn(session) ? 'Turn fast mode off' : 'Turn fast mode on' }] : []),
       ...(hostTakesSettings(session) && session.permissionMode
         ? [{ name: 'plan', description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
         : []),
@@ -487,6 +490,7 @@ export function ChatComposer({
       case 'native':
         applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, ''))
         if (item.name === 'model') setModelMenuOpen(true)
+        else if (item.name === 'fast') onConfigure({ fast: !fastModeOn(session) })
         else onConfigure({ permissionMode: session.permissionMode === 'plan' ? 'default' : 'plan' })
         return
       case 'command':

@@ -407,7 +407,7 @@ export class AgentHostHub {
     return this.toHost(paneId, { type: 'interrupt', paneId, requestId, ...(dropQueued.length ? { dropQueued } : {}) })
   }
 
-  /** Switches the pane's model, effort or permission mode for the rest of its session. */
+  /** Switches the pane's model, effort, speed or permission mode for the rest of its session. */
   configure(paneId: string, settings: ChatSettingsChange, requestId: string): boolean {
     return this.toHost(paneId, { type: 'configure', paneId, settings, requestId })
   }
@@ -424,6 +424,7 @@ export class AgentHostHub {
       permissionMode: session.permissionMode,
       ...(session.selectedModel ? { model: session.selectedModel } : {}),
       ...(session.effort ? { effort: session.effort } : {}),
+      ...(session.fast ? { fast: true } : {}),
       ...(session.prePlanPermissionMode ? { prePlanPermissionMode: session.prePlanPermissionMode } : {}),
       ...(session.bypassAllowed ? { bypassAllowed: true } : {}),
     }

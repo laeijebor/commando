@@ -279,6 +279,18 @@ describe('the / menu', () => {
     expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'plan' })
   })
 
+  it('toggles fast mode with /fast only on a model that offers it', () => {
+    const { input, type, onConfigure, view } = renderComposer()
+    type('/fas')
+    expect(screen.queryByText(/Turn fast mode/)).toBeNull()
+    const fastSession = { ...session, fast: true, models: [{ ...models[0]!, supportsFast: true }] }
+    view.rerender(<ChatComposer session={fastSession} hostConnected requests={[]} commands={commands} services={services()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={onConfigure} />)
+    type('/fast')
+    expect(screen.getByTestId('composer-menu')).toHaveTextContent('Turn fast mode off')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onConfigure).toHaveBeenCalledWith({ fast: false })
+  })
+
   it('says when Claude has not listed its commands yet, or the chat needs a restart', () => {
     const { type, view } = renderComposer({ commands: undefined })
     type('/zz')
