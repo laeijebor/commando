@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, ChevronDown, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, XCircle } from 'lucide-react'
 import type { PrAutofixStatus } from '../../shared/pr-types'
+import { prMergeDisabledReason } from '../../shared/pr-merge'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { usePanePullRequests } from '../PanePullRequests'
 import { PrBadges } from '../PrBadges'
+import { cachedPrSummary, markPrMerged, refreshPanePrs } from '../prStore'
+import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
-type StripApi = Pick<PrsApiClient, 'pane' | 'autofixStatus' | 'setAutofix'>
+type StripApi = Pick<PrsApiClient, 'pane' | 'list' | 'merge' | 'autofixStatus' | 'setAutofix'> & Partial<Pick<PrsApiClient, 'storeKey'>>
 
 export function autofixStatusText(status: PrAutofixStatus | null): string {
   if (!status) return 'Enable to watch CI failures and new comments'
@@ -53,6 +56,29 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
     catch (error) { setError(error instanceof Error ? error.message : String(error)) }
     finally { writing.current = false; setSaving(false) }
   }
+  const [merging, setMerging] = useState(false)
+  const [mergeError, setMergeError] = useState('')
+  const mergeInFlight = useRef(false)
+  // Pane status stays authoritative; the preview supplies GitHub's mergeability and head commit.
+  const full = pr.preview ?? cachedPrSummary(api, pr.repo, pr.number)
+  const mergeTarget = full ? { ...full, ...pr } : undefined
+  const mergeBlocked = !connected ? 'Disconnected' : mergeTarget ? prMergeDisabledReason(mergeTarget) : 'Checking merge readiness'
+  const merge = async () => {
+    if (!mergeTarget || mergeInFlight.current || mergeBlocked) return
+    mergeInFlight.current = true
+    setMerging(true)
+    setMergeError('')
+    try {
+      await api.merge(pr.repo, pr.number, mergeTarget.headRefOid, mergeTarget.baseRefName || undefined)
+      markPrMerged(api, pr.repo, pr.number)
+    } catch (error) {
+      setMergeError(error instanceof Error ? error.message : 'Unable to merge pull request')
+    } finally {
+      mergeInFlight.current = false
+      setMerging(false)
+      await refreshPanePrs(api, paneId).catch(() => undefined)
+    }
+  }
   const checks = pr.checks
   const skipped = checks?.skipped ?? checks?.runs.filter((run) => run.skipped).length ?? 0
   const counts = [
@@ -84,6 +110,12 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
           <p className="mt-2 text-xs text-muted-foreground" role="status">{loaded ? autofixStatusText(status) : connected ? 'Loading monitoring status…' : 'Disconnected'}</p>
           {status?.lastEventAt ? <time className="block mt-1 text-xs text-muted-foreground" dateTime={new Date(status.lastEventAt).toISOString()}>Last event: {new Date(status.lastEventAt).toLocaleString()}</time> : null}
           {error ? <p className="mt-2 text-xs text-destructive" role="alert">{error}</p> : null}
+        </div>
+        <div className="border-t mt-3 pt-3">
+          <Button size="sm" className="w-full" disabled={merging || Boolean(mergeBlocked)} title={mergeBlocked ?? 'Merge this pull request on GitHub'}
+            onClick={() => { void merge() }}><GitMerge className="size-4" />{merging ? 'Merging…' : 'Merge PR'}</Button>
+          {mergeBlocked && !merging ? <p className="mt-2 text-xs text-muted-foreground">{mergeBlocked}</p> : null}
+          {mergeError ? <p className="mt-2 text-xs text-destructive" role="alert">{mergeError}</p> : null}
         </div>
       </PopoverPopup>
     </Popover>
