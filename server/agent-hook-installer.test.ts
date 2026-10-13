@@ -10,6 +10,7 @@ import {
   OPENCODE_HOOK_EVENTS,
   mergeCodexNotify,
   generatedSimCli,
+  generatedChatCli,
   repairAgentStatusHooks,
 } from './agent-hook-installer.js'
 import { formatSimLabel } from './sim-leases.js'
@@ -243,6 +244,9 @@ describe('agent hook installer', () => {
     expect(output.system[1]).toContain('Append its exact HTML comment')
     expect(output.system[1]).toContain(paths.sessionBriefCliPath)
     expect(output.system[1]).toContain(paths.simCliPath)
+    expect(output.system[1]).toContain(paths.chatCliPath)
+    expect(output.system[1]).toContain('Never open chats the user did not ask for')
+    expect(output.system[1]).toContain('default location is a new session on its own worktree')
     expect(output.system[1]).toContain('--metro <port> --backend <port>')
     expect(output.system[1]).toContain('update when purpose, ports, or branch change')
     expect(output.system[1]).toContain('slim and labelled with the session and task')
@@ -2351,5 +2355,110 @@ describe('generated simulator pool CLI', () => {
     await expect(cli.runSimCommand(['pool', 'create'], deps)).rejects.toThrow(thirdSimUdid)
     expect(deps.members).toEqual([])
     expect(deps.events.some((event) => event.startsWith('POST /pool'))).toBe(false)
+  })
+})
+
+type ChatCliModule = {
+  parseChatArgs: (args: string[], read?: (...args: unknown[]) => Promise<string>) => Promise<{ method: string; path: string; body: Record<string, unknown> | undefined }>
+  runChatCli: (args: string[], request: (...args: any[]) => Promise<any>, options?: { out?: (value: any) => void; err?: (value: string) => void; now?: () => number; read?: (...args: unknown[]) => Promise<string> }) => Promise<number>
+  chatRequest: (env: Record<string, string | undefined>, fetch?: (...args: any[]) => Promise<any>, read?: (...args: unknown[]) => Promise<string>) => Promise<(...args: any[]) => Promise<any>>
+}
+async function loadChatCli(source = generatedChatCli('/test/token')): Promise<ChatCliModule> {
+  return import(`data:text/javascript;base64,${Buffer.from(source.replace(/^#![^\n]*\n/, '')).toString('base64')}`)
+}
+
+describe('generated chat CLI', () => {
+  it('prints JSON for immediate opens, lists and reports', async () => {
+    const cli = await loadChatCli(), out = vi.fn(), err = vi.fn()
+    for (const [args, method, path, result] of [
+      [['open', '--title', 'Fix', '--prompt', 'Brief'], 'POST', '', { ok: true, paneId: '%10' }],
+      [['list'], 'GET', '', [{ paneId: '%10', title: 'Fix' }]],
+      [['report', 'Finished'], 'POST', '/report', { ok: true }],
+    ] as const) {
+      const request = vi.fn(async (_method: string, _path: string, _body?: unknown) => ({ status: 200, result }))
+      expect(await cli.runChatCli([...args], request, { out, err })).toBe(0)
+      expect(request.mock.calls[0].slice(0, 2)).toEqual([method, path])
+      expect(out).toHaveBeenLastCalledWith(result)
+    }
+    expect(err).not.toHaveBeenCalled()
+  })
+  it('installs into a temporary home, repairs the script and injects compact open-chat instructions', async () => {
+    const home = await temporaryHome()
+    const installer = new AgentHookInstaller({ home })
+    const paths = await installer.install()
+    expect(paths.chatCliPath).toBe(join(home, '.commando', 'hooks', 'commando-chat.mjs'))
+    const source = await readFile(paths.chatCliPath, 'utf8')
+    expect(source).toBe(generatedChatCli(paths.tokenPath))
+    expect((await stat(paths.chatCliPath)).mode & 0o777).toBe(0o700)
+    expect(await readFile(paths.claudeBridgePath, 'utf8')).toContain('Never open chats the user did not ask for')
+    expect(await readFile(paths.openCodePluginPath, 'utf8')).toContain('Use list to check chats you opened')
+    const cli = await loadChatCli(source)
+    expect(await cli.parseChatArgs(['list'])).toMatchObject({ method: 'GET', path: '' })
+    await rm(paths.chatCliPath)
+    await rm(paths.claudeBridgePath)
+    expect((await installer.repair()).repaired).toBe(true)
+    expect(await readFile(paths.chatCliPath, 'utf8')).toBe(source)
+  })
+
+  it('parses every open flag, prompt files, list and report without shell interpretation', async () => {
+    const cli = await loadChatCli()
+    const read = vi.fn(async () => 'Full brief\nwith $literal `data`')
+    expect(await cli.parseChatArgs(['open', '--title', 'Fix', '--prompt-file', '/tmp/brief.md', '--location', 'pane', '--split', 'down', '--branch', 'fix/bug', '--no-worktree', '--agent', 'claude-chat', '--permission-mode', 'plan'], read)).toEqual({
+      method: 'POST', path: '', body: { title: 'Fix', prompt: 'Full brief\nwith $literal `data`', location: 'pane', split: 'down', branch: 'fix/bug', worktree: false, agent: 'claude-chat', permissionMode: 'plan' },
+    })
+    expect(read).toHaveBeenCalledWith('/tmp/brief.md', 'utf8')
+    expect(await cli.parseChatArgs(['open', '--title', 'Fix', '--prompt', '--literal\nbrief'])).toMatchObject({ body: { prompt: '--literal\nbrief' } })
+    expect(await cli.parseChatArgs(['report', 'Finished'])).toEqual({ method: 'POST', path: '/report', body: { message: 'Finished' } })
+    for (const args of [['open'], ['list', 'extra'], ['report'], ['open', '--title', 'Fix'], ['open', '--title', 'Fix', '--prompt', 'one', '--prompt-file', 'two'], ['open', '--title', 'Fix', '--prompt', 'one', '--unknown'], ['open', '--title', 'Fix', '--title', 'Other', '--prompt', 'one']]) {
+      await expect(cli.parseChatArgs(args)).rejects.toThrow()
+    }
+  })
+
+  it('uses token env overrides, pane headers and the default port; rejects invalid environment', async () => {
+    const cli = await loadChatCli()
+    const read = vi.fn(async () => ' private-token\n')
+    const fetch = vi.fn(async (_url: string, _options: unknown) => ({ status: 200, json: async () => ({ ok: true }) }))
+    const request = await cli.chatRequest({ TMUX_PANE: '%42', COMMANDO_AGENT_HOOK_TOKEN_PATH: '/tmp/custom-token' }, fetch, read)
+    expect(read).toHaveBeenCalledWith('/tmp/custom-token', 'utf8')
+    expect(await request('POST', '', { title: 'Fix' })).toEqual({ status: 200, result: { ok: true } })
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:4310/api/agent-chats', expect.objectContaining({ method: 'POST', headers: { Authorization: 'Bearer private-token', 'X-Commando-Pane': '%42', 'Content-Type': 'application/json' }, body: '{"title":"Fix"}' }))
+    const other = await cli.chatRequest({ TMUX_PANE: '%1', COMMANDO_PORT: '4410' }, fetch, read)
+    await other('GET', '')
+    expect(read).toHaveBeenLastCalledWith('/test/token', 'utf8')
+    expect(fetch.mock.calls.at(-1)?.[0]).toBe('http://127.0.0.1:4410/api/agent-chats')
+    for (const env of [{ TMUX_PANE: 'bad' }, { TMUX_PANE: '%1', COMMANDO_PORT: '4310bad' }, { TMUX_PANE: '%1', COMMANDO_PORT: '65536' }]) await expect(cli.chatRequest(env, fetch, read)).rejects.toThrow()
+  })
+
+  it('prints one waiting line, polls wait=60 and prints the accepted full result', async () => {
+    const cli = await loadChatCli(), out = vi.fn(), err = vi.fn()
+    const request = vi.fn().mockResolvedValueOnce({ status: 202, result: { ok: true, decision: 'pending', requestId: 'cr-abcd' } })
+      .mockResolvedValueOnce({ status: 202, result: { ok: true, decision: 'pending', requestId: 'cr-abcd' } })
+      .mockResolvedValueOnce({ status: 200, result: { ok: true, decision: 'accepted', paneId: '%10' } })
+    expect(await cli.runChatCli(['open', '--title', 'Fix', '--prompt', 'Brief'], request, { out, err })).toBe(0)
+    expect(err).toHaveBeenCalledExactlyOnceWith('Waiting for the user to approve (limit reached)…')
+    expect(request.mock.calls.slice(1)).toEqual([['GET', '/requests/cr-abcd?wait=60'], ['GET', '/requests/cr-abcd?wait=60']])
+    expect(out).toHaveBeenCalledExactlyOnceWith({ ok: true, decision: 'accepted', paneId: '%10' })
+  })
+
+  it.each(['dismissed', 'expired', 'superseded'])('exits 3 and prints JSON on %s', async (decision) => {
+    const cli = await loadChatCli(), out = vi.fn()
+    const request = vi.fn().mockResolvedValueOnce({ status: 202, result: { ok: true, decision: 'pending', requestId: 'cr-abcd' } })
+      .mockResolvedValueOnce({ status: 200, result: { ok: true, decision } })
+    expect(await cli.runChatCli(['open', '--title', 'Fix', '--prompt', 'Brief'], request, { out, err: vi.fn() })).toBe(3)
+    expect(out).toHaveBeenCalledExactlyOnceWith({ ok: true, decision })
+  })
+
+  it('bounds polling to ten minutes and preserves partial-error targets in JSON', async () => {
+    const cli = await loadChatCli(), out = vi.fn(), err = vi.fn()
+    let time = 0
+    const pending = vi.fn(async () => { time += 60_000; return { status: 202, result: { ok: true, decision: 'pending', requestId: 'cr-abcd' } } })
+    expect(await cli.runChatCli(['open', '--title', 'Fix', '--prompt', 'Brief'], pending, { out, err, now: () => time })).toBe(3)
+    expect(pending).toHaveBeenCalledTimes(10)
+    expect(out).toHaveBeenCalledWith({ ok: true, decision: 'expired', requestId: 'cr-abcd' })
+    const result = { ok: false, error: 'Created; do not retry', created: { paneId: '%10' } }
+    const failed = vi.fn(async () => ({ status: 502, result }))
+    expect(await cli.runChatCli(['list'], failed, { out, err })).toBe(1)
+    expect(out).toHaveBeenLastCalledWith(result)
+    expect(err).toHaveBeenLastCalledWith('Created; do not retry')
   })
 })
