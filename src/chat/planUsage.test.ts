@@ -8,7 +8,7 @@ const session = (configDir: string | undefined, planUsage?: ChatPlanUsage) => ({
 describe('plan usage helpers', () => {
   it('keeps the newest reading per login', () => {
     const map = newestPlanUsage([session('/a', usage(5)), session('/a', usage(9)), session('/b', usage(1)), session(undefined, usage(2)), session('/c')])
-    expect([...map].map(([key, value]) => [key, value.updatedAt])).toEqual([['/a', 9], ['/b', 1], ['', 2]])
+    expect([...map].map(([key, value]) => [key, value.updatedAt])).toEqual([['claude:/a', 9], ['claude:/b', 1], ['claude:', 2]])
   })
 
   it('goes stale after ten minutes or once a shown window has reset', () => {

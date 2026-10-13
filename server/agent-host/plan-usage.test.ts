@@ -1,7 +1,7 @@
 import type { SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest'
 import { parseChatSessionInfo, type ChatPlanUsage } from '../../shared/agent-chat.js'
-import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
+import { NO_PLAN_LIMITS, applyCodexRateLimits, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 // The shape SDK 0.3.295 / Claude Code 2.1.296 returned for a Max account.
 const REPORT = {
@@ -108,5 +108,38 @@ describe('applyRateLimitEvent', () => {
 
   it('returns the same reading for an event with nothing to use', () => {
     expect(applyRateLimitEvent(base, event({}), 9)).toBe(base)
+  })
+})
+
+describe('applyCodexRateLimits', () => {
+  const snapshot = {
+    limitId: 'codex', limitName: null, normalModelSlug: null, credits: null, individualLimit: null, spendControlReached: null,
+    planType: 'pro', rateLimitReachedType: null,
+    primary: { usedPercent: 78, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+    secondary: { usedPercent: 9, windowDurationMins: 10_080, resetsAt: 1_800_500_000 },
+  }
+
+  it('maps the 5h and weekly windows and grades them itself', () => {
+    expect(applyCodexRateLimits(undefined, snapshot, 5)).toEqual({
+      plan: 'pro',
+      updatedAt: 5,
+      limits: [
+        { kind: 'session', title: 'Current session', percent: 78, severity: 'warning', resetsAt: 1_800_000_000_000 },
+        { kind: 'weekly_all', title: 'Weekly', percent: 9, severity: 'normal', resetsAt: 1_800_500_000_000 },
+      ],
+    })
+  })
+
+  it('merges a sparse update and keeps windows it leaves out', () => {
+    const first = applyCodexRateLimits(undefined, snapshot, 5)
+    const next = applyCodexRateLimits(first, { primary: { usedPercent: 93, windowDurationMins: 300, resetsAt: null }, secondary: null, planType: null }, 9)
+    expect(next?.plan).toBe('pro')
+    expect(next?.limits.map((limit) => [limit.kind, limit.percent, limit.severity])).toEqual([['session', 93, 'critical'], ['weekly_all', 9, 'normal']])
+    expect(applyCodexRateLimits(first, { primary: null, secondary: null }, 9)).toBe(first)
+  })
+
+  it('names other window lengths and marks the fullest window when a limit is hit', () => {
+    const next = applyCodexRateLimits(undefined, { ...snapshot, primary: { usedPercent: 99, windowDurationMins: 1_440, resetsAt: null }, secondary: null, rateLimitReachedType: 'rate_limit_reached' }, 5)
+    expect(next?.limits).toEqual([{ kind: 'window_1440', title: '1d window', percent: 99, severity: 'critical', reached: true }])
   })
 })

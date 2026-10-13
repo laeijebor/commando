@@ -2500,7 +2500,7 @@ export function App() {
   const chatStashApi = useMemo(() => createChatStashApi(token), [token])
   const chatStash = useMemo<ChatStash>(() => ({ entries: chatStashEntries, ...chatStashApi }), [chatStashEntries, chatStashApi])
   // Rebuilt only when a reading changes, not on every streamed chat item.
-  const planUsageKey = Object.values(chats).map(({ session }) => `${session.configDir ?? ''}:${session.planUsage?.updatedAt ?? ''}`).join(',')
+  const planUsageKey = Object.values(chats).map(({ session }) => `${session.provider}:${session.configDir ?? ''}:${session.planUsage?.updatedAt ?? ''}`).join(',')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const planUsageByProfile = useMemo(() => newestPlanUsage(Object.values(chats).map((chat) => chat.session)), [planUsageKey])
   // One stable service object per pane, so the composer's effects don't refire each render.

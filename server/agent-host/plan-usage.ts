@@ -2,7 +2,7 @@ import type { SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatPlanLimit, ChatPlanSeverity, ChatPlanUsage } from '../../shared/agent-chat.js'
 
 /**
- * Plan limits come from two SDK sources, both read defensively since neither
+ * Claude's plan limits come from two SDK sources, both read defensively since neither
  * is a stable API: the `/usage` report (`usage_EXPERIMENTAL…`), which has every
  * window, and `rate_limit_event`, which updates the 5h and weekly windows
  * mid-turn through its undocumented `unifiedWindows`.
@@ -144,4 +144,48 @@ export function applyRateLimitEvent(current: ChatPlanUsage | undefined, info: SD
   }
   if (!changed) return current
   return { ...current, limits, updatedAt: now }
+}
+
+/** Codex doesn't grade its windows, so the meter does: amber from 75%, red from 90%. */
+function gradedSeverity(used: number): ChatPlanSeverity {
+  return used >= 90 ? 'critical' : used >= 75 ? 'warning' : 'normal'
+}
+
+function codexWindow(minutes: unknown, fallback: 'session' | 'weekly_all'): { kind: string; title: string } {
+  if (minutes === 300 || (minutes == null && fallback === 'session')) return { kind: 'session', title: 'Current session' }
+  if (minutes === 10_080 || minutes == null) return { kind: 'weekly_all', title: 'Weekly' }
+  const span = typeof minutes === 'number' && minutes % 1_440 === 0 ? `${minutes / 1_440}d` : `${Math.round(Number(minutes) / 60)}h`
+  return { kind: `window_${String(minutes)}`, title: `${span} window` }
+}
+
+/**
+ * Folds a Codex rate-limit snapshot (`account/rateLimits/read`'s `rateLimits`,
+ * or a sparse `account/rateLimits/updated`) into the last reading. A window the
+ * snapshot leaves out keeps its last value. Undefined until a window is known.
+ */
+export function applyCodexRateLimits(current: ChatPlanUsage | undefined, snapshot: unknown, now: number): ChatPlanUsage | undefined {
+  if (!isRecord(snapshot)) return current
+  const limits = [...(current?.limits ?? [])]
+  let changed = false
+  for (const [key, fallback] of [['primary', 'session'], ['secondary', 'weekly_all']] as const) {
+    const window = snapshot[key]
+    const used = isRecord(window) ? percent(window.usedPercent) : undefined
+    if (used === undefined || !isRecord(window)) continue
+    const { kind, title } = codexWindow(window.windowDurationMins, fallback)
+    const resetsAt = typeof window.resetsAt === 'number' && Number.isFinite(window.resetsAt) ? window.resetsAt * 1000 : undefined
+    const next = limit({ kind, title, percent: used, severity: gradedSeverity(used) }, resetsAt)
+    const index = limits.findIndex((entry) => entry.kind === kind)
+    if (index >= 0) limits[index] = next
+    else limits.push(next)
+    changed = true
+  }
+  // Codex says a limit was hit but not which; the fullest window is the one.
+  if (typeof snapshot.rateLimitReachedType === 'string' && limits.length && !limits.some((entry) => entry.reached)) {
+    const fullest = limits.reduce((top, entry, index) => entry.percent > limits[top]!.percent ? index : top, 0)
+    limits[fullest] = { ...limits[fullest]!, severity: 'critical', reached: true }
+    changed = true
+  }
+  const plan = typeof snapshot.planType === 'string' && snapshot.planType && snapshot.planType !== 'unknown' ? snapshot.planType : current?.plan
+  if (!changed || !limits.length) return current
+  return { limits, ...(plan ? { plan } : {}), updatedAt: now }
 }

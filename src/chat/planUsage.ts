@@ -4,16 +4,16 @@ import type { ChatPlanLimit, ChatPlanUsage, ChatSessionInfo } from '../../shared
 /** A reading older than this, or one whose window has since reset, shows as stale. */
 export const PLAN_USAGE_STALE_MS = 10 * 60_000
 
-/** The newest plan reading per Claude config dir; chats on one login share a plan. */
+/** The newest plan reading per login (provider and config dir); chats on one login share a plan. */
 export const PlanUsageContext = createContext<ReadonlyMap<string, ChatPlanUsage> | null>(null)
 
-const profileKey = (configDir: string | undefined) => configDir ?? ''
+const loginKey = (session: ChatSessionInfo) => `${session.provider}:${session.configDir ?? ''}`
 
 export function newestPlanUsage(sessions: Iterable<ChatSessionInfo | undefined>): Map<string, ChatPlanUsage> {
   const newest = new Map<string, ChatPlanUsage>()
   for (const session of sessions) {
     if (!session?.planUsage) continue
-    const key = profileKey(session.configDir)
+    const key = loginKey(session)
     const current = newest.get(key)
     if (!current || session.planUsage.updatedAt > current.updatedAt) newest.set(key, session.planUsage)
   }
@@ -22,7 +22,7 @@ export function newestPlanUsage(sessions: Iterable<ChatSessionInfo | undefined>)
 
 /** The chat's own reading, or a newer one another chat on the same login made. */
 export function usePlanUsage(session: ChatSessionInfo): ChatPlanUsage | undefined {
-  const shared = useContext(PlanUsageContext)?.get(profileKey(session.configDir))
+  const shared = useContext(PlanUsageContext)?.get(loginKey(session))
   const own = session.planUsage
   if (!own) return shared
   return shared && shared.updatedAt > own.updatedAt ? shared : own
