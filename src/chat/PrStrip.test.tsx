@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
-import type { PrAutofixStatus } from '../../shared/pr-types'
+import type { PrAutofixStatus, PrSummary } from '../../shared/pr-types'
 import { PrStrip } from './PrStrip'
 
 const targetId = '123e4567-e89b-42d3-a456-426614174000'
@@ -12,13 +12,24 @@ function pr(number: number, state: PanePrSummary['state'] = 'open'): PanePrSumma
     createdAt: '', updatedAt: '', additions: 125, deletions: 16, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
     checks: { state: 'fail', total: 9, failed: 2, pending: 1, skipped: 3, runs: [], truncated: false } }
 }
+const head = 'a'.repeat(40)
+function mergeable(number: number, patch: Partial<PrSummary> = {}): PanePrSummary {
+  const base = pr(number)
+  const preview = { number, title: base.title, url: base.url, state: 'open', isDraft: false, author: 'me', bodyExcerpt: '', additions: 1, deletions: 1, changedFiles: 1,
+    commitCount: 1, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null, reviews: [], requestedReviewers: [], conflicting: false,
+    mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', checks: null, createdAt: '', updatedAt: '', headRefName: 'feature', baseRefName: 'main',
+    headRefOid: head, baseRefOid: 'b'.repeat(40), viewerIsAuthor: true, viewerReviewRequested: false, commandoMarker: null, ...patch } satisfies PrSummary
+  return { ...base, preview }
+}
 const status = (patch: Partial<PrAutofixStatus> = {}): PrAutofixStatus => ({ repo: 'acme/widgets', number: 12, targetId, enabled: true, status: 'watching', rounds: 0, lastEventAt: null, ...patch })
 function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number) => void) {
   const api = {
     pane: vi.fn(async () => ({ targetId, totalCount: prs.length, pullRequests: prs, truncated: false, fetchedAt: Date.now() })),
     autofixStatus: vi.fn(async () => current),
     setAutofix: vi.fn(async (_repo: string, _number: number, enabled: boolean, _pane: string) => status({ enabled, status: enabled ? 'watching' : 'stopped', ...(!enabled ? { reason: 'Disabled' } : {}) })),
-  } satisfies Pick<PrsApiClient, 'pane' | 'autofixStatus' | 'setAutofix'>
+    list: vi.fn(async () => { throw new Error('unused') }),
+    merge: vi.fn(async (_repo: string, _number: number, _head: string, _base?: string) => ({ merged: true as const })),
+  } satisfies Pick<PrsApiClient, 'pane' | 'list' | 'merge' | 'autofixStatus' | 'setAutofix'>
   render(<PrStrip paneId="%1" api={api} connected {...(onOpenPr ? { onOpenPr } : {})} />)
   return api
 }
@@ -120,6 +131,39 @@ describe('chat PR strip', () => {
     fireEvent.click(screen.getByRole('checkbox'))
     expect(await screen.findByRole('alert')).toHaveTextContent('Pane no longer exists')
     expect(screen.getByRole('checkbox')).not.toBeChecked()
+  })
+
+  it('merges a mergeable PR from the CI menu and refreshes the pane', async () => {
+    const api = setup([mergeable(12)])
+    await openCi()
+    const button = screen.getByRole('button', { name: 'Merge PR' })
+    expect(button).toBeEnabled()
+    const calls = api.pane.mock.calls.length
+    fireEvent.click(button)
+    await waitFor(() => expect(api.merge).toHaveBeenCalledWith('acme/widgets', 12, head, 'main'))
+    await waitFor(() => expect(api.pane.mock.calls.length).toBeGreaterThan(calls))
+  })
+
+  it.each([
+    [mergeable(12, { mergeStateStatus: 'BLOCKED' }), 'GitHub reports unmet merge requirements'],
+    [mergeable(12, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' }), 'Resolve merge conflicts on GitHub first'],
+    [pr(12), 'Checking merge readiness'],
+  ])('disables merging and explains why when GitHub blocks it', async (blocked, reason) => {
+    const api = setup([blocked])
+    await openCi()
+    const button = screen.getByRole('button', { name: 'Merge PR' })
+    expect(button).toBeDisabled()
+    expect(screen.getByText(reason)).toBeInTheDocument()
+    fireEvent.click(button)
+    expect(api.merge).not.toHaveBeenCalled()
+  })
+
+  it('shows merge failures in the CI menu', async () => {
+    const api = setup([mergeable(12)])
+    api.merge.mockRejectedValue(new Error('The PR has new commits. Resync and try again.'))
+    await openCi()
+    fireEvent.click(screen.getByRole('button', { name: 'Merge PR' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The PR has new commits. Resync and try again.')
   })
 
   it('renders nothing when no PRs are linked', async () => {
