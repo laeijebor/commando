@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
 import { ChatImageStore } from '../chat-images.js'
-import { chatResumeCommand, claudeCodeSwitchCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
+import { chatResumeCommand, claudeCodeSwitchCommand, parseHostArgs, restartEnv, sessionFlags, terminalLine, withSessionSettings } from './main.js'
 import { AgentSession, PLAN_CAPTURED_MESSAGE, type SessionStore } from './session.js'
 import { createChatProviderSession } from './factory.js'
 import type { ChatProviderSession } from './provider.js'
@@ -609,6 +609,44 @@ describe('AgentSession settings', () => {
     await session.configure({ permissionMode: 'bypassPermissions' })
     expect(fake.setPermissionMode).toHaveBeenCalledWith('bypassPermissions')
     expect(sessions.at(-1)).toMatchObject({ permissionMode: 'bypassPermissions', bypassAllowed: true })
+  })
+})
+
+describe('commando-agent restart environment', () => {
+  const env = {
+    COMMANDO_PORT: '4410',
+    COMMANDO_AGENT_HOOK_TOKEN_PATH: '/state/hook-token',
+    COMMANDO_TMUX_SOCKET_NAME: 'chat-providers',
+    COMMANDO_TMUX_SOCKET_PATH: '/state/tmux.sock',
+    COMMANDO_CHAT_IMAGES_DIR: '/state/chat-images',
+    COMMANDO_CHAT_PLANS_DIR: '/state/chat-plans',
+    CLAUDE_CONFIG_DIR: '/home/me/.claudew',
+    OTHER_ENV: 'ignored',
+  }
+  const daemonEnv = [
+    '-e', 'COMMANDO_PORT=4410',
+    '-e', 'COMMANDO_AGENT_HOOK_TOKEN_PATH=/state/hook-token',
+    '-e', 'COMMANDO_TMUX_SOCKET_NAME=chat-providers',
+    '-e', 'COMMANDO_TMUX_SOCKET_PATH=/state/tmux.sock',
+    '-e', 'COMMANDO_CHAT_IMAGES_DIR=/state/chat-images',
+    '-e', 'COMMANDO_CHAT_PLANS_DIR=/state/chat-plans',
+  ]
+
+  it('includes CODEX_HOME for Codex when set', () => {
+    expect(restartEnv('codex', { ...env, CODEX_HOME: '/home/me/Codex account' }))
+      .toEqual([...daemonEnv, '-e', 'CODEX_HOME=/home/me/Codex account'])
+  })
+
+  it('omits CODEX_HOME for Codex when unset or empty', () => {
+    expect(restartEnv('codex', env)).toEqual(daemonEnv)
+    expect(restartEnv('codex', { ...env, CODEX_HOME: '' })).toEqual(daemonEnv)
+    expect(restartEnv('codex', {})).toEqual([])
+  })
+
+  it('keeps Claude restart environment byte-identical even when CODEX_HOME is set', () => {
+    expect(restartEnv('claude', { ...env, CODEX_HOME: '/home/me/.codex-work' })).toEqual(daemonEnv)
+    expect(restartEnv('claude', { COMMANDO_PORT: '4410', COMMANDO_TMUX_SOCKET_NAME: '' }))
+      .toEqual(['-e', 'COMMANDO_PORT=4410'])
   })
 })
 

@@ -134,6 +134,12 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
 /** Variables a respawned host needs to find the same daemon. */
 const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const
 
+/** Preserve pane-local daemon settings and the Codex account/config on restart. */
+export function restartEnv(provider: ChatProvider, env: Record<string, string | undefined>): string[] {
+  const keys = provider === 'codex' ? [...DAEMON_ENV_KEYS, 'CODEX_HOME'] : DAEMON_ENV_KEYS
+  return keys.flatMap((key) => env[key] ? ['-e', `${key}=${env[key]}`] : [])
+}
+
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
   return [
@@ -317,8 +323,8 @@ async function main(): Promise<void> {
     const command = ['exec', launcher, settings.provider, ...sessionFlags(settings), ...(sessionId ? ['--resume', sessionId] : [])]
       .map((word, index) => index === 0 ? word : shellQuote(word)).join(' ')
     // The tmux server's environment can differ from this host's (a dev daemon on
-    // another port), so carry the variables that find the daemon.
-    const env = DAEMON_ENV_KEYS.flatMap((key) => process.env[key] ? ['-e', `${key}=${process.env[key]}`] : [])
+    // another port or Codex account), so carry the daemon and provider settings.
+    const env = restartEnv(settings.provider, process.env)
     write(dim('Restarting to update…'))
     execFile('tmux', ['respawn-pane', '-k', ...env, '-t', paneId, '-c', process.cwd(), command], (error) => {
       if (!error) return
