@@ -38,6 +38,51 @@ const runner = (response = output()) =>
   vi.fn(async (_args: readonly string[]): Promise<string> => response)
 
 describe('TmuxCreator', () => {
+  it('creates and prepares a pane worktree before launching, and marks its lineage', async () => {
+    const rollback = vi.fn(async () => {})
+    const worktree = { path: '/repo/worktrees/fix', branch: 'fix', base: 'main', reusedBranch: false }
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo', defaultBranch: 'main' } as GitRepoInfo)), createWorktree: vi.fn(async () => ({ worktree, rollback })) }
+    const run = runner(output({ panePath: worktree.path }))
+    const before = vi.fn(async () => {})
+    const creator = new TmuxCreator(run, ['-L', 'test'], git, async () => '/host/bin/codex', {})
+    const result = await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: '/repo/src', worktree: { branch: 'fix', prepareCommand: 'npm ci\nnpm run build' }, agent: { provider: 'codex', prompt: 'Brief\nsecond line' } }, before)
+    expect(result).toMatchObject({ paneId: '%12', panePath: worktree.path, worktree, agentLaunch: { provider: 'codex', state: 'initiated' } })
+    expect(git.createWorktree).toHaveBeenCalledWith(expect.objectContaining({ mainRoot: '/repo', branch: 'fix', path: expect.stringContaining('fix') }))
+    const args = run.mock.calls[0][0]
+    expect(args.slice(args.indexOf('-c'), args.indexOf('-c') + 2)).toEqual(['-c', worktree.path])
+    expect(args.at(-1)).toBe(agentLaunchPaneCommand(['/host/bin/codex', '--', 'Brief\nsecond line'], 'npm ci\nnpm run build', {}))
+    expect(before.mock.invocationCallOrder[0]).toBeGreaterThan(git.createWorktree.mock.invocationCallOrder[0])
+    expect(rollback).not.toHaveBeenCalled()
+    await creator.setChatLineage('%12', 'parent-target', 'Fix bug')
+    expect(run.mock.calls.slice(1).map(([args]) => args)).toEqual([
+      ['-L', 'test', 'set-option', '-p', '-t', '%12', '@commando_opened_by', 'parent-target'],
+      ['-L', 'test', 'set-option', '-p', '-t', '%12', '@commando_chat_title', 'Fix bug'],
+    ])
+  })
+
+  it('rolls back a pane worktree if splitting fails; preserves it after a successful split with malformed output', async () => {
+    const rollback = vi.fn(async () => {})
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree: vi.fn(async () => ({ worktree: { path: '/repo/fix', branch: 'fix', base: 'main', reusedBranch: false }, rollback })) }
+    const run = vi.fn(async () => { throw new Error('not enough space') })
+    const input = { targetId: '%1', direction: 'horizontal', cwd: '/repo', worktree: { branch: 'fix' } } as const
+    await expect(new TmuxCreator(run, [], git).createPane(input)).rejects.toThrow('not enough space')
+    expect(rollback).toHaveBeenCalledOnce()
+    rollback.mockClear()
+    await expect(new TmuxCreator(runner('bad output'), [], git).createPane(input)).rejects.toThrow('invalid create response')
+    expect(rollback).not.toHaveBeenCalled()
+  })
+
+  it('includes pane worktree rollback failures in the error and validates preparation before mutation', async () => {
+    const rollback = vi.fn(async () => { throw new Error('dirty worktree') })
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree: vi.fn(async () => ({ worktree: { path: '/repo/fix', branch: 'fix', base: 'main', reusedBranch: false }, rollback })) }
+    const run = vi.fn(async () => { throw new Error('split failed') })
+    const creator = new TmuxCreator(run, [], git)
+    await expect(creator.createPane({ targetId: '%1', direction: 'vertical', cwd: '/repo', worktree: null } as never)).rejects.toThrow('worktree must be an object')
+    await expect(creator.createPane({ targetId: '%1', direction: 'vertical', cwd: '/repo', worktree: { branch: 'fix', prepareCommand: 'bad\0command' } })).rejects.toThrow('control')
+    expect(git.createWorktree).not.toHaveBeenCalled()
+    await expect(creator.createPane({ targetId: '%1', direction: 'vertical', cwd: '/repo', worktree: { branch: 'fix' } })).rejects.toThrow('split failed; worktree rollback failed: dirty worktree')
+  })
+
   it('starts Cursor with literal argv in the newly owned PTY and scopes daemon environment to that session', async () => {
     const run = runner()
     const resolve = vi.fn(async () => '/host/bin/agent')
@@ -821,5 +866,21 @@ describe('chatProfileConfigDir', () => {
     expect(chatProfileConfigDir('/h/.gone', profiles)).toBe('/h/.claudep')
     expect(chatProfileConfigDir(undefined, profiles)).toBe('/h/.claudep')
     expect(chatProfileConfigDir('/h/.claudew', [])).toBeUndefined()
+  })
+})
+
+describe('Codex chat creation', () => {
+  it('starts the Codex chat host in the owned session with the selected permissions', async () => {
+    const run = runner()
+    const resolve = vi.fn(async () => '/unused/codex')
+    const response = await new TmuxCreator(run, [], undefined, resolve, {}).createSession({ name: 'codex-chat', cwd: '/tmp', agent: { provider: 'codex-chat', permissionMode: 'plan', prompt: 'Hello' } })
+    expect(resolve).not.toHaveBeenCalled()
+    expect(response.agentLaunch).toMatchObject({ provider: 'codex-chat', paneId: '%12' })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'codex', '--permission-mode', 'plan', '--prompt', 'Hello'], undefined, {}))
+  })
+  it.each([{ configDir: '/Users/dev/.claude' }, { readableDir: '/tmp' }, { permissionMode: 'acceptEdits' }])('rejects incompatible Codex launch settings %j', async (settings) => {
+    const run = runner()
+    await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'codex-chat', ...settings } } as never)).rejects.toThrow(/Codex/)
+    expect(run).not.toHaveBeenCalled()
   })
 })

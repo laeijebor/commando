@@ -1,11 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Minimize2 } from 'lucide-react'
 import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatPlanLimit, type ChatPlanUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
-import { EFFORT_LABELS, PERMISSION_MODES, formatTokens, modelLabel, modelMenuAvailable, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
+import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { formatDuration, formatReadingAge, formatResetTime, headlineLimits, isPlanUsageStale, reachedLimit, shortLimitLabel } from './planUsage'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
+
+export { providerLabel } from '../../shared/chat-composer'
 
 function Pill({ children, title }: { children: ReactNode; title?: string }) {
   return <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={title}>{children}</span>
@@ -114,19 +116,19 @@ export function PermissionPicker({ session, disabled, onConfigure }: { session: 
   const [open, setOpen] = useState(false)
   const current = session.permissionMode
   if (!current) return null
-  if (!hostTakesSettings(session)) return <Pill title="Restart this chat to change its settings">{permissionLabel(current)}</Pill>
+  if (!hostTakesSettings(session)) return <Pill title="Restart this chat to change its settings">{permissionLabel(current, session)}</Pill>
   const modes = permissionModeOptions(session)
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PillTrigger label={permissionLabel(current)} open={open} disabled={disabled} />
+      <PillTrigger label={permissionLabel(current, session)} open={open} disabled={disabled} />
       <PopoverPopup className="w-[300px]" aria-label="Permissions">
         <div role="menu" aria-label="Permissions">
           {modes.map((mode) => (
             <MenuOption
               key={mode}
               checked={mode === current}
-              label={PERMISSION_MODES[mode].label}
-              description={PERMISSION_MODES[mode].description}
+              label={permissionLabel(mode, session)}
+              description={permissionDescription(mode, session)}
               onSelect={() => {
                 setOpen(false)
                 if (mode !== current) onConfigure({ permissionMode: mode })

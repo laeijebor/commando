@@ -33,6 +33,8 @@ import {
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
+import { shellQuote } from '../agent-resume-command.js'
+import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
 import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 export interface AgentSessionSpec {
@@ -74,6 +76,36 @@ export interface SessionImageStore extends ChatImageSink {
   stage(id: string, sessionId: string): Promise<string>
   /** The image and session a staged copy's path names, or null for any other path. */
   stagedImage(path: string): { id: string; sessionId: string } | null
+}
+
+type ClaudeCodeSettings = Pick<AgentSessionSpec, 'model' | 'effort' | 'permissionMode' | 'bypassAllowed'> & { readableDir?: string }
+
+/**
+ * Claude Code's own flags for this chat's settings, so the TUI runs the
+ * conversation with the same model, effort and permission mode.
+ */
+export function claudeCodeFlags(args: ClaudeCodeSettings): string[] {
+  return [
+    ...(args.model ? ['--model', args.model] : []),
+    ...(args.effort ? ['--effort', args.effort] : []),
+    ...(args.permissionMode === 'bypassPermissions'
+      ? ['--dangerously-skip-permissions']
+      : ['--permission-mode', args.permissionMode, ...(args.bypassAllowed ? ['--allow-dangerously-skip-permissions'] : [])]),
+    ...(args.readableDir ? ['--add-dir', args.readableDir] : []),
+  ]
+}
+
+/**
+ * The pane command for a switch to Claude Code: the TUI on the same
+ * conversation, then (when it exits, however it exits) this chat again.
+ * bash runs it with job control, so Claude Code is the pane's foreground
+ * process: tmux names the pane after it (auto-resume needs that to see an
+ * agent, not a shell), and Ctrl-C reaches only Claude Code.
+ */
+export function claudeCodeSwitchCommand(args: ClaudeCodeSettings, claudePath: string, launcher: string, sessionId: string, returnFlags: readonly string[]): string {
+  const tui = [claudePath, ...claudeCodeFlags(args), '--resume', sessionId].map(shellQuote).join(' ')
+  const back = ['exec', ...[launcher, 'claude', ...returnFlags, '--resume', sessionId, '--from-claude-code'].map(shellQuote)].join(' ')
+  return `exec /bin/bash -c ${shellQuote(`set -m; ${tui}; ${back}`)}`
 }
 
 type TranscriptMessage = { type: string; message: unknown; parent_tool_use_id: string | null }
@@ -188,12 +220,7 @@ function shortTitle(text: string): string {
   return line.length > 60 ? `${line.slice(0, 59)}…` : line
 }
 
-export interface AgentSessionEvents {
-  items: (items: ChatItem[]) => void
-  session: (info: ChatSessionInfo) => void
-  /** The `/` menu's list changed. */
-  commands: (commands: ChatCommand[]) => void
-  closed: () => void
+export interface AgentSessionEvents extends ChatProviderSessionEvents {
   /** A switch to Claude Code may go now: the turn is over and nothing waits on Claude. */
   switchReady: () => void
 }
@@ -258,7 +285,16 @@ function approvalDetail(toolName: string, input: Record<string, unknown>): strin
  * One agent conversation driven through the Claude Agent SDK. It knows nothing
  * about processes or sockets: a host owns it and forwards its events.
  */
-export class AgentSession {
+export class AgentSession implements ChatProviderSession {
+  readonly tui: ChatProviderTui = {
+    label: 'Claude Code',
+    env: {},
+    onReady: (listener) => this.on('switchReady', listener),
+    requestSwitch: (action) => this.requestSwitch(action),
+    command: (launcher, returnFlags, sessionId) => this.tuiCommand(launcher, returnFlags, sessionId),
+    handOver: () => this.handOver(),
+    endSwitch: (notice) => this.endSwitch(notice),
+  }
   private readonly mapper: ClaudeItemMapper
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
@@ -315,6 +351,7 @@ export class AgentSession {
     private readonly now: () => number = Date.now,
     private readonly store: SessionStore = sdkSessionStore,
   ) {
+    if (spec.configDir) this.tui.env.CLAUDE_CONFIG_DIR = spec.configDir
     this.mapper = new ClaudeItemMapper(now, spec.images)
     this.heldSends = spec.resume ? [] : null
     this.imageSessionId = spec.resume ?? randomUUID()
@@ -541,6 +578,22 @@ export class AgentSession {
     this.steersPending = 0
     this.flushQueue()
     this.checkSwitch()
+  }
+
+  private tuiCommand(launcher: string | undefined, returnFlags: readonly string[], sessionId: string | undefined): string {
+    if (!launcher || !this.spec.claudePath || !sessionId) {
+      throw new Error(!sessionId
+        ? 'this chat has no conversation yet'
+        : "this host was started without the commando-agent launcher or can't find claude")
+    }
+    const readableIndex = returnFlags.indexOf('--readable-dir')
+    return claudeCodeSwitchCommand({
+      ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}),
+      ...(this.info.effort ? { effort: this.info.effort } : {}),
+      permissionMode: isChatPermissionMode(this.info.permissionMode) ? this.info.permissionMode : this.spec.permissionMode,
+      ...(this.info.bypassAllowed ? { bypassAllowed: true } : {}),
+      ...(readableIndex >= 0 ? { readableDir: returnFlags[readableIndex + 1] } : {}),
+    }, this.spec.claudePath, launcher, sessionId, returnFlags)
   }
 
   /**

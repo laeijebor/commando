@@ -2,7 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CreateTmuxSessionRequest, GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
 import {
   START_WITH_STORAGE_KEY,
@@ -31,7 +31,12 @@ function probeFor(table: Record<string, GitRepoInfo>) {
   return vi.fn(async (directory: string): Promise<GitRepoInfo> => table[directory] ?? notRepo)
 }
 
+beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ command: '' })))
+})
+
 afterEach(() => {
+  vi.restoreAllMocks()
   cleanup()
   window.localStorage.clear()
 })
@@ -653,5 +658,65 @@ describe('Claude chat profile loading', () => {
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
     expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'claude-chat', configDir: '/Users/dev/.claudew', permissionMode: 'plan' })
     expect(JSON.parse(window.localStorage.getItem('commando.chat-launch.by-repo')!)['*']).toEqual({ configDir: '/Users/dev/.claudew', permissionMode: 'plan' })
+  })
+})
+
+describe('prepare-command daemon sync', () => {
+  const request = { id: 1, groupId: 'repo', groupName: 'Repo', suggestedDirectories: [MAIN], repo: { root: MAIN, name: 'Save-All' } }
+  it('prefills a missing local value with an authenticated owner GET and syncs it on creation', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ command: 'npm ci' })))
+    const onCreateSession = vi.fn().mockResolvedValue({ created })
+    render(<TmuxCreateControls token="owner" variant="dialog" sessionCreateRequest={request} onCreateSession={onCreateSession} />)
+    const prepare = await screen.findByLabelText(/^Prepare worktree/)
+    await waitFor(() => expect(prepare).toHaveValue('npm ci'))
+    expect(fetch).toHaveBeenCalledWith(`/api/repo-prepare-commands?root=${encodeURIComponent(MAIN)}`, expect.objectContaining({ method: 'GET', credentials: 'same-origin', headers: expect.objectContaining({ Authorization: 'Bearer owner' }) }))
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'next' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalled())
+    expect(fetch).toHaveBeenCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: MAIN, command: 'npm ci' }) }))
+    expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({ worktree: expect.objectContaining({ prepareCommand: 'npm ci' }) }))
+  })
+  it('prefers localStorage, PUTs edits against the main root, and sends empty to delete', async () => {
+    window.localStorage.setItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY, JSON.stringify({ [MAIN]: 'pnpm i' }))
+    render(<TmuxCreateControls token="owner" variant="dialog" sessionCreateRequest={request} onCreateSession={vi.fn()} />)
+    const prepare = await screen.findByLabelText(/^Prepare worktree/)
+    expect(prepare).toHaveValue('pnpm i')
+    expect(fetch).not.toHaveBeenCalled()
+    fireEvent.change(prepare, { target: { value: 'pnpm build' } })
+    expect(fetch).toHaveBeenLastCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: MAIN, command: 'pnpm build' }) }))
+    fireEvent.change(prepare, { target: { value: '' } })
+    expect(fetch).toHaveBeenLastCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: MAIN, command: '' }) }))
+    expect(window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY)).toBeNull()
+  })
+  it('does not overwrite edits with a delayed daemon prefill', async () => {
+    let resolve!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    render(<TmuxCreateControls variant="dialog" sessionCreateRequest={request} onCreateSession={vi.fn()} />)
+    const prepare = await screen.findByLabelText(/^Prepare worktree/)
+    fireEvent.change(prepare, { target: { value: 'my edit' } })
+    await act(async () => resolve(new Response(JSON.stringify({ command: 'old daemon value' }))))
+    expect(prepare).toHaveValue('my edit')
+  })
+  it('ignores stale prefills after the dialog changes repositories', async () => {
+    let resolve!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+      .mockImplementation(async () => new Response(JSON.stringify({ command: 'new repo' })))
+    const { rerender } = render(<TmuxCreateControls variant="dialog" sessionCreateRequest={request} onCreateSession={vi.fn()} />)
+    rerender(<TmuxCreateControls variant="dialog" sessionCreateRequest={{ ...request, id: 2, repo: { root: '/another', name: 'Other' } }} onCreateSession={vi.fn()} />)
+    await waitFor(() => expect(screen.getByLabelText(/^Prepare worktree/)).toHaveValue('new repo'))
+    await act(async () => resolve(new Response(JSON.stringify({ command: 'old repo' }))))
+    expect(screen.getByLabelText(/^Prepare worktree/)).toHaveValue('new repo')
+  })
+  it('warns on GET and PUT failures without blocking creation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(fetch).mockRejectedValue(new Error('offline'))
+    const onCreateSession = vi.fn().mockResolvedValue({ created })
+    render(<TmuxCreateControls variant="dialog" sessionCreateRequest={request} onCreateSession={onCreateSession} />)
+    await waitFor(() => expect(warn).toHaveBeenCalledWith('Unable to load repository prepare command', expect.any(Error)))
+    fireEvent.change(screen.getByLabelText(/^Prepare worktree/), { target: { value: 'npm ci' } })
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'next' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(warn).toHaveBeenCalledWith('Unable to sync repository prepare command', expect.any(Error))
   })
 })

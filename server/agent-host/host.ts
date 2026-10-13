@@ -8,7 +8,7 @@ import {
   type DaemonToHostMessage,
   type HostToDaemonMessage,
 } from '../../shared/agent-chat.js'
-import type { AgentSession } from './session.js'
+import type { ChatProviderSession } from './provider.js'
 
 const FLUSH_MS = 50
 /** Keeps snapshots well under the daemon's 4 MB frame limit. */
@@ -134,7 +134,7 @@ export class DaemonLink {
  */
 export class AgentHost {
   readonly hostId = randomUUID()
-  private readonly sessions = new Map<string, AgentSession>()
+  private readonly sessions = new Map<string, ChatProviderSession>()
   private readonly pendingItems = new Map<string, Map<string, ChatItem>>()
   private readonly handoffs = new Map<string, (result: { ok: boolean; error?: string }) => void>()
   private flushTimer: ReturnType<typeof setTimeout> | undefined
@@ -170,7 +170,7 @@ export class AgentHost {
     return this.link.connected
   }
 
-  add(session: AgentSession): void {
+  add(session: ChatProviderSession): void {
     this.sessions.set(session.paneId, session)
     session.on('items', (items) => this.queueItems(session.paneId, items))
     session.on('session', (info) => {
@@ -197,7 +197,7 @@ export class AgentHost {
     for (const session of this.sessions.values()) this.sendSnapshot(session)
   }
 
-  private sendSnapshot(session: AgentSession): void {
+  private sendSnapshot(session: ChatProviderSession): void {
     const { session: info, items } = session.snapshot()
     this.link.send({ type: 'session_snapshot', session: info, items: snapshotItems(items) })
     const commands = session.commands
@@ -250,7 +250,7 @@ export class AgentHost {
     else if (message.type === 'answer') session.answer(message.chatRequestId, message.answer)
     else if (message.type === 'restart') this.events.restart?.(message.paneId)
     else if (message.type === 'configure') await session.configure(message.settings)
-    else if (message.type === 'switch') await session.requestSwitch(message.action)
+    else if (message.type === 'switch') await session.tui?.requestSwitch(message.action)
   }
 
   /** Coalesces streaming updates so a long reply is not resent per token. */

@@ -303,7 +303,10 @@ export class AgentHostHub {
           ? { text: [untaken.text, typed.text].filter((part) => part.trim()).join('\n\n'), images: [...untaken.images, ...typed.images] }
           : typed
         try {
-          await handoffs.save({ sessionId: message.sessionId, cwd: message.cwd, returnFlags: message.returnFlags, draft, queue: message.queue })
+          await handoffs.save({
+            sessionId: message.sessionId, cwd: message.cwd, returnFlags: message.returnFlags, draft, queue: message.queue,
+            ...(message.provider ? { provider: message.provider, paneId: message.paneId } : {}),
+          })
         } catch (error) {
           return void refuse(`Commando couldn't save the chat's draft and queue: ${error instanceof Error ? error.message : String(error)}`)
         }

@@ -406,6 +406,21 @@ describe('AgentHostHub switch to Claude Code', () => {
     expect(socket.sent.at(-1)).toEqual({ type: 'handoff_saved', paneId: '%1', ok: true })
   })
 
+  it('persists the Codex handoff provider and pane before any TUI hooks exist', async () => {
+    const { hub, connect, saved } = switchable()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { provider: 'codex', hostVersion: 5, sessionId: 'codex-thread' }), items: [] })
+    await settle()
+    expect(hub.switchToClaudeCode('%1', 'after_turn', { text: 'draft', images: [] }, 'r1')).toBeNull()
+    socket.host({ type: 'handoff', paneId: '%1', provider: 'codex', sessionId: 'codex-thread', cwd: '/work', queue: [], returnFlags: ['--permission-mode', 'plan'] })
+    await settle()
+    expect(saved).toEqual([{
+      paneId: '%1', provider: 'codex', sessionId: 'codex-thread', cwd: '/work', queue: [],
+      returnFlags: ['--permission-mode', 'plan'], draft: { text: 'draft', images: [] },
+    }])
+    expect(socket.sent.at(-1)).toEqual({ type: 'handoff_saved', paneId: '%1', ok: true })
+  })
+
   it('refuses a switch for a host that predates it, and a handoff for another conversation', async () => {
     const { hub, connect, saved } = switchable()
     const old = connect()

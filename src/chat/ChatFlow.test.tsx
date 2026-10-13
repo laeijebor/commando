@@ -74,6 +74,17 @@ describe('plan cards', () => {
 })
 
 describe('plan follow-up', () => {
+  it.each([
+    ['codex', 'default', 'Workspace access'],
+    ['codex', 'acceptEdits', 'Workspace access'],
+    ['codex', 'bypassPermissions', 'Full access'],
+    ['claude', 'default', 'Ask before edits'],
+    ['claude', 'acceptEdits', 'Accept edits'],
+  ] as const)('labels %s plan implementation in %s mode as %s', (provider, prePlanPermissionMode, label) => {
+    renderPane(planItems, { provider, prePlanPermissionMode })
+    expect(screen.getByTestId('plan-ready')).toHaveTextContent(`Implement switches to ${label} and sends the plan. Type to refine it instead.`)
+  })
+
   it('implements in the pre-plan mode when the draft is empty', () => {
     const { onSend } = renderPane(planItems, { prePlanPermissionMode: 'acceptEdits' })
     expect(screen.getByTestId('plan-ready')).toHaveTextContent('Implement switches to Accept edits')

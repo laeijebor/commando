@@ -2958,3 +2958,65 @@ describe('narrow pane tabs', () => {
     expect(document.querySelector(`[data-web-pane-id="${split.id}"]`)?.closest('.window-terminal-grid')).toBeInTheDocument()
   })
 })
+
+describe('agent-opened chat integration', () => {
+  it.each([true, false])('keeps focus when a pane gains lineage on its next snapshot (initially active=%s)', async (initiallyActive) => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    const newChild = { ...adjacentPane, id: '%14', targetId: 'delayed-agent-child', active: initiallyActive }
+    act(() => screen.getByTestId(`renderer-${pane.id}`).focus())
+    const before = document.activeElement
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...pane, active: !initiallyActive }, newChild]) }))
+    expect(screen.queryByText(/opened this chat/)).not.toBeInTheDocument()
+    expect(screen.getByTestId(`renderer-${pane.id}`).closest('article')).toHaveClass('is-focused')
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...pane, active: false }, { ...newChild, active: true, openedBy: pane.targetId }]) }))
+    expect(await screen.findByText(/opened this chat/)).toHaveTextContent('work opened this chat')
+    expect(document.activeElement).toBe(before)
+    expect(screen.getByTestId(`renderer-${pane.id}`).closest('article')).toHaveClass('is-focused')
+    expect(screen.getByTestId('renderer-%14').closest('article')).not.toHaveClass('is-focused')
+  })
+  it('shows attribution only after the initial snapshot without changing pane focus', async () => {
+    const child = { ...adjacentPane, openedBy: pane.targetId }
+    await renderAppWithSnapshot(snapshotWith([pane, child]))
+    expect(screen.queryByText(/opened this chat/)).not.toBeInTheDocument()
+    const newChild = { ...child, id: '%14', targetId: 'new-agent-child', index: 2, active: true }
+    fireEvent.focus(screen.getByTestId(`renderer-${pane.id}`))
+    const before = document.activeElement
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...pane, active: false }, { ...child, active: false }, newChild]) }))
+    expect(await screen.findByText(/opened this chat/)).toHaveTextContent('work opened this chat')
+    expect(document.activeElement).toBe(before)
+    expect(screen.getByTestId(`renderer-${pane.id}`).closest('article')).toHaveClass('is-focused')
+    expect(screen.getByTestId('renderer-%14').closest('article')).not.toHaveClass('is-focused')
+  })
+  it.each(['Open', 'Dismiss'] as const)('stores pending chat requests from web_panes and submits %s over the caller pane', async (action) => {
+    await renderAppWithSnapshot()
+    const request = { id: 'cr-123abc', callerPaneId: pane.id, callerTargetId: pane.targetId, requestedBy: 'claude · work', reason: 'rate' as const, requestedAt: 0,
+      summary: { location: 'session' as const, title: 'Review', provider: 'claude-chat' as const, promptPreview: 'Review this' } }
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true })))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [], agentChatRequests: { [request.id]: request } }))
+    const dialog = await screen.findByRole('alertdialog', { name: 'Agent wants to open a chat' })
+    expect(dialog.closest('article')).toHaveAttribute('data-pane-id', pane.id)
+    fireEvent.click(within(dialog).getByRole('button', { name: action }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/agent-chats/requests/cr-123abc', expect.objectContaining({ method: 'POST',
+      body: JSON.stringify({ decision: action === 'Open' ? 'accepted' : 'dismissed' }) })))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+  it.each([409, 200])('surfaces a failed approval through the existing notice after its card is removed (HTTP %s)', async (status) => {
+    await renderAppWithSnapshot()
+    const request = { id: 'cr-123abc', callerPaneId: pane.id, callerTargetId: pane.targetId, requestedBy: 'claude · work', reason: 'rate' as const, requestedAt: 0,
+      summary: { location: 'session' as const, title: 'Review', provider: 'claude-chat' as const, promptPreview: 'Review this' } }
+    let resolve!: (response: Response) => void
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation((input, init) => String(input) === '/api/agent-chats/requests/cr-123abc'
+      ? new Promise<Response>((done) => { resolve = done }) : original(input, init))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [], agentChatRequests: { [request.id]: request } }))
+    const dialog = await screen.findByRole('alertdialog', { name: 'Agent wants to open a chat' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Open' }))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [], agentChatRequests: {} }))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    await act(async () => resolve(new Response(JSON.stringify({ ok: false, error: 'Branch is already checked out' }), { status })))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Branch is already checked out')
+    expect(screen.getByRole('alert')).toHaveClass('pane-action-error')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss pane action error' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})

@@ -9,6 +9,7 @@ import { PaneAgentSwitch } from '../PaneAgentSwitch'
 import { PaneContextMenu } from '../PaneContextMenu'
 import { ChatComposer, type ChatDraft } from './ChatComposer'
 import { ChatPane, type ChatFlowServices } from './ChatPane'
+import { saveDraft } from './draftStore'
 
 const imageId = `${'c'.repeat(64)}.png`
 const session: ChatSessionInfo = { paneId: '%5', provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 5, sessionId: 'abcd1234-0000', permissionMode: 'default' }
@@ -21,7 +22,7 @@ afterEach(() => {
 function composer(props: Partial<Parameters<typeof ChatComposer>[0]> = {}) {
   const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() }
   render(<ChatComposer session={session} hostConnected requests={[]} {...handlers} {...props} />)
-  return { ...handlers, input: screen.getByRole('textbox', { name: 'Message Claude' }) as HTMLTextAreaElement }
+  return { ...handlers, input: screen.getByRole('textbox', { name: props.session?.provider === 'codex' ? 'Message Codex' : 'Message Claude' }) as HTMLTextAreaElement }
 }
 
 function flow(overrides: Partial<ChatFlowServices> = {}): ChatFlowServices {
@@ -50,14 +51,23 @@ describe('switching a chat to Claude Code', () => {
     expect(screen.getByRole('img', { name: 'shot.png' })).toBeInTheDocument()
     expect(onCarriedTaken).toHaveBeenCalledWith('carry-1', 1)
     cleanup()
-    // A remount restores the persisted text once; the carry isn't appended again, and images aren't persisted.
+    // A remount restores the persisted draft once; the carry isn't appended again.
     const again = composer({ carried, onCarriedTaken })
     expect(again.input.value).toBe('queued\n\ndraft')
-    expect(screen.queryByRole('img', { name: 'shot.png' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('img', { name: 'shot.png' })).toHaveLength(1)
+  })
+
+  it('skips carried images the saved draft already brought back', () => {
+    saveDraft(session.sessionId, 'draft', [{ id: imageId, name: 'shot.png' }])
+    const onCarriedTaken = vi.fn()
+    const other = { id: `${'d'.repeat(64)}.png`, name: 'queued.png' }
+    composer({ carried: { id: 'carry-saved', text: 'queued\n\ndraft', images: [other, { id: imageId, name: 'shot.png' }] }, onCarriedTaken })
+    expect(screen.getAllByRole('img').map((image) => image.getAttribute('alt'))).toEqual(['queued.png', 'shot.png'])
+    expect(onCarriedTaken).toHaveBeenCalledWith('carry-saved', 2)
   })
 
   it('restores only the carried images that fit, and the rest once there is room', () => {
-    const many = Array.from({ length: 12 }, (_, index) => ({ id: `${String(index % 10).repeat(64)}.png`, name: `shot-${index}.png` }))
+    const many = Array.from({ length: 12 }, (_, index) => ({ id: `${index.toString(16).padStart(64, '0')}.png`, name: `shot-${index}.png` }))
     const onCarriedTaken = vi.fn()
     const { rerender } = render(<ChatComposer session={session} hostConnected requests={[]} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} carried={{ id: 'carry-many', text: 'with images', images: many }} onCarriedTaken={onCarriedTaken} />)
     expect(screen.getAllByRole('img')).toHaveLength(10)
@@ -137,5 +147,26 @@ describe('PaneAgentSwitch', () => {
     expect(screen.queryByRole('menuitem', { name: 'Show host log' })).toBeNull()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Back to chat' }))
     expect(onReturnToChat).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Codex TUI switch labels', () => {
+  it('offers Codex TUI and returns to chat through the same header actions', () => {
+    const onChat = vi.fn()
+    const onClaudeCode = vi.fn()
+    const { rerender } = render(<PaneAgentSwitch provider="codex" mode="chat" onChat={onChat} onClaudeCode={onClaudeCode} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Codex TUI' }))
+    expect(onClaudeCode).toHaveBeenCalledOnce()
+    rerender(<PaneAgentSwitch provider="codex" mode="claude-code" onChat={onChat} onClaudeCode={onClaudeCode} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
+    expect(onChat).toHaveBeenCalledOnce()
+  })
+  it('names Codex in the waiting banner and composer', () => {
+    composer({ session: { ...session, provider: 'codex', claudeCodeSwitch: 'after_turn' } })
+    expect(screen.getByRole('textbox', { name: 'Message Codex' })).toHaveAttribute('placeholder', 'Switching to Codex TUI…')
+    cleanup()
+    const chat: ChatState = { paneId: '%5', session: { ...session, provider: 'codex', status: 'running', claudeCodeSwitch: 'after_turn' }, items: [], hostConnected: true }
+    render(<ChatPane chat={chat} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} flow={flow()} />)
+    expect(screen.getByTestId('claude-code-switch')).toHaveTextContent('Switching to Codex TUI when this turn ends…')
   })
 })

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ImageIcon, ListChecks, MessageSquareShare, Pencil, SplitSquareHorizontal, X, Zap } from 'lucide-react'
-import type { ChatQueueAction, ChatQueuedMessage, ChatSessionPermissionMode } from '../../shared/agent-chat'
+import type { ChatQueueAction, ChatQueuedMessage, ChatSessionInfo, ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { permissionLabel } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { Button } from './ui/button'
@@ -10,7 +10,8 @@ import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
  * Messages the host holds until Claude's turn ends (after t3code's
  * QueuedRunsControl): edit, remove, or steer one in now.
  */
-export function QueuedMessages({ queue, disabled, onChange, onEditOrphaned }: {
+export function QueuedMessages({ provider = 'Claude', queue, disabled, onChange, onEditOrphaned }: {
+  provider?: string
   queue: ChatQueuedMessage[]
   disabled: boolean
   onChange: (change: ChatQueueAction) => void
@@ -33,7 +34,7 @@ export function QueuedMessages({ queue, disabled, onChange, onEditOrphaned }: {
   }, [])
   return (
     <div className="flex flex-col gap-1 border-b border-border px-3 py-2" aria-label="Queued messages" data-testid="chat-queue">
-      <span className="text-2xs text-muted-foreground">Queued · sent together when Claude's turn ends</span>
+      <span className="text-2xs text-muted-foreground">{`Queued · sent together when ${provider}'s turn ends`}</span>
       {queue.map((queued) => (
         <div key={queued.id} className="flex min-w-0 items-start gap-1.5 rounded-md bg-secondary px-2 py-1 text-sm text-secondary-label">
           {editing?.id === queued.id ? (
@@ -76,7 +77,7 @@ export function QueuedMessages({ queue, disabled, onChange, onEditOrphaned }: {
               <Button size="icon-xs" variant="ghost-muted" disabled={disabled || !queued.text} aria-label="Edit queued message" title="Edit" onClick={() => setEditing({ id: queued.id, text: queued.text })}>
                 <Pencil aria-hidden="true" />
               </Button>
-              <Button size="xs" variant="ghost-muted" disabled={disabled} title="Send now and end Claude's current turn at its next safe point" onClick={() => onChange({ action: 'steer', id: queued.id })}>
+              <Button size="xs" variant="ghost-muted" disabled={disabled} title={`Send now and end ${provider}'s current turn at its next safe point`} onClick={() => onChange({ action: 'steer', id: queued.id })}>
                 <Zap aria-hidden="true" />
                 Steer now
               </Button>
@@ -92,7 +93,7 @@ export function QueuedMessages({ queue, disabled, onChange, onEditOrphaned }: {
 }
 
 /** "Plan ready", after t3code's ComposerPlanFollowUpBanner. */
-export function PlanReadyBanner({ title, implementMode, refining }: { title: string; implementMode: ChatSessionPermissionMode; refining: boolean }) {
+export function PlanReadyBanner({ provider = 'Claude', session, title, implementMode, refining }: { provider?: string; session: Pick<ChatSessionInfo, 'provider'>; title: string; implementMode: ChatSessionPermissionMode; refining: boolean }) {
   return (
     <div className="flex min-w-0 items-start gap-2 border-b border-border bg-secondary px-3 py-2 text-xs text-muted-foreground" role="status" data-testid="plan-ready">
       <ListChecks className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
@@ -101,8 +102,8 @@ export function PlanReadyBanner({ title, implementMode, refining }: { title: str
         <span className="text-secondary-label">{title}</span>
         <span className="block">
           {refining
-            ? 'Refine sends your notes; Claude stays in plan mode.'
-            : `Implement switches to ${permissionLabel(implementMode)} and sends the plan. Type to refine it instead.`}
+            ? `Refine sends your notes; ${provider} stays in plan mode.`
+            : `Implement switches to ${permissionLabel(implementMode, session)} and sends the plan. Type to refine it instead.`}
         </span>
       </span>
     </div>
@@ -149,11 +150,11 @@ export function ImplementButton({ disabled, onImplement, onImplementInNewPane }:
 }
 
 /** Shown while the composer writes to a subagent through main Claude. */
-export function RelayChip({ label, onClear }: { label: string; onClear: () => void }) {
+export function RelayChip({ provider = 'Claude', label, onClear }: { provider?: string; label: string; onClear: () => void }) {
   return (
     <div className="flex min-w-0 items-center gap-1.5 border-b border-border bg-secondary px-3 py-1.5 text-xs text-secondary-label" data-testid="relay-chip">
       <MessageSquareShare className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate">To <span className="font-medium text-foreground">@{label}</span>, relayed through main Claude's SendMessage</span>
+      <span className="min-w-0 flex-1 truncate">To <span className="font-medium text-foreground">@{label}</span>, relayed through main {provider}'s SendMessage</span>
       <Button size="icon-xs" variant="ghost-muted" aria-label="Stop messaging this subagent" onClick={onClear}>
         <X aria-hidden="true" />
       </Button>

@@ -93,6 +93,24 @@ function apiError(status: number, body: unknown): Error {
   return Object.assign(new Error(message), { status })
 }
 
+export function createOwnerJsonRequest(token: string, fetcher: typeof fetch = fetch) {
+  return async (url: string, init: RequestInit): Promise<unknown> => {
+    const response = await fetcher(url, {
+      ...init,
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'Content-Type': 'application/json',
+        ...init.headers,
+      },
+    })
+    const body = await response.json().catch(() => null) as unknown
+    if (!response.ok) throw apiError(response.status, body)
+    return body
+  }
+}
+
 export function createWebPanesApi(
   token: string,
   fetcher: typeof fetch = fetch,
@@ -103,19 +121,8 @@ export function createWebPanesApi(
     return body
   }
 
-  const request = async (path: string, init: RequestInit): Promise<unknown> => {
-    const response = await fetcher(`/api/web-panes${path}`, {
-      ...init,
-      credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        'Content-Type': 'application/json',
-        ...init.headers,
-      },
-    })
-    return await parseResponse(response)
-  }
+  const ownerRequest = createOwnerJsonRequest(token, fetcher)
+  const request = (path: string, init: RequestInit) => ownerRequest(`/api/web-panes${path}`, init)
 
   const upload = async (path: string, expectedRevision: number, file: File): Promise<unknown> => {
     const response = await fetcher(`/api/web-panes${path}`, {

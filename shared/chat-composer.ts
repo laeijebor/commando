@@ -129,8 +129,27 @@ export const PERMISSION_MODES: Record<ChatSessionPermissionMode, { label: string
   bypassPermissions: { label: 'Bypass permissions', description: 'Nothing asks first. Only for chats started with it.' },
 }
 
-export function permissionLabel(mode: string): string {
-  return PERMISSION_MODES[mode as ChatSessionPermissionMode]?.label ?? mode
+const CODEX_WORKSPACE_ACCESS = { label: 'Workspace access', description: 'Workspace edits and sandboxed commands are allowed; escalation asks.' }
+const CODEX_PERMISSION_MODES: Partial<typeof PERMISSION_MODES> = {
+  default: CODEX_WORKSPACE_ACCESS,
+  acceptEdits: CODEX_WORKSPACE_ACCESS,
+  plan: { label: 'Read only', description: 'Read-only sandbox; Codex asks before escalating access.' },
+  bypassPermissions: { label: 'Full access', description: 'Full filesystem access without approval prompts.' },
+}
+
+export function providerLabel(session: Pick<ChatSessionInfo, 'provider'>): string {
+  return session.provider === 'claude' ? 'Claude' : 'Codex'
+}
+
+export function permissionLabel(mode: string, session?: Pick<ChatSessionInfo, 'provider'>): string {
+  const permission = mode as ChatSessionPermissionMode
+  return (session?.provider === 'codex' ? CODEX_PERMISSION_MODES[permission]?.label : undefined)
+    ?? PERMISSION_MODES[permission]?.label ?? mode
+}
+
+export function permissionDescription(mode: ChatSessionPermissionMode, session?: Pick<ChatSessionInfo, 'provider'>): string {
+  return (session?.provider === 'codex' ? CODEX_PERMISSION_MODES[mode]?.description : undefined)
+    ?? PERMISSION_MODES[mode].description.replace('Claude', session ? providerLabel(session) : 'Claude')
 }
 
 /** Whether the model menu can open: the host takes settings and has listed its models. */
@@ -156,8 +175,8 @@ export function permissionModeOptions(session: ChatSessionInfo): ChatSessionPerm
   const supportsAuto = selectedModelOption(session)?.supportsAutoMode ?? false
   return (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
     mode === current
-    || mode === 'default' || mode === 'acceptEdits' || mode === 'plan'
-    || (mode === 'auto' && supportsAuto)
+    || mode === 'default' || mode === 'plan'
+    || (session.provider !== 'codex' && (mode === 'acceptEdits' || (mode === 'auto' && supportsAuto)))
     || (mode === 'bypassPermissions' && session.bypassAllowed)
   ))
 }

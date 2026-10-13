@@ -326,12 +326,11 @@ export function PrCard({ pr: sourcePr, viewer, repo, api, liveTargetIds, targetS
       onBlur={scheduleClose}
     >
       {pill ? (
-        <button type="button" className="session-pr-count"
+        <button type="button" className={`session-pr-count tone-${pill.tone}`}
           aria-label={`PR #${pr.number} in ${pill.sessionName}: ${pill.status}${pill.count > 1 ? `; ${pill.count - 1} more open pull request${pill.count > 2 ? 's' : ''}` : ''}`}
           onClick={openQuickLook}>
-          <GitPullRequest aria-hidden="true" /><span>#{pr.number}</span>
-          {pill.count > 1 ? <span className="session-pr-more">+{pill.count - 1}</span> : null}
-          <i className={`session-pr-readiness ${pill.tone}`} aria-hidden="true" />
+          <GitPullRequest aria-hidden="true" />
+          {pill.count > 1 ? <span className="session-pr-more">{pill.count}</span> : null}
         </button>
       ) : <>
       <div className="pr-idrow">

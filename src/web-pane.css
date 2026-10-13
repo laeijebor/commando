@@ -407,7 +407,7 @@
   box-shadow: var(--shadow);
 }
 
-.web-pane-toast {
+.web-pane-toast, .pane-attribution-toast {
   position: absolute;
   left: 50%;
   bottom: 10px;
@@ -426,7 +426,7 @@
   pointer-events: none;
 }
 
-.web-pane-toast strong {
+.web-pane-toast strong, .pane-attribution-toast strong {
   color: var(--accent);
 }
 

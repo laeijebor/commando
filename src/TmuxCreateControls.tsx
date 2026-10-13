@@ -1,6 +1,7 @@
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react'
 import {
   CHAT_PERMISSION_MODES,
+  CODEX_CHAT_PERMISSION_MODES,
   chatProfileConfigDir,
   defaultWorktreePath,
   sanitizeBranchName,
@@ -18,6 +19,7 @@ import {
 } from '../shared/tmux-create'
 import { loadChatLaunch, saveChatLaunch, type ChatLaunchPreference } from './chatLaunchPreferences'
 import './tmux-create.css'
+import { createAgentChatsApi } from './agentChatsApi'
 
 export type SessionCreateRepo = { root: string; name: string; defaultBranch?: string }
 
@@ -38,6 +40,7 @@ const REPO_PROBE_DEBOUNCE_MS = 200
 const REPO_PROBE_TIMEOUT_MS = 10_000
 
 export type TmuxCreateControlsProps = {
+  token?: string
   disabled?: boolean
   /** `inline` (default) is the collapsible sidebar form; `dialog` renders the open panel only. */
   variant?: 'inline' | 'dialog'
@@ -160,6 +163,7 @@ function saveStartWith(repoKey: string | undefined, startWith: StartWith): void 
 }
 
 export function TmuxCreateControls({
+  token = '',
   disabled = false,
   variant = 'inline',
   sessionCreateRequest = null,
@@ -169,6 +173,8 @@ export function TmuxCreateControls({
   probeRepo,
   loadClaudeProfiles,
 }: TmuxCreateControlsProps) {
+  const prepareEditVersion = useRef(0)
+  const [openVersion, setOpenVersion] = useState(0)
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const sessionNameRef = useRef<HTMLInputElement>(null)
   const [sessionName, setSessionName] = useState('')
@@ -228,15 +234,28 @@ export function TmuxCreateControls({
   const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
 
   useEffect(() => {
-    setPrepareCommand(repo?.mainRoot ? loadWorktreePrepareCommands()[repo.mainRoot] ?? '' : '')
-  }, [repo?.mainRoot])
+    const root = repo?.mainRoot
+    const commands = loadWorktreePrepareCommands()
+    setPrepareCommand(root ? commands[root] ?? '' : '')
+    if (!root || Object.hasOwn(commands, root) || (sessionCreateRequest?.repo && root !== sessionCreateRequest.repo.root)) return
+    let cancelled = false
+    const version = prepareEditVersion.current
+    void createAgentChatsApi(token).getPrepareCommand(root).then(
+      (command) => { if (!cancelled && version === prepareEditVersion.current) setPrepareCommand(command) },
+      (cause: unknown) => console.warn('Unable to load repository prepare command', cause),
+    )
+    return () => { cancelled = true }
+  }, [repo?.mainRoot, sessionCreateRequest?.id, openVersion, token])
 
-  // What a session starts with, and a chat's profile and permission mode, are remembered per repository.
+  // The starting pane is remembered per repository; each chat provider keeps its own settings.
   const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
+  const preferenceProvider = agentProvider === 'codex-chat' ? 'codex-chat' : 'claude-chat'
   useEffect(() => {
     setAgentProvider(loadStartWith(repoKey))
-    setChatLaunch(loadChatLaunch(repoKey))
   }, [repoKey])
+  useEffect(() => {
+    setChatLaunch(loadChatLaunch(repoKey, preferenceProvider))
+  }, [repoKey, preferenceProvider])
 
   useEffect(() => {
     if (agentProvider !== 'claude-chat' || claudeProfiles || !loadClaudeProfiles) return
@@ -406,11 +425,13 @@ export function TmuxCreateControls({
         request.agent = {
           provider: agentProvider,
           ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
+          ...(agentProvider === 'codex-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
           ...(agentProvider === 'claude-chat' ? {
             ...((chatConfigDir ?? chatLaunch.configDir) ? { configDir: chatConfigDir ?? chatLaunch.configDir } : {}),
             permissionMode: chatLaunch.permissionMode,
           } : {}),
         }
+        if (agentProvider === 'codex-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, 'codex-chat')
         if (agentProvider === 'claude-chat') {
           // Keep a remembered profile even when the list could not be loaded this time.
           const configDir = chatConfigDir ?? chatLaunch.configDir
@@ -423,6 +444,11 @@ export function TmuxCreateControls({
           ...(worktreePath ? { path: worktreePath } : {}),
           ...(prepareRequested ? { prepareCommand } : {}),
         }
+      }
+      if (repo?.mainRoot) {
+        saveWorktreePrepareCommand(repo.mainRoot, prepareCommand)
+        void createAgentChatsApi(token).setPrepareCommand(repo.mainRoot, prepareCommand.trim() ? prepareCommand : '')
+          .catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
       }
       const result = requireSessionAgentLaunch(request, await onCreateSession(request))
       saveStartWith(repoKey, agentProvider)
@@ -528,8 +554,13 @@ export function TmuxCreateControls({
               placeholder="pnpm i"
               onChange={(event) => {
                 const command = event.target.value
+                prepareEditVersion.current += 1
                 setPrepareCommand(command)
-                if (repo.mainRoot) saveWorktreePrepareCommand(repo.mainRoot, command)
+                if (repo.mainRoot) {
+                  saveWorktreePrepareCommand(repo.mainRoot, command)
+                  void createAgentChatsApi(token).setPrepareCommand(repo.mainRoot, command.trim() ? command : '')
+                    .catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
+                }
               }}
             />
           </label>
@@ -657,9 +688,9 @@ export function TmuxCreateControls({
             {START_WITH_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
           </select>
         </label>
-        {agentProvider === 'claude-chat' ? (
+        {agentProvider === 'claude-chat' || agentProvider === 'codex-chat' ? (
           <div className="tmux-create__chat-launch">
-            <label>
+            {agentProvider === 'claude-chat' ? <label>
               Profile
               <select
                 value={chatConfigDir ?? ''}
@@ -670,7 +701,7 @@ export function TmuxCreateControls({
                 {claudeProfiles?.length === 0 ? <option value="">Default Claude login</option> : null}
                 {claudeProfiles?.map((profile) => <option key={profile.configDir} value={profile.configDir}>{profile.name}</option>)}
               </select>
-            </label>
+            </label> : null}
             <label>
               Permissions
               <select
@@ -678,7 +709,7 @@ export function TmuxCreateControls({
                 disabled={unavailable}
                 onChange={(event) => setChatLaunch((current) => ({ ...current, permissionMode: event.target.value as ChatPermissionMode }))}
               >
-                {CHAT_PERMISSION_MODES.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+                {(agentProvider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES).map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
               </select>
             </label>
           </div>
@@ -734,8 +765,10 @@ export function TmuxCreateControls({
       onToggle={(event) => {
         if (event.currentTarget.open) {
           // This form stays mounted, so pick up choices remembered by the dialog meanwhile.
-          setAgentProvider(loadStartWith(repoKey))
-          setChatLaunch(loadChatLaunch(repoKey))
+          setOpenVersion((value) => value + 1)
+          const startWith = loadStartWith(repoKey)
+          setAgentProvider(startWith)
+          setChatLaunch(loadChatLaunch(repoKey, startWith === 'codex-chat' ? 'codex-chat' : 'claude-chat'))
           return
         }
         if (sessionGroupId !== 'ungrouped') setWorkingDirectory(workingDirectoryHistory[0] ?? '')

@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatSessionInfo } from '../../shared/agent-chat'
-import { ModelPicker } from './ComposerControls'
+import { ModelPicker, PermissionPicker } from './ComposerControls'
 
 const models = [
   { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5-5', efforts: ['low' as const, 'high' as const] },
@@ -41,5 +41,22 @@ describe('ModelPicker', () => {
   it('shows nothing until Claude lists its models', () => {
     const { container } = render(<ModelPicker session={{ ...fresh, models: undefined }} disabled={false} onConfigure={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('Codex model and permissions controls', () => {
+  it('renders Codex reasoning efforts through the existing model picker', async () => {
+    const onConfigure = vi.fn()
+    render(<ModelPicker session={{ ...fresh, provider: 'codex', model: 'test-model', selectedModel: 'test-model', effort: 'high', models: [{ value: 'test-model', displayName: 'Codex model', efforts: ['low', 'high'] }] }} disabled={false} onConfigure={onConfigure} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Codex model · High' }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Low' }))
+    expect(onConfigure).toHaveBeenCalledWith({ effort: 'low' })
+  })
+  it('offers workspace access, read only and explicitly enabled full access', async () => {
+    render(<PermissionPicker session={{ ...fresh, provider: 'codex', bypassAllowed: true }} disabled={false} onConfigure={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace access' }))
+    expect(await screen.findByRole('menuitemradio', { name: /Read only/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: /Full access/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitemradio', { name: /Accept edits|Auto/ })).not.toBeInTheDocument()
   })
 })
