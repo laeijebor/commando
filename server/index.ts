@@ -1719,6 +1719,13 @@ async function main(): Promise<void> {
   const simLive = new SimLiveService({ log: (message) => console.log(`[sim-live] ${message}`) })
   const simLogs = new SimLogsService()
   const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists, cacheDirectory: defaultSimSnapshotDirectory(port) })
+  const webPaneAgentLabel = (paneId: string): string | undefined => {
+    const status = agentStatuses.get(paneId)
+    if (!status || status.provider === 'unknown') return undefined
+    return status.agentSessionName
+      ? `${status.provider} · ${status.agentSessionName}`
+      : status.provider
+  }
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
     registry: simLeaseRegistry,
@@ -1727,6 +1734,12 @@ async function main(): Promise<void> {
       const pane = paneForId(paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
       if (pane && session) return publishSessionBrief(withSimulatorClaim(sessionBriefs.get(paneId), pane, session.name))
+    },
+    onLeased: (paneId, lease) => {
+      const pane = paneForId(paneId)
+      if (!pane) return
+      webPanes.showLeasedSimulator(lease.udid, { anchorPaneId: pane.id, sessionId: pane.sessionId, windowId: pane.windowId, openerLabel: webPaneAgentLabel(pane.id) })
+      publishWebPanes()
     },
     paneContext: async (paneId) => {
       const pane = paneForId(paneId)
@@ -1815,13 +1828,7 @@ async function main(): Promise<void> {
           }
         : undefined
     },
-    agentLabel: (paneId) => {
-      const status = agentStatuses.get(paneId)
-      if (!status || status.provider === 'unknown') return undefined
-      return status.agentSessionName
-        ? `${status.provider} · ${status.agentSessionName}`
-        : status.provider
-    },
+    agentLabel: webPaneAgentLabel,
     onChange: () => publishWebPanes(),
     cdpInfo: (webPaneId) => {
       const pane = webPanes.get(webPaneId)
