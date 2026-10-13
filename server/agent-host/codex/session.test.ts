@@ -18,6 +18,7 @@ class FakeClient implements CodexTransport {
   handlers: ((message: RpcRequest) => boolean)[] = []
   closes: ((error?: Error) => void)[] = []
   count = 0
+  rateLimits: unknown = { planType: 'plus', primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1_800_000_000 }, secondary: { usedPercent: 12, windowDurationMins: 10_080, resetsAt: 1_800_500_000 } }
   start = vi.fn(async () => {})
   onNotification(listener: (message: RpcNotification) => void) { this.notifications.push(listener) }
   onRequest(listener: (message: RpcRequest) => boolean) { this.handlers.push(listener) }
@@ -34,6 +35,7 @@ class FakeClient implements CodexTransport {
       this.notify('item/completed', { turnId: id, item: { type: 'userMessage', id: `u-${id}`, clientId: null, content: input } })
       return { turn: turn(id) }
     }
+    if (method === 'account/rateLimits/read') return { rateLimits: this.rateLimits, rateLimitsByLimitId: null }
     if (method === 'turn/steer') return { turnId: (params as ClientMethods['turn/steer']).expectedTurnId }
     return {}
   })
@@ -57,6 +59,31 @@ async function running(spec: Partial<AgentSessionSpec> = {}) {
 }
 
 describe('CodexChatSession', () => {
+  it('reads the account rate limits at start and merges pushed updates', async () => {
+    const { session, client } = harness()
+    await session.start()
+    await tick()
+    expect(client.requests.some((request) => request.method === 'account/rateLimits/read')).toBe(true)
+    expect(session.snapshot().session.planUsage).toMatchObject({ plan: 'plus', limits: [{ kind: 'session', percent: 40 }, { kind: 'weekly_all', percent: 12 }] })
+    client.notifications.forEach((listener) => listener({ method: 'account/rateLimits/updated', params: { rateLimits: { primary: { usedPercent: 91, windowDurationMins: 300, resetsAt: null }, secondary: null } } }))
+    expect(session.snapshot().session.planUsage?.limits.map((limit) => [limit.kind, limit.percent, limit.severity])).toEqual([['session', 91, 'critical'], ['weekly_all', 12, 'normal']])
+    expect(parseChatSessionInfo(session.snapshot().session)?.planUsage).toEqual(session.snapshot().session.planUsage)
+    session.close()
+  })
+  it('re-applies updates pushed during a rate-limit read over its figures', async () => {
+    const { session, client } = harness()
+    const original = client.request.getMockImplementation()!
+    let answer!: (value: unknown) => void
+    client.request.mockImplementation(async (method, params) => method === 'account/rateLimits/read' ? new Promise((resolve) => { answer = resolve }) : original(method, params))
+    await session.start()
+    await tick()
+    client.notifications.forEach((listener) => listener({ method: 'account/rateLimits/updated', params: { rateLimits: { primary: { usedPercent: 91, windowDurationMins: 300, resetsAt: null }, secondary: null } } }))
+    answer({ rateLimits: { primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: null }, secondary: { usedPercent: 12, windowDurationMins: 10_080, resetsAt: null } } })
+    await tick()
+    // The pushed 5h figure wins; the weekly window only the read carried is kept.
+    expect(session.snapshot().session.planUsage?.limits.map((limit) => [limit.kind, limit.percent])).toEqual([['session', 91], ['weekly_all', 12]])
+    session.close()
+  })
   it('starts a thread in pane cwd, sends input and replays resumed history', async () => {
     const { session, client } = harness({ resume: thread.id })
     expect(session.snapshot().session.sessionId).toBe(thread.id)

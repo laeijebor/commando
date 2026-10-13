@@ -134,6 +134,7 @@ import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
+import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
@@ -2507,6 +2508,10 @@ export function App() {
   }
   const chatStashApi = useMemo(() => createChatStashApi(token), [token])
   const chatStash = useMemo<ChatStash>(() => ({ entries: chatStashEntries, ...chatStashApi }), [chatStashEntries, chatStashApi])
+  // Rebuilt only when a reading changes, not on every streamed chat item.
+  const planUsageKey = Object.values(chats).map(({ session }) => `${session.provider}:${session.configDir ?? ''}:${session.planUsage?.updatedAt ?? ''}`).join(',')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const planUsageByProfile = useMemo(() => newestPlanUsage(Object.values(chats).map((chat) => chat.session)), [planUsageKey])
   // One stable service object per pane, so the composer's effects don't refire each render.
   const chatServiceCache = useRef(new Map<string, ChatInputServices>())
   const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane, sendChatAction, switchChat })
@@ -3223,6 +3228,7 @@ export function App() {
 
   return (
     <ChatStashContext.Provider value={chatStash}>
+    <PlanUsageContext.Provider value={planUsageByProfile}>
     <div
       className={`cockpit${maximizedPaneId ? ' has-maximized-pane' : ''}`}
       style={{ '--left-panel-width': `${leftPanelWidth}px` } as CSSProperties}
@@ -4283,6 +4289,7 @@ export function App() {
         </div>
       ) : null}
     </div>
+    </PlanUsageContext.Provider>
     </ChatStashContext.Provider>
   )
 }

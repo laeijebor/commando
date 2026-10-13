@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Minimize2, Zap } from 'lucide-react'
-import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
+import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatPlanLimit, type ChatPlanUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
 import { EFFORT_LABELS, fastModeOn, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
 import { cn } from './cn'
+import { formatDuration, formatReadingAge, formatResetTime, headlineLimits, isLimitReached, isPlanUsageStale, reachedLimit, shortLimitLabel } from './planUsage'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
@@ -229,6 +230,97 @@ export function ContextMeter({ usage, canCompact, onCompact }: { usage: ChatCont
             <Minimize2 aria-hidden="true" />
             Compact now
           </Button>
+        </div>
+      </PopoverPopup>
+    </Popover>
+  )
+}
+
+const SEVERITY_TEXT = { normal: '', warning: 'text-warning', critical: 'text-destructive' } as const
+const SEVERITY_FILL = { normal: 'bg-primary', warning: 'bg-warning', critical: 'bg-destructive' } as const
+
+function limitSeverity(limit: ChatPlanLimit, now: number): ChatPlanLimit['severity'] {
+  if (isLimitReached(limit, now)) return 'critical'
+  // A full window that has reset since the reading is open again.
+  return limit.reached ? 'normal' : limit.severity
+}
+
+/** Re-renders on an interval, so reset countdowns and staleness keep up. */
+function useClock(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs)
+    return () => window.clearInterval(timer)
+  }, [intervalMs])
+  return now
+}
+
+function resetText(limit: ChatPlanLimit, now: number): string | null {
+  if (limit.resetsAt === undefined) return null
+  if (limit.resetsAt <= now) return 'Reset since this reading'
+  const at = formatResetTime(limit.resetsAt, now)
+  return limit.resetsAt - now < 24 * 3_600_000 ? `Resets ${at} · in ${formatDuration(limit.resetsAt - now)}` : `Resets ${at}`
+}
+
+/** The plan's 5h and weekly windows as two small bars, with every window in a popover. */
+export function PlanUsageMeter({ usage, profile }: { usage: ChatPlanUsage; profile: string | null }) {
+  const [open, setOpen] = useState(false)
+  const now = useClock(30_000)
+  const reached = reachedLimit(usage, now)
+  const stale = isPlanUsageStale(usage, now)
+  const age = formatReadingAge(usage.updatedAt, now)
+  const headline = headlineLimits(usage)
+  const summary = headline.map((limit) => `${limit.title} ${Math.round(limit.percent)}% used`).join(', ')
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        className={cn(
+          'flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-1.5 py-0.5 text-2xs tabular-nums text-muted-foreground hover:bg-accent hover:text-secondary-label',
+          open && 'bg-accent text-secondary-label',
+          stale && !reached && 'opacity-50',
+          reached && 'rounded-full border border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive',
+        )}
+        aria-label={reached ? `${reached.title} limit reached` : `Plan usage: ${summary}`}
+        title={reached ? undefined : `Plan usage, ${age}${stale ? ' (stale)' : ''}`}
+        data-testid="plan-usage-meter"
+      >
+        {reached ? (
+          <span>{shortLimitLabel(reached)} limit reached{reached.resetsAt !== undefined ? ` · resets ${formatResetTime(reached.resetsAt, now)}` : ''}</span>
+        ) : headline.map((limit) => (
+          <span key={`${limit.kind}:${limit.title}`} className={cn('flex items-center gap-1', SEVERITY_TEXT[limitSeverity(limit, now)])}>
+            {shortLimitLabel(limit)}
+            <span className="block h-1 w-6 overflow-hidden rounded-[2px] bg-accent" aria-hidden="true">
+              <span className={cn('block h-full', SEVERITY_FILL[limitSeverity(limit, now)])} style={{ width: `${limit.percent}%` }} />
+            </span>
+            {Math.round(limit.percent)}%
+          </span>
+        ))}
+      </PopoverTrigger>
+      <PopoverPopup className="grid w-[300px] gap-2.5 px-3 py-2.5" side="top" align="end" aria-label="Plan usage">
+        <div className="flex items-baseline justify-between gap-3 text-sm">
+          <b className="font-semibold text-foreground">Plan usage</b>
+          <span className="truncate text-xs text-muted-foreground">{[usage.plan && usage.plan[0]!.toUpperCase() + usage.plan.slice(1), profile].filter(Boolean).join(' · ')}</span>
+        </div>
+        {usage.limits.map((limit) => {
+          const severity = limitSeverity(limit, now)
+          const reset = resetText(limit, now)
+          return (
+            <div key={`${limit.kind}:${limit.title}`} className="grid gap-1">
+              <div className="flex items-baseline justify-between gap-3 text-xs">
+                <span className="truncate text-foreground">{limit.title}</span>
+                <span className={cn('tabular-nums', severity === 'normal' ? 'text-muted-foreground' : SEVERITY_TEXT[severity])}>
+                  {isLimitReached(limit, now) ? 'Limit reached' : `${Math.round(limit.percent)}% used`}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-[3px] bg-accent" role="progressbar" aria-label={`${limit.title} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(limit.percent)}>
+                <span className={cn('block h-full', SEVERITY_FILL[severity])} style={{ width: `${limit.percent}%` }} />
+              </div>
+              {reset ? <span className="text-2xs text-muted-foreground">{reset}</span> : null}
+            </div>
+          )
+        })}
+        <div className={cn('border-t border-border pt-2 text-2xs', stale ? 'text-warning' : 'text-muted-foreground')}>
+          Updated {age}{stale ? ' · refreshes after the next turn' : ''}
         </div>
       </PopoverPopup>
     </Popover>

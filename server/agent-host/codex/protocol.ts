@@ -28,6 +28,7 @@ export interface ClientMethods {
   'turn/start': { threadId: string; input: UserInput[]; model?: string; effort?: string | null; serviceTier?: string | null; approvalPolicy: ApprovalPolicy; approvalsReviewer: 'user'; sandboxPolicy: SandboxPolicy }
   'turn/steer': { threadId: string; expectedTurnId: string; input: UserInput[] }
   'turn/interrupt': { threadId: string; turnId: string }
+  'account/rateLimits/read': Record<string, never>
 }
 export interface RpcRequest { id: RpcId; method: string; params: unknown }
 export interface RpcNotification { method: string; params: unknown }

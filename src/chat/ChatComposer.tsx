@@ -25,7 +25,8 @@ import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
 import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
-import { ContextMeter, ModelPicker, PermissionPicker } from './ComposerControls'
+import { ContextMeter, ModelPicker, PermissionPicker, PlanUsageMeter } from './ComposerControls'
+import { usePlanUsage } from './planUsage'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
 import {
   detectTrigger,
@@ -804,6 +805,7 @@ export function ChatComposer({
     else onDismissActionError?.()
   }
   const profile = profileLabel(session.configDir)
+  const planUsage = usePlanUsage(session)
   return (
     <div className="px-4 pb-3 pt-2">
       <div
@@ -960,6 +962,7 @@ export function ChatComposer({
               </Button>
             ) : null}
           </span>
+          {planUsage ? <PlanUsageMeter usage={planUsage} profile={profile} /> : null}
           {session.contextUsage ? (
             <ContextMeter usage={session.contextUsage} canCompact={session.provider === 'claude' && !disabled && !running} onCompact={() => onSend('/compact')} />
           ) : null}

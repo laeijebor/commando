@@ -11,6 +11,7 @@ import {
   type ChatFileSearchResult,
   type ChatImageRef,
   type ChatItem,
+  type ChatPlanUsage,
   type ChatModelOption,
   type ChatQueueAction,
   type ChatQueuedMessage,
@@ -25,6 +26,7 @@ import {
 import { shellQuote } from '../../agent-resume-command.js'
 import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from '../provider.js'
+import { applyCodexRateLimits } from '../plan-usage.js'
 import type { AgentSessionSpec } from '../session.js'
 import { CodexRpcClient, type CodexTransport } from './client.js'
 import { CodexItemMapper, inputQuestions } from './items.js'
@@ -136,6 +138,10 @@ export class CodexChatSession implements ChatProviderSession {
   private queue: ChatQueuedMessage[] = []
   private queueCounter = 0
   private closing = false
+  /** When the rate limits were last read; turns closer together than a minute rely on Codex's pushed updates. */
+  private planUsageReadAt = 0
+  /** Updates pushed while each read awaits its answer; they are re-applied over the read's older figures. */
+  private readonly pushedDuringReads = new Set<unknown[]>()
   private closed = false
   private interrupting = false
 
@@ -198,6 +204,7 @@ export class CodexChatSession implements ChatProviderSession {
   private async initialize(): Promise<void> {
     try {
       await this.client.start()
+      void this.readPlanUsage()
       const models: ChatModelOption[] = []
       let cursor: string | undefined
       const cursors = new Set<string>()
@@ -445,6 +452,11 @@ export class CodexChatSession implements ChatProviderSession {
       this.emitItems(this.mapper.notice('info', `Codex routed this turn to ${params.toModel}`))
     }
     if (message.method === 'serverRequest/resolved' && rpcId(params.requestId)) this.pending.delete(requestKey(params.requestId))
+    if (message.method === 'account/rateLimits/updated') {
+      for (const pushed of this.pushedDuringReads) pushed.push(params.rateLimits)
+      this.applyRateLimits(params.rateLimits)
+      return
+    }
     this.emitItems(this.mapper.notification(message))
     if (message.method === 'serverRequest/resolved') this.update({ status: this.pending.size ? 'waiting' : this.activeTurn ? 'running' : 'idle' })
     if (message.method === 'turn/completed') {
@@ -460,7 +472,27 @@ export class CodexChatSession implements ChatProviderSession {
         this.switchReady()
         this.flushQueue()
       }
+      if (Date.now() - this.planUsageReadAt >= 60_000) void this.readPlanUsage()
     }
+  }
+  /** The account's rate limits, for the composer's usage meter; a failed read keeps the last one. */
+  private async readPlanUsage(): Promise<void> {
+    if (this.closing) return
+    this.planUsageReadAt = Date.now()
+    const pushed: unknown[] = []
+    this.pushedDuringReads.add(pushed)
+    try {
+      const response = record(await this.client.request('account/rateLimits/read', {}))
+      this.applyRateLimits(response.rateLimits, ...pushed)
+    } catch (error) {
+      if (!this.closing) this.spec.log?.(`Couldn't read Codex rate limits: ${errorText(error)}`)
+    } finally {
+      this.pushedDuringReads.delete(pushed)
+    }
+  }
+  private applyRateLimits(...snapshots: unknown[]): void {
+    const usage = snapshots.reduce<ChatPlanUsage | undefined>((current, snapshot) => applyCodexRateLimits(current, snapshot, Date.now()), this.info.planUsage)
+    if (usage && usage !== this.info.planUsage) this.update({ planUsage: usage })
   }
   async configure(change: ChatSettingsChange): Promise<void> {
     try { this.applySettings(change) } catch (error) { this.emitItems(this.mapper.notice('error', `Couldn't change Codex settings: ${errorText(error)}`)) }
