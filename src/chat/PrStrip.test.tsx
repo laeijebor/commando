@@ -48,6 +48,15 @@ describe('chat PR strip', () => {
     expect(screen.queryByText('Merged')).not.toBeInTheDocument()
   })
 
+  it('shows the shared HUD status chips for open PRs only', async () => {
+    const open = { ...pr(12), unresolvedThreads: 7, unansweredThreads: 2, conflicting: true }
+    setup([open, { ...pr(10, 'merged'), unresolvedThreads: 4 }])
+    const row = (await screen.findByRole('link', { name: '#12 Change 12' })).closest('.chat-pr-row') as HTMLElement
+    for (const chip of ['✗ 2 failing', '2 unanswered', '5 unresolved', '⚠ conflicts']) expect(within(row).getByText(chip)).toBeInTheDocument()
+    const merged = screen.getByText('Merged').closest('.chat-pr-row') as HTMLElement
+    expect(within(merged).queryByText(/unresolved|unanswered|failing/)).not.toBeInTheDocument()
+  })
+
   it('opens a PR in the side panel on a plain click and leaves modified clicks to the browser', async () => {
     const onOpenPr = vi.fn()
     setup([pr(12)], null, onOpenPr)

@@ -110,7 +110,7 @@ import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel } from './SidePanel'
-import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, NARROW_PANEL_QUERY, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
@@ -315,6 +315,7 @@ type TerminalPaneProps = {
   status?: AgentStatus
   brief?: SessionBrief
   panelTabs?: WebPane[]
+  panelTrigger?: ReactNode
   mark?: PaneMark
   resume?: AgentResume
   index: number
@@ -409,6 +410,7 @@ export function TerminalPaneCard({
   status,
   brief: suppliedBrief,
   panelTabs: paneTabs = [],
+  panelTrigger,
   mark,
   index,
   count,
@@ -558,8 +560,8 @@ export function TerminalPaneCard({
   return (
     <article
       className={`terminal-pane${focused ? ' is-focused' : ''}${jumpHighlighted ? ' is-jump-highlighted' : ''}${maximized ? ' is-maximized' : ''}${solo ? ' is-solo' : ''}${mark ? ` has-pane-mark tone-${mark.tone}` : ''}${mark?.activityCount ? ' has-pane-mark-activity' : ''}`}
-      onPointerDownCapture={onFocus}
-      onFocusCapture={onFocus}
+      onPointerDownCapture={(event) => { if (!(event.target as Element).closest('[data-panel-chip]')) onFocus() }}
+      onFocusCapture={(event) => { if (!(event.target as Element).closest('[data-panel-chip]')) onFocus() }}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -620,9 +622,9 @@ export function TerminalPaneCard({
           ) : <strong>{paneLabel}</strong>}
           <small title={brief?.headline || pane.command || pane.path}>{brief?.headline || pane.command || pane.path}</small>
         </span>
-        {paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
+        {panelTrigger ?? (paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
           {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
-        </span>}
+        </span>)}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
         {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
         {mark ? (
@@ -1031,6 +1033,16 @@ function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
 
 export function App() {
   const desktopWindowActive = useDesktopWindowActivity()
+  const [narrowPanel, setNarrowPanel] = useState(() => isNarrowPanel(window.matchMedia(NARROW_PANEL_QUERY)))
+  const [openDrawers, setOpenDrawers] = useState<Record<string, boolean>>({})
+  useEffect(() => {
+    const media = window.matchMedia(NARROW_PANEL_QUERY)
+    const onChange = () => setNarrowPanel(isNarrowPanel(media))
+    onChange()
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [])
+  useEffect(() => { setOpenDrawers({}) }, [narrowPanel])
   const nativeWindowBridge = getNativeWindowBridge()
   const detachedWebPaneIds = useDetachedWebPaneIds()
   const [token, setToken] = useState(getInitialToken)
@@ -3660,6 +3672,9 @@ export function App() {
                   </header>
                   <SidePanel key={group.windowId} windowId={group.windowId} tabs={panelWebPanes}
                     focusedPaneId={panelPaneId}
+                    narrowMode={narrowPanel} drawerOpen={Boolean(openDrawers[group.windowId])}
+                    onDrawerOpen={() => setOpenDrawers((current) => current[group.windowId] ? current : { ...current, [group.windowId]: true })}
+                    onDrawerClose={() => setOpenDrawers((current) => ({ ...current, [group.windowId]: false }))}
                     maximizedTabId={builtinMaximized?.id ?? maximizedPanelTab?.id}
                     revealRequest={panelRevealRequest && (panelWebPanes.some((tab) => tab.id === panelRevealRequest.tabId) || groupPanes.some((pane) => panelRevealRequest.tabId.startsWith(`panel:${pane.id}:`))) ? panelRevealRequest : undefined}
                     gridMaximized={Boolean(maximizedGridPaneId)}
@@ -3732,10 +3747,28 @@ export function App() {
                         const rendererControl = storedRendererControl?.identity === rendererIdentity
                           ? storedRendererControl
                           : undefined
+                        const paneTabs = panelTabs(panelWebPanes, pane.id)
+                        const hasNew = paneTabs.some((tab) => tab.unseen) || sessionAttention[pane.id] || sessionWarnings[pane.id]
+                        const panelTrigger = narrowPanel ? <button type="button" className={`pane-tab-count pane-tab-button${hasNew ? ' has-new' : ''}`}
+                          data-panel-chip={pane.id} aria-label={`Open tabs for ${pane.title || pane.command || `Pane ${pane.index}`}`}
+                          aria-expanded={Boolean(openDrawers[group.windowId]) && panelPaneId === pane.id}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            event.currentTarget.focus()
+                            setFocusedPaneId(pane.id)
+                            if (maximizedGridPaneId) {
+                              clearLayoutTimers()
+                              setMaximizedPaneId(null)
+                              setOpenDrawers((current) => ({ ...current, [group.windowId]: true }))
+                            } else setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))
+                          }}>
+                          <PanelTop aria-hidden="true" />{paneTabs.length > 0 && <span>{paneTabs.length}</span>}
+                          {hasNew && <i className={`side-panel-new${sessionWarnings[pane.id] ? ' is-warning' : ''}`} aria-label={sessionWarnings[pane.id] ? 'Session resume failed' : 'New updates'} />}
+                        </button> : undefined
                         if (pane.empty) {
                           return [
                             pane.id,
-                            <EmptyPane key={rendererIdentity} pane={pane} pending={paneActionPending} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />,
+                            <EmptyPane key={rendererIdentity} pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />,
                           ] as const
                         }
                         return [
@@ -3745,7 +3778,8 @@ export function App() {
                             pane={pane}
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}
-                            panelTabs={panelTabs(panelWebPanes, pane.id)}
+                            panelTabs={paneTabs}
+                            panelTrigger={panelTrigger}
                             mark={paneMarks[pane.targetId]}
                             resume={agentResumes[pane.targetId]}
                             onRetryResume={() => retryAgentResume(pane.targetId)}

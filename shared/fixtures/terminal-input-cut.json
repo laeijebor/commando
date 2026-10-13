@@ -82,12 +82,13 @@
     "rows": [
       "user@host ~ % git status"
     ],
+    "wrapped": [false],
     "cols": 80,
     "cursorRow": 0,
     "cursorCol": 24,
     "expected": {
-      "text": "git status",
-      "clear": "\u0005\u0015"
+      "text": "user@host ~ % git status",
+      "clear": ""
     }
   },
   {
@@ -113,7 +114,63 @@
     "cursorCol": 12,
     "expected": {
       "text": "echo a > b",
-      "clear": "\u0005\u0015"
+      "clear": ""
+    }
+  },
+  {
+    "name": "custom prompt redirect keeps complete input",
+    "rows": [
+      "λ echo a > out"
+    ],
+    "wrapped": [false],
+    "cols": 80,
+    "cursorRow": 0,
+    "cursorCol": 14,
+    "expected": {
+      "text": "λ echo a > out",
+      "clear": ""
+    }
+  },
+  {
+    "name": "oh-my-zsh prompt redirect keeps complete input",
+    "rows": [
+      "➜  commando git:(main) ✗ echo a > out"
+    ],
+    "wrapped": [false],
+    "cols": 80,
+    "cursorRow": 0,
+    "cursorCol": 39,
+    "expected": {
+      "text": "➜  commando git:(main) ✗ echo a > out",
+      "clear": ""
+    }
+  },
+  {
+    "name": "single-token prompt strips",
+    "rows": [
+      "user@host:~$ git status"
+    ],
+    "wrapped": [false],
+    "cols": 80,
+    "cursorRow": 0,
+    "cursorCol": 23,
+    "expected": {
+      "text": "git status",
+      "clear": ""
+    }
+  },
+  {
+    "name": "numeric percent is not a prompt",
+    "rows": [
+      "0% done"
+    ],
+    "wrapped": [false],
+    "cols": 80,
+    "cursorRow": 0,
+    "cursorCol": 7,
+    "expected": {
+      "text": "0% done",
+      "clear": ""
     }
   },
   {
@@ -138,7 +195,7 @@
     "cursorCol": 3,
     "expected": {
       "text": "output > stays",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -151,7 +208,7 @@
     "cursorCol": 6,
     "expected": {
       "text": "echo abc def",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -185,7 +242,7 @@
     "cursorCol": 6,
     "expected": {
       "text": "line",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -200,7 +257,7 @@
     "cursorCol": 6,
     "expected": {
       "text": "line",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -270,7 +327,7 @@
     "cursorCol": 12,
     "expected": {
       "text": "echo a > b",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -283,7 +340,7 @@
     "cursorCol": 12,
     "expected": {
       "text": "echo a > b",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -296,7 +353,7 @@
     "cursorCol": 12,
     "expected": {
       "text": "echo a > b",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -309,7 +366,7 @@
     "cursorCol": 12,
     "expected": {
       "text": "echo a > b",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -322,7 +379,7 @@
     "cursorCol": 12,
     "expected": {
       "text": "echo a > b",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -348,13 +405,11 @@
       "────────────────────────────────────────",
       "user@host ~ % git status                "
     ],
+    "wrapped": [false, false, false, false],
     "cols": 40,
     "cursorRow": 3,
     "cursorCol": 24,
-    "expected": {
-      "text": "git status",
-      "clear": "\u0005\u0015"
-    }
+    "expected": null
   },
   {
     "name": "cursor inside Claude box above shell prompt",
@@ -392,6 +447,21 @@
     }
   },
   {
+    "name": "cursor two rows below a live box's lower rule",
+    "rows": [
+      "────────────────────────────────────────",
+      "❯ live Claude input                     ",
+      "────────────────────────────────────────",
+      "output                                  ",
+      "user@host ~ % git status                "
+    ],
+    "wrapped": [false, false, false, false, false],
+    "cols": 40,
+    "cursorRow": 4,
+    "cursorCol": 24,
+    "expected": null
+  },
+  {
     "name": "wrapped shell command cursor on second row",
     "rows": [
       "$ echo abc",
@@ -402,7 +472,7 @@
     "cursorCol": 5,
     "expected": {
       "text": "echo abcdefgh",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -416,7 +486,7 @@
     "cursorCol": 5,
     "expected": {
       "text": "echo abcdefgh",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -431,7 +501,7 @@
     "cursorCol": 5,
     "expected": {
       "text": "echo abcdefghijklmnopq",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -445,7 +515,7 @@
     "cursorCol": 6,
     "expected": {
       "text": "next",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -458,7 +528,7 @@
     "cursorCol": 17,
     "expected": {
       "text": " secret-command",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -496,7 +566,7 @@
     "cursorCol": 5,
     "expected": {
       "text": "echo ab cdef",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -511,7 +581,7 @@
     "cursorCol": 4,
     "expected": {
       "text": "echo ab cdef",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -526,7 +596,7 @@
     "cursorCol": 5,
     "expected": {
       "text": "echo 你abcdef",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -540,7 +610,7 @@
     "cursorCol": 5,
     "expected": {
       "text": "echo 你a",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -556,7 +626,7 @@
     "cursorCol": 4,
     "expected": {
       "text": "echo abcdefghijklmnopq",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -571,7 +641,7 @@
     "cursorCol": 6,
     "expected": {
       "text": "next",
-      "clear": "\u0005\u0015"
+      "clear": ""
     }
   },
   {
@@ -612,9 +682,40 @@
     "cols": 40,
     "cursorRow": 3,
     "cursorCol": 32,
+    "expected": null
+  },
+  {
+    "name": "Claude bash box with cursor inside",
+    "rows": [
+      "────────────────────────────────────────",
+      "! git status",
+      "────────────────────────────────────────"
+    ],
+    "cols": 40,
+    "cursorRow": 1,
+    "cursorCol": 6,
     "expected": {
-      "text": "Opus 5.5:high | ░░ 0% | wt:chat",
-      "clear": ""
+      "text": "!git status",
+      "clear": "\u000b\u000b\u000b\u0015\u0015\u0015"
     }
+  },
+  {
+    "name": "Claude bash box above cursor on status row",
+    "rows": [
+      "────────────────────────────────────────",
+      "! git status",
+      "────────────────────────────────────────",
+      "  Opus 5.5:high | ░░ 0% | wt:chat"
+    ],
+    "wrapped": [
+      false,
+      false,
+      false,
+      false
+    ],
+    "cols": 40,
+    "cursorRow": 3,
+    "cursorCol": 32,
+    "expected": null
   }
 ]

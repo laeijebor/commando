@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronDown, CircleDashed, CircleMinus, ExternalLink, Git
 import type { PrAutofixStatus } from '../../shared/pr-types'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { usePanePullRequests } from '../PanePullRequests'
+import { PrBadges } from '../PrBadges'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
 type StripApi = Pick<PrsApiClient, 'pane' | 'autofixStatus' | 'setAutofix'>
@@ -63,7 +64,7 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger className="chat-pr-ci" aria-label={`CI monitoring for PR #${pr.number}`}>
-        <span className={`chat-pr-dot ${checks?.state ?? 'pending'}`} /> CI <ChevronDown className="size-3" />
+        CI <ChevronDown className="size-3" />
       </PopoverTrigger>
       <PopoverPopup align="end" className="w-[290px] p-3" aria-label={`CI monitoring for PR #${pr.number}`}>
         <div className="flex items-center justify-between gap-2 mb-3">
@@ -108,8 +109,16 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
                 event.preventDefault()
                 onOpenPr(pr.repo, pr.number)
               }}><span className="font-mono">#{pr.number}</span> <span className="truncate">{pr.title}</span></a>
-            <span className="chat-pr-diff"><span className="text-success">+{pr.additions.toLocaleString('en-US')}</span> <span className="text-destructive">−{pr.deletions.toLocaleString('en-US')}</span></span>
-            {pr.state === 'open' ? <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} /> : <span className="shrink-0">{pr.state === 'merged' ? 'Merged' : 'Closed'}</span>}
+            {pr.state === 'open' ? <>
+              {/* The same shared PR status the HUD shows, updated as any view refreshes it. */}
+              <span className="chat-pr-badges">
+                <PrBadges pr={pr} number={pr.number} />
+                <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} />
+              </span>
+            </> : <>
+              <span className="chat-pr-diff"><span className="text-success">+{pr.additions.toLocaleString('en-US')}</span> <span className="text-destructive">−{pr.deletions.toLocaleString('en-US')}</span></span>
+              <span className="shrink-0">{pr.state === 'merged' ? 'Merged' : 'Closed'}</span>
+            </>}
           </div>
         )
       })}

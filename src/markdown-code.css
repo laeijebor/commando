@@ -1,0 +1,26 @@
+.markdown-mermaid {
+  margin: 1em 0;
+  padding: 16px;
+  overflow: auto;
+  background: var(--surface);
+  border-radius: 8px;
+  text-align: center;
+}
+/* Beats the global icon sizing (`svg { width: 18px }`) and panel icon rules. */
+div.markdown-mermaid > svg {
+  width: 100%;
+  height: auto;
+  stroke-width: initial;
+}
+.markdown-mermaid-fallback small {
+  color: var(--muted);
+}
+.markdown-diff .add {
+  color: var(--green);
+}
+.markdown-diff .del {
+  color: var(--red);
+}
+.markdown-diff .hunk {
+  color: var(--accent);
+}

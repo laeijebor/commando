@@ -17,6 +17,7 @@ import { TileReviewLayer, type TileReviewSurface } from './TileReviewLayer'
 import { subscribeWebTilePending } from './webTilePendingSubscription'
 
 const FRAME_PUBLISH_FALLBACK_MS = 100
+const DRAWER_TRANSITION_FALLBACK_MS = 250
 
 /**
  * Desktop-shell tier of a web pane tile: reserves the tile's rectangle in the
@@ -262,7 +263,20 @@ export function NativeWebViewTile({
 
     let frame: number | null = null
     let fallbackTimer: number | null = null
+    let drawerTimer: number | null = null
+    let waitingForDrawer = false
     let fingerprint = ''
+    const drawer = slot.closest<HTMLElement>('.side-panel')
+    const drawerUsesMotion = () => Boolean(drawer?.closest('.window-panel-layout.is-narrow.is-drawer-open:not(.is-panel-maximized)')) &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const drawerIsMoving = () => {
+      if (!drawer || !drawerUsesMotion()) return false
+      if (drawer.getAnimations) return drawer.getAnimations().some((animation) =>
+        'transitionProperty' in animation && animation.transitionProperty === 'transform' && (animation.playState === 'running' || animation.pending))
+      const transform = window.getComputedStyle(drawer).transform
+      const matrix = transform.match(/^matrix\(([^)]+)\)$/)?.[1].split(',').map(Number)
+      return matrix ? matrix[4] !== 0 || matrix[5] !== 0 : Boolean(transform && transform !== 'none')
+    }
     const publish = () => {
       if (frame !== null) window.cancelAnimationFrame(frame)
       frame = null
@@ -275,12 +289,12 @@ export function NativeWebViewTile({
       const bounds = inputRef.current?.getBoundingClientRect() ?? slot.getBoundingClientRect()
       const clip = clippingRect(slot)
       const occluders = [...document.querySelectorAll('[data-native-terminal-occluder]')]
-        .filter(isVisibleElement)
+        .filter((element) => !element.contains(slot) && isVisibleElement(element))
         .map((element) => element.getBoundingClientRect())
       const hitBlockers = [...document.querySelectorAll('[data-native-terminal-hit-blocker]')]
-        .filter(isVisibleElement)
+        .filter((element) => !element.contains(slot) && isVisibleElement(element))
         .map((element) => element.getBoundingClientRect())
-      const slotVisible = visible && isVisibleElement(slot)
+      const slotVisible = visible && !waitingForDrawer && isVisibleElement(slot)
       const visibleRegions = slotVisible
         ? computeNativeTerminalVisibleRegions(bounds, clip, occluders)
         : []
@@ -312,9 +326,33 @@ export function NativeWebViewTile({
       // work and recompute once on the way back instead. This also stops the
       // fallback timer, so a hidden window runs no per-tile polling at all.
       if (!visible || !isPresenting()) return
+      if (waitingForDrawer) {
+        if (!drawerUsesMotion()) finishDrawerTransition()
+        return
+      }
       if (frame !== null || fallbackTimer !== null) return
       frame = window.requestAnimationFrame(publish)
       fallbackTimer = window.setTimeout(publish, FRAME_PUBLISH_FALLBACK_MS)
+    }
+    const finishDrawerTransition = () => {
+      if (drawerTimer !== null) window.clearTimeout(drawerTimer)
+      drawerTimer = null
+      waitingForDrawer = false
+      publish()
+    }
+    const startDrawerTransition = () => {
+      if (!visible || !drawerUsesMotion()) return
+      waitingForDrawer = true
+      if (drawerTimer !== null) window.clearTimeout(drawerTimer)
+      drawerTimer = window.setTimeout(finishDrawerTransition, DRAWER_TRANSITION_FALLBACK_MS)
+      publish()
+    }
+    const onTransitionStart = (event: TransitionEvent) => {
+      if (event.target === drawer && event.propertyName === 'transform') startDrawerTransition()
+    }
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (event.target === drawer && event.propertyName === 'transform' && waitingForDrawer) finishDrawerTransition()
+      else schedule()
     }
     const resizeObserver = new ResizeObserver(schedule)
     if (inputRef.current) resizeObserver.observe(inputRef.current)
@@ -328,21 +366,29 @@ export function NativeWebViewTile({
       childList: true,
       subtree: true,
     })
+    window.addEventListener('transitionrun', onTransitionStart, true)
+    window.addEventListener('transitionstart', onTransitionStart, true)
+    window.addEventListener('transitionend', onTransitionEnd, true)
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
     const unsubscribePresenting = subscribeToPresenting((presenting) => {
       if (presenting) schedule()
     })
-    publish()
+    if (visible && drawerIsMoving()) startDrawerTransition()
+    else publish()
 
     return () => {
       resizeObserver.disconnect()
       unsubscribePresenting()
       mutationObserver.disconnect()
+      window.removeEventListener('transitionrun', onTransitionStart, true)
+      window.removeEventListener('transitionstart', onTransitionStart, true)
+      window.removeEventListener('transitionend', onTransitionEnd, true)
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
       if (frame !== null) window.cancelAnimationFrame(frame)
       if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+      if (drawerTimer !== null) window.clearTimeout(drawerTimer)
     }
   }, [bridge, visible, attachment])
 

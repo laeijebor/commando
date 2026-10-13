@@ -87,7 +87,7 @@ final class TerminalInputCutTests: XCTestCase {
         surface.view.feed(text: "$ echo 界\u{1b}[2m ghost suggestion\u{1b}[0m")
         XCTAssertTrue(surface.view.performKeyEquivalent(with: try key(7, "x")))
         XCTAssertEqual(pasteboard.string(forType: .string), "echo 界")
-        XCTAssertEqual(inputs, [Data([0x05, 0x15])])
+        XCTAssertTrue(inputs.isEmpty)
         XCTAssertEqual(copiedCount, 1)
 
         inputs.removeAll()

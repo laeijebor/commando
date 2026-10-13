@@ -6,6 +6,7 @@ import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProv
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { providerLabel } from './ComposerControls'
+import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
 import { SubagentGroup, useNow } from './Subagents'
 import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
@@ -19,7 +20,7 @@ const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number;
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="chat-markdown">
-      <ReactMarkdown remarkPlugins={markdownPlugins} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>
+      <ReactMarkdown remarkPlugins={markdownPlugins} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />, pre: MarkdownPre }}>
         {text}
       </ReactMarkdown>
     </div>

@@ -72,13 +72,13 @@ These keep live legacy billing (78 subscriptions) working once the signature che
 
 ## Open it
 
-Run this from your own tmux pane. The script lives in the **Commando repo
-checkout**, not in this skill folder or the project: invoke
-`/absolute/path/to/commando/scripts/commando-guide` when working elsewhere. If
-you can't find the checkout, use the raw HTTP steps below.
+Run this from your own tmux pane, from any project. The script lives in the
+Commando checkout this skill was installed from, at
+`{{COMMANDO_REPO}}/scripts/commando-guide`. If that path doesn't exist, use the
+raw HTTP steps below.
 
 ```bash
-/path/to/commando/scripts/commando-guide .guides/stripe-webhooks.md   # prints webPaneId
+{{COMMANDO_REPO}}/scripts/commando-guide .guides/stripe-webhooks.md   # prints webPaneId
 ```
 
 Running it again for the same file focuses the existing tab. Tell the user
@@ -94,8 +94,8 @@ you opened it beside your pane.
 - **Read the full state** at any time:
 
   ```bash
-  /path/to/commando/scripts/commando-guide state <webPaneId>          # readable
-  /path/to/commando/scripts/commando-guide state <webPaneId> --json
+  {{COMMANDO_REPO}}/scripts/commando-guide state <webPaneId>          # readable
+  {{COMMANDO_REPO}}/scripts/commando-guide state <webPaneId> --json
   ```
 
 - **Respond by editing the guide file.** The tab re-renders live and keeps the
@@ -106,8 +106,8 @@ you opened it beside your pane.
 - The user's own ticks and notes override your `[x]`. Never ask them to re-tick
   something because you changed the wording; keep the `{#id}` instead.
 - Close the tab when the procedure is finished:
-  `commando-guide close <webPaneId>`. Keep the file; it is the record of what
-  happened.
+  `{{COMMANDO_REPO}}/scripts/commando-guide close <webPaneId>`. Keep the file;
+  it is the record of what happened.
 
 ## Raw HTTP
 

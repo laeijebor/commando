@@ -83,20 +83,28 @@ function isInputRule(row: string): boolean {
   return /^[─━╭╮╰╯│]+$/u.test(trimmed) && [...trimmed].filter((char) => char === '─').length >= 10
 }
 
+const BOX_START = /^(?:│ )?([❯>!])[ \u00a0]/u
+
 function withoutSideBorders(row: string): string {
   return row.replace(/^│ ?/u, '').replace(/ *│ *$/u, '')
 }
 
 export function extractTerminalInput({ rows, cols, cursorRow, cursorCol, wrapped }: TerminalInputScreen): TerminalInputCut | null {
   if (rows[cursorRow] === undefined || isInputRule(rows[cursorRow])) return null
+  let boxAboveCursor = false
   for (let start = rows.length - 1; start > 0; start -= 1) {
-    if (!/^(?:│ )?[❯>][ \u00a0]/u.test(rows[start]) || !isInputRule(rows[start - 1])) continue
+    if (!BOX_START.test(rows[start]) || !isInputRule(rows[start - 1])) continue
     const end = rows.findIndex((row, index) => index > start && isInputRule(row))
-    if (end === -1 || cursorRow < start || cursorRow >= end) continue
+    if (end === -1) continue
+    if (end < cursorRow) {
+      boxAboveCursor = true
+      continue
+    }
+    if (cursorRow < start || cursorRow >= end) continue
     const contentWidth = cols - 2 - (rows[start].startsWith('│ ') ? 4 : 0)
     const lines = rows.slice(start, end).map((row, index) => {
       const content = withoutSideBorders(row)
-      return (index === 0 ? content.replace(/^[❯>][ \u00a0]/u, '') : content.replace(/^  /u, '')).trimEnd()
+      return (index === 0 ? content.replace(BOX_START, (_, marker: string) => marker === '!' ? '!' : '') : content.replace(/^  /u, '')).trimEnd()
     })
     let text = lines[0]
     for (let index = 1; index < lines.length; index += 1) {
@@ -113,6 +121,7 @@ export function extractTerminalInput({ rows, cols, cursorRow, cursorCol, wrapped
     const repeats = 2 * lines.length + 1
     return { text, clear: '\x0b'.repeat(repeats) + '\x15'.repeat(repeats) }
   }
+  if (boxAboveCursor) return null
   const continues = (row: string) => {
     const lastCell = [...row][cols - 1]
     return lastCell !== undefined && lastCell !== ' '
@@ -123,9 +132,10 @@ export function extractTerminalInput({ rows, cols, cursorRow, cursorCol, wrapped
   while (lastRow + 1 < rows.length && (wrapped ? wrapped[lastRow + 1] : continues(rows[lastRow]))) lastRow += 1
   const row = rows.slice(firstRow, lastRow + 1).join('')
   const cursorOffset = (cursorRow - firstRow) * cols + cursorCol
-  const prompt = row.match(/^.*?(?:[$#❯>]|(?<!\d)%)[ \u00a0]/u)?.[0]
-  const text = prompt && [...prompt].length <= cursorOffset ? row.slice(prompt.length).trimEnd() : row.trim()
-  return text ? { text, clear: prompt ? '\x05\x15' : '' } : null
+  const prompt = row.match(/^(?:[$%#❯>][ \u00a0]|\S+(?:[$#>]|(?<!\d)%)[ \u00a0])/u)?.[0]
+  const strippedPrompt = prompt && [...prompt].length <= cursorOffset ? prompt : undefined
+  const text = strippedPrompt ? row.slice(strippedPrompt.length).trimEnd() : row.trim()
+  return text ? { text, clear: '' } : null
 }
 
 export function semanticKeyForEvent(event: TerminalKeyEvent): SpecialKey | null {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
-import { prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { NARROW_PANEL_QUERY, panelScrimClipPath, clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { neighbouringTab, nextWebPaneOrder } from '../shared/web-pane-placement'
 
 function tab(id: string, anchorPaneId = '%12', order = 0): WebPane {
@@ -133,4 +133,46 @@ it('hides only matching PR signatures and lists closed PRs in tab order', () => 
   const reopened = { ...pr, state: 'closed' as const }
   expect(visiblePanePrs([pr], { 'pr:acme:widgets:40': prTabSignature(reopened) })).toEqual([pr])
   expect(visiblePanePrs([pr], {})).toEqual([pr])
+})
+
+
+describe('narrow drawer dimensions', () => {
+  it('uses the CSS breakpoint and follows its media query match', () => {
+    expect(NARROW_PANEL_QUERY).toBe('(max-width: 840px)')
+    expect(isNarrowPanel({ matches: true })).toBe(true)
+    expect(isNarrowPanel({ matches: false })).toBe(false)
+  })
+  it('defaults to 60% and clamps to 25–90%', () => {
+    expect(DEFAULT_DRAWER_HEIGHT).toBe(60)
+    expect(clampDrawerHeight(12)).toBe(25)
+    expect(clampDrawerHeight(95)).toBe(90)
+    expect(clampDrawerHeight(67.5)).toBe(67.5)
+    for (const height of [NaN, Infinity, -Infinity]) expect(clampDrawerHeight(height)).toBe(60)
+  })
+  it('loads a remembered percentage, clamps it and tolerates invalid storage', () => {
+    expect(rememberedDrawerHeight('72.5')).toBe(72.5)
+    expect(rememberedDrawerHeight('10')).toBe(25)
+    expect(rememberedDrawerHeight('100')).toBe(90)
+    for (const height of [null, '', ' ', 'bad', 'Infinity']) expect(rememberedDrawerHeight(height)).toBe(60)
+  })
+})
+
+
+describe('drawer scrim controls', () => {
+  const bounds = { left: 10, top: 100, right: 810, bottom: 400 }
+  it('keeps the terminal region covered and cuts out each header and footer control with the evenodd rule', () => {
+    expect(panelScrimClipPath(bounds, [
+      { left: 110, top: 120, right: 150, bottom: 140 },
+      { left: 510, top: 120, right: 550, bottom: 140 },
+      { left: 610, top: 300, right: 670, bottom: 320 },
+    ])).toBe('path(evenodd, "M0 0H800V300H0Z M100 20H140V40H100Z M500 20H540V40H500Z M600 200H660V220H600Z")')
+  })
+  it('clips partial controls to the scrim and skips controls below the drawer, outside it or with empty bounds', () => {
+    expect(panelScrimClipPath(bounds, [
+      { left: 0, top: 90, right: 40, bottom: 120 },
+      { left: 20, top: 450, right: 60, bottom: 470 },
+      { left: 820, top: 110, right: 850, bottom: 130 },
+      { left: 20, top: 110, right: 20, bottom: 130 },
+    ])).toBe('path(evenodd, "M0 0H800V300H0Z M0 0H30V20H0Z")')
+  })
 })

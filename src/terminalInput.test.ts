@@ -182,6 +182,31 @@ describe('browser terminal macOS key routing', () => {
     return { event, result: xterm.handleKey!(event) }
   }
 
+  function mockBoxInput() {
+    xterm.active.getLine.mockImplementation((row: number) => ({
+      getCell: (col: number) => ({
+        getWidth: () => 1, isDim: () => false,
+        getChars: () => (row === 3 ? '!\u00a0input' : '─'.repeat(80))[col] ?? '',
+      }),
+    }))
+  }
+
+  it('clears a bash box only after the clipboard write succeeds', async () => {
+    const { onInput, writeText } = mount()
+    let finishCopy!: () => void
+    const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve })
+    writeText.mockReturnValue(pendingCopy)
+    mockBoxInput()
+    press('x')
+    expect(writeText).toHaveBeenCalledWith('!input')
+    expect(onInput).not.toHaveBeenCalled()
+    finishCopy()
+    await pendingCopy
+    await Promise.resolve()
+    expect(onInput).toHaveBeenCalledWith('\x0b'.repeat(3) + '\x15'.repeat(3))
+    expect(writeText.mock.invocationCallOrder[0]).toBeLessThan(onInput.mock.invocationCallOrder[0])
+  })
+
   it('sends raw editing input, consumes defaults, and leaves select all to xterm', () => {
     const { onInput } = mount()
     for (const [key, input] of [['ArrowLeft', '\x01'], ['ArrowRight', '\x05'], ['Backspace', '\x15'], ['Delete', '\x0b'], ['z', '\x1f']]) {
@@ -195,7 +220,7 @@ describe('browser terminal macOS key routing', () => {
     expect(onInput).toHaveBeenCalledTimes(5)
   })
 
-  it('starts copying synchronously and clears only after success, skipping dim and wide spacer cells', async () => {
+  it('copies line input synchronously without clearing, skipping dim and wide spacer cells', async () => {
     const { onInput, writeText } = mount()
     let finishCopy!: () => void
     const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve })
@@ -213,11 +238,10 @@ describe('browser terminal macOS key routing', () => {
     finishCopy()
     await pendingCopy
     await Promise.resolve()
-    expect(onInput).toHaveBeenCalledWith('\x05\x15')
-    expect(writeText.mock.invocationCallOrder[0]).toBeLessThan(onInput.mock.invocationCallOrder[0])
+    expect(onInput).not.toHaveBeenCalled()
   })
 
-  it('still clears when input arrived before Command+X', async () => {
+  it('copies without clearing when input arrived before Command+X', async () => {
     const { onInput, writeText } = mount()
     let finishCopy!: () => void
     const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve })
@@ -231,18 +255,18 @@ describe('browser terminal macOS key routing', () => {
     finishCopy()
     await pendingCopy
     await Promise.resolve()
-    expect(onInput).toHaveBeenLastCalledWith('\x05\x15')
+    expect(writeText).toHaveBeenCalledWith('input')
+    expect(onInput).toHaveBeenCalledTimes(1)
+    expect(onInput).toHaveBeenLastCalledWith('abc')
   })
 
   it('preserves input when the clipboard write fails', async () => {
     const { onInput, writeText } = mount()
     const failedCopy = Promise.reject(new DOMException('Denied', 'NotAllowedError'))
     writeText.mockReturnValue(failedCopy)
-    xterm.active.getLine.mockReturnValue({
-      getCell: (col: number) => ({ getWidth: () => 1, isDim: () => false, getChars: () => '$ input'[col] ?? '' }),
-    })
+    mockBoxInput()
     press('x')
-    expect(writeText).toHaveBeenCalledWith('input')
+    expect(writeText).toHaveBeenCalledWith('!input')
     await failedCopy.catch(() => {})
     await Promise.resolve()
     expect(onInput).not.toHaveBeenCalled()
@@ -253,11 +277,9 @@ describe('browser terminal macOS key routing', () => {
     let finishCopy!: () => void
     const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve })
     writeText.mockReturnValue(pendingCopy)
-    xterm.active.getLine.mockReturnValue({
-      getCell: (col: number) => ({ getWidth: () => 1, isDim: () => false, getChars: () => '$ input'[col] ?? '' }),
-    })
+    mockBoxInput()
     press('x')
-    expect(writeText).toHaveBeenCalledWith('input')
+    expect(writeText).toHaveBeenCalledWith('!input')
     disconnect()
     finishCopy()
     await pendingCopy
@@ -271,11 +293,9 @@ describe('browser terminal macOS key routing', () => {
       let finishCopy!: () => void
       const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve })
       writeText.mockReturnValue(pendingCopy)
-      xterm.active.getLine.mockReturnValue({
-        getCell: (col: number) => ({ getWidth: () => 1, isDim: () => false, getChars: () => '$ input'[col] ?? '' }),
-      })
+      mockBoxInput()
       press('x')
-      expect(writeText).toHaveBeenCalledWith('input')
+      expect(writeText).toHaveBeenCalledWith('!input')
       switch (source) {
         case 'data': xterm.handleData!('new text'); break
         case 'semantic key': xterm.handleKey!(new KeyboardEvent('keydown', { key: 'Enter' })); break
@@ -296,7 +316,7 @@ describe('browser terminal macOS key routing', () => {
       finishCopy()
       await pendingCopy
       await Promise.resolve()
-      expect(onInput).not.toHaveBeenCalledWith('\x05\x15')
+      expect(onInput).not.toHaveBeenCalledWith('\x0b'.repeat(3) + '\x15'.repeat(3))
     },
   )
 

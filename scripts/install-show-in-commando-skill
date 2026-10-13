@@ -5,6 +5,9 @@
 set -euo pipefail
 
 skills_root="$(cd "$(dirname "$0")/../skills" && pwd)"
+# Installed copies live outside the checkout, so skills name its scripts by
+# {{COMMANDO_REPO}} and each copy gets this checkout's absolute path.
+repo_root="$(cd "$skills_root/.." && pwd)"
 
 destination_roots=(
   "$HOME/.claude/skills"
@@ -45,6 +48,9 @@ for skill_dir in "${skill_dirs[@]}"; do
       continue
     fi
     cp -R "$skill_dir"/. "$root/$name/"
+    while IFS= read -r -d '' source_file; do
+      COMMANDO_REPO="$repo_root" perl -pi -e 's/\{\{COMMANDO_REPO\}\}/$ENV{COMMANDO_REPO}/g' "$root/$name/${source_file#"$skill_dir"}"
+    done < <(grep -rl --null --fixed-strings '{{COMMANDO_REPO}}' "$skill_dir" || true)
     echo "installed $root/$name"
   done
 done

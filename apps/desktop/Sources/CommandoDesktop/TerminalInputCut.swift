@@ -4,20 +4,28 @@ struct TerminalInputCut: Equatable {
     let text: String
     let clear: String
 
+    private static let boxStartPattern = "^(?:│ )?[❯>!][ \u{00a0}]"
+
     static func extract(rows: [String], cols: Int, cursorRow: Int, cursorCol: Int, wrapped: [Bool]? = nil) -> Self? {
         guard rows.indices.contains(cursorRow), !isRule(rows[cursorRow]) else { return nil }
+        var boxAboveCursor = false
         for start in rows.indices.reversed() where start > 0 {
-            guard rows[start].range(of: "^(?:│ )?[❯>][ \u{00a0}]", options: .regularExpression) != nil,
+            guard rows[start].range(of: boxStartPattern, options: .regularExpression) != nil,
                   isRule(rows[start - 1]),
-                  let end = rows.indices.first(where: { $0 > start && isRule(rows[$0]) }),
-                  start <= cursorRow, cursorRow < end
+                  let end = rows.indices.first(where: { $0 > start && isRule(rows[$0]) })
             else { continue }
+            if end < cursorRow {
+                boxAboveCursor = true
+                continue
+            }
+            guard start <= cursorRow, cursorRow < end else { continue }
             let contentWidth = cols - 2 - (rows[start].hasPrefix("│ ") ? 4 : 0)
             let lines = rows[start..<end].enumerated().map { index, row in
                 var content = row.replacingOccurrences(of: "^│ ?", with: "", options: .regularExpression)
                     .replacingOccurrences(of: " *│ *$", with: "", options: .regularExpression)
                 content = content.replacingOccurrences(
-                    of: index == 0 ? "^[❯>][ \u{00a0}]" : "^  ", with: "", options: .regularExpression
+                    of: index == 0 ? boxStartPattern : "^  ",
+                    with: index == 0 && content.hasPrefix("!") ? "!" : "", options: .regularExpression
                 )
                 return content.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
             }
@@ -36,6 +44,7 @@ struct TerminalInputCut: Equatable {
             return Self(text: text, clear: String(repeating: "\u{0b}", count: repeats)
                 + String(repeating: "\u{15}", count: repeats))
         }
+        if boxAboveCursor { return nil }
         func continues(_ row: String) -> Bool {
             let cells = Array(row.unicodeScalars)
             return cells.indices.contains(cols - 1) && cells[cols - 1] != " "
@@ -50,15 +59,20 @@ struct TerminalInputCut: Equatable {
         while lastRow + 1 < rows.count && (isWrapped(lastRow + 1) ?? continues(rows[lastRow])) { lastRow += 1 }
         var text = rows[firstRow...lastRow].joined()
         let cursorOffset = (cursorRow - firstRow) * cols + cursorCol
-        let prompt = text.range(of: "^.*?(?:[$#❯>]|(?<![0-9])%)[ \u{00a0}]", options: .regularExpression)
-        if let prompt,
-           text[prompt].unicodeScalars.count <= cursorOffset {
-            text = String(text[prompt.upperBound...])
+        let prompt = text.range(
+            of: "^(?:[$%#❯>][ \u{00a0}]|\\S+(?:[$#>]|(?<![0-9])%)[ \u{00a0}])",
+            options: .regularExpression
+        )
+        let strippedPrompt = prompt.flatMap { prompt in
+            text[prompt].unicodeScalars.count <= cursorOffset ? prompt : nil
+        }
+        if let strippedPrompt {
+            text = String(text[strippedPrompt.upperBound...])
                 .replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
         } else {
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return text.isEmpty ? nil : Self(text: text, clear: prompt == nil ? "" : "\u{05}\u{15}")
+        return text.isEmpty ? nil : Self(text: text, clear: "")
     }
 
     private static func isRule(_ row: String) -> Bool {
