@@ -1806,7 +1806,8 @@ async function main(): Promise<void> {
     prepareCommands: repoPrepareCommands,
     requests: agentChatRequests,
     beforePaneCreated: async (windowId) => { await tmux.releaseWindowPaneResizes(windowId) },
-    refreshSnapshot,
+    // A coalesced in-flight refresh can predate the new pane or its lineage options.
+    refreshSnapshot: refreshSnapshotFresh,
   })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
