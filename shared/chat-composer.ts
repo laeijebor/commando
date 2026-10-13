@@ -157,6 +157,16 @@ export function modelMenuAvailable(session: ChatSessionInfo): boolean {
   return Boolean(session.models?.length && hostTakesSettings(session))
 }
 
+/** Fast mode is on and the selected model offers it, so replies run fast. */
+export function fastModeOn(session: ChatSessionInfo): boolean {
+  return Boolean(session.fast && selectedModelOption(session)?.supportsFast)
+}
+
+/** The fast-mode toggle is offered: the pickers work and the selected model has fast mode. */
+export function fastModeAvailable(session: ChatSessionInfo): boolean {
+  return modelMenuAvailable(session) && Boolean(selectedModelOption(session)?.supportsFast)
+}
+
 /** "Opus 5.5": the named row for the running model, never the "Default" alias. */
 export function modelLabel(session: ChatSessionInfo): string | undefined {
   const models = session.models ?? []

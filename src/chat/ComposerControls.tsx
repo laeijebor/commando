@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
-import { Check, ChevronDown, Minimize2 } from 'lucide-react'
+import { Check, ChevronDown, Minimize2, Zap } from 'lucide-react'
 import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
-import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
+import { EFFORT_LABELS, fastModeOn, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
@@ -48,7 +48,7 @@ function MenuOption({ checked, label, description, onSelect }: { checked: boolea
   )
 }
 
-/** Model and effort, after t3code's ProviderModelPicker and TraitsPicker. */
+/** Model, effort and fast mode, after t3code's ProviderModelPicker and TraitsPicker. */
 export function ModelPicker({ session, disabled, onConfigure, open: controlledOpen, onOpenChange }: {
   session: ChatSessionInfo
   disabled: boolean
@@ -62,7 +62,8 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
   const setOpen = onOpenChange ?? setOwnOpen
   const label = modelLabel(session)
   if (!label) return null
-  const pill = session.effort ? `${label} · ${EFFORT_LABELS[session.effort]}` : label
+  const fast = fastModeOn(session)
+  const pill = [label, ...(session.effort ? [EFFORT_LABELS[session.effort]] : []), ...(fast ? ['Fast'] : [])].join(' · ')
   if (!session.models?.length || !modelMenuAvailable(session)) return <Pill title={session.model}>{pill}</Pill>
   const selected = selectedModelOption(session)
   const efforts = selected?.efforts ?? []
@@ -104,6 +105,25 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
                 </button>
               ))}
             </div>
+          </>
+        ) : null}
+        {selected?.supportsFast ? (
+          <>
+            <div className="mx-0.5 my-1 h-px bg-border" />
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={fast}
+              onClick={() => pick({ fast: !fast })}
+              className={cn('flex w-full min-w-0 items-center gap-2 rounded-[5px] px-2 py-1 text-left', fast ? 'text-foreground' : 'text-secondary-label hover:bg-accent')}
+            >
+              <Zap className={cn('size-3 shrink-0', fast ? 'text-primary' : 'text-icon-muted')} aria-hidden="true" />
+              <span className="shrink-0">Fast mode</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">Faster replies, higher usage</span>
+              <span className={cn('relative h-3.5 w-6 shrink-0 rounded-full transition-colors', fast ? 'bg-primary' : 'bg-input')} aria-hidden="true">
+                <span className={cn('absolute top-0.5 size-2.5 rounded-full bg-background transition-[left]', fast ? 'left-3' : 'left-0.5')} />
+              </span>
+            </button>
           </>
         ) : null}
       </PopoverPopup>
