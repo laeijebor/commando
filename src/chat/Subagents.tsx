@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { ArrowLeft, Bot, ChevronDown, CircleCheck, CircleSlash, CircleX, LoaderCircle, MessageSquareShare, MoveDownRight, Square } from 'lucide-react'
+import { ArrowLeft, Bot, ChevronDown, CircleAlert, CircleCheck, CircleSlash, CircleX, LoaderCircle, MessageSquareShare, MoveDownRight, Square } from 'lucide-react'
 import type { ChatItem, ChatTaskAction } from '../../shared/agent-chat'
 import { cn } from './cn'
 import type { SubagentItem, TimelineRow } from '../../shared/chat-timeline'
-import { elapsedLabel, relayAvailability, subagentActivity, subagentLabel } from './turnFlow'
+import { elapsedLabel, relayAvailability, subagentActivity, subagentLabel, subagentTypeLabel } from './turnFlow'
 import { Button } from './ui/button'
 
 /** A clock that ticks once a second while something live is on screen. */
@@ -21,6 +21,7 @@ export function useNow(active: boolean): number {
 export function SubagentStateIcon({ agent, className }: { agent: SubagentItem; className?: string }) {
   const base = cn('size-3.5 shrink-0', className)
   switch (agent.state) {
+    case 'quiet': return <CircleAlert className={cn(base, 'text-warning')} aria-label="Quiet" />
     case 'running': return <LoaderCircle className={cn(base, 'animate-spin text-primary')} aria-label="Running" />
     case 'completed': return <CircleCheck className={cn(base, 'text-success')} aria-label="Done" />
     case 'failed': return <CircleX className={cn(base, 'text-destructive')} aria-label="Failed" />
@@ -28,26 +29,47 @@ export function SubagentStateIcon({ agent, className }: { agent: SubagentItem; c
   }
 }
 
-const STATE_LABELS: Record<SubagentItem['state'], string> = { running: 'running', completed: 'done', failed: 'failed', stopped: 'stopped' }
+const STATE_LABELS: Record<SubagentItem['state'], string> = { quiet: 'quiet', running: 'running', completed: 'done', failed: 'failed', stopped: 'stopped' }
 
-function metrics(agent: SubagentItem, items: readonly ChatItem[], now: number): { line: string; lastAction: string | null } {
+function metrics(agent: SubagentItem, items: readonly ChatItem[], now: number): { line: string; lastAction: string | null; quiet?: string } {
   const activity = subagentActivity(agent, items, now)
   const parts = [
-    agent.background && agent.state === 'running' ? 'background' : STATE_LABELS[agent.state],
+    ...(!agent.runtime ? [agent.background && (agent.state === 'running' || agent.state === 'quiet') ? 'background' : STATE_LABELS[agent.state]] : []),
     ...(activity.toolUses !== null ? [`${activity.toolUses} ${activity.toolUses === 1 ? 'tool' : 'tools'}`] : []),
     ...(activity.elapsedMs !== null ? [elapsedLabel(activity.elapsedMs)] : []),
   ]
+  if (agent.runtime && agent.state === 'quiet') return {
+    line: parts.join(' · '),
+    quiet: `quiet for ${Math.floor(Math.max(0, now - (agent.lastEventAt ?? agent.createdAt)) / 60_000)}m`,
+    lastAction: activity.lastAction ? `last: ${activity.lastAction}` : null,
+  }
+  if (agent.runtime && agent.runningCommand) {
+    parts.push(`running ${agent.runningCommand.command} (${elapsedLabel(now - agent.runningCommand.startedAt)})`)
+    return { line: parts.join(' · '), lastAction: null }
+  }
   return { line: parts.join(' · '), lastAction: activity.lastAction }
 }
 
-/** Subagents of one turn as a card; each row opens that subagent's transcript (t3code groups them the same way). */
-export function SubagentGroup({ row, items, now, onOpen }: {
+function MetricsLine({ info, showLastAction = true }: { info: ReturnType<typeof metrics>; showLastAction?: boolean }) {
+  return (
+    <>
+      <span className="tabular-nums">{info.line}</span>
+      {info.quiet ? <> · <span className="text-warning">{info.quiet}</span></> : null}
+      {showLastAction && info.lastAction ? ` · ${info.lastAction}` : ''}
+    </>
+  )
+}
+
+/** Subagents of one turn as a card; SDK rows open their transcript. */
+export function SubagentGroup({ row, items, now, onOpen, onTask, controlsDisabled }: {
   row: Extract<TimelineRow, { kind: 'subagents' }>
   items: readonly ChatItem[]
   now: number
   onOpen?: (toolUseId: string) => void
+  onTask?: (action: ChatTaskAction, agent: SubagentItem) => void
+  controlsDisabled?: boolean
 }) {
-  const running = row.items.filter((agent) => agent.state === 'running').length
+  const running = row.items.filter((agent) => agent.state === 'running' || agent.state === 'quiet').length
   return (
     <div className="mb-2 overflow-hidden rounded-lg border border-border bg-card" data-testid="subagent-group">
       {row.items.length > 1 ? (
@@ -58,28 +80,28 @@ export function SubagentGroup({ row, items, now, onOpen }: {
       ) : null}
       <ul className="flex flex-col">
         {row.items.map((agent) => {
-          const { line, lastAction } = metrics(agent, items, now)
+          const info = metrics(agent, items, now)
           return (
-            <li key={agent.id} className="border-b border-border last:border-b-0">
+            <li key={agent.id} className="flex items-center border-b border-border last:border-b-0">
               <button
                 type="button"
-                className="flex w-full min-w-0 cursor-pointer items-start gap-2 px-2.5 py-1.5 text-left hover:bg-accent disabled:cursor-default"
+                className="flex w-full min-w-0 flex-1 cursor-pointer items-start gap-2 px-2.5 py-1.5 text-left hover:bg-accent disabled:cursor-default"
                 onClick={() => onOpen?.(agent.id)}
-                disabled={!onOpen}
+                disabled={!onOpen || Boolean(agent.runtime)}
                 aria-label={`Open subagent ${subagentLabel(agent)}`}
               >
                 <SubagentStateIcon agent={agent} className="mt-1" />
                 <span className="min-w-0 flex-1">
                   <span className="flex min-w-0 items-baseline gap-1.5">
                     <span className="truncate text-sm text-foreground">{subagentLabel(agent)}</span>
-                    {agent.subagentType ? <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">{agent.subagentType}</span> : null}
+                    {subagentTypeLabel(agent) ? <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">{subagentTypeLabel(agent)}</span> : null}
                   </span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    <span className="tabular-nums">{line}</span>
-                    {lastAction ? ` · ${lastAction}` : ''}
+                    <MetricsLine info={info} />
                   </span>
                 </span>
               </button>
+              {agent.runtime && onTask ? <span className="pr-2"><SubagentControls agent={agent} onTask={onTask} disabled={controlsDisabled} /></span> : null}
             </li>
           )
         })}
@@ -90,10 +112,10 @@ export function SubagentGroup({ row, items, now, onOpen }: {
 
 /** Stop and Background for one running subagent. */
 export function SubagentControls({ provider = 'Claude', agent, onTask, disabled }: { provider?: string; agent: SubagentItem; onTask: (action: ChatTaskAction, agent: SubagentItem) => void; disabled?: boolean }) {
-  if (agent.state !== 'running' || !agent.agentId) return null
+  if ((agent.state !== 'running' && agent.state !== 'quiet') || (!agent.runtime && !agent.agentId)) return null
   return (
     <>
-      {!agent.background ? (
+      {!agent.runtime && !agent.background ? (
         <Button size="icon-xs" variant="ghost-muted" disabled={disabled} aria-label={`Background ${subagentLabel(agent)}`} title={`Run in the background (${provider} carries on)`} onClick={(event) => { event.stopPropagation(); onTask('background', agent) }}>
           <MoveDownRight aria-hidden="true" />
         </Button>
@@ -109,7 +131,7 @@ export function SubagentControls({ provider = 'Claude', agent, onTask, disabled 
  * Main Claude plus each subagent, like the Claude Code TUI's agent list:
  * ↑/↓ move, Enter opens. Shows which one the pane is viewing.
  */
-export function AgentSwitcher({ provider = 'Claude', agents, items, viewing, now, disabled, onSelect, onTask }: {
+export function AgentSwitcher({ provider = 'Claude', agents, items, viewing, now, disabled, externalDisabled, onSelect, onTask }: {
   provider?: string
   agents: SubagentItem[]
   items: readonly ChatItem[]
@@ -117,6 +139,7 @@ export function AgentSwitcher({ provider = 'Claude', agents, items, viewing, now
   viewing: string | undefined
   now: number
   disabled?: boolean
+  externalDisabled?: boolean
   onSelect: (toolUseId: string | undefined) => void
   onTask: (action: ChatTaskAction, agent: SubagentItem) => void
 }) {
@@ -129,18 +152,19 @@ export function AgentSwitcher({ provider = 'Claude', agents, items, viewing, now
     list.current?.querySelectorAll<HTMLElement>('[role="option"]')[next]?.focus()
   }
   const onKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+    if ((event.target as HTMLElement).closest('button')) return
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       focusRow(focusIndex + (event.key === 'ArrowDown' ? 1 : -1))
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      onSelect(entries[focusIndex]?.id)
+      if (!entries[focusIndex]?.runtime) onSelect(entries[focusIndex]?.id)
     } else if (event.key === 'Escape' && viewing) {
       event.preventDefault()
       onSelect(undefined)
     }
   }
-  const running = agents.filter((agent) => agent.state === 'running').length
+  const running = agents.filter((agent) => agent.state === 'running' || agent.state === 'quiet').length
   // Open while something runs or a subagent is on screen, so a short pane keeps its timeline otherwise.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const open = userOpen ?? (running > 0 || viewing !== undefined)
@@ -172,13 +196,14 @@ export function AgentSwitcher({ provider = 'Claude', agents, items, viewing, now
               aria-selected={selected}
               tabIndex={index === focusIndex ? 0 : -1}
               onFocus={() => setFocusIndex(index)}
-              onClick={() => onSelect(agent?.id)}
-              className={cn('flex min-h-7 min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring', selected ? 'bg-accent text-foreground' : 'text-secondary-label hover:bg-accent')}
+              aria-disabled={agent?.runtime ? true : undefined}
+              onClick={() => { if (!agent?.runtime) onSelect(agent?.id) }}
+              className={cn('flex min-h-7 min-w-0 items-center gap-2 rounded-md px-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring', agent?.runtime ? 'cursor-default' : 'cursor-pointer', selected ? 'bg-accent text-foreground' : 'text-secondary-label hover:bg-accent')}
             >
               {agent ? <SubagentStateIcon agent={agent} /> : <span className="flex size-3.5 shrink-0 items-center justify-center"><span className="size-2 rounded-full bg-primary" /></span>}
-              <span className="min-w-0 flex-1 truncate">{agent ? subagentLabel(agent) : 'Main'}{agent?.subagentType ? <span className="ml-1.5 text-2xs text-muted-foreground">{agent.subagentType}</span> : null}</span>
-              {info ? <span className="shrink-0 text-2xs tabular-nums text-muted-foreground">{info.line}</span> : null}
-              {agent ? <SubagentControls provider={provider} agent={agent} onTask={onTask} disabled={disabled} /> : null}
+              <span className="min-w-0 flex-1 truncate">{agent ? subagentLabel(agent) : 'Main'}{agent && subagentTypeLabel(agent) ? <span className="ml-1.5 text-2xs text-muted-foreground">{subagentTypeLabel(agent)}</span> : null}</span>
+              {info ? <span className="min-w-0 truncate text-2xs tabular-nums text-muted-foreground"><MetricsLine info={info} showLastAction={Boolean(agent?.runtime)} /></span> : null}
+              {agent ? <SubagentControls provider={provider} agent={agent} onTask={onTask} disabled={agent.runtime ? externalDisabled : disabled} /> : null}
             </li>
           )
         })}

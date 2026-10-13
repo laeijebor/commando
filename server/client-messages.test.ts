@@ -653,6 +653,15 @@ describe('chat pane messages', () => {
     expect(parseClientMessage({ type: 'chat_file_search', paneId: '%4', query: 'x'.repeat(513), requestId: 'r7' }).ok).toBe(false)
   })
 
+  it('validates external agent stop messages through the client parser', () => {
+    const message = { type: 'chat_external_stop', paneId: '%1', runId: 'external-00000000-0000-4000-8000-000000000001', requestId: 'stop-1' }
+    expect(parseClientMessage({ ...message, extra: 'ignored' })).toEqual({ ok: true, message })
+    for (const bad of [{ paneId: '%1;kill' }, { paneId: '1' }, { runId: '50' }, { runId: null }, { requestId: '' }, { requestId: 'bad id' }]) {
+      expect(parseClientMessage({ ...message, ...bad })).toMatchObject({ ok: false, error: 'Invalid external agent stop request' })
+    }
+    expect(parseClientMessage({ ...message, runId: '50' })).toMatchObject({ ok: false, requestId: 'stop-1' })
+  })
+
   it('accepts queue, steer, relay, plan-mode and subagent messages, and rejects malformed ones', () => {
     expect(parseClientMessage({ type: 'chat_send', paneId: '%4', text: 'later', delivery: 'queue', requestId: 'r1' }))
       .toEqual({ ok: true, message: { type: 'chat_send', paneId: '%4', text: 'later', delivery: 'queue', requestId: 'r1' } })
