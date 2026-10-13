@@ -89,7 +89,8 @@ export function claudeCodeFlags(args: ClaudeCodeSettings): string[] {
   return [
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
-    ...(args.fast ? ['--settings', JSON.stringify({ fastMode: true })] : []),
+    // Named either way, so fastMode in a settings file can't override a fast-off pick.
+    '--settings', JSON.stringify({ fastMode: Boolean(args.fast) }),
     ...(args.permissionMode === 'bypassPermissions'
       ? ['--dangerously-skip-permissions']
       : ['--permission-mode', args.permissionMode, ...(args.bypassAllowed ? ['--allow-dangerously-skip-permissions'] : [])]),
