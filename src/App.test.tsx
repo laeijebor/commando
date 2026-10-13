@@ -2636,6 +2636,56 @@ describe('narrow pane tabs', () => {
 
   beforeEach(() => { vi.stubGlobal('innerWidth', 800) })
 
+  function mockControlBounds() {
+    const rect = (left: number, top: number, width: number, height: number) => ({ left, top, right: left + width, bottom: top + height, x: left, y: top, width, height, toJSON: () => ({}) })
+    return vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('side-panel-scrim')) return rect(0, 100, 800, 300)
+      if (this.dataset.panelChip === pane.id) return rect(100, 120, 40, 20)
+      if (this.dataset.panelChip === adjacentPane.id) return rect(500, 120, 40, 20)
+      if (this.classList.contains('pane-git-stats')) return rect(600, 300, 60, 20)
+      return rect(0, 0, 0, 0)
+    })
+  }
+
+  it('leaves the shown pane chip outside the scrim so clicking it again closes the drawer', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane]))
+    const bounds = mockControlBounds()
+    try {
+      fireEvent.click(chip())
+      expect(drawer()).toHaveClass('is-drawer-open')
+      expect(document.querySelector<HTMLElement>('.side-panel-scrim')!.style.clipPath).toContain('M100 20H140V40H100Z')
+      fireEvent.pointerDown(chip())
+      fireEvent.focus(chip())
+      fireEvent.click(chip())
+      expect(drawer()).not.toHaveClass('is-drawer-open')
+      expect(chip()).toHaveAttribute('aria-expanded', 'false')
+      expect(chip()).toHaveFocus()
+    } finally { bounds.mockRestore() }
+  })
+
+  it('leaves the other pane chip outside the scrim so it switches focus and tabs while keeping the drawer open', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, active: false }]))
+    vi.mocked(fetch).mockImplementation(async () => new Response('{}', { status: 200 }))
+    const first = { ...openWebPane, dock: 'panel' as const, unseen: false, activeTab: true }
+    const second = { ...first, id: 'w-other', anchorPaneId: adjacentPane.id, url: 'http://localhost/two' }
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [first, second], activeTabs: { [pane.id]: first.id, [adjacentPane.id]: second.id } }))
+    const bounds = mockControlBounds()
+    try {
+      fireEvent.click(chip())
+      const path = document.querySelector<HTMLElement>('.side-panel-scrim')!.style.clipPath
+      expect(path).toContain('M100 20H140V40H100Z')
+      expect(path).toContain('M500 20H540V40H500Z')
+      fireEvent.pointerDown(chip(adjacentPane))
+      fireEvent.focus(chip(adjacentPane))
+      fireEvent.click(chip(adjacentPane))
+      expect(drawer()).toHaveClass('is-drawer-open')
+      expect(chip(adjacentPane)).toHaveAttribute('aria-expanded', 'true')
+      expect(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)).toHaveClass('is-focused')
+      expect(screen.getByRole('tab', { name: /localhost\/two/ })).toHaveAttribute('aria-selected', 'true')
+      expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
+    } finally { bounds.mockRestore() }
+  })
+
   it('shows a button on every pane and preserves each pane active tab across toggle and pane switches', async () => {
     await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, active: false }]))
     expect(chip()).toHaveAttribute('aria-expanded', 'false')
@@ -2728,16 +2778,21 @@ describe('narrow pane tabs', () => {
       return new Response(JSON.stringify(value), { status: 200 })
     })
     await renderAppWithSnapshot()
-    fireEvent.click(within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)!).getByRole('button', { name: /Git changes/ }))
-    expect(drawer()).toHaveClass('is-drawer-open')
-    expect(await screen.findByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
-    expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
-    fireEvent.click(screen.getByRole('tab', { name: 'Session' }))
-    const changes = within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)!).getByRole('button', { name: /Git changes/ })
-    fireEvent.pointerDown(changes)
-    fireEvent.click(changes)
-    expect(drawer()).toHaveClass('is-drawer-open')
-    expect(screen.getByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
+    const bounds = mockControlBounds()
+    try {
+      fireEvent.click(chip())
+      expect(document.querySelector<HTMLElement>('.side-panel-scrim')!.style.clipPath).toContain('M600 200H660V220H600Z')
+      fireEvent.click(within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)!).getByRole('button', { name: /Git changes/ }))
+      expect(drawer()).toHaveClass('is-drawer-open')
+      expect(await screen.findByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
+      expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
+      fireEvent.click(screen.getByRole('tab', { name: 'Session' }))
+      const changes = within(document.querySelector(`[data-pane-id="${adjacentPane.id}"]`)!).getByRole('button', { name: /Git changes/ })
+      fireEvent.pointerDown(changes)
+      fireEvent.click(changes)
+      expect(drawer()).toHaveClass('is-drawer-open')
+      expect(screen.getByRole('tab', { name: /Changes/ })).toHaveAttribute('aria-selected', 'true')
+    } finally { bounds.mockRestore() }
   })
 
   it('opens the simulator from Show beside pane and hides it again on close', async () => {

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { FileDiff, GitPullRequest, LayoutDashboard, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
 import type { TmuxPane, WebPane, WebPaneEngine } from '../shared/protocol'
-import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, panelScrimClipPath, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrList, PrsApiClient } from './prsApi'
 import { usePaneGitSummary } from './paneGitStore'
@@ -92,6 +92,7 @@ export function SidePanel({
 }) {
   const [drawerHeight, setDrawerHeight] = useState(() => loadDrawerHeight(windowId))
   const drawerRef = useRef<HTMLElement>(null)
+  const scrimRef = useRef<HTMLButtonElement>(null)
   const drawerDragRef = useRef<{ startY: number; height: number; windowHeight: number } | null>(null)
   const swallowedPointerRef = useRef(false)
   const [width, setWidth] = useState(() => loadWidth(windowId))
@@ -175,6 +176,38 @@ export function SidePanel({
     const frame = window.requestAnimationFrame(revealRequest.onVisible)
     return () => window.cancelAnimationFrame(frame)
   }, [revealRequest, expanded, gridMaximized, active?.id])
+  useLayoutEffect(() => {
+    const scrim = scrimRef.current
+    const layout = bodyRef.current
+    const grid = layout?.querySelector<HTMLElement>('.window-terminal-grid')
+    if (!scrim || !layout || !grid) return
+    let frame: number | undefined
+    const update = () => {
+      frame = undefined
+      const controls = [...grid.querySelectorAll<HTMLButtonElement>('[data-panel-chip], .pane-git-stats')].filter((node) => !node.disabled)
+      scrim.style.clipPath = panelScrimClipPath(scrim.getBoundingClientRect(), controls.map((node) => node.getBoundingClientRect()))
+      controls.forEach((node) => resizeObserver?.observe(node))
+    }
+    const schedule = () => { frame ??= window.requestAnimationFrame(update) }
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(schedule)
+    resizeObserver?.observe(layout)
+    resizeObserver?.observe(grid)
+    const mutationObserver = new MutationObserver(schedule)
+    // Header and footer changes can add or move controls; terminal output cannot.
+    grid.querySelectorAll('.pane-head, .pane-footer').forEach((node) => mutationObserver.observe(node, { childList: true, characterData: true, attributes: true, subtree: true }))
+    window.addEventListener('resize', schedule)
+    window.addEventListener('scroll', schedule, true)
+    window.addEventListener('transitionend', schedule, true)
+    update()
+    return () => {
+      resizeObserver?.disconnect()
+      mutationObserver.disconnect()
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('scroll', schedule, true)
+      window.removeEventListener('transitionend', schedule, true)
+      if (frame !== undefined) window.cancelAnimationFrame(frame)
+    }
+  }, [narrowMode, expanded, gridMaximized, Boolean(maximizedTab), drawerHeight, focusedPaneId, paneIds.join(',')])
   const open = () => {
     if (!focusedPaneId || !adding || !url.trim()) return
     const raw = url.trim()
@@ -202,17 +235,8 @@ export function SidePanel({
           swallowedPointerRef.current = false
           if (drawerOpen) closeDrawer()
         }}>{children}</div>
-      {narrowMode && expanded && !maximizedTab && !gridMaximized && <button type="button" className="side-panel-scrim" aria-label="Close tabs drawer" tabIndex={-1} data-native-terminal-hit-blocker=""
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={(event) => {
-          // Keep explicit panel controls usable behind the terminal scrim.
-          const control = [...(bodyRef.current?.querySelectorAll<HTMLButtonElement>('[data-panel-chip], .pane-git-stats') ?? [])].find((node) => {
-            const bounds = node.getBoundingClientRect()
-            return !node.disabled && bounds.width > 0 && bounds.height > 0 && event.clientX >= bounds.left && event.clientX < bounds.right && event.clientY >= bounds.top && event.clientY < bounds.bottom
-          })
-          if (control) control.click()
-          else closeDrawer()
-        }} />}
+      {narrowMode && expanded && !maximizedTab && !gridMaximized && <button ref={scrimRef} type="button" className="side-panel-scrim" aria-label="Close tabs drawer" tabIndex={-1} data-native-terminal-hit-blocker=""
+        onPointerDown={(event) => event.preventDefault()} onClick={closeDrawer} />}
       {gitApi && prsApi && panes.map((pane) => <PanePanelSource key={pane.targetId} pane={pane} gitApi={gitApi} prsApi={prsApi} connected={connected} onData={onData} />)}
       <div className="side-panel-splitter" hidden={narrowMode || !paneIds.length || Boolean(maximizedTab) || gridMaximized} role="separator" aria-label="Resize side panel"
         aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(width)} tabIndex={collapsed ? -1 : 0}

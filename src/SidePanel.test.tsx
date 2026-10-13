@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane, WebPane } from '../shared/protocol'
@@ -390,27 +390,35 @@ describe('narrow tabs drawer', () => {
     expect(drawer).toHaveAttribute('inert')
   })
 
-  it('keeps chip toggles and explicit Changes reveals usable through the scrim without sending terminal clicks', () => {
+  it('cuts panel controls out of the scrim, updates holes on resize and keeps terminal clicks covered', async () => {
     const terminalClick = vi.fn()
     const view = render(<Drawer terminalClick={terminalClick} />)
     const chip = screen.getByRole('button', { name: 'Pane tabs' })
-    Object.defineProperty(chip, 'getBoundingClientRect', { value: () => ({ left: 100, right: 150, top: 20, bottom: 40, width: 50, height: 20 }) })
-    fireEvent.click(chip)
-    fireEvent.click(view.container.querySelector('.side-panel-scrim')!, { clientX: 120, clientY: 30 })
-    expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
-    fireEvent.click(chip)
+    let left = 100
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains('side-panel-scrim')) return { left: 0, top: 100, right: 800, bottom: 400 } as DOMRect
+      if (this === chip) return { left, top: 120, right: left + 50, bottom: 140 } as DOMRect
+      if (this.classList.contains('pane-git-stats')) return { left: 600, top: 300, right: 650, bottom: 320 } as DOMRect
+      return { left: 0, top: 0, right: 0, bottom: 0 } as DOMRect
+    })
     const changes = document.createElement('button')
     changes.className = 'pane-git-stats'
     const revealChanges = vi.fn()
     changes.addEventListener('click', revealChanges)
-    Object.defineProperty(changes, 'getBoundingClientRect', { value: () => ({ left: 100, right: 150, top: 200, bottom: 220, width: 50, height: 20 }) })
     view.container.querySelector('.window-terminal-grid')!.append(changes)
-    fireEvent.click(view.container.querySelector('.side-panel-scrim')!, { clientX: 120, clientY: 210 })
+    fireEvent.click(chip)
+    const scrim = view.container.querySelector<HTMLElement>('.side-panel-scrim')!
+    expect(scrim.style.clipPath).toBe('path(evenodd, "M0 0H800V300H0Z M100 20H150V40H100Z M600 200H650V220H600Z")')
+    fireEvent.click(changes)
     expect(revealChanges).toHaveBeenCalledOnce()
     expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
-    fireEvent.click(view.container.querySelector('.side-panel-scrim')!, { clientX: 200, clientY: 150 })
+    left = 200
+    fireEvent.resize(window)
+    await waitFor(() => expect(scrim.style.clipPath).toContain('M200 20H250V40H200Z'))
+    fireEvent.click(scrim, { clientX: 300, clientY: 150 })
     expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
     expect(terminalClick).not.toHaveBeenCalled()
+    bounds.mockRestore()
   })
 
   it('only reveals for an explicit request and keeps new revisions hidden and unseen while closed', () => {

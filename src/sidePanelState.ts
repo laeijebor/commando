@@ -13,6 +13,21 @@ export function rememberedDrawerHeight(remembered: string | null): number {
   return remembered?.trim() ? clampDrawerHeight(Number(remembered)) : DEFAULT_DRAWER_HEIGHT
 }
 
+/** Cut panel controls out of the scrim's paint and hit-test region. */
+export function panelScrimClipPath(bounds: Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom'>, controls: readonly Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom'>[]): string {
+  const width = bounds.right - bounds.left
+  const height = bounds.bottom - bounds.top
+  const paths = [`M0 0H${width}V${height}H0Z`]
+  for (const control of controls) {
+    const left = Math.max(0, control.left - bounds.left)
+    const top = Math.max(0, control.top - bounds.top)
+    const right = Math.min(width, control.right - bounds.left)
+    const bottom = Math.min(height, control.bottom - bounds.top)
+    if (left < right && top < bottom) paths.push(`M${left} ${top}H${right}V${bottom}H${left}Z`)
+  }
+  return `path(evenodd, "${paths.join(' ')}")`
+}
+
 /** Prefer client focus, then fall back to the current tmux pane. */
 export function effectiveFocusedPane(
   focusedPaneId: string | null,
