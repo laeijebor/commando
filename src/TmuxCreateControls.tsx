@@ -122,7 +122,11 @@ export function syncStoredPrepareCommands(token: string | undefined): void {
     const key = JSON.stringify([token ?? '', root, command])
     if (!command.trim() || prepareCommandsSynced.has(key)) continue
     prepareCommandsSynced.add(key)
-    void api.setPrepareCommand(root, command).catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
+    void api.setPrepareCommand(root, command).catch((cause: unknown) => {
+      // Forget the attempt so the next mount retries, e.g. after a daemon restart.
+      prepareCommandsSynced.delete(key)
+      console.warn('Unable to sync repository prepare command', cause)
+    })
   }
 }
 

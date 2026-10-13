@@ -701,6 +701,18 @@ describe('prepare-command daemon sync', () => {
     await act(async () => {})
     expect(fetch).not.toHaveBeenCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT' }))
   })
+  it('retries a prepare-command migration that failed on the next mount', async () => {
+    window.localStorage.setItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY, JSON.stringify({ '/repos/retry-migrated': 'make deps' }))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('daemon restarting'))
+    const { unmount } = render(<TmuxCreateControls token="retry" onCreateSession={vi.fn()} />)
+    await waitFor(() => expect(console.warn).toHaveBeenCalledWith('Unable to sync repository prepare command', expect.any(Error)))
+    unmount()
+    vi.mocked(fetch).mockClear()
+    render(<TmuxCreateControls token="retry" onCreateSession={vi.fn()} />)
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: '/repos/retry-migrated', command: 'make deps' }) })))
+  })
+
   it('does not overwrite edits with a delayed daemon prefill', async () => {
     let resolve!: (response: Response) => void
     vi.mocked(fetch).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
