@@ -112,6 +112,20 @@ function saveWorkingDirectoryHistory(value: string, history: readonly string[]):
   return nextHistory
 }
 
+// Prepare commands saved before the daemon kept a copy reach it once per page load,
+// so agent-opened worktrees prepare like ones created here.
+const prepareCommandsSynced = new Set<string>()
+
+export function syncStoredPrepareCommands(token: string | undefined): void {
+  const api = createAgentChatsApi(token ?? '')
+  for (const [root, command] of Object.entries(loadWorktreePrepareCommands())) {
+    const key = JSON.stringify([token ?? '', root, command])
+    if (!command.trim() || prepareCommandsSynced.has(key)) continue
+    prepareCommandsSynced.add(key)
+    void api.setPrepareCommand(root, command).catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
+  }
+}
+
 function loadWorktreePrepareCommands(): Record<string, string> {
   try {
     const stored = window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY)
@@ -232,6 +246,8 @@ export function TmuxCreateControls({
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>') : '')
   const worktreeRequested = Boolean(repo && worktreeEnabled)
   const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
+
+  useEffect(() => { syncStoredPrepareCommands(token) }, [token])
 
   useEffect(() => {
     const root = repo?.mainRoot

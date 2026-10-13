@@ -63,7 +63,10 @@ describe('TmuxCreator', () => {
   it('rolls back a pane worktree if splitting fails; preserves it after a successful split with malformed output', async () => {
     const rollback = vi.fn(async () => {})
     const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree: vi.fn(async () => ({ worktree: { path: '/repo/fix', branch: 'fix', base: 'main', reusedBranch: false }, rollback })) }
-    const run = vi.fn(async () => { throw new Error('not enough space') })
+    const run = vi.fn(async (args: readonly string[]) => {
+      if (args.includes('list-panes')) return '/repo\n/repo/fixture-other\n'
+      throw new Error('not enough space')
+    })
     const input = { targetId: '%1', direction: 'horizontal', cwd: '/repo', worktree: { branch: 'fix' } } as const
     await expect(new TmuxCreator(run, [], git).createPane(input)).rejects.toThrow('not enough space')
     expect(rollback).toHaveBeenCalledOnce()
@@ -72,10 +75,50 @@ describe('TmuxCreator', () => {
     expect(rollback).not.toHaveBeenCalled()
   })
 
+  it('keeps a pane worktree when an ambiguous split failure may have created a pane in it', async () => {
+    const rollback = vi.fn(async () => {})
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree: vi.fn(async () => ({ worktree: { path: '/repo/fix', branch: 'fix', base: 'main', reusedBranch: false }, rollback })) }
+    const input = { targetId: '%1', direction: 'horizontal', cwd: '/repo', worktree: { branch: 'fix' } } as const
+    const splitThenTimeout = vi.fn(async (args: readonly string[]) => {
+      if (args.includes('list-panes')) return '/repo\n/repo/fix/src\n'
+      throw new Error('tmux timed out')
+    })
+    await expect(new TmuxCreator(splitThenTimeout, [], git).createPane(input)).rejects.toThrow('may have been created but tmux did not report it; the worktree was kept: tmux timed out')
+    const tmuxUnreachable = vi.fn(async () => { throw new Error('no server') })
+    await expect(new TmuxCreator(tmuxUnreachable, [], git).createPane(input)).rejects.toThrow('the worktree was kept')
+    expect(rollback).not.toHaveBeenCalled()
+  })
+
+  it('recognises a pane in a worktree given with a trailing slash or through a symlink', async () => {
+    const { mkdtemp, mkdir, realpath: real, symlink, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const base = await mkdtemp(join(tmpdir(), 'pane-worktree-'))
+    try {
+      await mkdir(join(base, 'real', 'fix'), { recursive: true })
+      await symlink(join(base, 'real'), join(base, 'link'))
+      const realFix = await real(join(base, 'real', 'fix'))
+      const rollback = vi.fn(async () => {})
+      const run = vi.fn(async (args: readonly string[]) => {
+        if (args.includes('list-panes')) return `${realFix}\n`
+        throw new Error('tmux timed out')
+      })
+      for (const path of [`${realFix}/`, join(base, 'link', 'fix')]) {
+        const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree: vi.fn(async () => ({ worktree: { path, branch: 'fix', base: 'main', reusedBranch: false }, rollback })) }
+        await expect(new TmuxCreator(run, [], git).createPane({ targetId: '%1', direction: 'horizontal', cwd: '/repo', worktree: { branch: 'fix' } })).rejects.toThrow('the worktree was kept')
+      }
+      expect(rollback).not.toHaveBeenCalled()
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+
   it('includes pane worktree rollback failures in the error and validates preparation before mutation', async () => {
     const rollback = vi.fn(async () => { throw new Error('dirty worktree') })
     const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree: vi.fn(async () => ({ worktree: { path: '/repo/fix', branch: 'fix', base: 'main', reusedBranch: false }, rollback })) }
-    const run = vi.fn(async () => { throw new Error('split failed') })
+    const run = vi.fn(async (args: readonly string[]) => {
+      if (args.includes('list-panes')) return '/repo\n'
+      throw new Error('split failed')
+    })
     const creator = new TmuxCreator(run, [], git)
     await expect(creator.createPane({ targetId: '%1', direction: 'vertical', cwd: '/repo', worktree: null } as never)).rejects.toThrow('worktree must be an object')
     await expect(creator.createPane({ targetId: '%1', direction: 'vertical', cwd: '/repo', worktree: { branch: 'fix', prepareCommand: 'bad\0command' } })).rejects.toThrow('control')

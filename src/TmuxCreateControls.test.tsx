@@ -681,12 +681,25 @@ describe('prepare-command daemon sync', () => {
     render(<TmuxCreateControls token="owner" variant="dialog" sessionCreateRequest={request} onCreateSession={vi.fn()} />)
     const prepare = await screen.findByLabelText(/^Prepare worktree/)
     expect(prepare).toHaveValue('pnpm i')
-    expect(fetch).not.toHaveBeenCalled()
+    // The stored value is synced to the daemon on load instead of being fetched from it.
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/api/repo-prepare-commands?root='), expect.anything())
+    expect(fetch).toHaveBeenCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: MAIN, command: 'pnpm i' }) }))
     fireEvent.change(prepare, { target: { value: 'pnpm build' } })
     expect(fetch).toHaveBeenLastCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: MAIN, command: 'pnpm build' }) }))
     fireEvent.change(prepare, { target: { value: '' } })
     expect(fetch).toHaveBeenLastCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: MAIN, command: '' }) }))
     expect(window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY)).toBeNull()
+  })
+  it('migrates every stored prepare command to the daemon once, without the dialog open', async () => {
+    window.localStorage.setItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY, JSON.stringify({ '/repos/other-migrated': 'make setup', '/repos/blank-migrated': '  ' }))
+    const { unmount } = render(<TmuxCreateControls token="migrate" onCreateSession={vi.fn()} />)
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ root: '/repos/other-migrated', command: 'make setup' }) })))
+    expect(fetch).not.toHaveBeenCalledWith('/api/repo-prepare-commands', expect.objectContaining({ body: expect.stringContaining('blank-migrated') }))
+    unmount()
+    vi.mocked(fetch).mockClear()
+    render(<TmuxCreateControls token="migrate" onCreateSession={vi.fn()} />)
+    await act(async () => {})
+    expect(fetch).not.toHaveBeenCalledWith('/api/repo-prepare-commands', expect.objectContaining({ method: 'PUT' }))
   })
   it('does not overwrite edits with a delayed daemon prefill', async () => {
     let resolve!: (response: Response) => void
