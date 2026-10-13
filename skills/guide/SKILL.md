@@ -41,7 +41,7 @@ These keep live legacy billing (78 subscriptions) working once the signature che
 1. **Get the platform signing secret.**
    - [ ] Stripe → Live mode → Workbench → Webhooks → `graphql.vivi.fit/stripe/hooks` → Reveal → copy {#copy-platform}
 2. **Store it in Doppler.** This keeps it out of your shell history.
-   - [ ] Run: {#store-platform}
+   - [ ] Store the platform secret in Doppler: {#store-platform}
 
      ```sh
      pbpaste | doppler secrets set STRIPE_PLATFORM_WEBHOOK_SECRET --project fitliness-database --config prod_railway
@@ -55,6 +55,8 @@ These keep live legacy billing (78 subscriptions) working once the signature che
   digits, `-`, `_`) to give a step a stable id. Without one, the id is a slug of
   the text, and rewording the step resets its tick. Write `[x]` for steps you
   have already done or verified yourself; they render as done ("agent").
+  The step text is the step's name in your updates, so make it say what the
+  step does ("Store the secret in Doppler:", not "Run:").
 - **`<checkpoint id="…">label</checkpoint>`** is a highlighted step. Use it where
   you want the user to report back ("phase 1 done"), instead of writing "tell me
   X". Add `done` (`<checkpoint id="x" done>`) once you have verified it.

@@ -54,7 +54,8 @@
 .guide-step-body { flex: 1; min-width: 0; }
 .guide-step-body > p:first-child { margin-top: 0; }
 .guide-step-body > p:last-of-type { margin-bottom: 0; }
-.guide-step.is-done > .guide-step-body > p:first-child { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--muted-dim); }
+.guide-step.is-done > .guide-step-body { color: var(--muted); }
+.guide-step.is-done > .guide-step-body strong { color: var(--text-soft); }
 .guide-box { flex: none; width: 15px; height: 15px; margin: 3px 0 0; accent-color: var(--green); cursor: pointer; }
 
 .guide-note-add { display: inline-flex; vertical-align: middle; align-items: center; margin-left: 6px; padding: 0; border: 0; background: transparent; color: var(--muted-dim); cursor: pointer; opacity: 0; }
