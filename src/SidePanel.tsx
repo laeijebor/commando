@@ -210,7 +210,7 @@ export function SidePanel({
     resizeObserver?.observe(grid)
     const mutationObserver = new MutationObserver(schedule)
     // Header and footer changes can add or move controls; terminal output cannot.
-    grid.querySelectorAll('.pane-head, .pane-footer').forEach((node) => mutationObserver.observe(node, { childList: true, characterData: true, attributes: true, subtree: true }))
+    grid.querySelectorAll('.pane-head, .empty-pane__head, .pane-footer').forEach((node) => mutationObserver.observe(node, { childList: true, characterData: true, attributes: true, subtree: true }))
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
     window.addEventListener('transitionend', schedule, true)

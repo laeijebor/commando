@@ -4772,7 +4772,7 @@ body.is-resizing-hud-pinned-note {
 .terminal-pane .pane-heading { min-width: 80px; }
 .pane-tab-count { flex-shrink: 1; overflow: hidden; }
 @container (max-width: 480px) { .pane-tab-count-detail { display: none; } }
-@container (max-width: 360px) { .pane-tab-count { display: none; } }
+@container (max-width: 360px) { .pane-tab-count:not(.pane-tab-button) { display: none; } }
 
 .side-panel-new.is-warning { background: var(--amber); }
 .side-panel-add { flex-shrink: 0; }

@@ -314,11 +314,7 @@ type TerminalPaneProps = {
   status?: AgentStatus
   brief?: SessionBrief
   panelTabs?: WebPane[]
-  narrowPanel?: boolean
-  drawerOpen?: boolean
-  panelAttention?: boolean
-  panelWarning?: boolean
-  onToggleDrawer?: () => void
+  panelTrigger?: ReactNode
   mark?: PaneMark
   resume?: AgentResume
   index: number
@@ -411,11 +407,7 @@ export function TerminalPaneCard({
   status,
   brief: suppliedBrief,
   panelTabs: paneTabs = [],
-  narrowPanel = false,
-  drawerOpen = false,
-  panelAttention = false,
-  panelWarning = false,
-  onToggleDrawer,
+  panelTrigger,
   mark,
   index,
   count,
@@ -626,14 +618,9 @@ export function TerminalPaneCard({
           ) : <strong>{paneLabel}</strong>}
           <small title={brief?.headline || pane.command || pane.path}>{brief?.headline || pane.command || pane.path}</small>
         </span>
-        {narrowPanel ? <button type="button" className={`pane-tab-count pane-tab-button${paneTabs.some((tab) => tab.unseen) || panelAttention || panelWarning ? ' has-new' : ''}`}
-          data-panel-chip={pane.id} aria-label={`Open tabs for ${paneLabel}`} aria-expanded={drawerOpen}
-          onClick={(event) => { event.stopPropagation(); event.currentTarget.focus(); onFocus(); onToggleDrawer?.() }}>
-          <PanelTop aria-hidden="true" />{paneTabs.length > 0 && <span>{paneTabs.length}</span>}
-          {(paneTabs.some((tab) => tab.unseen) || panelAttention || panelWarning) && <i className={`side-panel-new${panelWarning ? ' is-warning' : ''}`} aria-label={panelWarning ? 'Session resume failed' : 'New updates'} />}
-        </button> : paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
+        {panelTrigger ?? (paneTabs.length > 0 && <span className={`pane-tab-count${paneTabs.some((tab) => tab.unseen) ? ' has-new' : ''}`}>
           {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
-        </span>}
+        </span>)}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
         {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
         {mark ? (
@@ -3754,10 +3741,28 @@ export function App() {
                         const rendererControl = storedRendererControl?.identity === rendererIdentity
                           ? storedRendererControl
                           : undefined
+                        const paneTabs = panelTabs(panelWebPanes, pane.id)
+                        const hasNew = paneTabs.some((tab) => tab.unseen) || sessionAttention[pane.id] || sessionWarnings[pane.id]
+                        const panelTrigger = narrowPanel ? <button type="button" className={`pane-tab-count pane-tab-button${hasNew ? ' has-new' : ''}`}
+                          data-panel-chip={pane.id} aria-label={`Open tabs for ${pane.title || pane.command || `Pane ${pane.index}`}`}
+                          aria-expanded={Boolean(openDrawers[group.windowId]) && panelPaneId === pane.id}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            event.currentTarget.focus()
+                            setFocusedPaneId(pane.id)
+                            if (maximizedGridPaneId) {
+                              clearLayoutTimers()
+                              setMaximizedPaneId(null)
+                              setOpenDrawers((current) => ({ ...current, [group.windowId]: true }))
+                            } else setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))
+                          }}>
+                          <PanelTop aria-hidden="true" />{paneTabs.length > 0 && <span>{paneTabs.length}</span>}
+                          {hasNew && <i className={`side-panel-new${sessionWarnings[pane.id] ? ' is-warning' : ''}`} aria-label={sessionWarnings[pane.id] ? 'Session resume failed' : 'New updates'} />}
+                        </button> : undefined
                         if (pane.empty) {
                           return [
                             pane.id,
-                            <EmptyPane key={rendererIdentity} pane={pane} pending={paneActionPending} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />,
+                            <EmptyPane key={rendererIdentity} pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />,
                           ] as const
                         }
                         return [
@@ -3767,16 +3772,8 @@ export function App() {
                             pane={pane}
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}
-                            panelTabs={panelTabs(panelWebPanes, pane.id)}
-                            narrowPanel={narrowPanel} drawerOpen={Boolean(openDrawers[group.windowId]) && panelPaneId === pane.id}
-                            panelAttention={sessionAttention[pane.id]} panelWarning={sessionWarnings[pane.id]}
-                            onToggleDrawer={() => {
-                              if (maximizedGridPaneId) {
-                                clearLayoutTimers()
-                                setMaximizedPaneId(null)
-                                setOpenDrawers((current) => ({ ...current, [group.windowId]: true }))
-                              } else setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))
-                            }}
+                            panelTabs={paneTabs}
+                            panelTrigger={panelTrigger}
                             mark={paneMarks[pane.targetId]}
                             resume={agentResumes[pane.targetId]}
                             onRetryResume={() => retryAgentResume(pane.targetId)}

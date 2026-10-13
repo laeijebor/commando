@@ -351,7 +351,8 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
   window.sessionStorage.setItem('commando.session-token', 'test-token')
   const view = render(<App />)
   act(() => daemonMessage?.({ type: 'snapshot', snapshot }))
-  await screen.findByTestId(`renderer-${snapshot.panes[0]!.id}`)
+  if (snapshot.panes[0]!.empty) await screen.findByRole('region', { name: 'Empty pane' })
+  else await screen.findByTestId(`renderer-${snapshot.panes[0]!.id}`)
   return view
 }
 
@@ -409,6 +410,7 @@ describe('pane close and create shortcuts', () => {
   it('shows a launcher instead of a terminal for an empty pane and launches into it', async () => {
     await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, empty: true }]))
     expect(screen.queryByTestId(`renderer-${adjacentPane.id}`)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: `Open tabs for ${adjacentPane.title}` })).not.toBeInTheDocument()
     vi.mocked(fetch).mockResolvedValue(new Response('{"launched":true}', { status: 200 }))
     const launcher = within(screen.getByRole('group', { name: 'Start in this pane' }))
 
@@ -2639,6 +2641,54 @@ describe('narrow pane tabs', () => {
   const closeButton = () => within(document.querySelector('.side-panel')!).getByRole('button', { name: 'Close tabs drawer' })
 
   beforeEach(() => { vi.stubGlobal('innerWidth', 800) })
+
+  it('exempts the drawer trigger from the compact pane count hiding rule', async () => {
+    await renderAppWithSnapshot()
+    const css = readFileSync('src/styles.css', 'utf8')
+    const compactRule = css.match(/@container\s*\(max-width:\s*360px\)\s*\{\s*([^{}]+)\{\s*display:\s*none;/)!
+    expect(compactRule[1].trim()).toBe('.pane-tab-count:not(.pane-tab-button)')
+    for (const owner of [pane, adjacentPane]) {
+      expect(chip(owner)).toHaveClass('pane-tab-button')
+      expect(chip(owner).matches(compactRule[1].trim())).toBe(false)
+      expect(chip(owner)).toBeEnabled()
+    }
+    fireEvent.click(chip(adjacentPane))
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
+  })
+
+  it('opens and closes the drawer from an empty-only window and offers Add web tab', async () => {
+    await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }]))
+    expect(screen.queryByTestId(`renderer-${pane.id}`)).not.toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Empty pane' })).getByRole('button', { name: 'Open tabs for api' })).toBe(chip())
+    expect(chip()).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(chip())
+    expect(drawer()).toHaveClass('is-drawer-open')
+    expect(chip()).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
+    expect(screen.getByRole('textbox', { name: 'Tab URL' })).toBeVisible()
+    fireEvent.click(chip())
+    expect(drawer()).not.toHaveClass('is-drawer-open')
+    fireEvent.click(chip())
+    fireEvent.click(closeButton())
+    expect(chip()).toHaveFocus()
+  })
+
+  it('switches an open drawer to an empty pane through its uncovered trigger', async () => {
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, empty: true, active: false }]))
+    const bounds = mockControlBounds()
+    try {
+      fireEvent.click(chip())
+      await waitFor(() => expect(document.querySelector<HTMLElement>('.side-panel-scrim')!.style.clipPath).toContain('M500 20H540V40H500Z'))
+      fireEvent.click(chip(adjacentPane))
+      expect(drawer()).toHaveClass('is-drawer-open')
+      expect(document.querySelector('.side-panel-owner')).toHaveTextContent(adjacentPane.id)
+      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+      fireEvent.click(chip(adjacentPane))
+      expect(drawer()).not.toHaveClass('is-drawer-open')
+    } finally { bounds.mockRestore() }
+  })
 
   it('follows the CSS media query even when the rounded innerWidth disagrees', async () => {
     vi.stubGlobal('innerWidth', 841)
