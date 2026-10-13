@@ -37,9 +37,12 @@ describe('toPlanUsage', () => {
     })
   })
 
-  it('falls back to the 5h and 7d windows when the server sends no rows', () => {
+  it('falls back to the 5h, 7d and per-model windows when the server sends no rows', () => {
     const { limits: _rows, ...rest } = REPORT.rate_limits
-    expect(reading({ ...REPORT, rate_limits: rest }).limits.map((limit) => [limit.kind, limit.percent])).toEqual([['session', 38], ['weekly_all', 43]])
+    const modelScoped = [{ display_name: 'Fable', utilization: 9, resets_at: '2026-10-16T11:59:59Z' }, { display_name: 'Opus', utilization: null, resets_at: null }]
+    expect(reading({ ...REPORT, rate_limits: { ...rest, model_scoped: modelScoped } }).limits.map((limit) => [limit.title, limit.percent])).toEqual([
+      ['Current session', 38], ['Weekly · all models', 43], ['Weekly · Fable', 9],
+    ])
   })
 
   it('marks a full window as reached', () => {

@@ -71,9 +71,18 @@ export function toPlanUsage(report: unknown, now: number): ChatPlanUsage | typeo
   if (!limits.length) {
     for (const [key, kind] of [['five_hour', 'session'], ['seven_day', 'weekly_all']] as const) {
       const window = rateLimits[key]
-      const used = isRecord(window) ? percent(window.utilization) : undefined
-      if (used === undefined || !isRecord(window)) continue
+      if (!isRecord(window)) continue
+      const used = percent(window.utilization)
+      if (used === undefined) continue
       limits.push(limit({ kind, title: limitTitle(kind, undefined, undefined), percent: used, severity: 'normal' }, isoTime(window.resets_at)))
+    }
+    // Per-model weekly windows (e.g. Fable) come separately in this shape.
+    for (const window of Array.isArray(rateLimits.model_scoped) ? rateLimits.model_scoped : []) {
+      if (!isRecord(window)) continue
+      const used = percent(window.utilization)
+      const name = displayName(window)
+      if (used === undefined || !name) continue
+      limits.push(limit({ kind: 'weekly_scoped', title: `Weekly · ${name}`, percent: used, severity: 'normal' }, isoTime(window.resets_at)))
     }
   }
   if (!limits.length) return null
