@@ -14,6 +14,11 @@ const GUIDE = `# Stripe rollout
 1. **Get the secret.**
    - [ ] Reveal and copy the signing secret {#reveal}
    - [x] Store it in Doppler
+   - [ ] Run: {#run-sync}
+
+     \`\`\`sh
+     doppler run -- sync
+     \`\`\`
 
 \`\`\`sh
 pbpaste | doppler secrets set STRIPE_SECRET
@@ -65,9 +70,11 @@ describe('GuidePane', () => {
     expect(screen.getByRole('checkbox', { name: 'Phase 1 done' })).toBeInTheDocument()
     expect(container.textContent).not.toContain('{#reveal}')
     expect(screen.getByRole('note')).toHaveTextContent('Careful Live mode only.')
-    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2)
     expect(container.querySelector('script')).toBeNull()
-    expect(screen.getByLabelText('1 of 3 steps done')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Run:' })).toBeInTheDocument()
+    expect(container.textContent).not.toContain('{#run-sync}')
+    expect(screen.getByLabelText('1 of 4 steps done')).toBeInTheDocument()
     expect(onTitle).toHaveBeenCalledWith('Stripe rollout')
   })
 

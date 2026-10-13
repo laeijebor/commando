@@ -43,21 +43,23 @@ function rehypeStepOffsets() {
   return (tree: HastNode) => visit(tree)
 }
 
-/** Drop the `{#id}` suffix from the last text node of each task item. */
+/** Drop the `{#id}` suffix from the end of each task item's first paragraph (where parseGuide reads it). */
 function rehypeStripStepIds() {
+  const lastText = (nodes: HastNode[]): HastNode | undefined => {
+    for (let index = nodes.length - 1; index >= 0; index--) {
+      const node = nodes[index]
+      if (node.type === 'text' && node.value?.trim()) return node
+      if (node.type === 'element') return lastText(node.children ?? [])
+    }
+  }
   const visit = (node: HastNode) => {
     if (node.tagName === 'li') {
-      const last = (parent: HastNode): HastNode | undefined => {
-        for (let index = (parent.children?.length ?? 0) - 1; index >= 0; index--) {
-          const child = parent.children![index]
-          if (child.type === 'text' && child.value?.trim()) return child
-          if (child.type === 'element' && child.tagName === 'p') return last(child)
-          if (child.type === 'element' && (child.tagName === 'ul' || child.tagName === 'ol')) continue
-          if (child.type === 'text') continue
-          return undefined
-        }
-      }
-      const text = last(node)
+      const children = node.children ?? []
+      const block = children.findIndex((child) => child.type === 'element' && ['p', 'ul', 'ol', 'pre', 'div', 'blockquote', 'table'].includes(child.tagName!))
+      const leading = children.slice(0, block < 0 ? children.length : block)
+      const text = leading.some((child) => child.type === 'text' && child.value?.trim()) || block < 0 || children[block].tagName !== 'p'
+        ? lastText(leading)
+        : lastText(children[block].children ?? [])
       if (text?.value) text.value = stripGuideStepId(text.value)
     }
     for (const child of node.children ?? []) visit(child)
