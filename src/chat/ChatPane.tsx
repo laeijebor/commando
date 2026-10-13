@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Component, useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
   hostTakesTurnFlow,
@@ -16,6 +16,8 @@ import {
   type ChatSwitchAction,
   type ChatTaskAction,
 } from '../../shared/agent-chat'
+import type { AgentStatus, TmuxPane } from '../../shared/protocol'
+import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from '../chatLineage'
 import type { PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
 import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError } from './ChatComposer'
@@ -73,6 +75,10 @@ export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
 function ChatColumn({
   chat,
   paneId,
+  pane,
+  snapshot,
+  statuses = {},
+  onSelectPane,
   prsApi,
   connected,
   focused,
@@ -92,6 +98,10 @@ function ChatColumn({
 }: {
   chat: ChatState
   paneId?: string
+  pane?: TmuxPane
+  snapshot?: LineageSnapshot
+  statuses?: Record<string, AgentStatus>
+  onSelectPane?: (id: string) => void
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
   connected: boolean
@@ -116,6 +126,7 @@ function ChatColumn({
   onDismissActionError?: () => void
   flow?: ChatFlowServices
 }) {
+  const openingTask = pane?.openedBy ? chat.items.find((item) => item.kind === 'user_message' && !item.parentToolUseId) : undefined
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])
   const working = chat.session.status === 'running'
@@ -246,6 +257,10 @@ function ChatColumn({
       ) : (
         <ChatTimeline
           items={chat.items}
+          {...(openingTask?.kind === 'user_message' && pane && snapshot ? { userMessageCard: {
+            itemId: openingTask.id,
+            content: <OpenedChatTask key={openingTask.id} text={stripTaskPreamble(openingTask.text)} pane={pane} snapshot={snapshot} statuses={statuses} onSelectPane={onSelectPane} />,
+          } } : {})}
           cwd={chat.session.cwd}
           working={working}
           {...(turnFlow ? { onOpenSubagent: select } : {})}
@@ -366,5 +381,38 @@ function SubagentTimeline({ agent, items, ownItems, transcript, cwd, onOpenSubag
       )}
       onOpenSubagent={onOpenSubagent}
     />
+  )
+}
+
+function OpenedChatTask({ text, pane, snapshot, statuses, onSelectPane }: {
+  text: string
+  pane: TmuxPane
+  snapshot: LineageSnapshot
+  statuses: Record<string, AgentStatus>
+  onSelectPane: ((id: string) => void) | undefined
+}) {
+  const parent = chatParent(pane, snapshot)
+  const body = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [long, setLong] = useState(false)
+  useLayoutEffect(() => {
+    const element = body.current
+    if (!element || expanded) return
+    const measure = () => setLong(element.scrollHeight > element.clientHeight)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [text, expanded])
+  return (
+    <div className="mb-3 rounded-lg border border-border bg-card px-3 py-2 text-sm text-secondary-label">
+      <div className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <Bot className="size-3" aria-hidden="true" /><span>Task from {parentLabel(pane, snapshot, statuses)}</span>
+        {parent && onSelectPane ? <button type="button" className="ml-auto shrink-0 text-primary hover:underline" onClick={(event) => { event.stopPropagation(); onSelectPane(parent.id) }}>Go to {parent.id}</button> : null}
+      </div>
+      <div ref={body} className={`whitespace-pre-wrap break-words${expanded ? '' : ' line-clamp-6'}`}>{text}</div>
+      {long ? <button type="button" className="mt-1 text-xs text-primary hover:underline" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? 'Show less' : 'Show more'}</button> : null}
+    </div>
   )
 }

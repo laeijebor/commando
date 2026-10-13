@@ -18,6 +18,7 @@ import {
 } from '../shared/tmux-create'
 import { loadChatLaunch, saveChatLaunch, type ChatLaunchPreference } from './chatLaunchPreferences'
 import './tmux-create.css'
+import { createAgentChatsApi } from './agentChatsApi'
 
 export type SessionCreateRepo = { root: string; name: string; defaultBranch?: string }
 
@@ -38,6 +39,7 @@ const REPO_PROBE_DEBOUNCE_MS = 200
 const REPO_PROBE_TIMEOUT_MS = 10_000
 
 export type TmuxCreateControlsProps = {
+  token?: string
   disabled?: boolean
   /** `inline` (default) is the collapsible sidebar form; `dialog` renders the open panel only. */
   variant?: 'inline' | 'dialog'
@@ -160,6 +162,7 @@ function saveStartWith(repoKey: string | undefined, startWith: StartWith): void 
 }
 
 export function TmuxCreateControls({
+  token = '',
   disabled = false,
   variant = 'inline',
   sessionCreateRequest = null,
@@ -169,6 +172,8 @@ export function TmuxCreateControls({
   probeRepo,
   loadClaudeProfiles,
 }: TmuxCreateControlsProps) {
+  const prepareEditVersion = useRef(0)
+  const [openVersion, setOpenVersion] = useState(0)
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const sessionNameRef = useRef<HTMLInputElement>(null)
   const [sessionName, setSessionName] = useState('')
@@ -228,8 +233,18 @@ export function TmuxCreateControls({
   const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
 
   useEffect(() => {
-    setPrepareCommand(repo?.mainRoot ? loadWorktreePrepareCommands()[repo.mainRoot] ?? '' : '')
-  }, [repo?.mainRoot])
+    const root = repo?.mainRoot
+    const commands = loadWorktreePrepareCommands()
+    setPrepareCommand(root ? commands[root] ?? '' : '')
+    if (!root || Object.hasOwn(commands, root) || (sessionCreateRequest?.repo && root !== sessionCreateRequest.repo.root)) return
+    let cancelled = false
+    const version = prepareEditVersion.current
+    void createAgentChatsApi(token).getPrepareCommand(root).then(
+      (command) => { if (!cancelled && version === prepareEditVersion.current) setPrepareCommand(command) },
+      (cause: unknown) => console.warn('Unable to load repository prepare command', cause),
+    )
+    return () => { cancelled = true }
+  }, [repo?.mainRoot, sessionCreateRequest?.id, openVersion, token])
 
   // What a session starts with, and a chat's profile and permission mode, are remembered per repository.
   const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
@@ -424,6 +439,11 @@ export function TmuxCreateControls({
           ...(prepareRequested ? { prepareCommand } : {}),
         }
       }
+      if (repo?.mainRoot) {
+        saveWorktreePrepareCommand(repo.mainRoot, prepareCommand)
+        void createAgentChatsApi(token).setPrepareCommand(repo.mainRoot, prepareCommand.trim() ? prepareCommand : '')
+          .catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
+      }
       const result = requireSessionAgentLaunch(request, await onCreateSession(request))
       saveStartWith(repoKey, agentProvider)
       const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory)
@@ -528,8 +548,13 @@ export function TmuxCreateControls({
               placeholder="pnpm i"
               onChange={(event) => {
                 const command = event.target.value
+                prepareEditVersion.current += 1
                 setPrepareCommand(command)
-                if (repo.mainRoot) saveWorktreePrepareCommand(repo.mainRoot, command)
+                if (repo.mainRoot) {
+                  saveWorktreePrepareCommand(repo.mainRoot, command)
+                  void createAgentChatsApi(token).setPrepareCommand(repo.mainRoot, command.trim() ? command : '')
+                    .catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
+                }
               }}
             />
           </label>
@@ -734,6 +759,7 @@ export function TmuxCreateControls({
       onToggle={(event) => {
         if (event.currentTarget.open) {
           // This form stays mounted, so pick up choices remembered by the dialog meanwhile.
+          setOpenVersion((value) => value + 1)
           setAgentProvider(loadStartWith(repoKey))
           setChatLaunch(loadChatLaunch(repoKey))
           return

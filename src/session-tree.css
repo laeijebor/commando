@@ -127,3 +127,8 @@
 .session-pref-group.kind-auxiliary .managed-session { background: var(--surface); }
 .session-pref-group.kind-auxiliary .managed-session-copy strong { color: var(--muted); }
 .session-tree-error { position: sticky; top: 0; z-index: 10; border: 1px solid var(--red); border-radius: 5px; background: var(--surface-raised) !important; }
+
+.managed-session-tree .opened-by-marker, .managed-session-tree .agent-chat-request-badge { color: var(--accent); font-family: var(--mono); font-size: inherit; }
+.opened-by-marker { padding: 0; margin-right: 5px; white-space: nowrap; }
+.managed-pane-row .opened-by-marker { font-size: 9px; }
+.managed-session-tree .agent-chat-request-badge { flex: 0 0 auto; padding: 3px 5px; border: 1px solid var(--border); border-radius: 5px; font-size: 8px; }

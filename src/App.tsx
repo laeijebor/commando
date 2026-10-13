@@ -101,6 +101,11 @@ import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { SessionTree } from './SessionTree'
+import type { AgentChatRequest } from '../shared/agent-chats'
+import { AgentChatRequestCard } from './AgentChatRequestCard'
+import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
+import { createAgentChatsApi } from './agentChatsApi'
+import type { LineageSnapshot } from './chatLineage'
 import { SessionIdeView } from './SessionIdeView'
 import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
@@ -311,6 +316,12 @@ function displayTime(timestamp: number) {
 
 type TerminalPaneProps = {
   pane: TmuxPane
+  lineageSnapshot?: LineageSnapshot
+  lineageStatuses?: Record<string, AgentStatus>
+  onSelectPane?: (id: string) => void
+  attributionVisible?: boolean
+  agentChatRequests?: AgentChatRequest[]
+  onAnswerAgentChatRequest?: (id: string, decision: 'accepted' | 'dismissed') => Promise<void>
   status?: AgentStatus
   brief?: SessionBrief
   panelTabs?: WebPane[]
@@ -404,6 +415,12 @@ function claudeCodeSwitchTitle(chat: ChatState): string {
 
 export function TerminalPaneCard({
   pane,
+  lineageSnapshot,
+  lineageStatuses = {},
+  onSelectPane,
+  attributionVisible,
+  agentChatRequests = [],
+  onAnswerAgentChatRequest,
   status,
   brief: suppliedBrief,
   panelTabs: paneTabs = [],
@@ -718,6 +735,10 @@ export function TerminalPaneCard({
         {showChat && chat ? (
           <ChatPane
             paneId={pane.id}
+            pane={pane}
+            snapshot={lineageSnapshot}
+            statuses={lineageStatuses}
+            onSelectPane={onSelectPane}
             {...(prsApi ? { prsApi } : {})}
             chat={chat}
             connected={connected}
@@ -765,6 +786,10 @@ export function TerminalPaneCard({
           registerFocusable={registerFocusable}
         />}
 
+        {attributionVisible && lineageSnapshot ? <PaneAttributionToast pane={pane} snapshot={lineageSnapshot} statuses={lineageStatuses} /> : null}
+        {onAnswerAgentChatRequest && agentChatRequests.length ? <div className="agent-chat-requests">
+          {agentChatRequests.map((request) => <AgentChatRequestCard key={request.id} request={request} onAnswer={onAnswerAgentChatRequest} />)}
+        </div> : null}
       </div>
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
@@ -1103,6 +1128,9 @@ export function App() {
   const [ideErrors, setIdeErrors] = useState<Record<string, string>>({})
   const ideRequests = useRef(new Set<string>())
   const [webPaneFeedback, setWebPaneFeedback] = useState<Record<string, WebPaneFeedbackInfo>>({})
+  const { observe: observePaneAttribution, visibleTargets: attributionTargets } = usePaneAttribution()
+  const [agentChatRequests, setAgentChatRequests] = useState<Record<string, AgentChatRequest>>({})
+  const agentChatsApi = useMemo(() => createAgentChatsApi(token), [token])
   const [webPaneNavigateRequests, setWebPaneNavigateRequests] = useState<Record<string, WebPaneNavigateRequest>>({})
   const [webPaneReloads, setWebPaneReloads] = useState<Record<string, number>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -1349,8 +1377,11 @@ export function App() {
             pane.windowId === activeGroup.windowId && pane.active)?.id
           const nextActive = message.snapshot.panes.find((pane) =>
             pane.windowId === activeGroup.windowId && pane.active)?.id
-          if (previousActive && nextActive && previousActive !== nextActive) setFocusedPaneId(nextActive)
+          const newlyOpenedByAgent = message.snapshot.panes.some((pane) => pane.id === nextActive && pane.openedBy &&
+            !previousSnapshotRef.current!.panes.some((previous) => previous.targetId === pane.targetId))
+          if (previousActive && nextActive && previousActive !== nextActive && !newlyOpenedByAgent) setFocusedPaneId(nextActive)
         }
+        observePaneAttribution(message.snapshot.panes)
         previousSnapshotRef.current = message.snapshot
         setSnapshot(message.snapshot)
         break
@@ -1526,6 +1557,7 @@ export function App() {
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
+        setAgentChatRequests(message.agentChatRequests ?? {})
         setWebPaneReloads(message.reloads ?? {})
         break
       case 'session_ides':
@@ -3378,6 +3410,7 @@ export function App() {
               panes={snapshot?.panes ?? []}
               displayedPaneIds={allVisiblePaneIds}
               statuses={agentStatuses}
+              agentChatRequests={agentChatRequests}
               marks={paneMarks}
               selectedSessionId={selectedSessionId}
               focusedPaneId={focusedPaneId}
@@ -3770,6 +3803,15 @@ export function App() {
                           <TerminalPaneCard
                             key={rendererIdentity}
                             pane={pane}
+                            lineageSnapshot={snapshot ?? undefined}
+                            lineageStatuses={agentStatuses}
+                            onSelectPane={jumpToPane}
+                            attributionVisible={attributionTargets.has(pane.targetId)}
+                            agentChatRequests={Object.values(agentChatRequests).filter((request) => request.callerPaneId === pane.id && request.callerTargetId === pane.targetId)}
+                            onAnswerAgentChatRequest={async (id, decision) => {
+                              await agentChatsApi.answerRequest(id, decision)
+                              setAgentChatRequests((current) => { const next = { ...current }; delete next[id]; return next })
+                            }}
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}
                             panelTabs={paneTabs}

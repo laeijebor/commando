@@ -2958,3 +2958,32 @@ describe('narrow pane tabs', () => {
     expect(document.querySelector(`[data-web-pane-id="${split.id}"]`)?.closest('.window-terminal-grid')).toBeInTheDocument()
   })
 })
+
+describe('agent-opened chat integration', () => {
+  it('shows attribution only after the initial snapshot without changing pane focus', async () => {
+    const child = { ...adjacentPane, openedBy: pane.targetId }
+    await renderAppWithSnapshot(snapshotWith([pane, child]))
+    expect(screen.queryByText(/opened this chat/)).not.toBeInTheDocument()
+    const newChild = { ...child, id: '%14', targetId: 'new-agent-child', index: 2, active: true }
+    fireEvent.focus(screen.getByTestId(`renderer-${pane.id}`))
+    const before = document.activeElement
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([{ ...pane, active: false }, { ...child, active: false }, newChild]) }))
+    expect(await screen.findByText(/opened this chat/)).toHaveTextContent('work opened this chat')
+    expect(document.activeElement).toBe(before)
+    expect(screen.getByTestId(`renderer-${pane.id}`).closest('article')).toHaveClass('is-focused')
+    expect(screen.getByTestId('renderer-%14').closest('article')).not.toHaveClass('is-focused')
+  })
+  it.each(['Open', 'Dismiss'] as const)('stores pending chat requests from web_panes and submits %s over the caller pane', async (action) => {
+    await renderAppWithSnapshot()
+    const request = { id: 'cr-123abc', callerPaneId: pane.id, callerTargetId: pane.targetId, requestedBy: 'claude · work', reason: 'rate' as const, requestedAt: 0,
+      summary: { location: 'session' as const, title: 'Review', provider: 'claude-chat' as const, promptPreview: 'Review this' } }
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true })))
+    act(() => daemonMessage?.({ type: 'web_panes', webPanes: [], agentChatRequests: { [request.id]: request } }))
+    const dialog = await screen.findByRole('alertdialog', { name: 'Agent wants to open a chat' })
+    expect(dialog.closest('article')).toHaveAttribute('data-pane-id', pane.id)
+    fireEvent.click(within(dialog).getByRole('button', { name: action }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/agent-chats/requests/cr-123abc', expect.objectContaining({ method: 'POST',
+      body: JSON.stringify({ decision: action === 'Open' ? 'accepted' : 'dismissed' }) })))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+})

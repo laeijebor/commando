@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
@@ -28,6 +28,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 beforeEach(() => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ command: '' })))
   vi.clearAllMocks()
   sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
@@ -946,5 +947,55 @@ describe('SessionTree', () => {
       })
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     })
+  })
+})
+
+describe('agent chat sidebar', () => {
+  it('keeps session lineage as metadata and pane lineage and request badges as independent buttons', async () => {
+    const parent = { ...pane('%1', 0, 'Parent'), sessionId: '$1' }
+    const child = { ...pane('%2', 0, 'Child'), sessionId: '$2', windowId: '@2', openedBy: parent.targetId }
+    const sibling = { ...pane('%3', 1, 'Sibling'), openedBy: parent.targetId }
+    const onSelectPane = vi.fn(), onSelectSession = vi.fn()
+    const props = {
+      token: '', sessions: [{ id: '$1', name: 'main', attached: true, activeWindowId: '@1', windowIds: ['@1'] }, { id: '$2', name: 'child', attached: false, activeWindowId: '@2', windowIds: ['@2'] }],
+      windows: [{ id: '@1', sessionId: '$1', name: 'shell', index: 0, active: true, layout: '', paneIds: ['%1', '%3'] }, { id: '@2', sessionId: '$2', name: 'shell', index: 0, active: true, layout: '', paneIds: ['%2'] }],
+      panes: [parent, child, sibling], displayedPaneIds: ['%1', '%3'], statuses: { '%1': { ...agentStatus('%1', 'claude', 'working'), agentSessionName: 'implementation' } },
+      selectedSessionId: '$1', focusedPaneId: '%1', onSelectPane, onSelectSession, onSelectWindow: vi.fn(), onOpenPaneMaximized: vi.fn(), onWindowDeleting: vi.fn(), onSessionsChanged: vi.fn(), onPreferencesChanged: vi.fn(),
+      agentChatRequests: { 'cr-123': { id: 'cr-123', callerPaneId: '%2', callerTargetId: child.targetId, requestedBy: 'claude', reason: 'rate' as const, requestedAt: 0, summary: { location: 'pane' as const, title: 'Review', provider: 'claude' as const, promptPreview: 'brief' } } },
+    }
+    const { rerender } = render(<SessionTree {...props} />)
+    await act(async () => {})
+    const markers = screen.getAllByTitle('Opened by claude · implementation')
+    expect(markers).toHaveLength(2)
+    const sessionMarker = markers.find((marker) => marker.closest('small'))!
+    expect(sessionMarker.tagName).toBe('SPAN')
+    expect(sessionMarker).toHaveClass('opened-by-marker')
+    const sessionButton = sessionMarker.closest('button')!
+    expect(sessionButton).toHaveClass('managed-session-main')
+    expect(sessionButton).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(sessionMarker)
+    expect(onSelectSession).toHaveBeenCalledExactlyOnceWith('$2')
+    expect(onSelectPane).not.toHaveBeenCalled()
+    onSelectSession.mockClear()
+    const paneMarker = screen.getByRole('button', { name: '↳ main' })
+    expect(paneMarker.closest('.managed-pane-row')).toBeTruthy()
+    expect(paneMarker.parentElement?.closest('button')).toBeNull()
+    fireEvent.click(paneMarker)
+    expect(onSelectPane).toHaveBeenCalledOnce()
+    expect(onSelectPane).toHaveBeenLastCalledWith('%1')
+    expect(onSelectSession).not.toHaveBeenCalled()
+    const badge = screen.getByRole('button', { name: 'chat request' })
+    expect(badge).toBeInTheDocument()
+    expect(badge.closest('.managed-session-row')).toHaveTextContent('child')
+    expect(badge.closest('.managed-session')).not.toHaveClass('selected')
+    expect(badge.parentElement?.closest('button')).toBeNull()
+    expect(document.querySelector('button button')).toBeNull()
+    fireEvent.click(badge)
+    expect(onSelectPane).toHaveBeenLastCalledWith('%2')
+    expect(onSelectSession).not.toHaveBeenCalled()
+    rerender(<SessionTree {...props} panes={[child, sibling]} agentChatRequests={{}} />)
+    expect(screen.queryByRole('button', { name: '↳ main' })).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Opened by claude · implementation')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'chat request' })).not.toBeInTheDocument()
   })
 })

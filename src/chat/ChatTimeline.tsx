@@ -256,7 +256,7 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan }: {
+export function ChatTimeline({ items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, userMessageCard }: {
   items: readonly ChatItem[]
   cwd: string
   working: boolean
@@ -264,6 +264,7 @@ export function ChatTimeline({ items, cwd, working, scope, header, footer, empty
   scope?: string
   /** Shown above the first row (a subagent's task). */
   header?: ReactNode
+  userMessageCard?: { itemId: string; content: ReactNode }
   footer?: ReactNode
   emptyText?: string
   onOpenSubagent?: (toolUseId: string) => void
@@ -301,7 +302,9 @@ export function ChatTimeline({ items, cwd, working, scope, header, footer, empty
         <TimelineContext value={context}>
           {rows.length === 0 && !header ? (
             <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? 'Ask Claude anything about this folder.'}</div>
-          ) : rows.map((row) => <Row key={row.id} row={row} cwd={cwd} />)}
+          ) : rows.map((row) => row.kind === 'user' && row.item.id === userMessageCard?.itemId
+            ? <div key={row.id}>{userMessageCard.content}</div>
+            : <Row key={row.id} row={row} cwd={cwd} />)}
         </TimelineContext>
         {working && !streaming && !liveWork ? (
           <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">
