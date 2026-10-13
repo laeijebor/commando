@@ -11,6 +11,7 @@ import { refreshPrCommentStatus } from './prStore'
 import { PrConflictPanel } from './PrConflictPanel'
 import { PrStackPanel } from './PrStackPanel'
 import { PrDiffPatch } from './PrDiffPatch'
+import { MarkdownPre } from './MarkdownCode'
 import type { PrSummary, PrsApiClient } from './prsApi'
 import './pr-quick-look.css'
 
@@ -24,7 +25,7 @@ function MarkdownBody({ body }: { body: string }) {
       <Markdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeRaw, rehypeSanitize]}
-        components={{ a: (props) => <a {...props} target="_blank" rel="noreferrer" /> }}
+        components={{ a: (props) => <a {...props} target="_blank" rel="noreferrer" />, pre: MarkdownPre }}
       >
         {body}
       </Markdown>
