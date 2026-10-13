@@ -161,7 +161,7 @@ describe('AgentChatsApi', () => {
     const pending = await s.call('POST', '', s.input)
     expect(pending).toMatchObject({ status: 202, result: { ok: true, decision: 'pending', requestId: expect.stringMatching(/^cr-/) } })
     const id = pending.result.requestId
-    expect(s.requests.pending()[id]).toMatchObject({ callerPaneId: '%1', callerTargetId: 'parent-target', reason: 'rate', requestedBy: 'codex · parent', summary: { provider: 'codex', promptPreview: s.input.prompt } })
+    expect(s.requests.pending()[id]).toMatchObject({ callerPaneId: '%1', callerTargetId: 'parent-target', reason: 'rate', requestedBy: 'codex · parent', summary: { provider: 'codex', branch: 'fix-bug', promptPreview: s.input.prompt } })
     expect(s.createSession).toHaveBeenCalledTimes(3)
     expect((await s.call('POST', `/requests/${id}`, { decision: 'accepted' })).status).toBe(401)
     expect((await s.call('POST', `/requests/${id}`, { decision: 'accepted' }, 'owner')).result).toMatchObject({ decision: 'accepted', paneId: '%13', location: 'session' })
@@ -185,6 +185,28 @@ describe('AgentChatsApi', () => {
     expect(s.createSession).not.toHaveBeenCalled()
     const third = (await s.call('POST', '', s.input)).result.requestId
     expect((await s.call('POST', `/requests/${third}`, { decision: 'accepted' }, 'owner')).status).toBe(200)
+  })
+
+  it.each([
+    { location: 'session', expected: 'fix-bug' },
+    { location: 'session', title: '!!!', expected: 'chat' },
+    { location: 'session', branch: 'custom/branch', expected: 'custom/branch' },
+    { location: 'session', worktree: false, expected: undefined },
+    { location: 'session', worktree: false, branch: 'explicit', expected: 'explicit' },
+    { location: 'pane', expected: undefined },
+    { location: 'pane', branch: 'pane-branch', expected: 'pane-branch' },
+  ] as const)('uses the same effective branch in approval and creation for %j', async ({ expected, ...overrides }) => {
+    const s = await setup()
+    s.parent.openedBy = 'grandparent'
+    const pending = await s.call('POST', '', { ...s.input, ...overrides })
+    expect(pending.status).toBe(202)
+    const id = pending.result.requestId
+    expect(s.requests.pending()[id].summary.branch).toBe(expected)
+    const accepted = await s.call('POST', `/requests/${id}`, { decision: 'accepted' }, 'owner')
+    expect(accepted.status).toBe(200)
+    expect(accepted.result.worktree?.branch).toBe(expected)
+    const created = overrides.location === 'pane' ? s.createPane.mock.calls[0][0] : s.createSession.mock.calls[0][0]
+    expect(created.worktree?.branch).toBe(expected)
   })
 
   it('expires pending requests after ten minutes and validates waits and poll ownership', async () => {

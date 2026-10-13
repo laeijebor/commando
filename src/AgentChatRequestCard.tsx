@@ -22,7 +22,7 @@ export function AgentChatRequestCard({ request, onAnswer }: {
   return (
     <div className="agent-chat-request web-pane-navigate-request" role="alertdialog" aria-label="Agent wants to open a chat" data-native-terminal-occluder="" aria-busy={pending}>
       <p className="web-pane-navigate-request-lede"><strong>{request.requestedBy}</strong> wants to open a chat</p>
-      <p className="web-pane-navigate-request-url">{summary.location === 'session' ? 'New session' : 'Pane'} {summary.title} · {summary.branch ?? 'no worktree'} · {summary.provider}{summary.permissionMode ? ` · ${summary.permissionMode}` : ''}</p>
+      <p className="web-pane-navigate-request-url">{summary.location === 'session' ? 'New session' : 'Pane'} {summary.title} · {summary.branch ?? (summary.location === 'pane' ? 'same checkout' : 'no worktree')} · {summary.provider}{summary.permissionMode ? ` · ${summary.permissionMode}` : ''}</p>
       <p className="agent-chat-request-reason">{request.reason === 'rate' ? 'Over the rate limit' : 'Opened by another chat (depth limit)'}</p>
       <p className="agent-chat-request-preview">{summary.promptPreview}</p>
       {error ? <p className="agent-chat-request-error" role="alert">{error}</p> : null}

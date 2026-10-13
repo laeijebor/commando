@@ -90,6 +90,10 @@ function waitBudget(url: URL): number {
   return seconds * 1000
 }
 
+function effectiveChatBranch(input: AgentChatInput): string | undefined {
+  return input.branch ?? (input.location === 'session' && input.worktree !== false ? sanitizeBranchName(input.title) || 'chat' : undefined)
+}
+
 function failure(error: unknown): AgentChatFailure {
   const status = error instanceof HttpError ? error.status
     : error instanceof TmuxAgentLaunchCompatibilityError || error instanceof TmuxCreateCommandError ? 502
@@ -187,7 +191,7 @@ export class AgentChatsApi {
         if (reason) {
           const approval = this.dependencies.requests.create({
             callerPaneId: caller.id, callerTargetId: caller.targetId, requestedBy: this.dependencies.agentLabel(caller.id) ?? launch.provider,
-            reason, summary: { location: input.location, title: input.title, ...(input.branch ? { branch: input.branch } : {}),
+            reason, summary: { location: input.location, title: input.title, branch: effectiveChatBranch(input),
               provider: launch.provider, ...(launch.permissionMode ? { permissionMode: launch.permissionMode } : {}), promptPreview: input.prompt.slice(0, 200) },
           }, { ...input, agent: launch.provider, ...(launch.permissionMode ? { permissionMode: launch.permissionMode } : {}) })
           await this.writeDecision(response, approval.id, waitMs)
@@ -241,7 +245,7 @@ export class AgentChatsApi {
       if (!session) throw new HttpError(404, 'Caller session no longer exists')
       const launch = this.launch(input, caller)
       const repo = caller.repo
-      const branch = repo && (input.location === 'pane' ? input.branch : input.worktree !== false ? input.branch ?? (sanitizeBranchName(input.title) || 'chat') : undefined)
+      const branch = repo && effectiveChatBranch(input)
       const warning = !repo ? 'Caller is not in a git repository; using its cwd without a worktree.' : undefined
       const cwd = input.location === 'session' && repo ? repo.root : caller.path
       const worktree = branch ? { branch, prepareCommand: await this.dependencies.prepareCommands.get(repo!.root) } : undefined
