@@ -196,6 +196,24 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toBe(`env CLAUDE_CONFIG_DIR=/Users/me/.claudep ${CLAUDE} --resume ${SESSION}; ${chatReturn}`)
   })
 
+  it.each([
+    { home: '/Users/me/.codex-work', prefix: 'env CODEX_HOME=/Users/me/.codex-work ' },
+    { home: "/Users/me/codex'work", prefix: `env 'CODEX_HOME=/Users/me/codex'"'"'work' ` },
+    { home: undefined, prefix: '' },
+  ])('restores a Codex TUI chat handoff with CODEX_HOME=$home on both halves', async ({ home, prefix }) => {
+    const codex = `/bin/codex resume ${SESSION}`
+    const chatReturn = `env COMMANDO_PORT=4410 /c/scripts/commando-agent codex --permission-mode default --resume ${SESSION} --from-claude-code`
+    const resume = service({
+      chatReturnCommand: () => chatReturn,
+      readProcessTable: vi.fn(async () => `  700 500 ${codex}\n`),
+      readProcessEnvironment: vi.fn(async () => `${codex}${home ? ` CODEX_HOME=${home}` : ''}\n`),
+    })
+
+    await resume.observeHookStatus(hookStatus({ provider: 'codex' }), pane(), OLD_SERVER)
+
+    expect(resume.get(TARGET)?.command).toBe(`${prefix}${codex}; ${prefix}${chatReturn}`)
+  })
+
   it('reads the process table once per conversation, not per hook event', async () => {
     const resume = await recordOn(OLD_SERVER)
     await resume.observeHookStatus(hookStatus(), pane(), OLD_SERVER)

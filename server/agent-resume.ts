@@ -16,6 +16,7 @@ import {
   isValidAgentSessionId,
   launchFromProcess,
   parseProcessTable,
+  shellQuote,
   type ResumableProvider,
 } from './agent-resume-command.js'
 
@@ -216,12 +217,17 @@ export class AgentResumeService {
       const found = chatHost ? null : findAgentProcess(rows, pane.processId, status.provider)
       // Claude Code running a chat's conversation must be resuming that very conversation.
       const agent = found && chatReturn && !found.args.split(/\s+/).includes(status.agentSessionId) ? null : found
-      const command = chatHost
-        ? this.deps.chatLauncher
-          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess(status.provider, chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv, chatSettings)
-          : null
-        : agent && withChatReturn(buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
-          status.provider, agent.args, await readEnvironment(agent.pid))), chatReturn)
+      let command: string | null = null
+      if (chatHost && this.deps.chatLauncher) {
+        command = buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess(status.provider, chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv, chatSettings)
+      } else if (!chatHost && agent) {
+        const launch = launchFromProcess(status.provider, agent.args, await readEnvironment(agent.pid))
+        // `env` on the TUI does not carry across the semicolon to the returning chat.
+        const returnCommand = chatReturn && status.provider === 'codex' && launch.env.CODEX_HOME
+          ? `env ${shellQuote(`CODEX_HOME=${launch.env.CODEX_HOME}`)} ${chatReturn}`
+          : chatReturn
+        command = withChatReturn(buildResumeCommand(status.provider, status.agentSessionId, launch), returnCommand)
+      }
       const record: AgentResumeRecord | null = command ? {
         targetId: pane.targetId,
         provider: status.provider,
