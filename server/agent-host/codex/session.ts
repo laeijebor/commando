@@ -216,8 +216,11 @@ export class CodexChatSession implements ChatProviderSession {
       const response = record(await (this.spec.resume ? this.client.request('thread/resume', { threadId: this.spec.resume, ...settings }) : this.client.request('thread/start', settings)))
       const thread = parseThread(response.thread)
       if (this.closing) return
-      this.update({ sessionId: thread.id, model: string(response.model), selectedModel: this.info.selectedModel ?? string(response.model),
+      const runningModel = this.info.selectedModel ?? string(response.model)
+      this.update({ sessionId: thread.id, model: string(response.model), selectedModel: runningModel,
         ...(isChatEffort(response.reasoningEffort) && !this.info.effort ? { effort: response.reasoningEffort } : {}),
+        // A fast tier from Codex's config (or the resumed thread) shows as fast mode, so turns keep it.
+        ...(runningModel && response.serviceTier && response.serviceTier === this.fastTiers.get(runningModel) ? { fast: true } : {}),
         title: thread.name || thread.preview || undefined })
       if (this.spec.resume) {
         if (thread.historyMode === 'paginated') {
