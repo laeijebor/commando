@@ -123,9 +123,10 @@ export function PrQuickLook({ onClose, ...props }: PrQuickLookProps & { onClose(
   )
 }
 
-export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied }: PrQuickLookProps & {
+export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton, visible = true, selection, onSelectionApplied, diffView }: PrQuickLookProps & {
   closeButton?: ReactNode
   visible?: boolean
+  diffView?: (visible: boolean) => ReactNode
   onSelectionApplied?(): void
 }) {
   const id = useId()
@@ -149,6 +150,8 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
     pr.requestedReviewers,
   ])
   const [tab, setTab] = useState<PrQuickLookTab>(selection?.tab ?? 'Description')
+  const [diffOpened, setDiffOpened] = useState(tab === 'Diff')
+  useEffect(() => { if (tab === 'Diff') setDiffOpened(true) }, [tab])
   useEffect(() => {
     if (!selection) return
     setTab(selection.tab)
@@ -207,7 +210,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
   }, [api, repo, pr.number, references, detailRevision, retry, visible, details])
 
   useEffect(() => {
-    if (!visible || tab !== 'Diff' || (diff && diffSnapshot?.retry === retry)) return
+    if (diffView !== undefined || !visible || tab !== 'Diff' || (diff && diffSnapshot?.retry === retry)) return
     let active = true
     setDiffError('')
     api
@@ -225,10 +228,10 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
     return () => {
       active = false
     }
-  }, [tab, api, repo, pr.number, references, diff, retry, visible])
+  }, [tab, api, repo, pr.number, references, diff, retry, visible, diffView !== undefined])
 
   const file = diff?.files.find((candidate) => candidate.path === selectedPath)
-  const error = tab === 'Diff' ? diffError : detailError
+  const error = tab === 'Diff' ? (diffView !== undefined ? '' : diffError) : detailError
   const checks = details?.checks ?? pr.checks?.runs.map((run) => ({ ...run, url: '' })) ?? []
   const knownTarget =
     detailSnapshot?.api === api && detailSnapshot.references === references
@@ -301,8 +304,8 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
             <strong>
               Merges into <code>{mergeTarget}</code>, not main.
             </strong>{' '}
-            The Diff tab still compares against <code>origin/main</code>; conflict inspection uses{' '}
-            <code>{mergeTarget}</code>.
+            {diffView === undefined ? <>The Diff tab still compares against <code>origin/main</code>; conflict inspection uses{' '}
+              <code>{mergeTarget}</code>.</> : <>Diff and conflict inspection use this PR’s merge target.</>}
           </div>
         ) : null}
         {hasConflicts ? (
@@ -342,13 +345,13 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
               }}
             >
               {name}
-              {name === 'Diff' ? <small>vs origin/main</small> : null}
+              {name === 'Diff' && diffView === undefined ? <small>vs origin/main</small> : null}
               {name === 'Conflicts' && hasConflicts ? <small className="fail">!</small> : null}
             </button>
           ))}
         </div>
         <div
-          className={`pr-quick-panel${tab === 'Diff' || tab === 'Conflicts' ? ' is-diff' : ''}`}
+          className={`pr-quick-panel${tab === 'Diff' && diffView !== undefined ? ' is-comparison' : tab === 'Diff' || tab === 'Conflicts' ? ' is-diff' : ''}`}
           role="tabpanel"
           id={`${id}-panel`}
           aria-labelledby={`${id}-tab-${tab}`}
@@ -439,7 +442,10 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
               repo={repo} number={pr.number} api={api} onChanged={refreshConversation}
               renderComment={(entry, options) => <ConversationComment entry={entry} prUrl={pr.url} {...options} />} />
           </div>
-          {tab === 'Diff' && !error ? (
+          {diffOpened && diffView !== undefined ? <div className="pr-quick-comparison" hidden={tab !== 'Diff'}>
+            {diffView(visible && tab === 'Diff')}
+          </div> : null}
+          {tab === 'Diff' && diffView === undefined && !error ? (
             diff ? (
               <>
                 <aside className="pr-quick-files">
@@ -488,7 +494,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
                 </aside>
                 <div className="pr-quick-diff">
                   <header>
-                    <strong>{file?.path ?? 'Select a file'}</strong>
+                    <strong title={file?.path}>{file?.path ?? 'Select a file'}</strong>
                     <span title={`${diff.base}…${diff.head}`}>
                       {diff.head.slice(0, 7)} vs origin/main · {diff.base.slice(0, 7)}
                     </span>

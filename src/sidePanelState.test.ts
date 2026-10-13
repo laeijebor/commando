@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
-import { openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { neighbouringTab, nextWebPaneOrder } from '../shared/web-pane-placement'
 
 function tab(id: string, anchorPaneId = '%12', order = 0): WebPane {
@@ -114,4 +114,23 @@ it('detects URL reopens even while unseen and ignores split reloads', () => {
   const split = { ...tab('w-split'), dock: 'split' as const, openRevision: 3 }
   const previous = new Map([[first.id, 2], [split.id, 2]])
   expect(openedPanelTabs([first, reused, split, tab('w-new')], previous).map((tab) => tab.id)).toEqual(['w-one', 'w-new'])
+})
+
+
+it('hides only matching PR signatures and lists closed PRs in tab order', () => {
+  const pr = { repo: 'acme/widgets', number: 40, state: 'open', isDraft: false, updatedAt: '2026-10-12' } as import('./prsApi').PanePrSummary
+  const newPr = { ...pr, number: 41 }
+  const dismissed = { 'pr:acme:widgets:40': prTabSignature(pr) }
+  expect(prTabSignature(pr)).toBe('open|false|2026-10-12')
+  expect(visiblePanePrs([pr, newPr], dismissed)).toEqual([newPr])
+  expect(closedPanePrs([pr, newPr], dismissed)).toEqual([pr])
+  expect(combinedPanelTabs('%12', [], null, [pr], false, false, dismissed).map(panelTabKey)).toEqual(['session'])
+  for (const change of [{ state: 'merged' }, { state: 'closed' }, { isDraft: true }, { updatedAt: 'later' }]) {
+    const changed = { ...pr, ...change } as typeof pr
+    expect(visiblePanePrs([changed], dismissed)).toEqual([changed])
+    expect(closedPanePrs([changed], dismissed)).toEqual([])
+  }
+  const reopened = { ...pr, state: 'closed' as const }
+  expect(visiblePanePrs([pr], { 'pr:acme:widgets:40': prTabSignature(reopened) })).toEqual([pr])
+  expect(visiblePanePrs([pr], {})).toEqual([pr])
 })

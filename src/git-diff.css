@@ -55,6 +55,11 @@
   background: var(--surface-raised);
 }
 
+.git-diff-view {
+  container-type: inline-size;
+  container-name: git-diff;
+}
+
 .git-diff-header {
   display: flex;
   align-items: center;
@@ -673,6 +678,26 @@
 .git-diff-error { color: var(--red); }
 
 .git-diff-status .spin { width: 14px; height: 14px; animation: git-diff-spin 1s linear infinite; }
+
+@container git-diff (width < 640px) {
+  .git-diff-header { flex-wrap: wrap; gap: 8px 12px; }
+  .git-diff-heading { flex-basis: 100%; }
+  .git-diff-target { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+  .git-diff-branch { min-width: 0; overflow-wrap: anywhere; }
+  .git-diff-toolbar { flex-wrap: wrap; }
+  .git-diff-segment { flex-shrink: 0; white-space: nowrap; }
+  .git-diff-body { flex-direction: column; min-width: 0; }
+  /* Width constraints override the saved inline column width without changing it. */
+  .git-diff-files { flex: 0 1 auto; min-width: 100%; max-width: 100%; min-height: 0; max-height: min(40%, 220px); border-bottom: 1px solid var(--border); }
+  .git-diff-files-resizer { display: none; }
+  .git-diff-content-search { flex-wrap: wrap; justify-content: flex-start; }
+  .git-diff-content-search-input { flex: 1 0 100%; width: 100%; min-width: 0; }
+  .git-diff-search-status { flex: 1 1 auto; min-width: 0; justify-content: flex-start; white-space: normal; overflow-wrap: anywhere; }
+  .git-diff-search-status.error { max-width: 100%; }
+  .git-diff-search-nav { flex-shrink: 0; }
+  .git-diff-search-scope { flex: 0 0 auto; flex-wrap: nowrap; white-space: nowrap; }
+  .git-diff-output pre { width: max-content; min-width: 100%; white-space: pre; }
+}
 
 @keyframes git-diff-spin {
   to { transform: rotate(360deg); }

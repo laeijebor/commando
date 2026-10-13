@@ -369,3 +369,15 @@ it('POSTs dock changes with optional anchor geometry', async () => {
     ['/api/web-panes/w-11111111/dock', 'POST', { dock: 'panel' }],
   ])
 })
+
+
+it('sends optional dismissal selection and atomic restore selection with the owner request', async () => {
+  const fetcher = vi.fn(async () => jsonResponse(200, { ok: true }))
+  const api = createWebPanesApi('token', fetcher as unknown as typeof fetch)
+  await api.dismissPrTab('%12', 'pr:acme:widgets:12', 'old', 'changes')
+  await api.restorePrTab('%12', 'pr:acme:widgets:12', true)
+  const calls = fetcher.mock.calls as unknown as [string, RequestInit][]
+  expect(calls.map(([url]) => url)).toEqual(['/api/web-panes/pr-tabs/dismiss', '/api/web-panes/pr-tabs/restore'])
+  expect(JSON.parse(String(calls[0][1].body))).toEqual({ anchorPaneId: '%12', key: 'pr:acme:widgets:12', signature: 'old', nextKey: 'changes' })
+  expect(JSON.parse(String(calls[1][1].body))).toEqual({ anchorPaneId: '%12', key: 'pr:acme:widgets:12', select: true })
+})

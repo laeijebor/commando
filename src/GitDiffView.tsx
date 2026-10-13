@@ -42,11 +42,14 @@ type Props = {
   initialSummary: GitDiffSummary | null
   comparison?: GitDiffComparison
   visible?: boolean
+  errorHint?: ReactNode
 }
 
 export type GitDiffComparison = {
   base: string
   head: string
+  baseFallbackRepo?: string
+  baseFallbackBranch?: string
   baseLabel: string
   headLabel: string
 }
@@ -138,7 +141,8 @@ function statusLabel(file: GitChangedFile): { letter: string; className: string;
   }
 }
 
-export function GitDiffView({ paneId, panePath, api, initialSummary, comparison, visible = true }: Props) {
+export function GitDiffView({ paneId, panePath, api, initialSummary, comparison, visible = true, errorHint }: Props) {
+  const comparisonVisible = !comparison || visible
   const [summary, setSummary] = useState<GitDiffSummary | null>(initialSummary)
   const [summaryError, setSummaryError] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
@@ -191,6 +195,8 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   const searchGeneration = useRef(0)
   const summaryRequestKey = useRef<string | null>(null)
   const diffRequestKey = useRef<string | null>(null)
+  const summaryResultKey = useRef<string | null>(null)
+  const diffResultKey = useRef<string | null>(null)
   const previousSummaryProp = useRef({ paneId, summary: initialSummary })
   const summaryRevision = useRef(0)
   const wasVisible = useRef(visible)
@@ -306,21 +312,26 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   }, [paneId, initialSummary, selectedTarget, comparison?.head, summary?.target])
 
   useEffect(() => {
+    if (!comparisonVisible) { summaryRequestKey.current = null; return }
+    const key = JSON.stringify([paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch])
+    if (comparison && summaryResultKey.current === key) return
+    summaryResultKey.current = null
     const request = ++generation.current
     const revision = summaryRevision.current
-    const key = JSON.stringify([paneId, selectedTarget, comparison?.head])
     const background = summaryRequestKey.current === key
     summaryRequestKey.current = key
     if (!background) {
       setSummaryLoading(true)
       setSummaryError('')
     }
-    const summaryRequest = comparison
-      ? apiRef.current.summary(paneId, selectedTarget, comparison.head)
-      : apiRef.current.summary(paneId, selectedTarget)
+    const summaryRequest = comparison && (comparison.baseFallbackRepo !== undefined || comparison.baseFallbackBranch !== undefined)
+      ? apiRef.current.summary(paneId, selectedTarget, comparison.head, comparison.baseFallbackRepo, comparison.baseFallbackBranch)
+      : comparison ? apiRef.current.summary(paneId, selectedTarget, comparison.head)
+        : apiRef.current.summary(paneId, selectedTarget)
     summaryRequest
       .then((next) => {
         if (request !== generation.current || revision !== summaryRevision.current) return
+        summaryResultKey.current = key
         setSummaryError('')
         setSummary(next)
       })
@@ -332,7 +343,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         if (request === generation.current) setSummaryLoading(false)
       })
     return () => { generation.current++ }
-  }, [paneId, selectedTarget, comparison?.head, refresh])
+  }, [paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, refresh, comparisonVisible])
 
   const files = summary?.files ?? []
   const deferredFileFilter = useDeferredValue(fileFilter)
@@ -370,6 +381,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
 
   const selectedFileStats = JSON.stringify(files.find((file) => file.path === selectedFile) ?? null)
   useEffect(() => {
+    if (!comparisonVisible) { diffRequestKey.current = null; return }
     if (!selectedFile) {
       diffRequestKey.current = null
       setDiffLoading(false)
@@ -377,8 +389,11 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
       setDiffError('')
       return
     }
+    const key = JSON.stringify([paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile, engine, display, diffViewportVersion])
+    const resultKey = JSON.stringify([key, selectedFileStats])
+    if (comparison && diffResultKey.current === resultKey) return
+    diffResultKey.current = null
     const request = ++diffGeneration.current
-    const key = JSON.stringify([paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion])
     const background = diffRequestKey.current === key
     diffRequestKey.current = key
     if (!background) {
@@ -392,13 +407,14 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     apiRef.current
       .fileDiff(paneId, selectedFile, {
         target: selectedTarget,
-        ...(comparison ? { head: comparison.head } : {}),
+        ...(comparison ? { head: comparison.head, baseFallbackRepo: comparison.baseFallbackRepo, baseFallbackBranch: comparison.baseFallbackBranch } : {}),
         width,
         engine,
         display,
       })
       .then((next) => {
         if (request !== diffGeneration.current) return
+        diffResultKey.current = resultKey
         setDiffError('')
         setDiff(next.diff)
       })
@@ -413,9 +429,10 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         if (request === diffGeneration.current) setDiffLoading(false)
       })
     return () => { diffGeneration.current++ }
-  }, [paneId, selectedTarget, comparison?.head, selectedFile, engine, display, diffViewportVersion, selectedFileStats])
+  }, [paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile, engine, display, diffViewportVersion, selectedFileStats, comparisonVisible])
 
   useEffect(() => {
+    if (!comparisonVisible) return
     const query = diffSearch.trim()
     const request = ++searchGeneration.current
     if (searchScope !== 'all' || query === '') {
@@ -429,9 +446,10 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     setAllSearchLoading(true)
     setAllSearchError('')
     const timeout = window.setTimeout(() => {
-      const searchRequest = comparison
-        ? apiRef.current.search(paneId, query, selectedTarget, comparison.head)
-        : apiRef.current.search(paneId, query, selectedTarget)
+      const searchRequest = comparison && (comparison.baseFallbackRepo !== undefined || comparison.baseFallbackBranch !== undefined)
+        ? apiRef.current.search(paneId, query, selectedTarget, comparison.head, comparison.baseFallbackRepo, comparison.baseFallbackBranch)
+        : comparison ? apiRef.current.search(paneId, query, selectedTarget, comparison.head)
+          : apiRef.current.search(paneId, query, selectedTarget)
       searchRequest
         .then((next) => {
           if (request !== searchGeneration.current) return
@@ -454,7 +472,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
       window.clearTimeout(timeout)
       if (searchGeneration.current === request) searchGeneration.current += 1
     }
-  }, [paneId, selectedTarget, comparison?.head, diffSearch, searchScope])
+  }, [paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, diffSearch, searchScope, comparisonVisible])
 
   useEffect(() => {
     setActiveDiffMatch(0)
@@ -818,7 +836,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
             </div>
             <div className="git-diff-file-scroll">
               {summaryLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading changes</div> : null}
-              {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}</div> : null}
+              {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}{errorHint}</div> : null}
               {!summaryLoading && !summaryError && files.length === 0
                 ? <div className="git-diff-status">No changes vs {summary?.target ?? 'target'}</div>
                 : null}
@@ -933,7 +951,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
             </div>
             <div className="git-diff-output" ref={outputRef}>
               {diffLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Running difftastic</div> : null}
-              {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}</div> : null}
+              {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}{errorHint}</div> : null}
               {!diffLoading && !diffError && selectedFile && diff.trim() === ''
                 ? <div className="git-diff-status">No content changes (permissions or identical after merge base)</div>
                 : null}
