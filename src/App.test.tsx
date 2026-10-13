@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { useEffect, useRef, useState } from 'react'
@@ -2228,6 +2229,12 @@ describe('terminal pane actions', () => {
     expect(onMove).toHaveBeenCalledWith(-1)
     expect(onMaximize).toHaveBeenCalledOnce()
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('bounds a maximized pane to the layout so a long chat cannot push the Restore button off screen', () => {
+    const css = readFileSync('src/styles.css', 'utf8')
+    expect(css).toMatch(/\.terminal-pane\.is-maximized\s*\{[^}]*\bheight:\s*100%;/)
+    expect(css).not.toMatch(/\.terminal-pane\.is-maximized\s*\{[^}]*min-height:\s*100%;/)
   })
 
   it('renders a semantic pane rail and acknowledges post-mark activity without clearing the label', () => {

@@ -1355,8 +1355,11 @@ kbd {
   min-height: 0;
 }
 
+/* A maximized pane is the layout root's only child, so nothing else bounds
+   it: without a fixed height a chat grows to its transcript and scrolls the
+   pane header (and its Restore button) out of view. */
 .terminal-pane.is-maximized {
-  min-height: 100%;
+  height: 100%;
 }
 
 .pane-head {
