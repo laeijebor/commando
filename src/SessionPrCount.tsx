@@ -24,31 +24,9 @@ export function SessionPrCount({ paneIds, api, previewApi, enabled, sessionName,
     pill={{ count: pullRequests.length, sessionName, tone: readiness.tone, status: readiness.label }}
     key={`${first.repo}:${first.number}`}
   />
-  return <span className="session-pr-preview"><span className="session-pr-count" role="img" aria-label={label} title={label}>
-    <GitPullRequest aria-hidden="true" /><span>#{first.number}</span>
-    {pullRequests.length > 1 ? <span className="session-pr-more">+{pullRequests.length - 1}</span> : null}
-    <i className={`session-pr-readiness ${readiness.tone}`} aria-hidden="true" />
+  return <span className="session-pr-preview"><span className={`session-pr-count tone-${readiness.tone}`} role="img" aria-label={label} title={label}>
+    <GitPullRequest aria-hidden="true" />
+    {pullRequests.length > 1 ? <span className="session-pr-more">{pullRequests.length}</span> : null}
   </span></span>
 }
 
-export function SessionPrCards({ paneIds, api, enabled, sessionName, liveTargetIds, onJumpToTarget }: {
-  paneIds: string[]
-  api: PrsApiClient
-  enabled: boolean
-  sessionName: string
-  liveTargetIds: ReadonlySet<string>
-  onJumpToTarget: (targetId: string) => void
-}) {
-  const { pullRequests, loading, error, truncated, refresh } = useSessionPrs(paneIds, api, { enabled, background: false })
-  return <div className="session-open-prs" role="region" aria-label={`Open pull requests in ${sessionName}`}>
-    {pullRequests.map((pr) => pr.preview ? <PrCard
-      key={`${pr.repo.toLowerCase()}:${pr.number}`} pr={pr.preview} repo={pr.repo}
-      viewer={pr.preview.viewerIsAuthor ? pr.preview.author ?? '' : ''} api={api}
-      liveTargetIds={liveTargetIds} onJumpToTarget={onJumpToTarget} onMerged={refresh}
-    /> : <a className="session-pr-fallback" key={`${pr.repo}:${pr.number}`} href={pr.url} target="_blank" rel="noreferrer">#{pr.number} · {pr.title}</a>)}
-    {loading && !pullRequests.length ? <p role="status">Loading open PRs…</p> : null}
-    {error ? <p role="alert">{error} <button type="button" onClick={() => { void refresh() }}>Retry</button></p> : null}
-    {!loading && !error && !pullRequests.length ? <p>No open pull requests in this session.</p> : null}
-    {truncated ? <p>More linked pull requests may be available on GitHub.</p> : null}
-  </div>
-}
