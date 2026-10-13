@@ -1,7 +1,7 @@
 import { cursorProducerIdentity, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { isCursorInvocation, normalizeCursorHook } from './cursor-hooks.js'
 import { inferAgentProvider } from './agent-status.js'
-import { stripAttachmentNotesFromSummary } from '../shared/agent-chat.js'
+import { stripAttachmentNotesFromSummary, type ChatProvider } from '../shared/agent-chat.js'
 import type {
   AgentActivity,
   AgentActivityKind,
@@ -44,6 +44,7 @@ type RegistryRecord = {
 
 /** What a chat pane's host reports; see `AgentStatusRegistry.applyChatHost`. */
 export type ChatHostReport = {
+  provider: ChatProvider
   status: AgentStatusKind
   sessionId?: string
   title?: string
@@ -793,8 +794,8 @@ function withChatHost(record: RegistryRecord, chat: ChatHostState): RegistryReco
   syncAttention(details, pendingRequests)
   const sessionId = chat.sessionId || record.status.agentSessionId || ''
   const name = chat.title ?? record.status.agentSessionName ?? null
-  const base = hookStatus(record.status.paneId, 'claude', sessionId, name, chat.status, record.status.updatedAt)
-  if (chat.status === 'unknown') base.summary = 'Claude is ready'
+  const base = hookStatus(record.status.paneId, chat.provider, sessionId, name, chat.status, record.status.updatedAt)
+  if (chat.status === 'unknown') base.summary = `${providerName(chat.provider)} is ready`
   const status = attachDetails({
     ...base,
     confidence: 'high',
@@ -926,6 +927,7 @@ export class AgentStatusRegistry {
       return this.remove(paneId)
     }
     if (
+      previous?.provider === report.provider &&
       previous?.status === report.status &&
       previous.sessionId === report.sessionId &&
       previous.title === report.title &&
@@ -955,7 +957,7 @@ export class AgentStatusRegistry {
       if (oldest !== undefined) chat.requests.delete(oldest)
     }
     chat.requests.set(key, {
-      attention: boundedText(attention, MAX_ATTENTION_LENGTH) ?? attentionFallback('claude'),
+      attention: boundedText(attention, MAX_ATTENTION_LENGTH) ?? attentionFallback(chat.provider),
       request,
     })
     return { request, change: this.upsertChat(paneId, updatedAt) }
@@ -970,10 +972,11 @@ export class AgentStatusRegistry {
   private upsertChat(paneId: string, updatedAt: number): AgentStatusChange {
     const previous = this.records.get(paneId)
     const chat = this.chatHosts.get(paneId)
-    return this.upsert(previous?.status.provider === 'claude'
+    if (!chat) return null
+    return this.upsert(previous?.status.provider === chat.provider
       ? { ...previous, status: { ...previous.status, updatedAt } }
       : {
-          status: hookStatus(paneId, 'claude', chat?.sessionId ?? '', chat?.title ?? null, 'unknown', updatedAt),
+          status: hookStatus(paneId, chat.provider, chat.sessionId ?? '', chat.title ?? null, 'unknown', updatedAt),
           providerSessionId: chat?.sessionId ?? null,
           processCommand: null,
           pendingRequests: new Map(),
@@ -1798,7 +1801,7 @@ export class AgentStatusRegistry {
 
   private upsert(next: RegistryRecord): AgentStatusChange {
     const chat = this.chatHosts.get(next.status.paneId)
-    const record = chat && next.status.provider === 'claude' ? withChatHost(next, chat) : next
+    const record = chat && next.status.provider === chat.provider ? withChatHost(next, chat) : next
     const previous = this.records.get(record.status.paneId)
     if (previous && sameStatus(previous.status, record.status)) {
       this.records.set(record.status.paneId, { ...record, status: previous.status })

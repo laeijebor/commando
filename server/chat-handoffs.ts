@@ -2,16 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { isChatImageId, type ChatCarriedDraft, type ChatImageRef, type ChatQueuedMessage } from '../shared/agent-chat.js'
+import { isChatImageId, type ChatCarriedDraft, type ChatHandoffInfo, type ChatImageRef, type ChatQueuedMessage } from '../shared/agent-chat.js'
 import { tmuxServerStateSuffix } from './agent-resume.js'
 import { isValidAgentSessionId } from './agent-resume-command.js'
 
 /**
- * A chat conversation running in Claude Code since a switch: what the chat
+ * A chat conversation running in its provider's TUI since a switch: what the chat
  * held (its unsent draft and queue) and the flags that bring the chat back.
  */
-export type ChatHandoff = {
-  sessionId: string
+export type ChatHandoff = ChatHandoffInfo & {
   /** The chat's folder: Claude resumes a conversation from the folder it was saved in. */
   cwd: string
   /** The chat host's session flags (profile, model, effort, modes). */
@@ -41,6 +40,8 @@ function validEntry(value: unknown): value is ChatHandoff {
   if (!value || typeof value !== 'object') return false
   const entry = value as ChatHandoff
   return typeof entry.sessionId === 'string' && isValidAgentSessionId(entry.sessionId)
+    && (entry.provider === undefined || entry.provider === 'claude' || entry.provider === 'codex')
+    && (entry.paneId === undefined || /^%\d+$/.test(entry.paneId))
     && typeof entry.cwd === 'string' && entry.cwd.startsWith('/')
     && Array.isArray(entry.returnFlags) && entry.returnFlags.every((flag) => typeof flag === 'string')
     && !!entry.draft && typeof entry.draft.text === 'string' && validImages(entry.draft.images)
@@ -94,6 +95,21 @@ export class ChatHandoffStore {
   /** Conversations running in Claude Code that started as a chat. */
   inClaudeCode(): string[] {
     return [...this.entries.values()].filter((entry) => entry.returnedAt === undefined).map((entry) => entry.sessionId)
+  }
+
+  /** Active handoffs retain the provider and pane even before a TUI emits hooks. */
+  active(): ChatHandoffInfo[] {
+    return this.activeEntries()
+      .map(({ sessionId, paneId, provider }) => ({ sessionId, paneId, provider }))
+  }
+
+  forPane(paneId: string): ChatHandoff | undefined {
+    return this.activeEntries().find((entry) => entry.paneId === paneId)
+  }
+
+  private activeEntries(): ChatHandoff[] {
+    return [...this.entries.values()].filter((entry) => entry.returnedAt === undefined)
+      .sort((left, right) => right.createdAt - left.createdAt)
   }
 
   /** Records a switch; resolves once it is on disk. A switch that can't be kept isn't recorded. */

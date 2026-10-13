@@ -1,0 +1,60 @@
+import { describe, expect, it } from 'vitest'
+import type { ChatSessionInfo } from './agent-chat.js'
+import { permissionDescription, permissionLabel, permissionModeOptions, providerLabel } from './chat-composer.js'
+
+const session: ChatSessionInfo = {
+  paneId: '%1', provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 3,
+  permissionMode: 'default',
+  models: [{ value: 'default', displayName: 'Default', supportsAutoMode: true }],
+}
+const codex = { ...session, provider: 'codex' as const }
+
+describe('provider-aware composer permissions', () => {
+  it('names both providers', () => {
+    expect(providerLabel(session)).toBe('Claude')
+    expect(providerLabel(codex)).toBe('Codex')
+  })
+
+  it.each([
+    ['default', 'Workspace access'],
+    ['acceptEdits', 'Workspace access'],
+    ['plan', 'Read only'],
+    ['bypassPermissions', 'Full access'],
+  ])('labels Codex %s as %s', (mode, label) => {
+    expect(permissionLabel(mode, codex)).toBe(label)
+  })
+
+  it('keeps the original labels for Claude and callers without a provider', () => {
+    expect(permissionLabel('default', session)).toBe('Ask before edits')
+    expect(permissionLabel('plan')).toBe('Plan mode')
+    expect(permissionLabel('future-mode', codex)).toBe('future-mode')
+  })
+
+  it('describes Codex sandbox access without promising plan-mode behavior', () => {
+    expect(permissionDescription('default', codex)).toContain('sandboxed commands')
+    expect(permissionDescription('acceptEdits', codex)).toBe(permissionDescription('default', codex))
+    expect(permissionDescription('plan', codex)).toBe('Read-only sandbox; Codex asks before escalating access.')
+    expect(permissionDescription('bypassPermissions', codex)).toContain('without approval prompts')
+    expect(permissionDescription('plan', session)).toBe('Claude explores and plans without changing anything.')
+  })
+
+  it('limits Codex to workspace and read-only access even when its model supports auto mode', () => {
+    expect(permissionModeOptions(codex)).toEqual(['default', 'plan'])
+  })
+
+  it('offers full access only when enabled or already current', () => {
+    expect(permissionModeOptions({ ...codex, bypassAllowed: true })).toEqual(['default', 'plan', 'bypassPermissions'])
+    expect(permissionModeOptions({ ...codex, permissionMode: 'bypassPermissions' })).toEqual(['default', 'plan', 'bypassPermissions'])
+  })
+
+  it('retains a legacy current Codex mode without offering other Claude-only modes', () => {
+    expect(permissionModeOptions({ ...codex, permissionMode: 'acceptEdits' })).toEqual(['default', 'acceptEdits', 'plan'])
+    expect(permissionModeOptions({ ...codex, permissionMode: 'dontAsk' })).toEqual(['default', 'plan', 'dontAsk'])
+  })
+
+  it('preserves Claude model capabilities, launch permissions, and the current mode', () => {
+    expect(permissionModeOptions(session)).toEqual(['default', 'acceptEdits', 'plan', 'auto'])
+    expect(permissionModeOptions({ ...session, models: [], bypassAllowed: true, permissionMode: 'dontAsk' }))
+      .toEqual(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions'])
+  })
+})

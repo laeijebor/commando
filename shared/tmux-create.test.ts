@@ -87,3 +87,12 @@ describe('chat launch arguments', () => {
     ])
   })
 })
+
+describe('Codex chat launch', () => {
+  it('launches the host with Codex and literal prompt text, without Claude flags', () => {
+    expect(sessionAgentArgv({ provider: 'codex-chat', permissionMode: 'plan', prompt: '--model malicious\nhello' }))
+      .toEqual(['commando-agent', 'codex', '--permission-mode', 'plan', '--prompt', '--model malicious\nhello'])
+    expect(sessionAgentArgv({ provider: 'codex-chat', configDir: '/unused/.claude', readableDir: '/unused' }))
+      .toEqual(['commando-agent', 'codex', '--permission-mode', 'default'])
+  })
+})
