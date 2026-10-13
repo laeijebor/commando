@@ -45,6 +45,8 @@ import {
   type UserInput,
 } from './protocol.js'
 
+/** Codex's id for the standard (not fast) service tier. */
+export const STANDARD_TIER = 'default'
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 /**
  * Codex has no separate "ask before edits" policy. Both default and acceptEdits
@@ -176,7 +178,7 @@ export class CodexChatSession implements ChatProviderSession {
       command: (launcher, flags, id) => {
         if (!launcher || !id) throw new Error('Switching to Codex TUI needs the launcher and a thread id')
         return codexTuiSwitchCommand({
-          cwd: spec.cwd, model: this.info.selectedModel, effort: this.info.effort, serviceTier: this.serviceTier(),
+          cwd: spec.cwd, model: this.info.selectedModel, effort: this.info.effort, serviceTier: this.tuiServiceTier(),
           permissionMode: this.info.permissionMode as ChatSessionPermissionMode,
         }, executable, launcher, id, flags)
       },
@@ -482,6 +484,14 @@ export class CodexChatSession implements ChatProviderSession {
     const effort = change.effort ?? (this.info.effort && model?.efforts?.includes(this.info.effort) ? this.info.effort : undefined)
     const fast = (change.fast ?? this.info.fast) && model?.supportsFast ? true : undefined
     this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, fast, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
+  }
+  /**
+   * The TUI's tier: named as standard too on a model with a fast tier, so a fast default in
+   * Codex's config can't override a fast-off pick. Models without tiers get no flag at all.
+   */
+  private tuiServiceTier(): string | undefined {
+    const model = this.info.selectedModel ?? this.info.model
+    return this.serviceTier() ?? (model && this.fastTiers.has(model) ? STANDARD_TIER : undefined)
   }
   /** The fast tier when the chat is in fast mode on a model that offers it. */
   private serviceTier(): string | undefined {
