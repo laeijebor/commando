@@ -22,11 +22,15 @@ export type SimLease = SimPaneContext & {
 export type EndedSimLease = Pick<SimLease, 'udid' | 'sessionName' | 'task' | 'label' | 'originalName' | 'repo' | 'paneId' | 'via' | 'adopted' | 'ports'> & {
   endedAt: number
   reason: 'pane-closed' | 'released'
+  /** The pane closed and the daemon still owes the device a release (persisted, so a restart retries it). */
+  releasePending?: true
 }
 const ENDED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000
 export const SIM_LEASE_IDLE_MS = 30 * 60 * 1_000
 const UDID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PANE_ID = /^%\d+$/
+const RELEASE_ATTEMPTS = 3
+const RELEASE_RETRY_MS = 30_000
 
 class SimLeaseError extends Error {
   constructor(readonly status: number, message: string) { super(message) }
@@ -234,6 +238,9 @@ export class SimLeaseRegistry {
   private leases: SimLease[] = []
   private ended: EndedSimLease[] = []
   private readonly reservations = new Map<string, { udid: string; operation: string; at: number }>()
+  /** Devices being shut down after their pane closed; nobody can lease them until that finishes. */
+  private readonly releasing = new Set<string>()
+  private readonly releaseRetries = new Map<string, { attempts: number; at: number }>()
   private readonly now: () => number
   private readonly statePath: string | undefined
 
@@ -269,7 +276,8 @@ export class SimLeaseRegistry {
           this.ended.push({ udid: input.udid, sessionName: value.sessionName, task: input.task,
             label: formatSimLabel(value.sessionName, input.task), originalName: input.originalName,
             ...(repo ? { repo } : {}), paneId: value.paneId, via: input.via, adopted: input.adopted,
-            ports: input.ports, endedAt: Math.min(value.endedAt, this.now()), reason: value.reason })
+            ports: input.ports, endedAt: Math.min(value.endedAt, this.now()), reason: value.reason,
+            ...(value.reason === 'pane-closed' && value.releasePending === true ? { releasePending: true as const } : {}) })
         } catch { /* Ignore malformed entries. */ }
       }
       this.ended = this.boundedEnded(this.ended)
@@ -278,12 +286,46 @@ export class SimLeaseRegistry {
 
   list(paneExists: (paneId: string) => boolean): Array<SimLease & { idle: boolean }> {
     const live = this.leases.filter((entry) => paneExists(entry.paneId))
-    if (live.length !== this.leases.length) this.commit(live, [...this.ended,
-      ...this.leases.filter((entry) => !live.includes(entry)).map((entry) => this.end(entry, 'pane-closed'))])
+    if (live.length !== this.leases.length) {
+      const closed = this.leases.filter((entry) => !live.includes(entry))
+        .map((entry): EndedSimLease => ({ ...this.end(entry, 'pane-closed'), releasePending: true }))
+      this.commit(live, [...this.ended, ...closed])
+    }
     for (const [paneId, reservation] of this.reservations) {
       if (!paneExists(paneId) || this.now() - reservation.at >= SIM_LEASE_IDLE_MS) this.reservations.delete(paneId)
     }
     return this.leases.map((entry) => ({ ...entry, idle: this.now() - entry.lastActiveAt >= SIM_LEASE_IDLE_MS }))
+  }
+
+  /**
+   * Ends leases whose pane closed and hands over each device that still owes a release,
+   * holding it until finishRelease. Reclaiming a device drops its ended record, so it is never handed over.
+   */
+  takeClosed(paneExists: (paneId: string) => boolean): EndedSimLease[] {
+    this.list(paneExists)
+    const due = this.ended.filter((entry) => entry.releasePending && !this.isHeld(entry.udid) &&
+      (this.releaseRetries.get(entry.udid)?.at ?? 0) <= this.now())
+    for (const entry of due) this.releasing.add(entry.udid)
+    return due.map((entry) => ({ ...entry }))
+  }
+
+  /** A failed release is retried with backoff, giving up after a few attempts. */
+  finishRelease(udid: string, released: boolean): void {
+    const id = udid.toUpperCase()
+    this.releasing.delete(id)
+    const attempts = (this.releaseRetries.get(id)?.attempts ?? 0) + 1
+    if (!released && attempts < RELEASE_ATTEMPTS) {
+      this.releaseRetries.set(id, { attempts, at: this.now() + RELEASE_RETRY_MS * 2 ** (attempts - 1) })
+      return
+    }
+    this.releaseRetries.delete(id)
+    if (this.ended.some((entry) => entry.udid === id && entry.releasePending)) {
+      this.commit(this.leases, this.ended.map((entry) => {
+        if (entry.udid !== id) return entry
+        const { releasePending: _, ...rest } = entry
+        return rest
+      }))
+    }
   }
 
   listEnded(): EndedSimLease[] {
@@ -292,13 +334,15 @@ export class SimLeaseRegistry {
 
   pruneEnded(bootedUdids: string[]): void {
     const booted = new Set(bootedUdids.map((udid) => udid.toUpperCase()))
-    const ended = this.boundedEnded(this.ended.filter((entry) => booted.has(entry.udid)))
+    const ended = this.boundedEnded(this.ended.filter((entry) => booted.has(entry.udid) || entry.releasePending))
     if (ended.length !== this.ended.length) this.commit(this.leases, ended)
   }
 
+  /** Owed releases stay until they finish or give up; other history is capped by age and count. */
   private boundedEnded(ended: EndedSimLease[]): EndedSimLease[] {
-    return ended.filter((entry) => this.now() - entry.endedAt < ENDED_MAX_AGE_MS)
+    const history = ended.filter((entry) => !entry.releasePending && this.now() - entry.endedAt < ENDED_MAX_AGE_MS)
       .sort((a, b) => b.endedAt - a.endedAt).slice(0, 50)
+    return [...ended.filter((entry) => entry.releasePending), ...history]
   }
 
   private end(entry: SimLease, reason: EndedSimLease['reason']): EndedSimLease {
@@ -310,7 +354,7 @@ export class SimLeaseRegistry {
     const leases = this.list(paneExists)
     return { ...target, poolUdids: this.pool.list().map((entry) => entry.udid), ended: this.listEnded(), lease: leases.find((entry) => entry.paneId === paneId) ?? null,
       heldUdids: [...new Set([...leases.filter((entry) => entry.paneId !== paneId).map((entry) => entry.udid),
-        ...[...this.reservations].filter(([pane]) => pane !== paneId).map(([, entry]) => entry.udid)])] }
+        ...[...this.reservations].filter(([pane]) => pane !== paneId).map(([, entry]) => entry.udid), ...this.releasing])] }
   }
 
   reserve(paneId: string, udid: unknown, requireUnleased = false): string {
@@ -345,6 +389,7 @@ export class SimLeaseRegistry {
       adopted: existing?.adopted ?? input.adopted,
       createdAt: existing?.createdAt ?? this.now(), lastActiveAt: this.now() }
     const previousLeases = this.leases, previousEnded = this.ended
+    this.releaseRetries.delete(input.udid)
     this.commit([...this.leases.filter((lease) => lease.paneId !== paneId), entry], this.ended.filter((ended) => ended.udid !== input.udid))
     try { this.pool.recordProject(input.udid, target.repo, this.now()) }
     catch (error) {
@@ -377,7 +422,7 @@ export class SimLeaseRegistry {
 
   isHeld(udid: string): boolean {
     const id = udid.toUpperCase()
-    return this.leases.some((entry) => entry.udid === id) || [...this.reservations.values()].some((entry) => entry.udid === id)
+    return this.leases.some((entry) => entry.udid === id) || this.releasing.has(id) || [...this.reservations.values()].some((entry) => entry.udid === id)
   }
 
   private assertFree(paneId: string, udid: string): void {
@@ -385,6 +430,7 @@ export class SimLeaseRegistry {
       [...this.reservations].some(([pane, entry]) => pane !== paneId && entry.udid === udid)) {
       throw new SimLeaseError(409, 'Simulator is held by another pane')
     }
+    if (this.releasing.has(udid)) throw new SimLeaseError(409, 'Simulator is shutting down after its pane closed; retry shortly')
   }
 
   private commit(leases: SimLease[], ended = this.ended): void {

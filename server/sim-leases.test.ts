@@ -311,6 +311,81 @@ describe('SimLeaseRegistry', () => {
     expect(new SimLeaseRegistry({ statePath, now: () => 101 }).listEnded()).toEqual([expect.objectContaining({ udid: OTHER, via: 'adopted', adopted: true })])
   })
 
+  it('hands each closed-pane lease over once for release and holds its device until the release finishes', () => {
+    const registry = new SimLeaseRegistry({ now: () => 123 })
+    let open = true
+    const paneExists = (paneId: string) => paneId === '%2' || open
+    registry.upsert('%1', target, input)
+    expect(registry.takeClosed(paneExists)).toEqual([])
+    open = false
+    // A list from another caller ends the lease first; the release queue still gets it.
+    expect(registry.list(paneExists)).toEqual([])
+    expect(registry.isHeld(UDID)).toBe(false)
+    expect(registry.takeClosed(paneExists)).toEqual([expect.objectContaining({ udid: UDID, paneId: '%1', reason: 'pane-closed', originalName: 'iPhone 17' })])
+    expect(registry.takeClosed(paneExists)).toEqual([])
+    expect(registry.isHeld(UDID)).toBe(true)
+    expect(registry.context('%2', target, paneExists).heldUdids).toEqual([UDID])
+    expect(() => registry.reserve('%2', UDID)).toThrow('shutting down')
+    expect(() => registry.upsert('%2', target, input)).toThrow('shutting down')
+    registry.finishRelease(UDID.toLowerCase(), true)
+    expect(registry.isHeld(UDID)).toBe(false)
+    expect(registry.takeClosed(paneExists)).toEqual([])
+    expect(registry.upsert('%2', target, input).paneId).toBe('%2')
+    // A device reclaimed before the daemon takes the closed lease is never shut down.
+    open = true
+    registry.upsert('%1', target, { ...input, udid: OTHER })
+    open = false
+    registry.list(paneExists)
+    registry.delete('%2')
+    registry.upsert('%2', target, { ...input, udid: OTHER })
+    expect(registry.takeClosed(paneExists)).toEqual([])
+  })
+
+  it('retries a failed release with backoff, gives up after three attempts, and resumes owed releases after a restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-sim-release-'))
+    directories.push(directory)
+    const statePath = join(directory, 'leases.json')
+    let now = 1_000
+    const registry = new SimLeaseRegistry({ statePath, now: () => now })
+    registry.upsert('%1', target, input)
+    const gone = () => false
+    expect(registry.takeClosed(gone)).toHaveLength(1)
+    // A daemon that restarts mid-release still owes it.
+    const restarted = new SimLeaseRegistry({ statePath, now: () => now })
+    expect(restarted.takeClosed(gone)).toEqual([expect.objectContaining({ udid: UDID, releasePending: true })])
+    registry.finishRelease(UDID, false)
+    expect(registry.takeClosed(gone)).toEqual([])
+    now += 30_000
+    expect(registry.takeClosed(gone)).toHaveLength(1)
+    registry.finishRelease(UDID, false)
+    now += 60_000
+    expect(registry.takeClosed(gone)).toHaveLength(1)
+    registry.finishRelease(UDID, false)
+    now += 10 * 60_000
+    expect(registry.takeClosed(gone)).toEqual([])
+    expect(registry.listEnded()[0].releasePending).toBeUndefined()
+    expect(new SimLeaseRegistry({ statePath, now: () => now }).takeClosed(gone)).toEqual([])
+  })
+
+  it('keeps owed releases through the wall pruning shut-down devices, and resets retries when a device is re-leased', () => {
+    let now = 1_000
+    const registry = new SimLeaseRegistry({ now: () => now })
+    registry.upsert('%1', target, input)
+    const gone = (paneId: string) => paneId === '%2'
+    registry.list(gone)
+    registry.pruneEnded([])
+    expect(registry.takeClosed(gone)).toEqual([expect.objectContaining({ udid: UDID, releasePending: true })])
+    registry.finishRelease(UDID, false)
+    registry.pruneEnded([])
+    now += 30_000
+    expect(registry.takeClosed(gone)).toHaveLength(1)
+    registry.finishRelease(UDID, false)
+    // Re-leasing drops the owed release and its retry state; the next close starts fresh.
+    registry.upsert('%2', target, input)
+    registry.upsert('%2', target, input)
+    expect(registry.takeClosed(() => false)).toHaveLength(1)
+  })
+
   it('reserves before device operations, prevents races and expires abandoned reservations', () => {
     let now = 10
     const registry = new SimLeaseRegistry({ now: () => now })
