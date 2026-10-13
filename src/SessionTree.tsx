@@ -72,6 +72,8 @@ function markLabel(mark: PaneMark, pane: TmuxPane): string {
   return `${mark.label}${mark.activityCount ? `, ${mark.activityCount} ${mark.activityCount === 1 ? 'activity' : 'activities'} since mark` : ''} - ${paneLabel(pane)}`
 }
 
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
+
 function suggestedDirectories(sessionIds: readonly string[], panes: readonly TmuxPane[]): string[] {
   const sessions = new Set(sessionIds)
   const counts = new Map<string, { count: number; order: number }>()
@@ -415,7 +417,7 @@ export function SessionTree(props: Props) {
                     aria-label={indicatorLabel}
                     title={indicatorLabel}
                   /> : <span className="session-indicator" aria-hidden="true" />}
-                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={branch ? `${session.name} · ${branch}` : session.name}>{session.name}</button>
+                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={[session.name, branch, `${plural(session.windowIds.length, 'window')} / ${plural(sessionPanes.length, 'pane')}`].filter(Boolean).join(' · ')}>{session.name}</button>
                   <span className="session-row-meta">
                     {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} previewApi={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
                     {ide ? <button type="button" className={`session-ide-glyph state-${ide.state}`} aria-pressed={props.ideSessionId === session.id} aria-label={`Open attached IDE for ${session.name}`} title={`${ide.state === 'ready' ? 'IDE attached' : ide.state === 'starting' ? 'IDE starting' : 'IDE failed'} · ${ide.workspacePath}`} onClick={() => props.onOpenIde?.(session.id)}><Code2 /></button> : null}

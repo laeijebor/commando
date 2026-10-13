@@ -18,7 +18,6 @@ const sessionApi = vi.hoisted(() => ({
   listArchives: vi.fn(),
   archiveSession: vi.fn(),
   restoreSession: vi.fn(),
-  deleteWindow: vi.fn(),
 }))
 
 vi.mock('./sessionManagementApi', () => ({ createSessionManagementApi: () => sessionApi }))
@@ -31,7 +30,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
-  sessionApi.deleteWindow.mockResolvedValue(undefined)
   sessionApi.previewWorktreeDeletion.mockResolvedValue({ auxiliarySessions: [] })
   sessionApi.listArchives.mockResolvedValue([])
 })
@@ -624,7 +622,7 @@ describe('SessionTree', () => {
       expect(screen.queryByRole('button', { name: 'Collapse GIZMO' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Move Save-All down' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /Group$/ })).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Coins everywhere' })).toHaveAttribute('title', 'Coins everywhere · referral-coins-reward')
+      expect(screen.getByRole('button', { name: 'Coins everywhere' })).toHaveAttribute('title', 'Coins everywhere · referral-coins-reward · 1 window / 1 pane')
       expect(screen.getByRole('button', { name: 'Group sessions by repository' })).toHaveAttribute('aria-pressed', 'true')
     })
 
