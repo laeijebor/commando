@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'no
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { AgentStatus, WebPane } from '../shared/protocol.js'
-import { GUIDE_STEP_ID, guideSnapshot, MAX_GUIDE_NOTE, parseGuide, type GuideMark, type GuideSnapshot } from '../shared/guide.js'
+import { GUIDE_STEP_ID, guideSnapshot, MAX_GUIDE_NOTE, parseGuide, type GuideDelivered, type GuideMark, type GuideSnapshot } from '../shared/guide.js'
 import { canvasRepoRoot, clip, singleLine } from './canvas-push.js'
 import { WebPaneError } from './web-panes.js'
 
@@ -11,8 +11,7 @@ export const MAX_GUIDE_RECORDS = 200
 export const MAX_GUIDE_MARKS = 500
 const MAX_GUIDE_BYTES = 1024 * 1024
 
-type Delivered = Record<string, { checked: boolean; note?: string }>
-type GuideRecord = { key: string; marks: Record<string, GuideMark>; delivered: Delivered; deliveredAt?: number; updatedAt: number }
+type GuideRecord = { key: string; marks: Record<string, GuideMark>; delivered: Record<string, GuideDelivered>; deliveredAt?: number; updatedAt: number }
 type GuidePane = WebPane & { content: { kind: 'guide'; artifactId: string; file: string } }
 
 export function defaultGuideStatePath(port = 4310): string {
@@ -71,7 +70,7 @@ export function guidePushPrompt(webPaneId: string, file: string, snapshot: Pick<
   let length = header.join('\n').length + footer.length + 2
   for (const change of snapshot.changes) {
     const label = clip(singleLine(change.label), 200)
-    const state = change.checkedChanged ? (change.checked ? (change.checkpoint ? '★ reached' : '✓ done') : '↺ unticked') : (change.checked ? '✓' : '○')
+    const state = change.checkedChanged ? (change.checked ? (change.checkpoint ? '★ reached' : '✓ done') : '↺ unticked') : (change.checked ? 'note, step done' : 'note, step open')
     const note = change.noteChanged && change.note ? ` — note: "${clip(singleLine(change.note), 400)}"` : change.noteChanged ? ' — note cleared' : ''
     const line = `- ${state}: ${label}${note}`
     if (length + line.length + 1 > 1_900) break
@@ -92,14 +91,16 @@ type Dependencies = {
   sendChat: (paneId: string, text: string, requestId: string) => boolean
   status: (paneId: string) => AgentStatus | undefined
   sendTerminal: (paneId: string, text: string) => Promise<void>
+  /** Anchors mid-paste, shared with canvas push so two prompts never interleave. */
+  sending?: Set<string>
 }
 
 /** Guide tabs: user ticks, notes, and "Update agent" pushes when the agent is idle. */
 export class Guides {
   /** Guide panes whose "Update agent" is waiting for the anchor agent to go idle. */
   private readonly owed = new Set<string>()
-  private readonly sending = new Set<string>()
-  constructor(private readonly deps: Dependencies) {}
+  private readonly sending: Set<string>
+  constructor(private readonly deps: Dependencies) { this.sending = deps.sending ?? new Set() }
 
   snapshot(webPaneId: string): GuideSnapshot {
     const pane = this.guidePane(webPaneId)
@@ -124,11 +125,14 @@ export class Guides {
     if (checked !== undefined && typeof checked !== 'boolean') throw new WebPaneError(400, 'checked must be a boolean')
     if (note !== undefined && (typeof note !== 'string' || note.length > MAX_GUIDE_NOTE)) throw new WebPaneError(400, `note must be a string of at most ${MAX_GUIDE_NOTE} characters`)
     if (checked === undefined && note === undefined) throw new WebPaneError(400, 'checked or note is required')
-    const step = this.snapshot(webPaneId).steps.find((candidate) => candidate.id === id)
-    if (!step) throw new WebPaneError(404, 'Step does not exist')
+    if (!this.snapshot(webPaneId).steps.some((candidate) => candidate.id === id)) throw new WebPaneError(404, 'Step does not exist')
     this.deps.store.update(guideKey(pane), (record) => {
-      const nextNote = note === undefined ? step.note : (note as string).trim()
-      record.marks[id] = { checked: checked ?? step.checked, ...(nextNote ? { note: nextNote } : {}), at: Date.now() }
+      // A note alone leaves the tick to the source, so a later agent `[x]` still shows.
+      const previous = record.marks[id]
+      const nextChecked = checked ?? previous?.checked
+      const nextNote = note === undefined ? previous?.note : (note as string).trim()
+      if (nextChecked === undefined && !nextNote) delete record.marks[id]
+      else record.marks[id] = { ...(nextChecked !== undefined ? { checked: nextChecked } : {}), ...(nextNote ? { note: nextNote } : {}), at: Date.now() }
     })
     this.deps.changed(pane.content.artifactId, pane.content.file)
     return this.snapshot(webPaneId)
@@ -192,7 +196,10 @@ export class Guides {
       } else await this.deps.sendTerminal(anchor, text)
       // Advance the baseline to exactly what the agent was told.
       this.deps.store.update(guideKey(guide), (record) => {
-        for (const change of snapshot.changes) record.delivered[change.id] = { checked: change.checked, ...(change.note ? { note: change.note } : {}) }
+        for (const change of snapshot.changes) {
+          const told = record.delivered[change.id] ?? {}
+          record.delivered[change.id] = { ...(change.checkedChanged ? { checked: change.checked } : told.checked !== undefined ? { checked: told.checked } : {}), ...(change.note ? { note: change.note } : {}) }
+        }
         record.deliveredAt = Date.now()
       })
       this.owed.delete(webPaneId)

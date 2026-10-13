@@ -14,18 +14,17 @@ const SCHEMA = {
   tagNames: [...(defaultSchema.tagNames ?? []), 'checkpoint', 'callout'],
   attributes: {
     ...defaultSchema.attributes,
-    checkpoint: ['id', 'done'],
+    checkpoint: ['dataStepIndex'],
     callout: ['tone', 'title'],
     li: [...(defaultSchema.attributes?.li ?? []), 'dataStepOffset'],
   },
 }
-const CLOBBER_PREFIX = 'user-content-'
 const TONES = new Set(['info', 'warn', 'danger', 'success'])
 
 type StepView = GuideStep & { checked: boolean; note?: string }
 type GuideContextValue = {
   byOffset: Map<number, StepView>
-  byId: Map<string, StepView>
+  checkpoints: StepView[]
   busy: ReadonlySet<string>
   toggle: (step: StepView) => void
   saveNote: (step: StepView, note: string) => void
@@ -41,6 +40,18 @@ function rehypeStepOffsets() {
     for (const child of node.children ?? []) visit(child)
   }
   return (tree: HastNode) => visit(tree)
+}
+
+/** Number `<checkpoint>` elements in document order, matching parseGuide's checkpoint order. */
+function rehypeCheckpointIndexes() {
+  return (tree: HastNode) => {
+    let index = 0
+    const visit = (node: HastNode) => {
+      if (node.tagName === 'checkpoint') node.properties = { ...node.properties, dataStepIndex: String(index++) }
+      for (const child of node.children ?? []) visit(child)
+    }
+    visit(tree)
+  }
 }
 
 /** Drop the `{#id}` suffix from the end of each task item's first paragraph (where parseGuide reads it). */
@@ -111,9 +122,10 @@ function TaskItem({ node, children, className }: { node?: HastNode; children?: R
   )
 }
 
-function Checkpoint({ id, children }: { id?: string; children?: ReactNode }) {
+function Checkpoint({ node, children }: { node?: HastNode; children?: ReactNode }) {
   const guide = useContext(GuideContext)
-  const step = id ? guide?.byId.get(id.startsWith(CLOBBER_PREFIX) ? id.slice(CLOBBER_PREFIX.length) : id) : undefined
+  const index = Number(node?.properties?.dataStepIndex)
+  const step = Number.isInteger(index) ? guide?.checkpoints[index] : undefined
   if (!step) return <span className="guide-checkpoint is-unknown">{children}</span>
   return (
     <span className={`guide-checkpoint${step.checked ? ' is-done' : ''}`} data-step-id={step.id}>
@@ -197,7 +209,7 @@ export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl
 
   const steps = useMemo(() => (outline?.steps ?? []).map((step): StepView => {
     const mark = snapshot?.marks[step.id]
-    return { ...step, checked: mark ? mark.checked : step.sourceChecked, ...(mark?.note ? { note: mark.note } : {}) }
+    return { ...step, checked: mark?.checked ?? step.sourceChecked, ...(mark?.note ? { note: mark.note } : {}) }
   }), [outline, snapshot])
 
   const run = useCallback(async (id: string, change: () => Promise<GuideSnapshot>) => {
@@ -206,8 +218,8 @@ export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl
     finally { setBusy((current) => { const next = new Set(current); next.delete(id); return next }) }
   }, [accept])
   const context = useMemo<GuideContextValue>(() => ({
-    byOffset: new Map(steps.map((step) => [step.offset, step])),
-    byId: new Map(steps.map((step) => [step.id, step])),
+    byOffset: new Map(steps.filter((step) => !step.checkpoint).map((step) => [step.offset, step])),
+    checkpoints: steps.filter((step) => step.checkpoint),
     busy,
     toggle: (step) => {
       setSnapshot((current) => current && { ...current, marks: { ...current.marks, [step.id]: { ...current.marks[step.id], checked: !step.checked, at: Date.now() } } })
@@ -268,7 +280,7 @@ export function GuidePane({ webPaneId, token = '', artifactId, file, artifactUrl
         {markdown === null ? (loadError ? null : <div className="guide-loading">Loading guide…</div>) : (
           <GuideContext.Provider value={context}>
             <article className="guide-doc">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeStepOffsets, rehypeRaw, [rehypeSanitize, SCHEMA], rehypeStripStepIds]} components={components}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeStepOffsets, rehypeRaw, rehypeCheckpointIndexes, [rehypeSanitize, SCHEMA], rehypeStripStepIds]} components={components}>
                 {markdown}
               </ReactMarkdown>
             </article>

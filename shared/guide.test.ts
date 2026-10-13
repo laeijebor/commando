@@ -44,6 +44,11 @@ describe('parseGuide', () => {
     expect(steps).toMatchObject([{ id: 'ship', label: 'Shipped it', checkpoint: true, sourceChecked: true }])
   })
 
+  it('finds every checkpoint in an HTML block and ids the ones without a usable id', () => {
+    const { steps } = parseGuide('<div>\n<checkpoint>Reach phase one</checkpoint>\n<checkpoint id="dup">First</checkpoint>\n<checkpoint id="dup">Second</checkpoint>\n</div>\n')
+    expect(steps.map((step) => [step.id, step.label])).toEqual([['reach-phase-one', 'Reach phase one'], ['dup', 'First'], ['second', 'Second']])
+  })
+
   it('keeps ids stable when unrelated steps are added', () => {
     const before = parseGuide('- [ ] One\n- [ ] Two\n').steps.map((step) => step.id)
     const after = parseGuide('- [ ] Zero\n- [ ] One\n- [ ] Two\n').steps.map((step) => step.id)
@@ -65,6 +70,12 @@ describe('guideSnapshot', () => {
       { id: 'two', label: 'Two', checkpoint: false, checked: false, checkedChanged: true, noteChanged: false },
       { id: 'three', label: 'Three', checkpoint: false, checked: false, note: 'blocked on access', checkedChanged: false, noteChanged: true },
     ])
+  })
+
+  it('lets a note-only mark keep following the source tick', () => {
+    const snapshot = guideSnapshot(outline, { two: { note: 'checked by hand', at: 1 } }, {})
+    expect(snapshot.steps[1]).toMatchObject({ checked: true, byUser: false, note: 'checked by hand' })
+    expect(snapshot.changes).toEqual([{ id: 'two', label: 'Two', checkpoint: false, checked: true, note: 'checked by hand', checkedChanged: false, noteChanged: true }])
   })
 
   it('ignores marks for steps the agent removed', () => {

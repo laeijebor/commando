@@ -37,7 +37,7 @@ Live mode only.
 
 let markdown = GUIDE
 let marks: Record<string, GuideMark> = {}
-let delivered: Record<string, { checked: boolean; note?: string }> = {}
+let delivered: Record<string, { checked?: boolean; note?: string }> = {}
 let waiting = false
 const snapshot = (): GuideSnapshot => ({ ...guideSnapshot(parseGuide(markdown), marks, delivered), marks, waiting })
 const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -46,7 +46,7 @@ const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.endsWith('/guide/steps')) {
     const body = JSON.parse(String(init?.body)) as { id: string; checked?: boolean; note?: string }
     const current = snapshot().steps.find((step) => step.id === body.id)!
-    marks = { ...marks, [body.id]: { checked: body.checked ?? current.checked, ...(body.note ?? current.note ? { note: body.note ?? current.note } : {}), at: 1 } }
+    marks = { ...marks, [body.id]: { ...marks[body.id], ...(body.checked !== undefined ? { checked: body.checked } : {}), ...(body.note ?? current.note ? { note: body.note ?? current.note } : {}), at: 1 } }
   }
   if (url.endsWith('/guide/update') && init?.method === 'POST') waiting = true
   return Response.json({ ok: true, guide: snapshot() })
@@ -76,6 +76,14 @@ describe('GuidePane', () => {
     expect(container.textContent).not.toContain('{#run-sync}')
     expect(screen.getByLabelText('1 of 4 steps done')).toBeInTheDocument()
     expect(onTitle).toHaveBeenCalledWith('Stripe rollout')
+  })
+
+  it('binds checkpoints without ids and with duplicate ids to their own steps', async () => {
+    markdown = '# G\n\n<checkpoint>Reach phase one</checkpoint>\n\n<checkpoint id="dup">First</checkpoint>\n\n<checkpoint id="dup">Second</checkpoint>\n'
+    renderGuide()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Second' }))
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/api/web-panes/w-12345678/guide/steps', expect.objectContaining({ body: JSON.stringify({ id: 'second', checked: true }) })))
+    expect(screen.getAllByRole('checkbox').map((box) => box.getAttribute('aria-label'))).toEqual(['Reach phase one', 'First', 'Second'])
   })
 
   it('ticks a step on the daemon and offers to update the agent', async () => {

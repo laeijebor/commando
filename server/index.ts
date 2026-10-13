@@ -1752,7 +1752,10 @@ async function main(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 150))
     await tmux.sendKey(pane.sessionId, paneId, 'Enter')
   }
+  // One paste at a time per agent pane, whichever tab is pushing.
+  const agentPushes = new Set<string>()
   canvasPush = new CanvasPush({
+    sending: agentPushes,
     repoRoot: fileURLToPath(new URL('../', import.meta.url)),
     pane: (id) => webPanes.get(id),
     title: (pane) => {
@@ -1776,6 +1779,7 @@ async function main(): Promise<void> {
     sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
     status: (paneId) => agentStatuses.get(paneId),
     sendTerminal: sendAgentTerminal,
+    sending: agentPushes,
   })
   const webPanesApi = new WebPanesApi({
     service: webPanes,

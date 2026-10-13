@@ -52,6 +52,24 @@ describe('Guides', () => {
     expect(make().snapshot(pane.id).steps[0]).toMatchObject({ checked: true, note: 'printed DIFFERENT' })
   })
 
+  it('keeps following the agent [x] after a note-only edit', async () => {
+    guides.mark(pane.id, { id: 'merge-527', note: 'waiting on review' })
+    await guides.requestUpdate(pane.id)
+    expect(sendTerminal.mock.calls[0][1]).toContain('- note, step open: Merge #527 — note: "waiting on review"')
+    writeFileSync(join(dir, 'guide.md'), GUIDE.replace('- [ ] Merge #527', '- [x] Merge #527'))
+    expect(guides.snapshot(pane.id)).toMatchObject({ changes: [], steps: expect.arrayContaining([expect.objectContaining({ id: 'merge-527', checked: true, note: 'waiting on review' })]) })
+  })
+
+  it('does not paste while another push holds the agent pane', async () => {
+    const sending = new Set(['%5'])
+    const shared = new Guides({ ...(guides as unknown as { deps: ConstructorParameters<typeof Guides>[0] }).deps, sending })
+    shared.mark(pane.id, { id: 'copy', checked: true })
+    expect(await shared.requestUpdate(pane.id)).toMatchObject({ waiting: true })
+    sending.clear()
+    await shared.statusChanged('%5')
+    expect(sendTerminal).toHaveBeenCalledTimes(1)
+  })
+
   it('rejects unknown steps and malformed bodies', () => {
     expect(() => guides.mark(pane.id, { id: 'nope', checked: true })).toThrow('Step does not exist')
     expect(() => guides.mark(pane.id, { id: 'copy' })).toThrow('checked or note is required')

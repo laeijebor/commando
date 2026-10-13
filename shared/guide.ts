@@ -10,14 +10,17 @@ export type GuideStep = {
   checkpoint: boolean
   /** `[x]` in the source: the agent marked the step done. */
   sourceChecked: boolean
-  /** Source offset of the task item or checkpoint tag; render-time lookup key. */
+  /** Source offset of the task item or checkpoint tag (task items use it as the render-time lookup key). */
   offset: number
 }
 
 export type GuideOutline = { title: string; steps: GuideStep[] }
 
-/** The user's own tick/note on a step; it wins over the source `[x]`. */
-export type GuideMark = { checked: boolean; note?: string; at: number }
+/** The user's own tick and/or note on a step; a tick wins over the source `[x]`. */
+export type GuideMark = { checked?: boolean; note?: string; at: number }
+
+/** What the agent was last told about a step. */
+export type GuideDelivered = { checked?: boolean; note?: string }
 
 export type GuideChange = { id: string; label: string; checkpoint: boolean; checked: boolean; note?: string; checkedChanged: boolean; noteChanged: boolean }
 
@@ -49,6 +52,7 @@ type Node = { type: string; value?: string; children?: Node[]; checked?: boolean
 const EXPLICIT_ID = /\s*\{#([A-Za-z0-9][A-Za-z0-9_-]{0,63})\}\s*$/
 const CHECKPOINT_OPEN = /<checkpoint\b([^>]*)>/i
 const CHECKPOINT_CLOSE = /<\/checkpoint\s*>/i
+const CHECKPOINT_PAIR = /<checkpoint\b([^>]*)>([\s\S]*?)<\/checkpoint\s*>/gi
 
 const text = (node: Node): string =>
   node.type === 'text' || node.type === 'inlineCode' ? node.value ?? '' : (node.children ?? []).map(text).join('')
@@ -93,9 +97,7 @@ export function parseGuide(markdown: string): GuideOutline {
       found.push({ explicit, label: squash(stripGuideStepId(raw)), checkpoint: false, sourceChecked: node.checked, offset: node.position?.start.offset ?? 0 })
     }
     if (node.type === 'html' && node.value) {
-      const open = CHECKPOINT_OPEN.exec(node.value)
-      const close = open && CHECKPOINT_CLOSE.exec(node.value.slice(open.index))
-      if (open && close) checkpoint(open[1], node.value.slice(open.index + open[0].length, open.index + close.index).replace(/<[^>]*>/g, ''), node.position?.start.offset ?? 0)
+      for (const match of node.value.matchAll(CHECKPOINT_PAIR)) checkpoint(match[1], match[2].replace(/<[^>]*>/g, ''), (node.position?.start.offset ?? 0) + match.index)
     }
     const children = node.children ?? []
     for (let index = 0; index < children.length; index++) {
@@ -129,17 +131,17 @@ export function parseGuide(markdown: string): GuideOutline {
 export function guideSnapshot(
   outline: GuideOutline,
   marks: Readonly<Record<string, GuideMark>>,
-  delivered: Readonly<Record<string, { checked: boolean; note?: string }>>,
+  delivered: Readonly<Record<string, GuideDelivered>>,
 ): Pick<GuideSnapshot, 'title' | 'steps' | 'changes'> {
   const steps = outline.steps.map((step) => {
     const mark = marks[step.id]
-    return { ...step, checked: mark ? mark.checked : step.sourceChecked, ...(mark?.note ? { note: mark.note } : {}), byUser: Boolean(mark) }
+    return { ...step, checked: mark?.checked ?? step.sourceChecked, ...(mark?.note ? { note: mark.note } : {}), byUser: mark?.checked !== undefined }
   })
   const changes: GuideChange[] = []
   for (const step of steps) {
-    if (!step.byUser) continue
-    const baseline = delivered[step.id] ?? { checked: step.sourceChecked }
-    const checkedChanged = step.checked !== baseline.checked
+    if (!marks[step.id]) continue
+    const baseline = delivered[step.id] ?? {}
+    const checkedChanged = step.byUser && step.checked !== (baseline.checked ?? step.sourceChecked)
     const noteChanged = (step.note ?? '') !== (baseline.note ?? '')
     if (checkedChanged || noteChanged) changes.push({ id: step.id, label: step.label, checkpoint: step.checkpoint, checked: step.checked, ...(step.note ? { note: step.note } : {}), checkedChanged, noteChanged })
   }

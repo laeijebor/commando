@@ -72,8 +72,10 @@ These keep live legacy billing (78 subscriptions) working once the signature che
 
 ## Open it
 
-Run this from your own tmux pane. The script lives in the Commando repo
-checkout, two levels up from this skill (`<commando>/scripts/commando-guide`):
+Run this from your own tmux pane. The script lives in the **Commando repo
+checkout**, not in this skill folder or the project: invoke
+`/absolute/path/to/commando/scripts/commando-guide` when working elsewhere. If
+you can't find the checkout, use the raw HTTP steps below.
 
 ```bash
 /path/to/commando/scripts/commando-guide .guides/stripe-webhooks.md   # prints webPaneId
