@@ -87,6 +87,7 @@ export function chatHostReport(session: ChatSessionInfo, hadTurn: boolean): Chat
           : session.status === 'closed' ? null : 'unknown'
   if (!status) return null
   return {
+    provider: session.provider,
     status,
     ...(session.sessionId ? { sessionId: session.sessionId } : {}),
     ...(session.title ? { title: session.title } : {}),
