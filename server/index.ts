@@ -642,7 +642,7 @@ async function main(): Promise<void> {
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
   let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
-  const chatEnv = Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const)
+  const chatEnv = Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR', 'ARGENT_SIMULATOR_NO_WINDOW'] as const)
     .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : []))
   // Chats switched to Claude Code: what they held, and the way back.
   const chatHandoffs = new ChatHandoffStore(undefined, Date.now, (error) => console.error('[commando] chat handoff state failed', error))

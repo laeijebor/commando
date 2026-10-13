@@ -129,7 +129,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
 }
 
 /** Variables a respawned host needs to find the same daemon. */
-const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const
+const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR', 'ARGENT_SIMULATOR_NO_WINDOW'] as const
 
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
