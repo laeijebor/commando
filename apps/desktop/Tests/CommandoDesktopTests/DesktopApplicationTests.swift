@@ -133,9 +133,24 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertEqual(fileMenu.item(withTitle: "Close Pane")?.action, #selector(DesktopWindow.closePane(_:)))
 
         let editMenu = try XCTUnwrap(menu.items[2].submenu)
-        XCTAssertEqual(editMenu.items.filter { !$0.isSeparatorItem }.map(\.title), [
-            "Copy", "Paste", "Find", "Find Next", "Find Previous"
+        let editActions = editMenu.items.filter { !$0.isSeparatorItem }
+        XCTAssertEqual(editActions.map(\.title), [
+            "Undo", "Redo", "Cut", "Copy", "Paste", "Select All", "Find", "Find Next", "Find Previous"
         ])
+        XCTAssertEqual(editMenu.items.indices.filter { editMenu.items[$0].isSeparatorItem }, [2, 7])
+        XCTAssertEqual(editActions.map(\.keyEquivalent), ["z", "z", "x", "c", "v", "a", "f", "g", "g"])
+        XCTAssertEqual(editActions.map(\.keyEquivalentModifierMask), [
+            .command, [.command, .shift], .command, .command, .command, .command,
+            .command, .command, [.command, .shift]
+        ])
+        XCTAssertEqual(editActions.map(\.action), [
+            Selector(("undo:")), Selector(("redo:")), #selector(NSText.cut(_:)),
+            #selector(NSText.copy(_:)), #selector(NSText.paste(_:)), #selector(NSText.selectAll(_:)),
+            #selector(NSResponder.performTextFinderAction(_:)),
+            #selector(NSResponder.performTextFinderAction(_:)),
+            #selector(NSResponder.performTextFinderAction(_:))
+        ])
+        XCTAssertTrue(editActions.allSatisfy { $0.target == nil })
         XCTAssertEqual(editMenu.item(withTitle: "Find")?.tag, NSTextFinder.Action.showFindInterface.rawValue)
         XCTAssertEqual(editMenu.item(withTitle: "Find")?.keyEquivalent, "f")
         XCTAssertEqual(editMenu.item(withTitle: "Find Next")?.tag, NSTextFinder.Action.nextMatch.rawValue)
