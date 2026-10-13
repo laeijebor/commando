@@ -378,7 +378,9 @@ final class HostedTerminalView: TerminalView {
                         ?? TerminalClipboardBridge.writePlainText(cut.text, to: .general)
                     if copied {
                         selectionWasCopied?()
-                        modifiedArrowWasPressed?(Data(cut.clear.utf8))
+                        if !cut.clear.isEmpty {
+                            modifiedArrowWasPressed?(Data(cut.clear.utf8))
+                        }
                     }
                 }
             }
@@ -444,8 +446,24 @@ final class HostedTerminalView: TerminalView {
             }
             return text
         }
+        // SwiftTerm keeps BufferLine.isWrapped internal. Its public getText API
+        // omits a newline between soft-wrapped rows, which lets us derive the
+        // equivalent metadata without depending on SwiftTerm internals.
+        let topRow = terminal.getTopVisibleRow()
+        let wrapped = (0..<terminal.rows).map { row in
+            guard row > 0, !rows[row].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return false
+            }
+            let text = terminal.getText(
+                start: Position(col: 0, row: topRow + row - 1),
+                end: Position(col: terminal.cols, row: topRow + row)
+            )
+            return !text.contains("\n")
+        }
         let cursor = terminal.getCursorLocation()
-        return TerminalInputCut.extract(rows: rows, cols: terminal.cols, cursorRow: cursor.y, cursorCol: cursor.x)
+        return TerminalInputCut.extract(
+            rows: rows, cols: terminal.cols, cursorRow: cursor.y, cursorCol: cursor.x, wrapped: wrapped
+        )
     }
 
     override func paste(_ sender: Any) {
