@@ -380,6 +380,19 @@ describe('narrow tabs drawer', () => {
     expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
   })
 
+  it('leaves Escape to an open menu outside the drawer, then closes on the next Escape', () => {
+    const view = render(<Drawer />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const menu = document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    document.body.append(menu)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+    menu.remove()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
+  })
+
   it.each(['xterm', 'terminal-find-shell', 'native'])('leaves Escape to %s terminal focus', (kind) => {
     const view = render(<Drawer />)
     fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
