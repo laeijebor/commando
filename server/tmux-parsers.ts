@@ -327,7 +327,9 @@ export function parsePanes(
     const terminalState = parseTerminalState(
       fields.slice(9, 9 + PANE_TERMINAL_STATE_FIELDS.length),
     )
-    const empty = fields[9 + PANE_TERMINAL_STATE_FIELDS.length] === '1'
+    // Empty only while the idle process that set the marker is still the pane's process.
+    const emptyMarker = fields[9 + PANE_TERMINAL_STATE_FIELDS.length]
+    const empty = Boolean(emptyMarker) && emptyMarker === fields.at(-2)
 
     if (
       !PANE_ID.test(id) ||

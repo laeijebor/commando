@@ -355,7 +355,8 @@ export function emptyPaneShellCommand(prepare?: { command: string; tmux: string 
       `  ${LOGIN_SHELL_COMMAND}`,
       'fi',
       "printf '[commando] Worktree preparation complete.\\n'",
-      `${shellQuote(prepare.tmux)} set-option -p -t "$TMUX_PANE" ${EMPTY_PANE_OPTION} 1 || ${LOGIN_SHELL_COMMAND}`,
+      // $$ is the pane's own process: this shell later execs the idle command in place.
+      `${shellQuote(prepare.tmux)} set-option -p -t "$TMUX_PANE" ${EMPTY_PANE_OPTION} "$$" || ${LOGIN_SHELL_COMMAND}`,
     ] : []),
     "printf '[commando] Nothing is running here yet. Start a shell or an agent from Commando.\\n'",
     'exec tail -f /dev/null',
@@ -547,12 +548,29 @@ export class TmuxCreator {
     } else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
     const created = parseCreatedTarget(await this.run(args), 'session')
     // A preparing pane marks itself once preparation succeeds.
-    if (empty && !prepareCommand) await this.setPaneEmpty(created.paneId, true)
+    if (empty && !prepareCommand) {
+      try {
+        await this.markPaneEmpty(created.paneId)
+      } catch (error) {
+        // The session exists either way: hand it back as a plain shell rather than orphan it.
+        console.warn('[commando] Could not mark the new pane empty; starting a shell in it', error)
+        try {
+          await this.run([...this.socketArgs, 'respawn-pane', '-k', '-t', created.paneId, LOGIN_SHELL_COMMAND])
+        } catch (respawnError) {
+          throw new Error(`Session ${created.sessionName} was created, but its pane could not be prepared. Close it and try again.`, { cause: respawnError })
+        }
+      }
+    }
     return created
   }
 
-  private async setPaneEmpty(paneId: string, empty: boolean): Promise<void> {
-    await this.run([...this.socketArgs, 'set-option', '-p', ...(empty ? [] : ['-u']), '-t', paneId, EMPTY_PANE_OPTION, ...(empty ? ['1'] : [])])
+  /** The marker holds the idle process id, so a pane respawned outside Commando never reads as empty. */
+  private async markPaneEmpty(paneId: string): Promise<void> {
+    await this.run([...this.socketArgs, 'set-option', '-p', '-F', '-t', paneId, EMPTY_PANE_OPTION, '#{pane_pid}'])
+  }
+
+  private async setPaneEmptyMarker(paneId: string, idlePid: string | null): Promise<void> {
+    await this.run([...this.socketArgs, 'set-option', '-p', ...(idlePid ? ['-t', paneId, EMPTY_PANE_OPTION, idlePid] : ['-u', '-t', paneId, EMPTY_PANE_OPTION])])
   }
 
   /** Replaces an empty pane's idle process; a pane already running something is never touched. */
@@ -564,16 +582,20 @@ export class TmuxCreator {
     if (this.launching.has(input.paneId)) throw new Error('This pane is already starting something')
     this.launching.add(input.paneId)
     try {
-      const marker = await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{${EMPTY_PANE_OPTION}}`])
-      if (marker.trim() !== '1') throw new Error('This pane is already running something')
-      await this.setPaneEmpty(input.paneId, false)
+      const [marker, panePid] = (await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{${EMPTY_PANE_OPTION}} #{pane_pid}`])).trim().split(' ')
+      if (!marker || marker !== panePid) throw new Error('This pane is already running something')
+      await this.setPaneEmptyMarker(input.paneId, null)
       try {
         await this.run([
           ...this.socketArgs, 'respawn-pane', '-k', '-t', input.paneId,
           ...(agentArgv ? [...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv)] : [LOGIN_SHELL_COMMAND]),
         ])
       } catch (error) {
-        await this.setPaneEmpty(input.paneId, true).catch(() => undefined)
+        // Restore the idle pid itself: if a timed-out respawn did start something, its new
+        // pid will not match, so the pane is never offered for another (killing) launch.
+        await this.setPaneEmptyMarker(input.paneId, marker).catch((restoreError: unknown) => {
+          console.warn('[commando] Could not restore the empty-pane marker', input.paneId, restoreError)
+        })
         throw error
       }
     } finally {

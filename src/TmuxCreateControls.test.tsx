@@ -171,6 +171,17 @@ describe('TmuxCreateControls', () => {
     await waitFor(() => expect(screen.getByLabelText('Start with')).toHaveValue('none'))
   })
 
+  it('picks up a choice remembered elsewhere each time the inline form opens', async () => {
+    render(<TmuxCreateControls onCreateSession={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/Users/dev/plain' } })
+    expect(screen.getByLabelText('Start with')).toHaveValue('none')
+    window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ '/Users/dev/plain': 'opencode' }))
+    const details = screen.getByText('New session').closest('details')!
+    details.open = true
+    fireEvent(details, new Event('toggle'))
+    expect(screen.getByLabelText('Start with')).toHaveValue('opencode')
+  })
+
   it('omits a retained opening prompt when switching to OpenCode or Shell', async () => {
     const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
     render(<TmuxCreateControls onCreateSession={onCreateSession} />)

@@ -732,7 +732,12 @@ export function TmuxCreateControls({
       className="tmux-create"
       ref={detailsRef}
       onToggle={(event) => {
-        if (event.currentTarget.open) return
+        if (event.currentTarget.open) {
+          // This form stays mounted, so pick up choices remembered by the dialog meanwhile.
+          setAgentProvider(loadStartWith(repoKey))
+          setChatLaunch(loadChatLaunch(repoKey))
+          return
+        }
         if (sessionGroupId !== 'ungrouped') setWorkingDirectory(workingDirectoryHistory[0] ?? '')
         setSessionGroupId('ungrouped')
         setSessionGroupName('Ungrouped')
