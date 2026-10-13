@@ -160,6 +160,8 @@ export function applyRateLimitEvent(current: ChatPlanUsage | undefined, info: SD
   return { ...current, limits, updatedAt: now }
 }
 
+const CODEX_BUCKET = 'codex'
+
 /** Codex doesn't grade its windows, so the meter does: amber from 75%, red from 90%. */
 function gradedSeverity(used: number): ChatPlanSeverity {
   return used >= 90 ? 'critical' : used >= 75 ? 'warning' : 'normal'
@@ -178,7 +180,8 @@ function codexWindow(minutes: unknown, fallback: 'session' | 'weekly_all'): { ki
  * snapshot leaves out keeps its last value. Undefined until a window is known.
  */
 export function applyCodexRateLimits(current: ChatPlanUsage | undefined, snapshot: unknown, now: number): ChatPlanUsage | undefined {
-  if (!isRecord(snapshot)) return current
+  // The meter shows the account's main `codex` bucket; another metered bucket's update must not overwrite it.
+  if (!isRecord(snapshot) || (typeof snapshot.limitId === 'string' && snapshot.limitId !== CODEX_BUCKET)) return current
   const limits = [...(current?.limits ?? [])]
   let changed = false
   for (const [key, fallback] of [['primary', 'session'], ['secondary', 'weekly_all']] as const) {
