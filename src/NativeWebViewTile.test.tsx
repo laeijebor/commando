@@ -131,6 +131,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 describe('NativeWebViewTile review integration', () => {
@@ -507,6 +509,102 @@ describe('native panel tab visibility', () => {
       expect(attachment.detach).not.toHaveBeenCalled()
       expect(bridge.attach).toHaveBeenCalledTimes(1)
     } finally { rect.mockRestore() }
+  })
+
+  function drawerFixture(mode: 'narrow' | 'wide' | 'split' | 'detached' = 'narrow', reducedMotion = false) {
+    class Observer { observe() {} disconnect() {} }
+    vi.stubGlobal('ResizeObserver', Observer)
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: reducedMotion })))
+    let top = 400
+    let moving = false
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 0, y: top, left: 0, top, width: 600, height: 300, right: 600, bottom: top + 300, toJSON: () => ({}),
+    }))
+    const { attachment, bridge } = nativeHarness()
+    const element = (visible: boolean) => <div className={mode === 'detached' ? 'detached-window' : `window-panel-layout${mode !== 'wide' ? ' is-narrow' : ''}${visible ? ' is-drawer-open' : ''}`}>
+      <aside className={mode === 'narrow' || mode === 'wide' ? 'side-panel' : 'window-terminal-grid'} ref={(node) => {
+        if (node) node.getAnimations = () => moving ? [{ transitionProperty: 'transform', playState: 'running', pending: false } as unknown as CSSTransition] : []
+      }}>
+        <NativeWebViewTile bridge={bridge} webPane={webPane} reloadKey={0} visible={visible} onFallback={() => undefined} />
+      </aside>
+    </div>
+    const view = render(element(false))
+    return {
+      attachment, bridge, view,
+      open: (animate = true) => { moving = animate; view.rerender(element(true)) },
+      close: () => { moving = false; top = 700; view.rerender(element(false)) },
+      widen: () => { mode = 'wide'; moving = false; top = 250; view.rerender(element(true)) },
+      finalPosition: () => { moving = false; top = 250 },
+      end: (target = view.container.querySelector('aside')!, propertyName = 'transform') => fireEvent(target, Object.assign(new Event('transitionend', { bubbles: true }), { propertyName })),
+      visibleFrames: () => vi.mocked(bridge.frame).mock.calls.filter(([, payload]) => payload.visible),
+    }
+  }
+
+  it('parks a native page while the narrow drawer opens and shows its final frame once on its own transform end', async () => {
+    vi.useFakeTimers()
+    const fixture = drawerFixture()
+    fixture.open()
+    expect(fixture.visibleFrames()).toHaveLength(0)
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false, visibleRegions: [], hitRegions: [] }))
+    await act(async () => { vi.advanceTimersByTime(150) })
+    fixture.end(fixture.view.container.querySelector('.web-pane-native-slot')!)
+    fixture.end(undefined, 'visibility')
+    expect(fixture.visibleFrames()).toHaveLength(0)
+    fixture.finalPosition()
+    fixture.end()
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ y: 250, visible: true }))
+    await act(async () => { vi.advanceTimersByTime(300) })
+    expect(fixture.visibleFrames()).toHaveLength(1)
+    fixture.close()
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false }))
+    expect(fixture.attachment.detach).not.toHaveBeenCalled()
+    expect(fixture.bridge.attach).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the final drawer frame after the fallback if no transform end arrives', async () => {
+    vi.useFakeTimers()
+    const fixture = drawerFixture()
+    fixture.open()
+    await act(async () => { vi.advanceTimersByTime(249) })
+    expect(fixture.visibleFrames()).toHaveLength(0)
+    fixture.finalPosition()
+    await act(async () => { vi.advanceTimersByTime(1) })
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ y: 250, visible: true }))
+    expect(fixture.visibleFrames()).toHaveLength(1)
+  })
+
+  it('cancels the opening fallback and stays parked when the drawer closes before settling', async () => {
+    vi.useFakeTimers()
+    const fixture = drawerFixture()
+    fixture.open()
+    fixture.close()
+    await act(async () => { vi.advanceTimersByTime(300) })
+    expect(fixture.visibleFrames()).toHaveLength(0)
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false }))
+  })
+
+  it('shows immediately when an opening drawer crosses into the wide layout', async () => {
+    vi.useFakeTimers()
+    const fixture = drawerFixture()
+    fixture.open()
+    expect(fixture.visibleFrames()).toHaveLength(0)
+    await act(async () => { fixture.widen() })
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ y: 250, visible: true }))
+    await act(async () => { vi.advanceTimersByTime(300) })
+    expect(fixture.visibleFrames()).toHaveLength(1)
+  })
+
+  it.each([false, true])('shows immediately when the drawer is settled or reduced motion is enabled: %s', (reducedMotion) => {
+    const fixture = drawerFixture('narrow', reducedMotion)
+    fixture.finalPosition()
+    fixture.open(reducedMotion)
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ y: 250, visible: true }))
+  })
+
+  it.each(['wide', 'split', 'detached'] as const)('keeps native pages outside the narrow drawer visible immediately in %s mode', (mode) => {
+    const fixture = drawerFixture(mode)
+    fixture.open()
+    expect(fixture.bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: true }))
   })
 
   it('publishes an invisible frame while retaining its native attachment', async () => {
