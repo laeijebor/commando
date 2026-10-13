@@ -5,93 +5,11 @@
 .session-tree-tools svg, .session-pref-group header svg, .session-row-actions svg { width: 12px; height: 12px; }
 .session-pref-group header button:disabled { opacity: .28; cursor: default; }
 .session-tree-error { width: 100%; padding: 7px; color: #eb6f92 !important; text-align: left; font-size: 9px; }
-.session-pref-group { margin-bottom: 9px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
-.session-pref-group > header { padding: 7px 8px; display: flex; align-items: center; gap: 6px; color: var(--muted); background: var(--surface); }
 .session-pref-group > header .session-pref-toggle { min-width: 0; flex: 1; padding: 0; display: flex; align-items: center; gap: 6px; text-align: left; }
 .session-pref-group > header .session-pref-toggle:hover { color: var(--text); }
 .session-pref-group > header .session-pref-toggle svg { flex: 0 0 auto; }
-.session-pref-group > header strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
-.session-pref-group > header small { color: var(--muted-dim); font-family: var(--mono); font-size: 8px; }
-.session-pref-group > header > button:not(.session-pref-toggle) { width: 20px; height: 20px; flex: 0 0 20px; padding: 0; display: grid; place-items: center; border-radius: 4px; }
 .session-pref-group > header > button:not(.session-pref-toggle):hover { color: var(--text); background: var(--surface-hover); }
 .session-pref-group > header > button[title^='Create a new session']:hover { color: var(--accent); }
-.managed-session { border-top: 1px solid var(--surface-hover); background: var(--surface-raised); }
-.managed-session.selected { background: var(--surface-soft); }
-.managed-session.dragging { opacity: .45; }
-.managed-session-row { display: flex; align-items: center; }
-.session-pr-preview { order: 1; display: inline-flex; flex: 0 0 auto; }
-.managed-session-tree .session-pr-count { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 3px 5px; border: 1px solid color-mix(in srgb, var(--green) 30%, transparent); border-radius: 5px; color: var(--green); background: color-mix(in srgb, var(--green) 8%, transparent); font: 8px var(--mono); }
-.session-pr-count svg { width: 11px; height: 11px; }
-.session-pr-count:hover, .session-pr-count:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
-.session-pr-more { color: var(--muted); }
-.session-pr-readiness { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: var(--muted-dim); }
-.session-pr-readiness.red { background: var(--red); }
-.session-pr-readiness.amber { background: var(--amber); }
-.session-pr-readiness.green { background: var(--green); }
-.session-open-prs { padding: 0 8px 10px 24px; }
-.session-open-prs > p { margin: 6px 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
-.session-open-prs .pr-card { min-width: 0; }
-.session-open-prs .pr-card .pr-number { color: var(--accent); }
-.session-pr-fallback { display: block; margin-bottom: 6px; color: var(--accent); font-size: 10px; overflow-wrap: anywhere; }
-.session-status-cluster, .session-mark-cluster, .session-row-actions { order: 2; }
-.managed-session-main { min-width: 0; flex: 1; padding: 9px 7px; display: flex; gap: 7px; align-items: center; text-align: left; }
-.managed-session-main > svg { flex: 0 0 auto; width: 13px; height: 13px; color: var(--muted-dim); }
-.managed-session-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
-.managed-session-main strong, .managed-session-main small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.managed-session-main strong { color: var(--text); font-size: 10px; }
-.managed-session-main small { color: var(--muted-dim); font-family: var(--mono); font-size: 8px; }
-.session-status-cluster { max-width: 50%; display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; }
-.session-mark-cluster { display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; }
-.session-mark-dot { position: relative; width: 20px; height: 24px; flex: 0 0 20px; padding: 0; display: grid; place-items: center; border-radius: 4px; color: var(--muted-dim) !important; }
-.session-mark-dot::before { width: 5px; height: 12px; border-radius: 2px; background: currentColor; box-shadow: 0 0 7px color-mix(in srgb, currentColor 45%, transparent); content: ''; }
-.session-mark-dot.tone-amber, .mini-pane-mark.tone-amber { color: var(--amber) !important; }
-.session-mark-dot.tone-green, .mini-pane-mark.tone-green { color: var(--green) !important; }
-.session-mark-dot.tone-red, .mini-pane-mark.tone-red { color: var(--red) !important; }
-.session-mark-dot.tone-purple, .mini-pane-mark.tone-purple { color: var(--accent) !important; }
-.session-mark-dot.has-activity::before { background: var(--cyan); box-shadow: 0 0 9px var(--cyan); }
-.session-mark-dot small { position: absolute; right: 0; bottom: 1px; min-width: 10px; height: 10px; display: grid; place-items: center; border-radius: 999px; color: var(--accent-ink); background: var(--cyan); font: 800 6px/1 var(--mono); }
-.session-status-dot { position: relative; isolation: isolate; width: 24px; height: 24px; flex: 0 0 24px; padding: 0; display: grid; place-items: center; border-radius: 4px; }
-.session-status-dot::before { width: 6px; height: 6px; content: ''; border-radius: 50%; background: var(--muted-dim); }
-.session-status-dot:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
-.session-status-dot.working::before { background: var(--accent); }
-/* Composited pulse ring: a scaled disc costs no repaint, where an animated
-   box-shadow spread forced one every frame. `z-index: -1` under the host's
-   isolation puts the disc behind the dot, which is what makes this pixel-exact:
-   box-shadow paints behind the element's background, so the dot's antialiased
-   edge has to composite over the ring rather than under it. Rest scale 0.5 ==
-   the 6px dot inside the 12px ring, so at rest the disc hides behind the dot
-   exactly as a zero spread does. */
-.session-status-dot.working::after { --pulse-rest-scale: 0.5; content: ''; position: absolute; top: 50%; left: 50%; z-index: -1; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 14%, transparent); transform: scale(var(--pulse-rest-scale)); animation: session-status-pulse 1.8s ease-in-out infinite; pointer-events: none; will-change: transform; }
-.session-status-dot.needs_input::before { border-radius: 1px; background: var(--amber); transform: rotate(45deg); }
-.session-status-dot.done::before { box-sizing: border-box; border: 2px solid var(--green); background: transparent; }
-.session-status-dot.failed::before { border-radius: 1px; background: var(--red); }
-.session-status-dot.stale::before { box-sizing: border-box; border: 1px solid var(--muted-dim); background: transparent; }
-.session-status-dot.unknown::before { width: 4px; height: 4px; background: var(--muted-dim); }
-.session-row-actions { padding-right: 3px; display: flex; }
-.session-row-actions button { width: 24px; height: 24px; color: var(--muted-dim); }
-.session-row-actions button:hover { color: var(--text); }
-.managed-window-tree { padding: 0 6px 8px 28px; }
-.managed-window-row { display: flex; align-items: center; }
-.managed-window-tree button { min-width: 0; padding: 5px 4px; display: flex; gap: 6px; align-items: center; color: var(--muted); text-align: left; font-size: 9px; }
-.managed-window-row .managed-window-main { flex: 1; }
-.managed-window-row .managed-window-close { width: 24px; flex: 0 0 24px; justify-content: center; padding: 0; opacity: 0; color: var(--muted-dim); }
-.managed-window-row:hover .managed-window-close, .managed-window-row:focus-within .managed-window-close { opacity: 1; }
-.managed-window-row .managed-window-close:hover { color: var(--red); }
-.managed-window-tree button > svg { flex: 0 0 auto; width: 12px; height: 12px; }
-.managed-window-tree button > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.managed-window-tree button > small { margin-left: auto; font-family: var(--mono); font-size: 8px; }
-.managed-window-panes { padding-left: 14px; }
-.managed-window-panes button { font-size: 8px; }
-.managed-pane-row { display: flex; align-items: center; border-radius: 6px; }
-.managed-pane-row:hover, .managed-pane-row.active { color: var(--text); background: var(--surface-hover); }
-.managed-pane-row .managed-pane-main { flex: 1; }
-.mini-pane-mark { width: 8px; height: 12px; display: inline-grid; flex: 0 0 8px; place-items: center; border-radius: 2px; color: var(--muted-dim); background: currentColor; box-shadow: 0 0 6px color-mix(in srgb, currentColor 45%, transparent); }
-.mini-pane-mark.has-activity { color: var(--cyan) !important; }
-.mini-pane-mark small { color: var(--accent-ink); font: 900 5px/1 var(--mono); }
-.managed-pane-row .managed-pane-maximize { width: 24px; flex: 0 0 24px; justify-content: center; padding: 0; opacity: 0; color: var(--muted-dim); }
-.managed-pane-row:hover .managed-pane-maximize, .managed-pane-row:focus-within .managed-pane-maximize { opacity: 1; }
-.managed-pane-row .managed-pane-maximize:hover { color: var(--accent); }
-.managed-pane-row .managed-pane-maximize svg { width: 11px; height: 11px; }
 .session-pref-empty { margin: 0; padding: 8px; color: var(--text-faint); font-size: 10px; }
 .session-context-menu { position: fixed; z-index: 50; width: 205px; padding: 5px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-hover); box-shadow: 0 12px 35px #000a; }
 .session-context-menu button { width: 100%; padding: 8px; display: flex; gap: 8px; align-items: center; color: var(--text); border-radius: 4px; text-align: left; font-size: 10px; }
@@ -111,19 +29,79 @@
 .managed-session-tree .session-grouping-switch button[aria-pressed='true'] { color: var(--text); background: var(--border-strong); }
 .managed-session-tree .session-grouping-switch button:hover { color: var(--text); }
 .session-grouping-switch svg { width: 10px; height: 10px; }
-.session-pref-group.kind-repository > header .session-pref-toggle strong { flex: 0 0 auto; max-width: 60%; }
-.session-pref-group > header .session-repo-path { margin-left: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--text-faint); font-family: var(--mono); font-size: 7px; letter-spacing: 0; text-transform: none; text-overflow: ellipsis; white-space: nowrap; }
-.session-branch { display: inline-flex; gap: 3px; align-items: center; margin-right: 5px; color: var(--cyan); }
-.session-branch svg { width: 9px; height: 9px; }
-.session-archive-row { display: flex; align-items: center; gap: 5px; padding: 6px 8px; border-top: 1px solid var(--surface-hover); background: var(--surface-raised); }
+.session-archive-row { display: flex; align-items: center; gap: 5px; padding: 4px 6px 4px 24px; border-radius: 5px; }
+.session-archive-row:hover { background: var(--surface-hover); }
 .session-archive-row > span { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .session-archive-row strong { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .session-archive-row small { color: var(--muted-dim); font: 8px var(--mono); }
 .session-archive-row button { display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 4px; color: var(--accent) !important; font-size: 9px; }
 .session-archive-row button:hover { background: var(--surface-hover); }
 .session-archive-row svg { width: 12px; height: 12px; }
-.session-pref-group.kind-auxiliary { border-style: dashed; }
-.session-pref-group.kind-auxiliary > header { color: var(--muted-dim); }
-.session-pref-group.kind-auxiliary .managed-session { background: var(--surface); }
-.session-pref-group.kind-auxiliary .managed-session-copy strong { color: var(--muted); }
+.session-pref-group.kind-auxiliary .managed-session-main { color: var(--muted) !important; }
 .session-tree-error { position: sticky; top: 0; z-index: 10; border: 1px solid var(--red); border-radius: 5px; background: var(--surface-raised) !important; }
+
+/* Session rows: one status indicator, the name, then muted glyphs. Colour is
+   reserved for states that need attention. */
+/* Group headers: a bright name and count, then a hairline to the edge, so
+   repositories read as landmarks. Utility groups stay muted. */
+.session-pref-group { margin-bottom: 12px; }
+.session-pref-group > header { padding: 4px 4px 4px 6px; display: flex; align-items: center; gap: 4px; color: var(--text); }
+.session-pref-group > header strong { min-width: 0; flex: 0 1 auto; overflow: hidden; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.session-pref-group > header small { flex: 0 0 auto; color: var(--text-faint); font-family: var(--mono); font-size: 8px; }
+.session-pref-group > header .session-pref-toggle::after { min-width: 12px; height: 1px; flex: 1 1 auto; margin-left: 2px; background: var(--border); content: ''; }
+.session-pref-group.kind-no-repo > header, .session-pref-group.kind-auxiliary > header, .session-archives > header { color: var(--muted-dim); }
+.session-pref-group.kind-no-repo > header strong, .session-pref-group.kind-auxiliary > header strong, .session-archives > header strong { font-weight: 500; }
+/* Group actions take no room until the header is hovered or focused. */
+.session-pref-group > header > button:not(.session-pref-toggle) { width: 0; height: 20px; flex: 0 0 auto; padding: 0; display: grid; place-items: center; overflow: hidden; border-radius: 4px; color: var(--text-faint); opacity: 0; }
+.session-pref-group > header:hover > button:not(.session-pref-toggle), .session-pref-group > header:focus-within > button:not(.session-pref-toggle) { width: 20px; opacity: 1; }
+.managed-session { border-radius: 5px; }
+.managed-session:hover { background: var(--surface-hover); }
+.managed-session.selected { background: var(--surface-soft); }
+.managed-session.dragging { opacity: .45; }
+.managed-session-row { display: flex; align-items: center; gap: 2px; padding: 0 2px 0 2px; }
+.managed-session-main { min-width: 0; flex: 1; padding: 7px 4px; overflow: hidden; color: var(--text-soft) !important; text-align: left; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 500; }
+.managed-session.selected .managed-session-main { color: var(--text) !important; }
+.session-row-meta { display: flex; flex: 0 0 auto; align-items: center; color: var(--text-faint); }
+.session-pr-preview { display: inline-flex; }
+.session-row-meta button, .session-pr-count { height: 20px; min-width: 18px; padding: 0 3px; display: inline-flex; align-items: center; justify-content: center; gap: 2px; border-radius: 4px; color: inherit !important; }
+.session-row-meta button:hover, .session-pr-count:hover { background: var(--border); }
+.session-row-meta button:focus-visible, .session-pr-count:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.session-row-meta svg { width: 11px; height: 11px; }
+.session-pr-count.tone-red { color: color-mix(in srgb, var(--red) 70%, var(--text-faint)) !important; }
+.session-pr-count.tone-amber { color: color-mix(in srgb, var(--amber) 65%, var(--text-faint)) !important; }
+.session-pr-count.tone-green { color: color-mix(in srgb, var(--green) 45%, var(--text-faint)) !important; }
+.session-pr-more { font: 8px/1 var(--mono); }
+.session-ide-glyph[aria-pressed='true'] { color: var(--accent) !important; }
+.session-ide-glyph.state-starting, .session-sim-glyph.idle { opacity: .55; }
+.session-ide-glyph.state-failed { color: color-mix(in srgb, var(--red) 70%, var(--text-faint)) !important; }
+.session-row-actions { width: 0; flex: 0 0 auto; display: flex; overflow: hidden; opacity: 0; }
+.managed-session:hover .session-row-actions, .managed-session:focus-within .session-row-actions { width: 20px; opacity: 1; }
+.session-row-actions button { width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--text-faint); }
+.session-row-actions button:hover { color: var(--text); }
+.session-row-actions svg { width: 12px; height: 12px; }
+
+/* Status column: an agent status, or the pane mark when it outranks it. */
+.session-indicator { position: relative; isolation: isolate; width: 18px; height: 24px; flex: 0 0 18px; padding: 0; display: grid; place-items: center; border-radius: 4px; }
+.session-indicator:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+button.session-indicator::before { width: 6px; height: 6px; content: ''; border-radius: 50%; background: var(--muted-dim); }
+.session-indicator.working::before { background: var(--accent); }
+/* Composited pulse ring: a scaled disc costs no repaint, where an animated
+   box-shadow spread forced one every frame. `z-index: -1` under the host's
+   isolation puts the disc behind the dot. Rest scale 0.5 == the 6px dot inside
+   the 12px ring, so at rest the disc hides behind the dot. */
+.session-indicator.working::after { --pulse-rest-scale: 0.5; content: ''; position: absolute; top: 50%; left: 50%; z-index: -1; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 14%, transparent); transform: scale(var(--pulse-rest-scale)); animation: session-status-pulse 1.8s ease-in-out infinite; pointer-events: none; will-change: transform; }
+.session-indicator.needs_input::before { border-radius: 1px; background: var(--amber); transform: rotate(45deg); }
+.session-indicator.done::before { box-sizing: border-box; border: 2px solid var(--green); background: transparent; }
+.session-indicator.failed::before { border-radius: 1px; background: var(--red); }
+.session-indicator.stale::before { box-sizing: border-box; border: 1px solid var(--muted-dim); background: transparent; }
+.session-indicator.unknown::before { width: 4px; height: 4px; background: var(--text-faint); }
+.session-indicator.mark { color: var(--muted-dim); }
+.session-indicator.mark::before { width: 4px; height: 11px; border-radius: 2px; background: currentColor; }
+.session-indicator.mark.tone-amber { color: var(--amber); }
+.session-indicator.mark.tone-green { color: var(--green); }
+.session-indicator.mark.tone-red { color: var(--red); }
+.session-indicator.mark.tone-purple { color: var(--accent); }
+.session-indicator.mark.has-activity::before { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+
+/* Agent-opened chats: lineage glyph and a pending open request (needs attention). */
+.session-row-meta .agent-chat-request-badge { color: var(--accent) !important; }

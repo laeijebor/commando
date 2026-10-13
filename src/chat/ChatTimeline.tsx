@@ -2,9 +2,11 @@ import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Zap } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatTaskAction } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
+import { providerLabel } from './ComposerControls'
+import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
 import { SubagentGroup, useNow } from './Subagents'
 import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type SubagentItem, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
@@ -13,12 +15,12 @@ import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog
 const markdownPlugins = [remarkGfm]
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0 })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0, provider: 'Claude' })
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="chat-markdown">
-      <ReactMarkdown remarkPlugins={markdownPlugins} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" /> }}>
+      <ReactMarkdown remarkPlugins={markdownPlugins} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />, pre: MarkdownPre }}>
         {text}
       </ReactMarkdown>
     </div>
@@ -225,7 +227,7 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
           {row.item.steered || row.item.relayTo ? (
             <span className="flex max-w-[85%] items-center gap-1 text-2xs text-muted-foreground">
               {row.item.relayTo ? <MessageSquareShare className="size-3" aria-hidden="true" /> : <Zap className="size-3" aria-hidden="true" />}
-              <span className="truncate">{row.item.relayTo ? `To @${row.item.relayTo.label}, relayed through main Claude` : 'Steered: sent while Claude worked'}</span>
+              <span className="truncate">{row.item.relayTo ? `To @${row.item.relayTo.label}, relayed through main ${context.provider}` : `Steered: sent while ${context.provider} worked`}</span>
             </span>
           ) : null}
           {row.item.images?.length ? <ImageStrip images={row.item.images} className="max-w-[85%] justify-end" /> : null}
@@ -256,7 +258,8 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, userMessageCard, onTask, controlsDisabled }: {
+  provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
   working: boolean
@@ -264,6 +267,7 @@ export function ChatTimeline({ items, cwd, working, scope, header, footer, empty
   scope?: string
   /** Shown above the first row (a subagent's task). */
   header?: ReactNode
+  userMessageCard?: { itemId: string; content: ReactNode }
   footer?: ReactNode
   emptyText?: string
   onOpenSubagent?: (toolUseId: string) => void
@@ -274,7 +278,7 @@ export function ChatTimeline({ items, cwd, working, scope, header, footer, empty
   const rows = useMemo(() => deriveTimelineRows(items, scope), [items, scope])
   const live = rows.some((row) => row.kind === 'subagents' && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, onOpenSubagent, onSavePlan, onTask, controlsDisabled])
+  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -302,8 +306,10 @@ export function ChatTimeline({ items, cwd, working, scope, header, footer, empty
         {header}
         <TimelineContext value={context}>
           {rows.length === 0 && !header ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? 'Ask Claude anything about this folder.'}</div>
-          ) : rows.map((row) => <Row key={row.id} row={row} cwd={cwd} />)}
+            <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
+          ) : rows.map((row) => row.kind === 'user' && row.item.id === userMessageCard?.itemId
+            ? <div key={row.id}>{userMessageCard.content}</div>
+            : <Row key={row.id} row={row} cwd={cwd} />)}
         </TimelineContext>
         {working && !streaming && !liveWork ? (
           <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">

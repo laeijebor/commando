@@ -16,14 +16,14 @@ export type TmuxSplitPlacement = 'before' | 'after'
  * Interactive CLIs supported by creation; provider names are not executable names.
  * `claude-chat` runs Claude through Commando's agent host and shows it as a chat.
  */
-export type SessionAgentProvider = 'claude-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
+export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
 export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
 export type SessionAgentLaunch = {
   provider: SessionAgentProvider
   prompt?: string
   /** claude-chat only: the Claude config dir (`~/.claudep`, `~/.claudew`) that picks the login. */
   configDir?: string
-  /** claude-chat only. */
+  /** Chat providers only. */
   permissionMode?: ChatPermissionMode
   /** claude-chat only: one stashed plan's folder, which this chat alone may read. */
   readableDir?: string
@@ -34,6 +34,12 @@ export const CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label:
   { value: 'acceptEdits', label: 'Accept edits' },
   { value: 'plan', label: 'Plan mode' },
   { value: 'bypassPermissions', label: 'Bypass permissions' },
+]
+
+export const CODEX_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
+  { value: 'default', label: 'Workspace access' },
+  { value: 'plan', label: 'Read only' },
+  { value: 'bypassPermissions', label: 'Full access' },
 ]
 
 /** A Claude config dir the daemon found in the home folder. */
@@ -54,6 +60,7 @@ export function chatProfileConfigDir(remembered: string | undefined, profiles: r
 export const SESSION_AGENT_CHOICES = [
   { value: 'shell', label: 'Shell' },
   { value: 'claude-chat', label: 'Claude chat' },
+  { value: 'codex-chat', label: 'Codex chat' },
   { value: 'claude', label: 'Claude (terminal)' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
@@ -61,24 +68,25 @@ export const SESSION_AGENT_CHOICES = [
 ] as const
 
 export const SESSION_AGENT_EXECUTABLES: Record<SessionAgentProvider, string> = {
-  'claude-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
+  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
 }
 
 /** Keep prompt data out of the shell and CLI option/subcommand parsers. */
 export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
   const executable = SESSION_AGENT_EXECUTABLES[launch.provider]
-  if (launch.provider === 'claude-chat') {
+  if (launch.provider === 'claude-chat' || launch.provider === 'codex-chat') {
     return [
       executable,
-      'claude',
-      ...(launch.configDir ? ['--config-dir', launch.configDir] : []),
+      launch.provider === 'codex-chat' ? 'codex' : 'claude',
+      ...(launch.provider === 'claude-chat' && launch.configDir ? ['--config-dir', launch.configDir] : []),
       '--permission-mode', launch.permissionMode ?? 'default',
-      ...(launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
+      ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]
   }
-  if (launch.provider === 'opencode' || !launch.prompt?.trim()) return [executable]
+  if (!launch.prompt?.trim()) return [executable]
+  if (launch.provider === 'opencode') return [executable, `--prompt=${launch.prompt}`]
   // Claude's Commander parser dispatches exact command names even after `--`.
   // An inert leading space keeps arbitrary prompts in the interactive action.
   if (launch.provider === 'claude') return [executable, '--', ` ${launch.prompt}`]
@@ -125,6 +133,7 @@ export type CreateTmuxPaneRequest = {
   direction: TmuxSplitDirection
   placement?: TmuxSplitPlacement
   cwd?: string
+  worktree?: CreateTmuxSessionWorktree
   /** Started interactively inside the new pane. */
   agent?: SessionAgentLaunch
 }

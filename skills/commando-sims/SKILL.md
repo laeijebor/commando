@@ -50,6 +50,13 @@ Keep driving the leased UDID with whatever tool the project uses, such as
 Argent MCP. The CLI manages the lease and label; your project's tools manage
 the app and its interactions.
 
+Leased simulators run headless: Commando shows the device in your pane's tabs
+as soon as you lease it. Never open Simulator.app. The lease has already booted
+the device, so skip Argent `boot-device`, or pass `headless: true` if you call it.
+`expo run:ios` (and pressing `i` in `expo start`) always opens Simulator.app;
+build without installing and use `xcrun simctl install <udid> <app>` and
+`xcrun simctl launch <udid> <bundle-id>` instead.
+
 Check ownership before driving a device:
 
 ```sh

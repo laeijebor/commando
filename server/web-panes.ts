@@ -512,6 +512,13 @@ export class WebPaneService {
     return pane
   }
 
+  /** Puts a newly leased simulator in its leasing pane's tabs, taking the tile from any previous holder. */
+  showLeasedSimulator(udid: string, anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId' | 'openerLabel'>): WebPane {
+    const existing = [...this.panes.values()].find((pane) => pane.content?.kind === 'simulator' && pane.content.udid === udid.toUpperCase())
+    if (existing && existing.anchorPaneId !== anchor.anchorPaneId) this.close(existing.id)
+    return this.open({ ...anchor, url: '', content: { kind: 'simulator', udid }, openedBy: 'agent' })
+  }
+
   /** Classifies a URL against the current allowlist (for the chromium watchdog). */
   classify(url: string): WebPaneUrlDecision {
     return classifyWebPaneUrl(url, this.allowedOrigins)
@@ -919,7 +926,7 @@ export class WebPaneService {
 
 export function buildWebPanesMessage(
   service: WebPaneService,
-  state: Pick<Extract<ServerMessage, { type: 'web_panes' }>, 'feedback' | 'navigateRequests' | 'spotlightRequests' | 'reloads'> = {},
+  state: Pick<Extract<ServerMessage, { type: 'web_panes' }>, 'feedback' | 'navigateRequests' | 'spotlightRequests' | 'reloads' | 'agentChatRequests'> = {},
 ): Extract<ServerMessage, { type: 'web_panes' }> {
   return {
     type: 'web_panes',

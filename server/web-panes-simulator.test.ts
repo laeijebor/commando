@@ -83,3 +83,15 @@ describe('panel tab actions without a listener', () => {
     expect((await request({}, 'POST', `/api/web-panes/${split.id}/active-tab`)).status).toBe(409)
   })
 })
+
+describe('showLeasedSimulator', () => {
+  it('opens an unseen agent tab in the leasing pane and takes the tile from a previous holder', async () => {
+    const { service } = await setup()
+    const first = service.showLeasedSimulator(U.toLowerCase(), { anchorPaneId: '%12', sessionId: '$1', windowId: '@3', openerLabel: 'claude' })
+    expect(first).toMatchObject({ content: { kind: 'simulator', udid: U }, anchorPaneId: '%12', dock: 'panel', unseen: true, openedBy: 'agent', openerLabel: 'claude' })
+    expect(service.showLeasedSimulator(U, { anchorPaneId: '%12', sessionId: '$1', windowId: '@3' }).id).toBe(first.id)
+    const moved = service.showLeasedSimulator(U, { anchorPaneId: '%20', sessionId: '$2', windowId: '@5' })
+    expect(moved.id).not.toBe(first.id)
+    expect(service.list()).toEqual([expect.objectContaining({ id: moved.id, anchorPaneId: '%20', sessionId: '$2' })])
+  })
+})

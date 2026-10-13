@@ -3,7 +3,7 @@ import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
 import './session-create-dialog.css'
 
-type Props = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'onCreated' | 'probeRepo' | 'loadClaudeProfiles'> & {
+type Props = Pick<TmuxCreateControlsProps, 'token' | 'disabled' | 'onCreateSession' | 'onCreated' | 'probeRepo' | 'loadClaudeProfiles'> & {
   request: SessionCreateRequest
   onClose: () => void
 }

@@ -111,12 +111,12 @@ export function SubagentGroup({ row, items, now, onOpen, onTask, controlsDisable
 }
 
 /** Stop and Background for one running subagent. */
-export function SubagentControls({ agent, onTask, disabled }: { agent: SubagentItem; onTask: (action: ChatTaskAction, agent: SubagentItem) => void; disabled?: boolean }) {
+export function SubagentControls({ provider = 'Claude', agent, onTask, disabled }: { provider?: string; agent: SubagentItem; onTask: (action: ChatTaskAction, agent: SubagentItem) => void; disabled?: boolean }) {
   if ((agent.state !== 'running' && agent.state !== 'quiet') || (!agent.runtime && !agent.agentId)) return null
   return (
     <>
       {!agent.runtime && !agent.background ? (
-        <Button size="icon-xs" variant="ghost-muted" disabled={disabled} aria-label={`Background ${subagentLabel(agent)}`} title="Run in the background (Claude carries on)" onClick={(event) => { event.stopPropagation(); onTask('background', agent) }}>
+        <Button size="icon-xs" variant="ghost-muted" disabled={disabled} aria-label={`Background ${subagentLabel(agent)}`} title={`Run in the background (${provider} carries on)`} onClick={(event) => { event.stopPropagation(); onTask('background', agent) }}>
           <MoveDownRight aria-hidden="true" />
         </Button>
       ) : null}
@@ -131,7 +131,8 @@ export function SubagentControls({ agent, onTask, disabled }: { agent: SubagentI
  * Main Claude plus each subagent, like the Claude Code TUI's agent list:
  * ↑/↓ move, Enter opens. Shows which one the pane is viewing.
  */
-export function AgentSwitcher({ agents, items, viewing, now, disabled, externalDisabled, onSelect, onTask }: {
+export function AgentSwitcher({ provider = 'Claude', agents, items, viewing, now, disabled, externalDisabled, onSelect, onTask }: {
+  provider?: string
   agents: SubagentItem[]
   items: readonly ChatItem[]
   /** The viewed subagent's id, or undefined for main. */
@@ -202,7 +203,7 @@ export function AgentSwitcher({ agents, items, viewing, now, disabled, externalD
               {agent ? <SubagentStateIcon agent={agent} /> : <span className="flex size-3.5 shrink-0 items-center justify-center"><span className="size-2 rounded-full bg-primary" /></span>}
               <span className="min-w-0 flex-1 truncate">{agent ? subagentLabel(agent) : 'Main'}{agent && subagentTypeLabel(agent) ? <span className="ml-1.5 text-2xs text-muted-foreground">{subagentTypeLabel(agent)}</span> : null}</span>
               {info ? <span className="min-w-0 truncate text-2xs tabular-nums text-muted-foreground"><MetricsLine info={info} showLastAction={Boolean(agent?.runtime)} /></span> : null}
-              {agent ? <SubagentControls agent={agent} onTask={onTask} disabled={agent.runtime ? externalDisabled : disabled} /> : null}
+              {agent ? <SubagentControls provider={provider} agent={agent} onTask={onTask} disabled={agent.runtime ? externalDisabled : disabled} /> : null}
             </li>
           )
         })}
@@ -213,7 +214,8 @@ export function AgentSwitcher({ agents, items, viewing, now, disabled, externalD
 }
 
 /** The top of a subagent's view: back to main, what it is, and what can be done with it. */
-export function SubagentHeader({ agent, items, now, disabled, onBack, onTask, onMessage }: {
+export function SubagentHeader({ provider = 'Claude', agent, items, now, disabled, onBack, onTask, onMessage }: {
+  provider?: string
   agent: SubagentItem
   items: readonly ChatItem[]
   now: number
@@ -236,13 +238,13 @@ export function SubagentHeader({ agent, items, now, disabled, onBack, onTask, on
         <span className="block truncate text-sm text-foreground">{subagentLabel(agent)}{agent.subagentType ? <span className="ml-1.5 text-2xs text-muted-foreground">{agent.subagentType}</span> : null}</span>
         <span className="block truncate text-2xs tabular-nums text-muted-foreground">{line}</span>
       </span>
-      <SubagentControls agent={agent} onTask={onTask} disabled={disabled} />
+      <SubagentControls provider={provider} agent={agent} onTask={onTask} disabled={disabled} />
       {onMessage ? (
         <Button
           size="xs"
           variant="outline"
           disabled={disabled || !relay.ok}
-          title={relay.ok ? 'Main Claude forwards your message with its SendMessage tool' : relay.reason}
+          title={relay.ok ? `Main ${provider} forwards your message with its SendMessage tool` : relay.reason}
           onClick={onMessage}
         >
           <MessageSquareShare aria-hidden="true" />

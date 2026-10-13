@@ -41,7 +41,9 @@ export function hostTakesSwitch(session: { hostVersion: number }): boolean {
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
-export type ChatProvider = 'claude'
+export type ChatProvider = 'claude' | 'codex'
+/** Optional broadcast metadata; old daemons send just ids. Missing provider means Claude. */
+export type ChatHandoffInfo = { sessionId: string; paneId?: string; provider?: ChatProvider }
 export type ChatItemStatus = 'running' | 'completed' | 'failed' | 'interrupted'
 export type ChatSessionStatus = 'starting' | 'idle' | 'running' | 'waiting' | 'closed' | 'error'
 
@@ -312,6 +314,33 @@ export interface ChatContextUsage {
   categories: { name: string; tokens: number }[]
 }
 
+export type ChatPlanSeverity = 'normal' | 'warning' | 'critical'
+
+/** One of the plan's rate-limit windows, as Claude's `/usage` reports it. */
+export interface ChatPlanLimit {
+  /** The server's meter kind: `session` (5h), `weekly_all`, `weekly_scoped`, … */
+  kind: string
+  /** What the window covers, e.g. "Current session" or "Weekly · Fable". */
+  title: string
+  /** Share of the window used, 0–100. */
+  percent: number
+  /** Epoch ms. */
+  resetsAt?: number
+  severity: ChatPlanSeverity
+  /** A request was refused against this window; it stays shut until `resetsAt`. */
+  reached?: boolean
+}
+
+/** The claude.ai plan limits of the account a chat runs as. */
+export interface ChatPlanUsage {
+  /** In the server's order. */
+  limits: ChatPlanLimit[]
+  /** `pro`, `max`, `team`, … */
+  plan?: string
+  /** Epoch ms of the reading. */
+  updatedAt: number
+}
+
 /** A picker change; at least one field is set. */
 export interface ChatSettingsChange {
   model?: string
@@ -337,6 +366,8 @@ export interface ChatSessionInfo {
   bypassAllowed?: boolean
   models?: ChatModelOption[]
   contextUsage?: ChatContextUsage
+  /** Plan rate limits; absent before the first reading and for API-key logins. */
+  planUsage?: ChatPlanUsage
   /** Claude config directory (`~/.claudep`, `~/.claudew`); decides the login used. */
   configDir?: string
   hostPid: number
@@ -437,11 +468,12 @@ export type HostToDaemonMessage =
   | ({ type: 'file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   | ({ type: 'subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
   /**
-   * The host is about to hand the conversation to Claude Code: the daemon keeps
+   * The host is about to hand the conversation to its TUI: the daemon keeps
    * its queue (and the client's draft) until the chat comes back, and the
-   * flags that bring it back. The host waits for `handoff_saved`.
+   * flags that bring it back. The host waits for `handoff_saved`. Provider is
+   * optional so version 5 hosts predating Codex still work as Claude hosts.
    */
-  | { type: 'handoff'; paneId: string; sessionId: string; cwd: string; queue: ChatQueuedMessage[]; returnFlags: string[] }
+  | { type: 'handoff'; paneId: string; sessionId: string; provider?: ChatProvider; cwd: string; queue: ChatQueuedMessage[]; returnFlags: string[] }
 
 /** A finished subagent's own turns, read from its saved transcript. */
 export interface ChatSubagentTranscript {
@@ -585,6 +617,29 @@ function parseContextUsage(value: unknown): ChatContextUsage | undefined {
     autoCompactThreshold: finiteCount(value.autoCompactThreshold) ? value.autoCompactThreshold : undefined,
   })
 }
+const PLAN_SEVERITIES = new Set<ChatPlanSeverity>(['normal', 'warning', 'critical'])
+
+function parsePlanUsage(value: unknown): ChatPlanUsage | undefined {
+  if (!isRecord(value) || !finiteCount(value.updatedAt) || !Array.isArray(value.limits)) return undefined
+  const limits = value.limits.slice(0, 16).flatMap((limit): ChatPlanLimit[] => (
+    isRecord(limit) && shortString(limit.kind, 64) && shortString(limit.title, 120) && finiteCount(limit.percent)
+      ? [withOptional({
+          kind: limit.kind,
+          title: limit.title,
+          percent: Math.min(100, limit.percent),
+          severity: PLAN_SEVERITIES.has(limit.severity as ChatPlanSeverity) ? limit.severity as ChatPlanSeverity : 'normal',
+        } as ChatPlanLimit, {
+          resetsAt: finiteCount(limit.resetsAt) ? limit.resetsAt : undefined,
+          reached: limit.reached === true ? true : undefined,
+        })]
+      : []
+  ))
+  if (!limits.length) return undefined
+  return withOptional({ limits, updatedAt: value.updatedAt } as ChatPlanUsage, {
+    plan: shortString(value.plan, 32) ? value.plan : undefined,
+  })
+}
+
 const SESSION_STATUSES = new Set<ChatSessionStatus>(['starting', 'idle', 'running', 'waiting', 'closed', 'error'])
 
 export function parseChatAnswer(value: unknown): ChatAnswer | null {
@@ -830,7 +885,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
 
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isRecord(value)) return null
-  if (!isPaneId(value.paneId) || value.provider !== 'claude' || typeof value.cwd !== 'string') return null
+  if (!isPaneId(value.paneId) || (value.provider !== 'claude' && value.provider !== 'codex') || typeof value.cwd !== 'string') return null
   if (!SESSION_STATUSES.has(value.status as ChatSessionStatus)) return null
   if (typeof value.hostPid !== 'number' || typeof value.hostVersion !== 'number') return null
   for (const key of ['sessionId', 'model', 'permissionMode', 'configDir', 'error', 'hostBuild', 'title', 'resumeCommand'] as const) {
@@ -840,10 +895,11 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (value.effort !== undefined && !isChatEffort(value.effort)) return null
   const models = parseModels(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
+  const planUsage = parsePlanUsage(value.planUsage)
   const queue = parseQueue(value.queue)
   return {
     paneId: value.paneId,
-    provider: 'claude',
+    provider: value.provider,
     cwd: value.cwd,
     status: value.status as ChatSessionStatus,
     hostPid: value.hostPid,
@@ -861,6 +917,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(value.bypassAllowed === true ? { bypassAllowed: true } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),
+    ...(planUsage ? { planUsage } : {}),
     ...(queue?.length ? { queue } : {}),
     ...(isChatPermissionMode(value.prePlanPermissionMode) ? { prePlanPermissionMode: value.prePlanPermissionMode } : {}),
     ...(CLAUDE_CODE_SWITCHES.has(value.claudeCodeSwitch as ChatClaudeCodeSwitch) ? { claudeCodeSwitch: value.claudeCodeSwitch as ChatClaudeCodeSwitch } : {}),
@@ -919,7 +976,10 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
         ? value.returnFlags as string[]
         : null
       if (!isPaneId(value.paneId) || !shortString(value.sessionId) || !shortString(value.cwd, 4096) || !queue || !flags) return null
-      return { type: 'handoff', paneId: value.paneId, sessionId: value.sessionId, cwd: value.cwd, queue, returnFlags: flags }
+      if (value.provider !== undefined && value.provider !== 'claude' && value.provider !== 'codex') return null
+      return withOptional({ type: 'handoff' as const, paneId: value.paneId, sessionId: value.sessionId, cwd: value.cwd, queue, returnFlags: flags }, {
+        provider: value.provider as ChatProvider | undefined,
+      })
     }
     default:
       return null
@@ -996,8 +1056,10 @@ export function parseQueueIds(value: unknown): string[] | null | undefined {
   return value as string[]
 }
 
+export const MAX_CHAT_ITEMS = 2000
+
 /** Upserts items by id, keeping first-seen order. Returns a new array. */
-export function mergeChatItems(current: readonly ChatItem[], updates: readonly ChatItem[], limit = 2000): ChatItem[] {
+export function mergeChatItems(current: readonly ChatItem[], updates: readonly ChatItem[], limit = MAX_CHAT_ITEMS): ChatItem[] {
   if (updates.length === 0) return current as ChatItem[]
   const next = current.slice()
   const index = new Map(next.map((item, position) => [item.id, position]))

@@ -32,8 +32,9 @@ export async function agentSdkVersion(): Promise<string> {
  */
 export async function agentHostBuild(): Promise<string> {
   const names = (await readdir(HOST_DIR)).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort()
+  const codexFiles = (await readdir(join(HOST_DIR, 'codex'))).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort().map((name) => join(HOST_DIR, 'codex', name))
   const hash = createHash('sha256')
-  for (const file of [...names.map((name) => join(HOST_DIR, name)), ...SHARED_FILES]) {
+  for (const file of [...names.map((name) => join(HOST_DIR, name)), ...codexFiles, ...SHARED_FILES]) {
     hash.update(file.slice(file.lastIndexOf('/') + 1)).update('\0').update(await readFile(file)).update('\0')
   }
   hash.update(SDK_PACKAGE).update('\0').update(await agentSdkVersion())

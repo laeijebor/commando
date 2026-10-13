@@ -5,8 +5,10 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
 import { ChatImageStore } from '../chat-images.js'
-import { chatResumeCommand, claudeCodeSwitchCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
+import { chatResumeCommand, claudeCodeSwitchCommand, parseHostArgs, restartEnv, sessionFlags, terminalLine, withSessionSettings } from './main.js'
 import { AgentSession, PLAN_CAPTURED_MESSAGE, type SessionStore } from './session.js'
+import { createChatProviderSession } from './factory.js'
+import type { ChatProviderSession } from './provider.js'
 
 /** A stand-in for the SDK query: records prompts and lets the test push messages. */
 function fakeQuery() {
@@ -44,6 +46,11 @@ function fakeQuery() {
     ],
     totalTokens: 42_000, maxTokens: 1_000_000, autoCompactThreshold: 967_000, isAutoCompactEnabled: true,
   }))
+  const planUsage = vi.fn(async (_options?: { skipBehaviors?: boolean }): Promise<unknown> => ({
+    subscription_type: 'max',
+    rate_limits_available: true,
+    rate_limits: { limits: [{ kind: 'session', group: 'session', percent: 38, severity: 'normal', resets_at: '2026-10-13T15:00:00Z' }] },
+  }))
   const run = ((params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => {
     options = params.options
     void (async () => { for await (const message of params.prompt) prompts.push(message) })()
@@ -55,7 +62,7 @@ function fakeQuery() {
       }
     }
     const handle = stream() as unknown as Query
-    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, stopTask, backgroundTasks, supportedModels, supportedCommands, getSettings, getContextUsage: contextUsage, close: () => { done = true; wake?.() } })
+    Object.assign(handle, { interrupt, setModel, applyFlagSettings, setPermissionMode, stopTask, backgroundTasks, supportedModels, supportedCommands, getSettings, getContextUsage: contextUsage, usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: planUsage, close: () => { done = true; wake?.() } })
     return handle
   }) as unknown as typeof import('@anthropic-ai/claude-agent-sdk').query
   return {
@@ -71,6 +78,7 @@ function fakeQuery() {
     supportedCommands,
     getSettings,
     contextUsage,
+    planUsage,
     get options() { return options! },
     push(message: SDKMessage) { outbox.push(message); wake?.(); wake = null },
     canUseTool: (...args: Parameters<CanUseTool>) => options!.canUseTool!(...args),
@@ -200,6 +208,20 @@ describe('AgentSession endings', () => {
 })
 
 describe('commando-agent arguments', () => {
+  it('parses Codex options and keeps the provider in resume commands', () => {
+    const args = parseHostArgs(['codex', '--model', 'gpt-5.4', '--effort', 'high', '--resume', 'abcd1234-0000'], { CLAUDE_CONFIG_DIR: '/x/.claudep' })
+    expect(args).toEqual({ provider: 'codex', permissionMode: 'default', model: 'gpt-5.4', effort: 'high', resume: 'abcd1234-0000' })
+    if (typeof args === 'string') throw new Error(args)
+    expect(chatResumeCommand('/c/commando-agent', args)).toBe('/c/commando-agent codex --model gpt-5.4 --effort high --permission-mode default')
+  })
+
+  it('lists both providers in help and rejects unsupported subcommands', () => {
+    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex>/)
+    expect(parseHostArgs(['cursor'], {})).toMatch(/^Usage/)
+    expect(parseHostArgs([], {})).toMatch(/^Usage/)
+    expect(parseHostArgs(['codex', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
+  })
+
   it('reads the config dir from the environment and flags, and maps permissions', () => {
     expect(parseHostArgs(['claude', '--dangerously-skip-permissions'], { CLAUDE_CONFIG_DIR: '/x/.claudep' }))
       .toEqual({ provider: 'claude', permissionMode: 'bypassPermissions', bypassAllowed: true, configDir: '/x/.claudep' })
@@ -207,12 +229,45 @@ describe('commando-agent arguments', () => {
       .toMatchObject({ configDir: '/y/.claudew', resume: 'abcdef12-34', model: 'opus', permissionMode: 'default' })
     expect(parseHostArgs(['claude', '--permission-mode', 'yolo'], {})).toMatch(/Unknown permission mode/)
     expect(parseHostArgs(['claude', '--resume', '$(rm -rf)'], {})).toMatch(/Invalid session id/)
-    expect(parseHostArgs(['codex'], {})).toMatch(/^Usage/)
+    expect(parseHostArgs(['codex'], {})).toEqual({ provider: 'codex', permissionMode: 'default' })
   })
 
   it('prints finished items as terminal lines and skips streaming ones', () => {
     expect(terminalLine({ id: 'a', turnId: 't', status: 'running', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text: 'partial' })).toBeNull()
     expect(terminalLine({ id: 'b', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'command', toolUseId: 'x', command: 'npm test' })).toContain('npm test')
+  })
+})
+
+describe('chat provider sessions', () => {
+  it('constructs Claude through the seam', async () => {
+    const spec = { paneId: '%3', cwd: '/work', permissionMode: 'default' as const, env: {}, claudePath: '/bin/claude' }
+    const session = await createChatProviderSession('claude', spec)
+    expect(session.snapshot().session).toMatchObject({ provider: 'claude', status: 'starting' })
+    expect(session.tui?.label).toBe('Claude Code')
+    session.close()
+  })
+
+  it('keeps Claude TUI settings and readiness behind the optional capability', async () => {
+    const { session: claude, fake } = started({ claudePath: '/bin/claude', model: 'sonnet', effort: 'high', permissionMode: 'acceptEdits', bypassAllowed: true })
+    const session: ChatProviderSession = claude
+    await tick()
+    const tui = session.tui!
+    expect(() => tui.command(undefined, [], 'abcd1234-0000')).toThrow(/commando-agent launcher/)
+    expect(() => tui.command('/c/commando-agent', [], undefined)).toThrow('this chat has no conversation yet')
+    const info = session.snapshot().session
+    const args = withSessionSettings({ provider: 'claude', permissionMode: 'acceptEdits', bypassAllowed: true }, info)
+    const flags = [...sessionFlags(args), '--readable-dir', '/state/chat-plans/plan-a']
+    expect(tui.command('/c/commando-agent', flags, 'abcd1234-0000'))
+      .toBe(claudeCodeSwitchCommand({ ...args, readableDir: '/state/chat-plans/plan-a' }, '/bin/claude', '/c/commando-agent', 'abcd1234-0000'))
+    expect(tui.env).toEqual({ CLAUDE_CONFIG_DIR: '/home/me/.claudew' })
+    const ready = vi.fn()
+    tui.onReady(ready)
+    fake.push({ type: 'system', subtype: 'init', session_id: 'abcd1234-0000', model: 'claude-sonnet-5-5' } as SDKMessage)
+    await tick()
+    await tui.requestSwitch('after_turn')
+    expect(ready).toHaveBeenCalledOnce()
+    tui.endSwitch()
+    session.close()
   })
 })
 
@@ -360,6 +415,71 @@ describe('AgentSession state from Claude', () => {
     fake.push(system('session_state_changed', { state: 'idle' }))
     await tick()
     expect(fake.contextUsage).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads plan limits at start, follows rate-limit events, and re-reads after turns at most once a minute', async () => {
+    const fake = fakeQuery()
+    let now = 1_000
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledWith({ skipBehaviors: true })
+    expect(sessions.at(-1)?.planUsage).toEqual({ plan: 'max', updatedAt: 1_000, limits: [{ kind: 'session', title: 'Current session', percent: 38, severity: 'normal', resetsAt: Date.parse('2026-10-13T15:00:00Z') }] })
+    now = 2_000
+    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.81, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
+    await tick()
+    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 81, severity: 'warning', resetsAt: 1_800_000_000_000 })
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(1)
+    now = 62_000
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(2)
+    session.close()
+  })
+
+  it('keeps the last plan reading when a later one fails', async () => {
+    const log = vi.fn()
+    const fake = fakeQuery()
+    let now = 1_000
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, log }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    fake.planUsage.mockResolvedValueOnce({ subscription_type: 'max', rate_limits_available: true, rate_limits: null })
+    now = 100_000
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.planUsage).toMatchObject({ updatedAt: 1_000 })
+    expect(log).toHaveBeenCalledWith("Couldn't read plan usage: Claude returned no limits")
+    now = 200_000
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(3)
+    expect(sessions.at(-1)?.planUsage).toMatchObject({ updatedAt: 200_000 })
+    session.close()
+  })
+
+  it('leaves the meter out, and stops asking, for a login without plan limits', async () => {
+    const fake = fakeQuery()
+    fake.planUsage.mockResolvedValueOnce({ subscription_type: null, rate_limits_available: false, rate_limits: null })
+    let now = 1_000
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    now = 100_000
+    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.5, resetsAt: 1 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(1)
+    expect(sessions.some((info) => info.planUsage)).toBe(false)
+    session.close()
   })
 
   it('logs, rather than shows, a model list or meter it cannot read', async () => {
@@ -560,6 +680,44 @@ describe('AgentSession settings', () => {
     await session.configure({ permissionMode: 'bypassPermissions' })
     expect(fake.setPermissionMode).toHaveBeenCalledWith('bypassPermissions')
     expect(sessions.at(-1)).toMatchObject({ permissionMode: 'bypassPermissions', bypassAllowed: true })
+  })
+})
+
+describe('commando-agent restart environment', () => {
+  const env = {
+    COMMANDO_PORT: '4410',
+    COMMANDO_AGENT_HOOK_TOKEN_PATH: '/state/hook-token',
+    COMMANDO_TMUX_SOCKET_NAME: 'chat-providers',
+    COMMANDO_TMUX_SOCKET_PATH: '/state/tmux.sock',
+    COMMANDO_CHAT_IMAGES_DIR: '/state/chat-images',
+    COMMANDO_CHAT_PLANS_DIR: '/state/chat-plans',
+    CLAUDE_CONFIG_DIR: '/home/me/.claudew',
+    OTHER_ENV: 'ignored',
+  }
+  const daemonEnv = [
+    '-e', 'COMMANDO_PORT=4410',
+    '-e', 'COMMANDO_AGENT_HOOK_TOKEN_PATH=/state/hook-token',
+    '-e', 'COMMANDO_TMUX_SOCKET_NAME=chat-providers',
+    '-e', 'COMMANDO_TMUX_SOCKET_PATH=/state/tmux.sock',
+    '-e', 'COMMANDO_CHAT_IMAGES_DIR=/state/chat-images',
+    '-e', 'COMMANDO_CHAT_PLANS_DIR=/state/chat-plans',
+  ]
+
+  it('includes CODEX_HOME for Codex when set', () => {
+    expect(restartEnv('codex', { ...env, CODEX_HOME: '/home/me/Codex account' }))
+      .toEqual([...daemonEnv, '-e', 'CODEX_HOME=/home/me/Codex account'])
+  })
+
+  it('omits CODEX_HOME for Codex when unset or empty', () => {
+    expect(restartEnv('codex', env)).toEqual(daemonEnv)
+    expect(restartEnv('codex', { ...env, CODEX_HOME: '' })).toEqual(daemonEnv)
+    expect(restartEnv('codex', {})).toEqual([])
+  })
+
+  it('keeps Claude restart environment byte-identical even when CODEX_HOME is set', () => {
+    expect(restartEnv('claude', { ...env, CODEX_HOME: '/home/me/.codex-work' })).toEqual(daemonEnv)
+    expect(restartEnv('claude', { COMMANDO_PORT: '4410', COMMANDO_TMUX_SOCKET_NAME: '' }))
+      .toEqual(['-e', 'COMMANDO_PORT=4410'])
   })
 })
 

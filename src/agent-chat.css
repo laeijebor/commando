@@ -1,0 +1,8 @@
+.pane-attribution-toast { z-index: 3; }
+.terminal-pane-body { position: relative; }
+.agent-chat-requests { position: absolute; inset: 0; z-index: 3; overflow-y: auto; pointer-events: none; display: flex; flex-direction: column; align-items: center; }
+.agent-chat-request { flex: 0 0 auto; width: max-content; pointer-events: auto; animation: none; }
+.agent-chat-request-reason, .agent-chat-request-preview, .agent-chat-request-error { margin: 0; font-size: 11px; }
+.agent-chat-request-reason { color: var(--muted); }
+.agent-chat-request-preview { color: var(--text-soft); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.agent-chat-request-error { color: var(--red); }

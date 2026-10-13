@@ -21,11 +21,6 @@
 .session-ide-message p { max-width: 580px; color: var(--muted); }
 .session-ide-view button, .open-session-ide { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .session-ide-view button svg, .open-session-ide svg { width: 15px; height: 15px; }
-.session-ide-badge { display: inline-flex; align-items: center; gap: 3px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--accent); font-size: 10px; flex-shrink: 0; }
-.session-ide-badge svg { width: 12px; height: 12px; }
-.session-ide-badge.state-failed { color: var(--red); }
-.session-ide-badge.state-starting { color: var(--amber); }
-.session-ide-badge[aria-pressed="true"] { background: var(--surface-hover); border-color: var(--accent); }
 .session-ide-minimize { color: var(--accent); }
 .session-ide-detach-control summary { display: flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; background: var(--surface-raised); font-size: 10px; }
 .session-ide-detach-control summary::-webkit-details-marker { display: none; }

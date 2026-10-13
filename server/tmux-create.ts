@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access, readdir, stat } from 'node:fs/promises'
+import { access, readdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   CHAT_PERMISSION_MODES,
+  CODEX_CHAT_PERMISSION_MODES,
   defaultWorktreePath,
   EMPTY_PANE_OPTION,
   SESSION_AGENT_EXECUTABLES,
@@ -19,6 +20,8 @@ import {
   type LaunchTmuxPaneRequest,
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
+  type TmuxCreatedWorktree,
+  type SessionAgentLaunchAcknowledgment,
 } from '../shared/tmux-create.js'
 import { isChatPlanDir } from './chat-plans-dir.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
@@ -127,6 +130,7 @@ export const AGENT_LAUNCH_ENV_KEYS = [
   'HOME', 'SHELL', 'PATH', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CURSOR_CONFIG_DIR', 'XDG_CONFIG_HOME',
   'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_PORT', 'COMMANDO_TOKEN',
   'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR',
+  'ARGENT_SIMULATOR_NO_WINDOW',
 ] as const
 export type AgentExecutableResolver = (command: string, env: LaunchEnvironment) => Promise<string>
 
@@ -152,9 +156,11 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (provider !== 'claude-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
+  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
     throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
   }
+  if (provider === 'codex-chat' && (configDir !== undefined || readableDir !== undefined)) throw new Error('Codex chat does not accept a Claude profile or readable folder')
+  if (provider === 'codex-chat' && permissionMode !== undefined && !CODEX_CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) throw new Error('Unsupported Codex permission mode')
   // Only one stashed plan's own folder: a chat must not be handed any other path.
   if (readableDir !== undefined && !isChatPlanDir(readableDir)) {
     throw new Error('A chat can only be given a stashed plan folder to read')
@@ -490,6 +496,19 @@ export class TmuxCreator {
     }
   }
 
+  /** True when a pane's cwd is inside `directory`, or when tmux cannot say (so callers keep it). */
+  private async paneMayUseDirectory(directory: string): Promise<boolean> {
+    try {
+      const output = await this.run([...this.socketArgs, 'list-panes', '-a', '-F', '#{pane_current_path}'])
+      // tmux reports the real cwd; a typed path may carry a trailing slash or a symlink.
+      const trimmed = directory.replace(/\/+$/u, '') || '/'
+      const roots = new Set([trimmed, await realpath(trimmed).catch(() => trimmed)])
+      return output.split('\n').some((path) => [...roots].some((root) => path === root || path.startsWith(`${root}/`)))
+    } catch {
+      return true
+    }
+  }
+
   private async sessionExists(name: string): Promise<boolean> {
     try {
       await this.run([...this.socketArgs, 'has-session', '-t', `=${name}`])
@@ -501,7 +520,7 @@ export class TmuxCreator {
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
     const argv = sessionAgentArgv(agent)
-    argv[0] = agent.provider === 'claude-chat'
+    argv[0] = (agent.provider === 'claude-chat' || agent.provider === 'codex-chat')
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
     return argv
@@ -627,7 +646,7 @@ export class TmuxCreator {
   async createPane(
     input: CreateTmuxPaneRequest,
     beforeCreate?: () => void | Promise<void>,
-  ): Promise<TmuxCreatedTarget> {
+  ): Promise<TmuxCreatedTarget & { worktree?: TmuxCreatedWorktree; agentLaunch?: SessionAgentLaunchAcknowledgment }> {
     if (
       typeof input.targetId !== 'string' ||
       (!WINDOW_ID.test(input.targetId) && !PANE_ID.test(input.targetId))
@@ -640,9 +659,27 @@ export class TmuxCreator {
     if (input.placement !== undefined && input.placement !== 'before' && input.placement !== 'after') {
       throw new Error('Invalid tmux split placement')
     }
-    const cwd = validatedPath(input.cwd)
+    let cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
     const agentArgv = agent ? await this.agentArgv(agent) : undefined
+    if (input.worktree !== undefined && (!input.worktree || typeof input.worktree !== 'object' || Array.isArray(input.worktree))) throw new Error('worktree must be an object')
+    const branch = input.worktree ? validatedName(input.worktree.branch, 'branch name') : undefined
+    const path = input.worktree ? validatedPath(input.worktree.path) : undefined
+    const prepareCommand = input.worktree ? optionalPrepareCommand(input.worktree.prepareCommand) : undefined
+    if (input.worktree && (!this.worktrees || !cwd)) throw new Error('A working directory and worktree service are required')
+    let worktree: TmuxCreatedWorktree | undefined
+    let rollback: (() => Promise<void>) | undefined
+    if (input.worktree) {
+      const repo = await this.worktrees!.probe(cwd!)
+      if (!repo.isRepo || !repo.mainRoot) throw new GitWorktreeError('not-repo', `${cwd} is not inside a git repository`)
+      const result = await this.worktrees!.createWorktree({
+        mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!),
+        ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
+      })
+      worktree = result.worktree
+      rollback = result.rollback
+      cwd = worktree.path
+    }
     const args = [
       ...this.socketArgs,
       'split-window',
@@ -656,8 +693,35 @@ export class TmuxCreator {
       input.targetId,
     ]
     if (cwd) args.push('-c', cwd)
-    if (agentArgv) args.push(...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv))
-    await beforeCreate?.()
-    return parseCreatedTarget(await this.run(args), 'pane')
+    if (agentArgv) args.push(...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, prepareCommand, this.launchEnv))
+    else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
+    let output: string
+    try {
+      await beforeCreate?.()
+      output = await this.run(args)
+    } catch (error) {
+      if (rollback && worktree) {
+        const detail = error instanceof Error ? error.message : String(error)
+        // An ambiguous failure may still have split: never delete a worktree a pane already runs in.
+        if (await this.paneMayUseDirectory(worktree.path)) {
+          throw new Error(`A pane in ${worktree.path} may have been created but tmux did not report it; the worktree was kept: ${detail}`, { cause: error })
+        }
+        try { await rollback() } catch (rollbackError) {
+          throw new Error(`${detail}; worktree rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`, { cause: error })
+        }
+      }
+      throw error
+    }
+    // A successful split with malformed output still owns its worktree.
+    const created = parseCreatedTarget(output, 'pane')
+    return { ...created, ...(worktree ? { worktree } : {}), ...(agent ? {
+      agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' },
+    } : {}) }
+  }
+
+  async setChatLineage(paneId: string, parentTargetId: string, title: string): Promise<void> {
+    if (!PANE_ID.test(paneId) || CONTROL_CHARACTER.test(parentTargetId) || CONTROL_CHARACTER.test(title)) throw new Error('Invalid chat lineage')
+    await this.run([...this.socketArgs, 'set-option', '-p', '-t', paneId, '@commando_opened_by', parentTargetId])
+    await this.run([...this.socketArgs, 'set-option', '-p', '-t', paneId, '@commando_chat_title', title])
   }
 }

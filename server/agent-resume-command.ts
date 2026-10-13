@@ -1,4 +1,5 @@
 import { basename } from 'node:path'
+import type { ChatProvider } from '../shared/agent-chat.js'
 import type { AgentProvider } from '../shared/protocol.js'
 
 export type ResumableProvider = Exclude<AgentProvider, 'unknown'>
@@ -323,16 +324,18 @@ export function buildChatResumeCommand(
 ): string | null {
   if (!isValidAgentSessionId(sessionId)) return null
   const entry = launch.args.findIndex((word) => word.endsWith(CHAT_HOST_ENTRY))
-  if (entry < 0 || launch.args[entry + 1] !== 'claude') return null
+  const provider = launch.args[entry + 1]
+  if (entry < 0 || (provider !== 'claude' && provider !== 'codex')) return null
   // Commando puts --prompt last; everything after it is prompt text, never flags.
   const rest = launch.args.slice(entry + 2)
   const promptAt = rest.indexOf('--prompt')
   const launched = carriedFlags(CHAT_FLAGS, promptAt < 0 ? rest : rest.slice(0, promptAt))
   const flags = settings ? withChatSettings(launched, settings) : launched
-  if (!flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
+  if (provider === 'claude' && !flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
   // A shell restored by tmux may not know which daemon to report to.
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
-  return [...(env.length ? ['env', ...env] : []), launcher, 'claude', ...flags, '--resume', sessionId].map(shellQuote).join(' ')
+  if (provider === 'codex' && launch.env.CODEX_HOME) env.push(`CODEX_HOME=${launch.env.CODEX_HOME}`)
+  return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId].map(shellQuote).join(' ')
 }
 
 /**
@@ -345,9 +348,10 @@ export function buildChatReturnCommand(
   launcher: string,
   returnFlags: readonly string[],
   daemonEnv: Readonly<Record<string, string>> = {},
+  provider: ChatProvider = 'claude',
 ): string | null {
   if (!isValidAgentSessionId(sessionId)) return null
   const flags = carriedFlags(CHAT_FLAGS, returnFlags)
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
-  return [...(env.length ? ['env', ...env] : []), launcher, 'claude', ...flags, '--resume', sessionId, '--from-claude-code'].map(shellQuote).join(' ')
+  return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId, '--from-claude-code'].map(shellQuote).join(' ')
 }

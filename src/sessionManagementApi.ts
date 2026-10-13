@@ -26,7 +26,6 @@ export interface SessionManagementApiClient {
   listArchives(): Promise<SessionArchiveSummary[]>
   archiveSession(sessionId: string): Promise<void>
   restoreSession(archiveId: string): Promise<string>
-  deleteWindow(windowId: string): Promise<void>
 }
 
 export type SessionArchiveSummary = { id: string; name: string; createdAt: number; windowCount: number; paneCount: number }
@@ -105,12 +104,6 @@ export function createSessionManagementApi(
     async restoreSession(archiveId) {
       const result = await request<{ sessionId: string }>(`/archives/${encodeURIComponent(archiveId)}/restore`, { method: 'POST' })
       return result.sessionId
-    },
-    async deleteWindow(windowId) {
-      await request(`/windows/${encodeURIComponent(windowId)}/delete`, {
-        method: 'DELETE',
-        body: JSON.stringify({ confirmWindowId: windowId }),
-      })
     },
   }
 }

@@ -47,6 +47,7 @@ const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
 const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
 const SIM_CLI_FILENAME = 'commando-sim.mjs'
+const CHAT_CLI_FILENAME = 'commando-chat.mjs'
 const PR_MARKER_CLI_FILENAME = 'commando-pr-marker.mjs'
 
 type JsonObject = Record<string, unknown>
@@ -62,6 +63,7 @@ export type AgentHookInstallerOptions = {
   openCodePluginPath?: string
   prMarkerCliPath?: string
   simCliPath?: string
+  chatCliPath?: string
   sessionBriefCliPath?: string
   tokenPath?: string
 }
@@ -84,6 +86,7 @@ export type AgentHookInstallResult = {
   openCodePluginPath: string
   prMarkerCliPath: string
   simCliPath: string
+  chatCliPath: string
   sessionBriefCliPath: string
   tokenPath: string
 }
@@ -137,13 +140,14 @@ async function writeAtomically(path: string, content: string, mode: number): Pro
   }
 }
 
-function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string, simCliPath: string): string {
+function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string, simCliPath: string, chatCliPath: string): string {
   return [
     'Commando pane integration (this agent runs inside a tmux pane):',
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
     `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Pin the command that resumes this conversation with --session \"COMMAND\" using the resume command given below (it replaces the previous one). Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
-    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. If the user asks to use an already-running simulator, use node ${JSON.stringify(simCliPath)} adopt <udid> instead; it does not reboot or slim the device, and release leaves it running. Otherwise always lease. Run node ${JSON.stringify(simCliPath)} update when purpose, ports, or branch change. Release them with node ${JSON.stringify(simCliPath)} release when done.`,
+    `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. If the user asks to use an already-running simulator, use node ${JSON.stringify(simCliPath)} adopt <udid> instead; it does not reboot or slim the device, and release leaves it running. Otherwise always lease. Run node ${JSON.stringify(simCliPath)} update when purpose, ports, or branch change. Release them with node ${JSON.stringify(simCliPath)} release when done. Commando shows a leased simulator in this pane's tabs, so keep it headless: never open Simulator.app, and pass headless: true if you call Argent boot-device. expo run:ios always opens Simulator.app; install builds with xcrun simctl install instead.`,
+    `When the user asks you to open or start another chat or agent (for example to fix something you found), run node ${JSON.stringify(chatCliPath)} open --title "<short title>" --prompt-file <brief.md> [--location pane] — default location is a new session on its own worktree; use --location pane only when the user asks for it beside you. Write a self-contained brief (goal, context, files, repo rules). Never open chats the user did not ask for. Use list to check chats you opened.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
 }
@@ -783,6 +787,86 @@ try {
   console.error(error instanceof Error ? error.message : String(error))
   usage()
   process.exitCode = 1
+}
+`
+}
+
+export function generatedChatCli(tokenPath: string): string {
+  return `#!/usr/bin/env node
+import { realpathSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
+const defaultTokenPath = ${JSON.stringify(tokenPath)}
+` + String.raw`
+export async function parseChatArgs(args, read = readFile) {
+  const [command, ...rest] = args
+  if (command === 'list' && !rest.length) return { method: 'GET', path: '', body: undefined }
+  if (command === 'report' && rest.length === 1 && rest[0].trim()) return { method: 'POST', path: '/report', body: { message: rest[0] } }
+  if (command !== 'open') throw new Error('Usage: commando-chat open --title T (--prompt TEXT | --prompt-file PATH) [--location pane|session] | list | report "message"')
+  const body = {}, seen = new Set()
+  let promptFile
+  const fields = { '--title': 'title', '--prompt': 'prompt', '--location': 'location', '--split': 'split', '--branch': 'branch', '--agent': 'agent', '--permission-mode': 'permissionMode' }
+  for (let index = 0; index < rest.length; index++) {
+    const flag = rest[index]
+    if (seen.has(flag)) throw new Error('Duplicate argument: ' + flag)
+    seen.add(flag)
+    if (flag === '--no-worktree') { body.worktree = false; continue }
+    if (flag !== '--prompt-file' && !fields[flag]) throw new Error('Unknown argument: ' + flag)
+    const value = rest[++index]
+    if (value === undefined || value.startsWith('--') && !['--prompt', '--title'].includes(flag)) throw new Error(flag + ' requires a value')
+    if (flag === '--prompt-file') promptFile = value
+    else body[fields[flag]] = value
+  }
+  if (!body.title?.trim()) throw new Error('--title is required')
+  if (seen.has('--prompt') === seen.has('--prompt-file')) throw new Error('Use exactly one of --prompt or --prompt-file')
+  if (promptFile !== undefined) body.prompt = await read(promptFile, 'utf8')
+  if (!body.prompt?.trim()) throw new Error('The prompt must not be empty')
+  return { method: 'POST', path: '', body }
+}
+
+export async function runChatCli(args, request, { out = (value) => console.log(JSON.stringify(value)), err = (text) => console.error(text), now = Date.now, read = readFile } = {}) {
+  const input = await parseChatArgs(args, read)
+  const deadline = now() + 10 * 60_000
+  let response = await request(input.method, input.path, input.body)
+  if (response.status === 202 && response.result.decision === 'pending') {
+    err('Waiting for the user to approve (limit reached)…')
+    const id = response.result.requestId
+    if (!/^cr-[0-9a-f]+$/.test(id ?? '')) throw new Error('Commando returned an invalid approval request id')
+    while (response.result.decision === 'pending' && now() < deadline) {
+      const wait = Math.max(0, Math.min(60, (deadline - now()) / 1000))
+      response = await request('GET', '/requests/' + id + '?wait=' + wait)
+    }
+    if (response.result.decision === 'pending') response = { status: 200, result: { ok: true, decision: 'expired', requestId: id } }
+  }
+  out(response.result)
+  if (response.status >= 400 || response.result.ok === false) {
+    err(response.result.error ?? ('Commando returned ' + response.status))
+    return 1
+  }
+  return ['dismissed', 'expired', 'superseded'].includes(response.result.decision) ? 3 : 0
+}
+
+export async function chatRequest(env = process.env, fetchRequest = fetch, read = readFile) {
+  const paneId = env.TMUX_PANE
+  if (!/^%\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
+  const port = Number(env.COMMANDO_PORT ?? '4310')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('COMMANDO_PORT is invalid')
+  const token = (await read(env.COMMANDO_AGENT_HOOK_TOKEN_PATH ?? defaultTokenPath, 'utf8')).trim()
+  return async (method, path, body) => {
+    const response = await fetchRequest('http://127.0.0.1:' + port + '/api/agent-chats' + path, {
+      method,
+      headers: { Authorization: 'Bearer ' + token, 'X-Commando-Pane': paneId, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(path.includes('?wait=') ? 65_000 : 30_000),
+    })
+    const result = await response.json().catch(() => ({ ok: false, error: 'Commando returned invalid JSON' }))
+    return { status: response.status, result }
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  try { process.exitCode = await runChatCli(process.argv.slice(2), await chatRequest()) }
+  catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1 }
 }
 `
 }
@@ -2167,6 +2251,7 @@ export class AgentHookInstaller {
         options.prMarkerCliPath
           ?? resolve(resolvedHome, '.commando', 'hooks', PR_MARKER_CLI_FILENAME),
       ),
+      chatCliPath: resolve(options.chatCliPath ?? resolve(resolvedHome, '.commando', 'hooks', CHAT_CLI_FILENAME)),
       simCliPath: resolve(
         options.simCliPath ?? resolve(resolvedHome, '.commando', 'hooks', SIM_CLI_FILENAME),
       ),
@@ -2252,7 +2337,7 @@ export class AgentHookInstaller {
     }, [this.paths.cursorBridgePath, this.paths.cursorHooksPath])
     const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex, ...staleCursor])].sort()
     if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
-    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
+    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
     await this.installGeneratedScripts({ claude: staleClaude.length > 0, openCode: false })
     if (staleCursor.length > 0) await this.installCursorHooks(true)
     if (staleCodex.length > 0) await this.installCodexNotify()
@@ -2279,7 +2364,7 @@ export class AgentHookInstaller {
 
   private async installCursorHooks(repair = false): Promise<void> {
     const { settings, mode } = await readClaudeSettings(this.paths.cursorHooksPath)
-    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath)
     await writeAtomically(this.paths.cursorBridgePath, generatedCursorBridge(this.paths.tokenPath, instructions), 0o600)
     await writeAtomically(this.paths.cursorHooksPath, `${JSON.stringify(mergeCursorHooks(settings, this.paths.cursorBridgePath, repair), null, 2)}\n`, mode)
     // Explicit install upgrades the healthy managed Claude bridge as well. Repair
@@ -2289,7 +2374,7 @@ export class AgentHookInstaller {
   private async installGeneratedScripts(
     providers = { claude: true, openCode: true },
   ): Promise<void> {
-    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
     if (providers.claude) {
       await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
@@ -2312,6 +2397,7 @@ export class AgentHookInstaller {
       generatedSessionBriefCli(this.paths.tokenPath),
       0o700,
     )
+    await writeAtomically(this.paths.chatCliPath, generatedChatCli(this.paths.tokenPath), 0o700)
     await writeAtomically(this.paths.simCliPath, generatedSimCli(this.paths.tokenPath), 0o700)
     await writeAtomically(
       this.paths.prMarkerCliPath,

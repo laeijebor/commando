@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { TmuxPane } from '../../shared/protocol'
 import type { ChatItem, ChatState } from '../../shared/agent-chat'
 import { ChatPane } from './ChatPane'
 import { deriveTimelineRows, patchLines, pendingRequests, shortPath, thoughtLabel, workSummary } from '../../shared/chat-timeline'
@@ -61,6 +62,13 @@ describe('timeline rows', () => {
 })
 
 describe('ChatPane', () => {
+  it('reads the provider for composer labels and the empty timeline', () => {
+    renderPane(chat({ session: { ...chat().session, provider: 'codex' }, items: [] }))
+    expect(screen.getByRole('textbox', { name: 'Message Codex' })).toHaveAttribute('placeholder', 'Ask Codex… / for commands, @ for files')
+    expect(screen.getByText('Ask Codex anything about this folder.')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Message Claude' })).toBeNull()
+  })
+
   it('renders messages, a folded work group and the session chips', () => {
     renderPane(chat())
     expect(screen.getByText('Fix the queue')).toBeInTheDocument()
@@ -227,6 +235,41 @@ describe('context meter', () => {
   })
 })
 
+describe('plan usage meter', () => {
+  const now = Date.now()
+  const planUsage = {
+    plan: 'max',
+    updatedAt: now,
+    limits: [
+      { kind: 'session', title: 'Current session', percent: 38, severity: 'normal' as const, resetsAt: now + 110 * 60_000 },
+      { kind: 'weekly_all', title: 'Weekly · all models', percent: 82, severity: 'warning' as const, resetsAt: now + 3 * 86_400_000 },
+      { kind: 'weekly_scoped', title: 'Weekly · Fable', percent: 9, severity: 'normal' as const },
+    ],
+  }
+
+  it('shows the 5h and weekly windows and lists every window with reset times', () => {
+    renderPane(pickerChat({ planUsage, configDir: '/home/me/.claudep' }))
+    const meter = screen.getByRole('button', { name: 'Plan usage: Current session 38% used, Weekly · all models 82% used' })
+    expect(meter).toHaveTextContent('5h38%wk82%')
+    fireEvent.click(meter)
+    const popup = screen.getByRole('dialog', { name: 'Plan usage' })
+    expect(popup).toHaveTextContent('Max · claudep')
+    expect(popup).toHaveTextContent('Weekly · Fable9% used')
+    expect(popup).toHaveTextContent(/Resets .* · in 1h \d+m/)
+    expect(within(popup).getByRole('progressbar', { name: 'Weekly · all models usage' })).toHaveAttribute('aria-valuenow', '82')
+  })
+
+  it('swaps the bars for the reset time once a limit is reached', () => {
+    renderPane(pickerChat({ planUsage: { ...planUsage, limits: [{ ...planUsage.limits[0]!, percent: 100, severity: 'critical', reached: true }] } }))
+    expect(screen.getByRole('button', { name: 'Current session limit reached' })).toHaveTextContent(/^5h limit reached · resets /)
+  })
+
+  it('stays out of the bar without a reading', () => {
+    renderPane(pickerChat({}))
+    expect(screen.queryByTestId('plan-usage-meter')).toBeNull()
+  })
+})
+
 describe('thinking rows', () => {
   const thought: ChatItem = { ...base, id: 'th', kind: 'reasoning', text: 'Checking how the hub routes chat_send.', createdAt: 1_000, updatedAt: 15_000 }
 
@@ -244,5 +287,47 @@ describe('thinking rows', () => {
     fireEvent.click(row)
     expect(screen.getByText('Checking how the hub routes chat_send.')).toBeInTheDocument()
     expect(deriveTimelineRows([...items, thought]).at(-1)).toMatchObject({ kind: 'thought', id: 'th' })
+  })
+})
+
+describe('opened chat task card', () => {
+  const parent = { id: '%1', targetId: 'parent', sessionId: '$1' } as TmuxPane
+  const child = { id: '%5', targetId: 'child', sessionId: '$2', openedBy: 'parent' } as TmuxPane
+  const snapshot = { panes: [parent, child], sessions: [{ id: '$1', name: 'main', attached: true, activeWindowId: null, windowIds: [] }] }
+  const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
+  const first = { ...base, id: 'task', kind: 'user_message' as const, text: 'Injected instructions\n---\nThe brief' }
+  it('replaces only the first user bubble and jumps to its parent', () => {
+    const onSelectPane = vi.fn()
+    render(<ChatPane chat={chat({ items: [first, ...items] })} pane={child} snapshot={snapshot} onSelectPane={onSelectPane} connected focused={false} {...handlers} />)
+    expect(screen.getByText('Task from main')).toBeInTheDocument()
+    expect(screen.getByText('The brief')).toBeInTheDocument()
+    expect(screen.queryByText(/Injected instructions/)).not.toBeInTheDocument()
+    expect(screen.getByText('Fix the queue')).toHaveClass('bg-message')
+    expect(screen.getByText('The brief')).not.toHaveClass('bg-message')
+    fireEvent.click(screen.getByRole('button', { name: 'Go to %1' }))
+    expect(onSelectPane).toHaveBeenCalledExactlyOnceWith('%1')
+  })
+  it('has no task card for an ordinary chat', () => {
+    render(<ChatPane chat={chat()} pane={{ ...child, openedBy: undefined }} snapshot={snapshot} connected focused={false} {...handlers} />)
+    expect(screen.queryByText(/Task from/)).not.toBeInTheDocument()
+    expect(screen.getByText('Fix the queue')).toHaveClass('bg-message')
+  })
+  it('retains the full brief without a separator and hides a vanished parent link', () => {
+    render(<ChatPane chat={chat()} pane={child} snapshot={{ ...snapshot, panes: [child] }} connected focused={false} {...handlers} />)
+    expect(screen.getByText('Task from another agent')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Go to/ })).not.toBeInTheDocument()
+    expect(screen.getByText('Fix the queue')).not.toHaveClass('bg-message')
+  })
+  it('offers Show more only when the clamped task overflows', () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(150)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(100)
+    try {
+      render(<ChatPane chat={chat({ items: [first] })} pane={child} snapshot={snapshot} connected focused={false} {...handlers} />)
+      expect(screen.getByText('The brief')).toHaveClass('line-clamp-6')
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }))
+      expect(screen.getByText('The brief')).not.toHaveClass('line-clamp-6')
+      fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
+      expect(screen.getByText('The brief')).toHaveClass('line-clamp-6')
+    } finally { vi.restoreAllMocks() }
   })
 })

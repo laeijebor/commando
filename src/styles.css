@@ -734,7 +734,6 @@ kbd {
   color: var(--muted-dim);
 }
 
-.mini-status,
 .input-indicator,
 .hud-pulse {
   flex: 0 0 auto;
@@ -844,64 +843,6 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.mini-status {
-  position: relative;
-  width: 5px;
-  height: 5px;
-}
-
-.mini-status.working {
-  /* The dot moves to ::before so the ring can paint behind it - see the ring
-     rule below. */
-  isolation: isolate;
-  background: transparent;
-}
-
-.mini-status.working::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-/* Composited pulse ring - see the matching rule in session-tree.css. Rest scale
-   is 5/11: the dot's diameter inside the fully grown ring. */
-.mini-status.working::after {
-  --pulse-rest-scale: 0.4545;
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  z-index: -1;
-  width: 11px;
-  height: 11px;
-  margin: -5.5px 0 0 -5.5px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  transform: scale(var(--pulse-rest-scale));
-  animation: session-status-pulse 1.8s ease-in-out infinite;
-  pointer-events: none;
-  will-change: transform;
-}
-
-.mini-status.needs_input {
-  background: var(--amber);
-}
-
-.mini-status.done {
-  background: var(--green);
-}
-
-.mini-status.failed {
-  background: var(--red);
-}
-
-.mini-status.stale,
-.mini-status.unknown {
-  background: var(--muted-dim);
 }
 
 .sidebar-empty,

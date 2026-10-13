@@ -33,6 +33,9 @@ import {
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
+import { shellQuote } from '../agent-resume-command.js'
+import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
+import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 export interface AgentSessionSpec {
   paneId: string
@@ -75,6 +78,36 @@ export interface SessionImageStore extends ChatImageSink {
   stagedImage(path: string): { id: string; sessionId: string } | null
 }
 
+type ClaudeCodeSettings = Pick<AgentSessionSpec, 'model' | 'effort' | 'permissionMode' | 'bypassAllowed'> & { readableDir?: string }
+
+/**
+ * Claude Code's own flags for this chat's settings, so the TUI runs the
+ * conversation with the same model, effort and permission mode.
+ */
+export function claudeCodeFlags(args: ClaudeCodeSettings): string[] {
+  return [
+    ...(args.model ? ['--model', args.model] : []),
+    ...(args.effort ? ['--effort', args.effort] : []),
+    ...(args.permissionMode === 'bypassPermissions'
+      ? ['--dangerously-skip-permissions']
+      : ['--permission-mode', args.permissionMode, ...(args.bypassAllowed ? ['--allow-dangerously-skip-permissions'] : [])]),
+    ...(args.readableDir ? ['--add-dir', args.readableDir] : []),
+  ]
+}
+
+/**
+ * The pane command for a switch to Claude Code: the TUI on the same
+ * conversation, then (when it exits, however it exits) this chat again.
+ * bash runs it with job control, so Claude Code is the pane's foreground
+ * process: tmux names the pane after it (auto-resume needs that to see an
+ * agent, not a shell), and Ctrl-C reaches only Claude Code.
+ */
+export function claudeCodeSwitchCommand(args: ClaudeCodeSettings, claudePath: string, launcher: string, sessionId: string, returnFlags: readonly string[]): string {
+  const tui = [claudePath, ...claudeCodeFlags(args), '--resume', sessionId].map(shellQuote).join(' ')
+  const back = ['exec', ...[launcher, 'claude', ...returnFlags, '--resume', sessionId, '--from-claude-code'].map(shellQuote)].join(' ')
+  return `exec /bin/bash -c ${shellQuote(`set -m; ${tui}; ${back}`)}`
+}
+
 type TranscriptMessage = { type: string; message: unknown; parent_tool_use_id: string | null }
 
 /** Reads saved transcripts and titles; swapped out in tests. */
@@ -107,6 +140,10 @@ export const PLAN_CAPTURED_MESSAGE = "The client captured your proposed plan. St
 
 /** Turn results that only mean the turn was cut short (a steer or Stop), not that it failed. */
 const ABORTED_REASONS = new Set(['aborted_streaming', 'aborted_tools'])
+/** Experimental in the SDK: a rename shows up as a type error here when the SDK is upgraded. */
+const PLAN_USAGE_METHOD = 'usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET' satisfies keyof Query
+const PLAN_USAGE_TURN_REFRESH_MS = 60_000
+const PLAN_USAGE_IDLE_REFRESH_MS = 5 * 60_000
 
 /** The picker's value for "no explicit model": Claude Code's own default. */
 const DEFAULT_MODEL = 'default'
@@ -183,12 +220,7 @@ function shortTitle(text: string): string {
   return line.length > 60 ? `${line.slice(0, 59)}…` : line
 }
 
-export interface AgentSessionEvents {
-  items: (items: ChatItem[]) => void
-  session: (info: ChatSessionInfo) => void
-  /** The `/` menu's list changed. */
-  commands: (commands: ChatCommand[]) => void
-  closed: () => void
+export interface AgentSessionEvents extends ChatProviderSessionEvents {
   /** A switch to Claude Code may go now: the turn is over and nothing waits on Claude. */
   switchReady: () => void
 }
@@ -253,7 +285,16 @@ function approvalDetail(toolName: string, input: Record<string, unknown>): strin
  * One agent conversation driven through the Claude Agent SDK. It knows nothing
  * about processes or sockets: a host owns it and forwards its events.
  */
-export class AgentSession {
+export class AgentSession implements ChatProviderSession {
+  readonly tui: ChatProviderTui = {
+    label: 'Claude Code',
+    env: {},
+    onReady: (listener) => this.on('switchReady', listener),
+    requestSwitch: (action) => this.requestSwitch(action),
+    command: (launcher, returnFlags, sessionId) => this.tuiCommand(launcher, returnFlags, sessionId),
+    handOver: () => this.handOver(),
+    endSwitch: (notice) => this.endSwitch(notice),
+  }
   private readonly mapper: ClaudeItemMapper
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
@@ -263,6 +304,12 @@ export class AgentSession {
   /** Set once Claude reports session_state_changed; it then decides idle and running. */
   private stateEvents = false
   private contextReads = 0
+  private planUsageReads = 0
+  /** When the plan limits were last asked for; turns closer together than a minute reuse the reading. */
+  private planUsageAskedAt = 0
+  /** Set when the account has no plan limits (API key, Bedrock) or the SDK lost the method. */
+  private planUsageOff = false
+  private planUsageTimer: NodeJS.Timeout | undefined
   /** Set by interrupt(); the turn's error result then reads as interrupted. */
   private interruptRequested = false
   /**
@@ -301,9 +348,10 @@ export class AgentSession {
   constructor(
     private readonly spec: AgentSessionSpec,
     private readonly runQuery: typeof query = query,
-    now: () => number = Date.now,
+    private readonly now: () => number = Date.now,
     private readonly store: SessionStore = sdkSessionStore,
   ) {
+    if (spec.configDir) this.tui.env.CLAUDE_CONFIG_DIR = spec.configDir
     this.mapper = new ClaudeItemMapper(now, spec.images)
     this.heldSends = spec.resume ? [] : null
     this.imageSessionId = spec.resume ?? randomUUID()
@@ -403,6 +451,10 @@ export class AgentSession {
     void this.loadStartingModel(this.queryHandle)
     void this.loadCommands(this.queryHandle)
     void this.refreshContext()
+    void this.refreshPlanUsage()
+    // Windows reset and other chats spend the same plan while this one sits idle.
+    this.planUsageTimer = setInterval(() => void this.refreshPlanUsage(), PLAN_USAGE_IDLE_REFRESH_MS)
+    this.planUsageTimer.unref?.()
     const held = this.heldSends ?? []
     this.heldSends = null
     if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
@@ -526,6 +578,22 @@ export class AgentSession {
     this.steersPending = 0
     this.flushQueue()
     this.checkSwitch()
+  }
+
+  private tuiCommand(launcher: string | undefined, returnFlags: readonly string[], sessionId: string | undefined): string {
+    if (!launcher || !this.spec.claudePath || !sessionId) {
+      throw new Error(!sessionId
+        ? 'this chat has no conversation yet'
+        : "this host was started without the commando-agent launcher or can't find claude")
+    }
+    const readableIndex = returnFlags.indexOf('--readable-dir')
+    return claudeCodeSwitchCommand({
+      ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}),
+      ...(this.info.effort ? { effort: this.info.effort } : {}),
+      permissionMode: isChatPermissionMode(this.info.permissionMode) ? this.info.permissionMode : this.spec.permissionMode,
+      ...(this.info.bypassAllowed ? { bypassAllowed: true } : {}),
+      ...(readableIndex >= 0 ? { readableDir: returnFlags[readableIndex + 1] } : {}),
+    }, this.spec.claudePath, launcher, sessionId, returnFlags)
   }
 
   /**
@@ -851,6 +919,7 @@ export class AgentSession {
   }
 
   close(): void {
+    this.stopPlanUsage()
     this.input.end()
     this.queryHandle?.close()
   }
@@ -933,9 +1002,50 @@ export class AgentSession {
     }
   }
 
+  /** Reads the plan's rate limits (Claude's `/usage`), for the composer's usage meter. */
+  private async refreshPlanUsage(): Promise<void> {
+    const handle = this.queryHandle
+    if (!handle || this.planUsageOff) return
+    const readUsage = handle[PLAN_USAGE_METHOD]
+    if (typeof readUsage !== 'function') {
+      this.stopPlanUsage()
+      return
+    }
+    const read = ++this.planUsageReads
+    this.planUsageAskedAt = this.now()
+    try {
+      const report = await readUsage.call(handle, { skipBehaviors: true })
+      if (read !== this.planUsageReads) return
+      const usage = toPlanUsage(report, this.now())
+      if (usage === NO_PLAN_LIMITS) {
+        this.stopPlanUsage()
+        if (!this.info.planUsage) return
+        const { planUsage: _gone, ...rest } = this.info
+        this.info = rest
+      } else if (usage) {
+        this.info = { ...this.info, planUsage: usage }
+      } else {
+        // The usage fetch failed this time; the last reading stands and shows as stale once it ages.
+        this.spec.log?.("Couldn't read plan usage: Claude returned no limits")
+        return
+      }
+      this.emitSession()
+    } catch (error) {
+      // The meter keeps the last reading, which shows as stale once it ages.
+      if (this.info.status !== 'closed' && this.info.status !== 'error') this.spec.log?.(`Couldn't read plan usage: ${errorText(error)}`)
+    }
+  }
+
+  private stopPlanUsage(): void {
+    this.planUsageOff = true
+    if (this.planUsageTimer) clearInterval(this.planUsageTimer)
+    this.planUsageTimer = undefined
+  }
+
   /** After a turn: the meter changed, and a model list that failed to load gets another try. */
   private refreshBetweenTurns(): void {
     void this.refreshContext()
+    if (this.now() - this.planUsageAskedAt >= PLAN_USAGE_TURN_REFRESH_MS) void this.refreshPlanUsage()
     if (!this.info.models && this.queryHandle) void this.loadModels(this.queryHandle)
   }
 
@@ -1018,6 +1128,7 @@ export class AgentSession {
         this.setQueue([])
         this.emitItems(this.mapper.notice('error', `The session ended with messages still queued, so they weren't sent: ${texts}`))
       }
+      this.stopPlanUsage()
       for (const listener of this.listeners.closed) listener()
     }
   }
@@ -1081,6 +1192,15 @@ export class AgentSession {
       // Background subagents keep Claude from reporting idle, so the queue goes at the turn's end.
       else this.closeTurn()
       void this.refreshTitle()
+      return
+    }
+    if (message.type === 'rate_limit_event') {
+      if (this.planUsageOff) return
+      const usage = applyRateLimitEvent(this.info.planUsage, message.rate_limit_info, this.now())
+      if (usage && usage !== this.info.planUsage) {
+        this.info = { ...this.info, planUsage: usage }
+        this.emitSession()
+      }
       return
     }
     if (message.type === 'assistant' && !message.parent_tool_use_id) {
