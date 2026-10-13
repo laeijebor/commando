@@ -162,15 +162,39 @@ describe('draft persistence', () => {
     expect(second.input.value).toBe('returned thought\n\ntyped just now')
   })
 
-  it('persists only text when images are attached', async () => {
+  it('keeps uploaded images with the draft when switching away and back', async () => {
     const first = renderComposer({ session: savedSession })
     first.type('describe this image')
     fireEvent.paste(first.input, { clipboardData: { files: [new File(['image'], 'shot.png', { type: 'image/png' })], types: ['Files'] } })
     await waitFor(() => expect(screen.queryByLabelText('Uploading')).toBeNull())
     first.view.unmount()
-    expect(JSON.parse(localStorage.getItem(savedKey)!)).toEqual({ text: 'describe this image', updatedAt: expect.any(Number) })
-    expect(renderComposer({ session: savedSession }).input.value).toBe('describe this image')
-    expect(screen.queryByLabelText('Attached images')).toBeNull()
+    expect(JSON.parse(localStorage.getItem(savedKey)!)).toEqual({ text: 'describe this image', images: [{ id: imageId, name: 'shot.png' }], updatedAt: expect.any(Number) })
+    const second = renderComposer({ session: savedSession })
+    expect(second.input.value).toBe('describe this image')
+    expect(screen.getByRole('img', { name: 'shot.png' })).toHaveAttribute('src', `/chat-images/${imageId}`)
+    fireEvent.keyDown(second.input, { key: 'Enter' })
+    expect(second.onSend).toHaveBeenCalledWith('describe this image', [{ id: imageId, name: 'shot.png' }])
+    expect(localStorage.getItem(savedKey)).toBeNull()
+  })
+
+  it('keeps an image-only draft, and drops it once the image is removed', () => {
+    saveDraft(savedSession.sessionId, '', [{ id: imageId, name: 'shot.png' }])
+    const { view } = renderComposer({ session: savedSession })
+    expect(screen.getByRole('img', { name: 'shot.png' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Remove/ }))
+    expect(localStorage.getItem(savedKey)).toBeNull()
+    view.unmount()
+    renderComposer({ session: savedSession })
+    expect(screen.queryByRole('img')).toBeNull()
+  })
+
+  it('restores saved images when the session id arrives after mount', () => {
+    saveDraft(savedSession.sessionId, 'saved earlier', [{ id: imageId, name: 'shot.png' }])
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() }
+    const { view } = renderComposer()
+    expect(screen.queryByRole('img')).toBeNull()
+    view.rerender(<ChatComposer session={savedSession} hostConnected requests={[]} {...handlers} />)
+    expect(screen.getByRole('img', { name: 'shot.png' })).toBeInTheDocument()
   })
 
   it('continues typing and sending when storage throws', () => {

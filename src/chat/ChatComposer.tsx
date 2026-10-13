@@ -43,7 +43,7 @@ import { useNow } from './Subagents'
 import { shortPath, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
-import { readDraft, saveDraft } from './draftStore'
+import { loadDraft, saveDraft } from './draftStore'
 
 /** What the composer asks of the app for `@`, `#` and images. */
 export interface ChatInputServices {
@@ -181,6 +181,16 @@ function TodoChip({ todos }: { todos: TodoItem }) {
 }
 
 type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef }
+
+const uploadedRefs = (attachments: Attachment[]) => attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
+
+/** A saved draft's images, previewed from the daemon's copies. */
+const savedAttachments = (refs: ChatImageRef[]): Attachment[] => refs.map((ref, index) => ({
+  key: `saved-${index}-${ref.id}`,
+  name: ref.name ?? 'image',
+  previewUrl: chatImageUrl(ref.id),
+  ref,
+}))
 
 /** The draft a switch to Claude Code carries across: text and uploaded images. */
 export type ChatDraft = { text: string; images: ChatImageRef[] }
@@ -356,22 +366,29 @@ export function ChatComposer({
   /** An image is still uploading: a switch now would leave it behind. */
   onUploadingChange?: (uploading: boolean) => void
 }) {
-  const [draft, setDraft] = useState(() => readDraft(session.sessionId))
+  const [initial] = useState(() => loadDraft(session.sessionId))
+  const [draft, setDraft] = useState(initial.text)
+  const [attachments, setAttachments] = useState<Attachment[]>(() => savedAttachments(initial.images))
   const [draftSessionId, setDraftSessionId] = useState(session.sessionId)
   const restoredDraft = useRef(draft)
   // The session id can arrive after mount; restore before an effect saves an empty draft.
   if (session.sessionId !== draftSessionId) {
     setDraftSessionId(session.sessionId)
-    if (!draft) {
-      const saved = readDraft(session.sessionId)
-      restoredDraft.current = saved
-      setDraft(saved)
+    const late = draft && attachments.length ? null : loadDraft(session.sessionId)
+    if (late && !draft) {
+      restoredDraft.current = late.text
+      setDraft(late.text)
     }
+    if (late && !attachments.length) setAttachments(savedAttachments(late.images))
   }
-  const storedDraft = useMemo(() => ({ text: draft }), [session.sessionId])
-  useLayoutEffect(() => { storedDraft.text = draft }, [storedDraft, draft])
+  const images = useMemo(() => uploadedRefs(attachments), [attachments])
+  const storedDraft = useMemo(() => ({ text: draft, images }), [session.sessionId])
+  useLayoutEffect(() => {
+    storedDraft.text = draft
+    storedDraft.images = images
+  }, [storedDraft, draft, images])
   useEffect(() => {
-    const flush = () => saveDraft(session.sessionId, storedDraft.text)
+    const flush = () => saveDraft(session.sessionId, storedDraft.text, storedDraft.images)
     window.addEventListener('pagehide', flush)
     return () => {
       window.removeEventListener('pagehide', flush)
@@ -379,13 +396,13 @@ export function ChatComposer({
     }
   }, [session.sessionId, storedDraft])
   useEffect(() => {
-    if (!draft) {
+    if (!draft && !images.length) {
       saveDraft(session.sessionId, '')
       return
     }
-    const timeout = window.setTimeout(() => saveDraft(session.sessionId, draft), 300)
+    const timeout = window.setTimeout(() => saveDraft(session.sessionId, draft, images), 300)
     return () => window.clearTimeout(timeout)
-  }, [session.sessionId, draft])
+  }, [session.sessionId, draft, images])
   const textarea = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const pendingCaret = useRef<number | null>(null)
@@ -404,7 +421,6 @@ export function ChatComposer({
   const { trigger, update: updateTrigger, dismiss } = useTriggerState()
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
-  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [attachError, setAttachError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [viewing, setViewing] = useState<ViewableImage | null>(null)
@@ -532,6 +548,7 @@ export function ChatComposer({
     setAttachError(null)
     // A send or stash can unmount the composer before its empty state commits.
     storedDraft.text = ''
+    storedDraft.images = []
     saveDraft(session.sessionId, '')
     restoredDraft.current = ''
     setDraft('')
@@ -562,7 +579,7 @@ export function ChatComposer({
   const stash = useComposerStash({
     session,
     draft,
-    images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])),
+    images,
     uploading: attachments.some((attachment) => !attachment.ref),
     clear: clearDraft,
     bringBack,
@@ -605,7 +622,7 @@ export function ChatComposer({
   }, [sendError])
 
   const latestDraft = useRef<ChatDraft>({ text: '', images: [] })
-  latestDraft.current = { text: draft, images: attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : [])) }
+  latestDraft.current = { text: draft, images }
   useEffect(() => {
     if (!registerDraft) return
     registerDraft(() => latestDraft.current)
@@ -620,11 +637,23 @@ export function ChatComposer({
     if (!carried || switching || reportedCarries.current.has(carried.id)) return
     let restored = takenCarries.get(carried.id)
     if (restored === undefined) {
-      const fit = fitAttachments(attachments.length, carried.images.length)
-      const waiting = carried.images.length - fit.accepted
+      // The saved draft may have brought some of the carried images back already.
+      const attached = new Set(images.map((ref) => ref.id))
+      let room = MAX_CHAT_IMAGES - attachments.length
+      const adding: ChatImageRef[] = []
+      let taken = 0
+      for (const ref of carried.images) {
+        if (!attached.has(ref.id)) {
+          if (room <= 0) break
+          room -= 1
+          adding.push(ref)
+        }
+        taken += 1
+      }
+      const waiting = carried.images.length - taken
       if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before Claude Code ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
-      if (!carried.text && fit.accepted === 0) return
-      restored = fit.accepted
+      if (!carried.text && taken === 0) return
+      restored = taken
       takenCarries.set(carried.id, restored)
       if (carried.text) {
         const saved = restoredDraft.current
@@ -636,13 +665,13 @@ export function ChatComposer({
           return [carried.text, included ? '' : text].filter(Boolean).join('\n\n')
         })
       }
-      const images = carried.images.slice(0, restored).map((ref, index) => ({
+      const back = adding.map((ref, index) => ({
         key: `carried-${carried.id}-${index}`,
         name: ref.name ?? 'image',
         previewUrl: chatImageUrl(ref.id),
         ref,
       }))
-      if (images.length) setAttachments((current) => [...images, ...current])
+      if (back.length) setAttachments((current) => [...back, ...current])
     }
     reportedCarries.current.add(carried.id)
     onCarriedTaken?.(carried.id, restored)
