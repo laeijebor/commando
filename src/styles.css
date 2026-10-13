@@ -4718,28 +4718,30 @@ body.is-resizing-hud-pinned-note {
 
 @media (max-width: 840px) {
   .window-panel-layout { position: relative; isolation: isolate; overflow: hidden; }
+  .window-panel-layout .window-terminal-grid { position: relative; z-index: 0; }
   .window-panel-layout .side-panel {
     position: absolute;
     inset: auto 0 0;
-    height: var(--side-panel-height, 60%);
+    height: min(var(--side-panel-height, 60vh), 100%);
     z-index: 10;
     border-top: 1px solid var(--border-mid);
     transform: translateY(100%);
     visibility: hidden;
+    pointer-events: none;
     transition: transform 160ms ease, visibility 160ms;
   }
-  .window-panel-layout.is-drawer-open .side-panel { transform: translateY(0); visibility: visible; }
-  .window-panel-layout.is-panel-maximized .side-panel { height: 100%; transform: none; visibility: visible; }
+  .window-panel-layout.is-drawer-open .side-panel { transform: translateY(0); visibility: visible; pointer-events: auto; }
+  .window-panel-layout.is-panel-maximized .side-panel { height: 100%; transform: none; visibility: visible; pointer-events: auto; }
+  .window-panel-layout .side-panel-rail { display: none; }
   .side-panel-splitter { display: none; }
   .side-panel-scrim {
     position: absolute;
-    inset: 0 0 var(--side-panel-height, 60%);
+    inset: 0 0 min(var(--side-panel-height, 60vh), 100%);
     z-index: 8;
     border: 0;
     padding: 0;
     background: color-mix(in srgb, var(--surface-deep) 15%, transparent);
-    /* Grid capture consumes the click while leaving header chips reachable. */
-    pointer-events: none;
+    pointer-events: auto;
   }
   .side-panel-drawer-handle { flex: 0 0 14px; cursor: row-resize; touch-action: none; display: grid; place-items: center; background: var(--surface-raised); }
   .side-panel-drawer-handle::after { content: ''; width: 36px; height: 3px; border-radius: 2px; background: var(--border-mid); }

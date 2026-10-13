@@ -92,7 +92,7 @@ export function SidePanel({
 }) {
   const [drawerHeight, setDrawerHeight] = useState(() => loadDrawerHeight(windowId))
   const drawerRef = useRef<HTMLElement>(null)
-  const drawerDragRef = useRef<{ startY: number; height: number; workspaceHeight: number } | null>(null)
+  const drawerDragRef = useRef<{ startY: number; height: number; windowHeight: number } | null>(null)
   const swallowedPointerRef = useRef(false)
   const [width, setWidth] = useState(() => loadWidth(windowId))
   const [collapseChoice, setCollapsed] = useState(() => loadCollapsed(windowId))
@@ -184,7 +184,7 @@ export function SidePanel({
   }
   return (
     <div ref={bodyRef} className={`window-panel-layout${!expanded ? ' is-collapsed' : ''}${maximizedTab ? ' is-panel-maximized' : ''}${narrowMode ? ' is-narrow' : ''}${narrowMode && expanded ? ' is-drawer-open' : ''}`}
-      style={{ '--side-panel-width': `${width}%`, '--side-panel-height': `${drawerHeight}%` } as CSSProperties}>
+      style={{ '--side-panel-width': `${width}%`, '--side-panel-height': `${drawerHeight}vh` } as CSSProperties}>
       <div className="window-terminal-grid" hidden={Boolean(maximizedTab)}
         onPointerDownCapture={(event) => {
           if (!narrowMode || !drawerOpen || gridMaximized || (event.target as Element).closest('[data-panel-chip], .pane-git-stats')) return
@@ -202,7 +202,17 @@ export function SidePanel({
           swallowedPointerRef.current = false
           if (drawerOpen) closeDrawer()
         }}>{children}</div>
-      {narrowMode && expanded && !maximizedTab && !gridMaximized && <button type="button" className="side-panel-scrim" aria-label="Close tabs drawer" data-native-terminal-hit-blocker="" onClick={closeDrawer} />}
+      {narrowMode && expanded && !maximizedTab && !gridMaximized && <button type="button" className="side-panel-scrim" aria-label="Close tabs drawer" tabIndex={-1} data-native-terminal-hit-blocker=""
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          // Keep explicit panel controls usable behind the terminal scrim.
+          const control = [...(bodyRef.current?.querySelectorAll<HTMLButtonElement>('[data-panel-chip], .pane-git-stats') ?? [])].find((node) => {
+            const bounds = node.getBoundingClientRect()
+            return !node.disabled && bounds.width > 0 && bounds.height > 0 && event.clientX >= bounds.left && event.clientX < bounds.right && event.clientY >= bounds.top && event.clientY < bounds.bottom
+          })
+          if (control) control.click()
+          else closeDrawer()
+        }} />}
       {gitApi && prsApi && panes.map((pane) => <PanePanelSource key={pane.targetId} pane={pane} gitApi={gitApi} prsApi={prsApi} connected={connected} onData={onData} />)}
       <div className="side-panel-splitter" hidden={narrowMode || !paneIds.length || Boolean(maximizedTab) || gridMaximized} role="separator" aria-label="Resize side panel"
         aria-orientation="vertical" aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(width)} tabIndex={collapsed ? -1 : 0}
@@ -239,14 +249,14 @@ export function SidePanel({
           onPointerDown={(event) => {
             if (event.button !== 0) return
             event.preventDefault()
-            const workspaceHeight = bodyRef.current?.getBoundingClientRect().height ?? 0
-            if (!workspaceHeight) return
-            drawerDragRef.current = { startY: event.clientY, height: drawerHeight, workspaceHeight }
+            const windowHeight = window.innerHeight
+            if (!windowHeight) return
+            drawerDragRef.current = { startY: event.clientY, height: drawerHeight, windowHeight }
             event.currentTarget.setPointerCapture(event.pointerId)
           }}
           onPointerMove={(event) => {
             const drag = drawerDragRef.current
-            if (drag) setDrawerHeight(clampDrawerHeight(drag.height - (event.clientY - drag.startY) / drag.workspaceHeight * 100))
+            if (drag) setDrawerHeight(clampDrawerHeight(drag.height - (event.clientY - drag.startY) / drag.windowHeight * 100))
           }}
           onPointerUp={() => { drawerDragRef.current = null }}
           onPointerCancel={() => { drawerDragRef.current = null }}

@@ -6,6 +6,7 @@ import type { TmuxPane, WebPane } from '../shared/protocol'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrSummary, PrsApiClient } from './prsApi'
 import { useState } from 'react'
+import { readFileSync } from 'node:fs'
 import { prTabSignature } from './sidePanelState'
 import { SidePanel } from './SidePanel'
 
@@ -21,7 +22,7 @@ function panel(focusedPaneId = '%12', onOpen = vi.fn(), panes = tabs, titles: Re
     renderTab={(tab) => <iframe title={tab.id} src={tab.url} />}><div>Terminal grid</div></SidePanel>
 }
 
-afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.useRealTimers() })
+afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('SidePanel', () => {
   it('keeps tab content mounted across focus swaps and empty states at the same width', () => {
@@ -349,6 +350,69 @@ describe('narrow tabs drawer', () => {
     expect(localStorage.getItem('commando.side-panel.collapsed.@1')).toBeNull()
   })
 
+  it('layers a clickable scrim above the terminal stacking context and below the drawer', () => {
+    const view = render(<Drawer />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const grid = view.container.querySelector('.window-terminal-grid')!
+    const scrim = view.container.querySelector('.side-panel-scrim')!
+    const drawer = view.container.querySelector('.side-panel')!
+    expect(scrim.parentElement).toBe(grid.parentElement)
+    expect(drawer.parentElement).toBe(grid.parentElement)
+    const css = readFileSync('src/styles.css', 'utf8')
+    const narrowCss = css.slice(css.indexOf('@media (max-width: 840px) {', css.indexOf('.window-panel-layout {')),
+      css.indexOf('@media (max-width: 840px) and (prefers-reduced-motion: reduce)'))
+    const gridRule = narrowCss.match(/\.window-panel-layout \.window-terminal-grid\s*\{([^}]+)\}/)![1]
+    const scrimRule = narrowCss.match(/\.side-panel-scrim\s*\{([^}]+)\}/)![1]
+    const drawerRule = narrowCss.match(/\.window-panel-layout \.side-panel\s*\{([^}]+)\}/)![1]
+    const zIndex = (rule: string) => Number(rule.match(/z-index:\s*(\d+)/)![1])
+    expect(gridRule).toMatch(/position:\s*relative;/)
+    expect(scrimRule).toMatch(/pointer-events:\s*auto;/)
+    expect(zIndex(scrimRule)).toBeGreaterThan(zIndex(gridRule))
+    expect(zIndex(drawerRule)).toBeGreaterThan(zIndex(scrimRule))
+    expect(drawerRule).toContain('height: min(var(--side-panel-height, 60vh), 100%)')
+    expect(scrimRule).toContain('inset: 0 0 min(var(--side-panel-height, 60vh), 100%)')
+    expect(narrowCss).toMatch(/\.window-panel-layout \.side-panel-rail\s*\{\s*display:\s*none;/)
+  })
+
+  it.each(['true', 'false'])('renders no narrow rail with a remembered wide collapse choice of %s', (choice) => {
+    localStorage.setItem('commando.side-panel.collapsed.@1', choice)
+    const view = render(<Drawer />)
+    const drawer = view.container.querySelector<HTMLElement>('.side-panel')!
+    expect(view.container.querySelector('.side-panel-rail')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open Session' })).not.toBeInTheDocument()
+    expect(drawer).toHaveAttribute('inert')
+    expect(drawer).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    expect(view.container.querySelector('.side-panel-rail')).toBeNull()
+    expect(drawer).not.toHaveAttribute('inert')
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close tabs drawer' }))
+    expect(view.container.querySelector('.side-panel-rail')).toBeNull()
+    expect(drawer).toHaveAttribute('inert')
+  })
+
+  it('keeps chip toggles and explicit Changes reveals usable through the scrim without sending terminal clicks', () => {
+    const terminalClick = vi.fn()
+    const view = render(<Drawer terminalClick={terminalClick} />)
+    const chip = screen.getByRole('button', { name: 'Pane tabs' })
+    Object.defineProperty(chip, 'getBoundingClientRect', { value: () => ({ left: 100, right: 150, top: 20, bottom: 40, width: 50, height: 20 }) })
+    fireEvent.click(chip)
+    fireEvent.click(view.container.querySelector('.side-panel-scrim')!, { clientX: 120, clientY: 30 })
+    expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
+    fireEvent.click(chip)
+    const changes = document.createElement('button')
+    changes.className = 'pane-git-stats'
+    const revealChanges = vi.fn()
+    changes.addEventListener('click', revealChanges)
+    Object.defineProperty(changes, 'getBoundingClientRect', { value: () => ({ left: 100, right: 150, top: 200, bottom: 220, width: 50, height: 20 }) })
+    view.container.querySelector('.window-terminal-grid')!.append(changes)
+    fireEvent.click(view.container.querySelector('.side-panel-scrim')!, { clientX: 120, clientY: 210 })
+    expect(revealChanges).toHaveBeenCalledOnce()
+    expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
+    fireEvent.click(view.container.querySelector('.side-panel-scrim')!, { clientX: 200, clientY: 150 })
+    expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
+    expect(terminalClick).not.toHaveBeenCalled()
+  })
+
   it('only reveals for an explicit request and keeps new revisions hidden and unseen while closed', () => {
     const onSeen = vi.fn()
     const view = render(<Drawer onSeen={onSeen} />)
@@ -386,20 +450,24 @@ describe('narrow tabs drawer', () => {
     expect(screen.getByRole('separator', { name: 'Resize tabs drawer' })).toHaveAttribute('aria-valuenow', '90')
   })
 
-  it('resizes from a captured pointer and stops on release', () => {
+  it('resizes against window height from a captured pointer and stops on release', () => {
+    vi.stubGlobal('innerHeight', 1000)
     const view = render(<Drawer />)
     fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
     const handle = screen.getByRole('separator', { name: 'Resize tabs drawer' })
     const capture = vi.fn()
     Object.defineProperty(handle, 'setPointerCapture', { value: capture })
-    vi.spyOn(view.container.querySelector('.window-panel-layout')!, 'getBoundingClientRect').mockReturnValue({ height: 1000 } as DOMRect)
+    vi.spyOn(view.container.querySelector('.window-panel-layout')!, 'getBoundingClientRect').mockReturnValue({ height: 700 } as DOMRect)
     const pointer = (type: string, clientY: number) => {
       const event = new Event(type, { bubbles: true })
       Object.assign(event, { clientY, button: 0, pointerId: 7 })
       fireEvent(handle, event)
     }
+    expect(view.container.querySelector<HTMLElement>('.window-panel-layout')!.style.getPropertyValue('--side-panel-height')).toBe('60vh')
     pointer('pointerdown', 600)
     expect(capture).toHaveBeenCalledWith(7)
+    pointer('pointermove', 500)
+    expect(handle).toHaveAttribute('aria-valuenow', '70')
     pointer('pointermove', 0)
     expect(handle).toHaveAttribute('aria-valuenow', '90')
     pointer('pointermove', 1000)
