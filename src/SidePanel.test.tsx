@@ -393,6 +393,16 @@ describe('narrow tabs drawer', () => {
     expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
   })
 
+  it('still closes on Escape while an always-visible listbox sits in the grid', () => {
+    const view = render(<Drawer />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
+    const listbox = document.createElement('ul')
+    listbox.setAttribute('role', 'listbox')
+    view.container.querySelector('.window-terminal-grid')!.append(listbox)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(view.container.querySelector('.window-panel-layout')).not.toHaveClass('is-drawer-open')
+  })
+
   it.each(['xterm', 'terminal-find-shell', 'native'])('leaves Escape to %s terminal focus', (kind) => {
     const view = render(<Drawer />)
     fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))

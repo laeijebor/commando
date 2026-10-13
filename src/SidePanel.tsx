@@ -175,8 +175,9 @@ export function SidePanel({
       if (event.key !== 'Escape' || event.defaultPrevented) return
       const target = event.target instanceof Element ? event.target : document.activeElement
       if (target?.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .xterm, .terminal-find-shell, [data-native-terminal-pane]')) return
-      // Menus (e.g. the ports menu) dismiss themselves on Escape; let them win over the drawer.
-      const overlayOpen = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .command-palette, .pane-context-menu')].some((node) => {
+      // Open popup menus (e.g. the ports menu) dismiss themselves on Escape; let them win over the
+      // drawer. Listboxes are only checked by focus above: some stay on screen (chat agent switcher).
+      const overlayOpen = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"], .command-palette, .pane-context-menu')].some((node) => {
         const style = window.getComputedStyle(node)
         return !node.closest('[hidden], [inert], [aria-hidden="true"]') && style.display !== 'none' && style.visibility !== 'hidden'
       })
