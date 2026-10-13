@@ -13,7 +13,7 @@ import {
   type SpecialKey,
 } from '../shared/protocol'
 import type { PaneTerminalSink } from './paneStream'
-import { modifiedControlShiftS, semanticKeyForEvent } from './terminalInput'
+import { extractTerminalInput, macTerminalAction, modifiedControlShiftS, semanticKeyForEvent } from './terminalInput'
 import { sessionShortcutIndex } from './sessionShortcuts'
 import { activeTheme, onThemeChange } from './theme'
 
@@ -194,6 +194,42 @@ export function XtermPane({
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true
       if ((event.metaKey && event.key.toLowerCase() === 'k') || sessionShortcutIndex(event) !== null) {
+        return false
+      }
+      const macAction = macTerminalAction(event, isMac)
+      if (macAction && macAction !== 'selectAll') {
+        event.preventDefault()
+        if (macAction === 'cut') {
+          if (terminal.hasSelection() && terminal.getSelection()) {
+            void copyTerminalSelection(terminal.getSelection(), navigator.clipboard).then((copied) => {
+              if (copied) selectionCopiedRef.current()
+            })
+          } else if (connectedRef.current) {
+            const buffer = terminal.buffer.active
+            const rows = Array.from({ length: terminal.rows }, (_, row) => {
+              const line = buffer.getLine(buffer.viewportY + row)
+              let text = ''
+              for (let col = 0; col < terminal.cols; col += 1) {
+                const cell = line?.getCell(col)
+                if (!cell || cell.getWidth() === 0) continue
+                text += cell.isDim() ? ' ' : cell.getChars() || ' '
+              }
+              return text
+            })
+            const cut = extractTerminalInput({
+              rows, cols: terminal.cols,
+              cursorRow: buffer.baseY + buffer.cursorY - buffer.viewportY,
+              cursorCol: buffer.cursorX,
+            })
+            // Start the clipboard write during the keypress, before clearing any input.
+            if (cut && navigator.clipboard) {
+              void copyTerminalSelection(cut.text, navigator.clipboard).then((copied) => {
+                if (copied) selectionCopiedRef.current()
+                if (copied && connectedRef.current) inputRef.current(cut.clear)
+              })
+            }
+          }
+        } else if (connectedRef.current) inputRef.current(macAction.input)
         return false
       }
       if (
