@@ -425,6 +425,19 @@ describe('pane close and create shortcuts', () => {
     })))
   })
 
+  it('launches a Codex chat in an empty pane with the remembered Codex permission mode', async () => {
+    window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ 'codex:/repo': { permissionMode: 'plan' }, '/repo': { permissionMode: 'bypassPermissions' } }))
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, empty: true }]))
+    vi.mocked(fetch).mockImplementation(async (input) => new Response(JSON.stringify(
+      String(input).startsWith('/api/git/repo') ? { isRepo: true, mainRoot: '/repo' } : { launched: true },
+    ), { status: 200 }))
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'Start in this pane' })).getByRole('button', { name: 'Codex chat' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes/launch', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ paneId: adjacentPane.id, agent: { provider: 'codex-chat', permissionMode: 'plan' } }),
+    })))
+  })
+
   it('reports failed closes and disables close controls while disconnected', async () => {
     vi.stubGlobal('confirm', vi.fn(() => true))
     const view = await renderAppWithSnapshot()

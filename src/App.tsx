@@ -2851,6 +2851,12 @@ export function App() {
     }
   }
 
+  /** A Codex chat launch with the permission mode remembered for the path's repository. */
+  const rememberedCodexChatLaunch = async (path: string): Promise<SessionAgentLaunch> => {
+    const repoRoot = await gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined)
+    return { provider: 'codex-chat', permissionMode: loadChatLaunch(repoRoot ?? path, 'codex-chat').permissionMode }
+  }
+
   /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */
   const rememberedChatLaunch = async (path: string): Promise<SessionAgentLaunch> => {
     const [repoRoot, profiles] = await Promise.all([
@@ -2874,7 +2880,10 @@ export function App() {
     setPaneActionPending(true)
     setPaneActionError('')
     try {
-      const agent = choice === 'shell' ? undefined : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path) : { provider: choice }
+      const agent = choice === 'shell' ? undefined
+        : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path)
+          : choice === 'codex-chat' ? await rememberedCodexChatLaunch(pane.path)
+            : { provider: choice }
       await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
       // Focus lands once the snapshot swaps the launcher for the running pane.
       setPendingPaneFocus({ paneId })
