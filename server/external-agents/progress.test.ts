@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { claudeSource, findClaudeTranscript, parseClaudeLine } from './claude-transcript.js'
-import { codexSource, matchRollout, parseCodexLine, rolloutCandidates, type RolloutCandidate } from './codex-rollout.js'
+import { codexSource, findResumeRollout, matchRollout, parseCodexLine, RESUME_LOOKUP_BACKOFF_MS, rolloutCandidates, type ResumeRolloutLookup, type RolloutCandidate } from './codex-rollout.js'
 import { JsonlTail, type AgentProgress } from './progress.js'
 import { recognizeAgent, type AgentProcess } from './process-scan.js'
 
@@ -50,6 +50,58 @@ describe('Codex rollouts', () => {
     }
     const candidates = await rolloutCandidates(dir, new Date(2026, 9, 13, 12).getTime())
     expect(candidates.map((value) => value.sessionId).sort()).toEqual(['12', '13'])
+  })
+
+  it('finds old resumed rollouts newest year/month/day first and caches a successful lookup', async () => {
+    const dir = await temp()
+    const id = '00000000-0000-4000-8000-000000000001'
+    const paths: string[] = []
+    for (const date of ['2024/12/31', '2025/01/01', '2025/09/02', '2025/09/03']) {
+      const folder = join(dir, date)
+      await mkdir(folder, { recursive: true })
+      const path = join(folder, `rollout-example-${id}.jsonl`)
+      await writeFile(path, JSON.stringify({ timestamp: `${date.replaceAll('/', '-')}T06:30:10Z`, type: 'session_meta', payload: { id, cwd: '/work/example', originator: 'codex_exec' } }) + '\n')
+      paths.push(path)
+    }
+    expect(await rolloutCandidates(dir, start)).toEqual([])
+    const cache = new Map<string, ResumeRolloutLookup>()
+    const found = await findResumeRollout(dir, id, start, cache)
+    expect(found?.path).toBe(paths[3])
+    expect((await matchRollout([found!], { ...run, resume: true, resumeId: id }, '/work/example', new Set()))?.path).toBe(paths[3])
+    expect(await matchRollout([found!], { ...run, resume: true, resumeId: id }, '/other', new Set())).toBeUndefined()
+    expect(await matchRollout([found!], { ...run, resume: true, resumeId: id }, '/work/example', new Set([found!.path]))).toBeUndefined()
+    await rm(dir, { recursive: true })
+    expect(await findResumeRollout(dir, id, start + RESUME_LOOKUP_BACKOFF_MS, cache)).toBe(found)
+  })
+
+  it('caches missing resume ids until the retry back-off expires', async () => {
+    const dir = await temp()
+    const id = '00000000-0000-4000-8000-000000000001'
+    const cache = new Map<string, ResumeRolloutLookup>()
+    expect(await findResumeRollout(dir, id, start, cache)).toBeUndefined()
+    expect(cache.has(id)).toBe(true)
+    const folder = join(dir, '2025', '09', '03')
+    await mkdir(folder, { recursive: true })
+    const path = join(folder, `rollout-example-${id}.jsonl`)
+    await writeFile(path, JSON.stringify({ timestamp: '2025-09-03T06:30:10Z', type: 'session_meta', payload: { id, cwd: '/work/example', originator: 'codex_exec' } }) + '\n')
+    expect(await findResumeRollout(dir, id, start + RESUME_LOOKUP_BACKOFF_MS - 1, cache)).toBeUndefined()
+    expect((await findResumeRollout(dir, id, start + RESUME_LOOKUP_BACKOFF_MS, cache))?.path).toBe(path)
+  })
+
+  it('bounds archive directory traversal and ignores malformed or mismatched metadata', async () => {
+    const dir = await temp()
+    const id = '00000000-0000-4000-8000-000000000001'
+    const newer = join(dir, '2026', '09', '03')
+    const older = join(dir, '2025', '09', '03')
+    await mkdir(newer, { recursive: true })
+    await mkdir(older, { recursive: true })
+    await writeFile(join(newer, `rollout-z-${id}.jsonl`), 'garbled\n')
+    await writeFile(join(newer, `rollout-y-${id}.jsonl`), JSON.stringify({ timestamp: '2026-09-03T06:30:10Z', type: 'session_meta', payload: { id: 'other-id', cwd: '/work/example', originator: 'codex_exec' } }) + '\n')
+    const path = join(older, `rollout-x-${id}.jsonl`)
+    await writeFile(path, JSON.stringify({ timestamp: '2025-09-03T06:30:10Z', type: 'session_meta', payload: { id, cwd: '/work/example', originator: 'codex_exec' } }) + '\n')
+    const cache = new Map<string, ResumeRolloutLookup>()
+    expect(await findResumeRollout(dir, id, start, cache, 4)).toBeUndefined()
+    expect((await findResumeRollout(dir, id, start + RESUME_LOOKUP_BACKOFF_MS, cache))?.path).toBe(path)
   })
 
   it('parses an anonymised captured rollout without counting instructions or reasoning as tools', async () => {

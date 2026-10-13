@@ -41,7 +41,8 @@ export function parseProcesses(output: string): ProcessRow[] {
     const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)\s+(.+)$/)
     if (!match) return []
     const startedAt = Date.parse(match[5]!)
-    return Number.isFinite(startedAt) ? [{ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), tty: match[4]!, startedAt, command: match[6]! }] : []
+    const tty = match[4] === '?' ? '??' : match[4]!
+    return Number.isFinite(startedAt) ? [{ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), tty, startedAt, command: match[6]! }] : []
   })
 }
 
@@ -66,9 +67,7 @@ function executable(words: string[]): { name: string; args: string[] } {
 export function recognizeAgent(command: string): Pick<AgentProcess, 'runtime' | 'label' | 'resume' | 'resumeId' | 'cwdOverride' | 'model' | 'effort' | 'prompt'> | null {
   const { name, args } = executable(commandWords(command))
   if (name === 'codex' && args[0] === 'exec') {
-    const resume = args[1] === 'resume'
-    const resumeId = resume ? args.slice(2).find((arg) => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(arg)) : undefined
-    return { runtime: 'codex', label: 'codex exec', resume, ...(resumeId ? { resumeId } : {}), ...codexOptions(args.slice(1)), prompt: promptText(args.slice(resume ? 2 : 1).filter((arg) => arg !== resumeId), ['-C', '--cd', '-c', '--config', '--profile', '-i', '--image', '--sandbox', '-o', '--output-last-message', '--output-schema', '--color', '-a', '--ask-for-approval']) }
+    return { runtime: 'codex', label: 'codex exec', ...codexArguments(args.slice(1)) }
   }
   if (name === 'claude' && args.some((arg) => arg === '-p' || arg === '--print')
     && !args.some((arg, index) => (arg === '--input-format' && args[index + 1] === 'stream-json') || arg === '--input-format=stream-json')) {
@@ -99,22 +98,37 @@ function claudeResume(args: string[]): Pick<AgentProcess, 'resume' | 'resumeId'>
   return fork ? { resume: false } : { resume: continuing || Boolean(resumeId), ...(resumeId ? { resumeId } : {}) }
 }
 
-function codexOptions(args: string[]): Pick<AgentProcess, 'cwdOverride' | 'model' | 'effort'> {
+const codexValueFlags = new Set(['-m', '--model', '-c', '--config', '-C', '--cd', '-s', '--sandbox', '-p', '--profile', '-o', '--output-last-message', '-i', '--image', '--color', '--output-schema', '-a', '--ask-for-approval', '--add-dir', '--enable', '--disable', '--local-provider', '--thread-source'])
+
+function codexArguments(args: string[]): Pick<AgentProcess, 'resume' | 'resumeId' | 'prompt' | 'cwdOverride' | 'model' | 'effort'> {
   const options: Pick<AgentProcess, 'cwdOverride' | 'model' | 'effort'> = {}
+  const positional: string[] = []
+  let literal = false
+  let firstPositional = true
+  let resume = false
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === '--') break
-    const flag = args[index]!.match(/^(-C|--cd|-m|--model|-c|--config)(?:=(.*))?$/s)
-    if (!flag) continue
+    const arg = args[index]!
+    if (!literal && arg === '--') { literal = true; continue }
+    if (literal || arg === '-' || !arg.startsWith('-')) {
+      if (firstPositional && !literal && arg === 'resume') resume = true
+      else positional.push(arg)
+      firstPositional = false
+      continue
+    }
+    const flag = arg.match(/^([^=]+)(?:=(.*))?$/s)!
+    if (!codexValueFlags.has(flag[1]!)) continue
     const value = (flag[2] ?? args[++index] ?? '').replace(/^(['"])(.*)\1$/s, '$2')
     if (!value) continue
     if (flag[1] === '-C' || flag[1] === '--cd') options.cwdOverride = value
     else if (flag[1] === '-m' || flag[1] === '--model') options.model = value
-    else {
+    else if (flag[1] === '-c' || flag[1] === '--config') {
       const effort = value.match(/^model_reasoning_effort\s*=\s*(.+)$/)?.[1]?.trim().replace(/^(['"])(.*)\1$/s, '$2')
       if (effort) options.effort = effort
     }
   }
-  return options
+  const resumeId = resume && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(positional[0] ?? '') ? positional.shift() : undefined
+  const prompt = positional.includes('-') ? undefined : positional.join(' ').trim() || undefined
+  return { ...options, resume, ...(resumeId ? { resumeId } : {}), prompt }
 }
 
 function promptText(args: string[], extraValueFlags: string[] = []): string | undefined {

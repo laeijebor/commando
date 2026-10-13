@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { ChatSessionStatus, ChatSubagentState, ExternalAgentRun } from '../../shared/agent-chat.js'
 import { claudeSource, findClaudeTranscript } from './claude-transcript.js'
-import { codexSource, matchRollout, rolloutCandidates, type RolloutCandidate } from './codex-rollout.js'
+import { codexSource, findResumeRollout, matchRollout, rolloutCandidates, type ResumeRolloutLookup, type RolloutCandidate } from './codex-rollout.js'
 import { findAgentProcesses, indexProcesses, processCwd, readProcesses, runningCommand, type AgentProcess, type ProcessRow } from './process-scan.js'
 import type { AgentProgress, ProgressSource } from './progress.js'
 
@@ -63,6 +63,7 @@ export class ExternalAgentWatcher {
   private readonly paneBusyTimes = new Map<string, { since: number; lastBusyAt: number }>()
   private readonly orphanDecisions = new Map<string, { paneId?: string; cwd?: string }>()
   private readonly rolloutCache = new Map<string, RolloutCandidate>()
+  private readonly resumeRolloutCache = new Map<string, ResumeRolloutLookup>()
   private readonly published = new Map<string, string>()
   private readonly stopTimers = new Set<ReturnType<typeof setTimeout>>()
   private timer?: ReturnType<typeof setInterval>
@@ -195,8 +196,13 @@ export class ExternalAgentWatcher {
                 try {
                   if (this.dependencies.source) entry.source = await this.dependencies.source(entry.process, entry.cwd, claimed, now)
                   else if (entry.run.runtime === 'codex') {
-                    candidates ??= rolloutCandidates(join(process.env.CODEX_HOME || join(home, '.codex'), 'sessions'), now, this.rolloutCache)
-                    const candidate = await matchRollout(await candidates, entry.process, entry.cwd, claimed)
+                    const sessionsDir = join(process.env.CODEX_HOME || join(home, '.codex'), 'sessions')
+                    candidates ??= rolloutCandidates(sessionsDir, now, this.rolloutCache)
+                    let candidate = await matchRollout(await candidates, entry.process, entry.cwd, claimed)
+                    if (!candidate && entry.process.resumeId) {
+                      const archived = await findResumeRollout(sessionsDir, entry.process.resumeId, now, this.resumeRolloutCache)
+                      if (archived) candidate = await matchRollout([archived], entry.process, entry.cwd, claimed)
+                    }
                     if (candidate) entry.source = await codexSource(candidate, entry.process)
                   } else {
                     const path = await findClaudeTranscript(configDirs, entry.cwd, entry.process.startedAt, new Set([...claimed, ...chatTranscripts]), entry.process.prompt, entry.process)

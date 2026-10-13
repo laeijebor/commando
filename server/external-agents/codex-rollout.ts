@@ -13,6 +13,50 @@ export interface RolloutCandidate {
   prompt?: string
 }
 
+export interface ResumeRolloutLookup {
+  candidate?: RolloutCandidate
+  retryAt: number
+}
+
+export const RESUME_LOOKUP_BACKOFF_MS = 15_000
+
+async function readRolloutCandidate(path: string): Promise<RolloutCandidate | undefined> {
+  const line = record(await firstJsonLine(path).catch(() => undefined))
+  const payload = record(line.payload)
+  const startedAt = Date.parse(typeof payload.timestamp === 'string' ? payload.timestamp : String(line.timestamp))
+  if (line.type !== 'session_meta' || typeof payload.cwd !== 'string' || typeof payload.originator !== 'string' || !Number.isFinite(startedAt)) return undefined
+  return { path, cwd: payload.cwd, originator: payload.originator, startedAt, sessionId: typeof payload.id === 'string' ? payload.id : undefined }
+}
+
+/** Old resumed sessions need an archive lookup; cap directory and metadata reads per attempt. */
+export async function findResumeRollout(sessionsDir: string, resumeId: string, now: number, cache: Map<string, ResumeRolloutLookup>, maxDirectories = 4_096): Promise<RolloutCandidate | undefined> {
+  const known = cache.get(resumeId)
+  if (known && (known.candidate || now < known.retryAt)) return known.candidate
+  let directories = 0
+  let files = 0
+  const walk = async (dir: string, depth: number): Promise<RolloutCandidate | undefined> => {
+    if (depth > 6 || directories >= maxDirectories || files >= 64) return undefined
+    directories += 1
+    const entries = (await readdir(dir, { withFileTypes: true }).catch(() => [])).sort((a, b) => b.name.localeCompare(a.name))
+    for (const entry of entries) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        const candidate = await walk(path, depth + 1)
+        if (candidate) return candidate
+      } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith(`-${resumeId}.jsonl`)) {
+        if (files >= 64) break
+        files += 1
+        const candidate = await readRolloutCandidate(path)
+        if (candidate?.sessionId === resumeId) return candidate
+      }
+    }
+    return undefined
+  }
+  const candidate = await walk(sessionsDir, 0)
+  cache.set(resumeId, { candidate, retryAt: now + RESUME_LOOKUP_BACKOFF_MS })
+  return candidate
+}
+
 function codexUserText(value: unknown): string {
   const line = record(value)
   const payload = record(line.payload)
@@ -44,11 +88,8 @@ export async function rolloutCandidates(sessionsDir: string, now: number, cache 
       const path = join(dir, name)
       const known = cache.get(path)
       if (known) return known
-      const line = record(await firstJsonLine(path).catch(() => undefined))
-      const payload = record(line.payload)
-      const startedAt = Date.parse(typeof payload.timestamp === 'string' ? payload.timestamp : String(line.timestamp))
-      if (line.type !== 'session_meta' || typeof payload.cwd !== 'string' || typeof payload.originator !== 'string' || !Number.isFinite(startedAt)) return null
-      const candidate = { path, cwd: payload.cwd, originator: payload.originator, startedAt, sessionId: typeof payload.id === 'string' ? payload.id : undefined }
+      const candidate = await readRolloutCandidate(path)
+      if (!candidate) return null
       cache.set(path, candidate)
       return candidate
     }))

@@ -92,6 +92,33 @@ describe('external process detection', () => {
     expect(recognizeAgent('claude -p')?.prompt).toBeUndefined()
   })
 
+  it.each(['-m', '--model', '-c', '--config', '-C', '--cd', '-s', '--sandbox', '-p', '--profile', '-o', '--output-last-message', '-i', '--image', '--color', '--output-schema', '-a', '--ask-for-approval', '--add-dir', '--enable', '--disable', '--local-provider', '--thread-source'])('skips Codex value option %s before and after resume, including = forms', (flag) => {
+    const id = '00000000-0000-4000-8000-000000000001'
+    const otherId = '00000000-0000-4000-8000-000000000002'
+    for (const option of [`${flag} ${otherId}`, `${flag}=${otherId}`]) {
+      for (const args of [`${option} resume ${id} "Review new changes"`, `resume ${option} ${id} "Review new changes"`, `resume ${id} ${option} "Review new changes"`]) {
+        expect(recognizeAgent(`codex exec ${args}`)).toMatchObject({ resume: true, resumeId: id, prompt: 'Review new changes' })
+      }
+      expect(recognizeAgent(`codex exec ${option} "Review new changes"`)).toMatchObject({ resume: false, prompt: 'Review new changes' })
+    }
+  })
+
+  it.each(['--json', '--full-auto', '--skip-git-repo-check', '--oss', '--ephemeral'])('skips Codex boolean option %s without consuming the subcommand or id', (flag) => {
+    const id = '00000000-0000-4000-8000-000000000001'
+    for (const args of [`${flag} resume ${id}`, `resume ${flag} ${id}`, `${flag}=true resume ${id}`, `resume ${flag}=true ${id}`]) {
+      expect(recognizeAgent(`codex exec ${args} "Review new changes"`)).toMatchObject({ resume: true, resumeId: id, prompt: 'Review new changes' })
+    }
+  })
+
+  it('keeps Codex resume options, cwd and metadata consistent', () => {
+    const id = '00000000-0000-4000-8000-000000000001'
+    expect(recognizeAgent(`codex exec --json -C ../work -m gpt-6.1-sol resume --config='model_reasoning_effort="high"' --cd=/tmp/x ${id} "Review new changes"`)).toMatchObject({ resume: true, resumeId: id, cwdOverride: '/tmp/x', model: 'gpt-6.1-sol', effort: 'high', prompt: 'Review new changes' })
+    expect(recognizeAgent(`codex exec --json resume --last "Review new changes"`)).toMatchObject({ resume: true, prompt: 'Review new changes' })
+    expect(recognizeAgent(`codex exec --json resume ${id} -`)?.prompt).toBeUndefined()
+    expect(recognizeAgent(`codex exec --json -- resume ${id}`)).toMatchObject({ resume: false, prompt: `resume ${id}` })
+    expect(recognizeAgent(`codex exec --profile resume "Review new changes"`)).toMatchObject({ resume: false, prompt: 'Review new changes' })
+  })
+
   it.each(['--resume', '-r', '--session-id', '--resume=', '-r=', '--session-id='])('parses Claude explicit session flag %s', (flag) => {
     const id = '00000000-0000-4000-8000-000000000001'
     const option = flag.endsWith('=') ? `${flag}${id}` : `${flag} ${id}`
@@ -142,5 +169,10 @@ describe('external process detection', () => {
     const rows = parseProcesses('  50 40 50 ?? Tue Oct 13 07:30:10 2026 node /opt/bin/codex.js exec prompt\n  60 1 60 ttys001 Tue Oct 13 07:30:10 2026 claude -p prompt\ngarbled\n')
     const startedAt = new Date('Tue Oct 13 07:30:10 2026').getTime()
     expect(rows).toEqual([processRow(50, 40, 'node /opt/bin/codex.js exec prompt', startedAt), processRow(60, 1, 'claude -p prompt', startedAt, 60, 'ttys001')])
+  })
+
+  it.each(['?', '??'])('normalises ps no-terminal marker %s', (tty) => {
+    const rows = parseProcesses(` 50 1 50 ${tty} Tue Oct 13 07:30:10 2026 codex exec prompt\n`)
+    expect(rows[0]?.tty).toBe('??')
   })
 })

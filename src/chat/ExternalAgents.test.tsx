@@ -24,6 +24,7 @@ function show(runs: ExternalAgentRun[], overrides: Partial<ChatState> = {}) {
 
 describe('external runs in chat', () => {
   it('renders runtime/model/effort and progress, offers Stop in both surfaces and never opens a transcript', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now)
     const flow = show([run])
     const group = screen.getByTestId('subagent-group')
     expect(group).toHaveTextContent('Codex · gpt-6.1-sol high')

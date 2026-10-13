@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ExternalAgentRun } from '../../shared/agent-chat.js'
 import { ExternalAgentWatcher, QUIET_AFTER_MS, SCAN_AFTER_BUSY_MS, MAX_ORPHAN_LOOKUPS_PER_POLL, runState, type WatchedPane } from './watcher.js'
-import type { AgentProcess, ProcessRow } from './process-scan.js'
+import { parseProcesses, type AgentProcess, type ProcessRow } from './process-scan.js'
 import type { AgentProgress, ProgressSource } from './progress.js'
 
 const row = (pid: number, ppid: number, command: string, startedAt = 1_000, pgid = pid, tty = '??'): ProcessRow => ({ pid, ppid, command, startedAt, pgid, tty })
@@ -174,6 +174,16 @@ describe('external watcher', () => {
     await env.watcher.poll()
     expect(env.runs()).toEqual([])
     expect(env.cwd).not.toHaveBeenCalled()
+  })
+
+  it.each(['?', '??'])('attributes a detached orphan parsed from ps with tty %s', async (tty) => {
+    const env = setup()
+    const orphan = parseProcesses(`60 1 60 ${tty} Tue Oct 13 07:30:10 2026 codex exec prompt\n`)[0]!
+    env.setNow(orphan.startedAt)
+    env.setTable([...roots, orphan])
+    await env.watcher.poll()
+    expect(env.runs()).toHaveLength(1)
+    expect(env.cwd.mock.calls).toEqual([[60]])
   })
 
   it('includes a fast launch between the last idle observation and the first busy observation', async () => {
@@ -450,6 +460,31 @@ describe('external watcher', () => {
       watchers.push(watcher)
       await watcher.poll()
       expect(watcher.snapshots()[0]!.runs[0]).toMatchObject({ label: 'Review the sample change.', state: 'completed', toolUses: 1 })
+    } finally { await rm(home, { recursive: true, force: true }) }
+  })
+
+  it('attaches an older Codex resume rollout after skipping options before the subcommand', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'external-codex-resume-'))
+    try {
+      const id = '00000000-0000-4000-8000-000000000001'
+      const startedAt = Date.parse('2026-10-13T06:30:10Z')
+      const dir = join(home, '.codex', 'sessions', '2025', '09', '03')
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `rollout-example-${id}.jsonl`), [
+        { timestamp: '2025-09-03T06:30:10Z', type: 'session_meta', payload: { id, cwd: '/work/example', originator: 'codex_exec' } },
+        { timestamp: '2025-09-03T06:31:10Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'Old completion' } },
+        { timestamp: new Date(startedAt).toISOString(), type: 'turn_context', payload: { model: 'resumed-model', effort: 'high' } },
+        { timestamp: new Date(startedAt).toISOString(), type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'Review new changes' }] } } },
+        { timestamp: new Date(startedAt + 1_000).toISOString(), type: 'event_msg', payload: { type: 'item_completed', item: { type: 'CommandExecution', command: ['/bin/zsh', '-lc', 'npm test'] } } },
+      ].map((line) => JSON.stringify(line) + '\n').join(''))
+      const watcher = new ExternalAgentWatcher({
+        home, panes: () => [{ paneId: '%1', panePid: 10, hostPid: 20, status: 'running' }], publish: vi.fn(),
+        processes: async () => [...roots, row(50, 40, `codex exec --json --cd=/work/example resume ${id} "Review new changes"`, startedAt)],
+        cwd: async () => '/work/original', now: () => startedAt + 2_000,
+      })
+      watchers.push(watcher)
+      await watcher.poll()
+      expect(watcher.snapshots()[0]!.runs[0]).toMatchObject({ label: 'Review new changes', model: 'resumed-model', effort: 'high', toolUses: 1, lastAction: '$ npm test', state: 'running' })
     } finally { await rm(home, { recursive: true, force: true }) }
   })
 
