@@ -6,6 +6,8 @@ import type { PrAutofixSnapshot } from './pr-autofix.js'
 import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
+import { PrReadCache } from './pr-read-cache.js'
+import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
 import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 export type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
@@ -33,7 +35,10 @@ const PANE_PULL_REQUEST_PAGE_SIZE = 100
 const LOW_RATE_LIMIT_POINTS = 500
 const RATE_LIMIT_BACKOFF_MS = 60_000
 const MAX_RATE_LIMIT_BACKOFF_MS = 15 * 60_000
-const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt }'
+const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt cost limit }'
+const PR_METADATA_TTL_MS = 5 * 60_000
+const PR_CONVERSATION_TTL_MS = 60_000
+const PR_CHECKS_TTL_MS = 30_000
 
 const PR_STATUS_FIELDS = `
   stackEntry { position stack { number size baseRefName } }
@@ -50,6 +55,7 @@ const PR_STATUS_FIELDS = `
 
 const THREADS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
+  ${RATE_LIMIT_FIELD}
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: ${THREAD_PAGE_SIZE}) {
@@ -61,6 +67,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 }`.trim()
 const REVIEW_THREAD_FIELDS = 'id isResolved viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
 const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  ${RATE_LIMIT_FIELD}
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $cursor) {
@@ -127,6 +134,7 @@ export class PrServiceError extends Error {
     readonly code: string,
     message: string,
     readonly retryAt?: number,
+    readonly throttleScope?: 'primary' | 'secondary',
   ) {
     super(message)
     this.name = 'PrServiceError'
@@ -185,7 +193,8 @@ function classifyGhFailure(error: import('node:child_process').ExecFileException
     return new PrServiceError(401, 'auth_required', 'gh is not authenticated — run `gh auth login` on the daemon host')
   }
   if (/rate limit|abuse detection|HTTP 429/i.test(stderr)) {
-    return new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached')
+    return new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached', undefined,
+      /secondary|abuse detection/i.test(stderr) ? 'secondary' : /API rate limit exceeded/i.test(stderr) ? 'primary' : undefined)
   }
   if (/Could not resolve to a Repository/i.test(stderr)) {
     return new PrServiceError(404, 'repo_not_found', 'Repository was not found')
@@ -198,9 +207,9 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function rateLimited(retryAt: number): PrServiceError {
+function rateLimited(retryAt: number, lowBudget = false): PrServiceError {
   const time = new Date(retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  return new PrServiceError(429, 'rate_limited', `GitHub rate limit is low — PR sync resumes at ${time}`, retryAt)
+  return new PrServiceError(429, 'rate_limited', `${lowBudget ? 'GitHub GraphQL budget is low — PR sync paused until' : 'GitHub reads paused — retrying at'} ${time}`, retryAt)
 }
 
 function invalidUpstream(): PrServiceError {
@@ -658,12 +667,15 @@ export class PrService {
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
   private readonly batchedRepos = new Set<string>()
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
-  private readonly autofixCommentsCache = new Map<string, CacheEntry<PrAutofixSnapshot['comments']>>()
+  private readonly metadataCache: PrReadCache<JsonRecord>
+  private readonly commentPagesCache: PrReadCache<JsonRecord[]>
+  private readonly reviewThreadsCache: PrReadCache<Map<number, PrReviewThread>>
+  private readonly checksCache: PrReadCache<PrDetails['checks']>
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
-  private pausedUntil = 0
-  private backoffMs = 0
+  private graphqlPausedUntil = 0
+  private readonly backoffs = { rest: { until: 0, delay: 0 }, graphql: { until: 0, delay: 0 }, shared: { until: 0, delay: 0 } }
 
   constructor(options?: {
     runner?: GhRunner
@@ -676,6 +688,7 @@ export class PrService {
   }) {
     this.runner = options?.runner ?? defaultRunner
     this.stacks = new PrStackService(this.runner, (repo) => {
+      this.invalidateDetailCaches(repo)
       this.entities.invalidate(repo)
       for (const key of this.listCache.keys()) if (key.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(key)
       this.paneListCache.clear()
@@ -686,6 +699,10 @@ export class PrService {
     this.reposTtlMs = options?.reposTtlMs ?? REPOS_CACHE_TTL_MS
     this.repoContextTtlMs = options?.repoContextTtlMs ?? REPO_CONTEXT_CACHE_TTL_MS
     this.now = options?.now ?? Date.now
+    this.metadataCache = new PrReadCache(PR_METADATA_TTL_MS, this.now)
+    this.commentPagesCache = new PrReadCache(PR_CONVERSATION_TTL_MS, this.now, 300)
+    this.reviewThreadsCache = new PrReadCache(PR_CONVERSATION_TTL_MS, this.now)
+    this.checksCache = new PrReadCache(PR_CHECKS_TTL_MS, this.now)
   }
 
   async mergePullRequest(repoInput: unknown, numberInput: unknown, headInput: unknown, baseInput?: unknown): Promise<{ merged: true }> {
@@ -727,6 +744,7 @@ export class PrService {
       return { merged: true }
     } finally {
       this.merging.delete(key)
+      this.invalidateDetailCaches(repo, number)
       this.entities.invalidate(repo)
       if (merged) this.entities.markMerged(repo, number, this.now())
       // A failed/ambiguous write can still have changed GitHub state.
@@ -739,12 +757,17 @@ export class PrService {
 
   // Every polled GitHub read goes through here; user actions such as merge do not.
   private async ghRead(args: string[]): Promise<string> {
-    if (this.now() < this.pausedUntil) throw rateLimited(this.pausedUntil)
+    // Low GraphQL budget must not block REST's separate primary budget.
+    // Unclassified upstream throttling remains shared (secondary limits can span both).
+    const resource = args[1] === 'graphql' ? 'graphql' : 'rest'
+    const throttledUntil = Math.max(this.backoffs.shared.until, this.backoffs[resource].until)
+    const retryAt = Math.max(throttledUntil, resource === 'graphql' ? this.graphqlPausedUntil : 0)
+    if (this.now() < retryAt) throw rateLimited(retryAt, retryAt > throttledUntil)
     let output: string
     try {
       output = await this.runner(args)
     } catch (error) {
-      if (error instanceof PrServiceError && error.code === 'rate_limited') throw this.backOff()
+      if (error instanceof PrServiceError && error.code === 'rate_limited') throw this.backOff(error.throttleScope === 'primary' ? resource : 'shared')
       throw error
     }
     let payload: unknown
@@ -754,22 +777,27 @@ export class PrService {
       return output
     }
     if (!isRecord(payload)) return output
-    if (Array.isArray(payload.errors) && payload.errors.some((error) => isRecord(error) && error.type === 'RATE_LIMITED')) {
-      throw this.backOff()
-    }
-    this.backoffMs = 0
     const rateLimit = isRecord(payload.data) && isRecord(payload.data.rateLimit) ? payload.data.rateLimit : null
     if (rateLimit && typeof rateLimit.remaining === 'number' && rateLimit.remaining < LOW_RATE_LIMIT_POINTS) {
       const resetAt = typeof rateLimit.resetAt === 'string' ? Date.parse(rateLimit.resetAt) : NaN
-      if (Number.isFinite(resetAt)) this.pausedUntil = Math.max(this.pausedUntil, resetAt)
+      if (Number.isFinite(resetAt)) this.graphqlPausedUntil = Math.max(this.graphqlPausedUntil, resetAt)
     }
+    if (Array.isArray(payload.errors) && payload.errors.some((error) => isRecord(error) && error.type === 'RATE_LIMITED')) {
+      const secondary = payload.errors.some((error) => isRecord(error) && typeof error.message === 'string' && /secondary|abuse/i.test(error.message))
+      throw this.backOff(secondary ? 'shared' : resource)
+    }
+    this.backoffs[resource].delay = 0
+    this.backoffs.shared.delay = 0
     return output
   }
 
-  private backOff(): PrServiceError {
-    this.backoffMs = Math.min(Math.max(this.backoffMs * 2, RATE_LIMIT_BACKOFF_MS), MAX_RATE_LIMIT_BACKOFF_MS)
-    this.pausedUntil = Math.max(this.pausedUntil, this.now() + this.backoffMs)
-    return rateLimited(this.pausedUntil)
+  private backOff(resource: 'rest' | 'graphql' | 'shared' = 'shared'): PrServiceError {
+    const backoff = this.backoffs[resource]
+    // Parallel failures belong to one attempt, not five successive retries.
+    if (this.now() < backoff.until) return rateLimited(Math.max(backoff.until, resource === 'graphql' ? this.graphqlPausedUntil : 0))
+    backoff.delay = Math.min(Math.max(backoff.delay * 2, RATE_LIMIT_BACKOFF_MS), MAX_RATE_LIMIT_BACKOFF_MS)
+    backoff.until = this.now() + backoff.delay
+    return rateLimited(Math.max(backoff.until, resource === 'graphql' ? this.graphqlPausedUntil : 0))
   }
 
   async listPullRequests(
@@ -854,6 +882,7 @@ export class PrService {
       truncated: linked.truncated,
       fetchedAt,
     }
+    this.invalidateChangedReferences(list)
     this.entities.ingest(list, order)
     return list
   }
@@ -982,6 +1011,7 @@ export class PrService {
       mineTruncated: authored.truncated || reviewRequested.truncated,
       fetchedAt,
     }
+    this.invalidateChangedReferences(list)
     this.entities.ingest(list, order)
     return list
   }
@@ -1043,30 +1073,29 @@ export class PrService {
     }
     if (pr.state !== 'open') return { state: pr.state, url: pr.url, headSha: '', failingChecks: [], comments: [], viewer: list.viewer ?? '' }
     if (!pr.preview?.headRefOid || !list.viewer) throw invalidUpstream()
-    const key = `${repo.toLowerCase()}::${number}`
-    let cached = this.autofixCommentsCache.get(key)
-    if (!cached || this.now() - cached.at >= 60_000) {
-      const promise = this.fetchAutofixComments(repo, number)
-      cached = { at: this.now(), promise }
-      this.autofixCommentsCache.set(key, cached)
-      const entry = cached
-      void promise.catch(() => { if (this.autofixCommentsCache.get(key) === entry) this.autofixCommentsCache.delete(key) })
-      if (this.autofixCommentsCache.size > MAX_LIST_CACHE_ENTRIES) this.autofixCommentsCache.delete(this.autofixCommentsCache.keys().next().value!)
-    }
+    const comments = await this.fetchAutofixComments(repo, number)
     return { state: pr.state, url: pr.url, headSha: pr.preview.headRefOid,
       failingChecks: pr.checks?.runs.filter((run) => run.state === 'fail').map((run) => run.name) ?? [],
-      comments: await cached.promise, viewer: list.viewer }
+      comments, viewer: list.viewer }
+  }
+
+  private async commentPages(repo: string, number: number, kind: number, refresh = false) {
+    const paths = [`issues/${number}/comments`, `pulls/${number}/reviews`, `pulls/${number}/comments`]
+    return this.commentPagesCache.read(`${this.detailKey(repo, number)}${kind}`, async () => {
+      const parsed: unknown = JSON.parse(await this.ghRead(['api', `repos/${repo}/${paths[kind]}?per_page=100`, '--paginate', '--slurp']))
+      if (!Array.isArray(parsed) || !parsed.every(Array.isArray) || !parsed.flat().every(isRecord)) throw invalidUpstream()
+      return parsed.flat() as JsonRecord[]
+    }, refresh)
   }
 
   private async fetchAutofixComments(repo: string, number: number): Promise<PrAutofixSnapshot['comments']> {
-    const paths = [`issues/${number}/comments`, `pulls/${number}/reviews`, `pulls/${number}/comments`]
     const comments: PrAutofixSnapshot['comments'] = []
-    // Keep extra polling modest and go through the shared GitHub backoff gate.
-    for (const [kind, path] of paths.entries()) {
-      const parsed: unknown = JSON.parse(await this.ghRead(['api', `repos/${repo}/${path}?per_page=100`, '--paginate', '--slurp']))
-      if (!Array.isArray(parsed) || !parsed.every(Array.isArray)) throw invalidUpstream()
-      for (const entry of parsed.flat()) {
-        if (!isRecord(entry) || typeof entry.id !== 'number') throw invalidUpstream()
+    for (let kind = 0; kind < 3; kind++) {
+      const snapshot = await this.commentPages(repo, number, kind)
+      // Stale fallback is for display; automation must wait for fresh evidence.
+      if (snapshot.stale) throw rateLimited(snapshot.retryAt ?? this.now() + RATE_LIMIT_BACKOFF_MS)
+      for (const entry of snapshot.value) {
+        if (typeof entry.id !== 'number') throw invalidUpstream()
         if (kind === 1 && entry.state !== 'CHANGES_REQUESTED') continue
         const author = optionalObject(entry, 'user')
         if (typeof author?.login !== 'string') continue
@@ -1078,19 +1107,93 @@ export class PrService {
     return comments
   }
 
-  async pullRequestDetails(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrDetails> {
+  private detailKey(repo: string, number: number): string { return `${repo.toLowerCase()}#${number}/` }
+
+  private invalidateDetailCaches(repo: string, number?: number): void {
+    const prefix = number === undefined ? `${repo.toLowerCase()}#` : this.detailKey(repo, number)
+    this.metadataCache.invalidate(prefix)
+    this.commentPagesCache.invalidate(prefix)
+    this.reviewThreadsCache.invalidate(prefix)
+    this.checksCache.invalidate(prefix)
+  }
+
+  private invalidateChangedReferences(list: PrList | PanePrList): void {
+    for (const item of list.pullRequests) {
+      const repo = 'repo' in list ? list.repo : (item as PanePrSummary).repo
+      const summary = 'repo' in list ? item as PrSummary : (item as PanePrSummary).preview
+      if (!summary) continue
+      const key = this.detailKey(repo, item.number)
+      const cached = this.metadataCache.peek(key)
+      if (!cached) continue
+      const head = optionalObject(cached, 'head')
+      const base = optionalObject(cached, 'base')
+      if ((summary.headRefOid && summary.headRefOid !== head?.sha)
+        || (summary.baseRefOid && summary.baseRefOid !== base?.sha)
+        || (summary.baseRefName && summary.baseRefName !== base?.ref)) this.invalidateDetailCaches(repo, item.number)
+    }
+  }
+
+  private metadata(repo: string, number: number, refresh = false) {
+    return this.metadataCache.read(this.detailKey(repo, number), async () => {
+      const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
+      const head = requiredString(objectField(pr, 'head'), 'sha')
+      if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
+      return pr
+    }, refresh)
+  }
+
+  async pullRequestDetails(repoInput: unknown, numberInput: unknown, options: { refresh?: boolean } = {}): Promise<PrDetails> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
-    const root = `repos/${repo}`
-    const [reviewThreads, prOutput, ...pages] = await Promise.all([
-      this.pullRequestReviewThreads(repo, number),
-      this.ghRead(['api', `${root}/pulls/${number}`]),
-      ...[`issues/${number}/comments`, `pulls/${number}/reviews`, `pulls/${number}/comments`].map((path) =>
-        this.ghRead(['api', `${root}/${path}?per_page=100`, '--paginate', '--slurp'])),
+    const [threadSnapshot, metadata, ...pages] = await Promise.all([
+      this.reviewThreadsCache.read(this.detailKey(repo, number), () => this.pullRequestReviewThreads(repo, number), options.refresh)
+        .catch((cause: unknown) => {
+          if (!(cause instanceof PrServiceError) || cause.code !== 'rate_limited') throw cause
+          return { value: new Map<number, PrReviewThread>(), fetchedAt: 0, stale: true, retryAt: cause.retryAt, warning: cause.message }
+        }),
+      this.metadata(repo, number, options.refresh),
+      ...[0, 1, 2].map((kind) => this.commentPages(repo, number, kind, options.refresh)),
     ])
-    const pr = parseGhObject(prOutput)
+    const pr = metadata.value
     const head = requiredString(objectField(pr, 'head'), 'sha')
-    if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
+    const checkSnapshot = await this.checksCache.read(`${this.detailKey(repo, number)}${head}`, () => this.fetchChecks(repo, head), options.refresh)
+    const checks = checkSnapshot.value
+    const reviewThreads = threadSnapshot.value
+    const conversation: import('../shared/pr-quick-look.js').PrConversationEntry[] = []
+    pages.forEach((snapshot, kind) => {
+      for (const entry of snapshot.value) {
+        if (!isRecord(entry)) throw invalidUpstream()
+        const user = optionalObject(entry, 'user')
+        conversation.push({
+          id: `${kind}:${entry.id}`,
+          author: typeof user?.login === 'string' ? user.login : 'someone',
+          body: typeof entry.body === 'string' ? stripCommandoPrMarkers(entry.body) : '',
+          url: typeof entry.html_url === 'string' ? entry.html_url : '',
+          createdAt: typeof entry.submitted_at === 'string' ? entry.submitted_at : typeof entry.created_at === 'string' ? entry.created_at : '',
+          kind: kind === 1 && typeof entry.state === 'string' ? entry.state.toLowerCase().replaceAll('_', ' ') : kind === 2 ? 'inline comment' : 'comment',
+          ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
+          ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
+          ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
+          ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
+          ...(kind === 2 && reviewThreads.has(Number(entry.id)) ? { thread: reviewThreads.get(Number(entry.id)) } : {}),
+          ...(kind === 1 && typeof entry.id === 'number' ? { reviewId: entry.id }
+            : kind === 2 && typeof entry.pull_request_review_id === 'number' ? { reviewId: entry.pull_request_review_id } : {}),
+        })
+      }
+    })
+    conversation.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const base = optionalObject(pr, 'base')
+    const snapshots = [metadata, threadSnapshot, checkSnapshot, ...pages]
+    const stale = snapshots.filter((snapshot) => snapshot.stale)
+    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks, headOid: head,
+      fetchedAt: { metadata: metadata.fetchedAt, conversation: Math.min(...(threadSnapshot.fetchedAt ? [threadSnapshot.fetchedAt] : []), ...pages.map((page) => page.fetchedAt)), checks: checkSnapshot.fetchedAt },
+      ...(stale.length ? { stale: true, retryAt: Math.max(...stale.map((snapshot) => snapshot.retryAt ?? 0)), warning: stale[0].warning } : {}),
+      ...(threadSnapshot.fetchedAt ? { unresolvedThreads: [...reviewThreads.values()].filter((thread) => !thread.isResolved).length } : {}),
+      ...(base && typeof base.ref === 'string' && typeof base.sha === 'string' ? { mergeTarget: { branch: base.ref, oid: base.sha } } : {}) }
+  }
+
+  private async fetchChecks(repo: string, head: string): Promise<PrDetails['checks']> {
+    const root = `repos/${repo}`
     const checkOutputs = await Promise.all([
       this.ghRead(['api', `${root}/commits/${head}/check-runs?per_page=100`, '--paginate', '--slurp']),
       this.ghRead(['api', `${root}/commits/${head}/statuses?per_page=100`, '--paginate', '--slurp']),
@@ -1119,35 +1222,7 @@ export class PrService {
       seen.add(`status:${name}`)
       checks.push({ name, state: status.state === 'pending' ? 'pending' : status.state === 'success' ? 'pass' : 'fail', url: typeof status.target_url === 'string' ? status.target_url : '' })
     }
-    const conversation: import('../shared/pr-quick-look.js').PrConversationEntry[] = []
-    pages.forEach((output, kind) => {
-      const parsed: unknown = JSON.parse(output)
-      if (!Array.isArray(parsed) || !parsed.every(Array.isArray)) throw invalidUpstream()
-      for (const entry of parsed.flat()) {
-        if (!isRecord(entry)) throw invalidUpstream()
-        const user = optionalObject(entry, 'user')
-        conversation.push({
-          id: `${kind}:${entry.id}`,
-          author: typeof user?.login === 'string' ? user.login : 'someone',
-          body: typeof entry.body === 'string' ? stripCommandoPrMarkers(entry.body) : '',
-          url: typeof entry.html_url === 'string' ? entry.html_url : '',
-          createdAt: typeof entry.submitted_at === 'string' ? entry.submitted_at : typeof entry.created_at === 'string' ? entry.created_at : '',
-          kind: kind === 1 && typeof entry.state === 'string' ? entry.state.toLowerCase().replaceAll('_', ' ') : kind === 2 ? 'inline comment' : 'comment',
-          ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
-          ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
-          ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
-          ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
-          ...(kind === 2 && reviewThreads.has(Number(entry.id)) ? { thread: reviewThreads.get(Number(entry.id)) } : {}),
-          ...(kind === 1 && typeof entry.id === 'number' ? { reviewId: entry.id }
-            : kind === 2 && typeof entry.pull_request_review_id === 'number' ? { reviewId: entry.pull_request_review_id } : {}),
-        })
-      }
-    })
-    conversation.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    const base = optionalObject(pr, 'base')
-    return { body: typeof pr.body === 'string' ? stripCommandoPrMarkers(pr.body) : '', conversation, checks, headOid: head,
-      unresolvedThreads: [...reviewThreads.values()].filter((thread) => !thread.isResolved).length,
-      ...(base && typeof base.ref === 'string' && typeof base.sha === 'string' ? { mergeTarget: { branch: base.ref, oid: base.sha } } : {}) }
+    return checks
   }
 
   private async pullRequestReviewThreads(repo: string, number: number): Promise<Map<number, import('../shared/pr-quick-look.js').PrReviewThread>> {
@@ -1245,6 +1320,7 @@ export class PrService {
   }
 
   private invalidateReviewThreadCaches(repo: string, number: number): void {
+    this.invalidateDetailCaches(repo, number)
     this.entities.invalidate(repo)
     for (const key of this.listCache.keys()) {
       if (key.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(key)

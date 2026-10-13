@@ -348,6 +348,48 @@ describe('pane PR status', () => {
     expect(runner).toHaveBeenCalledTimes(8)
   })
 
+  it('shares full comment pages between conversation and auto-fix without shortening UI bodies', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      if (args.includes('graphql')) {
+        if (args.some((arg) => arg.startsWith('targetQuery='))) return linkedPayload()
+        return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
+          nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+        } } } } })
+      }
+      if (args[1].endsWith('/pulls/12')) return JSON.stringify({ head: { sha: '2'.repeat(40) }, base: { ref: pullRequestNode().baseRefName, sha: pullRequestNode().baseRefOid }, body: 'Description' })
+      if (args[1].includes('/check-runs')) return JSON.stringify([{ check_runs: [] }])
+      if (args[1].includes('/statuses')) return JSON.stringify([[]])
+      return JSON.stringify([[{ id: 1, state: 'CHANGES_REQUESTED', body: 'x'.repeat(900), user: { login: 'reviewer' } }]])
+    })
+    const service = new PrService({ runner })
+    const details = await service.pullRequestDetails('acme/widgets', 12)
+    const autofix = await service.autofixSnapshot('ACME/Widgets', 12, targetId)
+    expect(runner).toHaveBeenCalledTimes(8)
+    expect(details.conversation.every((entry) => entry.body.length === 900)).toBe(true)
+    expect(autofix.comments.every((comment) => comment.body.length === 500)).toBe(true)
+  })
+
+  it('invalidates long-lived metadata when pane discovery reports a new head', async () => {
+    let currentHead = '2'.repeat(40)
+    const runner = vi.fn(async (args: string[]) => {
+      if (args.includes('graphql')) {
+        if (args.some((arg) => arg.startsWith('targetQuery='))) return linkedPayload({ headRefOid: currentHead })
+        return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
+          nodes: [], pageInfo: { hasNextPage: false, endCursor: null },
+        } } } } })
+      }
+      if (args[1].endsWith('/pulls/12')) return JSON.stringify({ head: { sha: currentHead } })
+      if (args[1].includes('/check-runs')) return JSON.stringify([{ check_runs: [] }])
+      return JSON.stringify([[]])
+    })
+    const service = new PrService({ runner })
+    expect((await service.pullRequestDetails('acme/widgets', 12)).headOid).toBe(currentHead)
+    currentHead = '4'.repeat(40)
+    await service.listPanePullRequests(targetId)
+    expect((await service.pullRequestDetails('acme/widgets', 12)).headOid).toBe(currentHead)
+    expect(runner.mock.calls.filter(([args]) => args[1].endsWith('/pulls/12'))).toHaveLength(2)
+  })
+
   it.each(['MERGED', 'CLOSED'])('does not fetch comments for a %s PR', async (state) => {
     const { service, runner } = serviceWith(linkedPayload({ state }))
     expect((await service.autofixSnapshot('acme/widgets', 12, targetId)).state).toBe(state.toLowerCase())
@@ -1129,6 +1171,29 @@ describe('GitHub rate limit backpressure', () => {
     expect(runner).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps REST reads available when only the protective GraphQL reserve is reached', async () => {
+    const now = Date.parse('2026-10-03T10:00:00Z')
+    const payload = JSON.parse(graphqlPayload([pullRequestNode()]))
+    payload.data.rateLimit = { remaining: 120, resetAt: '2026-10-03T10:20:00Z' }
+    const runner = vi.fn().mockResolvedValueOnce(JSON.stringify(payload))
+      .mockResolvedValueOnce(JSON.stringify({ state: 'closed', head: { ref: 'feature', sha: 'a'.repeat(40) }, base: { ref: 'main', sha: 'b'.repeat(40) } }))
+    const service = new PrService({ runner, now: () => now })
+    await service.listPullRequests('acme/widgets', 'open')
+    await expect(service.pullRequestConflicts('acme/widgets', 12)).resolves.toMatchObject({ state: 'not-open' })
+    expect(runner).toHaveBeenCalledTimes(2)
+    await expect(service.listPanePullRequests('123e4567-e89b-42d3-a456-426614174000')).rejects.toMatchObject({ code: 'rate_limited' })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it('scopes identified primary throttling to the API that rejected the request', async () => {
+    const runner = vi.fn().mockRejectedValueOnce(new PrServiceError(429, 'rate_limited', 'Primary limit', undefined, 'primary'))
+      .mockResolvedValueOnce(JSON.stringify({ state: 'closed', head: { ref: 'feature', sha: 'a'.repeat(40) }, base: { ref: 'main', sha: 'b'.repeat(40) } }))
+    const service = new PrService({ runner, now: () => 1_000_000 })
+    await expect(service.listPullRequests('acme/widgets', 'open')).rejects.toMatchObject({ code: 'rate_limited' })
+    await expect(service.pullRequestConflicts('acme/widgets', 12)).resolves.toMatchObject({ state: 'not-open' })
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
   it('treats a RATE_LIMITED GraphQL error as a rate limit', async () => {
     const { service, runner } = serviceWith(JSON.stringify({ errors: [{ type: 'RATE_LIMITED', message: 'API rate limit exceeded' }] }))
     await expect(service.listPullRequests('acme/widgets', 'open')).rejects.toMatchObject({ code: 'rate_limited' })
@@ -1161,7 +1226,7 @@ describe('GitHub rate limit backpressure', () => {
       const query = args.find((arg) => arg.startsWith('query='))!
       if (query.includes('fragment PrFields on PullRequest { id }')) return discovery
       if (query.includes('repository(owner:')) throw new PrServiceError(504, 'github_timeout', 'GitHub request timed out')
-      expect(query).toContain('rateLimit { remaining resetAt }')
+      expect(query).toContain('rateLimit { remaining resetAt cost limit }')
       const ids = JSON.parse(/nodes\(ids: (\[[^\]]*\])/.exec(query)![1]!) as string[]
       return JSON.stringify({ data: {
         rateLimit: { remaining: 100, resetAt: '2026-10-03T10:20:00Z' },
@@ -1178,6 +1243,6 @@ describe('GitHub rate limit backpressure', () => {
   it('asks GitHub for the remaining budget in polled list queries', async () => {
     const { service, runner } = serviceWith(graphqlPayload([pullRequestNode()]))
     await service.listPullRequests('acme/widgets', 'open')
-    expect(runner.mock.calls[0]![0].find((arg) => arg.startsWith('query='))).toContain('rateLimit { remaining resetAt }')
+    expect(runner.mock.calls[0]![0].find((arg) => arg.startsWith('query='))).toContain('rateLimit { remaining resetAt cost limit }')
   })
 })

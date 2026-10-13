@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { PrService } from './prs.js'
+import { PrService, PrServiceError } from './prs.js'
 
 const head = '2'.repeat(40)
 const main = '3'.repeat(40)
@@ -105,5 +105,116 @@ describe('PR quick look data', () => {
     await expect(service.pullRequestDetails('../bad', 12)).rejects.toMatchObject({ status: 400 })
     await expect(service.pullRequestDiff('acme/widgets', '-1')).rejects.toMatchObject({ status: 400 })
     expect(runner).not.toHaveBeenCalled()
+  })
+})
+
+
+function cachedDetailsFixture() {
+  let now = 1_000_000
+  let body = 'Cached description'
+  const runner = vi.fn(async (args: string[]) => {
+    const endpoint = args[1]
+    if (endpoint === 'graphql') return JSON.stringify({ data: { repository: { pullRequest: {
+      reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    } } } })
+    if (endpoint.endsWith('/pulls/12')) return JSON.stringify({ body, head: { sha: head }, base: { ref: 'main', sha: main } })
+    if (endpoint.includes('/check-runs')) return JSON.stringify([{ check_runs: [] }])
+    if (endpoint.includes('/issues/')) return JSON.stringify([[{ id: 1, body: 'Full comment', user: { login: 'reviewer' } }]])
+    return JSON.stringify([[]])
+  })
+  const service = new PrService({ runner, now: () => now })
+  return { service, runner, advance: (ms: number) => { now += ms }, setBody: (value: string) => { body = value } }
+}
+
+describe('shared PR resource caches', () => {
+  it('deduplicates concurrent detail reads across repository casing and reuses all fresh resources', async () => {
+    const { service, runner } = cachedDetailsFixture()
+    const [first, second] = await Promise.all([
+      service.pullRequestDetails('acme/widgets', 12), service.pullRequestDetails('ACME/Widgets', 12),
+    ])
+    expect(first).toEqual(second)
+    expect(runner).toHaveBeenCalledTimes(7)
+    await service.pullRequestDetails('acme/widgets', 12)
+    expect(runner).toHaveBeenCalledTimes(7)
+  })
+
+  it('expires checks and conversation independently while retaining description and metadata for five minutes', async () => {
+    const { service, runner, advance, setBody } = cachedDetailsFixture()
+    await service.pullRequestDetails('acme/widgets', 12)
+    runner.mockClear()
+    setBody('Changed on GitHub')
+    advance(30_000)
+    expect((await service.pullRequestDetails('acme/widgets', 12)).body).toBe('Cached description')
+    expect(runner).toHaveBeenCalledTimes(2)
+    expect(runner.mock.calls.every(([args]) => args[1].includes('/commits/'))).toBe(true)
+    runner.mockClear()
+    advance(30_000)
+    await service.pullRequestDetails('acme/widgets', 12)
+    expect(runner).toHaveBeenCalledTimes(6)
+    expect(runner.mock.calls.some(([args]) => args[1].endsWith('/pulls/12'))).toBe(false)
+    advance(240_000)
+    expect((await service.pullRequestDetails('acme/widgets', 12)).body).toBe('Changed on GitHub')
+  })
+
+  it('manual refresh bypasses every TTL and concurrent refreshes still share requests', async () => {
+    const { service, runner, setBody } = cachedDetailsFixture()
+    await service.pullRequestDetails('acme/widgets', 12)
+    runner.mockClear()
+    setBody('Fresh description')
+    const values = await Promise.all([service.pullRequestDetails('acme/widgets', 12, { refresh: true }),
+      service.pullRequestDetails('acme/widgets', 12, { refresh: true })])
+    expect(values.every((value) => value.body === 'Fresh description')).toBe(true)
+    expect(runner).toHaveBeenCalledTimes(7)
+  })
+
+  it('retains cached content with original timestamps and retryAt during shared upstream throttling', async () => {
+    const { service, runner } = cachedDetailsFixture()
+    const previous = await service.pullRequestDetails('acme/widgets', 12)
+    runner.mockRejectedValue(new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached'))
+    const paused = await service.pullRequestDetails('acme/widgets', 12, { refresh: true })
+    expect(paused).toMatchObject({ body: previous.body, conversation: previous.conversation, stale: true,
+      retryAt: 1_060_000, fetchedAt: previous.fetchedAt })
+  })
+
+  it('can display REST details without thread actions when the GraphQL budget is exhausted', async () => {
+    const { service, runner } = cachedDetailsFixture()
+    const original = runner.getMockImplementation()!
+    runner.mockImplementation(async (args) => {
+      if (args[1] === 'graphql') throw new PrServiceError(429, 'rate_limited', 'Primary GraphQL limit', undefined, 'primary')
+      return original(args)
+    })
+    const result = await service.pullRequestDetails('acme/widgets', 12)
+    expect(result).toMatchObject({ body: 'Cached description', stale: true, retryAt: 1_060_000 })
+    expect(result.conversation).toHaveLength(1)
+    expect(result.conversation[0].thread).toBeUndefined()
+    expect(result.unresolvedThreads).toBeUndefined()
+    expect(result.fetchedAt?.conversation).toBe(1_000_000)
+  })
+
+  it('does not hide permission failures behind stale content', async () => {
+    const { service, runner } = cachedDetailsFixture()
+    await service.pullRequestDetails('acme/widgets', 12)
+    runner.mockRejectedValue(new PrServiceError(401, 'auth_required', 'Log in again'))
+    await expect(service.pullRequestDetails('acme/widgets', 12, { refresh: true })).rejects.toMatchObject({ code: 'auth_required' })
+  })
+
+  it('invalidates resources after a thread write, including a read already in flight', async () => {
+    const { service, runner, setBody } = cachedDetailsFixture()
+    await service.pullRequestDetails('acme/widgets', 12)
+    const original = runner.getMockImplementation()!
+    let finishOld!: (value: string) => void
+    runner.mockImplementation(async (args) => args[1].endsWith('/pulls/12')
+      ? new Promise<string>((resolve) => { finishOld = resolve }) : original(args))
+    const oldRead = service.pullRequestDetails('acme/widgets', 12, { refresh: true })
+    await vi.waitFor(() => expect(finishOld).toBeDefined())
+    runner.mockResolvedValueOnce(JSON.stringify({ data: { node: { id: 'PRRT_1', isResolved: true,
+      pullRequest: { number: 12, repository: { nameWithOwner: 'acme/widgets' } } } } }))
+    await service.actOnReviewThread('acme/widgets', 12, 'PRRT_1', 'resolve')
+    runner.mockImplementation(original)
+    setBody('After write')
+    expect((await service.pullRequestDetails('acme/widgets', 12)).body).toBe('After write')
+    finishOld(JSON.stringify({ body: 'Before write', head: { sha: head }, base: { ref: 'main', sha: main } }))
+    await oldRead
+    expect((await service.pullRequestDetails('acme/widgets', 12)).body).toBe('After write')
   })
 })

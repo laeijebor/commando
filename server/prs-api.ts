@@ -196,7 +196,7 @@ export async function handlePrsApi(
       const repo = url.searchParams.get('repo')
       const number = url.searchParams.get('number')
       json(response, 200, path[0] === 'details'
-        ? { details: await service.pullRequestDetails(repo, number) }
+        ? { details: await service.pullRequestDetails(repo, number, { refresh: url.searchParams.get('refresh') === '1' }) }
         : path[0] === 'conflicts' ? { conflicts: await service.pullRequestConflicts(repo, number) }
         : { diff: await service.pullRequestDiff(repo, number) })
       return true
@@ -211,7 +211,7 @@ export async function handlePrsApi(
       const repo = url.searchParams.get('repo')
       const number = url.searchParams.get('number')
       json(response, 200, path[0] === 'details'
-        ? { details: await service.pullRequestDetails(repo, number) }
+        ? { details: await service.pullRequestDetails(repo, number, { refresh: url.searchParams.get('refresh') === '1' }) }
         : { diff: await service.pullRequestDiff(repo, number) })
       return true
     }

@@ -29,6 +29,10 @@ export type PrDetails = {
   mergeTarget?: { branch: string; oid: string }
   headOid?: string
   unresolvedThreads?: number
+  fetchedAt?: { metadata: number; conversation: number; checks: number }
+  stale?: boolean
+  retryAt?: number
+  warning?: string
 }
 
 export type PrConflicts = {
