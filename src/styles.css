@@ -4703,6 +4703,11 @@ body.is-resizing-hud-pinned-note {
 .side-panel-add-menu { position: absolute; top: 26px; right: 6px; z-index: 3; padding: 8px; border: 1px solid var(--border-mid); background: var(--surface-raised); color: var(--text-soft); font-size: 12px; }
 .side-panel-add-menu div, .side-panel-add-menu form { display: flex; gap: 6px; margin-top: 8px; }
 .side-panel-add-menu button, .side-panel-add-menu input { border: 1px solid var(--border-mid); border-radius: 3px; padding: 5px 8px; background: var(--surface-raised); color: var(--text); font: inherit; }
+.side-panel-closed-prs { display: grid; gap: 6px; margin-top: 8px; max-width: 360px; }
+.side-panel-closed-prs h3 { margin: 0; color: var(--text-dim); font-size: 11px; font-weight: 500; }
+.side-panel-closed-prs button { display: flex; align-items: center; gap: 6px; min-width: 0; text-align: left; }
+.side-panel-closed-prs .side-panel-pr-indicator { flex-shrink: 0; }
+.side-panel-closed-prs span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side-panel-add-menu button { cursor: pointer; }
 .side-panel-add-menu input { min-width: 0; flex: 1; }
 .pane-tab-count { flex-shrink: 0; color: var(--muted); font-size: 10px; white-space: nowrap; }

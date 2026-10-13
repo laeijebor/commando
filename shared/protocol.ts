@@ -740,6 +740,7 @@ export type ServerMessage =
       webPanes: WebPane[]
       /** Per-pane panel selection, including built-in keys. */
       activeTabs?: Record<string, string>
+      dismissedPrTabs?: Record<string, Record<string, string>>
       feedback?: Record<string, WebPaneFeedbackInfo>
       navigateRequests?: Record<string, WebPaneNavigateRequest>
       spotlightRequests?: Record<string, CanvasSpotlightRequest>

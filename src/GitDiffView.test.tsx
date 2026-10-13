@@ -3,6 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 
@@ -52,6 +53,15 @@ function renderView(api = fakeApi(), onClose = vi.fn(), initialSummary = summary
   )
   return { api, onClose }
 }
+
+it('establishes its own container for the narrow layout query', async () => {
+  renderView()
+  await screen.findByText('DIFF')
+  expect(screen.getByRole('region', { name: 'Git diff' }).parentElement).toHaveClass('git-diff-view')
+  const css = readFileSync('src/git-diff.css', 'utf8')
+  expect(css).toMatch(/\.git-diff-view\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*git-diff;/)
+  expect(css).toContain('@container git-diff (width < 640px)')
+})
 
 it.each(['summary', 'diff'] as const)('clears an initial %s error after a successful silent refresh', async (failedRequest) => {
   vi.useFakeTimers()
@@ -241,6 +251,52 @@ it('keeps an explicit branch comparison when footer stats use the same label for
 })
 
 describe('GitDiffView engine and layout toggles', () => {
+  it.each(['summary', 'fileDiff'] as const)('retries an interrupted comparison %s as a foreground request', async (operation) => {
+    const api = fakeApi()
+    let finish!: () => void
+    if (operation === 'summary') {
+      vi.mocked(api.summary).mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve(summary) }))
+    } else {
+      vi.mocked(api.fileDiff).mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve({ file: 'a.ts', diff: 'stale' }) }))
+    }
+    const props = { paneId: '%1', panePath: '/repo', api, initialSummary: null,
+      comparison: { base: 'base-tip', head: 'head-tip', baseLabel: 'main', headLabel: 'feature' } }
+    const view = render(<GitDiffView {...props} />)
+    await waitFor(() => expect(api[operation]).toHaveBeenCalledTimes(1))
+    view.rerender(<GitDiffView {...props} visible={false} />)
+    vi.mocked(api[operation]).mockRejectedValueOnce(new Error('Unknown git ref: head-tip'))
+    view.rerender(<GitDiffView {...props} visible />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unknown git ref: head-tip')
+    expect(api[operation]).toHaveBeenCalledTimes(2)
+    await act(async () => { finish() })
+    expect(screen.getByRole('alert')).toHaveTextContent('Unknown git ref: head-tip')
+    expect(screen.queryByText('stale')).not.toBeInTheDocument()
+  })
+
+  it('defers comparison summary, file and all-file search requests while hidden', async () => {
+    vi.useFakeTimers()
+    const api = fakeApi()
+    const props = { paneId: '%1', panePath: '/repo', api, initialSummary: null,
+      comparison: { base: 'base-tip', head: 'head-tip', baseLabel: 'main', headLabel: 'feature' } }
+    let view!: ReturnType<typeof render>
+    await act(async () => { view = render(<GitDiffView {...props} visible={false} />) })
+    fireEvent.click(screen.getByRole('button', { name: 'all' }))
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'DIFF' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(api.summary).not.toHaveBeenCalled()
+    expect(api.fileDiff).not.toHaveBeenCalled()
+    expect(api.search).not.toHaveBeenCalled()
+    await act(async () => { view.rerender(<GitDiffView {...props} visible />) })
+    expect(api.summary).toHaveBeenCalledWith('%1', 'base-tip', 'head-tip')
+    expect(api.fileDiff).toHaveBeenCalledWith('%1', 'a.ts', expect.objectContaining({ target: 'base-tip', head: 'head-tip' }))
+    await act(async () => { view.rerender(<GitDiffView {...props} visible={false} />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(api.search).not.toHaveBeenCalled()
+    await act(async () => { view.rerender(<GitDiffView {...props} visible />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+    expect(api.search).toHaveBeenCalledExactlyOnceWith('%1', 'DIFF', 'base-tip', 'head-tip')
+  })
+
   it('re-requests the diff with the chosen engine and layout, and persists them', async () => {
     const { api } = renderView()
     const fileDiff = api.fileDiff as ReturnType<typeof vi.fn>
