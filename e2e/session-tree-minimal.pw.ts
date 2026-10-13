@@ -3,7 +3,7 @@ import { createServer, type ViteDevServer } from 'vite'
 import type { AgentStatus, CommandoSnapshot, PaneMark, SessionBrief, SessionIde, TmuxPane } from '../shared/protocol'
 import type { PanePrSummary } from '../src/prsApi'
 
-const port = Number(process.env.COMMANDO_E2E_VITE_PORT ?? 5298)
+const port = Number(process.env.COMMANDO_E2E_VITE_PORT ?? 5299)
 let vite: ViteDevServer
 test.beforeAll(async () => {
   vite = await createServer({ server: { host: '127.0.0.1', port, strictPort: true,
