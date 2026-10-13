@@ -1,8 +1,8 @@
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { chatProfileConfigDir, defaultClaudeProfile, type GitRepoInfo } from '../shared/tmux-create.js'
+import { chatProfileConfigDir, defaultClaudeProfile, sessionAgentArgv, type GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
-import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
+import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, emptyPaneCommand, emptyPaneShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
 import { chatPlansDir } from './chat-plans-dir.js'
 
 const separator = '\u001f'
@@ -355,6 +355,86 @@ describe('TmuxCreator', () => {
       '-s',
       'work',
     ])
+  })
+})
+
+describe('empty sessions', () => {
+  it('starts an idle pane and marks it empty', async () => {
+    const run = runner()
+    const result = await new TmuxCreator(run, ['-L', 'test']).createSession({ name: 'work', cwd: '/tmp', empty: true })
+    expect(result.agentLaunch).toBeUndefined()
+    expect(run.mock.calls.map(([args]) => args)).toEqual([
+      ['-L', 'test', 'new-session', '-d', '-P', '-F', expect.any(String), '-s', 'work', '-c', '/tmp', emptyPaneCommand()],
+      ['-L', 'test', 'set-option', '-p', '-t', '%12', '@commando_empty', '1'],
+    ])
+    expect(emptyPaneShellCommand()).toMatch(/exec tail -f \/dev\/null$/)
+  })
+
+  it('rejects an empty session that also starts an agent', async () => {
+    const run = runner()
+    await expect(new TmuxCreator(run, []).createSession({ name: 'work', empty: true, agent: { provider: 'codex' } })).rejects.toThrow('cannot also start')
+    await expect(new TmuxCreator(run, []).createSession({ name: 'work', empty: 'yes' } as never)).rejects.toThrow('boolean')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('lets a preparing pane mark itself empty once preparation succeeds', async () => {
+    const run = vi.fn(async (args: readonly string[]) => {
+      if (args.includes('has-session')) throw new Error("can't find session")
+      return output()
+    })
+    const git = {
+      probe: async (): Promise<GitRepoInfo> => ({ isRepo: true, root: '/repo', mainRoot: '/repo' }),
+      createWorktree: async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => ({ worktree: { path: input.path, branch: input.branch, base: '', reusedBranch: false }, rollback: async () => {} }),
+    }
+    const resolve = vi.fn(async () => '/opt/bin/tmux')
+    await new TmuxCreator(run, [], git, resolve, {}).createSession({ name: 'work', cwd: '/repo', empty: true, worktree: { branch: 'work', prepareCommand: 'pnpm i' } })
+    const script = emptyPaneShellCommand({ command: 'pnpm i', tmux: '/opt/bin/tmux' })
+    expect(resolve).toHaveBeenCalledWith('tmux', {})
+    expect(run.mock.calls.find(([args]) => args.includes('new-session'))?.[0].at(-1)).toBe(emptyPaneCommand({ command: 'pnpm i', tmux: '/opt/bin/tmux' }))
+    expect(run.mock.calls.some(([args]) => args.includes('set-option'))).toBe(false)
+    // A failed preparation leaves a shell to investigate in, not an empty launcher.
+    expect(script.indexOf('pnpm i')).toBeLessThan(script.indexOf("'/opt/bin/tmux' set-option -p -t \"$TMUX_PANE\" @commando_empty 1"))
+    expect(script.indexOf('exec "${SHELL:-/bin/sh}" -l')).toBeLessThan(script.indexOf('set-option'))
+  })
+})
+
+describe('launching into an empty pane', () => {
+  const tmux = (marker: string, options: { respawnFails?: boolean } = {}) => vi.fn(async (args: readonly string[]): Promise<string> => {
+    if (args.includes('display-message')) return `${marker}\n`
+    if (args.includes('respawn-pane') && options.respawnFails) throw new Error('respawn failed')
+    return ''
+  })
+
+  it('clears the marker, then replaces the idle process with a login shell', async () => {
+    const run = tmux('1')
+    await new TmuxCreator(run, ['-L', 'test']).launchInEmptyPane({ paneId: '%3' })
+    expect(run.mock.calls.map(([args]) => args)).toEqual([
+      ['-L', 'test', 'display-message', '-p', '-t', '%3', '#{@commando_empty}'],
+      ['-L', 'test', 'set-option', '-p', '-u', '-t', '%3', '@commando_empty'],
+      ['-L', 'test', 'respawn-pane', '-k', '-t', '%3', 'exec "${SHELL:-/bin/sh}" -l'],
+    ])
+  })
+
+  it('starts an agent with the daemon environment scoped to the pane', async () => {
+    const run = tmux('1')
+    const env = { COMMANDO_PORT: '4410' }
+    await new TmuxCreator(run, [], undefined, async () => '/host/bin/codex', env).launchInEmptyPane({ paneId: '%3', agent: { provider: 'codex', prompt: 'Hi' } })
+    const respawn = run.mock.calls.map(([args]) => args).find((args) => args.includes('respawn-pane'))!
+    expect(respawn).toContain('COMMANDO_PORT=4410')
+    expect(respawn.at(-1)).toBe(agentLaunchPaneCommand(['/host/bin/codex', ...sessionAgentArgv({ provider: 'codex', prompt: 'Hi' }).slice(1)], undefined, env))
+  })
+
+  it('never touches a pane that is already running something', async () => {
+    const run = tmux('')
+    await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('already running')
+    expect(run).toHaveBeenCalledOnce()
+    await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '3' })).rejects.toThrow('Invalid tmux pane id')
+  })
+
+  it('marks the pane empty again when the launch fails', async () => {
+    const run = tmux('1', { respawnFails: true })
+    await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('respawn failed')
+    expect(run.mock.calls.at(-1)?.[0]).toEqual(['set-option', '-p', '-t', '%3', '@commando_empty', '1'])
   })
 })
 

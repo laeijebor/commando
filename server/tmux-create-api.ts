@@ -71,6 +71,12 @@ export async function handleTmuxCreateApi(
 
   try {
     const input = await body(request)
+    if (url.pathname === `${ROOT}/panes/launch`) {
+      await creator.launchInEmptyPane(input as never)
+      await onCreated()
+      json(response, 200, { launched: true })
+      return true
+    }
     let result: TmuxCreateResponse | null = null
     if (url.pathname === `${ROOT}/sessions`) {
       result = await creator.createSession(input as never)
