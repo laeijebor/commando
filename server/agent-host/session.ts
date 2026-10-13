@@ -348,6 +348,8 @@ export class AgentSession implements ChatProviderSession {
   private handedOver = false
   /** The fast-mode notice last shown, so each turn's result doesn't repeat it. */
   private fastNotice: string | null = null
+  /** Claude's own fastMode flag, which can lag the chat's pick when turning it off fails. */
+  private fastFlag = false
   /**
    * Names the session's image folder. A new conversation is given this id up
    * front, so a resume (which keeps the id) finds the folder its notes name.
@@ -423,6 +425,7 @@ export class AgentSession implements ChatProviderSession {
     if (this.spec.returnedFromClaudeCode) this.emitItems(this.mapper.notice('info', RETURNED_FROM_CLAUDE_CODE))
     const canUseTool: CanUseTool = (toolName, input, options) => this.requestPermission(toolName, input, options)
     const readableDirs = [...this.openImageDirs(notedSessions), ...(this.spec.readableDirectories ?? [])]
+    this.fastFlag = Boolean(this.spec.fast)
     this.queryHandle = this.runQuery({
       prompt: this.input,
       options: {
@@ -846,7 +849,6 @@ export class AgentSession implements ChatProviderSession {
       this.emitItems(this.mapper.notice('error', "This session isn't running, so its settings can't change."))
       return
     }
-    let clearFast = false
     if (change.model !== undefined) {
       const option = this.info.models?.find((model) => model.value === change.model)
       if (this.info.models && !option) {
@@ -861,7 +863,6 @@ export class AgentSession implements ChatProviderSession {
           const keepEffort = effort && (!option || option.efforts?.includes(effort))
           // Fast mode stays on only while the model offers it, so a later switch back doesn't turn it on unasked.
           const keepFast = fast && (!option || option.supportsFast)
-          clearFast = Boolean(fast && !keepFast)
           this.info = {
             ...rest,
             model: option?.resolvedModel ?? change.model,
@@ -875,10 +876,14 @@ export class AgentSession implements ChatProviderSession {
       }
     }
     // After the switch is recorded, so a refusal here can't leave the chat naming the old model.
-    if (clearFast) {
-      await handle.applyFlagSettings({ fastMode: false }).catch((error: unknown) => {
+    // A flag a failed clear left on is retried on each later switch (a fast pick below sets it anyway).
+    if (change.model !== undefined && change.fast === undefined && this.fastFlag && !this.info.fast) {
+      try {
+        await handle.applyFlagSettings({ fastMode: false })
+        this.fastFlag = false
+      } catch (error) {
         this.emitItems(this.mapper.notice('error', `Couldn't turn fast mode off: ${errorText(error)}`))
-      })
+      }
     }
     // A stale picker can offer an effort the current model lacks, which would run as another.
     const running = selectedModelOption(this.info)
@@ -899,6 +904,7 @@ export class AgentSession implements ChatProviderSession {
     } else if (change.fast !== undefined) {
       try {
         await handle.applyFlagSettings({ fastMode: change.fast })
+        this.fastFlag = change.fast
         const { fast: _previous, ...rest } = this.info
         this.info = change.fast ? { ...rest, fast: true } : rest
         this.fastNotice = null

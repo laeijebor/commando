@@ -507,6 +507,12 @@ describe('AgentSession settings', () => {
     expect(sessions.at(-1)).toMatchObject({ selectedModel: 'sonnet', model: 'claude-sonnet-5-5' })
     expect(sessions.at(-1)?.fast).toBeUndefined()
     expect([...items.values()].flatMap((item) => item.kind === 'notice' ? [item.text] : [])).toEqual(["Couldn't turn fast mode off: busy"])
+    // Claude's flag is still on, so switching back to a fast model retries the clear rather than running fast unasked.
+    await session.configure({ model: 'default' })
+    expect(fake.applyFlagSettings).toHaveBeenLastCalledWith({ fastMode: false })
+    expect(fake.applyFlagSettings).toHaveBeenCalledTimes(2)
+    await session.configure({ model: 'sonnet' })
+    expect(fake.applyFlagSettings).toHaveBeenCalledTimes(2)
   })
 
   it('says once why a fast chat runs at standard speed', async () => {
