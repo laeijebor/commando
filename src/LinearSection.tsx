@@ -2,6 +2,7 @@ import { ArrowUpRight, Check, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, 
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { MarkdownPre } from './MarkdownCode'
 import { createLinearApi, type LinearAccount, type LinearBoard, type LinearComment, type LinearIssueDetail, type LinearProject } from './linearApi'
 import './linear-section.css'
 
@@ -13,6 +14,7 @@ const markdownComponents: Components = {
   a({ node: _node, ...props }) {
     return <a {...props} target="_blank" rel="noreferrer" />
   },
+  pre: MarkdownPre,
 }
 
 function MarkdownContent({ children }: { children: string }) {

@@ -1,5 +1,5 @@
 import type { AgentChatRequest } from './agent-chats.js'
-import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
+import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatHandoffInfo, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 import type { ChatStashEntry } from './chat-stash.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
@@ -778,7 +778,7 @@ export type ServerMessage =
   /** A chat's `/` menu list changed. */
   | { type: 'chat_commands'; paneId: string; commands: ChatCommand[] }
   /** Conversations running in Claude Code that started as a chat, so their panes offer the way back. */
-  | { type: 'chat_handoffs'; sessionIds: string[] }
+  | { type: 'chat_handoffs'; sessionIds: string[]; handoffs?: ChatHandoffInfo[] }
   /** Answers one client's `chat_file_search`. */
   | ({ type: 'chat_file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   /** Answers one client's `chat_subagent_transcript`. */

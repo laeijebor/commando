@@ -34,6 +34,7 @@ import {
   mentionText,
   modelMenuAvailable,
   moveCommandToStart,
+  providerLabel,
   replaceRange,
   type ComposerTrigger,
 } from '../../shared/chat-composer'
@@ -90,7 +91,7 @@ function ApprovalPanel({ request, pendingCount, cwd, disabled, onAnswer }: { req
 }
 
 // AskUserQuestion, after t3code's ComposerPendingUserInputPanel.
-function QuestionPanel({ request, disabled, onAnswer }: { request: RequestItem; disabled: boolean; onAnswer: (answer: ChatAnswer) => void }) {
+function QuestionPanel({ request, provider, disabled, onAnswer }: { request: RequestItem; provider: string; disabled: boolean; onAnswer: (answer: ChatAnswer) => void }) {
   const questions = request.questions ?? []
   const [selected, setSelected] = useState<Record<string, string[]>>({})
   const [other, setOther] = useState<Record<string, string>>({})
@@ -107,8 +108,8 @@ function QuestionPanel({ request, disabled, onAnswer }: { request: RequestItem; 
   }
   const complete = questions.every((question) => answerFor(question.question))
   return (
-    <div className="flex max-h-[50vh] flex-col gap-3 overflow-y-auto border-b border-border bg-warning-surface px-3 py-2.5" role="group" aria-label="Claude is asking">
-      <span className="text-2xs font-semibold uppercase tracking-wide text-warning">Claude is asking</span>
+    <div className="flex max-h-[50vh] flex-col gap-3 overflow-y-auto border-b border-border bg-warning-surface px-3 py-2.5" role="group" aria-label={`${provider} is asking`}>
+      <span className="text-2xs font-semibold uppercase tracking-wide text-warning">{provider} is asking</span>
       {questions.map((question) => {
         const chosen = selected[question.question] ?? []
         return (
@@ -255,7 +256,7 @@ function menuGroups(
     const rest = matched.filter((command) => command.kind === 'command')
     const skillGroup: ComposerMenuGroup = {
       label: 'Skills',
-      ...(trigger.atStart ? {} : { note: 'Claude can run these mid-message' }),
+      ...(trigger.atStart ? {} : { note: `${providerLabel(session)} can run these mid-message` }),
       items: skills.map((command) => ({ key: `skill:${command.name}`, type: 'command' as const, command, runsHere: true })),
     }
     const commandGroup: ComposerMenuGroup = {
@@ -270,7 +271,7 @@ function menuGroups(
     const commandsFirst = Boolean(query) && (natives.some((native) => native.name.startsWith(query)) || matched[0]?.kind === 'command')
     return {
       groups: commandsFirst ? [commandGroup, skillGroup] : [skillGroup, commandGroup],
-      status: commands ? null : hostTakesInput(session) ? "Claude's commands appear once the session has started" : "Restart this chat to list Claude's commands",
+      status: commands ? null : hostTakesInput(session) ? `${providerLabel(session)}'s commands appear once the session has started` : `Restart this chat to list ${providerLabel(session)}'s commands`,
     }
   }
   if (trigger.kind === 'mention') {
@@ -390,6 +391,7 @@ export function ChatComposer({
   const fileInput = useRef<HTMLInputElement>(null)
   const pendingCaret = useRef<number | null>(null)
   const menuId = useId()
+  const provider = providerLabel(session)
   const running = session.status === 'running' || session.status === 'waiting'
   const closed = session.status === 'closed' || session.status === 'error'
   // A switch to Claude Code takes the draft as it is; answers and Stop still work.
@@ -622,7 +624,7 @@ export function ChatComposer({
     if (restored === undefined) {
       const fit = fitAttachments(attachments.length, carried.images.length)
       const waiting = carried.images.length - fit.accepted
-      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before Claude Code ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
+      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'} ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
       if (!carried.text && fit.accepted === 0) return
       restored = fit.accepted
       takenCarries.set(carried.id, restored)
@@ -781,10 +783,11 @@ export function ChatComposer({
         onDrop={onDrop}
         data-testid="chat-composer"
       >
-        {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} /> : null}
-        {planFollowUp ? <PlanReadyBanner title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
+        {relayTarget && onClearRelay ? <RelayChip provider={provider} label={relayTarget.label} onClear={onClearRelay} /> : null}
+        {planFollowUp ? <PlanReadyBanner provider={provider} session={session} title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
         {queue.length && onQueue ? (
           <QueuedMessages
+            provider={provider}
             queue={queue}
             disabled={!hostConnected}
             onChange={onQueue}
@@ -796,7 +799,7 @@ export function ChatComposer({
         ) : null}
         {request ? (
           request.requestKind === 'question'
-            ? <QuestionPanel key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
+            ? <QuestionPanel provider={provider} key={request.requestId} request={request} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
             : <ApprovalPanel request={request} pendingCount={requests.length} cwd={session.cwd} disabled={!hostConnected} onAnswer={(answer) => onAnswer(request.requestId, answer)} />
         ) : null}
         {stash.menuOpen ? (
@@ -867,15 +870,15 @@ export function ChatComposer({
           placeholder={!hostConnected
             ? 'Reconnecting to the agent host…'
             : switching
-              ? 'Switching to Claude Code…'
+              ? `Switching to ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'}…`
                 : closed
                 ? 'This session has ended'
                 : relayTarget
-                  ? `Message @${relayTarget.label} through main Claude…`
+                  ? `Message @${relayTarget.label} through main ${provider}…`
                   : running
                     ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
-                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : 'Ask Claude… / for commands, @ for files'}
-          aria-label="Message Claude"
+                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : `Ask ${provider}… / for commands, @ for files`}
+          aria-label={`Message ${provider}`}
           aria-controls={stash.menuOpen ? stashMenuId : triggerMenuOpen ? menuId : undefined}
           aria-autocomplete="list"
           aria-activedescendant={stash.menuOpen ? (stash.activeId ? `${stashMenuId}-${stash.activeId}` : undefined) : triggerMenuOpen && active ? `${menuId}-${active.key}` : undefined}
@@ -925,7 +928,7 @@ export function ChatComposer({
             ) : null}
           </span>
           {session.contextUsage ? (
-            <ContextMeter usage={session.contextUsage} canCompact={!disabled && !running} onCompact={() => onSend('/compact')} />
+            <ContextMeter usage={session.contextUsage} canCompact={session.provider === 'claude' && !disabled && !running} onCompact={() => onSend('/compact')} />
           ) : null}
           {running ? (
             <Button size="icon-sm" variant="outline" aria-label="Stop" title={queue.length ? 'Stop (Esc): queued messages come back here' : 'Stop (Esc)'} onClick={interrupt} disabled={!hostConnected}>
@@ -933,19 +936,19 @@ export function ChatComposer({
             </Button>
           ) : null}
           {running && turnFlow && !relayTarget ? (
-            <Button size="icon-sm" variant="outline" aria-label="Steer now" title="Steer now (⌘Enter): ends Claude's turn at its next safe point and sends this" onClick={() => submit(true)} disabled={!canSend}>
+            <Button size="icon-sm" variant="outline" aria-label="Steer now" title={`Steer now (⌘Enter): ends ${provider}'s turn at its next safe point and sends this`} onClick={() => submit(true)} disabled={!canSend}>
               <Zap aria-hidden="true" />
             </Button>
           ) : null}
           {planFollowUp && onImplement && !refining ? (
             <ImplementButton disabled={disabled} onImplement={onImplement} {...(onImplementInNewPane ? { onImplementInNewPane } : {})} />
           ) : planFollowUp && refining ? (
-            <Button size="sm" onClick={() => submit()} disabled={!canSend} title="Send your notes; Claude stays in plan mode">Refine</Button>
+            <Button size="sm" onClick={() => submit()} disabled={!canSend} title={`Send your notes; ${provider} stays in plan mode`}>Refine</Button>
           ) : (
             <Button
               size="icon-sm"
               aria-label={running && turnFlow && !relayTarget ? 'Queue' : 'Send'}
-              title={uploading ? 'Waiting for images to upload' : running && turnFlow && !relayTarget ? 'Queue (Enter): sent when Claude finishes this turn' : 'Send (Enter)'}
+              title={uploading ? 'Waiting for images to upload' : running && turnFlow && !relayTarget ? `Queue (Enter): sent when ${provider} finishes this turn` : 'Send (Enter)'}
               onClick={() => submit()}
               disabled={!canSend}
             >

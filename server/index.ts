@@ -69,9 +69,9 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
 import { AgentResumeService, readProcessTable } from './agent-resume.js'
-import { buildChatReturnCommand, isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
+import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
 import { ChatHandoffStore, type ChatHandoff } from './chat-handoffs.js'
-import { returnToChat } from './chat-return.js'
+import { chatReturnCommand as buildHandoffReturnCommand, returnToChat } from './chat-return.js'
 import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
@@ -491,6 +491,8 @@ async function repairStaleAgentHooks(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Leased simulators show in Commando's tabs; agents' Argent boots them without opening Simulator.app.
+  process.env.ARGENT_SIMULATOR_NO_WINDOW ??= '1'
   const port = configuredPort()
   const networkAccess = createNetworkAccess(port)
   const token = authToken()
@@ -645,13 +647,13 @@ async function main(): Promise<void> {
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
   let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
-  const chatEnv = Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'] as const)
+  const chatEnv = Object.fromEntries((['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR', 'ARGENT_SIMULATOR_NO_WINDOW'] as const)
     .flatMap((key) => process.env[key] && (key !== 'COMMANDO_PORT' || process.env[key] !== '4310') ? [[key, process.env[key]!]] : []))
   // Chats switched to Claude Code: what they held, and the way back.
   const chatHandoffs = new ChatHandoffStore(undefined, Date.now, (error) => console.error('[commando] chat handoff state failed', error))
   await chatHandoffs.load()
   const chatReturnCommand = (handoff: ChatHandoff): string | null => (
-    buildChatReturnCommand(handoff.sessionId, COMMANDO_AGENT_LAUNCHER, handoff.returnFlags, chatEnv)
+    buildHandoffReturnCommand(handoff, COMMANDO_AGENT_LAUNCHER, chatEnv)
   )
   const agentResume = new AgentResumeService({
     chatLauncher: COMMANDO_AGENT_LAUNCHER,
@@ -897,7 +899,7 @@ async function main(): Promise<void> {
   })
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
   let publishedHandoffs = ''
-  const chatHandoffsMessage = (): ServerMessage => ({ type: 'chat_handoffs', sessionIds: chatHandoffs.inClaudeCode() })
+  const chatHandoffsMessage = (): ServerMessage => ({ type: 'chat_handoffs', sessionIds: chatHandoffs.inClaudeCode(), handoffs: chatHandoffs.active() })
   function publishChatHandoffs(): void {
     const message = chatHandoffsMessage()
     const key = JSON.stringify(message)
@@ -1436,7 +1438,7 @@ async function main(): Promise<void> {
           const live = agentStatuses.liveHookStatus(paneId, pane.command)
           if (live) return live
           const status = agentStatuses.get(paneId)
-          const switched = status?.source === 'hook' && status.provider === 'claude' && status.agentSessionId !== undefined
+          const switched = status?.source === 'hook' && (status.provider === 'claude' || status.provider === 'codex') && status.agentSessionId !== undefined
             && chatHandoffs.inClaudeCode().includes(status.agentSessionId)
           return switched ? status : undefined
         })
@@ -1722,6 +1724,13 @@ async function main(): Promise<void> {
   const simLive = new SimLiveService({ log: (message) => console.log(`[sim-live] ${message}`) })
   const simLogs = new SimLogsService()
   const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists, cacheDirectory: defaultSimSnapshotDirectory(port) })
+  const webPaneAgentLabel = (paneId: string): string | undefined => {
+    const status = agentStatuses.get(paneId)
+    if (!status || status.provider === 'unknown') return undefined
+    return status.agentSessionName
+      ? `${status.provider} · ${status.agentSessionName}`
+      : status.provider
+  }
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
     registry: simLeaseRegistry,
@@ -1730,6 +1739,12 @@ async function main(): Promise<void> {
       const pane = paneForId(paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
       if (pane && session) return publishSessionBrief(withSimulatorClaim(sessionBriefs.get(paneId), pane, session.name))
+    },
+    onLeased: (paneId, lease) => {
+      const pane = paneForId(paneId)
+      if (!pane) return
+      webPanes.showLeasedSimulator(lease.udid, { anchorPaneId: pane.id, sessionId: pane.sessionId, windowId: pane.windowId, openerLabel: webPaneAgentLabel(pane.id) })
+      publishWebPanes()
     },
     paneContext: async (paneId) => {
       const pane = paneForId(paneId)
@@ -1841,13 +1856,7 @@ async function main(): Promise<void> {
           }
         : undefined
     },
-    agentLabel: (paneId) => {
-      const status = agentStatuses.get(paneId)
-      if (!status || status.provider === 'unknown') return undefined
-      return status.agentSessionName
-        ? `${status.provider} · ${status.agentSessionName}`
-        : status.provider
-    },
+    agentLabel: webPaneAgentLabel,
     onChange: () => publishWebPanes(),
     cdpInfo: (webPaneId) => {
       const pane = webPanes.get(webPaneId)
@@ -2297,6 +2306,7 @@ async function main(): Promise<void> {
           paneCommand: async (paneId) => (await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_current_command}']).catch(() => '')).trim() || undefined,
           status: (paneId) => agentStatuses.get(paneId),
           handoff: (sessionId) => chatHandoffs.get(sessionId),
+          handoffForPane: (paneId) => chatHandoffs.forPane(paneId),
           chatOwnsPane: (paneId) => agentHosts.owns(paneId),
           readProcessTable,
           signal: (pid, signal) => { process.kill(pid, signal) },

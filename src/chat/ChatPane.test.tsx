@@ -62,6 +62,13 @@ describe('timeline rows', () => {
 })
 
 describe('ChatPane', () => {
+  it('reads the provider for composer labels and the empty timeline', () => {
+    renderPane(chat({ session: { ...chat().session, provider: 'codex' }, items: [] }))
+    expect(screen.getByRole('textbox', { name: 'Message Codex' })).toHaveAttribute('placeholder', 'Ask Codex… / for commands, @ for files')
+    expect(screen.getByText('Ask Codex anything about this folder.')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'Message Claude' })).toBeNull()
+  })
+
   it('renders messages, a folded work group and the session chips', () => {
     renderPane(chat())
     expect(screen.getByText('Fix the queue')).toBeInTheDocument()

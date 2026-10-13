@@ -337,8 +337,9 @@ describe('SimLeaseApi', () => {
     const registry = new SimLeaseRegistry({ now: () => 123 })
     const paneExists = (paneId: string) => paneId === '%1' || paneId === '%2'
     const onChange = vi.fn()
-    const api = new SimLeaseApi({ token, registry, paneExists, onChange, paneContext: async (pane) => paneExists(pane) ? target : null })
-    return { api, registry, onChange }
+    const onLeased = vi.fn()
+    const api = new SimLeaseApi({ token, registry, paneExists, onChange, onLeased, paneContext: async (pane) => paneExists(pane) ? target : null })
+    return { api, registry, onChange, onLeased }
   }
   async function call(api: SimLeaseApi, method: string, suffix = '', body?: unknown, headers: Record<string, string> = {}) {
     const request = Readable.from(body === undefined ? [] : [JSON.stringify(body)]) as IncomingMessage
@@ -403,6 +404,19 @@ describe('SimLeaseApi', () => {
     await call(api, 'PUT', '', { ...input, ports: [{ name: 'metro', port: 0 }] })
     await call(api, 'POST', '/reservation', { udid: UDID })
     expect(onChange).toHaveBeenCalledTimes(4)
+  })
+
+  it('reports only new leases to onLeased, and a failing callback never fails the lease', async () => {
+    const { api, onLeased } = setup()
+    const created = await call(api, 'PUT', '', input)
+    await call(api, 'PATCH', '', { task: 'ready: review' })
+    await call(api, 'DELETE', '', {})
+    expect(onLeased.mock.calls).toEqual([['%1', created.body.lease]])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onLeased.mockImplementation(() => { throw new Error('tile limit') })
+    expect((await call(api, 'PUT', '', input)).status).toBe(200)
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
   })
 
   it('rejects invalid auth, methods, panes, inputs and oversized bodies', async () => {

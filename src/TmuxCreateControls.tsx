@@ -1,6 +1,7 @@
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react'
 import {
   CHAT_PERMISSION_MODES,
+  CODEX_CHAT_PERMISSION_MODES,
   chatProfileConfigDir,
   defaultWorktreePath,
   sanitizeBranchName,
@@ -246,12 +247,15 @@ export function TmuxCreateControls({
     return () => { cancelled = true }
   }, [repo?.mainRoot, sessionCreateRequest?.id, openVersion, token])
 
-  // What a session starts with, and a chat's profile and permission mode, are remembered per repository.
+  // The starting pane is remembered per repository; each chat provider keeps its own settings.
   const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
+  const preferenceProvider = agentProvider === 'codex-chat' ? 'codex-chat' : 'claude-chat'
   useEffect(() => {
     setAgentProvider(loadStartWith(repoKey))
-    setChatLaunch(loadChatLaunch(repoKey))
   }, [repoKey])
+  useEffect(() => {
+    setChatLaunch(loadChatLaunch(repoKey, preferenceProvider))
+  }, [repoKey, preferenceProvider])
 
   useEffect(() => {
     if (agentProvider !== 'claude-chat' || claudeProfiles || !loadClaudeProfiles) return
@@ -421,11 +425,13 @@ export function TmuxCreateControls({
         request.agent = {
           provider: agentProvider,
           ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
+          ...(agentProvider === 'codex-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
           ...(agentProvider === 'claude-chat' ? {
             ...((chatConfigDir ?? chatLaunch.configDir) ? { configDir: chatConfigDir ?? chatLaunch.configDir } : {}),
             permissionMode: chatLaunch.permissionMode,
           } : {}),
         }
+        if (agentProvider === 'codex-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, 'codex-chat')
         if (agentProvider === 'claude-chat') {
           // Keep a remembered profile even when the list could not be loaded this time.
           const configDir = chatConfigDir ?? chatLaunch.configDir
@@ -682,9 +688,9 @@ export function TmuxCreateControls({
             {START_WITH_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
           </select>
         </label>
-        {agentProvider === 'claude-chat' ? (
+        {agentProvider === 'claude-chat' || agentProvider === 'codex-chat' ? (
           <div className="tmux-create__chat-launch">
-            <label>
+            {agentProvider === 'claude-chat' ? <label>
               Profile
               <select
                 value={chatConfigDir ?? ''}
@@ -695,7 +701,7 @@ export function TmuxCreateControls({
                 {claudeProfiles?.length === 0 ? <option value="">Default Claude login</option> : null}
                 {claudeProfiles?.map((profile) => <option key={profile.configDir} value={profile.configDir}>{profile.name}</option>)}
               </select>
-            </label>
+            </label> : null}
             <label>
               Permissions
               <select
@@ -703,7 +709,7 @@ export function TmuxCreateControls({
                 disabled={unavailable}
                 onChange={(event) => setChatLaunch((current) => ({ ...current, permissionMode: event.target.value as ChatPermissionMode }))}
               >
-                {CHAT_PERMISSION_MODES.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+                {(agentProvider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES).map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
               </select>
             </label>
           </div>
@@ -760,8 +766,9 @@ export function TmuxCreateControls({
         if (event.currentTarget.open) {
           // This form stays mounted, so pick up choices remembered by the dialog meanwhile.
           setOpenVersion((value) => value + 1)
-          setAgentProvider(loadStartWith(repoKey))
-          setChatLaunch(loadChatLaunch(repoKey))
+          const startWith = loadStartWith(repoKey)
+          setAgentProvider(startWith)
+          setChatLaunch(loadChatLaunch(repoKey, startWith === 'codex-chat' ? 'codex-chat' : 'claude-chat'))
           return
         }
         if (sessionGroupId !== 'ungrouped') setWorkingDirectory(workingDirectoryHistory[0] ?? '')

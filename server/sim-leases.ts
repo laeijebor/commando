@@ -435,6 +435,8 @@ export class SimLeaseApi {
     paneExists: (paneId: string) => boolean
     paneContext: (paneId: string) => Promise<SimPaneContext | null>
     onChange?: (paneId: string) => void | Promise<void>
+    /** A new lease was recorded (lease or adopt). Best effort: failures never fail the lease. */
+    onLeased?: (paneId: string, lease: SimLease) => void
   }) {
     if (dependencies.token.length < 32) throw new Error('Agent hook token must contain at least 32 characters')
     this.tokenDigest = createHash('sha256').update(dependencies.token).digest()
@@ -491,6 +493,10 @@ export class SimLeaseApi {
         } else {
           const lease = request.method === 'PUT' ? registry.upsert(paneId, target, body) : registry.touch(paneId, target, body)
           await this.dependencies.onChange?.(paneId)
+          if (request.method === 'PUT') {
+            try { this.dependencies.onLeased?.(paneId, lease) }
+            catch (error) { console.warn('[sim-leases] could not show the leased simulator', error) }
+          }
           writeJson(response, 200, { lease })
         }
       }

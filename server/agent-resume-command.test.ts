@@ -190,3 +190,30 @@ describe('buildChatReturnCommand', () => {
     expect(chatReturnCommand('bad id!', '/c/scripts/commando-agent', [])).toBeNull()
   })
 })
+
+describe('Codex chat resume and return', () => {
+  it('carries the captured Codex home alongside the daemon environment on chat resume', () => {
+    const args = 'node /c/server/agent-host/main.ts codex --permission-mode default'
+    const launch = launchFromProcess('codex', args, `${args} CODEX_HOME=/Users/dev/.codex-work`)
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', launch, { COMMANDO_PORT: '4410' }))
+      .toBe('env COMMANDO_PORT=4410 CODEX_HOME=/Users/dev/.codex-work /c/launcher codex --permission-mode default --resume abcdef12-3456')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { ...launch, env: { CODEX_HOME: '/Users/dev/Codex work' } }))
+      .toBe("env 'CODEX_HOME=/Users/dev/Codex work' /c/launcher codex --permission-mode default --resume abcdef12-3456")
+  })
+
+  it('keeps Claude chat resume byte-identical when CODEX_HOME is present', () => {
+    const args = 'node /c/server/agent-host/main.ts claude --permission-mode default'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', {
+      args, env: { CODEX_HOME: '/Users/dev/.codex-work', CLAUDE_CONFIG_DIR: '/Users/dev/.claudep' },
+    }, { COMMANDO_PORT: '4410' }))
+      .toBe('env COMMANDO_PORT=4410 /c/launcher claude --config-dir /Users/dev/.claudep --permission-mode default --resume abcdef12-3456')
+  })
+
+  it('preserves Codex model/effort, never inheriting a Claude config directory', () => {
+    const args = 'node /c/server/agent-host/main.ts codex --model test-model --effort high --permission-mode default --prompt hi --model wrong'.split(' ')
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args, env: { CLAUDE_CONFIG_DIR: '/Users/dev/.claudep' } }))
+      .toBe('/c/launcher codex --model test-model --effort high --permission-mode default --resume abcdef12-3456')
+    expect(chatReturnCommand('abcdef12-3456', '/c/launcher', ['--permission-mode', 'plan'], {}, 'codex'))
+      .toBe('/c/launcher codex --permission-mode plan --resume abcdef12-3456 --from-claude-code')
+  })
+})

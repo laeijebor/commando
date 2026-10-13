@@ -136,7 +136,7 @@ import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
-import { PaneAgentSwitch } from './PaneAgentSwitch'
+import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
@@ -147,6 +147,7 @@ import {
   planImplementationPrompt,
   type ChatAnswer,
   type ChatFileSearchResult,
+  type ChatHandoffInfo,
   type ChatImageRef,
   type ChatSendOptions,
   type ChatSessionPermissionMode,
@@ -374,6 +375,7 @@ type TerminalPaneProps = {
   onDismissChatActionError?: () => void
   /** The pane runs Claude Code on a conversation that started as a chat. */
   claudeCodeFromChat?: boolean
+  handoffProvider?: 'claude' | 'codex'
   /** The chat's composer has an image still uploading. */
   chatUploading?: boolean
   onSwitchToClaudeCode?: () => void
@@ -403,14 +405,15 @@ type TerminalPaneProps = {
 
 /** What clicking Claude Code in a chat's header does, or why it can't. */
 function claudeCodeSwitchTitle(chat: ChatState): string {
+  const label = chat.session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'
   if (!chat.hostConnected) return 'The agent host is disconnected'
-  if (!hostTakesSwitch(chat.session)) return 'This chat started before switching to Claude Code; restart it to switch'
-  if (!chat.session.sessionId) return 'Send a message first: Claude Code resumes a conversation'
-  if (chat.session.claudeCodeSwitch) return 'Switching to Claude Code…'
+  if (!hostTakesSwitch(chat.session)) return `This chat started before switching to ${label}; restart it to switch`
+  if (!chat.session.sessionId) return `Send a message first: ${label} resumes a conversation`
+  if (chat.session.claudeCodeSwitch) return `Switching to ${label}…`
   const running = chat.session.status === 'running' || chat.session.status === 'waiting'
   return running
-    ? 'Continue in Claude Code, in this pane, when this turn ends'
-    : 'Continue this conversation in Claude Code, in this pane'
+    ? `Continue in ${label}, in this pane, when this turn ends`
+    : `Continue this conversation in ${label}, in this pane`
 }
 
 export function TerminalPaneCard({
@@ -461,6 +464,7 @@ export function TerminalPaneCard({
   chatActionError,
   onDismissChatActionError,
   claudeCodeFromChat = false,
+  handoffProvider,
   chatUploading = false,
   onSwitchToClaudeCode,
   onReturnToChat,
@@ -650,6 +654,7 @@ export function TerminalPaneCard({
         {chat || claudeCodeFromChat ? (
           <PaneAgentSwitch
             mode={chat ? 'chat' : 'claude-code'}
+            provider={chat?.session.provider ?? handoffProvider ?? 'claude'}
             hostLogShown={Boolean(chat) && !showChat}
             chatDisabled={!chat && !connected}
             claudeCodeDisabled={!connected || !chat?.hostConnected || !chat || !hostTakesSwitch(chat.session) || !chat.session.sessionId || Boolean(chat.session.claudeCodeSwitch) || chatUploading}
@@ -1078,6 +1083,7 @@ export function App() {
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   /** Conversations running in Claude Code that started as a chat. */
   const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())
+  const [chatHandoffEntries, setChatHandoffEntries] = useState<ChatHandoffInfo[]>([])
   /** Chat panes whose composer has an image still uploading; a switch waits for it. */
   const [chatUploads, setChatUploads] = useState<ReadonlySet<string>>(() => new Set())
   const [chatStashEntries, setChatStashEntries] = useState<ChatStashEntry[]>([])
@@ -1181,7 +1187,6 @@ export function App() {
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const [resizeRetryVersion, setResizeRetryVersion] = useState(0)
   const tokenBrokerRef = useRef<SessionTokenBroker | null>(null)
-  const pendingMaximizePaneId = useRef<string | null>(null)
   const previousSnapshotRef = useRef<CommandoSnapshot | null>(null)
   const resizeAuthorityActiveRef = useRef(false)
   const previousResizeAuthorityActive = useRef(false)
@@ -1525,6 +1530,7 @@ export function App() {
       }
       case 'chat_handoffs':
         setChatHandoffs(new Set(message.sessionIds))
+        setChatHandoffEntries(message.handoffs ?? [])
         break
       case 'chat_removed':
         setChats((current) => {
@@ -1855,8 +1861,7 @@ export function App() {
   }, [connection.phase])
 
   useEffect(() => {
-    setMaximizedPaneId(pendingMaximizePaneId.current)
-    pendingMaximizePaneId.current = null
+    setMaximizedPaneId(null)
     setFocusedPaneId(null)
   }, [selectedSessionId])
 
@@ -2114,13 +2119,6 @@ export function App() {
     })
   }
   const openPrDiff = (pr: PrSummary) => openPanePr(pr, 'Diff')
-
-  const openPaneMaximized = (paneId: string) => {
-    if (!paneMap.has(paneId)) return
-    pendingMaximizePaneId.current = paneId
-    jumpToPane(paneId)
-    setMaximizedPaneId(paneId)
-  }
 
   const jumpToGroup = (windowId: string) => {
     const group = groups.find((candidate) => candidate.windowId === windowId)
@@ -2460,8 +2458,7 @@ export function App() {
   }
   /** The pane runs Claude Code on a conversation that started as a chat, so it offers the way back. */
   const runsChatInClaudeCode = (paneId: string): boolean => {
-    const status = agentStatuses[paneId]
-    return !chats[paneId] && status?.provider === 'claude' && Boolean(status.agentSessionId) && chatHandoffs.has(status.agentSessionId!)
+    return !chats[paneId] && Boolean(paneChatHandoff(paneId, agentStatuses[paneId], chatHandoffEntries, chatHandoffs))
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
@@ -2614,6 +2611,10 @@ export function App() {
     }
   }
 
+  const paneSimulators = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
+    const brief = paneBriefs[pane.id]
+    return brief?.simulator && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.simulator]] : []
+  })), [snapshot?.panes, paneBriefs])
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
     try {
@@ -3406,19 +3407,16 @@ export function App() {
               prsApi={prsApi}
               connected={connected}
               sessions={snapshot?.sessions ?? []}
-              windows={snapshot?.windows ?? []}
               panes={snapshot?.panes ?? []}
               displayedPaneIds={allVisiblePaneIds}
               statuses={agentStatuses}
               agentChatRequests={agentChatRequests}
               marks={paneMarks}
+              simulators={paneSimulators}
               selectedSessionId={selectedSessionId}
-              focusedPaneId={focusedPaneId}
               onSelectSession={selectSession}
-              onSelectWindow={jumpToGroup}
               onSelectPane={jumpToPane}
-              onOpenPaneMaximized={openPaneMaximized}
-              onWindowDeleting={clearLayoutTimers}
+              onShowSimulator={(udid, paneId) => { void showSimulator(udid, paneId) }}
               onSessionsChanged={refresh}
               onPreferencesChanged={setSessionTreePreferences}
               ides={sessionIdes}
@@ -3849,6 +3847,7 @@ export function App() {
                             onChatRestart={() => restartChat(pane.id)}
                             onChatOpenPr={(repo, number) => { void revealPrTab(pane.id, repo, number, 'Description') }}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
+                            handoffProvider={paneChatHandoff(pane.id, agentStatuses[pane.id], chatHandoffEntries, chatHandoffs)?.provider}
                             chatUploading={chatUploads.has(pane.id)}
                             onSwitchToClaudeCode={() => switchChat(pane.id, 'after_turn')}
                             onReturnToChat={() => returnToChat(pane.id)}

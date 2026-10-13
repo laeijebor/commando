@@ -18,7 +18,6 @@ const sessionApi = vi.hoisted(() => ({
   listArchives: vi.fn(),
   archiveSession: vi.fn(),
   restoreSession: vi.fn(),
-  deleteWindow: vi.fn(),
 }))
 
 vi.mock('./sessionManagementApi', () => ({ createSessionManagementApi: () => sessionApi }))
@@ -32,7 +31,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
-  sessionApi.deleteWindow.mockResolvedValue(undefined)
   sessionApi.previewWorktreeDeletion.mockResolvedValue({ auxiliarySessions: [] })
   sessionApi.listArchives.mockResolvedValue([])
 })
@@ -86,17 +84,17 @@ function agentStatus(paneId: string, provider: AgentStatus['provider'], status: 
 }
 
 describe('SessionTree', () => {
-  it('shows attached IDEs on session rows even when their pane tree is collapsed', async () => {
+  it('shows attached IDEs as a glyph on session rows', async () => {
     const onOpenIde = vi.fn()
     render(<SessionTree
       token="token" sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: null, windowIds: [] }, { id: '$2', name: 'other', attached: false, activeWindowId: null, windowIds: [] }]}
-      windows={[]} panes={[]} displayedPaneIds={[]} statuses={{}} selectedSessionId={null} focusedPaneId={null}
-      onSelectSession={vi.fn()} onSelectWindow={vi.fn()} onSelectPane={vi.fn()} onOpenPaneMaximized={vi.fn()}
-      onWindowDeleting={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} onOpenIde={onOpenIde}
+      panes={[]} displayedPaneIds={[]} statuses={{}} selectedSessionId={null}
+      onSelectSession={vi.fn()} onSelectPane={vi.fn()}
+      onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} onOpenIde={onOpenIde}
       ides={[{ id: 'ide-1111111111111111', sessionIds: ['$1'], workspacePath: '/worktree', state: 'ready', generation: 1, url: '/ide/ide-1111111111111111/' }]}
     />)
     const badge = await screen.findByRole('button', { name: 'Open attached IDE for work' })
-    expect(badge).toHaveTextContent('IDE')
+    expect(badge).toHaveClass('session-ide-glyph', 'state-ready')
     expect(screen.queryByRole('button', { name: 'Open attached IDE for other' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Open attached IDE for work' }))
     expect(onOpenIde).toHaveBeenCalledWith('$1')
@@ -104,25 +102,25 @@ describe('SessionTree', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open IDE' }))
     expect(onOpenIde).toHaveBeenLastCalledWith('$2')
   })
-  it('replaces selected-session window and pane rows with open PR details', async () => {
+  it('keeps the selected session to a single row with a muted PR glyph', async () => {
     const open: PanePrSummary = {
       repo: 'acme/app', number: 12, title: 'Ship the feature', url: 'https://github.com/acme/app/pull/12',
       state: 'open', isDraft: false, createdAt: '', updatedAt: '', additions: 2, deletions: 1,
-      checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
+      checks: { state: 'fail', runs: [], failed: 1, pending: 0, total: 1, truncated: false }, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null,
     }
     const prsApi = { pane: vi.fn(async () => ({ targetId: 'target', pullRequests: [open], totalCount: 1, truncated: false, fetchedAt: 1 })) } as unknown as PrsApiClient
     const { container } = render(<SessionTree
       token="token" sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-      windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: '', paneIds: ['%1'] }]}
       panes={[pane('%1', 0, 'Agent pane')]} displayedPaneIds={['%1']} statuses={{}}
-      selectedSessionId="$1" focusedPaneId="%1" onSelectSession={vi.fn()} onSelectWindow={vi.fn()}
-      onSelectPane={vi.fn()} onOpenPaneMaximized={vi.fn()} onWindowDeleting={vi.fn()}
+      selectedSessionId="$1" onSelectSession={vi.fn()} onSelectPane={vi.fn()}
       onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} prsApi={prsApi} connected
     />)
-    expect(await screen.findByRole('link', { name: '#12 · Ship the feature' })).toBeVisible()
-    expect(screen.getByRole('region', { name: 'Open pull requests in work' })).toContainElement(screen.getByRole('link', { name: '#12 · Ship the feature' }))
-    expect(container.querySelector('.managed-window-tree')).not.toBeInTheDocument()
-    expect(container.querySelector('.managed-pane-row')).not.toBeInTheDocument()
+    const glyph = await screen.findByRole('img', { name: 'PR #12 in work: Failed checks' })
+    expect(glyph).toHaveClass('tone-red')
+    expect(glyph).toHaveTextContent('')
+    expect(screen.getByRole('button', { name: 'work' })).toHaveAttribute('aria-current', 'true')
+    expect(screen.queryByRole('region', { name: 'Open pull requests in work' })).not.toBeInTheDocument()
+    expect(container.querySelectorAll('.managed-session-row')).toHaveLength(1)
   })
 
   it('opens the first nine sessions by their session-tree order', async () => {
@@ -147,17 +145,12 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={sessions}
-        windows={[]}
         panes={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={onSelectSession}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
@@ -191,17 +184,12 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: null, windowIds: [] }]}
-        windows={[]}
         panes={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={onSelectSession}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
@@ -230,17 +218,12 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[]}
-        windows={[]}
         panes={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={onPreferencesChanged}
       />,
@@ -283,17 +266,12 @@ describe('SessionTree', () => {
           { id: '$2', name: 'second', attached: false, activeWindowId: null, windowIds: [] },
           { id: '$3', name: 'third', attached: false, activeWindowId: null, windowIds: [] },
         ]}
-        windows={[]}
         panes={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
@@ -333,17 +311,12 @@ describe('SessionTree', () => {
           { id: '$1', name: 'gizmo-work', attached: true, activeWindowId: null, windowIds: [] },
           { id: '$2', name: 'loose-work', attached: false, activeWindowId: null, windowIds: [] },
         ]}
-        windows={[]}
         panes={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
@@ -389,17 +362,12 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[{ id: '$1', name: 'gizmo-work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'shell', active: true, layout: 'layout', paneIds: ['%1'] }]}
         panes={[{ ...pane('%1', 0, 'Gizmo shell'), path: '/Users/dev/gizmo' }]}
         displayedPaneIds={['%1']}
         statuses={{}}
         selectedSessionId="$1"
-        focusedPaneId="%1"
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
         creation={{
@@ -449,17 +417,12 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[{ id: '$1', name: 'gizmo-work', attached: true, activeWindowId: null, windowIds: [] }]}
-        windows={[]}
         panes={[]}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId="$1"
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
         creation={{
@@ -499,42 +462,34 @@ describe('SessionTree', () => {
     })
   })
 
-  it('lists panes in their displayed workspace order', () => {
-    const panes = [
-      pane('%1', 0, 'First tmux pane'),
-      pane('%2', 1, 'Second tmux pane'),
-      pane('%3', 2, 'Third tmux pane'),
-    ]
-    const onOpenPaneMaximized = vi.fn()
-    const { container } = render(
+  it('shows a leased simulator glyph that opens the simulator', () => {
+    const onShowSimulator = vi.fn()
+    render(
       <SessionTree
         token="token"
-        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: panes.map(({ id }) => id) }]}
-        panes={panes}
-        displayedPaneIds={['%3', '%1', '%2']}
+        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }, { id: '$2', name: 'other', attached: false, activeWindowId: null, windowIds: [] }]}
+        panes={[pane('%1', 0, 'Shell'), pane('%2', 1, 'Agent')]}
+        displayedPaneIds={['%1', '%2']}
         statuses={{}}
-        selectedSessionId="$1"
-        focusedPaneId={null}
+        simulators={{ '%2': { udid: 'SIM-1', label: 'work · checkout', task: 'checkout', sessionName: 'work', ports: [], idle: true } }}
+        selectedSessionId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={onOpenPaneMaximized}
-        onWindowDeleting={vi.fn()}
+        onShowSimulator={onShowSimulator}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
     )
 
-    const labels = [...container.querySelectorAll('.managed-pane-main')]
-      .map((button) => button.textContent)
-    expect(labels).toEqual(['Third tmux pane', 'First tmux pane', 'Second tmux pane'])
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open Third tmux pane maximized' }))
-    expect(onOpenPaneMaximized).toHaveBeenCalledWith('%3')
+    const glyph = screen.getByRole('button', { name: 'Show leased simulator for work' })
+    expect(glyph).toHaveClass('idle')
+    expect(glyph).toHaveAttribute('title', 'Simulator · work · checkout · checkout')
+    expect(screen.queryByRole('button', { name: 'Show leased simulator for other' })).not.toBeInTheDocument()
+    fireEvent.click(glyph)
+    expect(onShowSimulator).toHaveBeenCalledWith('SIM-1', '%2')
   })
 
-  it('shows ordered accessible pane statuses on a collapsed session', () => {
+  it('shows one status indicator for the most urgent pane', () => {
     const panes = [
       pane('%1', 0, 'Claude pane'),
       pane('%2', 1, 'No agent'),
@@ -546,7 +501,6 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: panes.map(({ id }) => id) }]}
         panes={panes}
         displayedPaneIds={['%3', '%2', '%1']}
         statuses={{
@@ -555,38 +509,25 @@ describe('SessionTree', () => {
           '%4': agentStatus('%4', 'cursor', 'stale'),
         }}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={onSelectPane}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
     )
 
-    const dots = [...container.querySelectorAll('.session-status-dot')]
-    expect(dots).toHaveLength(3)
-    expect(dots.map((dot) => dot.getAttribute('aria-label'))).toEqual([
-      'Codex: needs input - Codex pane',
-      'Claude: working - Claude pane',
-      'Cursor: stale - Cursor pane',
-    ])
-    expect(dots.map((dot) => dot.getAttribute('title'))).toEqual([
-      'Codex: needs input - Codex pane',
-      'Claude: working - Claude pane',
-      'Cursor: stale - Cursor pane',
-    ])
-    expect(dots[0]).toHaveClass('needs_input')
-    expect(dots[1]).toHaveClass('working')
-    fireEvent.click(dots[0])
+    const indicators = [...container.querySelectorAll('button.session-indicator')]
+    expect(indicators).toHaveLength(1)
+    const label = 'Codex: needs input - Codex pane; Claude: working - Claude pane; Cursor: stale - Cursor pane'
+    expect(indicators[0]).toHaveAttribute('aria-label', label)
+    expect(indicators[0]).toHaveAttribute('title', label)
+    expect(indicators[0]).toHaveClass('needs_input')
+    fireEvent.click(indicators[0])
     expect(onSelectPane).toHaveBeenCalledWith('%3')
-    expect(container.querySelector('.managed-window-tree')).not.toBeInTheDocument()
     expect(container.querySelector('.live-dot')).not.toBeInTheDocument()
   })
 
-  it('mirrors durable pane marks and activity counts in session and pane rows', () => {
+  it('folds pane marks into the status indicator', () => {
     const panes = [pane('%1', 0, 'Release pane'), pane('%2', 1, 'API pane')]
     const onSelectPane = vi.fn()
     const marks = {
@@ -597,32 +538,23 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: panes.map(({ id }) => id) }]}
         panes={panes}
-        displayedPaneIds={['%2', '%1']}
-        statuses={{}}
+        displayedPaneIds={['%1', '%2']}
+        statuses={{ '%1': agentStatus('%1', 'claude', 'working') }}
         marks={marks}
         selectedSessionId="$1"
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={onSelectPane}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
     )
 
-    const dots = [...container.querySelectorAll<HTMLButtonElement>('.session-mark-dot')]
-    expect(dots.map((dot) => dot.getAttribute('aria-label'))).toEqual([
-      'Blocked, 3 activities since mark - API pane',
-      'Waiting for PR - Release pane',
-    ])
-    expect(dots[0]).toHaveClass('tone-red', 'has-activity')
-    expect(dots[0]).toHaveTextContent('3')
-    expect(container.querySelectorAll('.mini-pane-mark')).toHaveLength(2)
-    fireEvent.click(dots[0])
+    const indicators = [...container.querySelectorAll<HTMLButtonElement>('button.session-indicator')]
+    expect(indicators).toHaveLength(1)
+    expect(indicators[0]).toHaveClass('mark', 'tone-red', 'has-activity')
+    expect(indicators[0]).toHaveAttribute('aria-label', 'Claude: working - Release pane; Waiting for PR - Release pane; Blocked, 3 activities since mark - API pane')
+    fireEvent.click(indicators[0])
     expect(onSelectPane).toHaveBeenCalledWith('%2')
   })
 
@@ -632,57 +564,19 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={[{ id: '$1', name: 'attached', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: ['%1'] }]}
         panes={panes}
         displayedPaneIds={['%1']}
         statuses={{}}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
       />,
     )
 
-    expect(container.querySelector('.session-status-cluster')).not.toBeInTheDocument()
-    expect(container.querySelector('.session-status-dot')).not.toBeInTheDocument()
+    expect(container.querySelector('button.session-indicator')).not.toBeInTheDocument()
     expect(container.querySelector('.live-dot')).not.toBeInTheDocument()
-  })
-
-  it('confirms and closes a tmux window', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const onSessionsChanged = vi.fn()
-    const onWindowDeleting = vi.fn()
-    render(
-      <SessionTree
-        token="token"
-        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
-        windows={[{ id: '@1', index: 0, sessionId: '$1', name: 'zsh', active: true, layout: 'dbde,80x24,0,0,1', paneIds: [] }]}
-        panes={[]}
-        displayedPaneIds={[]}
-        statuses={{}}
-        selectedSessionId="$1"
-        focusedPaneId={null}
-        onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
-        onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={onWindowDeleting}
-        onSessionsChanged={onSessionsChanged}
-        onPreferencesChanged={vi.fn()}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close window zsh' }))
-
-    await waitFor(() => expect(sessionApi.deleteWindow).toHaveBeenCalledWith('@1'))
-    expect(onWindowDeleting).toHaveBeenCalledWith('@1')
-    expect(onSessionsChanged).toHaveBeenCalled()
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('last window'))
   })
 
   describe('repository grouping', () => {
@@ -705,17 +599,12 @@ describe('SessionTree', () => {
       <SessionTree
         token="token"
         sessions={sessions}
-        windows={[]}
         panes={panes}
         displayedPaneIds={[]}
         statuses={{}}
         selectedSessionId={null}
-        focusedPaneId={null}
         onSelectSession={vi.fn()}
-        onSelectWindow={vi.fn()}
         onSelectPane={vi.fn()}
-        onOpenPaneMaximized={vi.fn()}
-        onWindowDeleting={vi.fn()}
         onSessionsChanged={vi.fn()}
         onPreferencesChanged={vi.fn()}
         {...overrides}
@@ -734,7 +623,7 @@ describe('SessionTree', () => {
       expect(screen.queryByRole('button', { name: 'Collapse GIZMO' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Move Save-All down' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /Group$/ })).not.toBeInTheDocument()
-      expect(screen.getByText('referral-coins-reward')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Coins everywhere' })).toHaveAttribute('title', 'Coins everywhere · referral-coins-reward · 1 window / 1 pane')
       expect(screen.getByRole('button', { name: 'Group sessions by repository' })).toHaveAttribute('aria-pressed', 'true')
     })
 
@@ -760,7 +649,7 @@ describe('SessionTree', () => {
       const tree = renderTree({ onSelectSession })
       await waitFor(() => expect(sessionApi.loadPreferences).toHaveBeenCalled())
       const repo = screen.getByRole('button', { name: 'Collapse Save-All' }).closest('section')!
-      const names = () => [...repo.querySelectorAll('.managed-session-copy strong')].map((node) => node.textContent)
+      const names = () => [...repo.querySelectorAll('.managed-session-main')].map((node) => node.textContent)
       const team = screen.getByRole('button', { name: 'Actions for Team Battles' }).closest('article')!
       const coins = screen.getByRole('button', { name: 'Actions for Coins everywhere' }).closest('article')!
       expect(team).toHaveAttribute('draggable', 'true')
@@ -773,13 +662,13 @@ describe('SessionTree', () => {
       expect(onSelectSession).toHaveBeenLastCalledWith('$1')
       fireEvent.click(screen.getByRole('button', { name: 'Group sessions manually' }))
       const manualGroup = await screen.findByRole('button', { name: 'Collapse GIZMO' })
-      expect([...manualGroup.closest('section')!.querySelectorAll('.managed-session-copy strong')].map((node) => node.textContent)).toEqual(['Coins everywhere', 'Team Battles'])
+      expect([...manualGroup.closest('section')!.querySelectorAll('.managed-session-main')].map((node) => node.textContent)).toEqual(['Coins everywhere', 'Team Battles'])
       fireEvent.click(screen.getByRole('button', { name: 'Group sessions by repository' }))
       await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenLastCalledWith({ ...saved, groupingMode: 'repository' }))
       tree.unmount()
       sessionApi.loadPreferences.mockResolvedValue(saved)
       renderTree()
-      await waitFor(() => expect([...screen.getByRole('button', { name: 'Collapse Save-All' }).closest('section')!.querySelectorAll('.managed-session-copy strong')].map((node) => node.textContent)).toEqual(['Team Battles', 'Coins everywhere']))
+      await waitFor(() => expect([...screen.getByRole('button', { name: 'Collapse Save-All' }).closest('section')!.querySelectorAll('.managed-session-main')].map((node) => node.textContent)).toEqual(['Team Battles', 'Coins everywhere']))
     })
 
     it('rejects cross-repo and self drops, and allows dropping on the group to move to the end', async () => {
@@ -951,7 +840,7 @@ describe('SessionTree', () => {
 })
 
 describe('agent chat sidebar', () => {
-  it('keeps session lineage as metadata and pane lineage and request badges as independent buttons', async () => {
+  it('shows a lineage glyph for a session opened from another session and a request badge in the row meta', async () => {
     const parent = { ...pane('%1', 0, 'Parent'), sessionId: '$1' }
     const child = { ...pane('%2', 0, 'Child'), sessionId: '$2', windowId: '@2', openedBy: parent.targetId }
     const sibling = { ...pane('%3', 1, 'Sibling'), openedBy: parent.targetId }
@@ -965,40 +854,25 @@ describe('agent chat sidebar', () => {
     }
     const { rerender } = render(<SessionTree {...props} />)
     await act(async () => {})
-    const markers = screen.getAllByTitle('Opened by claude · implementation')
-    expect(markers).toHaveLength(2)
-    const sessionMarker = markers.find((marker) => marker.closest('small'))!
-    expect(sessionMarker.tagName).toBe('SPAN')
-    expect(sessionMarker).toHaveClass('opened-by-marker')
-    const sessionButton = sessionMarker.closest('button')!
-    expect(sessionButton).toHaveClass('managed-session-main')
-    expect(sessionButton).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(sessionMarker)
-    expect(onSelectSession).toHaveBeenCalledExactlyOnceWith('$2')
-    expect(onSelectPane).not.toHaveBeenCalled()
-    onSelectSession.mockClear()
-    const paneMarker = screen.getByRole('button', { name: '↳ main' })
-    expect(paneMarker.closest('.managed-pane-row')).toBeTruthy()
-    expect(paneMarker.parentElement?.closest('button')).toBeNull()
-    fireEvent.click(paneMarker)
-    expect(onSelectPane).toHaveBeenCalledOnce()
+    // Only a session opened from another session gets the glyph; a sibling pane is attributed in its own pane.
+    const marker = screen.getByRole('button', { name: 'Opened by claude · implementation in main' })
+    expect(marker).toHaveClass('opened-by-marker')
+    expect(marker.closest('.session-row-meta')).toBeTruthy()
+    expect(marker.closest('.managed-session-row')).toHaveTextContent('child')
+    fireEvent.click(marker)
     expect(onSelectPane).toHaveBeenLastCalledWith('%1')
     expect(onSelectSession).not.toHaveBeenCalled()
     const badge = screen.getByRole('button', { name: 'claude wants to open a chat' })
-    expect(badge).toBeInTheDocument()
-    expect(badge).toHaveAttribute('title', 'claude wants to open a chat')
     expect(badge.textContent).toBe('')
     expect(badge.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+    expect(badge.closest('.session-row-meta')).toBeTruthy()
     expect(badge.closest('.managed-session-row')).toHaveTextContent('child')
-    expect(badge.closest('.managed-session')).not.toHaveClass('selected')
-    expect(badge.parentElement?.closest('button')).toBeNull()
     expect(document.querySelector('button button')).toBeNull()
     fireEvent.click(badge)
     expect(onSelectPane).toHaveBeenLastCalledWith('%2')
     expect(onSelectSession).not.toHaveBeenCalled()
     rerender(<SessionTree {...props} panes={[child, sibling]} agentChatRequests={{}} />)
-    expect(screen.queryByRole('button', { name: '↳ main' })).not.toBeInTheDocument()
-    expect(screen.queryByTitle('Opened by claude · implementation')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Opened by/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'claude wants to open a chat' })).not.toBeInTheDocument()
   })
 })

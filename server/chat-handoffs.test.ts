@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -23,6 +23,42 @@ const switched = {
 }
 
 describe('ChatHandoffStore', () => {
+  it('persists Codex provider and pane ownership alongside legacy Claude handoffs', async () => {
+    const handoffs = await store()
+    await handoffs.save(switched)
+    await handoffs.save({ ...switched, sessionId: 'codex-thread', provider: 'codex', paneId: '%4' })
+    const reloaded = new ChatHandoffStore(handoffs.path, () => 2_000)
+    await reloaded.load()
+    expect(reloaded.get(switched.sessionId)?.provider).toBeUndefined()
+    expect(reloaded.forPane('%4')).toMatchObject({ sessionId: 'codex-thread', provider: 'codex', paneId: '%4' })
+    expect(reloaded.active()).toContainEqual({ sessionId: 'codex-thread', provider: 'codex', paneId: '%4' })
+    reloaded.returned('codex-thread')
+    expect(reloaded.forPane('%4')).toBeUndefined()
+    expect(reloaded.inClaudeCode()).toEqual([switched.sessionId])
+    await reloaded.flush()
+  })
+
+  it('ignores unknown handoff providers while loading valid legacy entries', async () => {
+    const handoffs = await store()
+    await handoffs.save(switched)
+    const disk = JSON.parse(await readFile(handoffs.path, 'utf8'))
+    disk.entries.push({ ...disk.entries[0], sessionId: 'bad-provider', provider: 'other' })
+    await writeFile(handoffs.path, JSON.stringify(disk))
+    const reloaded = new ChatHandoffStore(handoffs.path, () => 2_000)
+    await reloaded.load()
+    expect(reloaded.inClaudeCode()).toEqual([switched.sessionId])
+  })
+
+  it('uses the latest handoff when a pane has switched more than one conversation', async () => {
+    let now = 1_000
+    const handoffs = await store(() => now)
+    await handoffs.save({ ...switched, sessionId: 'old-thread', provider: 'codex', paneId: '%4' })
+    now += 1_000
+    await handoffs.save({ ...switched, sessionId: 'new-thread', provider: 'codex', paneId: '%4' })
+    expect(handoffs.forPane('%4')?.sessionId).toBe('new-thread')
+    expect(handoffs.active()[0]?.sessionId).toBe('new-thread')
+  })
+
   it('keeps a switch on disk until the chat is back and its composer took the draft', async () => {
     const handoffs = await store()
     await handoffs.save(switched)
