@@ -97,8 +97,12 @@ export class PrAutofixStore {
 
   list(): Promise<PrAutofixState[]> { return this.serialize(async () => (await this.load()).watches) }
   defaultChoice(): Promise<PrAutofixDefault | null> { return this.serialize(async () => (await this.load()).default) }
+  /** Keeps the original time when the choice is unchanged, so PRs not yet adopted stay covered. */
   setDefaultChoice(enabled: boolean, at: number): Promise<void> {
-    return this.serialize(async () => { const store = await this.load(); await this.save({ ...store, default: { enabled, at } }) })
+    return this.serialize(async () => {
+      const store = await this.load()
+      if (store.default?.enabled !== enabled) await this.save({ ...store, default: { enabled, at } })
+    })
   }
   async get(repo: string, number: number): Promise<PrAutofixState | null> {
     return (await this.list()).find((state) => state.repo.toLowerCase() === repo.toLowerCase() && state.number === number) ?? null

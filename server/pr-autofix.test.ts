@@ -161,6 +161,8 @@ describe('PR auto-fix persistence and delivery', () => {
     await persisted.update(repo, 12, () => initial())
     await persisted.setDefaultChoice(true, 100)
     expect(await persisted.defaultChoice()).toEqual({ enabled: true, at: 100 })
+    await persisted.setDefaultChoice(true, 200)
+    expect(await persisted.defaultChoice()).toEqual({ enabled: true, at: 100 })
     expect(await persisted.get(repo, 12)).toMatchObject({ enabled: true })
     const send = vi.fn(() => true)
     const watcher = new PrAutofixWatcher(persisted, { snapshot: async () => snapshot(), linkedPrs: noLinkedPrs, target: () => ({ paneId: '%1', busy: false, connected: true }), send })
