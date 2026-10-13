@@ -130,6 +130,10 @@ describe('external process detection', () => {
     expect(recognizeAgent(`claude ${flag} -p "Review new changes"`)?.resumeId).toBeUndefined()
   })
 
+  it.each(['--permission-prompt-tool mcp_auth_tool', '--max-turns 3', '--allowed-tools Bash', '--name review', '--resume old-session', '--add-dir ../other'])('skips the value of Claude option %s in the prompt', (option) => {
+    expect(recognizeAgent(`claude -p "Review changes" ${option}`)?.prompt).toBe('Review changes')
+  })
+
   it.each(['--resume old-session', '-r old-session', '--session-id old-session', '-c', '--continue'])('treats Claude --fork-session with %s as a new transcript', (flags) => {
     const agent = recognizeAgent(`claude -p ${flags} --fork-session "Review new changes"`)
     expect(agent).toMatchObject({ resume: false, prompt: 'Review new changes' })

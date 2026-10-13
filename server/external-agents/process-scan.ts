@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readlink } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { ExternalAgentRuntime } from '../../shared/agent-chat.js'
 import { hostRunsInPane } from '../agent-host-hub.js'
@@ -64,6 +65,12 @@ function executable(words: string[]): { name: string; args: string[] } {
   return { name: basename(words[index] ?? '').replace(/\.js$/, ''), args: words.slice(index + 1) }
 }
 
+/** Claude options that take a value (from `claude --help`, plus the hidden --permission-prompt-tool and --max-turns); variadic ones are assumed to take one. */
+const claudeValueFlags = new Set(['-r', '--resume', '-n', '--name', '--session-id', '--input-format', '--output-format', '--permission-mode', '--permission-prompt-tool', '--permission-prompts',
+  '--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools', '--tools', '--system-prompt', '--append-system-prompt', '--system-prompt-snapshot', '--max-turns', '--effort',
+  '--model', '--fallback-model', '--agent', '--agents', '--settings', '--setting-sources', '--mcp-config', '--max-budget-usd', '--json-schema', '--add-dir', '--betas', '--debug-file',
+  '--file', '--plugin-dir', '--plugin-url', '--environment', '--autocompact', '--remote-control-session-name-prefix'])
+
 export function recognizeAgent(command: string): Pick<AgentProcess, 'runtime' | 'label' | 'resume' | 'resumeId' | 'cwdOverride' | 'model' | 'effort' | 'prompt'> | null {
   const { name, args } = executable(commandWords(command))
   if (name === 'codex' && args[0] === 'exec') {
@@ -71,7 +78,7 @@ export function recognizeAgent(command: string): Pick<AgentProcess, 'runtime' | 
   }
   if (name === 'claude' && args.some((arg) => arg === '-p' || arg === '--print')
     && !args.some((arg, index) => (arg === '--input-format' && args[index + 1] === 'stream-json') || arg === '--input-format=stream-json')) {
-    return { runtime: 'claude', label: 'claude -p', ...claudeResume(args), prompt: promptText(args, ['-r', '--input-format', '--permission-mode', '--allowedTools', '--disallowedTools', '--system-prompt', '--append-system-prompt', '--max-turns', '--session-id', '--effort', '--settings', '--setting-sources', '--mcp-config', '--fallback-model', '--max-budget-usd', '--json-schema']) }
+    return { runtime: 'claude', label: 'claude -p', ...claudeResume(args), prompt: promptText(args, [...claudeValueFlags]) }
   }
   if ((name === 'agent' || name === 'cursor-agent') && args.some((arg) => arg === '-p' || arg === '--print')) {
     return { runtime: 'cursor', label: promptArgument(args) || 'Cursor agent', resume: false }
@@ -214,6 +221,9 @@ export function runningCommand(rows: readonly ProcessRow[], run: AgentProcess): 
 }
 
 export async function processCwd(pid: number): Promise<string | undefined> {
+  // Linux exposes the cwd directly; lsof is the macOS path and may be missing elsewhere.
+  const proc = await readlink(`/proc/${pid}/cwd`).catch(() => undefined)
+  if (proc) return proc
   const output = await runFile('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']).catch(() => '')
   return output.split('\n').find((line) => line.startsWith('n/'))?.slice(1)
 }
