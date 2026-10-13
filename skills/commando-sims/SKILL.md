@@ -103,5 +103,9 @@ the simulator; an adopted simulator stays running. If an adopted device stops
 running, `lease` will not boot it implicitly: release, then lease again. If it fails, resolve the error and retry; do not assume ownership
 has been cleared.
 
+Closing your pane, or closing or archiving its session, releases the lease the
+same way: Commando restores the name and shuts the simulator down, leaving an
+adopted simulator running.
+
 If the CLI is missing, tell the user to run `npm run hooks:install` in the
 Commando repo, then retry leasing from the agent pane.

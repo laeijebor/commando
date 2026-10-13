@@ -234,6 +234,10 @@ export class SimLeaseRegistry {
   private leases: SimLease[] = []
   private ended: EndedSimLease[] = []
   private readonly reservations = new Map<string, { udid: string; operation: string; at: number }>()
+  /** Leases whose pane closed, waiting for the daemon to shut their device down. */
+  private closed: EndedSimLease[] = []
+  /** Devices being shut down after their pane closed; nobody can lease them until that finishes. */
+  private readonly releasing = new Set<string>()
   private readonly now: () => number
   private readonly statePath: string | undefined
 
@@ -278,12 +282,30 @@ export class SimLeaseRegistry {
 
   list(paneExists: (paneId: string) => boolean): Array<SimLease & { idle: boolean }> {
     const live = this.leases.filter((entry) => paneExists(entry.paneId))
-    if (live.length !== this.leases.length) this.commit(live, [...this.ended,
-      ...this.leases.filter((entry) => !live.includes(entry)).map((entry) => this.end(entry, 'pane-closed'))])
+    if (live.length !== this.leases.length) {
+      const closed = this.leases.filter((entry) => !live.includes(entry)).map((entry) => this.end(entry, 'pane-closed'))
+      this.commit(live, [...this.ended, ...closed])
+      this.closed.push(...closed)
+    }
     for (const [paneId, reservation] of this.reservations) {
       if (!paneExists(paneId) || this.now() - reservation.at >= SIM_LEASE_IDLE_MS) this.reservations.delete(paneId)
     }
     return this.leases.map((entry) => ({ ...entry, idle: this.now() - entry.lastActiveAt >= SIM_LEASE_IDLE_MS }))
+  }
+
+  /**
+   * Ends leases whose pane closed and hands each over once for device shutdown,
+   * holding the device until finishRelease. A device another pane reclaimed meanwhile is skipped.
+   */
+  takeClosed(paneExists: (paneId: string) => boolean): EndedSimLease[] {
+    this.list(paneExists)
+    const closed = this.closed.splice(0).filter((entry) => !this.isHeld(entry.udid))
+    for (const entry of closed) this.releasing.add(entry.udid)
+    return closed
+  }
+
+  finishRelease(udid: string): void {
+    this.releasing.delete(udid.toUpperCase())
   }
 
   listEnded(): EndedSimLease[] {
@@ -310,7 +332,7 @@ export class SimLeaseRegistry {
     const leases = this.list(paneExists)
     return { ...target, poolUdids: this.pool.list().map((entry) => entry.udid), ended: this.listEnded(), lease: leases.find((entry) => entry.paneId === paneId) ?? null,
       heldUdids: [...new Set([...leases.filter((entry) => entry.paneId !== paneId).map((entry) => entry.udid),
-        ...[...this.reservations].filter(([pane]) => pane !== paneId).map(([, entry]) => entry.udid)])] }
+        ...[...this.reservations].filter(([pane]) => pane !== paneId).map(([, entry]) => entry.udid), ...this.releasing])] }
   }
 
   reserve(paneId: string, udid: unknown, requireUnleased = false): string {
@@ -377,7 +399,7 @@ export class SimLeaseRegistry {
 
   isHeld(udid: string): boolean {
     const id = udid.toUpperCase()
-    return this.leases.some((entry) => entry.udid === id) || [...this.reservations.values()].some((entry) => entry.udid === id)
+    return this.leases.some((entry) => entry.udid === id) || this.releasing.has(id) || [...this.reservations.values()].some((entry) => entry.udid === id)
   }
 
   private assertFree(paneId: string, udid: string): void {
@@ -385,6 +407,7 @@ export class SimLeaseRegistry {
       [...this.reservations].some(([pane, entry]) => pane !== paneId && entry.udid === udid)) {
       throw new SimLeaseError(409, 'Simulator is held by another pane')
     }
+    if (this.releasing.has(udid)) throw new SimLeaseError(409, 'Simulator is shutting down after its pane closed; retry shortly')
   }
 
   private commit(leases: SimLease[], ended = this.ended): void {

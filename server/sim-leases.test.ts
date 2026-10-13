@@ -311,6 +311,35 @@ describe('SimLeaseRegistry', () => {
     expect(new SimLeaseRegistry({ statePath, now: () => 101 }).listEnded()).toEqual([expect.objectContaining({ udid: OTHER, via: 'adopted', adopted: true })])
   })
 
+  it('hands each closed-pane lease over once for release and holds its device until the release finishes', () => {
+    const registry = new SimLeaseRegistry({ now: () => 123 })
+    let open = true
+    const paneExists = (paneId: string) => paneId === '%2' || open
+    registry.upsert('%1', target, input)
+    expect(registry.takeClosed(paneExists)).toEqual([])
+    open = false
+    // A list from another caller ends the lease first; the release queue still gets it.
+    expect(registry.list(paneExists)).toEqual([])
+    expect(registry.isHeld(UDID)).toBe(false)
+    expect(registry.takeClosed(paneExists)).toEqual([expect.objectContaining({ udid: UDID, paneId: '%1', reason: 'pane-closed', originalName: 'iPhone 17' })])
+    expect(registry.takeClosed(paneExists)).toEqual([])
+    expect(registry.isHeld(UDID)).toBe(true)
+    expect(registry.context('%2', target, paneExists).heldUdids).toEqual([UDID])
+    expect(() => registry.reserve('%2', UDID)).toThrow('shutting down')
+    expect(() => registry.upsert('%2', target, input)).toThrow('shutting down')
+    registry.finishRelease(UDID.toLowerCase())
+    expect(registry.isHeld(UDID)).toBe(false)
+    expect(registry.upsert('%2', target, input).paneId).toBe('%2')
+    // A device reclaimed before the daemon takes the closed lease is never shut down.
+    open = true
+    registry.upsert('%1', target, { ...input, udid: OTHER })
+    open = false
+    registry.list(paneExists)
+    registry.delete('%2')
+    registry.upsert('%2', target, { ...input, udid: OTHER })
+    expect(registry.takeClosed(paneExists)).toEqual([])
+  })
+
   it('reserves before device operations, prevents races and expires abandoned reservations', () => {
     let now = 10
     const registry = new SimLeaseRegistry({ now: () => now })

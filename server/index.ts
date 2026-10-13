@@ -68,6 +68,7 @@ import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
+import { releaseClosedSimLease } from './sim-lease-release.js'
 import { AgentResumeService, readProcessTable } from './agent-resume.js'
 import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
 import { ChatHandoffStore, type ChatHandoff } from './chat-handoffs.js'
@@ -698,6 +699,8 @@ async function main(): Promise<void> {
     ports: [],
   }
   let snapshotRefresh: Promise<CommandoSnapshot> | null = null
+  // Until tmux has been read once, an empty snapshot must not look like every pane closed.
+  let snapshotReady = false
   let snapshotRevision = 0
   let outputRevision = 0
   let lastTmuxError = ''
@@ -733,7 +736,7 @@ async function main(): Promise<void> {
 
   const clientBriefDependencies = () => ({
     panes: snapshot.panes,
-    leases: () => simLeaseRegistry.list(paneExists),
+    leases: () => simLeaseRegistry.list(leasePaneExists),
     resolveRepos: (paths: string[]) => paneRepos.resolve(paths),
   })
   const clientSessionBrief = async (brief: SessionBrief): Promise<SessionBrief> => (
@@ -847,6 +850,7 @@ async function main(): Promise<void> {
     snapshot.panes.find((pane) => pane.id === paneId)
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
+  const leasePaneExists = (paneId: string): boolean => !snapshotReady || paneExists(paneId)
 
   // Chat panes: agent hosts inside tmux panes connect here (see agent-host/).
   // The checkout's host fingerprint, re-read at most every 10 s, flags hosts left behind by a merge.
@@ -1407,6 +1411,8 @@ async function main(): Promise<void> {
         )
         snapshotRevision = nextSnapshot.revision
         snapshot = nextSnapshot
+        snapshotReady = true
+        releaseClosedSimLeases()
         lastTmuxError = ''
         await sessionIdes.retain(new Set(snapshot.sessions.map((session) => session.id)))
 
@@ -1723,7 +1729,7 @@ async function main(): Promise<void> {
   })
   const simLive = new SimLiveService({ log: (message) => console.log(`[sim-live] ${message}`) })
   const simLogs = new SimLogsService()
-  const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists, cacheDirectory: defaultSimSnapshotDirectory(port) })
+  const simWallApi = new SimWallApi({ registry: simLeaseRegistry, paneExists: leasePaneExists, cacheDirectory: defaultSimSnapshotDirectory(port) })
   const webPaneAgentLabel = (paneId: string): string | undefined => {
     const status = agentStatuses.get(paneId)
     if (!status || status.provider === 'unknown') return undefined
@@ -1731,10 +1737,18 @@ async function main(): Promise<void> {
       ? `${status.provider} · ${status.agentSessionName}`
       : status.provider
   }
+  // Archiving or closing a session, or closing a pane, returns the pane's leased simulator.
+  const releaseClosedSimLeases = (): void => {
+    for (const lease of simLeaseRegistry.takeClosed(leasePaneExists)) {
+      void releaseClosedSimLease(lease)
+        .catch((error: unknown) => console.warn(`[sim-leases] could not release ${lease.udid} after its pane closed`, error))
+        .finally(() => simLeaseRegistry.finishRelease(lease.udid))
+    }
+  }
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
     registry: simLeaseRegistry,
-    paneExists,
+    paneExists: leasePaneExists,
     onChange: (paneId) => {
       const pane = paneForId(paneId)
       const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
