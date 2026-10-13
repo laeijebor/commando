@@ -1159,7 +1159,6 @@ export function App() {
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const [resizeRetryVersion, setResizeRetryVersion] = useState(0)
   const tokenBrokerRef = useRef<SessionTokenBroker | null>(null)
-  const pendingMaximizePaneId = useRef<string | null>(null)
   const previousSnapshotRef = useRef<CommandoSnapshot | null>(null)
   const resizeAuthorityActiveRef = useRef(false)
   const previousResizeAuthorityActive = useRef(false)
@@ -1830,8 +1829,7 @@ export function App() {
   }, [connection.phase])
 
   useEffect(() => {
-    setMaximizedPaneId(pendingMaximizePaneId.current)
-    pendingMaximizePaneId.current = null
+    setMaximizedPaneId(null)
     setFocusedPaneId(null)
   }, [selectedSessionId])
 
@@ -2089,13 +2087,6 @@ export function App() {
     })
   }
   const openPrDiff = (pr: PrSummary) => openPanePr(pr, 'Diff')
-
-  const openPaneMaximized = (paneId: string) => {
-    if (!paneMap.has(paneId)) return
-    pendingMaximizePaneId.current = paneId
-    jumpToPane(paneId)
-    setMaximizedPaneId(paneId)
-  }
 
   const jumpToGroup = (windowId: string) => {
     const group = groups.find((candidate) => candidate.windowId === windowId)
@@ -2588,6 +2579,10 @@ export function App() {
     }
   }
 
+  const paneSimulators = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
+    const brief = paneBriefs[pane.id]
+    return brief?.simulator && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.simulator]] : []
+  })), [snapshot?.panes, paneBriefs])
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
     try {
@@ -3380,18 +3375,15 @@ export function App() {
               prsApi={prsApi}
               connected={connected}
               sessions={snapshot?.sessions ?? []}
-              windows={snapshot?.windows ?? []}
               panes={snapshot?.panes ?? []}
               displayedPaneIds={allVisiblePaneIds}
               statuses={agentStatuses}
               marks={paneMarks}
+              simulators={paneSimulators}
               selectedSessionId={selectedSessionId}
-              focusedPaneId={focusedPaneId}
               onSelectSession={selectSession}
-              onSelectWindow={jumpToGroup}
               onSelectPane={jumpToPane}
-              onOpenPaneMaximized={openPaneMaximized}
-              onWindowDeleting={clearLayoutTimers}
+              onShowSimulator={(udid, paneId) => { void showSimulator(udid, paneId) }}
               onSessionsChanged={refresh}
               onPreferencesChanged={setSessionTreePreferences}
               ides={sessionIdes}
