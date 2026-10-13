@@ -365,6 +365,91 @@ describe('NativeTerminalPane', () => {
     bridge.dispose()
   })
 
+  async function transitionFixture() {
+    const messages: NativeTerminalMessage[] = []
+    installHandler(messages)
+    const bridge = new NativeTerminalBridge()
+    const receive = receiver(bridge)
+    await connectBridge(bridge, receive)
+    const { props, getSink } = nativeProps(bridge)
+    const view = render(<NativeTerminalPane {...props} />)
+    const attachmentId = messages.find((message) => message.type === 'pane.attach')!.payload.attachmentId as string
+    act(() => receive('pane.attached', { paneId: '%1', attachmentId }))
+    act(() => getSink()!.reset({ data: new Uint8Array(), cols: 80, rows: 24, terminalState, revision: 1 }))
+    act(() => receive('pane.seeded', { paneId: '%1', attachmentId, revision: 1 }))
+    let top = 90
+    const overlay = document.createElement('aside')
+    overlay.setAttribute('data-native-terminal-occluder', '')
+    Object.defineProperty(overlay, 'getBoundingClientRect', { value: () => rect(10, top, 90, top + 30) })
+    await act(async () => { view.container.append(overlay) })
+    return {
+      bridge, props,
+      frames: () => messages.filter((message) => message.type === 'pane.frame'),
+      setTop: (value: number) => { top = value },
+      transition: (type: string) => fireEvent(overlay, Object.assign(new Event(type, { bubbles: true }), { propertyName: 'transform' })),
+    }
+  }
+
+  it.each(['transitionend', 'transitioncancel'])('tracks moving occluders on rAF without resizing, dedupes unchanged frames and stops on %s', async (endEvent) => {
+    vi.useFakeTimers()
+    const callbacks = new Map<number, FrameRequestCallback>()
+    let nextFrame = 0
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { callbacks.set(++nextFrame, callback); return nextFrame })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { callbacks.delete(id) })
+    const fixture = await transitionFixture()
+    const tick = async () => {
+      await act(async () => {
+        const pending = [...callbacks.values()]
+        callbacks.clear()
+        pending.forEach((callback) => callback(performance.now()))
+      })
+    }
+    await tick()
+    const initialFrames = fixture.frames().length
+    fixture.transition('transitionrun')
+    fixture.transition('transitionstart')
+    fixture.setTop(60)
+    await tick()
+    expect(fixture.frames().at(-1)?.payload.visibleRegions).toEqual([{ x: 10, y: 10, width: 80, height: 50 }])
+    fixture.setTop(50)
+    await tick()
+    expect(fixture.frames().length).toBe(initialFrames + 2)
+    expect(fixture.frames().at(-1)?.payload.visibleRegions).toEqual([{ x: 10, y: 10, width: 80, height: 40 }])
+    await tick()
+    expect(fixture.frames().length).toBe(initialFrames + 2)
+    fixture.transition(endEvent)
+    await tick()
+    expect(callbacks.size).toBe(0)
+    const requests = vi.mocked(window.requestAnimationFrame).mock.calls.length
+    await act(async () => { vi.advanceTimersByTime(700) })
+    expect(window.requestAnimationFrame).toHaveBeenCalledTimes(requests)
+    for (const frame of fixture.frames()) expect(frame.payload).toMatchObject({ x: 10, y: 10, width: 80, height: 70 })
+    expect(fixture.props.onResize).not.toHaveBeenCalled()
+    fixture.bridge.dispose()
+  })
+
+  it.each([false, true])('tracks occlusion through the suspended-rAF timer and bounds polling when an end event is missing: %s', async (missingEnd) => {
+    vi.useFakeTimers()
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 47)
+    const fixture = await transitionFixture()
+    await act(async () => { vi.advanceTimersByTime(100) })
+    const initialFrames = fixture.frames().length
+    fixture.transition('transitionrun')
+    fixture.setTop(60)
+    await act(async () => { vi.advanceTimersByTime(100) })
+    fixture.setTop(50)
+    await act(async () => { vi.advanceTimersByTime(100) })
+    expect(fixture.frames().length).toBe(initialFrames + 2)
+    if (!missingEnd) fixture.transition('transitionend')
+    await act(async () => { vi.advanceTimersByTime(700) })
+    const requests = vi.mocked(window.requestAnimationFrame).mock.calls.length
+    await act(async () => { vi.advanceTimersByTime(700) })
+    expect(window.requestAnimationFrame).toHaveBeenCalledTimes(requests)
+    for (const frame of fixture.frames()) expect(frame.payload).toMatchObject({ width: 80, height: 70 })
+    expect(fixture.props.onResize).not.toHaveBeenCalled()
+    fixture.bridge.dispose()
+  })
+
   it('publishes through the timer fallback when WebKit suspends animation frames', async () => {
     const messages: NativeTerminalMessage[] = []
     installHandler(messages)

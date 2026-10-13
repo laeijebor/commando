@@ -337,6 +337,7 @@ export function NativeTerminalPane({
 
     let frame: number | null = null
     let fallbackTimer: number | null = null
+    const transitions = new Map<Element, Map<string, number>>()
     let fingerprint = ''
     const publish = () => {
       if (frame !== null) window.cancelAnimationFrame(frame)
@@ -373,9 +374,11 @@ export function NativeTerminalPane({
         order,
       }
       const nextFingerprint = JSON.stringify(payload)
-      if (nextFingerprint === fingerprint) return
-      fingerprint = nextFingerprint
-      if (!bridge.frame(attachmentId, payload)) activeFailureRef.current()
+      if (nextFingerprint !== fingerprint) {
+        fingerprint = nextFingerprint
+        if (!bridge.frame(attachmentId, payload)) activeFailureRef.current()
+      }
+      if (transitions.size) schedule()
     }
     const schedule = () => {
       // Publishing costs a forced full-document layout read, and while the UI is
@@ -386,6 +389,27 @@ export function NativeTerminalPane({
       if (frame !== null || fallbackTimer !== null) return
       frame = window.requestAnimationFrame(publish)
       fallbackTimer = window.setTimeout(publish, FRAME_PUBLISH_FALLBACK_MS)
+    }
+    const finishTransition = (target: Element, property: string) => {
+      const properties = transitions.get(target)
+      const timer = properties?.get(property)
+      if (timer !== undefined) window.clearTimeout(timer)
+      properties?.delete(property)
+      if (!properties?.size) transitions.delete(target)
+      schedule()
+    }
+    const startTransition = (event: TransitionEvent) => {
+      const target = event.target
+      if (!(target instanceof Element) || !target.hasAttribute('data-native-terminal-occluder')) return
+      const properties = transitions.get(target) ?? new Map<string, number>()
+      if (properties.has(event.propertyName)) return
+      // A missing end event must not leave native frame polling running.
+      properties.set(event.propertyName, window.setTimeout(() => finishTransition(target, event.propertyName), 500))
+      transitions.set(target, properties)
+      schedule()
+    }
+    const endTransition = (event: TransitionEvent) => {
+      if (event.target instanceof Element) finishTransition(event.target, event.propertyName)
     }
     const resizeObserver = new ResizeObserver(schedule)
     for (let element: HTMLElement | null = placeholder; element; element = element.parentElement) {
@@ -398,7 +422,10 @@ export function NativeTerminalPane({
       childList: true,
       subtree: true,
     })
-    window.addEventListener('transitionend', schedule, true)
+    window.addEventListener('transitionrun', startTransition, true)
+    window.addEventListener('transitionstart', startTransition, true)
+    window.addEventListener('transitionend', endTransition, true)
+    window.addEventListener('transitioncancel', endTransition, true)
     window.addEventListener('resize', schedule)
     window.addEventListener('scroll', schedule, true)
     const unsubscribePresenting = subscribeToPresenting((presenting) => {
@@ -410,11 +437,15 @@ export function NativeTerminalPane({
       resizeObserver.disconnect()
       unsubscribePresenting()
       mutationObserver.disconnect()
-      window.removeEventListener('transitionend', schedule, true)
+      window.removeEventListener('transitionrun', startTransition, true)
+      window.removeEventListener('transitionstart', startTransition, true)
+      window.removeEventListener('transitionend', endTransition, true)
+      window.removeEventListener('transitioncancel', endTransition, true)
       window.removeEventListener('resize', schedule)
       window.removeEventListener('scroll', schedule, true)
       if (frame !== null) window.cancelAnimationFrame(frame)
       if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+      for (const properties of transitions.values()) for (const timer of properties.values()) window.clearTimeout(timer)
     }
   }, [bridge, measurementKey, order, resizeOwner])
 

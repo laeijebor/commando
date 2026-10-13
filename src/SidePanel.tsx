@@ -91,6 +91,7 @@ export function SidePanel({
   children: ReactNode
 }) {
   const [drawerHeight, setDrawerHeight] = useState(() => loadDrawerHeight(windowId))
+  const [drawerOccluding, setDrawerOccluding] = useState(false)
   const drawerRef = useRef<HTMLElement>(null)
   const scrimRef = useRef<HTMLButtonElement>(null)
   const drawerDragRef = useRef<{ startY: number; height: number; windowHeight: number } | null>(null)
@@ -126,6 +127,14 @@ export function SidePanel({
   useEffect(() => { onTabSets?.(allTabs) }, [allTabs, onTabSets])
   const maximizedTab = allTabs.find((tab) => tab.id === maximizedTabId)
   const expanded = Boolean(maximizedTab) || (narrowMode ? drawerOpen : !collapsed)
+  useLayoutEffect(() => {
+    if (!narrowMode || gridMaximized) { setDrawerOccluding(false); return }
+    if (expanded) { setDrawerOccluding(true); return }
+    if (!drawerOccluding) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setDrawerOccluding(false); return }
+    const timer = window.setTimeout(() => setDrawerOccluding(false), 250)
+    return () => window.clearTimeout(timer)
+  }, [narrowMode, expanded, gridMaximized, drawerOccluding])
   const owner = maximizedTab?.anchorPaneId ?? focusedPaneId ?? ''
   const closedPrs = closedPanePrs(paneData[focusedPaneId ?? '']?.prs?.pullRequests ?? [], dismissedPrTabs[focusedPaneId ?? ''])
   const focusedTabs = allTabs.filter((tab) => tab.anchorPaneId === owner)
@@ -269,7 +278,10 @@ export function SidePanel({
         onLostPointerCapture={() => { dragRef.current = null }} />
       <aside ref={drawerRef} className="side-panel" hidden={!paneIds.length || gridMaximized} aria-label="Pane tabs"
         aria-hidden={narrowMode && !expanded ? true : undefined} inert={narrowMode && !expanded}
-        data-native-terminal-occluder={narrowMode && expanded ? '' : undefined}>
+        data-native-terminal-occluder={narrowMode && !gridMaximized && (expanded || drawerOccluding) ? '' : undefined}
+        onTransitionEnd={(event) => {
+          if (event.target === event.currentTarget && event.propertyName === 'transform' && !expanded) setDrawerOccluding(false)
+        }}>
         {narrowMode && !maximizedTab && <div className="side-panel-drawer-handle" role="separator" aria-label="Resize tabs drawer"
           aria-orientation="horizontal" aria-valuemin={25} aria-valuemax={90} aria-valuenow={Math.round(drawerHeight)} tabIndex={0}
           onKeyDown={(event) => {

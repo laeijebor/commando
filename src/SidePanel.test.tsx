@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TmuxPane, WebPane } from '../shared/protocol'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrSummary, PrsApiClient } from './prsApi'
@@ -22,6 +22,8 @@ function panel(focusedPaneId = '%12', onOpen = vi.fn(), panes = tabs, titles: Re
     simulatorNames={{}} titles={titles} onSelect={() => undefined} onClose={() => undefined} onOpen={onOpen}
     renderTab={(tab) => <iframe title={tab.id} src={tab.url} />}><div>Terminal grid</div></SidePanel>
 }
+
+beforeEach(() => { vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false }))) })
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
@@ -404,6 +406,51 @@ describe('narrow tabs drawer', () => {
       fireEvent.keyDown(window, { key: 'Escape' })
       expect(view.container.querySelector('.window-panel-layout')).toHaveClass('is-drawer-open')
     } finally { overlay.remove() }
+  })
+
+  it('retains native occlusion through close and ignores child and unrelated transition ends', () => {
+    const view = render(<Drawer />)
+    const chip = screen.getByRole('button', { name: 'Pane tabs' })
+    fireEvent.click(chip)
+    const drawer = view.container.querySelector<HTMLElement>('.side-panel')!
+    expect(drawer).toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(chip)
+    expect(drawer).toHaveAttribute('data-native-terminal-occluder')
+    const end = (target: Element, propertyName: string) => fireEvent(target, Object.assign(new Event('transitionend', { bubbles: true }), { propertyName }))
+    end(drawer.querySelector('.side-panel-head')!, 'transform')
+    end(drawer, 'visibility')
+    expect(drawer).toHaveAttribute('data-native-terminal-occluder')
+    end(drawer, 'transform')
+    expect(drawer).not.toHaveAttribute('data-native-terminal-occluder')
+  })
+
+  it('ends close occlusion after the fallback and cancels it if the drawer reopens', () => {
+    vi.useFakeTimers()
+    const view = render(<Drawer />)
+    const chip = screen.getByRole('button', { name: 'Pane tabs' })
+    const drawer = view.container.querySelector('.side-panel')!
+    fireEvent.click(chip)
+    fireEvent.click(chip)
+    act(() => vi.advanceTimersByTime(249))
+    expect(drawer).toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(chip)
+    act(() => vi.advanceTimersByTime(300))
+    expect(drawer).toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(chip)
+    act(() => vi.advanceTimersByTime(250))
+    expect(drawer).not.toHaveAttribute('data-native-terminal-occluder')
+  })
+
+  it('removes close occlusion immediately with reduced motion', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+    const view = render(<Drawer />)
+    const chip = screen.getByRole('button', { name: 'Pane tabs' })
+    const drawer = view.container.querySelector('.side-panel')!
+    fireEvent.click(chip)
+    expect(drawer).toHaveAttribute('data-native-terminal-occluder')
+    fireEvent.click(chip)
+    expect(drawer).not.toHaveAttribute('data-native-terminal-occluder')
+    expect(window.matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)')
   })
 
   it('layers a clickable scrim above the terminal stacking context and below the drawer', () => {
