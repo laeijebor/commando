@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# commando-guide — open a Markdown guide as a tickable tab beside this tmux pane,
+# and read back the user's progress.
+#   commando-guide <file.md>                 open (or re-focus) the guide; prints webPaneId
+#   commando-guide state <webPaneId> [--json] the user's ticks and notes
+#   commando-guide close <webPaneId>          close the tab
+set -euo pipefail
+
+command="open"
+case "${1:-}" in
+  state|close) command="$1"; shift ;;
+esac
+json="false"
+if [ "$command" != open ]; then
+  [ $# -ge 1 ] || { echo "usage: commando-guide $command <webPaneId>" >&2; exit 2; }
+  web_pane_id="$1"; shift
+  [[ "$web_pane_id" =~ ^w-[0-9a-f]{8}$ ]] || { echo "commando-guide: invalid webPaneId" >&2; exit 2; }
+  while [ $# -gt 0 ]; do
+    case "$command:$1" in
+      state:--json) json="true"; shift ;;
+      *) echo "commando-guide: unexpected argument: $1" >&2; exit 2 ;;
+    esac
+  done
+else
+  [ $# -eq 1 ] && [[ "$1" != -* ]] || { echo "usage: commando-guide <file.md> | state <webPaneId> [--json] | close <webPaneId>" >&2; exit 2; }
+  file="$1"
+  [[ "$file" =~ \.(md|markdown)$ ]] || { echo "commando-guide: $file must be a .md file" >&2; exit 2; }
+  [ -f "$file" ] || { echo "commando-guide: $file does not exist" >&2; exit 1; }
+  pane="${TMUX_PANE:-}"
+  [ -n "$pane" ] || { echo "commando-guide: not inside a tmux pane (TMUX_PANE is unset)" >&2; exit 1; }
+  dir="$(cd "$(dirname "$file")" && pwd)"
+  name="$(basename "$file")"
+  # The whole folder is served and watched, so keep guides out of repo roots.
+  if [ -e "$dir/.git" ] || [ -e "$dir/node_modules" ]; then
+    echo "commando-guide: put the guide in its own folder (e.g. .guides/$name), not $dir" >&2; exit 2
+  fi
+fi
+token_file="${COMMANDO_AGENT_HOOK_TOKEN_PATH:-$HOME/.commando/agent-hook-token}"
+if [ ! -r "$token_file" ]; then
+  echo "commando-guide: agent hook token not readable at $token_file" >&2
+  echo "commando-guide: run 'npm run hooks:install' in the commando repo first" >&2
+  exit 1
+fi
+base="http://127.0.0.1:${COMMANDO_PORT:-4310}"
+token="$(cat "$token_file")"
+body_file=$(mktemp "${TMPDIR:-/tmp}/commando-guide-body.XXXXXX")
+trap 'rm -f "$body_file"' EXIT
+request() {
+  local status
+  status=$(curl -sS -o "$body_file" -w '%{http_code}' -H "Authorization: Bearer ${token}" "$@") || {
+    echo "commando-guide: daemon unavailable at $base" >&2; exit 1;
+  }
+  case "$status" in
+    200|201|202) ;;
+    *) cat "$body_file" >&2; echo "commando-guide: daemon responded ${status}" >&2; exit 1 ;;
+  esac
+}
+
+if [ "$command" = close ]; then
+  request -X DELETE "$base/api/web-panes/$web_pane_id"
+  exit 0
+fi
+if [ "$command" = state ]; then
+  request "$base/api/web-panes/$web_pane_id/guide"
+  if [ "$json" = true ]; then cat "$body_file"; echo; exit 0; fi
+  node -e '
+    const { guide } = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    if (guide.error) { console.error("commando-guide: " + guide.error); process.exit(1) }
+    const done = guide.steps.filter((step) => step.checked).length;
+    const parts = [`${guide.title || "Guide"} — ${done}/${guide.steps.length} done`];
+    if (guide.changes.length) parts.push(`${guide.changes.length} change(s) not yet sent to you${guide.waiting ? " (update queued)" : ""}`);
+    console.log(parts.join(" · "));
+    for (const step of guide.steps) {
+      const box = step.checkpoint ? (step.checked ? "[★]" : "[☆]") : (step.checked ? "[x]" : "[ ]");
+      const who = step.checked && !step.byUser ? " (agent)" : "";
+      console.log(`${box} ${step.id}: ${step.label}${who}${step.note ? ` — note: ${JSON.stringify(step.note)}` : ""}`);
+    }
+  ' "$body_file"
+  exit 0
+fi
+
+body=$(node -e 'console.log(JSON.stringify({dir:process.argv[1]}))' "$dir")
+request -X POST -H 'Content-Type: application/json' --data "$body" "$base/api/redline/artifacts"
+artifact_id=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).id)' "$body_file")
+artifact_url=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).url)' "$body_file")
+body=$(node -e 'console.log(JSON.stringify({url:process.argv[1],anchor:process.argv[2],engine:"webkit",content:{kind:"guide",artifactId:process.argv[3],file:process.argv[4]}}))' "$artifact_url" "$pane" "$artifact_id" "$name")
+request -X POST -H 'Content-Type: application/json' --data "$body" "$base/api/web-panes"
+node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).webPaneId)' "$body_file"

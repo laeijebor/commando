@@ -15,7 +15,7 @@ export class CanvasWatch {
   ) {}
 
   sync(panes: readonly WebPane[]): void {
-    const ids = new Set(panes.flatMap((pane) => pane.content?.kind === 'canvas' ? [pane.content.artifactId] : []))
+    const ids = new Set(panes.flatMap((pane) => pane.content?.kind === 'canvas' || pane.content?.kind === 'guide' ? [pane.content.artifactId] : []))
     for (const [id, entry] of this.watched) {
       if (!ids.has(id) || !this.artifacts.directory(id)) this.stop(id, entry)
     }

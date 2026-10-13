@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { FileDiff, GitPullRequest, LayoutDashboard, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X } from 'lucide-react'
+import { FileDiff, GitPullRequest, LayoutDashboard, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
 import type { TmuxPane, WebPane, WebPaneEngine } from '../shared/protocol'
 import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
@@ -41,6 +41,7 @@ function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string 
   if (title) return title
   if (tab.content?.kind === 'simulator') return simulatorName ?? 'Simulator'
   if (tab.content?.kind === 'canvas') return 'Canvas'
+  if (tab.content?.kind === 'guide') return 'Guide'
   try {
     const url = new URL(tab.url)
     return `${url.host}${url.pathname}`
@@ -191,7 +192,7 @@ export function SidePanel({
                       ? resolveActivePanelTab(focusedTabs.filter((candidate) => candidate.id !== tab.id), tab.key, focusedTabs) : undefined)}><X /></button>}
                   </div>
                 }
-                const Icon = tab.content?.kind === 'canvas' ? LayoutDashboard : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
+                const Icon = tab.content?.kind === 'canvas' ? LayoutDashboard : tab.content?.kind === 'guide' ? ListChecks : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
                 const label = tabLabel(tab, titles[tab.id], tab.content?.kind === 'simulator' ? simulatorNames[tab.content.udid] : undefined)
                 return <div className={`side-panel-tab${active?.id === tab.id ? ' is-active' : ''}${tab.id === focusedTabs.find((item) => !isBuiltinTab(item))?.id ? ' first-web-tab' : ''}`} key={tab.id}>
                   <button type="button" role="tab" aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)} title={tab.url || label}>

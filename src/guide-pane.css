@@ -1,0 +1,85 @@
+.web-pane > .guide-pane { grid-row: 1 / -1; }
+.guide-pane { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }
+
+.guide-toolbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-bottom: 1px solid var(--surface-hover); font-size: 11px; white-space: nowrap; }
+.guide-progress { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.guide-progress-count { font-family: var(--mono); color: var(--text-soft); }
+.guide-progress-bar { width: 72px; height: 4px; border-radius: 2px; background: var(--surface-hover); overflow: hidden; }
+.guide-progress-bar > span { display: block; height: 100%; background: var(--green); transition: width 160ms ease; }
+.guide-delivery { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.guide-tool { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: 0; border-radius: 5px; background: transparent; color: var(--muted-dim); cursor: pointer; }
+.guide-tool:hover { color: var(--text); background: var(--surface-hover); }
+.guide-tool svg, .guide-update svg { width: 13px; height: 13px; }
+.guide-update { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); color: var(--text-soft); font: inherit; cursor: pointer; }
+.guide-update:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.guide-update.is-ready { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.guide-update.is-ready:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, white); color: var(--accent-ink); }
+.guide-update:disabled { opacity: 0.5; cursor: default; }
+
+.guide-error { flex: none; padding: 6px 10px; border-bottom: 1px solid color-mix(in srgb, var(--red) 40%, transparent); background: color-mix(in srgb, var(--red) 10%, transparent); color: var(--red); font-size: 12px; }
+.guide-loading { padding: 24px; color: var(--muted); font-size: 13px; }
+.guide-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+
+.guide-doc { max-width: 860px; margin: 0 auto; padding: 18px 22px 64px; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.guide-doc > :first-child { margin-top: 0; }
+.guide-doc h1 { margin: 0 0 14px; font-size: 22px; line-height: 1.25; }
+.guide-doc h2 { margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 17px; }
+.guide-doc h3 { margin: 20px 0 8px; font-size: 15px; }
+.guide-doc p { margin: 8px 0; }
+.guide-doc a { color: var(--accent); }
+.guide-doc strong { color: var(--text); }
+.guide-doc code { padding: 1px 4px; border-radius: 4px; background: var(--surface-hover); color: var(--cyan); font-family: var(--mono); font-size: 0.88em; }
+.guide-doc ul, .guide-doc ol { margin: 6px 0; padding-left: 22px; }
+.guide-doc li { margin: 3px 0; }
+.guide-doc img { max-width: 100%; border-radius: 6px; border: 1px solid var(--border); }
+.guide-doc table { border-collapse: collapse; margin: 10px 0; font-size: 13px; display: block; overflow-x: auto; }
+.guide-doc th, .guide-doc td { padding: 5px 9px; border: 1px solid var(--border); text-align: left; }
+.guide-doc blockquote { margin: 10px 0; padding: 2px 12px; border-left: 3px solid var(--border-strong); color: var(--text-soft); }
+.guide-doc kbd { padding: 0 4px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; font-family: var(--mono); font-size: 0.85em; }
+.guide-doc details { margin: 10px 0; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.guide-doc summary { cursor: pointer; color: var(--text-soft); }
+.guide-doc hr { border: 0; border-top: 1px solid var(--border); margin: 20px 0; }
+
+.guide-code { position: relative; margin: 8px 0; }
+.guide-code pre { margin: 0; padding: 10px 40px 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-deep); overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+.guide-code pre code { padding: 0; background: transparent; color: var(--text); font-size: inherit; }
+.guide-copy { position: absolute; top: 6px; right: 6px; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid var(--border-mid); border-radius: 5px; background: var(--surface-raised); color: var(--muted); cursor: pointer; }
+.guide-copy:hover { color: var(--text); border-color: var(--border-strong); }
+.guide-copy svg { width: 13px; height: 13px; }
+
+.guide-doc ul.contains-task-list { padding-left: 0; list-style: none; }
+.guide-doc ol > li > ul.contains-task-list, .guide-doc ul > li > ul.contains-task-list { margin-left: -2px; }
+.guide-step { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0; padding: 4px 6px; border-radius: 6px; }
+.guide-step:hover { background: var(--surface-raised); }
+.guide-step-body { flex: 1; min-width: 0; }
+.guide-step-body > p:first-child { margin-top: 0; }
+.guide-step-body > p:last-of-type { margin-bottom: 0; }
+.guide-step.is-done > .guide-step-body { color: var(--muted); }
+.guide-step.is-done > .guide-step-body strong { color: var(--text-soft); }
+.guide-box { flex: none; width: 15px; height: 15px; margin: 3px 0 0; accent-color: var(--green); cursor: pointer; }
+
+.guide-note-add { display: inline-flex; vertical-align: middle; align-items: center; margin-left: 6px; padding: 0; border: 0; background: transparent; color: var(--muted-dim); cursor: pointer; opacity: 0; }
+.guide-note-add svg { width: 13px; height: 13px; }
+.guide-step:hover .guide-note-add, .guide-checkpoint:hover .guide-note-add, .guide-note-add:focus-visible { opacity: 1; }
+.guide-note-add:hover { color: var(--text); }
+.guide-note { display: block; max-width: 100%; margin: 4px 0 0; padding: 3px 8px; border: 0; border-left: 2px solid var(--amber); border-radius: 0 4px 4px 0; background: color-mix(in srgb, var(--amber) 9%, transparent); color: var(--text-soft); font: inherit; font-size: 12.5px; text-align: left; white-space: pre-wrap; cursor: text; }
+.guide-note-input { display: block; width: 100%; box-sizing: border-box; margin: 4px 0 0; padding: 5px 8px; border: 1px solid var(--amber); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; resize: vertical; }
+
+.guide-checkpoint { display: block; margin: 16px 0; padding: 9px 12px; border: 1px dashed var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.guide-checkpoint-row { display: flex; align-items: flex-start; gap: 8px; }
+.guide-checkpoint-flag { flex: none; width: 15px; height: 15px; margin-top: 3px; color: var(--accent); }
+.guide-checkpoint-label { flex: 1; min-width: 0; font-weight: 600; }
+.guide-checkpoint.is-done { border-style: solid; border-color: color-mix(in srgb, var(--green) 60%, transparent); background: color-mix(in srgb, var(--green) 7%, transparent); }
+.guide-checkpoint.is-done .guide-checkpoint-flag { color: var(--green); }
+.guide-checkpoint .guide-note { flex-basis: 100%; }
+.guide-checkpoint-row:has(.guide-note, .guide-note-input) { flex-wrap: wrap; }
+.guide-checkpoint-row > .guide-note, .guide-checkpoint-row > .guide-note-input { flex-basis: 100%; margin-left: 46px; }
+
+.guide-callout { margin: 12px 0; padding: 8px 12px; border-left: 3px solid var(--callout); border-radius: 0 6px 6px 0; background: color-mix(in srgb, var(--callout) 9%, transparent); }
+.guide-callout > :first-child:not(.guide-callout-title) { margin-top: 0; }
+.guide-callout > :last-child { margin-bottom: 0; }
+.guide-callout-title { display: block; margin-bottom: 2px; color: var(--callout); }
+.guide-callout.tone-info { --callout: var(--cyan); }
+.guide-callout.tone-warn { --callout: var(--amber); }
+.guide-callout.tone-danger { --callout: var(--red); }
+.guide-callout.tone-success { --callout: var(--green); }
