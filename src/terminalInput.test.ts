@@ -9,6 +9,8 @@ import { XtermPane } from './XtermPane'
 
 const xterm = vi.hoisted(() => ({
   handleKey: null as ((event: KeyboardEvent) => boolean) | null,
+  handleData: null as ((data: string) => void) | null,
+  handleWheel: null as ((event: WheelEvent) => boolean) | null,
   selection: '',
   active: {
     viewportY: 2, baseY: 3, cursorY: 0, cursorX: 10,
@@ -25,9 +27,9 @@ vi.mock('@xterm/xterm', () => ({
     open() {}
     loadAddon() {}
     dispose() {}
-    onData() { return { dispose() {} } }
+    onData(handler: (data: string) => void) { xterm.handleData = handler; return { dispose() {} } }
     onSelectionChange() { return { dispose() {} } }
-    attachCustomWheelEventHandler() {}
+    attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) { xterm.handleWheel = handler }
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { xterm.handleKey = handler }
     hasSelection() { return xterm.selection.length > 0 }
     getSelection() { return xterm.selection }
@@ -168,7 +170,9 @@ describe('browser terminal macOS key routing', () => {
     }
     const view = render(createElement(XtermPane, props))
     return {
-      onInput, writeText,
+      onInput, writeText, onKey: props.onKey, onPaste: props.onPaste,
+      host: view.container.querySelector('.xterm-host')!,
+      terminalState,
       disconnect: () => view.rerender(createElement(XtermPane, { ...props, connected: false })),
     }
   }
@@ -213,6 +217,23 @@ describe('browser terminal macOS key routing', () => {
     expect(writeText.mock.invocationCallOrder[0]).toBeLessThan(onInput.mock.invocationCallOrder[0])
   })
 
+  it('still clears when input arrived before Command+X', async () => {
+    const { onInput, writeText } = mount()
+    let finishCopy!: () => void
+    const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve })
+    writeText.mockReturnValue(pendingCopy)
+    xterm.active.getLine.mockReturnValue({
+      getCell: (col: number) => ({ getWidth: () => 1, isDim: () => false, getChars: () => '$ input'[col] ?? '' }),
+    })
+    xterm.handleData!('abc')
+    expect(onInput).toHaveBeenCalledWith('abc')
+    press('x')
+    finishCopy()
+    await pendingCopy
+    await Promise.resolve()
+    expect(onInput).toHaveBeenLastCalledWith('\x05\x15')
+  })
+
   it('preserves input when the clipboard write fails', async () => {
     const { onInput, writeText } = mount()
     const failedCopy = Promise.reject(new DOMException('Denied', 'NotAllowedError'))
@@ -243,6 +264,41 @@ describe('browser terminal macOS key routing', () => {
     await Promise.resolve()
     expect(onInput).not.toHaveBeenCalled()
   })
+
+  it.each(['data', 'semantic key', 'modified key', 'mac action', 'paste', 'mouse key'])(
+    'does not clear after intervening %s while the clipboard write is pending', async (source) => {
+      const { onInput, writeText, onKey, onPaste, host, terminalState } = mount()
+      let finishCopy!: () => void
+      const pendingCopy = new Promise<void>((resolve) => { finishCopy = resolve })
+      writeText.mockReturnValue(pendingCopy)
+      xterm.active.getLine.mockReturnValue({
+        getCell: (col: number) => ({ getWidth: () => 1, isDim: () => false, getChars: () => '$ input'[col] ?? '' }),
+      })
+      press('x')
+      expect(writeText).toHaveBeenCalledWith('input')
+      switch (source) {
+        case 'data': xterm.handleData!('new text'); break
+        case 'semantic key': xterm.handleKey!(new KeyboardEvent('keydown', { key: 'Enter' })); break
+        case 'modified key': xterm.handleKey!(new KeyboardEvent('keydown', { key: 'S', ctrlKey: true, shiftKey: true })); break
+        case 'mac action': press('Backspace'); break
+        case 'paste': {
+          const event = new Event('paste', { cancelable: true })
+          Object.defineProperty(event, 'clipboardData', { value: { getData: () => 'pasted input' } })
+          host.dispatchEvent(event)
+          break
+        }
+        case 'mouse key':
+          terminalState.alternateOn = true
+          xterm.handleWheel!(new WheelEvent('wheel', { deltaY: 1 }))
+          break
+      }
+      expect(onInput.mock.calls.length + onKey.mock.calls.length + onPaste.mock.calls.length).toBeGreaterThan(0)
+      finishCopy()
+      await pendingCopy
+      await Promise.resolve()
+      expect(onInput).not.toHaveBeenCalledWith('\x05\x15')
+    },
+  )
 
   it('copies selections exactly without clearing and leaves empty input alone', () => {
     const { onInput, writeText } = mount()
