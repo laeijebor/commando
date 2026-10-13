@@ -78,6 +78,21 @@ describe('ChatConversationsApi', () => {
     expect(creator.createPane).toHaveBeenCalledWith({ targetId: '%1', direction: 'horizontal', placement: 'after', cwd: folder, agent: { provider: 'claude-chat', permissionMode: 'plan', resume: ID, configDir: '/home/me/.claudew' } })
   })
 
+  it('lets only one pane resume a conversation, until its new host has had time to report it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const { creator, resume } = setup({ chats: [chat(), chat({ paneId: '%2', sessionId: 'bbbbbbbb-0000' })] })
+      const [first, second] = await Promise.all([resume({}), resume({ paneId: '%2' })])
+      expect([first.status, second.status].sort()).toEqual([200, 409])
+      expect(await resume({ paneId: '%2' })).toMatchObject({ status: 409, body: { error: 'That conversation is already being opened' } })
+      vi.advanceTimersByTime(15_000)
+      expect(await resume({ paneId: '%2' })).toMatchObject({ status: 200 })
+      expect(creator.respawnChatPane).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('refuses unknown conversations, non-chat panes, open conversations and missing folders', async () => {
     expect(await setup().resume({ sessionId: '22222222-0000' })).toMatchObject({ status: 404 })
     expect(await setup().resume({ paneId: '%2' })).toMatchObject({ status: 409, body: { error: expect.stringContaining('from a chat pane') } })

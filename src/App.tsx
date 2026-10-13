@@ -2947,7 +2947,8 @@ export function App() {
       if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p') return
       const target = event.target instanceof Element ? event.target.closest('[data-pane-id]')?.getAttribute('data-pane-id') : undefined
       const paneId = target ?? focusedPaneId
-      if (!connected || paletteOpen || !paneId || !chats[paneId] || (chatViews[paneId] ?? 'chat') !== 'chat') return
+      // Only in the workspace: elsewhere the last focused chat is hidden.
+      if (!connected || area !== 'workspace' || paletteOpen || !paneId || !chats[paneId] || (chatViews[paneId] ?? 'chat') !== 'chat') return
       event.preventDefault()
       event.stopPropagation()
       // Closes only a picker that is showing; one whose pane went away opens afresh.
