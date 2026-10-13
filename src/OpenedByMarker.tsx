@@ -12,7 +12,8 @@ export function OpenedByMarker({ pane, snapshot, statuses, onSelect }: {
   const parent = chatParent(pane, snapshot)
   if (!parent || parent.sessionId === pane.sessionId) return null
   const session = snapshot.sessions.find((candidate) => candidate.id === parent.sessionId)
-  const label = `Opened by ${parentLabel(pane, snapshot, statuses)}${session ? ` in ${session.name}` : ''}`
+  const opener = parentLabel(pane, snapshot, statuses)
+  const label = `Opened by ${opener}${session && session.name !== opener ? ` in ${session.name}` : ''}`
   return (
     <button type="button" className="opened-by-marker" aria-label={label} title={label}
       onClick={(event) => { event.stopPropagation(); onSelect(parent.id) }}>
