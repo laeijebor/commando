@@ -37,16 +37,20 @@
 .session-archive-row button { display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 4px; color: var(--accent) !important; font-size: 9px; }
 .session-archive-row button:hover { background: var(--surface-hover); }
 .session-archive-row svg { width: 12px; height: 12px; }
-.session-pref-group.kind-auxiliary > header, .session-archives > header { color: var(--muted-dim); }
 .session-pref-group.kind-auxiliary .managed-session-main { color: var(--muted) !important; }
 .session-tree-error { position: sticky; top: 0; z-index: 10; border: 1px solid var(--red); border-radius: 5px; background: var(--surface-raised) !important; }
 
 /* Session rows: one status indicator, the name, then muted glyphs. Colour is
    reserved for states that need attention. */
-.session-pref-group { margin-bottom: 8px; }
-.session-pref-group > header { padding: 4px 4px 4px 6px; display: flex; align-items: center; gap: 4px; color: var(--muted); }
-.session-pref-group > header strong { overflow: hidden; font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.session-pref-group > header small { color: var(--text-faint); font-family: var(--mono); font-size: 8px; }
+/* Group headers: a bright name and count, then a hairline to the edge, so
+   repositories read as landmarks. Utility groups stay muted. */
+.session-pref-group { margin-bottom: 12px; }
+.session-pref-group > header { padding: 4px 4px 4px 6px; display: flex; align-items: center; gap: 4px; color: var(--text); }
+.session-pref-group > header strong { min-width: 0; flex: 0 1 auto; overflow: hidden; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.session-pref-group > header small { flex: 0 0 auto; color: var(--text-faint); font-family: var(--mono); font-size: 8px; }
+.session-pref-group > header .session-pref-toggle::after { min-width: 12px; height: 1px; flex: 1 1 auto; margin-left: 2px; background: var(--border); content: ''; }
+.session-pref-group.kind-no-repo > header, .session-pref-group.kind-auxiliary > header, .session-archives > header { color: var(--muted-dim); }
+.session-pref-group.kind-no-repo > header strong, .session-pref-group.kind-auxiliary > header strong, .session-archives > header strong { font-weight: 500; }
 /* Group actions take no room until the header is hovered or focused. */
 .session-pref-group > header > button:not(.session-pref-toggle) { width: 0; height: 20px; flex: 0 0 auto; padding: 0; display: grid; place-items: center; overflow: hidden; border-radius: 4px; color: var(--text-faint); opacity: 0; }
 .session-pref-group > header:hover > button:not(.session-pref-toggle), .session-pref-group > header:focus-within > button:not(.session-pref-toggle) { width: 20px; opacity: 1; }
