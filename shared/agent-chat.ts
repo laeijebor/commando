@@ -178,7 +178,28 @@ export interface ChatQueuedMessage {
 export type ChatDelivery = 'queue' | 'steer'
 
 /** A subagent run: its Agent tool call, kept up to date from Claude's task events. */
-export type ChatSubagentState = 'running' | 'completed' | 'failed' | 'stopped'
+export type ChatSubagentState = 'running' | 'quiet' | 'completed' | 'failed' | 'stopped'
+
+export type ExternalAgentRuntime = 'codex' | 'claude' | 'opencode' | 'cursor'
+
+/** Observed by the daemon, without a connection to the agent's runtime. */
+export interface ExternalAgentRun {
+  id: string
+  runtime: ExternalAgentRuntime
+  label: string
+  state: ChatSubagentState
+  startedAt: number
+  updatedAt: number
+  lastEventAt?: number
+  finishedAt?: number
+  model?: string
+  effort?: string
+  toolUses?: number
+  lastAction?: string
+  durationMs?: number
+  summary?: string
+  runningCommand?: { command: string; startedAt: number }
+}
 
 interface ChatItemBase {
   id: string
@@ -237,6 +258,13 @@ export type ChatItem = ChatItemBase & (
       toolUseId: string
       description: string
       subagentType?: string
+      /** Absent for Claude SDK subagents. External runs have no transcript or relay. */
+      runtime?: ExternalAgentRuntime
+      model?: string
+      effort?: string
+      lastEventAt?: number
+      lastAction?: string
+      runningCommand?: { command: string; startedAt: number }
       /** The task id from task events, which is also the subagent's agent id. */
       agentId?: string
       prompt?: string

@@ -2,20 +2,20 @@ import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Zap } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatTaskAction } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { providerLabel } from './ComposerControls'
 import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
 import { SubagentGroup, useNow } from './Subagents'
-import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
+import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type SubagentItem, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
 import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan }>({ items: [], now: 0, provider: 'Claude' })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0, provider: 'Claude' })
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
@@ -241,7 +241,7 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
     case 'plan':
       return <PlanCard item={row.item} markdown={Markdown} {...(context.onSavePlan ? { onSave: context.onSavePlan } : {})} />
     case 'subagents':
-      return <SubagentGroup row={row} items={context.items} now={context.now} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
+      return <SubagentGroup row={row} items={context.items} now={context.now} onTask={context.onTask} controlsDisabled={context.controlsDisabled} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
     case 'assistant':
       return <div className="pb-3"><Markdown text={row.item.text} /></div>
     case 'work':
@@ -258,7 +258,7 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, userMessageCard }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, userMessageCard, onTask, controlsDisabled }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -272,11 +272,13 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   emptyText?: string
   onOpenSubagent?: (toolUseId: string) => void
   onSavePlan?: SavePlan
+  onTask?: (action: ChatTaskAction, agent: SubagentItem) => void
+  controlsDisabled?: boolean
 }) {
   const rows = useMemo(() => deriveTimelineRows(items, scope), [items, scope])
   const live = rows.some((row) => row.kind === 'subagents' && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan])
+  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 

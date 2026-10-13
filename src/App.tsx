@@ -146,6 +146,7 @@ import {
   hostTakesSwitch,
   mergeChatItems,
   planImplementationPrompt,
+  type ExternalAgentRun,
   type ChatAnswer,
   type ChatFileSearchResult,
   type ChatHandoffInfo,
@@ -358,6 +359,7 @@ type TerminalPaneProps = {
   onRetryResume?: () => void
   /** Set when an agent host drives this pane: the card can show a chat instead of the terminal. */
   chat?: ChatState
+  externalRuns?: readonly ExternalAgentRun[]
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
   onChatSend?: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
@@ -450,6 +452,7 @@ export function TerminalPaneCard({
   onOpenMenu,
   onAcknowledgeMark,
   chat,
+  externalRuns,
   chatView = 'chat',
   onChatView,
   onChatSend,
@@ -747,6 +750,7 @@ export function TerminalPaneCard({
             onSelectPane={onSelectPane}
             {...(prsApi ? { prsApi } : {})}
             chat={chat}
+            externalRuns={externalRuns}
             connected={connected}
             focused={focused}
             onFocus={onFocus}
@@ -1081,6 +1085,7 @@ export function App() {
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
+  const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   /** Conversations running in Claude Code that started as a chat. */
   const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())
@@ -1492,7 +1497,11 @@ export function App() {
         })
         break
       }
+      case 'chat_external_runs':
+        setExternalRuns((current) => ({ ...current, [message.paneId]: message.runs }))
+        break
       case 'chat_snapshot':
+        setExternalRuns({})
         setChats(Object.fromEntries(message.chats.map((chat) => [chat.paneId, chat])))
         break
       case 'chat_stash':
@@ -2537,6 +2546,7 @@ export function App() {
     if (!flow) {
       flow = {
         queue: (change) => latestChatDeps.current.sendChatAction(paneId, { type: 'chat_queue', paneId, ...change, requestId: requestId('chat-queue') }),
+        stopExternal: (runId) => latestChatDeps.current.sendChatAction(paneId, { type: 'chat_external_stop', paneId, runId, requestId: requestId('chat-external-stop') }),
         task: (action, agentId, toolUseId) => latestChatDeps.current.sendChatAction(paneId, { type: 'chat_task', paneId, action, agentId, toolUseId, requestId: requestId('chat-task') }),
         subagentTranscript: (agentId) => new Promise<ChatSubagentTranscript>((resolve) => {
           const id = requestId('chat-transcript')
@@ -3830,6 +3840,7 @@ export function App() {
                             resume={agentResumes[pane.targetId]}
                             onRetryResume={() => retryAgentResume(pane.targetId)}
                             chat={chats[pane.id]}
+                            externalRuns={externalRuns[pane.id]}
                             chatView={chatViews[pane.id] ?? 'chat'}
                             onChatView={(view) => setChatViews((current) => ({ ...current, [pane.id]: view }))}
                             onChatSend={(text, images, options) => sendChat(pane.id, text, images, options)}
