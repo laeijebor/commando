@@ -701,6 +701,10 @@ async function main(): Promise<void> {
   let snapshotRefresh: Promise<CommandoSnapshot> | null = null
   // Until tmux has been read once, an empty snapshot must not look like every pane closed.
   let snapshotReady = false
+  // A lease's pane must be missing from two reads in a row, so one empty or failed tmux read releases nothing.
+  let previousPaneIds = new Set<string>()
+  // Releases wait for the listener, so a daemon that fails to bind its port never touches devices.
+  let listening = false
   let snapshotRevision = 0
   let outputRevision = 0
   let lastTmuxError = ''
@@ -850,7 +854,7 @@ async function main(): Promise<void> {
     snapshot.panes.find((pane) => pane.id === paneId)
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
-  const leasePaneExists = (paneId: string): boolean => !snapshotReady || paneExists(paneId)
+  const leasePaneExists = (paneId: string): boolean => !snapshotReady || paneExists(paneId) || previousPaneIds.has(paneId)
 
   // Chat panes: agent hosts inside tmux panes connect here (see agent-host/).
   // The checkout's host fingerprint, re-read at most every 10 s, flags hosts left behind by a merge.
@@ -1410,6 +1414,7 @@ async function main(): Promise<void> {
           snapshot.panes.map((pane) => [pane.id, pane.command]),
         )
         snapshotRevision = nextSnapshot.revision
+        if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
         snapshotReady = true
         releaseClosedSimLeases()
@@ -1739,11 +1744,14 @@ async function main(): Promise<void> {
   }
   // Archiving or closing a session, or closing a pane, returns the pane's leased simulator.
   const releaseClosedSimLeases = (): void => {
-    for (const lease of simLeaseRegistry.takeClosed(leasePaneExists)) {
-      void releaseClosedSimLease(lease)
-        .catch((error: unknown) => console.warn(`[sim-leases] could not release ${lease.udid} after its pane closed`, error))
-        .finally(() => simLeaseRegistry.finishRelease(lease.udid))
-    }
+    if (!listening) return
+    try {
+      for (const lease of simLeaseRegistry.takeClosed(leasePaneExists)) {
+        void releaseClosedSimLease(lease)
+          .catch((error: unknown) => console.warn(`[sim-leases] could not release ${lease.udid} after its pane closed`, error))
+          .finally(() => simLeaseRegistry.finishRelease(lease.udid))
+      }
+    } catch (error) { console.error('[sim-leases] failed to end leases of closed panes', error) }
   }
   const simLeaseApi = new SimLeaseApi({
     token: agentHookToken,
@@ -2722,6 +2730,7 @@ async function main(): Promise<void> {
       resolveListen()
     })
   })))
+  listening = true
 
   prAutofix.start()
   const snapshotTimer = setInterval(() => {
