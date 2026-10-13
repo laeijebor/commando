@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { findAgentProcesses, indexProcesses, parseProcesses, recognizeAgent, runningCommand, type ProcessRow } from './process-scan.js'
 
-export const processRow = (pid: number, ppid: number, command: string, startedAt = 1_000, pgid = pid): ProcessRow => ({ pid, ppid, command, startedAt, pgid })
+export const processRow = (pid: number, ppid: number, command: string, startedAt = 1_000, pgid = pid, tty = '??'): ProcessRow => ({ pid, ppid, command, startedAt, pgid, tty })
 const ancestry = [processRow(10, 1, '/bin/zsh'), processRow(20, 10, 'node commando-agent claude'), processRow(30, 20, '/Users/test/.local/bin/claude -p --input-format stream-json'), processRow(40, 30, '/bin/bash -c launch')]
 
 describe('external process detection', () => {
@@ -92,6 +92,23 @@ describe('external process detection', () => {
     expect(recognizeAgent('claude -p')?.prompt).toBeUndefined()
   })
 
+  it.each(['--resume', '-r', '--session-id', '--resume=', '-r=', '--session-id='])('parses Claude explicit session flag %s', (flag) => {
+    const id = '00000000-0000-4000-8000-000000000001'
+    const option = flag.endsWith('=') ? `${flag}${id}` : `${flag} ${id}`
+    expect(recognizeAgent(`claude -p ${option} "Review new changes"`)).toMatchObject({ runtime: 'claude', resume: true, resumeId: id, prompt: 'Review new changes' })
+  })
+
+  it.each(['-c', '--continue'])('parses Claude continuation %s', (flag) => {
+    expect(recognizeAgent(`claude ${flag} -p "Review new changes"`)).toMatchObject({ resume: true, prompt: 'Review new changes' })
+    expect(recognizeAgent(`claude ${flag} -p "Review new changes"`)?.resumeId).toBeUndefined()
+  })
+
+  it.each(['--resume old-session', '-r old-session', '--session-id old-session', '-c', '--continue'])('treats Claude --fork-session with %s as a new transcript', (flags) => {
+    const agent = recognizeAgent(`claude -p ${flags} --fork-session "Review new changes"`)
+    expect(agent).toMatchObject({ resume: false, prompt: 'Review new changes' })
+    expect(agent?.resumeId).toBeUndefined()
+  })
+
   it('handles cycles without claiming unrelated processes', () => {
     const rows = [...ancestry, processRow(90, 91, 'codex exec prompt'), processRow(91, 90, '/bin/bash')]
     expect(findAgentProcesses(rows, 10, 20)).toEqual([])
@@ -121,8 +138,9 @@ describe('external process detection', () => {
     expect(recognizeAgent('codex exec -c other=value -- -C /tmp/x -m model')).toMatchObject({ runtime: 'codex', label: 'codex exec', resume: false, prompt: '-C /tmp/x -m model' })
   })
 
-  it('reads one ps table with process start times and group ids', () => {
-    const rows = parseProcesses('  50 40 50 Tue Oct 13 07:30:10 2026 node /opt/bin/codex.js exec prompt\ngarbled\n')
-    expect(rows).toEqual([processRow(50, 40, 'node /opt/bin/codex.js exec prompt', new Date('Tue Oct 13 07:30:10 2026').getTime())])
+  it('reads one ps table with process start times, group ids and controlling terminals', () => {
+    const rows = parseProcesses('  50 40 50 ?? Tue Oct 13 07:30:10 2026 node /opt/bin/codex.js exec prompt\n  60 1 60 ttys001 Tue Oct 13 07:30:10 2026 claude -p prompt\ngarbled\n')
+    const startedAt = new Date('Tue Oct 13 07:30:10 2026').getTime()
+    expect(rows).toEqual([processRow(50, 40, 'node /opt/bin/codex.js exec prompt', startedAt), processRow(60, 1, 'claude -p prompt', startedAt, 60, 'ttys001')])
   })
 })

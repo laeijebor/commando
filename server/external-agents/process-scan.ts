@@ -7,6 +7,7 @@ export interface ProcessRow {
   pid: number
   ppid: number
   pgid: number
+  tty: string
   startedAt: number
   command: string
 }
@@ -32,15 +33,15 @@ export function runFile(file: string, args: string[]): Promise<string> {
 }
 
 export async function readProcesses(): Promise<ProcessRow[]> {
-  return parseProcesses(await runFile('ps', ['-axwwo', 'pid=,ppid=,pgid=,lstart=,args=']))
+  return parseProcesses(await runFile('ps', ['-axwwo', 'pid=,ppid=,pgid=,tty=,lstart=,args=']))
 }
 
 export function parseProcesses(output: string): ProcessRow[] {
   return output.split('\n').flatMap((line) => {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)\s+(.+)$/)
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)\s+(.+)$/)
     if (!match) return []
-    const startedAt = Date.parse(match[4]!)
-    return Number.isFinite(startedAt) ? [{ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), startedAt, command: match[5]! }] : []
+    const startedAt = Date.parse(match[5]!)
+    return Number.isFinite(startedAt) ? [{ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), tty: match[4]!, startedAt, command: match[6]! }] : []
   })
 }
 
@@ -71,7 +72,7 @@ export function recognizeAgent(command: string): Pick<AgentProcess, 'runtime' | 
   }
   if (name === 'claude' && args.some((arg) => arg === '-p' || arg === '--print')
     && !args.some((arg, index) => (arg === '--input-format' && args[index + 1] === 'stream-json') || arg === '--input-format=stream-json')) {
-    return { runtime: 'claude', label: 'claude -p', resume: false, prompt: promptText(args, ['--input-format', '--permission-mode', '--allowedTools', '--disallowedTools', '--system-prompt', '--append-system-prompt', '--max-turns', '--session-id', '--effort', '--settings', '--setting-sources', '--mcp-config', '--fallback-model', '--max-budget-usd', '--json-schema']) }
+    return { runtime: 'claude', label: 'claude -p', ...claudeResume(args), prompt: promptText(args, ['-r', '--input-format', '--permission-mode', '--allowedTools', '--disallowedTools', '--system-prompt', '--append-system-prompt', '--max-turns', '--session-id', '--effort', '--settings', '--setting-sources', '--mcp-config', '--fallback-model', '--max-budget-usd', '--json-schema']) }
   }
   if ((name === 'agent' || name === 'cursor-agent') && args.some((arg) => arg === '-p' || arg === '--print')) {
     return { runtime: 'cursor', label: promptArgument(args) || 'Cursor agent', resume: false }
@@ -80,6 +81,22 @@ export function recognizeAgent(command: string): Pick<AgentProcess, 'runtime' | 
     return { runtime: 'opencode', label: promptArgument(args.slice(1)) || 'opencode run', resume: false }
   }
   return null
+}
+
+function claudeResume(args: string[]): Pick<AgentProcess, 'resume' | 'resumeId'> {
+  let resumeId: string | undefined
+  let continuing = false
+  let fork = false
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === '--') break
+    if (args[index] === '--fork-session') fork = true
+    if (args[index] === '-c' || args[index] === '--continue') continuing = true
+    const flag = args[index]!.match(/^(--resume|-r|--session-id)(?:=(.*))?$/)
+    if (!flag) continue
+    const value = flag[2] ?? args[++index] ?? ''
+    if (/^[A-Za-z0-9_-]{1,200}$/.test(value)) resumeId = value
+  }
+  return fork ? { resume: false } : { resume: continuing || Boolean(resumeId), ...(resumeId ? { resumeId } : {}) }
 }
 
 function codexOptions(args: string[]): Pick<AgentProcess, 'cwdOverride' | 'model' | 'effort'> {

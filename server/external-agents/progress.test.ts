@@ -1,17 +1,17 @@
-import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { claudeSource, findClaudeTranscript, parseClaudeLine } from './claude-transcript.js'
 import { codexSource, matchRollout, parseCodexLine, rolloutCandidates, type RolloutCandidate } from './codex-rollout.js'
 import { JsonlTail, type AgentProgress } from './progress.js'
-import type { AgentProcess } from './process-scan.js'
+import { recognizeAgent, type AgentProcess } from './process-scan.js'
 
 const dirs: string[] = []
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))) })
 async function temp() { const dir = await mkdtemp(join(tmpdir(), 'external-progress-')); dirs.push(dir); return dir }
 const start = Date.parse('2026-10-13T06:30:10.465Z')
-const run: AgentProcess = { pid: 50, ppid: 40, pgid: 50, startedAt: start, command: 'codex exec prompt', runtime: 'codex', label: 'codex exec', resume: false }
+const run: AgentProcess = { pid: 50, ppid: 40, pgid: 50, tty: '??', startedAt: start, command: 'codex exec prompt', runtime: 'codex', label: 'codex exec', resume: false }
 const candidate = (path: string, overrides: Partial<RolloutCandidate> = {}): RolloutCandidate => ({ path, cwd: '/work/example', originator: 'codex_exec', startedAt: start, ...overrides })
 const fixture = (name: string) => readFile(new URL(`./fixtures/${name}.jsonl`, import.meta.url), 'utf8')
 const event = (text: string) => JSON.stringify({ timestamp: '2026-10-13T06:31:00Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', content: [{ type: 'Text', text }] } } }) + '\n'
@@ -140,6 +140,71 @@ describe('Claude print transcripts', () => {
     expect(await findClaudeTranscript([config], cwd, startedAt, new Set(), 'Review scanner.   Check progress.')).toBe(second)
     expect(await findClaudeTranscript([config], cwd, startedAt, new Set([second]), 'Review parser. Check edge cases.')).toBe(first)
     expect(await findClaudeTranscript([config], cwd, startedAt, new Set())).toBe(first)
+  })
+
+  it.each(['--resume', '-r', '--session-id'])('uses an explicit Claude %s transcript born before the process starts', async (flag) => {
+    const config = await temp()
+    const project = join(config, 'projects', '-work-example')
+    await mkdir(project, { recursive: true })
+    const id = 'old-session'
+    const path = join(project, `${id}.jsonl`)
+    await writeFile(path, await fixture('claude-print'))
+    const startedAt = Date.now() + 60_000
+    const resumed = { ...run, ...recognizeAgent(`claude -p ${flag} ${id} "Review new changes"`)!, startedAt }
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set())).toBeUndefined()
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set(), resumed.prompt, resumed)).toBe(path)
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([path]), resumed.prompt, resumed)).toBeUndefined()
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([`${id}.jsonl`]), resumed.prompt, resumed)).toBeUndefined()
+  })
+
+  it.each(['-c', '--continue'])('selects the existing transcript most recently modified after start for %s', async (flag) => {
+    const config = await temp()
+    const project = join(config, 'projects', '-work-example')
+    await mkdir(project, { recursive: true })
+    const startedAt = Date.now() + 60_000
+    for (const [name, offset] of [['old', -5_000], ['recent', 1_000], ['latest', 2_000]] as const) {
+      const path = join(project, `${name}.jsonl`)
+      await writeFile(path, await fixture('claude-print') + JSON.stringify({ type: 'user', timestamp: new Date(startedAt).toISOString(), message: { content: 'Review new changes' } }) + '\n')
+      await utimes(path, new Date(startedAt + offset), new Date(startedAt + offset))
+    }
+    const continued = recognizeAgent(`claude ${flag} -p "Review new changes"`)!
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set(), continued.prompt, continued)).toBe(join(project, 'latest.jsonl'))
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([join(project, 'latest.jsonl')]), continued.prompt, continued)).toBe(join(project, 'recent.jsonl'))
+  })
+
+  it('matches only the current continuation prompt and excludes known chat session filenames', async () => {
+    const config = await temp()
+    const project = join(config, 'projects', '-work-example')
+    await mkdir(project, { recursive: true })
+    const startedAt = Date.now() + 60_000
+    const user = (offset: number, text: string) => JSON.stringify({ type: 'user', timestamp: new Date(startedAt + offset).toISOString(), message: { content: text } }) + '\n'
+    for (const [name, offset, content] of [
+      ['matching', 1_000, user(-1_000, 'Review new changes.\nCheck edge cases.')],
+      ['history-only', 2_000, user(-2_000, 'Review new changes. Check edge cases.')],
+      ['terminal', 3_000, user(0, 'Review a different project')],
+      ['parent-chat', 4_000, user(0, 'Review new changes. Check edge cases.')],
+    ] as const) {
+      const path = join(project, `${name}.jsonl`)
+      await writeFile(path, content)
+      await utimes(path, new Date(startedAt + offset), new Date(startedAt + offset))
+    }
+    const excluded = new Set(['parent-chat.jsonl'])
+    const continued = { resume: true }
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, excluded, 'Review new changes.   Check edge cases.', continued)).toBe(join(project, 'matching.jsonl'))
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, new Set([...excluded, 'matching.jsonl']), 'Review new changes. Check edge cases.', continued)).toBeUndefined()
+    expect(await findClaudeTranscript([config], '/work/example', startedAt, excluded, undefined, continued)).toBe(join(project, 'terminal.jsonl'))
+  })
+
+  it('keeps new resumed Claude events already written at attachment and ignores history before start minus one second', async () => {
+    const path = join(await temp(), 'resumed.jsonl')
+    const startedAt = Date.now() + 60_000
+    const line = (type: string, offset: number, content: unknown) => JSON.stringify({ type, timestamp: new Date(startedAt + offset).toISOString(), message: { content, model: 'claude-new-model' } }) + '\n'
+    await writeFile(path, line('user', -2_000, 'Old prompt') + line('assistant', -2_000, [{ type: 'tool_use', name: 'Bash', input: { command: 'old command' } }])
+      + line('user', -1_000, 'New resumed prompt') + line('assistant', 2_000, [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }]))
+    const source = claudeSource(path, { resume: true, startedAt })
+    expect(await source.poll()).toMatchObject({ label: 'New resumed prompt', toolUses: 1, lastAction: '$ npm test', lastEventAt: startedAt + 2_000 })
+    await appendFile(path, line('assistant', 3_000, [{ type: 'text', text: 'New review finished.' }]))
+    expect(await source.poll()).toMatchObject({ label: 'New resumed prompt', toolUses: 1, lastAction: 'New review finished.' })
   })
 
   it('finds an unclaimed newly created transcript across config directories, and tails it', async () => {

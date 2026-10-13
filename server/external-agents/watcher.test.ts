@@ -1,29 +1,30 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ExternalAgentRun } from '../../shared/agent-chat.js'
-import { ExternalAgentWatcher, QUIET_AFTER_MS, SCAN_AFTER_BUSY_MS, runState, type WatchedPane } from './watcher.js'
+import { ExternalAgentWatcher, QUIET_AFTER_MS, SCAN_AFTER_BUSY_MS, MAX_ORPHAN_LOOKUPS_PER_POLL, runState, type WatchedPane } from './watcher.js'
 import type { AgentProcess, ProcessRow } from './process-scan.js'
 import type { AgentProgress, ProgressSource } from './progress.js'
 
-const row = (pid: number, ppid: number, command: string, startedAt = 1_000, pgid = pid): ProcessRow => ({ pid, ppid, command, startedAt, pgid })
+const row = (pid: number, ppid: number, command: string, startedAt = 1_000, pgid = pid, tty = '??'): ProcessRow => ({ pid, ppid, command, startedAt, pgid, tty })
 const roots = [row(10, 1, '/bin/zsh'), row(20, 10, 'node commando-agent claude'), row(30, 20, 'claude -p --input-format stream-json'), row(40, 30, '/bin/bash -c launch')]
 const alive = [...roots, row(50, 40, 'codex exec prompt')]
 const watchers: ExternalAgentWatcher[] = []
 afterEach(() => { watchers.splice(0).forEach((watcher) => watcher.close()); vi.useRealTimers(); vi.unstubAllEnvs() })
 
-function setup(options: { runtime?: string; source?: () => Promise<ProgressSource | undefined>; pgid?: number } = {}) {
+function setup(options: { runtime?: string; source?: () => Promise<ProgressSource | undefined>; pgid?: number; cwd?: (pid: number) => Promise<string | undefined> } = {}) {
   let table = options.runtime ? [...roots, row(50, 40, options.runtime, 1_000, options.pgid)] : [...alive]
   let now = 2_000
-  let panes: WatchedPane[] = [{ paneId: '%1', panePid: 10, hostPid: 20, status: 'running' }]
+  let panes: WatchedPane[] = [{ paneId: '%1', panePid: 10, hostPid: 20, status: 'running', cwd: '/work' }]
   const publish = vi.fn()
   const signal = vi.fn()
   const processes = vi.fn(async () => table)
   const source = vi.fn(async (_process: AgentProcess, _cwd: string, _claimed: ReadonlySet<string>, _now: number) => options.source?.())
-  const watcher = new ExternalAgentWatcher({ panes: () => panes, publish, now: () => now, processes, cwd: async () => '/work', source, signal })
+  const cwd = vi.fn(async (pid: number) => options.cwd ? options.cwd(pid) : '/work')
+  const watcher = new ExternalAgentWatcher({ panes: () => panes, publish, now: () => now, processes, cwd, source, signal })
   watchers.push(watcher)
-  return { watcher, publish, processes, signal, source, setTable: (rows: ProcessRow[]) => { table = rows }, setNow: (value: number) => { now = value }, setPanes: (value: WatchedPane[]) => { panes = value.map((pane) => pane.hostPid ? { status: 'running', ...pane } : pane) }, runs: () => watcher.snapshots()[0]?.runs ?? [] }
+  return { watcher, publish, processes, signal, source, cwd, setTable: (rows: ProcessRow[]) => { table = rows }, setNow: (value: number) => { now = value }, setPanes: (value: WatchedPane[]) => { panes = value.map((pane) => pane.hostPid ? { status: 'running', cwd: '/work', ...pane } : pane) }, runs: () => watcher.snapshots()[0]?.runs ?? [] }
 }
 
 describe('external run states', () => {
@@ -91,26 +92,193 @@ describe('external watcher', () => {
     expect(env.runs()[0]).toMatchObject({ label: 'Review tests', model: 'rollout-model', effort: 'medium' })
   })
 
-  it('scans running/waiting sessions or live runs, stopping once only finished history remains', async () => {
+  it('scans running/waiting sessions or live runs, stopping after the grace period', async () => {
     const env = setup()
+    env.setTable(roots)
     env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
     await env.watcher.poll()
-    expect(env.processes).not.toHaveBeenCalled()
-    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'waiting' }])
+    expect(env.processes).toHaveBeenCalledTimes(1)
+    env.setNow(2_000 + SCAN_AFTER_BUSY_MS + 1)
     await env.watcher.poll()
     expect(env.processes).toHaveBeenCalledTimes(1)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'waiting' }])
+    env.setTable(alive)
+    await env.watcher.poll()
+    expect(env.processes).toHaveBeenCalledTimes(2)
     env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
     env.setTable(roots)
     await env.watcher.poll()
-    expect(env.processes).toHaveBeenCalledTimes(2)
+    expect(env.processes).toHaveBeenCalledTimes(3)
     expect(env.runs()[0]!.state).toBe('completed')
-    // A turn that launched a run and went idle between polls is still scanned for a while.
+    env.setNow(2_000 + 2 * SCAN_AFTER_BUSY_MS + 1)
+    await env.watcher.poll()
+    expect(env.processes).toHaveBeenCalledTimes(4)
+    env.setNow(2_000 + 2 * SCAN_AFTER_BUSY_MS + 2)
+    await env.watcher.poll()
+    expect(env.processes).toHaveBeenCalledTimes(4)
+  })
+
+  it('scans an already-running external run when an idle host first appears after restart', async () => {
+    const env = setup()
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    await env.watcher.poll()
+    expect(env.processes).toHaveBeenCalledTimes(1)
+    expect(env.runs()[0]).toMatchObject({ state: 'running', startedAt: 1_000 })
+  })
+
+  it('opens a full grace period for a newly seen idle host and again when its pid changes', async () => {
+    const env = setup()
+    env.setTable(roots)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    await env.watcher.poll()
     env.setNow(2_000 + SCAN_AFTER_BUSY_MS)
     await env.watcher.poll()
-    expect(env.processes).toHaveBeenCalledTimes(3)
+    expect(env.processes).toHaveBeenCalledTimes(2)
     env.setNow(2_000 + SCAN_AFTER_BUSY_MS + 1)
     await env.watcher.poll()
+    expect(env.processes).toHaveBeenCalledTimes(2)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 30, status: 'idle' }])
+    await env.watcher.poll()
     expect(env.processes).toHaveBeenCalledTimes(3)
+  })
+
+  it('attributes an orphan by its effective cwd and busy window, caching the cwd lookup', async () => {
+    const env = setup({ cwd: async () => '/work/original' })
+    env.setTable([...roots, row(60, 1, 'codex exec -C ../project prompt', 2_000)])
+    await env.watcher.poll()
+    expect(env.runs()).toHaveLength(1)
+    expect(env.runs()[0]).toMatchObject({ runtime: 'codex', state: 'running' })
+    expect(env.source).toHaveBeenCalledWith(expect.objectContaining({ pid: 60 }), '/work/project', expect.any(Set), 2_000)
+    await env.watcher.poll()
+    expect(env.cwd.mock.calls).toEqual([[60]])
+  })
+
+  it('scans newly seen and changed idle hosts without opening orphan attribution windows', async () => {
+    const env = setup()
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000)])
+    await env.watcher.poll()
+    expect(env.processes).toHaveBeenCalledTimes(1)
+    expect(env.runs()).toEqual([])
+    env.setNow(3_000)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 30, status: 'idle' }])
+    env.setTable([...roots, row(61, 1, 'codex exec prompt', 3_000)])
+    await env.watcher.poll()
+    expect(env.processes).toHaveBeenCalledTimes(2)
+    expect(env.runs()).toEqual([])
+  })
+
+  it('rejects an orphan with a controlling terminal in a busy pane cwd', async () => {
+    const env = setup()
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000, 60, 'ttys001')])
+    await env.watcher.poll()
+    expect(env.runs()).toEqual([])
+    expect(env.cwd).not.toHaveBeenCalled()
+  })
+
+  it('includes a fast launch between the last idle observation and the first busy observation', async () => {
+    const env = setup()
+    env.setTable(roots)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    await env.watcher.poll()
+    env.setNow(6_000)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'running' }])
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 3_000)])
+    await env.watcher.poll()
+    expect(env.runs()).toHaveLength(1)
+  })
+
+  it.each(['undefined', 'error'])('retries an orphan cwd lookup after %s instead of caching the failure', async (failure) => {
+    let available = false
+    const env = setup({ cwd: async () => {
+      if (available) return '/work'
+      if (failure === 'error') throw new Error('lsof unavailable')
+      return undefined
+    } })
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000)])
+    await env.watcher.poll()
+    expect(env.runs()).toEqual([])
+    available = true
+    await env.watcher.poll()
+    expect(env.runs()).toHaveLength(1)
+    expect(env.cwd.mock.calls).toEqual([[60], [60]])
+  })
+
+  it('attributes an orphan started within the grace period after a turn finishes', async () => {
+    const env = setup()
+    env.setTable(roots)
+    await env.watcher.poll()
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    env.setNow(20_000)
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 20_000)])
+    await env.watcher.poll()
+    expect(env.runs()).toHaveLength(1)
+  })
+
+  it('ignores an orphan started long after its pane was busy', async () => {
+    const env = setup()
+    await env.watcher.poll()
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }])
+    env.setNow(100_000)
+    env.setTable([...alive, row(60, 1, 'codex exec prompt', 100_000)])
+    await env.watcher.poll()
+    expect(env.runs()).toHaveLength(1)
+    expect(env.cwd.mock.calls.filter(([pid]) => pid === 60)).toHaveLength(1)
+  })
+
+  it('skips ambiguous orphans and caches the decision for two busy panes in the same cwd', async () => {
+    const env = setup()
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20 }, { paneId: '%2', panePid: 100, hostPid: 200 }])
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000)])
+    await env.watcher.poll()
+    await env.watcher.poll()
+    expect(env.watcher.snapshots()).toEqual([])
+    expect(env.cwd.mock.calls).toEqual([[60]])
+  })
+
+  it("uses each pane's busy time when choosing among panes in the same cwd", async () => {
+    const env = setup()
+    env.setTable(roots)
+    env.setPanes([{ paneId: '%1', panePid: 10, hostPid: 20, status: 'running' }, { paneId: '%2', panePid: 100, hostPid: 200, status: 'idle' }])
+    await env.watcher.poll()
+    env.setNow(100_000)
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 100_000)])
+    await env.watcher.poll()
+    expect(env.watcher.snapshots()).toEqual([{ paneId: '%1', runs: [expect.objectContaining({ runtime: 'codex' })] }])
+  })
+
+  it('bounds orphan cwd lookups per poll and inspects reused pids again', async () => {
+    const env = setup({ cwd: async () => '/unrelated' })
+    const orphans = Array.from({ length: MAX_ORPHAN_LOOKUPS_PER_POLL + 2 }, (_, index) => row(60 + index, 1, 'codex exec prompt', 2_000))
+    env.setTable([...roots, ...orphans])
+    await env.watcher.poll()
+    expect(env.cwd).toHaveBeenCalledTimes(MAX_ORPHAN_LOOKUPS_PER_POLL)
+    await env.watcher.poll()
+    expect(env.cwd).toHaveBeenCalledTimes(orphans.length)
+    await env.watcher.poll()
+    expect(env.cwd).toHaveBeenCalledTimes(orphans.length)
+    env.setNow(3_000)
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 3_000)])
+    await env.watcher.poll()
+    expect(env.cwd).toHaveBeenCalledTimes(orphans.length + 1)
+  })
+
+  it('keeps failed orphan retries within the per-poll lookup cap', async () => {
+    const env = setup({ cwd: async () => undefined })
+    env.setTable([...roots, ...Array.from({ length: MAX_ORPHAN_LOOKUPS_PER_POLL + 2 }, (_, index) => row(60 + index, 1, 'codex exec prompt', 2_000))])
+    await env.watcher.poll()
+    expect(env.cwd).toHaveBeenCalledTimes(MAX_ORPHAN_LOOKUPS_PER_POLL)
+    await env.watcher.poll()
+    expect(env.cwd).toHaveBeenCalledTimes(2 * MAX_ORPHAN_LOOKUPS_PER_POLL)
+    expect(env.runs()).toEqual([])
+  })
+
+  it('does not attribute an orphan to a sibling cwd or an unrelated process', async () => {
+    const env = setup({ cwd: async () => '/work-other' })
+    env.setTable([...roots, row(60, 1, 'codex exec prompt', 2_000), row(70, 1, 'npm test', 2_000)])
+    await env.watcher.poll()
+    expect(env.runs()).toEqual([])
+    expect(env.cwd.mock.calls).toEqual([[60]])
   })
 
   it('fails sourced Codex on exit without completion and never ships the process command', async () => {
@@ -283,6 +451,55 @@ describe('external watcher', () => {
       await watcher.poll()
       expect(watcher.snapshots()[0]!.runs[0]).toMatchObject({ label: 'Review the sample change.', state: 'completed', toolUses: 1 })
     } finally { await rm(home, { recursive: true, force: true }) }
+  })
+
+  it('connects a resumed Claude process to its old transcript and counts only the resumed turn', async () => {
+    const config = await mkdtemp(join(tmpdir(), 'external-claude-resume-'))
+    try {
+      const project = join(config, 'projects', '-work-example')
+      await mkdir(project, { recursive: true })
+      await writeFile(join(project, 'old-session.jsonl'), [
+        { type: 'user', timestamp: new Date(0).toISOString(), message: { content: 'Old prompt' } },
+        { type: 'user', timestamp: new Date(3_000).toISOString(), message: { content: 'Review new changes' } },
+        { type: 'assistant', timestamp: new Date(3_000).toISOString(), message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } },
+      ].map((line) => JSON.stringify(line) + '\n').join(''))
+      const watcher = new ExternalAgentWatcher({
+        panes: () => [{ paneId: '%1', panePid: 10, hostPid: 20, status: 'idle' }], publish: vi.fn(), configDirs: [config],
+        processes: async () => [...roots, row(50, 40, 'claude -p --resume old-session "Review new changes"', 2_000)],
+        cwd: async () => '/work/example', now: () => 3_000,
+      })
+      watchers.push(watcher)
+      await watcher.poll()
+      expect(watcher.snapshots()[0]!.runs[0]).toMatchObject({ runtime: 'claude', label: 'Review new changes', toolUses: 1, lastAction: '$ npm test' })
+    } finally { await rm(config, { recursive: true, force: true }) }
+  })
+
+  it('excludes every pane chat session from Claude continuation matching', async () => {
+    const config = await mkdtemp(join(tmpdir(), 'external-claude-continue-'))
+    try {
+      const project = join(config, 'projects', '-work-example')
+      await mkdir(project, { recursive: true })
+      for (const [id, modifiedAt, command] of [['external-session', 3_000, 'npm test'], ['parent-session', 4_000, 'parent command'], ['other-pane-session', 5_000, 'other pane command']] as const) {
+        const path = join(project, `${id}.jsonl`)
+        await writeFile(path, [
+          { type: 'user', timestamp: new Date(0).toISOString(), message: { content: 'Old prompt' } },
+          { type: 'user', timestamp: new Date(2_000).toISOString(), message: { content: 'Review new changes' } },
+          { type: 'assistant', timestamp: new Date(3_000).toISOString(), message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } },
+        ].map((line) => JSON.stringify(line) + '\n').join(''))
+        await utimes(path, new Date(modifiedAt), new Date(modifiedAt))
+      }
+      const watcher = new ExternalAgentWatcher({
+        panes: () => [
+          { paneId: '%1', panePid: 10, hostPid: 20, status: 'running', sessionId: 'parent-session' },
+          { paneId: '%2', sessionId: 'other-pane-session' },
+        ], publish: vi.fn(), configDirs: [config],
+        processes: async () => [...roots, row(50, 40, 'claude -c -p "Review new changes"', 2_000)],
+        cwd: async () => '/work/example', now: () => 3_000,
+      })
+      watchers.push(watcher)
+      await watcher.poll()
+      expect(watcher.snapshots()[0]!.runs[0]).toMatchObject({ label: 'Review new changes', toolUses: 1, lastAction: '$ npm test' })
+    } finally { await rm(config, { recursive: true, force: true }) }
   })
 
   it('claims matched rollouts across live runs', async () => {
