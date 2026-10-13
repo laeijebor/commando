@@ -5,6 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CreateTmuxSessionRequest, GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
 import {
+  START_WITH_STORAGE_KEY,
   TMUX_CWD_HISTORY_STORAGE_KEY,
   TmuxCreateControls,
   WORKTREE_PREPARE_COMMANDS_STORAGE_KEY,
@@ -135,10 +136,10 @@ describe('TmuxCreateControls', () => {
     expect(onCreateSession).toHaveBeenCalledOnce()
     expect(view.container).toBeEmptyDOMElement()
   })
-  it.each(['inline', 'dialog'] as const)('creates Cursor interactively in the %s form while preserving Shell as the default', async (variant) => {
+  it.each(['inline', 'dialog'] as const)('creates Cursor interactively in the %s form with None as the default', async (variant) => {
     const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
     render(<TmuxCreateControls variant={variant} onCreateSession={onCreateSession} />)
-    expect(screen.getByLabelText('Start with')).toHaveValue('shell')
+    expect(screen.getByLabelText('Start with')).toHaveValue('none')
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
     const prompt = "Read Leo's spec\nInspect $HOME `whoami`"
@@ -147,6 +148,27 @@ describe('TmuxCreateControls', () => {
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith({ name: 'work', windowName: '', cwd: '', agent: { provider: 'cursor', prompt } }))
     expect(screen.getByLabelText('Start with')).toHaveValue('cursor')
     expect(screen.getByLabelText(/Opening prompt/)).toHaveValue('')
+  })
+
+  it('remembers what each repository starts with and defaults to None elsewhere', async () => {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
+    const probe = probeFor({ [MAIN]: repo })
+    const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    await screen.findByLabelText(/Create a worktree and branch/)
+    expect(screen.getByLabelText('Start with')).toHaveValue('none')
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'codex' } })
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'codex' } })))
+    expect(JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY)!)).toEqual({ [MAIN]: 'codex' })
+
+    view.unmount()
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    await waitFor(() => expect(screen.getByLabelText('Start with')).toHaveValue('codex'))
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/Users/dev/other' } })
+    await waitFor(() => expect(screen.getByLabelText('Start with')).toHaveValue('none'))
   })
 
   it('omits a retained opening prompt when switching to OpenCode or Shell', async () => {
@@ -187,6 +209,7 @@ describe('TmuxCreateControls', () => {
       name: 'work',
       windowName: 'editor',
       cwd: '/Users/dev/project',
+      empty: true,
     })
     expect(screen.getByRole('button', { name: 'Creating...' })).toHaveProperty(
       'disabled',
@@ -386,6 +409,7 @@ describe('TmuxCreateControls worktrees', () => {
       windowName: '',
       cwd: MAIN,
       worktree: { branch: 'bot-rematch-flow', prepareCommand: 'pnpm i\npnpm build' },
+      empty: true,
     }))
     expect(await screen.findByRole('status')).toHaveTextContent(`bot-rematch-flow`)
     expect(screen.getByRole('status')).toHaveTextContent(/Preparation started/)
@@ -444,6 +468,7 @@ describe('TmuxCreateControls worktrees', () => {
       windowName: '',
       cwd: MAIN,
       worktree: { branch: 'quick-session' },
+      empty: true,
     }))
     expect(await screen.findByRole('status')).not.toHaveTextContent(/Preparation started/)
     expect(JSON.parse(window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY) ?? 'null')).toEqual({ [MAIN]: 'pnpm i' })
@@ -467,7 +492,7 @@ describe('TmuxCreateControls worktrees', () => {
     fireEvent.click(toggle)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'plain' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
-    await waitFor(() => expect(onCreateSession).toHaveBeenLastCalledWith({ name: 'plain', windowName: '', cwd: MAIN }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenLastCalledWith({ name: 'plain', windowName: '', cwd: MAIN, empty: true }))
   })
 
   it('warns instead of offering a worktree when the directory is not a repository', async () => {

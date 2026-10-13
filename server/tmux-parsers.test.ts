@@ -69,6 +69,7 @@ function paneRow(
   return row(
     ...(fields as string[]),
     ...(terminalState ?? defaultTerminalState),
+    '',
     '1234',
     `v1:${paneId}:${targetIds.get(paneId) ?? '550e8400-e29b-41d4-a716-446655440000'}`,
   )
@@ -263,6 +264,14 @@ describe('tmux format parsers', () => {
       alternateSavedX: 79,
       alternateSavedY: 23,
     })
+  })
+
+  it('marks panes that idle until something is launched into them', () => {
+    const idle = paneRow('%1', '0', '@1', '$1', '', 'tail', '/repo', '1', '0', '80', '24', '0', '0')
+    const empty = idle.replace(row('', '1234'), row('1', '1234'))
+
+    expect(parsePanes(idle, targetIds)[0]).not.toHaveProperty('empty')
+    expect(parsePanes(empty, targetIds)[0]).toMatchObject({ id: '%1', empty: true })
   })
 
   it('drops malformed and unstable pane records', () => {

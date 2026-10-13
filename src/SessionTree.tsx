@@ -61,6 +61,7 @@ const statusLabels: Record<AgentStatus['status'], string> = {
 }
 
 function paneLabel(pane: TmuxPane): string {
+  if (pane.empty) return 'Nothing running yet'
   return pane.title || pane.command || `Pane ${pane.index}`
 }
 

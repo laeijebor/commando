@@ -425,6 +425,7 @@ describe('SessionTree', () => {
       name: 'new-gizmo-work',
       windowName: '',
       cwd: '/Users/dev/gizmo',
+      empty: true,
     })
     expect(onCreated).toHaveBeenCalledWith(created)
   })
