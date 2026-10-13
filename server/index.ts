@@ -1,7 +1,7 @@
-import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { AgentChatsApi } from './agent-chats-api.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
+import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { CanvasPush } from './canvas-push.js'
 import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'

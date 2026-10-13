@@ -258,7 +258,7 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, userMessageCard, onTask, controlsDisabled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
