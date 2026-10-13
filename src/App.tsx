@@ -1128,7 +1128,7 @@ export function App() {
   const [ideErrors, setIdeErrors] = useState<Record<string, string>>({})
   const ideRequests = useRef(new Set<string>())
   const [webPaneFeedback, setWebPaneFeedback] = useState<Record<string, WebPaneFeedbackInfo>>({})
-  const { observe: observePaneAttribution, visibleTargets: attributionTargets } = usePaneAttribution()
+  const { observe: observePaneAttribution, isRecentTarget: isRecentPaneTarget, visibleTargets: attributionTargets } = usePaneAttribution()
   const [agentChatRequests, setAgentChatRequests] = useState<Record<string, AgentChatRequest>>({})
   const agentChatsApi = useMemo(() => createAgentChatsApi(token), [token])
   const [webPaneNavigateRequests, setWebPaneNavigateRequests] = useState<Record<string, WebPaneNavigateRequest>>({})
@@ -1370,6 +1370,7 @@ export function App() {
         ) {
           setPaneRendererControls(new Map())
         }
+        observePaneAttribution(message.snapshot.panes)
         // Consume tmux focus transitions at snapshot time so a later click
         // cannot be overridden by an unchanged active pane on a rerender.
         if (activeGroup && previousSnapshotRef.current) {
@@ -1377,11 +1378,10 @@ export function App() {
             pane.windowId === activeGroup.windowId && pane.active)?.id
           const nextActive = message.snapshot.panes.find((pane) =>
             pane.windowId === activeGroup.windowId && pane.active)?.id
-          const newlyOpenedByAgent = message.snapshot.panes.some((pane) => pane.id === nextActive && pane.openedBy &&
-            !previousSnapshotRef.current!.panes.some((previous) => previous.targetId === pane.targetId))
+          // Lineage can follow the structural snapshot; hold focus during that grace period.
+          const newlyOpenedByAgent = message.snapshot.panes.some((pane) => pane.id === nextActive && isRecentPaneTarget(pane.targetId))
           if (previousActive && nextActive && previousActive !== nextActive && !newlyOpenedByAgent) setFocusedPaneId(nextActive)
         }
-        observePaneAttribution(message.snapshot.panes)
         previousSnapshotRef.current = message.snapshot
         setSnapshot(message.snapshot)
         break
@@ -3809,8 +3809,14 @@ export function App() {
                             attributionVisible={attributionTargets.has(pane.targetId)}
                             agentChatRequests={Object.values(agentChatRequests).filter((request) => request.callerPaneId === pane.id && request.callerTargetId === pane.targetId)}
                             onAnswerAgentChatRequest={async (id, decision) => {
-                              await agentChatsApi.answerRequest(id, decision)
-                              setAgentChatRequests((current) => { const next = { ...current }; delete next[id]; return next })
+                              setPaneActionError('')
+                              try {
+                                await agentChatsApi.answerRequest(id, decision)
+                                setAgentChatRequests((current) => { const next = { ...current }; delete next[id]; return next })
+                              } catch (cause) {
+                                setPaneActionError(cause instanceof Error ? cause.message : 'Unable to answer chat request')
+                                throw cause
+                              }
                             }}
                             status={agentStatuses[pane.id]}
                             brief={paneBriefs[pane.id]}

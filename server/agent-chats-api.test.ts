@@ -107,6 +107,25 @@ describe('AgentChatsApi', () => {
     expect(s.createSession.mock.calls[1][0].agent!.prompt).not.toContain('branch parent-branch')
   })
 
+  it('uses a tmux-safe session name for dotted titles while keeping dots in the branch', async () => {
+    const s = await setup()
+    const response = await s.call('POST', '', { ...s.input, title: 'Fix README.md' })
+    expect(response).toMatchObject({ status: 200, result: { sessionName: 'fix-readme-md', worktree: { branch: 'fix-readme.md' } } })
+    expect(s.createSession).toHaveBeenCalledWith(expect.objectContaining({ name: 'fix-readme-md', worktree: expect.objectContaining({ branch: 'fix-readme.md' }) }))
+    expect((await s.call('POST', '', { ...s.input, title: 'Fix README.md' })).result.sessionName).toBe('fix-readme-md-2')
+  })
+
+  it('rejects invalid input before charging rate tokens', async () => {
+    const s = await setup()
+    for (const value of [{ title: '' }, { prompt: '' }, { branch: 'bad..branch' }, { branch: ' spaced ' }, { branch: 'bad.lock' }, { location: 'elsewhere' }, { agent: 'bad' }, { permissionMode: 'bad' }, { split: 'down' }]) {
+      expect((await s.call('POST', '', { ...s.input, ...value })).status).toBe(400)
+    }
+    expect((await s.call('POST', '?wait=61', s.input)).status).toBe(400)
+    expect(s.createSession).not.toHaveBeenCalled()
+    for (let index = 0; index < 3; index++) expect((await s.call('POST', '', s.input)).status).toBe(200)
+    expect((await s.call('POST', '', s.input)).status).toBe(202)
+  })
+
   it.each(['right', 'down'] as const)('splits %s after the caller at its cwd, without a worktree', async (split) => {
     const s = await setup()
     expect((await s.call('POST', '', { ...s.input, location: 'pane', split })).status).toBe(200)
@@ -137,6 +156,18 @@ describe('AgentChatsApi', () => {
     expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'default' })
     expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'plan' })).result.agent.permissionMode).toBe('plan')
     expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'acceptEdits' })).status).toBe(403)
+  })
+
+  it.each(['claude', 'codex', 'opencode', 'cursor'] as const)('refuses a plan-mode chat opening %s without charging a rate token', async (agent) => {
+    const s = await setup()
+    s.chats.set('%1', { permissionMode: 'plan' } as ChatSessionInfo)
+    for (const extra of [{ agent }, { agent, permissionMode: 'plan' }]) {
+      expect(await s.call('POST', '', { ...s.input, ...extra })).toMatchObject({ status: 403, result: { ok: false, error: 'A plan-mode chat can only open claude-chat chats' } })
+    }
+    expect(s.createSession).not.toHaveBeenCalled()
+    for (let index = 0; index < 3; index++) {
+      expect(await s.call('POST', '', s.input)).toMatchObject({ status: 200, result: { agent: { provider: 'claude-chat', permissionMode: 'plan' } } })
+    }
   })
 
   it('rejects an unknown inherited provider and permission mode, unsafe input and arbitrary targets', async () => {

@@ -9,7 +9,7 @@ import { CHAT_PERMISSION_MODES, requireSessionAgentLaunch, sanitizeBranchName, S
 import { AgentChatRequests } from './agent-chat-requests.js'
 import type { ChatPlanStore } from './chat-plans.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
-import { GitWorktreeError } from './git-worktree.js'
+import { GitWorktreeError, validateBranchName } from './git-worktree.js'
 import type { RepoPrepareCommands } from './repo-prepare-commands.js'
 import { TmuxCreateCommandError, type TmuxCreator } from './tmux-create.js'
 
@@ -81,7 +81,10 @@ function parseInput(value: Record<string, unknown>): AgentChatInput {
   if (value.worktree !== undefined && typeof value.worktree !== 'boolean') throw new HttpError(400, 'worktree must be a boolean')
   if (value.agent !== undefined && (typeof value.agent !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, value.agent))) throw new HttpError(400, 'Unknown agent provider')
   if (value.permissionMode !== undefined && !CHAT_PERMISSION_MODES.some((mode) => mode.value === value.permissionMode)) throw new HttpError(400, 'Unknown permission mode')
-  return { ...value, location, split } as AgentChatInput
+  const input = { ...value, location, split } as AgentChatInput
+  const branch = effectiveChatBranch(input)
+  if (branch !== undefined) validateBranchName(branch)
+  return input
 }
 
 function waitBudget(url: URL): number {
@@ -130,6 +133,7 @@ export class AgentChatsApi {
     const provider = input.agent ?? (chat ? 'claude-chat' : this.dependencies.status(caller.id)?.provider)
     if (!provider || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) throw new HttpError(400, 'Unknown caller agent provider; specify --agent')
     const callerMode = chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'
+    if (chat && PERMISSION_RANK[callerMode] < PERMISSION_RANK.default && provider !== 'claude-chat') throw new HttpError(403, 'A plan-mode chat can only open claude-chat chats')
     const permissionMode = input.permissionMode ?? callerMode
     if (PERMISSION_RANK[permissionMode] > PERMISSION_RANK[callerMode]) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
     if (provider !== 'claude-chat' && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat accepts a permission mode')
@@ -186,7 +190,9 @@ export class AgentChatsApi {
           cwd: pane.path, status: this.dependencies.status(pane.id)?.status ?? 'unknown',
         })))
       } else if (url.pathname === ROOT && request.method === 'POST') {
-        const waitMs = waitBudget(url), input = parseInput(await body(request)), launch = this.launch(input, caller)
+        const waitMs = waitBudget(url)
+        const input = parseInput(await body(request))
+        const launch = this.launch(input, caller)
         const reason = caller.openedBy ? 'depth' : !this.take(this.openBuckets, caller, 3, 120) ? 'rate' : undefined
         if (reason) {
           const approval = this.dependencies.requests.create({
@@ -260,7 +266,7 @@ export class AgentChatsApi {
       let result: TmuxCreateResponse
       try {
         if (input.location === 'session') {
-          const slug = sanitizeBranchName(input.title) || 'chat'
+          const slug = (sanitizeBranchName(input.title) || 'chat').replace(/[.:]/gu, '-')
           const names = new Set(snapshot.sessions.map((session) => session.name))
           let name = slug, suffix = 2
           while (names.has(name)) name = `${slug}-${suffix++}`
