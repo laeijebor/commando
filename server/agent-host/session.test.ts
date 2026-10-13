@@ -431,10 +431,32 @@ describe('AgentSession state from Claude', () => {
     fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 0.81, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
     await tick()
     expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ percent: 81, severity: 'warning', resetsAt: 1_800_000_000_000 })
+    // No read was under way, so the event leaves the once-a-minute limit alone (checked below).
     fake.push(system('session_state_changed', { state: 'idle' }))
     await tick()
     expect(fake.planUsage).toHaveBeenCalledTimes(1)
     now = 62_000
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(2)
+    session.close()
+  })
+
+  it('keeps a rate-limit event over a /usage read that was already under way', async () => {
+    const fake = fakeQuery()
+    let finishRead!: (report: unknown) => void
+    fake.planUsage.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve }))
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {} }, fake.run, () => 100_000, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    fake.push({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1_800_000_000 } } }, uuid: 'u', session_id: 's' } as unknown as SDKMessage)
+    await tick()
+    finishRead({ subscription_type: 'max', rate_limits_available: true, rate_limits: { limits: [{ kind: 'session', group: 'session', percent: 40, severity: 'normal', resets_at: null }] } })
+    await tick()
+    expect(sessions.at(-1)?.planUsage?.limits[0]).toMatchObject({ kind: 'session', percent: 100, reached: true })
+    // The dropped read is retried at the next turn's end.
     fake.push(system('session_state_changed', { state: 'idle' }))
     await tick()
     expect(fake.planUsage).toHaveBeenCalledTimes(2)

@@ -6,8 +6,9 @@ const usage = (updatedAt: number, limits: ChatPlanUsage['limits'] = [{ kind: 'se
 const session = (configDir: string | undefined, planUsage?: ChatPlanUsage) => ({ paneId: '%1', provider: 'claude', cwd: '/', status: 'idle', hostPid: 1, hostVersion: 1, ...(configDir ? { configDir } : {}), ...(planUsage ? { planUsage } : {}) }) as ChatSessionInfo
 
 describe('plan usage helpers', () => {
-  it('keeps the newest reading per login', () => {
-    const map = newestPlanUsage([session('/a', usage(5)), session('/a', usage(9)), session('/b', usage(1)), session(undefined, usage(2)), session('/c')])
+  it('keeps the newest reading per Claude login and leaves Codex chats to their own', () => {
+    const codex = { ...session(undefined, usage(20)), provider: 'codex' } as ChatSessionInfo
+    const map = newestPlanUsage([session('/a', usage(5)), session('/a', usage(9)), session('/b', usage(1)), session(undefined, usage(2)), session('/c'), codex])
     expect([...map].map(([key, value]) => [key, value.updatedAt])).toEqual([['claude:/a', 9], ['claude:/b', 1], ['claude:', 2]])
   })
 

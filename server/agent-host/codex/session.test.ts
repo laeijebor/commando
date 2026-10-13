@@ -70,6 +70,20 @@ describe('CodexChatSession', () => {
     expect(parseChatSessionInfo(session.snapshot().session)?.planUsage).toEqual(session.snapshot().session.planUsage)
     session.close()
   })
+  it('re-applies updates pushed during a rate-limit read over its figures', async () => {
+    const { session, client } = harness()
+    const original = client.request.getMockImplementation()!
+    let answer!: (value: unknown) => void
+    client.request.mockImplementation(async (method, params) => method === 'account/rateLimits/read' ? new Promise((resolve) => { answer = resolve }) : original(method, params))
+    await session.start()
+    await tick()
+    client.notifications.forEach((listener) => listener({ method: 'account/rateLimits/updated', params: { rateLimits: { primary: { usedPercent: 91, windowDurationMins: 300, resetsAt: null }, secondary: null } } }))
+    answer({ rateLimits: { primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: null }, secondary: { usedPercent: 12, windowDurationMins: 10_080, resetsAt: null } } })
+    await tick()
+    // The pushed 5h figure wins; the weekly window only the read carried is kept.
+    expect(session.snapshot().session.planUsage?.limits.map((limit) => [limit.kind, limit.percent])).toEqual([['session', 91], ['weekly_all', 12]])
+    session.close()
+  })
   it('starts a thread in pane cwd, sends input and replays resumed history', async () => {
     const { session, client } = harness({ resume: thread.id })
     expect(session.snapshot().session.sessionId).toBe(thread.id)

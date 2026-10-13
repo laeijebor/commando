@@ -46,6 +46,15 @@ function limit(fields: Omit<ChatPlanLimit, 'resetsAt' | 'reached'>, resetsAt: nu
   }
 }
 
+/** The windows a row-less `/usage` report names as fields: field, kind, title. */
+const NAMED_WINDOWS = [
+  ['five_hour', 'session', 'Current session'],
+  ['seven_day', 'weekly_all', 'Weekly · all models'],
+  ['seven_day_opus', 'weekly_scoped', 'Weekly · Opus'],
+  ['seven_day_sonnet', 'weekly_scoped', 'Weekly · Sonnet'],
+  ['seven_day_oauth_apps', 'weekly_scoped', 'Weekly · OAuth apps'],
+] as const
+
 /** Plan limits don't apply to this login (API key, Bedrock, Vertex); they won't start mid-session. */
 export const NO_PLAN_LIMITS = 'no_plan_limits'
 
@@ -67,13 +76,18 @@ export function toPlanUsage(report: unknown, now: number): ChatPlanUsage | typeo
       return [limit({ kind: row.kind, title: limitTitle(row.kind, row.group, row.scope), percent: used, severity: severity(row.severity) }, isoTime(row.resets_at))]
     })
   }
-  // A server that predates the rows still has the two headline windows.
+  // Without rows (an older server, or a cached answer) the windows are named fields.
   if (!limits.length) {
-    for (const [key, kind] of [['five_hour', 'session'], ['seven_day', 'weekly_all']] as const) {
-      const window = rateLimits[key]
-      const used = isRecord(window) ? percent(window.utilization) : undefined
-      if (used === undefined || !isRecord(window)) continue
-      limits.push(limit({ kind, title: limitTitle(kind, undefined, undefined), percent: used, severity: 'normal' }, isoTime(window.resets_at)))
+    const add = (window: unknown, kind: string, title: string) => {
+      if (!isRecord(window) || limits.some((entry) => entry.title === title)) return
+      const used = percent(window.utilization)
+      if (used !== undefined) limits.push(limit({ kind, title, percent: used, severity: 'normal' }, isoTime(window.resets_at)))
+    }
+    for (const [key, kind, title] of NAMED_WINDOWS) add(rateLimits[key], kind, title)
+    // Per-model weekly windows (e.g. Fable) the named fields don't cover.
+    for (const window of Array.isArray(rateLimits.model_scoped) ? rateLimits.model_scoped : []) {
+      const name = isRecord(window) ? displayName(window) : undefined
+      if (name) add(window, 'weekly_scoped', `Weekly · ${name}`)
     }
   }
   if (!limits.length) return null
@@ -146,6 +160,8 @@ export function applyRateLimitEvent(current: ChatPlanUsage | undefined, info: SD
   return { ...current, limits, updatedAt: now }
 }
 
+const CODEX_BUCKET = 'codex'
+
 /** Codex doesn't grade its windows, so the meter does: amber from 75%, red from 90%. */
 function gradedSeverity(used: number): ChatPlanSeverity {
   return used >= 90 ? 'critical' : used >= 75 ? 'warning' : 'normal'
@@ -164,7 +180,8 @@ function codexWindow(minutes: unknown, fallback: 'session' | 'weekly_all'): { ki
  * snapshot leaves out keeps its last value. Undefined until a window is known.
  */
 export function applyCodexRateLimits(current: ChatPlanUsage | undefined, snapshot: unknown, now: number): ChatPlanUsage | undefined {
-  if (!isRecord(snapshot)) return current
+  // The meter shows the account's main `codex` bucket; another metered bucket's update must not overwrite it.
+  if (!isRecord(snapshot) || (typeof snapshot.limitId === 'string' && snapshot.limitId !== CODEX_BUCKET)) return current
   const limits = [...(current?.limits ?? [])]
   let changed = false
   for (const [key, fallback] of [['primary', 'session'], ['secondary', 'weekly_all']] as const) {

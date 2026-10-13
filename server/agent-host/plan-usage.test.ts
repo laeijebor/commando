@@ -37,9 +37,17 @@ describe('toPlanUsage', () => {
     })
   })
 
-  it('falls back to the 5h and 7d windows when the server sends no rows', () => {
+  it('falls back to the 5h, 7d and per-model windows when the server sends no rows', () => {
     const { limits: _rows, ...rest } = REPORT.rate_limits
-    expect(reading({ ...REPORT, rate_limits: rest }).limits.map((limit) => [limit.kind, limit.percent])).toEqual([['session', 38], ['weekly_all', 43]])
+    const modelScoped = [{ display_name: 'Fable', utilization: 9, resets_at: '2026-10-16T11:59:59Z' }, { display_name: 'Opus', utilization: null, resets_at: null }]
+    expect(reading({ ...REPORT, rate_limits: { ...rest, model_scoped: modelScoped } }).limits.map((limit) => [limit.title, limit.percent])).toEqual([
+      ['Current session', 38], ['Weekly · all models', 43], ['Weekly · Fable', 9],
+    ])
+    // Named per-model fields count once, even when model_scoped repeats them.
+    const named = { ...rest, seven_day_opus: { utilization: 70, resets_at: null }, seven_day_oauth_apps: { utilization: 2, resets_at: null }, model_scoped: [{ display_name: 'Opus', utilization: 70, resets_at: null }] }
+    expect(reading({ ...REPORT, rate_limits: named }).limits.map((limit) => [limit.kind, limit.title, limit.percent])).toEqual([
+      ['session', 'Current session', 38], ['weekly_all', 'Weekly · all models', 43], ['weekly_scoped', 'Weekly · Opus', 70], ['weekly_scoped', 'Weekly · OAuth apps', 2],
+    ])
   })
 
   it('marks a full window as reached', () => {
@@ -137,6 +145,8 @@ describe('applyCodexRateLimits', () => {
     expect(next?.limits.map((limit) => [limit.kind, limit.percent, limit.severity])).toEqual([['session', 93, 'critical'], ['weekly_all', 9, 'normal']])
     expect(next?.limits[0]?.resetsAt).toBe(1_800_000_000_000)
     expect(applyCodexRateLimits(first, { primary: null, secondary: null }, 9)).toBe(first)
+    // Another metered bucket's update leaves the main codex bucket's rows alone.
+    expect(applyCodexRateLimits(first, { ...snapshot, limitId: 'codex_other_model', primary: { usedPercent: 99, windowDurationMins: 300, resetsAt: null } }, 9)).toBe(first)
   })
 
   it('names other window lengths and marks the fullest window when a limit is hit', () => {
