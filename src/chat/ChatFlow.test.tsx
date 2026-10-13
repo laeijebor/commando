@@ -6,8 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PLAN_IMPLEMENTATION_PREFIX, type ChatItem, type ChatSessionInfo, type ChatState } from '../../shared/agent-chat'
 import { ChatPane, type ChatFlowServices } from './ChatPane'
+import { readDraft } from './draftStore'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  localStorage.clear()
+})
 
 const base = { turnId: 't1', status: 'completed' as const, createdAt: 1, updatedAt: 1 }
 const PLAN = '# Add greeting.txt\n\n- Create it\n- Check it'
@@ -144,11 +148,13 @@ describe('queue and steer', () => {
   })
 
   it('brings queued messages back into the composer on Stop', () => {
-    const { onInterrupt } = renderPane([], { status: 'running', queue: [{ id: 'q1', text: 'run lint' }, { id: 'q2', text: 'and the tests' }] })
+    const { onInterrupt } = renderPane([], { sessionId: 'queue-session', status: 'running', queue: [{ id: 'q1', text: 'run lint' }, { id: 'q2', text: 'and the tests' }] })
     fireEvent.change(textbox(), { target: { value: 'half typed' } })
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
     expect(onInterrupt).toHaveBeenCalledWith(['q1', 'q2'])
     expect(textbox()).toHaveValue('run lint\n\nand the tests\n\nhalf typed')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(readDraft('queue-session')).toBe('run lint\n\nand the tests\n\nhalf typed')
   })
 })
 

@@ -9,6 +9,7 @@ import type { ChatSessionInfo } from '../../shared/agent-chat'
 import type { ChatStashEntry, ChatStashInput } from '../../shared/chat-stash'
 import { ChatComposer, type ChatInputServices } from './ChatComposer'
 import { ChatStashContext, type ChatStash } from './chatStash'
+import { readDraft } from './draftStore'
 
 const imageId = `${'a'.repeat(64)}.png`
 const session: ChatSessionInfo = { paneId: '%5', provider: 'claude', cwd: '/work/app', status: 'idle', hostPid: 1, hostVersion: 3, sessionId: 'session-1', title: 'Fix login', permissionMode: 'default' }
@@ -76,21 +77,27 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  localStorage.clear()
 })
 
 describe('stash and pop with Ctrl+S', () => {
   it('stashes the draft with its chat and clears the composer, without the Save dialog', async () => {
     const { input, type, press, pushed } = setup()
     type('half-written thought')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(readDraft(session.sessionId)).toBe('half-written thought')
     const event = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })
     act(() => { input.dispatchEvent(event) })
     expect(event.defaultPrevented).toBe(true)
     expect(input.value).toBe('')
+    expect(localStorage.getItem(`commando:chat-draft:${session.sessionId}`)).toBeNull()
     await waitFor(() => expect(screen.getByRole('button', { name: /1 stashed/ })).toBeInTheDocument())
     expect(pushed).toEqual([{ text: 'half-written thought', images: [], source: { paneId: '%5', sessionId: 'session-1', title: 'Fix login', cwd: '/work/app' } }])
 
     press('s', { ctrlKey: true })
     await waitFor(() => expect(input.value).toBe('half-written thought'))
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(readDraft(session.sessionId)).toBe('half-written thought')
     expect(screen.queryByRole('button', { name: /stashed/ })).not.toBeInTheDocument()
   })
 
@@ -125,6 +132,8 @@ describe('stash and pop with Ctrl+S', () => {
     press('s', { ctrlKey: true })
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Disk full'))
     expect(input.value).toBe('keep me')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(readDraft(session.sessionId)).toBe('keep me')
   })
 
   it('does one thing per press while Ctrl+S is held', async () => {
