@@ -18,7 +18,7 @@ afterEach(cleanup)
 function composer(props: Partial<Parameters<typeof ChatComposer>[0]> = {}) {
   const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() }
   render(<ChatComposer session={session} hostConnected requests={[]} {...handlers} {...props} />)
-  return { ...handlers, input: screen.getByRole('textbox', { name: 'Message Claude' }) as HTMLTextAreaElement }
+  return { ...handlers, input: screen.getByRole('textbox', { name: props.session?.provider === 'codex' ? 'Message Codex' : 'Message Claude' }) as HTMLTextAreaElement }
 }
 
 function flow(overrides: Partial<ChatFlowServices> = {}): ChatFlowServices {
@@ -133,5 +133,26 @@ describe('PaneAgentSwitch', () => {
     expect(screen.queryByRole('menuitem', { name: 'Show host log' })).toBeNull()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Back to chat' }))
     expect(onReturnToChat).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Codex TUI switch labels', () => {
+  it('offers Codex TUI and returns to chat through the same header actions', () => {
+    const onChat = vi.fn()
+    const onClaudeCode = vi.fn()
+    const { rerender } = render(<PaneAgentSwitch provider="codex" mode="chat" onChat={onChat} onClaudeCode={onClaudeCode} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Codex TUI' }))
+    expect(onClaudeCode).toHaveBeenCalledOnce()
+    rerender(<PaneAgentSwitch provider="codex" mode="claude-code" onChat={onChat} onClaudeCode={onClaudeCode} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
+    expect(onChat).toHaveBeenCalledOnce()
+  })
+  it('names Codex in the waiting banner and composer', () => {
+    composer({ session: { ...session, provider: 'codex', claudeCodeSwitch: 'after_turn' } })
+    expect(screen.getByRole('textbox', { name: 'Message Codex' })).toHaveAttribute('placeholder', 'Switching to Codex TUI…')
+    cleanup()
+    const chat: ChatState = { paneId: '%5', session: { ...session, provider: 'codex', status: 'running', claudeCodeSwitch: 'after_turn' }, items: [], hostConnected: true }
+    render(<ChatPane chat={chat} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} flow={flow()} />)
+    expect(screen.getByTestId('claude-code-switch')).toHaveTextContent('Switching to Codex TUI when this turn ends…')
   })
 })

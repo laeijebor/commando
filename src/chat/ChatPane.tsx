@@ -179,7 +179,7 @@ function ChatColumn({
     setImplemented({ planId: plan.id, itemCount: chat.items.length })
     onSend(planImplementationPrompt(plan.text), undefined, { permissionMode: implementPermissionMode(chat.session) })
   }
-  const implementInNewPane = flow?.implementInNewPane && plan
+  const implementInNewPane = chat.session.provider === 'claude' && flow?.implementInNewPane && plan
     ? () => {
         setFlowError(null)
         flow.implementInNewPane!(plan.text, implementPermissionMode(chat.session)).catch((error: unknown) => {
@@ -261,6 +261,7 @@ function ChatColumn({
       {chat.session.claudeCodeSwitch ? (
         <ClaudeCodeSwitchBanner
           state={chat.session.claudeCodeSwitch}
+          provider={chat.session.provider}
           disabled={!connected || !chat.hostConnected}
           {...(flow?.switchToClaudeCode ? { onSwitch: flow.switchToClaudeCode } : {})}
         />
@@ -295,21 +296,23 @@ function ChatColumn({
 }
 
 /** A switch to Claude Code waiting for the turn to end (Cancel, or Switch now to interrupt it), or under way. */
-function ClaudeCodeSwitchBanner({ state, disabled, onSwitch }: {
+function ClaudeCodeSwitchBanner({ state, disabled, onSwitch, provider }: {
+  provider: 'claude' | 'codex'
   state: ChatClaudeCodeSwitch
   disabled: boolean
   onSwitch?: (action: ChatSwitchAction) => void
 }) {
+  const label = provider === 'codex' ? 'Codex TUI' : 'Claude Code'
   return (
     <div className="px-4 pt-2">
       <div className="mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-secondary-label" role="status" data-testid="claude-code-switch">
         <SquareTerminal className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-        <span className="min-w-40 flex-1">{state === 'after_turn' ? 'Switching to Claude Code when this turn ends…' : 'Switching to Claude Code…'}</span>
+        <span className="min-w-40 flex-1">{state === 'after_turn' ? `Switching to ${label} when this turn ends…` : `Switching to ${label}…`}</span>
         {state !== 'switching' && onSwitch ? (
           <>
             <Button size="xs" variant="outline" disabled={disabled} onClick={() => onSwitch('cancel')}>Cancel</Button>
             {state === 'after_turn' ? (
-              <Button size="xs" disabled={disabled} onClick={() => onSwitch('now')} title="Interrupt Claude's turn and switch">Switch now</Button>
+              <Button size="xs" disabled={disabled} onClick={() => onSwitch('now')} title={`Interrupt ${provider === 'codex' ? 'Codex' : 'Claude'}'s turn and switch`}>Switch now</Button>
             ) : null}
           </>
         ) : null}

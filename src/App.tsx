@@ -389,14 +389,15 @@ type TerminalPaneProps = {
 
 /** What clicking Claude Code in a chat's header does, or why it can't. */
 function claudeCodeSwitchTitle(chat: ChatState): string {
+  const label = chat.session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'
   if (!chat.hostConnected) return 'The agent host is disconnected'
-  if (!hostTakesSwitch(chat.session)) return 'This chat started before switching to Claude Code; restart it to switch'
-  if (!chat.session.sessionId) return 'Send a message first: Claude Code resumes a conversation'
-  if (chat.session.claudeCodeSwitch) return 'Switching to Claude Code…'
+  if (!hostTakesSwitch(chat.session)) return `This chat started before switching to ${label}; restart it to switch`
+  if (!chat.session.sessionId) return `Send a message first: ${label} resumes a conversation`
+  if (chat.session.claudeCodeSwitch) return `Switching to ${label}…`
   const running = chat.session.status === 'running' || chat.session.status === 'waiting'
   return running
-    ? 'Continue in Claude Code, in this pane, when this turn ends'
-    : 'Continue this conversation in Claude Code, in this pane'
+    ? `Continue in ${label}, in this pane, when this turn ends`
+    : `Continue this conversation in ${label}, in this pane`
 }
 
 export function TerminalPaneCard({
@@ -628,6 +629,7 @@ export function TerminalPaneCard({
         {chat || claudeCodeFromChat ? (
           <PaneAgentSwitch
             mode={chat ? 'chat' : 'claude-code'}
+            provider={chat?.session.provider ?? (status?.provider === 'codex' ? 'codex' : 'claude')}
             hostLogShown={Boolean(chat) && !showChat}
             chatDisabled={!chat && !connected}
             claudeCodeDisabled={!connected || !chat?.hostConnected || !chat || !hostTakesSwitch(chat.session) || !chat.session.sessionId || Boolean(chat.session.claudeCodeSwitch) || chatUploading}
@@ -2383,7 +2385,7 @@ export function App() {
   /** The pane runs Claude Code on a conversation that started as a chat, so it offers the way back. */
   const runsChatInClaudeCode = (paneId: string): boolean => {
     const status = agentStatuses[paneId]
-    return !chats[paneId] && status?.provider === 'claude' && Boolean(status.agentSessionId) && chatHandoffs.has(status.agentSessionId!)
+    return !chats[paneId] && (status?.provider === 'claude' || status?.provider === 'codex') && Boolean(status.agentSessionId) && chatHandoffs.has(status.agentSessionId!)
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)

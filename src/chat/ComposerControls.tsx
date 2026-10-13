@@ -149,26 +149,29 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
 export function PermissionPicker({ session, disabled, onConfigure }: { session: ChatSessionInfo; disabled: boolean; onConfigure: (change: ChatSettingsChange) => void }) {
   const [open, setOpen] = useState(false)
   const current = session.permissionMode
+  const labels: Partial<Record<ChatSessionPermissionMode, string>> = session.provider === 'codex' ? { default: 'Workspace access', acceptEdits: 'Workspace access', plan: 'Read only', bypassPermissions: 'Full access' } : {}
+  const label = labels[current as ChatSessionPermissionMode] ?? permissionLabel(current ?? '')
   if (!current) return null
-  if (!hostTakesSettings(session)) return <Pill title="Restart this chat to change its settings">{permissionLabel(current)}</Pill>
+  if (!hostTakesSettings(session)) return <Pill title="Restart this chat to change its settings">{label}</Pill>
   const supportsAuto = selectedModelOption(session)?.supportsAutoMode ?? false
+  const codexModes = ['default', 'plan', ...(session.bypassAllowed ? ['bypassPermissions'] : [])]
   const modes = (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
-    mode === current
+    session.provider === 'codex' ? codexModes.includes(mode) || mode === current : mode === current
     || mode === 'default' || mode === 'acceptEdits' || mode === 'plan'
     || (mode === 'auto' && supportsAuto)
     || (mode === 'bypassPermissions' && session.bypassAllowed)
   ))
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PillTrigger label={permissionLabel(current)} open={open} disabled={disabled} />
+      <PillTrigger label={label} open={open} disabled={disabled} />
       <PopoverPopup className="w-[300px]" aria-label="Permissions">
         <div role="menu" aria-label="Permissions">
           {modes.map((mode) => (
             <MenuOption
               key={mode}
               checked={mode === current}
-              label={PERMISSION_MODES[mode].label}
-              description={PERMISSION_MODES[mode].description.replace('Claude', providerLabel(session))}
+              label={labels[mode] ?? PERMISSION_MODES[mode].label}
+              description={session.provider === 'codex' ? mode === 'default' || mode === 'acceptEdits' ? 'Workspace edits and sandboxed commands are allowed; escalation asks.' : mode === 'plan' ? 'Read-only sandbox; Codex asks before escalating access.' : 'Full filesystem access without approval prompts.' : PERMISSION_MODES[mode].description.replace('Claude', providerLabel(session))}
               onSelect={() => {
                 setOpen(false)
                 if (mode !== current) onConfigure({ permissionMode: mode })

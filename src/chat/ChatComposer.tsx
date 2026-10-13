@@ -590,7 +590,7 @@ export function ChatComposer({
     if (restored === undefined) {
       const fit = fitAttachments(attachments.length, carried.images.length)
       const waiting = carried.images.length - fit.accepted
-      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before Claude Code ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
+      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'} ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
       if (!carried.text && fit.accepted === 0) return
       restored = fit.accepted
       takenCarries.set(carried.id, restored)
@@ -826,7 +826,7 @@ export function ChatComposer({
           placeholder={!hostConnected
             ? 'Reconnecting to the agent host…'
             : switching
-              ? 'Switching to Claude Code…'
+              ? `Switching to ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'}…`
                 : closed
                 ? 'This session has ended'
                 : relayTarget
@@ -884,7 +884,7 @@ export function ChatComposer({
             ) : null}
           </span>
           {session.contextUsage ? (
-            <ContextMeter usage={session.contextUsage} canCompact={!disabled && !running} onCompact={() => onSend('/compact')} />
+            <ContextMeter usage={session.contextUsage} canCompact={session.provider === 'claude' && !disabled && !running} onCompact={() => onSend('/compact')} />
           ) : null}
           {running ? (
             <Button size="icon-sm" variant="outline" aria-label="Stop" title={queue.length ? 'Stop (Esc): queued messages come back here' : 'Stop (Esc)'} onClick={interrupt} disabled={!hostConnected}>

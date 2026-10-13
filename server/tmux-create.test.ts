@@ -708,3 +708,19 @@ describe('chatProfileConfigDir', () => {
     expect(chatProfileConfigDir('/h/.claudew', [])).toBeUndefined()
   })
 })
+
+describe('Codex chat creation', () => {
+  it('starts the Codex chat host in the owned session with the selected permissions', async () => {
+    const run = runner()
+    const resolve = vi.fn(async () => '/unused/codex')
+    const response = await new TmuxCreator(run, [], undefined, resolve, {}).createSession({ name: 'codex-chat', cwd: '/tmp', agent: { provider: 'codex-chat', permissionMode: 'plan', prompt: 'Hello' } })
+    expect(resolve).not.toHaveBeenCalled()
+    expect(response.agentLaunch).toMatchObject({ provider: 'codex-chat', paneId: '%12' })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'codex', '--permission-mode', 'plan', '--prompt', 'Hello'], undefined, {}))
+  })
+  it.each([{ configDir: '/Users/dev/.claude' }, { readableDir: '/tmp' }, { permissionMode: 'acceptEdits' }])('rejects incompatible Codex launch settings %j', async (settings) => {
+    const run = runner()
+    await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'codex-chat', ...settings } } as never)).rejects.toThrow(/Codex/)
+    expect(run).not.toHaveBeenCalled()
+  })
+})
