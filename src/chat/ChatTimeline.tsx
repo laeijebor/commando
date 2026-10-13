@@ -2,19 +2,19 @@ import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Zap } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatTaskAction } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
 import { SubagentGroup, useNow } from './Subagents'
-import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
+import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type SubagentItem, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
 import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan }>({ items: [], now: 0 })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0 })
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
@@ -240,7 +240,7 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
     case 'plan':
       return <PlanCard item={row.item} markdown={Markdown} {...(context.onSavePlan ? { onSave: context.onSavePlan } : {})} />
     case 'subagents':
-      return <SubagentGroup row={row} items={context.items} now={context.now} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
+      return <SubagentGroup row={row} items={context.items} now={context.now} onTask={context.onTask} controlsDisabled={context.controlsDisabled} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
     case 'assistant':
       return <div className="pb-3"><Markdown text={row.item.text} /></div>
     case 'work':
@@ -257,7 +257,7 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan }: {
+export function ChatTimeline({ items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled }: {
   items: readonly ChatItem[]
   cwd: string
   working: boolean
@@ -269,11 +269,13 @@ export function ChatTimeline({ items, cwd, working, scope, header, footer, empty
   emptyText?: string
   onOpenSubagent?: (toolUseId: string) => void
   onSavePlan?: SavePlan
+  onTask?: (action: ChatTaskAction, agent: SubagentItem) => void
+  controlsDisabled?: boolean
 }) {
   const rows = useMemo(() => deriveTimelineRows(items, scope), [items, scope])
   const live = rows.some((row) => row.kind === 'subagents' && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, onOpenSubagent, onSavePlan])
+  const context = useMemo(() => ({ items, now, onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, onOpenSubagent, onSavePlan, onTask, controlsDisabled])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 

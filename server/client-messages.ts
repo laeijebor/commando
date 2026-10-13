@@ -551,6 +551,13 @@ export function parseClientMessage(value: unknown): ParseResult {
         ? { ok: true, message: { type: 'chat_queue', paneId: value.paneId, requestId: id, ...change } }
         : { ok: false, error: 'Invalid queue change', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
+    case 'chat_external_stop': {
+      const id = requestId(value.requestId)
+      const runId = typeof value.runId === 'string' && /^external-[0-9a-f-]{36}$/.test(value.runId) ? value.runId : null
+      return id && isPaneId(value.paneId) && runId
+        ? { ok: true, message: { type: 'chat_external_stop', paneId: value.paneId, runId, requestId: id } }
+        : { ok: false, error: 'Invalid external agent stop request', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
     case 'chat_task': {
       const id = requestId(value.requestId)
       const toolUseId = typeof value.toolUseId === 'string' && value.toolUseId.length > 0 && value.toolUseId.length <= 200 ? value.toolUseId : null

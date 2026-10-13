@@ -1,3 +1,4 @@
+import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { CanvasPush } from './canvas-push.js'
 import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
@@ -855,11 +856,16 @@ async function main(): Promise<void> {
     return hostBuildCache.build
   }
   const interactions = new AgentInteractionBroker()
+  // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
+  let noteChatBusy: ((paneId: string) => void) | undefined
   const agentHosts: AgentHostHub = new AgentHostHub({
     currentHostBuild,
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
-    broadcast,
+    broadcast: (message) => {
+      if (message.type === 'chat_session' && (message.session.status === 'running' || message.session.status === 'waiting')) noteChatBusy?.(message.paneId)
+      broadcast(message)
+    },
     verifyHost: async (paneId, hostPid) => {
       const rows = parseProcessTable(await readProcessTable())
       const known = paneForId(paneId)?.processId
@@ -892,6 +898,14 @@ async function main(): Promise<void> {
     send: (paneId, prompt) => agentHosts.send(paneId, prompt, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {}),
     log: (error) => console.error('[commando] PR auto-fix failed', error),
   })
+  const externalAgents = new ExternalAgentWatcher({
+    panes: () => {
+      const hosts = new Map(agentHosts.states().map((chat) => [chat.paneId, chat.session]))
+      return snapshot.panes.map((pane) => ({ paneId: pane.id, panePid: pane.processId, hostPid: hosts.get(pane.id)?.hostPid, sessionId: hosts.get(pane.id)?.sessionId, status: hosts.get(pane.id)?.status, cwd: hosts.get(pane.id)?.cwd, configDir: hosts.get(pane.id)?.configDir }))
+    },
+    publish: (paneId, runs) => broadcast({ type: 'chat_external_runs', paneId, runs }),
+  })
+  noteChatBusy = (paneId) => externalAgents.noteBusy(paneId)
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
   let publishedHandoffs = ''
   const chatHandoffsMessage = (): ServerMessage => ({ type: 'chat_handoffs', sessionIds: chatHandoffs.inClaudeCode() })
@@ -2294,6 +2308,13 @@ async function main(): Promise<void> {
         ).finally(() => chatReturns.delete(message.paneId))
         return
       }
+      case 'chat_external_stop': {
+        void externalAgents.stop(message.paneId, message.runId).then(
+          (stopped) => { if (!stopped) sendError(client, 'chat_unavailable', 'This external run is no longer available in this pane', message.requestId) },
+          () => sendError(client, 'chat_unavailable', 'Could not stop this external run', message.requestId),
+        )
+        return
+      }
       case 'chat_queue':
       case 'chat_task': {
         if (!agentHosts.takesTurnFlow(message.paneId)) {
@@ -2391,6 +2412,7 @@ async function main(): Promise<void> {
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
+    for (const { paneId, runs } of externalAgents.snapshots()) send(client, { type: 'chat_external_runs', paneId, runs })
     send(client, chatHandoffsMessage())
     send(client, { type: 'chat_stash', entries: chatStash.list() })
     const replayStatuses = agentStatuses.values()
@@ -2678,6 +2700,7 @@ async function main(): Promise<void> {
     })
   })))
 
+  externalAgents.start()
   prAutofix.start()
   const snapshotTimer = setInterval(() => {
     canvasSnapshots.prune()
@@ -2701,6 +2724,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     clearInterval(snapshotTimer)
+    externalAgents.close()
     prAutofix.stop()
     resurrectSaver.stop()
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)

@@ -1,4 +1,4 @@
-import type { ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
+import type { ExternalAgentRun, ChatAnswer, ChatCommand, ChatFileSearchResult, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 import type { ChatStashEntry } from './chat-stash.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
@@ -763,6 +763,8 @@ export type ServerMessage =
   | { type: 'guide_state_changed'; artifactId: string; file: string }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'chat_snapshot'; chats: ChatState[] }
+  /** External runs for one pane, replacing its previous snapshot. */
+  | { type: 'chat_external_runs'; paneId: string; runs: ExternalAgentRun[] }
   /** The composer stash, newest first: on connect and after every change. */
   | { type: 'chat_stash'; entries: ChatStashEntry[] }
   /** A chat pane's whole state: sent when its host connects or reconnects. */
@@ -868,6 +870,7 @@ export type ClientMessage =
   | ({ type: 'chat_send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string } & ChatSendOptions)
   /** Edits, removes or steers a message the host holds in the chat's queue. */
   | ({ type: 'chat_queue'; paneId: string; requestId: string } & ChatQueueAction)
+  | { type: 'chat_external_stop'; paneId: string; runId: string; requestId: string }
   | { type: 'chat_task'; paneId: string; action: ChatTaskAction; agentId: string; toolUseId: string; requestId: string }
   | { type: 'chat_subagent_transcript'; paneId: string; agentId: string; requestId: string }
   /** Files and folders for an `@` mention, searched in the chat's folder by its host. */
