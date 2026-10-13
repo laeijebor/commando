@@ -40,9 +40,13 @@ export function shortLimitLabel(limit: ChatPlanLimit): string {
   return limit.title
 }
 
-/** A window refused a request and has not reset since. */
+/** The window refused a request and has not reset since. */
+export function isLimitReached(limit: ChatPlanLimit, now: number): boolean {
+  return Boolean(limit.reached) && (limit.resetsAt === undefined || limit.resetsAt > now)
+}
+
 export function reachedLimit(usage: ChatPlanUsage, now: number): ChatPlanLimit | undefined {
-  return usage.limits.find((limit) => limit.reached && (limit.resetsAt === undefined || limit.resetsAt > now))
+  return usage.limits.find((limit) => isLimitReached(limit, now))
 }
 
 export function isPlanUsageStale(usage: ChatPlanUsage, now: number): boolean {

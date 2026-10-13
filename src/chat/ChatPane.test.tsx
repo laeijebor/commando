@@ -264,6 +264,15 @@ describe('plan usage meter', () => {
     expect(screen.getByRole('button', { name: 'Current session limit reached' })).toHaveTextContent(/^5h limit reached · resets /)
   })
 
+  it('treats a reached window as open again once its reset time has passed', () => {
+    renderPane(pickerChat({ planUsage: { ...planUsage, limits: [{ ...planUsage.limits[0]!, percent: 100, severity: 'critical', reached: true, resetsAt: now - 60_000 }] } }))
+    const meter = screen.getByRole('button', { name: 'Plan usage: Current session 100% used' })
+    fireEvent.click(meter)
+    const popup = screen.getByRole('dialog', { name: 'Plan usage' })
+    expect(popup).not.toHaveTextContent('Limit reached')
+    expect(popup).toHaveTextContent('Reset since this reading')
+  })
+
   it('stays out of the bar without a reading', () => {
     renderPane(pickerChat({}))
     expect(screen.queryByTestId('plan-usage-meter')).toBeNull()

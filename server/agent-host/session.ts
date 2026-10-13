@@ -1198,6 +1198,9 @@ export class AgentSession implements ChatProviderSession {
       if (this.planUsageOff) return
       const usage = applyRateLimitEvent(this.info.planUsage, message.rate_limit_info, this.now())
       if (usage && usage !== this.info.planUsage) {
+        // A /usage read already under way predates this; drop it, and let the next turn read again.
+        this.planUsageReads += 1
+        this.planUsageAskedAt = 0
         this.info = { ...this.info, planUsage: usage }
         this.emitSession()
       }

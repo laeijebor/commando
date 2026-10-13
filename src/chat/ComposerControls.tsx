@@ -3,7 +3,7 @@ import { Check, ChevronDown, Minimize2 } from 'lucide-react'
 import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatPlanLimit, type ChatPlanUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
 import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
 import { cn } from './cn'
-import { formatDuration, formatReadingAge, formatResetTime, headlineLimits, isPlanUsageStale, reachedLimit, shortLimitLabel } from './planUsage'
+import { formatDuration, formatReadingAge, formatResetTime, headlineLimits, isLimitReached, isPlanUsageStale, reachedLimit, shortLimitLabel } from './planUsage'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
@@ -219,8 +219,10 @@ export function ContextMeter({ usage, canCompact, onCompact }: { usage: ChatCont
 const SEVERITY_TEXT = { normal: '', warning: 'text-warning', critical: 'text-destructive' } as const
 const SEVERITY_FILL = { normal: 'bg-primary', warning: 'bg-warning', critical: 'bg-destructive' } as const
 
-function limitSeverity(limit: ChatPlanLimit): ChatPlanLimit['severity'] {
-  return limit.reached ? 'critical' : limit.severity
+function limitSeverity(limit: ChatPlanLimit, now: number): ChatPlanLimit['severity'] {
+  if (isLimitReached(limit, now)) return 'critical'
+  // A full window that has reset since the reading is open again.
+  return limit.reached ? 'normal' : limit.severity
 }
 
 /** Re-renders on an interval, so reset countdowns and staleness keep up. */
@@ -265,10 +267,10 @@ export function PlanUsageMeter({ usage, profile }: { usage: ChatPlanUsage; profi
         {reached ? (
           <span>{shortLimitLabel(reached)} limit reached{reached.resetsAt !== undefined ? ` · resets ${formatResetTime(reached.resetsAt, now)}` : ''}</span>
         ) : headline.map((limit) => (
-          <span key={`${limit.kind}:${limit.title}`} className={cn('flex items-center gap-1', SEVERITY_TEXT[limitSeverity(limit)])}>
+          <span key={`${limit.kind}:${limit.title}`} className={cn('flex items-center gap-1', SEVERITY_TEXT[limitSeverity(limit, now)])}>
             {shortLimitLabel(limit)}
             <span className="block h-1 w-6 overflow-hidden rounded-[2px] bg-accent" aria-hidden="true">
-              <span className={cn('block h-full', SEVERITY_FILL[limitSeverity(limit)])} style={{ width: `${limit.percent}%` }} />
+              <span className={cn('block h-full', SEVERITY_FILL[limitSeverity(limit, now)])} style={{ width: `${limit.percent}%` }} />
             </span>
             {Math.round(limit.percent)}%
           </span>
@@ -280,14 +282,14 @@ export function PlanUsageMeter({ usage, profile }: { usage: ChatPlanUsage; profi
           <span className="truncate text-xs text-muted-foreground">{[usage.plan && usage.plan[0]!.toUpperCase() + usage.plan.slice(1), profile].filter(Boolean).join(' · ')}</span>
         </div>
         {usage.limits.map((limit) => {
-          const severity = limitSeverity(limit)
+          const severity = limitSeverity(limit, now)
           const reset = resetText(limit, now)
           return (
             <div key={`${limit.kind}:${limit.title}`} className="grid gap-1">
               <div className="flex items-baseline justify-between gap-3 text-xs">
                 <span className="truncate text-foreground">{limit.title}</span>
                 <span className={cn('tabular-nums', severity === 'normal' ? 'text-muted-foreground' : SEVERITY_TEXT[severity])}>
-                  {limit.reached ? 'Limit reached' : `${Math.round(limit.percent)}% used`}
+                  {isLimitReached(limit, now) ? 'Limit reached' : `${Math.round(limit.percent)}% used`}
                 </span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-[3px] bg-accent" role="progressbar" aria-label={`${limit.title} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(limit.percent)}>
