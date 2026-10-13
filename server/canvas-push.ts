@@ -6,8 +6,8 @@ import type { AgentStatus, WebPane, WebPaneFeedbackNote } from '../shared/protoc
 
 export const canvasRepoRoot = fileURLToPath(new URL('../', import.meta.url))
 
-const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
-const clip = (text: string, limit: number) => text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
+export const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
+export const clip = (text: string, limit: number) => text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
 
 export function canvasPushPrompt(title: string, id: string, notes: readonly WebPaneFeedbackNote[], repoRoot = canvasRepoRoot): string {
   id = singleLine(id)
@@ -35,14 +35,16 @@ type Dependencies = {
   sendChat: (paneId: string, text: string, requestId: string) => boolean
   status: (paneId: string) => AgentStatus | undefined
   sendTerminal: (paneId: string, text: string) => Promise<void>
+  /** Anchors mid-paste, shared with other pushers so two prompts never interleave. */
+  sending?: Set<string>
 }
 
 /** Push is an in-memory convenience; the acknowledged journal is authoritative. */
 export class CanvasPush {
   private readonly pushed = new Map<string, Set<string>>()
   private readonly owed = new Map<string, Map<string, WebPaneFeedbackNote>>()
-  private readonly sending = new Set<string>()
-  constructor(private readonly deps: Dependencies) {}
+  private readonly sending: Set<string>
+  constructor(private readonly deps: Dependencies) { this.sending = deps.sending ?? new Set() }
 
   async deliver(webPaneId: string, notes: readonly WebPaneFeedbackNote[]): Promise<void> {
     const pane = this.deps.pane(webPaneId)

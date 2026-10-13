@@ -20,30 +20,31 @@ import {
   type ChatSessionPermissionMode,
   type ChatSettingsChange,
 } from '../../shared/agent-chat'
-import { fitAttachments, prepareImage, type PreparedImage } from './attachImages'
+import { prepareImage, type PreparedImage } from './attachImages'
 import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
 import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
-import { ContextMeter, ModelPicker, PermissionPicker, modelMenuAvailable, providerLabel } from './ComposerControls'
+import { ContextMeter, ModelPicker, PermissionPicker } from './ComposerControls'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
 import {
   detectTrigger,
   filterCommands,
-  filterPullRequests,
+  fitAttachments,
   mentionText,
+  modelMenuAvailable,
   moveCommandToStart,
-  pullRequestText,
+  providerLabel,
   replaceRange,
-  useTriggerState,
   type ComposerTrigger,
-  type PullRequestOption,
-} from './composerTriggers'
+} from '../../shared/chat-composer'
+import { filterPullRequests, pullRequestText, useTriggerState, type PullRequestOption } from './composerTriggers'
 import { StashMenu } from './StashMenu'
 import { useNow } from './Subagents'
-import { shortPath, type PlanItem } from './timelineRows'
+import { shortPath, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
+import { readDraft, saveDraft } from './draftStore'
 
 /** What the composer asks of the app for `@`, `#` and images. */
 export interface ChatInputServices {
@@ -356,7 +357,36 @@ export function ChatComposer({
   /** An image is still uploading: a switch now would leave it behind. */
   onUploadingChange?: (uploading: boolean) => void
 }) {
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(() => readDraft(session.sessionId))
+  const [draftSessionId, setDraftSessionId] = useState(session.sessionId)
+  const restoredDraft = useRef(draft)
+  // The session id can arrive after mount; restore before an effect saves an empty draft.
+  if (session.sessionId !== draftSessionId) {
+    setDraftSessionId(session.sessionId)
+    if (!draft) {
+      const saved = readDraft(session.sessionId)
+      restoredDraft.current = saved
+      setDraft(saved)
+    }
+  }
+  const storedDraft = useMemo(() => ({ text: draft }), [session.sessionId])
+  useLayoutEffect(() => { storedDraft.text = draft }, [storedDraft, draft])
+  useEffect(() => {
+    const flush = () => saveDraft(session.sessionId, storedDraft.text)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  }, [session.sessionId, storedDraft])
+  useEffect(() => {
+    if (!draft) {
+      saveDraft(session.sessionId, '')
+      return
+    }
+    const timeout = window.setTimeout(() => saveDraft(session.sessionId, draft), 300)
+    return () => window.clearTimeout(timeout)
+  }, [session.sessionId, draft])
   const textarea = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const pendingCaret = useRef<number | null>(null)
@@ -502,6 +532,10 @@ export function ChatComposer({
     for (const attachment of attachments) release(attachment)
     setAttachments([])
     setAttachError(null)
+    // A send or stash can unmount the composer before its empty state commits.
+    storedDraft.text = ''
+    saveDraft(session.sessionId, '')
+    restoredDraft.current = ''
     setDraft('')
     updateTrigger(null)
   }
@@ -594,7 +628,16 @@ export function ChatComposer({
       if (!carried.text && fit.accepted === 0) return
       restored = fit.accepted
       takenCarries.set(carried.id, restored)
-      if (carried.text) setDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+      if (carried.text) {
+        const saved = restoredDraft.current
+        setDraft((current) => {
+          const text = current.trim()
+          // A handoff carries the saved draft, sometimes with the queue before it.
+          const included = current === saved && text
+            && (carried.text.trim() === text || carried.text.trim().endsWith(`\n\n${text}`))
+          return [carried.text, included ? '' : text].filter(Boolean).join('\n\n')
+        })
+      }
       const images = carried.images.slice(0, restored).map((ref, index) => ({
         key: `carried-${carried.id}-${index}`,
         name: ref.name ?? 'image',
@@ -813,6 +856,7 @@ export function ChatComposer({
           value={draft}
           disabled={disabled}
           onChange={(event) => {
+            restoredDraft.current = ''
             setDraft(event.target.value)
             syncTrigger(event.target)
           }}

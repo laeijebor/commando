@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Dimensions,
+  Keyboard,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Platform,
   Pressable,
   StyleSheet,
@@ -12,6 +15,10 @@ import * as Haptics from 'expo-haptics'
 
 import type { WebPane } from '@commando/protocol'
 
+import type { ChatState } from '@commando/agent-chat'
+
+import { chatStatusWord, ChatErrorBoundary, ChatView } from '../chat/ChatView'
+import { useChat } from '../chat/store'
 import { useDaemonClient, useDaemonConnection } from '../daemon/useDaemonConnection'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
@@ -41,15 +48,103 @@ export type PaneViewProps = {
 }
 
 /**
- * One live pane: the xterm WebView with the window chips, HUD strip, key bar
- * and composer around it. React Native owns the socket, the keyboard and the
- * pane's size; by default the pane renders at its source `cols × rows` and pans
- * (Decision 2), and "Fit to phone" takes the resize lease while it is on.
+ * One live pane. A chat pane (an agent host drives it) is drawn natively from
+ * its chat items; any other pane, including a chat handed to Claude Code, is
+ * the terminal.
  *
  * The phone's pane screen and the iPad cockpit's centre column are the same
  * component so that neither can drift from the other.
  */
-export function PaneView({
+export function PaneView(props: PaneViewProps): React.JSX.Element {
+  const chat = useChat(props.host?.id, props.paneId)
+  // Keyed so the iPad's centre column starts each chat afresh (its draft, scroll and error boundary).
+  return chat && props.host
+    ? <ChatPane key={`${props.host.id}:${chat.paneId}`} {...props} chat={chat} host={props.host} />
+    : <TerminalPane {...props} />
+}
+
+/** A chat pane: the nav and window chips over the native chat. */
+function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWindow }: PaneViewProps & { host: Host; chat: ChatState }): React.JSX.Element {
+  const theme = useTheme()
+  const state = useDaemonConnection(host)
+  const client = useDaemonClient(host)
+  const keyboard = useKeyboardOverlap()
+  const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
+  return (
+    <View style={styles.root}>
+      <PaneNav
+        {...(onBack ? { onBack } : {})}
+        {...(onInfo ? { onInfo } : {})}
+        subtitle={`${context.title} · chat · ${chatStatusWord(chat.session.status)}`}
+        title={chat.session.title || context.title}
+      />
+      <PaneChips context={context} onOpenTile={onOpenTile} onSelectWindow={onSelectWindow} />
+      <View onLayout={keyboard.onLayout} ref={keyboard.ref} style={[styles.body, { paddingBottom: keyboard.overlap ?? 0 }]}>
+        <ChatErrorBoundary
+          fallback={(error) => (
+            <Text style={[styles.chatFailed, { color: theme.red }]}>The chat view failed to render: {error.message}</Text>
+          )}
+        >
+          <ChatView chat={chat} client={client} host={host} phase={state.phase} />
+        </ChatErrorBoundary>
+      </View>
+    </View>
+  )
+}
+
+/**
+ * How much of the pane's body the keyboard covers, or null while it is down.
+ * The body sits under the stack's nav and above the tab bar, which
+ * KeyboardAvoidingView's parent-relative frame can't see, so the gap between
+ * the body and the bottom of the window is measured on layout, and the
+ * overlap is the keyboard's height less that gap. (`measureInWindow` reports
+ * the body relative to its screen here, and a measure during the keyboard
+ * event can catch the app-switch animation's transform.)
+ */
+function useKeyboardOverlap(): { ref: React.RefObject<View | null>; onLayout: () => void; overlap: number | null } {
+  const ref = useRef<View>(null)
+  const gap = useRef(0)
+  const [overlap, setOverlap] = useState<number | null>(null)
+  const shown = useRef(false)
+  const onLayout = useCallback(() => {
+    // The padding changes the body's layout while the keyboard is up; the gap below it doesn't change.
+    if (shown.current) return
+    ref.current?.measure((_x, _y, _width, height, _pageX, pageY) => {
+      gap.current = Math.max(0, Dimensions.get('window').height - (pageY + height))
+    })
+  }, [])
+  useEffect(() => {
+    const animate = (duration: number) => {
+      LayoutAnimation.configureNext(LayoutAnimation.create(duration || 250, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
+    }
+    const show = Keyboard.addListener('keyboardWillShow', (event) => {
+      shown.current = true
+      animate(event.duration)
+      const { height, screenY } = event.endCoordinates
+      // A floating or undocked iPad keyboard doesn't reach the bottom edge, and covers nothing below it.
+      const docked = height > 0 && screenY + height >= Dimensions.get('window').height - 1
+      setOverlap(docked ? Math.max(0, Math.min(height, Dimensions.get('window').height - screenY) - gap.current) : null)
+    })
+    const hide = Keyboard.addListener('keyboardWillHide', (event) => {
+      shown.current = false
+      animate(event.duration)
+      setOverlap(null)
+    })
+    return () => {
+      show.remove()
+      hide.remove()
+    }
+  }, [])
+  return { ref, onLayout, overlap }
+}
+
+/**
+ * The terminal: the xterm WebView with the window chips, HUD strip, key bar
+ * and composer around it. React Native owns the socket, the keyboard and the
+ * pane's size; by default the pane renders at its source `cols × rows` and pans
+ * (Decision 2), and "Fit to phone" takes the resize lease while it is on.
+ */
+function TerminalPane({
   host,
   paneId,
   active,
@@ -222,4 +317,5 @@ const styles = StyleSheet.create({
   },
   toastLabel: { fontSize: 12.5, fontWeight: '600' },
   sizeLine: { fontSize: 11.5, paddingHorizontal: 16, paddingTop: 6 },
+  chatFailed: { fontSize: 13.5, lineHeight: 19, padding: 16 },
 })

@@ -3,7 +3,11 @@ export const TMUX_CREATE_ROUTES = {
   window: '/api/tmux/windows',
   pane: '/api/tmux/panes',
   claudeProfiles: '/api/tmux/claude-profiles',
+  launch: '/api/tmux/panes/launch',
 } as const
+
+/** Pane option marking a pane that idles until something is launched into it. */
+export const EMPTY_PANE_OPTION = '@commando_empty'
 
 export type TmuxSplitDirection = 'horizontal' | 'vertical'
 export type TmuxSplitPlacement = 'before' | 'after'
@@ -106,6 +110,14 @@ export type CreateTmuxSessionRequest = {
   cwd?: string
   worktree?: CreateTmuxSessionWorktree
   /** Started interactively inside the new pane, after successful preparation. */
+  agent?: SessionAgentLaunch
+  /** Start with nothing running: the pane idles until a shell or agent is launched into it. */
+  empty?: boolean
+}
+
+/** Replaces an empty pane's idle process with a shell, or with `agent` when given. */
+export type LaunchTmuxPaneRequest = {
+  paneId: string
   agent?: SessionAgentLaunch
 }
 

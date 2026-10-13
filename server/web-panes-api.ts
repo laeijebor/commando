@@ -1,6 +1,7 @@
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasNoteContext } from '../shared/canvas-feedback.js'
 import type { CanvasThreadsStore } from './canvas-threads.js'
+import type { Guides } from './guides.js'
 import { isBuiltinPanelKey } from '../shared/web-pane-placement.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -62,6 +63,8 @@ type WebPanesApiDependencies = {
   /** Queued-but-unsent review notes, owned by the daemon. */
   pending: WebPanePendingStore
   canvasThreads?: CanvasThreadsStore
+  /** Guide tabs: tick state and "Update agent" delivery. */
+  guides?: Guides
   spotlight?: CanvasSpotlightStore
   onCanvasSent?: (webPaneId: string, notes: WebPaneFeedbackNote[]) => void
   /** Private bytes referenced by pending and sent review notes. */
@@ -393,11 +396,31 @@ export class WebPanesApi {
 
     try {
       const caller = await this.authenticate(request, url)
+      const guide = /^\/api\/web-panes\/(w-[0-9a-f]{8})\/guide(?:\/(steps|update|reset))?$/.exec(url.pathname)
+      if (guide) {
+        await this.handleGuide(request, response, guide[1], guide[2] as 'steps' | 'update' | 'reset' | undefined, caller)
+        return true
+      }
       const route = this.route(url.pathname)
+
+      if (route.kind === 'pr-tabs') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can dismiss or restore PR tabs')
+        const body = await readJson(request)
+        const paneExists = (id: string) => Boolean(this.dependencies.paneForId(id))
+        if (route.action === 'dismiss') this.dependencies.service.dismissPrTab(body.anchorPaneId as string, body.key as string, body.signature as string, paneExists, body.nextKey as string | undefined)
+        else {
+          if (body.select !== undefined && typeof body.select !== 'boolean') throw new HttpError(400, 'select must be a boolean')
+          this.dependencies.service.restorePrTab(body.anchorPaneId as string, body.key as string, paneExists, body.select === true)
+        }
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true })
+        return true
+      }
 
       if (route.kind === 'collection') {
         if (request.method === 'GET') {
-          writeJson(response, 200, { webPanes: this.dependencies.service.list(), activeTabs: this.dependencies.service.panelActiveTabs() })
+          writeJson(response, 200, { webPanes: this.dependencies.service.list(), activeTabs: this.dependencies.service.panelActiveTabs(), dismissedPrTabs: this.dependencies.service.panelDismissedPrTabs() })
           return true
         }
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
@@ -1014,6 +1037,24 @@ export class WebPanesApi {
     }
   }
 
+  private async handleGuide(request: IncomingMessage, response: ServerResponse, id: string, action: 'steps' | 'update' | 'reset' | undefined, caller: 'owner' | 'agent'): Promise<void> {
+    const guides = this.dependencies.guides
+    if (!guides) throw new HttpError(404, 'Not found')
+    if (action === undefined) {
+      if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+      writeJson(response, 200, { ok: true, webPaneId: id, guide: guides.snapshot(id) })
+      return
+    }
+    if (caller !== 'owner') throw new HttpError(403, 'Only the owner can tick guide steps or update the agent')
+    let guide
+    if (action === 'steps' && request.method === 'POST') guide = guides.mark(id, await readJson(request))
+    else if (action === 'reset' && request.method === 'POST') guide = guides.reset(id)
+    else if (action === 'update' && request.method === 'POST') guide = await guides.requestUpdate(id)
+    else if (action === 'update' && request.method === 'DELETE') guide = guides.cancelUpdate(id)
+    else throw new HttpError(405, 'Method not allowed')
+    writeJson(response, 200, { ok: true, webPaneId: id, guide })
+  }
+
   private async authenticate(request: IncomingMessage, url: URL): Promise<'owner' | 'agent'> {
     if (await this.dependencies.ownerAuthorized(request, url)) return 'owner'
     const candidate = bearerToken(request)
@@ -1029,11 +1070,14 @@ export class WebPanesApi {
 
   private route(pathname: string):
     | { kind: 'collection' }
+    | { kind: 'pr-tabs'; action: 'dismiss' | 'restore' }
     | { kind: 'pane'; id: string; action: 'spotlight' | 'active-tab' | 'seen' | 'dock' | 'confirm' | 'cdp' | 'feedback' | 'threads' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
     | { kind: 'pane'; id: string; action: 'navigate-request' | 'spotlight-request'; requestId: string }
     | { kind: 'pane'; id: string; action: 'thread-replies' | 'thread-status'; threadId: string }
     | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
+    if (pathname === `${API_ROOT}/pr-tabs/dismiss`) return { kind: 'pr-tabs', action: 'dismiss' }
+    if (pathname === `${API_ROOT}/pr-tabs/restore`) return { kind: 'pr-tabs', action: 'restore' }
     if (pathname === API_ROOT) return { kind: 'collection' }
     const thread = /^\/api\/web-panes\/([^/]+)\/threads\/(ct-[0-9a-f]{24})\/(replies|status)$/.exec(pathname)
     if (thread && WEB_PANE_ID.test(thread[1])) return { kind: 'pane', id: thread[1], threadId: thread[2], action: thread[3] === 'replies' ? 'thread-replies' : 'thread-status' }
@@ -1097,7 +1141,7 @@ export class WebPanesApi {
   private openPane(body: Record<string, unknown>, caller: 'owner' | 'agent'): WebPane {
     const { url, anchor, placement, engine, content } = body
     const parsedContent = parseWebPaneContent(content)
-    if (parsedContent === null) throw new HttpError(400, (content as { kind?: unknown } | null)?.kind === 'canvas' ? 'Invalid canvas content' : 'Invalid simulator content')
+    if (parsedContent === null) throw new HttpError(400, (content as { kind?: unknown } | null)?.kind === 'canvas' ? 'Invalid canvas content' : (content as { kind?: unknown } | null)?.kind === 'guide' ? 'Invalid guide content' : 'Invalid simulator content')
     const simulator = parsedContent?.kind === 'simulator'
     if (!simulator && typeof url !== 'string') throw new HttpError(400, 'url must be a string')
     if (typeof anchor !== 'string' || !PANE_ID.test(anchor)) {

@@ -9,6 +9,8 @@ const PANE_ID = /^%\d+$/
 type PaneTargetApiDependencies = {
   token: string
   paneTarget: (paneId: string) => { targetId: string } | null
+  /** The pane is about to open a PR carrying this marker. */
+  onMarkerIssued?: (targetId: string) => void
 }
 
 function digest(value: string): Buffer {
@@ -61,6 +63,7 @@ export class PaneTargetApi {
       writeJson(response, 404, { error: 'Tmux pane does not exist' })
       return true
     }
+    this.dependencies.onMarkerIssued?.(target.targetId)
     writeJson(response, 200, {
       targetId: target.targetId,
       marker: formatCommandoPrMarker(target.targetId),

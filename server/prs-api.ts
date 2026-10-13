@@ -92,9 +92,15 @@ export async function handlePrsApi(
         if (!pr) throw new PrServiceError(404, 'pr_not_linked', 'PR is not linked to this pane')
         if (pr.state !== 'open') throw new PrServiceError(409, 'pr_not_open', 'PR is no longer open')
       }
-      const state = await watcher.store.update(repo, number, (current) => targetId
+      let state = await watcher.store.update(repo, number, (current) => targetId
         ? setAutofixEnabled(current, repo, number, targetId, enabled)
         : current ? setAutofixEnabled(current, repo, number, current.targetId, false) : null)
+      await watcher.store.setDefaultChoice(enabled, Date.now())
+      // Act on failures and comments already on the PR instead of waiting for the next poll.
+      if (state?.enabled) {
+        await watcher.check(repo, number)
+        state = await watcher.store.get(repo, number)
+      }
       json(response, 200, { status: state ? autofixStatus(state) : null })
       return true
     }

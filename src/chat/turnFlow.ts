@@ -1,43 +1,8 @@
 import type { ChatItem, ChatSessionInfo, ChatSessionPermissionMode } from '../../shared/agent-chat'
 import type { ChatPermissionMode } from '../../shared/tmux-create'
-import type { PlanItem, SubagentItem } from './timelineRows'
+import type { PlanItem, SubagentItem } from '../../shared/chat-timeline'
 
 // ---- plans (after t3code's proposedPlan.ts) ----
-
-/** Long plans fold to a preview, as t3code's ProposedPlanCard does. */
-export function canCollapsePlan(markdown: string): boolean {
-  return markdown.length > 900 || markdown.split('\n').length > 20
-}
-
-/** The plan without its title heading (the card shows it) or a "Summary" heading. */
-export function planBody(markdown: string): string {
-  const lines = markdown.trimEnd().split(/\r?\n/)
-  const body = lines[0] && /^\s{0,3}#{1,6}\s+/.test(lines[0]) ? lines.slice(1) : [...lines]
-  while (body[0]?.trim().length === 0) body.shift()
-  if (body[0]?.match(/^\s{0,3}#{1,6}\s+(.+)$/)?.[1]?.trim().toLowerCase() === 'summary') {
-    body.shift()
-    while (body[0]?.trim().length === 0) body.shift()
-  }
-  return body.join('\n')
-}
-
-/** The first `maxLines` lines that have text, then an ellipsis (t3code's collapsed preview). */
-export function collapsedPlanPreview(markdown: string, maxLines = 10): string {
-  const preview: string[] = []
-  let visible = 0
-  let more = false
-  for (const line of planBody(markdown).split('\n').map((value) => value.trimEnd())) {
-    if (line.trim() && visible >= maxLines) {
-      more = true
-      break
-    }
-    preview.push(line)
-    if (line.trim()) visible += 1
-  }
-  while (preview.length && !preview.at(-1)?.trim()) preview.pop()
-  if (more) preview.push('', '…')
-  return preview.join('\n')
-}
 
 /**
  * The plan the composer offers to implement or refine: Claude's latest plan,

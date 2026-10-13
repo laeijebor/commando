@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileS
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
 
-const MAX_ARTIFACT_DIRS = 16
+export const MAX_ARTIFACT_DIRS = 64
 
 /** Persisted registrations expire after a week — a review never runs that long. */
 export const REDLINE_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1_000
@@ -34,6 +34,7 @@ type Entry = { dir: string; registeredAt: number }
  * daemon restarts (same id keeps serving); entries whose directory vanished
  * or whose ttl lapsed are dropped on load, and every surviving entry is
  * re-validated through the same realpath checks as a fresh registration.
+ * Registering a new directory when full releases the oldest registration.
  */
 export class RedlineArtifactRegistry {
   private readonly entries = new Map<string, Entry>()
@@ -71,7 +72,9 @@ export class RedlineArtifactRegistry {
       }
     }
     if (nextEntries.size >= MAX_ARTIFACT_DIRS) {
-      throw new RedlineArtifactError(429, `At most ${MAX_ARTIFACT_DIRS} artifact directories can be registered`)
+      // Full: release the oldest registration. Re-registering refreshes an entry.
+      const [oldestId] = [...nextEntries].reduce((oldest, next) => (next[1].registeredAt < oldest[1].registeredAt ? next : oldest))
+      nextEntries.delete(oldestId)
     }
     let id: string
     do {

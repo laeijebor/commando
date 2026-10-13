@@ -328,6 +328,8 @@ export type TmuxPane = PaneTerminalState & {
   path: string
   active: boolean
   dead: boolean
+  /** Nothing has been launched yet: the pane idles and shows a launcher instead of a terminal. */
+  empty?: boolean
   /** Repository behind `path`, when the daemon could resolve one. */
   repo?: PaneRepo
 }
@@ -467,7 +469,7 @@ export type WebPaneEngine = 'webkit' | 'chromium'
  */
 export type WebPane = {
   /** Built-in content bypasses browser engines and URL navigation. */
-  content?: { kind: 'simulator'; udid: string } | { kind: 'canvas'; artifactId: string; manifest: string }
+  content?: { kind: 'simulator'; udid: string } | { kind: 'canvas'; artifactId: string; manifest: string } | { kind: 'guide'; artifactId: string; file: string }
   id: string
   url: string
   /** Daemon page title, available even when a Chromium tile is hidden. */
@@ -740,6 +742,7 @@ export type ServerMessage =
       webPanes: WebPane[]
       /** Per-pane panel selection, including built-in keys. */
       activeTabs?: Record<string, string>
+      dismissedPrTabs?: Record<string, Record<string, string>>
       feedback?: Record<string, WebPaneFeedbackInfo>
       navigateRequests?: Record<string, WebPaneNavigateRequest>
       spotlightRequests?: Record<string, CanvasSpotlightRequest>
@@ -756,6 +759,8 @@ export type ServerMessage =
   | { type: 'canvas_pending_changed'; webPaneId: string }
   | { type: 'canvas_threads_changed'; webPaneId: string }
   | { type: 'canvas_changed'; artifactId: string; changed: string[] }
+  /** A guide's ticks, notes or delivery state changed. */
+  | { type: 'guide_state_changed'; artifactId: string; file: string }
   | { type: 'provider_usage'; usage: ProviderUsage[] }
   | { type: 'chat_snapshot'; chats: ChatState[] }
   /** The composer stash, newest first: on connect and after every change. */

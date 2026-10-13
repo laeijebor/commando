@@ -4,6 +4,7 @@ import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
+import { defaultGuideStatePath, GuideStateStore, Guides } from './guides.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream, readFileSync } from 'node:fs'
@@ -41,7 +42,7 @@ import { TmuxClient } from './tmux.js'
 import { normalizeCaptureLineEndings } from './tmux-control.js'
 import { buildPaneSeed } from './terminal-seed.js'
 import { WorkspaceStore } from './workspaces.js'
-import { WebPaneService } from './web-panes.js'
+import { buildWebPanesMessage, WebPaneService } from './web-panes.js'
 import { WebPanesApi } from './web-panes-api.js'
 import { WebPaneFeedbackStore } from './web-pane-feedback.js'
 import { WebPaneAgentRequests } from './web-pane-agent-requests.js'
@@ -532,6 +533,7 @@ async function main(): Promise<void> {
   const webPaneAgentRequests = new WebPaneAgentRequests()
   const canvasSpotlight = new CanvasSpotlightStore()
   let canvasPush: CanvasPush | undefined
+  let guides: Guides | undefined
   const feedbackJournal = new FeedbackJournal()
   const pendingJournal = new PendingNotesJournal()
   feedbackJournal.removeExpired(FEEDBACK_JOURNAL_TTL_MS)
@@ -594,10 +596,7 @@ async function main(): Promise<void> {
     service: webPanes,
     pendingNotes: (webPaneId) => webPanePending.snapshot(webPaneId),
   })
-  const webPanesMessage = (): ServerMessage => ({
-    type: 'web_panes',
-    webPanes: webPanes.list(),
-    activeTabs: webPanes.panelActiveTabs(),
+  const webPanesMessage = (): ServerMessage => buildWebPanesMessage(webPanes, {
     feedback: webPaneFeedback.info(),
     navigateRequests: webPaneAgentRequests.navigateRequests(),
     spotlightRequests: canvasSpotlight.pending(),
@@ -624,6 +623,7 @@ async function main(): Promise<void> {
     webPaneAgentRequests.retain(liveIds)
     canvasSpotlight.retain(liveIds)
     canvasPush?.retain(liveIds)
+    guides?.retain(liveIds)
     canvasWatch.sync(webPanes.list())
     broadcast(webPanesMessage())
   }
@@ -778,7 +778,10 @@ async function main(): Promise<void> {
   }
 
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
-    if (change?.type === 'upsert') void canvasPush?.statusChanged(change.status.paneId)
+    if (change?.type === 'upsert') {
+      void canvasPush?.statusChanged(change.status.paneId)
+      void guides?.statusChanged(change.status.paneId)
+    }
     for (const client of clients) sendAgentStatusChange(client, change)
     if (change && companionClientCount > 0) {
       if (change.type === 'remove') {
@@ -877,6 +880,7 @@ async function main(): Promise<void> {
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
     snapshot: (repo, number, targetId) => prs.autofixSnapshot(repo, number, targetId),
+    linkedPrs: async (targetId) => (await prs.listPanePullRequests(targetId)).pullRequests,
     target: (targetId) => {
       const pane = snapshot.panes.find((pane) => pane.targetId === targetId)
       const chat = pane && agentHosts.states().find((chat) => chat.paneId === pane.id)
@@ -1736,9 +1740,22 @@ async function main(): Promise<void> {
       const pane = paneForId(paneId)
       return pane ? { targetId: pane.targetId } : null
     },
+    onMarkerIssued: (targetId) => prAutofix.noteMarkerRequest(targetId),
   })
   const canvasThreads = new CanvasThreadsStore(defaultCanvasThreadsPath(port), (webPaneId) => broadcast({ type: 'canvas_threads_changed', webPaneId }))
+  const sendAgentTerminal = async (paneId: string, text: string): Promise<void> => {
+    const pane = paneForId(paneId)
+    const status = agentStatuses.get(paneId)
+    if (!pane || pane.dead || agentHosts.owns(paneId) || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
+    // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
+    await tmux.pasteText(paneId, text)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await tmux.sendKey(pane.sessionId, paneId, 'Enter')
+  }
+  // One paste at a time per agent pane, whichever tab is pushing.
+  const agentPushes = new Set<string>()
   canvasPush = new CanvasPush({
+    sending: agentPushes,
     repoRoot: fileURLToPath(new URL('../', import.meta.url)),
     pane: (id) => webPanes.get(id),
     title: (pane) => {
@@ -1751,18 +1768,22 @@ async function main(): Promise<void> {
     owns: (paneId) => agentHosts.owns(paneId),
     sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
     status: (paneId) => agentStatuses.get(paneId),
-    sendTerminal: async (paneId, text) => {
-      const pane = paneForId(paneId)
-      const status = agentStatuses.get(paneId)
-      if (!pane || pane.dead || agentHosts.owns(paneId) || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
-      // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
-      await tmux.pasteText(paneId, text)
-      await new Promise((resolve) => setTimeout(resolve, 150))
-      await tmux.sendKey(pane.sessionId, paneId, 'Enter')
-    },
+    sendTerminal: sendAgentTerminal,
+  })
+  guides = new Guides({
+    store: new GuideStateStore(defaultGuideStatePath(port)),
+    pane: (id) => webPanes.get(id),
+    resolveFile: (artifactId, file) => redlineArtifacts.resolve(artifactId, file),
+    changed: (artifactId, file) => broadcast({ type: 'guide_state_changed', artifactId, file }),
+    owns: (paneId) => agentHosts.owns(paneId),
+    sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
+    status: (paneId) => agentStatuses.get(paneId),
+    sendTerminal: sendAgentTerminal,
+    sending: agentPushes,
   })
   const webPanesApi = new WebPanesApi({
     service: webPanes,
+    guides,
     feedback: webPaneFeedback,
     pending: webPanePending,
     canvasThreads,

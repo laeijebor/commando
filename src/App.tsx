@@ -135,6 +135,7 @@ import { PaneAgentSwitch } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   hostTakesSwitch,
   mergeChatItems,
@@ -350,6 +351,7 @@ type TerminalPaneProps = {
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
+  onChatOpenPr?: (repo: string, number: number) => void
   chatServices?: ChatInputServices
   chatFlow?: ChatFlowServices
   /** Why the daemon refused one of this pane's chat sends. */
@@ -433,6 +435,7 @@ export function TerminalPaneCard({
   onChatAnswer,
   onChatConfigure,
   onChatRestart,
+  onChatOpenPr,
   chatServices,
   chatFlow,
   chatSendError,
@@ -725,6 +728,7 @@ export function TerminalPaneCard({
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
             onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
+            {...(onChatOpenPr ? { onOpenPr: onChatOpenPr } : {})}
             {...(chatServices ? { services: chatServices } : {})}
             {...(chatFlow ? { flow: chatFlow } : {})}
             {...(chatSendError ? { sendError: chatSendError } : {})}
@@ -1063,6 +1067,7 @@ export function App() {
   const [activeSimulatorTileId, setActiveSimulatorTileId] = useState<string | null>(null)
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
   const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
+  const [dismissedPrTabs, setDismissedPrTabs] = useState<Record<string, Record<string, string>>>({})
   const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
   const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
   const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
@@ -1507,6 +1512,7 @@ export function App() {
           knownPanelTabs.current = new Map(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => [tab.id, tab.openRevision ?? 0]))
         }
         setPanelActiveTabs(message.activeTabs ?? {})
+        setDismissedPrTabs(message.dismissedPrTabs ?? {})
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
@@ -1721,7 +1727,7 @@ export function App() {
     setFocusedPaneId((current) => effectiveFocusedPane(current, allVisiblePaneIds, tmuxActivePaneId) ?? null)
   }, [snapshot, activeGroup?.windowId, focusedPaneId])
 
-  const selectPanelTab = useCallback(async (tab: PanelTab) => {
+  const selectPanelTabLocally = useCallback((tab: PanelTab) => {
     const maximized = maximizedBuiltinTab?.anchorPaneId === tab.anchorPaneId || webPanes.some((pane) => pane.id === maximizedPaneId && pane.dock !== 'split' && pane.anchorPaneId === tab.anchorPaneId)
     if (maximized) {
       setMaximizedBuiltinTab(isBuiltinTab(tab) ? tab : null)
@@ -1731,10 +1737,14 @@ export function App() {
     setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
       ? { ...pane, activeTab: pane.id === tab.id }
       : pane))
+  }, [webPanes, maximizedPaneId, maximizedBuiltinTab])
+
+  const selectPanelTab = useCallback(async (tab: PanelTab) => {
+    selectPanelTabLocally(tab)
     try { await createWebPanesApi(token).setActiveTab(panelTabKey(tab), tab.anchorPaneId) } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
     }
-  }, [webPanes, maximizedPaneId, maximizedBuiltinTab, token])
+  }, [selectPanelTabLocally, token])
 
   useEffect(() => {
     const tabs = webPanes.filter((tab) => tab.dock !== 'split')
@@ -1991,16 +2001,42 @@ export function App() {
     jumpToPane(matches[0].id, targetId, true)
   }
 
-  const revealBuiltinTab = (paneId: string, key: BuiltinPanelKey) => {
+  const revealBuiltinTab = (paneId: string, key: BuiltinPanelKey, persistSelection = true) => {
     const tab = builtinPanelTab(paneId, key)
     setMaximizedPaneId((current) => webPanes.some((pane) => pane.id === current && pane.dock !== 'split' && pane.anchorPaneId === paneId) ? current : null)
     setMaximizedBuiltinTab((current) => current?.id === tab.id ? current : null)
     setFocusedPaneId(paneId)
-    void selectPanelTab(tab)
+    if (persistSelection) void selectPanelTab(tab)
+    else selectPanelTabLocally(tab)
     setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
   }
 
-  const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean => {
+  const restorePanePrTab = async (tab: BuiltinPanelTab) => {
+    await webPanesApi.restorePrTab(tab.anchorPaneId, tab.key, true)
+    setDismissedPrTabs((current) => {
+      const entries = { ...current[tab.anchorPaneId] }
+      delete entries[tab.key]
+      return { ...current, [tab.anchorPaneId]: entries }
+    })
+  }
+
+  /** Selects a linked PR's side-panel tab on a sub-tab, restoring it first if it was closed. */
+  const revealPrTab = (paneId: string, repo: string, number: number, subTab: PrQuickLookTab): boolean | Promise<boolean> => {
+    const key = prPanelKey(repo, number)
+    const tab = builtinPanelTab(paneId, key)
+    const open = (selected = false) => {
+      setPrSelections((current) => ({ ...current, [tab.id]: { tab: subTab, revision: (current[tab.id]?.revision ?? 0) + 1 } }))
+      revealBuiltinTab(paneId, key, !selected)
+      return true
+    }
+    if (dismissedPrTabs[paneId]?.[key] === undefined) return open()
+    return restorePanePrTab(tab).then(() => open(true)).catch((error: unknown) => {
+      setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')
+      return true
+    })
+  }
+
+  const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean | Promise<boolean> => {
     const targetId = pr.commandoMarker?.targetId
     const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
     if (matches.length !== 1) return false
@@ -2009,13 +2045,11 @@ export function App() {
     const list = cachedPanePrs(prsApi, pane.id)
     if (list?.targetId !== pane.targetId || !list.pullRequests.some((linked) => linked.repo.toLowerCase() === repo && linked.number === pr.number)) return false
     if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
-    const key = prPanelKey(repo, pr.number)
-    const tabId = builtinPanelTab(pane.id, key).id
-    setPrSelections((current) => ({ ...current, [tabId]: { tab: subTab, revision: (current[tabId]?.revision ?? 0) + 1 } }))
-    revealBuiltinTab(pane.id, key)
+    const opened = revealPrTab(pane.id, repo, pr.number, subTab)
     if (refresh) void refreshPanePrs(prsApi, pane.id)
-    return true
+    return opened
   }
+
   const latestOpenLoadedPanePr = useRef(openLoadedPanePr)
   latestOpenLoadedPanePr.current = openLoadedPanePr
   const openPanePr = (pr: PrSummary, subTab: PrQuickLookTab): boolean | Promise<boolean | undefined> => {
@@ -2588,6 +2622,31 @@ export function App() {
     setPendingSimulatorTileId(null)
   }, [pendingSimulatorTileId, webPanes, selectedSessionId, activeGroup?.windowId])
 
+  const dismissPanePrTab = async (tab: BuiltinPanelTab, signature: string, next?: PanelTab) => {
+    const previousActiveKey = panelActiveTabs[tab.anchorPaneId]
+    const previousMaximizedBuiltinTab = maximizedBuiltinTab
+    const previousMaximizedPaneId = maximizedPaneId
+    const previousWebActiveTabs = new Map(webPanes.map((pane) => [pane.id, pane.activeTab]))
+    setPaneActionError('')
+    if (next) selectPanelTabLocally(next)
+    try {
+      await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature, next ? panelTabKey(next) : undefined)
+      setDismissedPrTabs((current) => ({ ...current, [tab.anchorPaneId]: { ...current[tab.anchorPaneId], [tab.key]: signature } }))
+    } catch (error) {
+      setPanelActiveTabs((current) => {
+        const restored = { ...current }
+        if (previousActiveKey === undefined) delete restored[tab.anchorPaneId]
+        else restored[tab.anchorPaneId] = previousActiveKey
+        return restored
+      })
+      setMaximizedBuiltinTab(previousMaximizedBuiltinTab)
+      setMaximizedPaneId(previousMaximizedPaneId)
+      setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
+        ? { ...pane, activeTab: previousWebActiveTabs.get(pane.id) } : pane))
+      setPaneActionError(error instanceof Error ? error.message : 'Could not close PR tab')
+    }
+  }
+
   const closeWebPane = async (webPaneId: string) => {
     setPaneActionError('')
     if (activeSimulatorTileId === webPaneId) setActiveSimulatorTileId(null)
@@ -2739,6 +2798,40 @@ export function App() {
     }
   }
 
+  /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */
+  const rememberedChatLaunch = async (path: string): Promise<SessionAgentLaunch> => {
+    const [repoRoot, profiles] = await Promise.all([
+      gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined),
+      tmuxCreateApi.claudeProfiles().catch((error: unknown) => {
+        console.warn('[commando] Claude profiles unavailable; using the remembered profile', error)
+        return null
+      }),
+    ])
+    const preference = loadChatLaunch(repoRoot ?? path)
+    // Check the remembered profile against the current ones, as the dialog does, so a
+    // stale or missing preference never falls back to the daemon's own login.
+    const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
+    if (!profiles && !configDir) throw new Error("Couldn't load your Claude profiles, so this chat's login is unknown. Try again, or start it from New session.")
+    return { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(configDir ? { configDir } : {}) }
+  }
+
+  const launchInEmptyPane = async (paneId: string, choice: EmptyPaneChoice) => {
+    const pane = paneMap.get(paneId)
+    if (!pane || paneActionPending) return
+    setPaneActionPending(true)
+    setPaneActionError('')
+    try {
+      const agent = choice === 'shell' ? undefined : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path) : { provider: choice }
+      await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
+      // Focus lands once the snapshot swaps the launcher for the running pane.
+      setPendingPaneFocus({ paneId })
+    } catch (cause) {
+      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to start in this pane')
+    } finally {
+      setPaneActionPending(false)
+    }
+  }
+
   const splitPane = async (paneId: string, direction: PaneSplitDirection, chat = false) => {
     const pane = paneMap.get(paneId)
     if (!pane || paneActionPending) return
@@ -2747,23 +2840,7 @@ export function App() {
     clearLayoutTimers()
     try {
       const before = direction === 'left' || direction === 'up'
-      let agent: SessionAgentLaunch | undefined
-      if (chat) {
-        // The profile is remembered per repository, as in the new-session dialog.
-        const [repoRoot, profiles] = await Promise.all([
-          gitDiffApi.repo(pane.path).then((info) => info.mainRoot, () => undefined),
-          tmuxCreateApi.claudeProfiles().catch((error: unknown) => {
-            console.warn('[commando] Claude profiles unavailable; using the remembered profile', error)
-            return null
-          }),
-        ])
-        const preference = loadChatLaunch(repoRoot ?? pane.path)
-        // Check the remembered profile against the current ones, as the dialog does, so a
-        // stale or missing preference never falls back to the daemon's own login.
-        const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
-        if (!profiles && !configDir) throw new Error("Couldn't load your Claude profiles, so this chat's login is unknown. Try again, or start it from New session.")
-        agent = { provider: 'claude-chat', permissionMode: preference.permissionMode, ...(configDir ? { configDir } : {}) }
-      }
+      const agent = chat ? await rememberedChatLaunch(pane.path) : undefined
       const created = await tmuxCreateApi.createPane({
         targetId: paneId,
         direction: direction === 'left' || direction === 'right' ? 'horizontal' : 'vertical',
@@ -3587,7 +3664,10 @@ export function App() {
                     titles={webPaneTitles}
                     onTabSets={rememberPanelTabs}
                     panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
-                    activeTabs={panelActiveTabs} sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
+                    activeTabs={panelActiveTabs} dismissedPrTabs={dismissedPrTabs}
+                    onDismissPr={(tab, signature, next) => { void dismissPanePrTab(tab, signature, next) }}
+                    onRestorePr={(tab) => { void restorePanePrTab(tab).then(() => revealBuiltinTab(tab.anchorPaneId, tab.key, false)).catch((error: unknown) => setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')) }}
+                    sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
                     onMaximize={(tab) => {
                       clearLayoutTimers()
                       if (isBuiltinTab(tab)) {
@@ -3606,7 +3686,7 @@ export function App() {
                       if (identity) {
                         const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
                         return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
-                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} source={source} api={prsApi} visible={visible} selection={prSelections[tab.id]}
+                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
                             onSelectionApplied={() => setPrSelections((current) => {
                               if (current[tab.id] !== prSelections[tab.id]) return current
                               const next = { ...current }; delete next[tab.id]; return next
@@ -3648,6 +3728,12 @@ export function App() {
                         const rendererControl = storedRendererControl?.identity === rendererIdentity
                           ? storedRendererControl
                           : undefined
+                        if (pane.empty) {
+                          return [
+                            pane.id,
+                            <EmptyPane key={rendererIdentity} pane={pane} pending={paneActionPending} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />,
+                          ] as const
+                        }
                         return [
                           pane.id,
                           <TerminalPaneCard
@@ -3681,6 +3767,7 @@ export function App() {
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
+                            onChatOpenPr={(repo, number) => { void revealPrTab(pane.id, repo, number, 'Description') }}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
                             chatUploading={chatUploads.has(pane.id)}
                             onSwitchToClaudeCode={() => switchChat(pane.id, 'after_turn')}

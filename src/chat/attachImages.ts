@@ -3,7 +3,6 @@ import {
   CHAT_IMAGE_MAX_DIMENSION,
   CHAT_IMAGE_TYPES,
   MAX_CHAT_IMAGE_BYTES,
-  MAX_CHAT_IMAGES,
   type ChatImageType,
 } from '../../shared/agent-chat'
 
@@ -106,11 +105,4 @@ export async function prepareImage(file: File, codec: ImageCodec = browserImageC
     smallest = Math.min(smallest, blob.size)
   }
   return Number.isFinite(smallest) ? tooLarge(smallest) : { ok: false, error: `${name} couldn't be resized` }
-}
-
-/** How many of `adding` fit beside `current` attachments, and what to say about the rest. */
-export function fitAttachments(current: number, adding: number): { accepted: number; error?: string } {
-  const room = Math.max(0, MAX_CHAT_IMAGES - current)
-  if (adding <= room) return { accepted: adding }
-  return { accepted: room, error: `A message can carry at most ${MAX_CHAT_IMAGES} images` }
 }

@@ -3,11 +3,16 @@ import type { PanePrSummary, PrSummary, PrsApiClient } from './prsApi'
 import { cachedPrSummary, markPrMerged, refreshPanePrs } from './prStore'
 import { PrQuickLookView, type PrQuickLookTab } from './PrQuickLook'
 import { prMergeDisabledReason } from '../shared/pr-merge'
+import { GitDiffView } from './GitDiffView'
+import type { GitDiffApiClient } from './gitApi'
+import './git-diff.css'
 
-export function PrPanel({ paneId, source, api, visible, selection, onSelectionApplied }: {
+export function PrPanel({ paneId, panePath, source, api, gitApi, visible, selection, onSelectionApplied }: {
   paneId: string
+  panePath: string
   source: PanePrSummary
   api: PrsApiClient
+  gitApi: GitDiffApiClient
   visible: boolean
   selection?: { tab: PrQuickLookTab; revision: number }
   onSelectionApplied?(): void
@@ -55,9 +60,19 @@ export function PrPanel({ paneId, source, api, visible, selection, onSelectionAp
       setMerging(false)
     }
   }
+  const comparisonHint = <p>Comparison commits must be available in this pane’s repository.{' '}
+    <a href={`${pr?.url ?? source.url}/files`} target="_blank" rel="noreferrer">Open on GitHub</a>
+  </p>
+  const diffView = (diffVisible: boolean) => pr?.baseRefOid && pr.headRefOid
+    ? <GitDiffView key={`${pr.baseRefOid}:${pr.headRefOid}`} paneId={paneId} panePath={panePath} api={gitApi}
+        initialSummary={null} visible={diffVisible} comparison={{ base: pr.baseRefOid, head: pr.headRefOid,
+          ...(pr.baseRefName ? { baseFallbackRepo: source.repo, baseFallbackBranch: pr.baseRefName } : {}),
+          baseLabel: pr.baseRefName || pr.baseRefOid.slice(0, 7), headLabel: pr.headRefName || pr.headRefOid.slice(0, 7) }}
+        errorHint={comparisonHint} />
+    : <div className="pr-quick-message" role="alert">The PR’s comparison commits are unavailable.{comparisonHint}</div>
   return <div className="pr-quick-embedded">
     {error ? <p role="alert" className="pr-quick-message">{error} <button type="button" onClick={() => { void refresh() }}>Refresh PR</button></p> : null}
-    {pr ? <PrQuickLookView pr={pr} repo={source.repo} api={api} visible={visible} selection={selection} onSelectionApplied={onSelectionApplied} onRefresh={refresh} actions={<>
+    {pr ? <PrQuickLookView diffView={diffView} pr={pr} repo={source.repo} api={api} visible={visible} selection={selection} onSelectionApplied={onSelectionApplied} onRefresh={refresh} actions={<>
       <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(String(pr.number)).catch(() => undefined) }}>Copy #</button>
       <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.headRefName).catch(() => undefined) }}>Copy branch</button>
       <button type="button" className="pr-pop-btn" onClick={() => { void navigator.clipboard?.writeText(pr.url).catch(() => undefined) }}>Copy URL</button>

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebPanesApi } from './web-panes-api.js'
-import { WebPaneService } from './web-panes.js'
+import { buildWebPanesMessage, WebPaneService } from './web-panes.js'
 import { WebPaneAgentRequests } from './web-pane-agent-requests.js'
 import { WebPaneAttachmentStore } from './web-pane-attachments.js'
 import { FeedbackJournal } from './web-pane-feedback-journal.js'
@@ -139,4 +139,39 @@ describe('PR panel selection API', () => {
     expect((await post(`/api/web-panes/${path}`, { anchorPaneId: '%12' }, true)).status).toBe(404)
     expect(service.panelActiveTabs()).toEqual({})
   })
+})
+
+
+it('allows only owners to dismiss and restore PR tabs', async () => {
+  const { service, post, onChange } = await setup()
+  const body = { anchorPaneId: '%12', key: 'pr:acme:widgets:12', signature: 'open|false|now' }
+  for (const action of ['dismiss', 'restore']) expect((await post(`/api/web-panes/pr-tabs/${action}`, body)).status).toBe(403)
+  expect((await post('/api/web-panes/pr-tabs/dismiss', body, true)).status).toBe(200)
+  expect(service.panelDismissedPrTabs()).toEqual({ '%12': { [body.key]: body.signature } })
+  expect((await post('/api/web-panes/pr-tabs/dismiss', { ...body, key: 'session' }, true)).status).toBe(400)
+  expect((await post('/api/web-panes/pr-tabs/dismiss', { ...body, signature: 'x'.repeat(257) }, true)).status).toBe(400)
+  expect((await post('/api/web-panes/pr-tabs/restore', { ...body, anchorPaneId: '%99' }, true)).status).toBe(404)
+  expect((await post('/api/web-panes/pr-tabs/restore', body, true)).status).toBe(200)
+  expect(service.panelDismissedPrTabs()).toEqual({})
+  expect(onChange).toHaveBeenCalledTimes(2)
+})
+
+
+it('publishes one dismissal update with the requested neighbour and one restore-and-select update', async () => {
+  const { service, post, onChange } = await setup()
+  const key = 'pr:acme:widgets:12'
+  const body = { anchorPaneId: '%12', key, signature: 'old', nextKey: 'changes' }
+  service.setActiveTab(key, '%12', () => true)
+  const messages: ReturnType<typeof buildWebPanesMessage>[] = []
+  onChange.mockImplementation(() => messages.push(buildWebPanesMessage(service)))
+  expect((await post('/api/web-panes/pr-tabs/dismiss', body, true)).status).toBe(200)
+  expect(messages).toHaveLength(1)
+  expect(messages[0]).toMatchObject({ activeTabs: { '%12': 'changes' }, dismissedPrTabs: { '%12': { [key]: 'old' } } })
+  expect((await post('/api/web-panes/pr-tabs/restore', { anchorPaneId: '%12', key, select: true }, true)).status).toBe(200)
+  expect(messages).toHaveLength(2)
+  expect(messages[1]).toMatchObject({ activeTabs: { '%12': key }, dismissedPrTabs: {} })
+  expect((await post('/api/web-panes/pr-tabs/dismiss', { ...body, nextKey: 'not-a-tab' }, true)).status).toBe(400)
+  expect((await post('/api/web-panes/pr-tabs/dismiss', { ...body, nextKey: 3 }, true)).status).toBe(400)
+  expect((await post('/api/web-panes/pr-tabs/restore', { anchorPaneId: '%12', key, select: 'yes' }, true)).status).toBe(400)
+  expect(onChange).toHaveBeenCalledTimes(2)
 })

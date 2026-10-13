@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   defaultRedlineArtifactStatePath,
+  MAX_ARTIFACT_DIRS,
   REDLINE_ARTIFACT_TTL_MS,
   RedlineArtifactError,
   RedlineArtifactRegistry,
@@ -79,10 +80,21 @@ describe('RedlineArtifactRegistry', () => {
     expect(() => registry.register(filePath)).toThrow(RedlineArtifactError)
   })
 
-  it('caps registrations at 16', () => {
-    const registry = new RedlineArtifactRegistry()
-    for (let index = 0; index < 16; index += 1) registry.register(artifactDir())
-    expect(() => registry.register(artifactDir())).toThrow(RedlineArtifactError)
+  it('releases the oldest registration when full, counting a re-registration as fresh', () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
+    let clock = 1_000
+    const registry = new RedlineArtifactRegistry({ statePath, now: () => clock++ })
+    const dirs = Array.from({ length: MAX_ARTIFACT_DIRS }, () => realpathSync(artifactDir()))
+    const ids = dirs.map((dir) => registry.register(dir).id)
+    expect(registry.register(dirs[0]).id).toBe(ids[0])
+    const dir = realpathSync(artifactDir())
+    const { id } = registry.register(dir)
+    expect(registry.resolve(id, 'index.html')).toBe(join(dir, 'index.html'))
+    expect(registry.resolve(ids[0], 'index.html')).toBe(join(dirs[0], 'index.html'))
+    expect(registry.resolve(ids[1], 'index.html')).toBeNull()
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8')) as { artifacts: Array<{ id: string }> }
+    expect(persisted.artifacts).toHaveLength(MAX_ARTIFACT_DIRS)
+    expect(persisted.artifacts.map((artifact) => artifact.id)).not.toContain(ids[1])
   })
 
   it('unregister frees the id', () => {
@@ -158,7 +170,7 @@ describe('RedlineArtifactRegistry', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
     let clock = 1_000
     const registry = new RedlineArtifactRegistry({ statePath, now: () => clock })
-    const expiredIds = Array.from({ length: 16 }, () => registry.register(realpathSync(artifactDir())).id)
+    const expiredIds = Array.from({ length: MAX_ARTIFACT_DIRS }, () => registry.register(realpathSync(artifactDir())).id)
     clock += REDLINE_ARTIFACT_TTL_MS + 1
     const dir = realpathSync(artifactDir())
     const { id } = registry.register(dir)
@@ -179,9 +191,9 @@ describe('RedlineArtifactRegistry', () => {
     expect(reborn.resolve(id, 'index.html')).toBeNull()
   })
 
-  it('keeps the 16 newest valid persisted entries', () => {
+  it('keeps the MAX_ARTIFACT_DIRS newest valid persisted entries', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
-    const artifacts = Array.from({ length: 17 }, (_, index) => ({
+    const artifacts = Array.from({ length: MAX_ARTIFACT_DIRS + 1 }, (_, index) => ({
       id: index.toString(16).padStart(16, '0'),
       dir: realpathSync(artifactDir()),
       registeredAt: index + 1,

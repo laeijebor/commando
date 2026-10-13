@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
-import { publishCanvasSpotlights, publishCanvasChange, publishCanvasThreadsChanged, publishCanvasPendingChanged, publishCanvasRefresh } from './webPanesApi'
+import { publishCanvasSpotlights, publishCanvasChange, publishGuideStateChanged, publishCanvasThreadsChanged, publishCanvasPendingChanged, publishCanvasRefresh } from './webPanesApi'
 import type { ClientMessage, CommandoSnapshot, ServerMessage } from '../shared/protocol'
 
 export type ConnectionPhase =
@@ -98,6 +98,7 @@ export function useDaemon(
           if (message.type === 'canvas_pending_changed') publishCanvasPendingChanged(message.webPaneId)
           else if (message.type === 'canvas_threads_changed') publishCanvasThreadsChanged(message.webPaneId)
           else if (message.type === 'canvas_changed') publishCanvasChange(message)
+          else if (message.type === 'guide_state_changed') publishGuideStateChanged(message)
           else {
             if (message.type === 'web_panes') publishCanvasSpotlights(message.spotlightRequests ?? {})
             receiveMessage(message)

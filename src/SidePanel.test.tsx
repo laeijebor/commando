@@ -6,6 +6,7 @@ import type { TmuxPane, WebPane } from '../shared/protocol'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrSummary, PrsApiClient } from './prsApi'
 import { useState } from 'react'
+import { prTabSignature } from './sidePanelState'
 import { SidePanel } from './SidePanel'
 
 const tabs: WebPane[] = ['%12', '%13'].map((anchorPaneId, index) => ({
@@ -98,7 +99,8 @@ describe('SidePanel', () => {
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:4' }))
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', '#4', '#3', '#2', '#1'])
     expect(screen.getByRole('tab', { name: '#4 open' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.queryByRole('button', { name: /Close #/ })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Close PR #\d+ tab/ })).toHaveLength(4)
+    expect(screen.queryByRole('button', { name: 'Close Session' })).not.toBeInTheDocument()
     const first = screen.getByLabelText('State of pr:acme:widgets:4')
     fireEvent.change(first, { target: { value: 'retained' } })
     view.rerender(element('pr:acme:widgets:3'))
@@ -119,6 +121,55 @@ describe('SidePanel', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session'])
     expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('dismisses only PR tabs, falls forward, restores from the menu and filters the rail', async () => {
+    vi.useFakeTimers()
+    const first = { repo: 'acme/widgets', number: 40, title: 'First', state: 'open', isDraft: false, updatedAt: 'later' } as PanePrSummary
+    const second = { ...first, number: 41, title: 'Second', updatedAt: 'earlier' }
+    const prsApi = { pane: vi.fn(async () => ({ targetId: 'dismiss-target', pullRequests: [first, second] })) } as unknown as PrsApiClient
+    const gitApi = { summary: vi.fn(async () => ({ isRepo: true, target: 'main', files: [{ path: 'a.ts', additions: 1, deletions: 0 }] })) } as unknown as GitDiffApiClient
+    const onDismissPr = vi.fn()
+    const onRestorePr = vi.fn()
+    const onSelect = vi.fn()
+    let dismissed: Record<string, string> = {}
+    const element = () => <SidePanel windowId="@1" tabs={[]} panes={[{ id: '%12', targetId: 'dismiss-target', path: '/repo' } as TmuxPane]}
+      connected gitApi={gitApi} prsApi={prsApi} focusedPaneId="%12" activeTabs={{ '%12': 'pr:acme:widgets:40' }} dismissedPrTabs={{ '%12': dismissed }}
+      paneLabel="pane" titles={{}} simulatorNames={{}} onSelect={onSelect} onDismissPr={onDismissPr} onRestorePr={onRestorePr}
+      onClose={vi.fn()} onOpen={vi.fn()} renderTab={() => null}>{null}</SidePanel>
+    localStorage.setItem('commando.side-panel.collapsed.@1', 'false')
+    let view!: ReturnType<typeof render>
+    await act(async () => { view = render(element()) })
+    expect(screen.queryByRole('button', { name: 'Close Changes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Close Session' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
+    expect(screen.queryByRole('heading', { name: 'Closed PRs' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close PR #40 tab' }))
+    expect(onDismissPr).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:40' }), prTabSignature(first), expect.objectContaining({ key: 'pr:acme:widgets:41' }))
+    dismissed = { 'pr:acme:widgets:40': prTabSignature(first) }
+    view.rerender(element())
+    expect(screen.queryByRole('tab', { name: '#40 open' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '#41 open' })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Add web tab' }))
+    expect(screen.getByRole('heading', { name: 'Closed PRs' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Browser' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Chromium' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /#40 · First/ }))
+    expect(onRestorePr).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:40', anchorPaneId: '%12' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:41' }))
+    dismissed['pr:acme:widgets:41'] = prTabSignature(second)
+    view.rerender(element())
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse side panel' }))
+    expect(screen.queryByRole('button', { name: 'Open PRs' })).not.toBeInTheDocument()
+    first.updatedAt = 'new activity'
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(screen.getByRole('button', { name: 'Open PRs' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:40' }))
+    expect(screen.getByRole('tab', { name: '#40 open' })).toBeInTheDocument()
   })
 
   it.each([false, true])('settles a delayed PR reveal after membership loads (present=%s)', async (present) => {

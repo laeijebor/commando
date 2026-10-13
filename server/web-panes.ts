@@ -8,12 +8,14 @@ import {
   MAX_WEB_PANE_TITLE_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
+  type ServerMessage,
   type WebPane,
   type WebPaneEngine,
   type WebPanePlacement,
 } from '../shared/protocol.js'
 import { canvasRelativePath } from '../shared/canvas-manifest.js'
-import { isLegacyPrPanelKey, isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
+import { guideRelativePath } from '../shared/guide.js'
+import { parsePrPanelKey, prPanelKey, isLegacyPrPanelKey, isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
 
 const SESSION_ID = /^\$\d+$/
 const WINDOW_ID = /^@\d+$/
@@ -21,6 +23,7 @@ const PANE_ID = /^%\d+$/
 const WEB_PANE_ID = /^w-[0-9a-f]{8}$/
 const TMUX_SOCKET_HASH = /^[0-9a-f]{64}$/
 const MAX_ALLOWED_ORIGINS = 64
+const MAX_DISMISSED_PR_TABS = 200
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
 const SIM_UDID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
@@ -33,6 +36,7 @@ type StateFile = {
   allowedOrigins: string[]
   panes: PersistedWebPane[]
   activeTabs: Record<string, string>
+  dismissedPrTabs: Record<string, Record<string, string>>
 }
 
 export type WebPaneUrlDecision =
@@ -125,6 +129,10 @@ export function parseWebPaneContent(value: unknown): WebPane['content'] | null {
     const manifest = canvasRelativePath(value.manifest === undefined ? 'canvas.json' : value.manifest)
     if (manifest) return { kind: 'canvas', artifactId: value.artifactId, manifest }
   }
+  if (value.kind === 'guide' && typeof value.artifactId === 'string' && /^[0-9a-f]{16}$/.test(value.artifactId)) {
+    const file = guideRelativePath(value.file)
+    if (file) return { kind: 'guide', artifactId: value.artifactId, file }
+  }
   return null
 }
 
@@ -161,7 +169,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   const parsedContent = parseWebPaneContent(content)
   if (parsedContent === null) return null
   const simulator = parsedContent?.kind === 'simulator'
-  const canvas = parsedContent?.kind === 'canvas'
+  const panelOnly = parsedContent?.kind === 'canvas' || parsedContent?.kind === 'guide'
   const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(url, allowedOrigins)
   if (decision.kind === 'invalid') return null
   return {
@@ -173,7 +181,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     windowId,
     anchorPaneId,
     placement: placement as WebPanePlacement,
-    dock: !canvas && dock === 'split' ? 'split' : 'panel',
+    dock: !panelOnly && dock === 'split' ? 'split' : 'panel',
     order: typeof order === 'number' ? order : -1,
     unseen: unseen === true,
     ...(typeof openRevision === 'number' ? { openRevision } : {}),
@@ -238,7 +246,19 @@ function parseState(value: unknown): StateFile {
     const active = tabs.find((tab) => tab.id === saved) ?? tabs[0]
     if (active) activeTabs[pane.anchorPaneId] = active.id
   }
-  return { version: 1, allowedOrigins, panes, activeTabs }
+  const dismissedPrTabs: Record<string, Record<string, string>> = {}
+  if (isRecord(value.dismissedPrTabs)) {
+    for (const [anchor, entries] of Object.entries(value.dismissedPrTabs)) {
+      if (!PANE_ID.test(anchor) || !isRecord(entries)) continue
+      const valid: Record<string, string> = {}
+      for (const [key, signature] of Object.entries(entries)) {
+        const pr = parsePrPanelKey(key)
+        if (pr && typeof signature === 'string' && signature.length <= 256) valid[prPanelKey(pr.repo, pr.number)] = signature
+      }
+      dismissedPrTabs[anchor] = Object.fromEntries(Object.entries(valid).slice(-MAX_DISMISSED_PR_TABS))
+    }
+  }
+  return { version: 1, allowedOrigins, panes, activeTabs, dismissedPrTabs }
 }
 
 type WebPaneEnvironment = Record<string, string | undefined>
@@ -320,6 +340,7 @@ export class WebPaneService {
   readonly statePath: string
   private readonly panes = new Map<string, WebPane>()
   private activeTabs: Record<string, string> = {}
+  private dismissedPrTabs: Record<string, Record<string, string>> = {}
   private readonly paneSocketHashes = new Map<string, string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
@@ -364,6 +385,7 @@ export class WebPaneService {
     this.allowedOrigins.clear()
     for (const origin of state.allowedOrigins) this.allowedOrigins.add(origin)
     this.activeTabs = state.activeTabs
+    this.dismissedPrTabs = state.dismissedPrTabs
     this.panes.clear()
     this.paneSocketHashes.clear()
     for (const persistedPane of state.panes) {
@@ -407,15 +429,20 @@ export class WebPaneService {
 
   open(input: OpenWebPaneInput): WebPane {
     const content = parseWebPaneContent(input.content)
-    if (content === null) throw new WebPaneError(400, input.content?.kind === 'canvas' ? 'Invalid canvas content' : 'Invalid simulator udid')
+    if (content === null) throw new WebPaneError(400, input.content?.kind === 'canvas' ? 'Invalid canvas content' : input.content?.kind === 'guide' ? 'Invalid guide content' : 'Invalid simulator udid')
     const simulator = content?.kind === 'simulator' ? content : undefined
     const canvas = content?.kind === 'canvas' ? content : undefined
+    const panelOnly = content?.kind === 'canvas' || content?.kind === 'guide'
     if (simulator) {
       const existing = [...this.panes.values()].find((pane) => pane.content?.kind === 'simulator' && pane.content.udid === simulator.udid)
       if (existing) return existing
     }
     if (canvas) {
       const existing = [...this.panes.values()].find((pane) => pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'canvas' && pane.content.artifactId === canvas.artifactId && pane.content.manifest === canvas.manifest)
+      if (existing) { this.setActiveTab(existing.id); return existing }
+    }
+    if (content?.kind === 'guide') {
+      const existing = [...this.panes.values()].find((pane) => pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'guide' && pane.content.artifactId === content.artifactId && pane.content.file === content.file)
       if (existing) { this.setActiveTab(existing.id); return existing }
     }
     const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(input.url, this.allowedOrigins)
@@ -465,11 +492,11 @@ export class WebPaneService {
       windowId: input.windowId,
       anchorPaneId: input.anchorPaneId,
       placement,
-      dock: canvas ? 'panel' : input.dock ?? 'panel',
+      dock: panelOnly ? 'panel' : input.dock ?? 'panel',
       order: nextWebPaneOrder(this.list(), input.anchorPaneId),
       unseen: input.openedBy === 'agent',
-      ...(canvas || input.dock !== 'split' ? { layoutState: 'settled' as const } : {}),
-      ...(!canvas && input.dock === 'split' && input.anchorSize
+      ...(panelOnly || input.dock !== 'split' ? { layoutState: 'settled' as const } : {}),
+      ...(!panelOnly && input.dock === 'split' && input.anchorSize
         ? { layoutState: 'pending' as const, anchorSize: input.anchorSize }
         : {}),
       engine,
@@ -499,7 +526,7 @@ export class WebPaneService {
   repend(id: string, url: string): WebPane | undefined {
     const pane = this.panes.get(id)
     if (!pane) return undefined
-    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
+    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : pane.content.kind === 'guide' ? 'Guide tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind !== 'confirm') return pane
     const pended: WebPane = { ...pane, url: decision.url, status: 'pending' }
@@ -527,6 +554,45 @@ export class WebPaneService {
 
   panelActiveTabs(): Record<string, string> {
     return { ...this.activeTabs }
+  }
+
+  panelDismissedPrTabs(): Record<string, Record<string, string>> {
+    return Object.fromEntries(Object.entries(this.dismissedPrTabs).map(([anchor, entries]) => [anchor, { ...entries }]))
+  }
+
+  private dismissedPrKey(anchor: unknown, key: unknown, paneExists: (id: string) => boolean): string {
+    if (typeof anchor !== 'string' || !PANE_ID.test(anchor) || !paneExists(anchor)) throw new WebPaneError(404, 'Anchor pane does not exist')
+    const pr = typeof key === 'string' ? parsePrPanelKey(key) : undefined
+    if (!pr) throw new WebPaneError(400, 'Invalid PR tab key')
+    return prPanelKey(pr.repo, pr.number)
+  }
+
+  dismissPrTab(anchorPaneId: string, key: string, signature: string, paneExists: (id: string) => boolean, nextKey?: string): void {
+    key = this.dismissedPrKey(anchorPaneId, key, paneExists)
+    if (typeof signature !== 'string' || signature.length > 256) throw new WebPaneError(400, 'Invalid PR tab signature')
+    if (nextKey !== undefined) {
+      const pane = typeof nextKey === 'string' ? this.panes.get(nextKey) : undefined
+      if (typeof nextKey !== 'string' || nextKey === key || (!isBuiltinPanelKey(nextKey) && !(pane?.dock === 'panel' && pane.anchorPaneId === anchorPaneId))) {
+        throw new WebPaneError(400, 'Invalid next panel tab')
+      }
+    }
+    const entries = { ...this.dismissedPrTabs[anchorPaneId] }
+    delete entries[key]
+    entries[key] = signature
+    this.dismissedPrTabs[anchorPaneId] = Object.fromEntries(Object.entries(entries).slice(-MAX_DISMISSED_PR_TABS))
+    const active = this.activeTabs[anchorPaneId]
+    if (active === key || active === 'pr' || active === `pr:${parsePrPanelKey(key)!.number}`) this.activeTabs[anchorPaneId] = nextKey ?? 'session'
+    this.persist()
+  }
+
+  restorePrTab(anchorPaneId: string, key: string, paneExists: (id: string) => boolean, select = false): void {
+    key = this.dismissedPrKey(anchorPaneId, key, paneExists)
+    const entries = { ...this.dismissedPrTabs[anchorPaneId] }
+    delete entries[key]
+    if (Object.keys(entries).length) this.dismissedPrTabs[anchorPaneId] = entries
+    else delete this.dismissedPrTabs[anchorPaneId]
+    if (select) this.activeTabs[anchorPaneId] = key
+    this.persist()
   }
 
   setActiveTab(id: string, anchorPaneId?: string, paneExists: (id: string) => boolean = () => false): void {
@@ -584,7 +650,7 @@ export class WebPaneService {
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
     if (dock !== 'panel' && dock !== 'split') throw new WebPaneError(400, 'Invalid dock')
-    if (dock === 'split' && pane.content?.kind === 'canvas') throw new WebPaneError(400, 'Canvas tabs cannot split out')
+    if (dock === 'split' && (pane.content?.kind === 'canvas' || pane.content?.kind === 'guide')) throw new WebPaneError(400, pane.content.kind === 'guide' ? 'Guide tabs cannot split out' : 'Canvas tabs cannot split out')
     if ((pane.dock ?? 'panel') === dock) return pane
     const size = parseAnchorSize(anchorSize)
     if (size === null || (dock === 'split' && !size)) throw new WebPaneError(400, 'Invalid anchor size')
@@ -658,7 +724,7 @@ export class WebPaneService {
   ): WebPane {
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
-    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
+    if (pane.content) throw new WebPaneError(409, pane.content.kind === 'canvas' ? 'Canvas tabs cannot navigate to a URL' : pane.content.kind === 'guide' ? 'Guide tabs cannot navigate to a URL' : 'Simulator tiles cannot navigate to a URL')
     const decision = classifyWebPaneUrl(url, this.allowedOrigins)
     if (decision.kind === 'invalid') throw new WebPaneError(400, decision.reason)
     const navigated: WebPane = {
@@ -727,7 +793,7 @@ export class WebPaneService {
    * when their whole session is absent. Returns true when anything changed.
    */
   prune(currentWindows: readonly PruneWindow[]): boolean {
-    if (this.panes.size === 0 && Object.keys(this.activeTabs).length === 0) return false
+    if (this.panes.size === 0 && Object.keys(this.activeTabs).length === 0 && Object.keys(this.dismissedPrTabs).length === 0) return false
     const totalPaneCount = currentWindows.reduce(
       (count, window) => count + window.paneIds.length,
       0,
@@ -792,9 +858,10 @@ export class WebPaneService {
     if (changed) this.reconcileActiveTabs()
     if (canPruneActiveTabs) {
       const livePaneIds = new Set(currentWindows.flatMap((window) => window.paneIds))
-      for (const anchor of Object.keys(this.activeTabs)) {
+      for (const anchor of new Set([...Object.keys(this.activeTabs), ...Object.keys(this.dismissedPrTabs)])) {
         if (livePaneIds.has(anchor)) continue
         delete this.activeTabs[anchor]
+        delete this.dismissedPrTabs[anchor]
         changed = true
       }
     }
@@ -811,6 +878,7 @@ export class WebPaneService {
       version: 1,
       allowedOrigins: [...this.allowedOrigins],
       activeTabs: { ...this.activeTabs },
+      dismissedPrTabs: this.panelDismissedPrTabs(),
       panes: [...this.panes.values()].map((pane) => {
         const socketHash = this.paneSocketHashes.get(pane.id)
         return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}) }
@@ -846,5 +914,18 @@ export class WebPaneService {
       await rm(temporaryPath, { force: true }).catch(() => undefined)
       throw error
     }
+  }
+}
+
+export function buildWebPanesMessage(
+  service: WebPaneService,
+  state: Pick<Extract<ServerMessage, { type: 'web_panes' }>, 'feedback' | 'navigateRequests' | 'spotlightRequests' | 'reloads'> = {},
+): Extract<ServerMessage, { type: 'web_panes' }> {
+  return {
+    type: 'web_panes',
+    webPanes: service.list(),
+    activeTabs: service.panelActiveTabs(),
+    dismissedPrTabs: service.panelDismissedPrTabs(),
+    ...state,
   }
 }

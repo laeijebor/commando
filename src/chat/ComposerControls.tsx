@@ -1,47 +1,12 @@
 import { useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Minimize2 } from 'lucide-react'
-import { baseModelId, hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatEffort, type ChatSessionInfo, type ChatSettingsChange, type ChatSessionPermissionMode } from '../../shared/agent-chat'
+import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
+import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
-const DEFAULT_MODEL = 'default'
-
-const EFFORT_LABELS: Record<ChatEffort, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' }
-
-export const PERMISSION_MODES: Record<ChatSessionPermissionMode, { label: string; description: string }> = {
-  default: { label: 'Ask before edits', description: 'Claude asks before it edits files or runs commands.' },
-  acceptEdits: { label: 'Accept edits', description: 'Edits apply without asking; commands still ask.' },
-  plan: { label: 'Plan mode', description: 'Claude explores and plans without changing anything.' },
-  auto: { label: 'Auto', description: 'A classifier approves routine actions; the rest still ask.' },
-  dontAsk: { label: "Don't ask", description: 'Anything not already allowed is denied.' },
-  bypassPermissions: { label: 'Bypass permissions', description: 'Nothing asks first. Only for chats started with it.' },
-}
-
-export function providerLabel(session: Pick<ChatSessionInfo, 'provider'>): string {
-  return session.provider === 'claude' ? 'Claude' : 'Codex'
-}
-
-export function permissionLabel(mode: string): string {
-  return PERMISSION_MODES[mode as ChatSessionPermissionMode]?.label ?? mode
-}
-
-/** Whether the model menu can open: the host takes settings and has listed its models. */
-export function modelMenuAvailable(session: ChatSessionInfo): boolean {
-  return Boolean(session.models?.length && hostTakesSettings(session))
-}
-
-/** "Opus 5.5": the named row for the running model, never the "Default" alias. */
-export function modelLabel(session: ChatSessionInfo): string | undefined {
-  const models = session.models ?? []
-  const fallback = models.find((model) => model.value === DEFAULT_MODEL)
-  // Claude reports the running model with its first turn; until then a fresh chat runs the default.
-  const running = session.model ? baseModelId(session.model) : fallback?.resolvedModel
-  const picked = session.selectedModel ?? running
-  const named = models.find((model) => model.value !== DEFAULT_MODEL && model.value === picked)
-    ?? models.find((model) => model.value !== DEFAULT_MODEL && model.resolvedModel === running)
-  return named?.displayName ?? session.model ?? fallback?.displayName
-}
+export { providerLabel } from '../../shared/chat-composer'
 
 function Pill({ children, title }: { children: ReactNode; title?: string }) {
   return <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={title}>{children}</span>
@@ -149,29 +114,20 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
 export function PermissionPicker({ session, disabled, onConfigure }: { session: ChatSessionInfo; disabled: boolean; onConfigure: (change: ChatSettingsChange) => void }) {
   const [open, setOpen] = useState(false)
   const current = session.permissionMode
-  const labels: Partial<Record<ChatSessionPermissionMode, string>> = session.provider === 'codex' ? { default: 'Workspace access', acceptEdits: 'Workspace access', plan: 'Read only', bypassPermissions: 'Full access' } : {}
-  const label = labels[current as ChatSessionPermissionMode] ?? permissionLabel(current ?? '')
   if (!current) return null
-  if (!hostTakesSettings(session)) return <Pill title="Restart this chat to change its settings">{label}</Pill>
-  const supportsAuto = selectedModelOption(session)?.supportsAutoMode ?? false
-  const codexModes = ['default', 'plan', ...(session.bypassAllowed ? ['bypassPermissions'] : [])]
-  const modes = (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
-    session.provider === 'codex' ? codexModes.includes(mode) || mode === current : mode === current
-    || mode === 'default' || mode === 'acceptEdits' || mode === 'plan'
-    || (mode === 'auto' && supportsAuto)
-    || (mode === 'bypassPermissions' && session.bypassAllowed)
-  ))
+  if (!hostTakesSettings(session)) return <Pill title="Restart this chat to change its settings">{permissionLabel(current, session)}</Pill>
+  const modes = permissionModeOptions(session)
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PillTrigger label={label} open={open} disabled={disabled} />
+      <PillTrigger label={permissionLabel(current, session)} open={open} disabled={disabled} />
       <PopoverPopup className="w-[300px]" aria-label="Permissions">
         <div role="menu" aria-label="Permissions">
           {modes.map((mode) => (
             <MenuOption
               key={mode}
               checked={mode === current}
-              label={labels[mode] ?? PERMISSION_MODES[mode].label}
-              description={session.provider === 'codex' ? mode === 'default' || mode === 'acceptEdits' ? 'Workspace edits and sandboxed commands are allowed; escalation asks.' : mode === 'plan' ? 'Read-only sandbox; Codex asks before escalating access.' : 'Full filesystem access without approval prompts.' : PERMISSION_MODES[mode].description.replace('Claude', providerLabel(session))}
+              label={permissionLabel(mode, session)}
+              description={permissionDescription(mode, session)}
               onSelect={() => {
                 setOpen(false)
                 if (mode !== current) onConfigure({ permissionMode: mode })
@@ -182,12 +138,6 @@ export function PermissionPicker({ session, disabled, onConfigure }: { session: 
       </PopoverPopup>
     </Popover>
   )
-}
-
-export function formatTokens(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`
-  return String(tokens)
 }
 
 function percent(part: number, whole: number): number {

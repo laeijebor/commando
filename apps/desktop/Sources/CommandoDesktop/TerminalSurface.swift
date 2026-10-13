@@ -362,6 +362,30 @@ final class HostedTerminalView: TerminalView {
         guard window?.firstResponder === self else {
             return super.performKeyEquivalent(with: event)
         }
+        if event.type == .keyDown,
+           let action = Self.macEditingAction(
+               keyCode: event.keyCode, modifiers: event.modifierFlags,
+               characters: event.charactersIgnoringModifiers
+           ) {
+            switch action {
+            case let .input(data): modifiedArrowWasPressed?(data)
+            case .selectAll: selectAll()
+            case .cut:
+                if let selection = getSelection(), !selection.isEmpty {
+                    copy(self)
+                } else if let cut = visibleInputCut() {
+                    let copied = copySelection?(cut.text)
+                        ?? TerminalClipboardBridge.writePlainText(cut.text, to: .general)
+                    if copied {
+                        selectionWasCopied?()
+                        if !cut.clear.isEmpty {
+                            modifiedArrowWasPressed?(Data(cut.clear.utf8))
+                        }
+                    }
+                }
+            }
+            return true
+        }
         let shortcutModifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if shortcutModifiers == .command,
            let key = event.charactersIgnoringModifiers?.lowercased() {
@@ -381,6 +405,65 @@ final class HostedTerminalView: TerminalView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    enum MacEditingAction: Equatable {
+        case input(Data)
+        case selectAll
+        case cut
+    }
+
+    static func macEditingAction(
+        keyCode: UInt16, modifiers: NSEvent.ModifierFlags, characters: String?
+    ) -> MacEditingAction? {
+        guard modifiers.intersection([.command, .option, .control, .shift]) == .command else { return nil }
+        switch keyCode {
+        case 123: return .input(Data([0x01]))
+        case 124: return .input(Data([0x05]))
+        case 51: return .input(Data([0x15]))
+        case 117: return .input(Data([0x0b]))
+        default:
+            switch characters?.lowercased() {
+            // Ctrl+Z suspends the foreground process; readline undo is Ctrl+_.
+            case "z": return .input(Data([0x1f]))
+            case "a": return .selectAll
+            case "x": return .cut
+            default: return nil
+            }
+        }
+    }
+
+    func visibleInputCut() -> TerminalInputCut? {
+        let terminal = getTerminal()
+        let rows = (0..<terminal.rows).map { row -> String in
+            guard let line = terminal.getLine(row: row) else { return "" }
+            var text = ""
+            for col in 0..<min(terminal.cols, line.count) {
+                let cell = line[col]
+                guard cell.width != 0 else { continue }
+                let char = terminal.getCharacter(for: cell)
+                text.append(cell.attribute.style.contains(.dim) || char == "\0" ? " " : char)
+            }
+            return text
+        }
+        // SwiftTerm keeps BufferLine.isWrapped internal. Its public getText API
+        // omits a newline between soft-wrapped rows, which lets us derive the
+        // equivalent metadata without depending on SwiftTerm internals.
+        let topRow = terminal.getTopVisibleRow()
+        let wrapped = (0..<terminal.rows).map { row in
+            guard row > 0, !rows[row].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return false
+            }
+            let text = terminal.getText(
+                start: Position(col: 0, row: topRow + row - 1),
+                end: Position(col: terminal.cols, row: topRow + row)
+            )
+            return !text.contains("\n")
+        }
+        let cursor = terminal.getCursorLocation()
+        return TerminalInputCut.extract(
+            rows: rows, cols: terminal.cols, cursorRow: cursor.y, cursorCol: cursor.x, wrapped: wrapped
+        )
     }
 
     override func paste(_ sender: Any) {

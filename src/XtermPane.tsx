@@ -13,7 +13,7 @@ import {
   type SpecialKey,
 } from '../shared/protocol'
 import type { PaneTerminalSink } from './paneStream'
-import { modifiedControlShiftS, semanticKeyForEvent } from './terminalInput'
+import { extractTerminalInput, macTerminalAction, modifiedControlShiftS, semanticKeyForEvent } from './terminalInput'
 import { sessionShortcutIndex } from './sessionShortcuts'
 import { activeTheme, onThemeChange } from './theme'
 
@@ -125,6 +125,7 @@ export function XtermPane({
   const inputRef = useRef(onInput)
   const keyRef = useRef(onKey)
   const pasteRef = useRef(onPaste)
+  const inputGenerationRef = useRef(0)
   const selectionCopiedRef = useRef(onSelectionCopied)
   const resizeRef = useRef(onResize)
   const terminalStateRef = useRef(terminalState)
@@ -180,8 +181,20 @@ export function XtermPane({
     const textarea = host.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
     textarea?.setAttribute('aria-label', ariaLabel)
 
+    const sendInput = (data: string) => {
+      inputGenerationRef.current += 1
+      inputRef.current(data)
+    }
+    const sendKey = (key: SpecialKey) => {
+      inputGenerationRef.current += 1
+      keyRef.current(key)
+    }
+    const sendPaste = (data: string) => {
+      inputGenerationRef.current += 1
+      pasteRef.current(data)
+    }
     const dataSubscription = terminal.onData((data) => {
-      if (connectedRef.current) inputRef.current(data)
+      if (connectedRef.current) sendInput(data)
     })
     const searchSubscription = search.onDidChangeResults(setResults)
     const selectionSubscription = terminal.onSelectionChange(() => {
@@ -194,6 +207,49 @@ export function XtermPane({
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true
       if ((event.metaKey && event.key.toLowerCase() === 'k') || sessionShortcutIndex(event) !== null) {
+        return false
+      }
+      const macAction = macTerminalAction(event, isMac)
+      if (macAction && macAction !== 'selectAll') {
+        event.preventDefault()
+        if (macAction === 'cut') {
+          if (terminal.hasSelection() && terminal.getSelection()) {
+            void copyTerminalSelection(terminal.getSelection(), navigator.clipboard).then((copied) => {
+              if (copied) selectionCopiedRef.current()
+            })
+          } else if (connectedRef.current) {
+            const buffer = terminal.buffer.active
+            const rows = Array.from({ length: terminal.rows }, (_, row) => {
+              const line = buffer.getLine(buffer.viewportY + row)
+              let text = ''
+              for (let col = 0; col < terminal.cols; col += 1) {
+                const cell = line?.getCell(col)
+                if (!cell || cell.getWidth() === 0) continue
+                text += cell.isDim() ? ' ' : cell.getChars() || ' '
+              }
+              return text
+            })
+            const wrapped = Array.from(
+              { length: terminal.rows },
+              (_, row) => buffer.getLine(buffer.viewportY + row)?.isWrapped ?? false,
+            )
+            const cut = extractTerminalInput({
+              rows, wrapped, cols: terminal.cols,
+              cursorRow: buffer.baseY + buffer.cursorY - buffer.viewportY,
+              cursorCol: buffer.cursorX,
+            })
+            // Start the clipboard write during the keypress, before clearing any input.
+            if (cut && navigator.clipboard) {
+              const inputGeneration = inputGenerationRef.current
+              void copyTerminalSelection(cut.text, navigator.clipboard).then((copied) => {
+                if (copied) selectionCopiedRef.current()
+                if (cut.clear && copied && connectedRef.current && inputGenerationRef.current === inputGeneration) {
+                  sendInput(cut.clear)
+                }
+              })
+            }
+          }
+        } else if (connectedRef.current) sendInput(macAction.input)
         return false
       }
       if (
@@ -220,13 +276,13 @@ export function XtermPane({
       const modifiedKey = modifiedControlShiftS(event)
       if (modifiedKey) {
         event.preventDefault()
-        if (connectedRef.current) inputRef.current(modifiedKey)
+        if (connectedRef.current) sendInput(modifiedKey)
         return false
       }
       const key = semanticKeyForEvent(event)
       if (key) {
         event.preventDefault()
-        if (connectedRef.current) keyRef.current(key)
+        if (connectedRef.current) sendKey(key)
         return false
       }
       return true
@@ -236,7 +292,7 @@ export function XtermPane({
       const data = event.clipboardData.getData('text/plain')
       event.preventDefault()
       event.stopPropagation()
-      if (connectedRef.current) pasteRef.current(data)
+      if (connectedRef.current) sendPaste(data)
     }
     host.addEventListener('paste', handlePaste, true)
     terminal.attachCustomWheelEventHandler((event) => {
@@ -257,7 +313,7 @@ export function XtermPane({
         const key = event.deltaY < 0 ? 'Up' : 'Down'
         const repeats = Math.max(1, Math.min(6, Math.ceil(Math.abs(event.deltaY) / 40)))
         if (connectedRef.current) {
-          for (let index = 0; index < repeats; index += 1) keyRef.current(key)
+          for (let index = 0; index < repeats; index += 1) sendKey(key)
         }
         return false
       }

@@ -8,7 +8,7 @@ import { cn } from './cn'
 import { providerLabel } from './ComposerControls'
 import { PlanCard, type SavePlan } from './PlanCard'
 import { SubagentGroup, useNow } from './Subagents'
-import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from './timelineRows'
+import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
 import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]

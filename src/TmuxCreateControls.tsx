@@ -33,6 +33,7 @@ export type SessionCreateRequest = {
 
 export const TMUX_CWD_HISTORY_STORAGE_KEY = 'commando.tmux-create.cwd'
 export const WORKTREE_PREPARE_COMMANDS_STORAGE_KEY = 'commando.tmux-create.prepare-by-repo'
+export const START_WITH_STORAGE_KEY = 'commando.tmux-create.start-with-by-repo'
 const MAX_WORKING_DIRECTORY_HISTORY = 10
 const REPO_PROBE_DEBOUNCE_MS = 200
 const REPO_PROBE_TIMEOUT_MS = 10_000
@@ -52,6 +53,10 @@ export type TmuxCreateControlsProps = {
 }
 
 type RepoProbe = { directory: string; info: GitRepoInfo } | null
+
+/** `none` starts the session with an empty pane that offers to launch something later. */
+type StartWith = SessionAgentProvider | 'shell' | 'none'
+const START_WITH_CHOICES: readonly { value: StartWith; label: string }[] = [{ value: 'none', label: 'None' }, ...SESSION_AGENT_CHOICES]
 
 function knownRepoProbe(request: SessionCreateRequest | null): RepoProbe {
   const repo = request?.repo
@@ -134,6 +139,27 @@ function saveWorktreePrepareCommand(repoRoot: string, command: string): void {
   }
 }
 
+function loadStartWith(repoKey: string | undefined): StartWith {
+  if (!repoKey) return 'none'
+  try {
+    const stored = (JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY) ?? '{}') as Record<string, unknown> | null)?.[repoKey]
+    return START_WITH_CHOICES.find((choice) => choice.value === stored)?.value ?? 'none'
+  } catch {
+    return 'none'
+  }
+}
+
+function saveStartWith(repoKey: string | undefined, startWith: StartWith): void {
+  if (!repoKey) return
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY) ?? '{}') as unknown
+    const all = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored as Record<string, unknown> : {}
+    window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ ...all, [repoKey]: startWith }))
+  } catch {
+    // Persistence is optional when browser storage is unavailable.
+  }
+}
+
 export function TmuxCreateControls({
   disabled = false,
   variant = 'inline',
@@ -166,7 +192,7 @@ export function TmuxCreateControls({
   const [prepareCommand, setPrepareCommand] = useState('')
   const [prepareEnabled, setPrepareEnabled] = useState(true)
   const [pending, setPending] = useState(false)
-  const [agentProvider, setAgentProvider] = useState<SessionAgentProvider | 'shell'>('shell')
+  const [agentProvider, setAgentProvider] = useState<StartWith>('none')
   const [openingPrompt, setOpeningPrompt] = useState('')
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfile[] | null>(null)
   const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined))
@@ -206,12 +232,15 @@ export function TmuxCreateControls({
     setPrepareCommand(repo?.mainRoot ? loadWorktreePrepareCommands()[repo.mainRoot] ?? '' : '')
   }, [repo?.mainRoot])
 
-  // Chat panes remember their profile and permission mode per repository.
+  // The starting pane is remembered per repository; each chat provider keeps its own settings.
+  const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
   const preferenceProvider = agentProvider === 'codex-chat' ? 'codex-chat' : 'claude-chat'
-  const chatLaunchKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
   useEffect(() => {
-    setChatLaunch(loadChatLaunch(chatLaunchKey, preferenceProvider))
-  }, [chatLaunchKey, preferenceProvider])
+    setAgentProvider(loadStartWith(repoKey))
+  }, [repoKey])
+  useEffect(() => {
+    setChatLaunch(loadChatLaunch(repoKey, preferenceProvider))
+  }, [repoKey, preferenceProvider])
 
   useEffect(() => {
     if (agentProvider !== 'claude-chat' || claudeProfiles || !loadClaudeProfiles) return
@@ -375,7 +404,9 @@ export function TmuxCreateControls({
         windowName: String(form.get('windowName') ?? ''),
         cwd,
       }
-      if (agentProvider !== 'shell') {
+      if (agentProvider === 'none') {
+        request.empty = true
+      } else if (agentProvider !== 'shell') {
         request.agent = {
           provider: agentProvider,
           ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
@@ -385,11 +416,11 @@ export function TmuxCreateControls({
             permissionMode: chatLaunch.permissionMode,
           } : {}),
         }
-        if (agentProvider === 'codex-chat') saveChatLaunch(chatLaunchKey, { permissionMode: chatLaunch.permissionMode }, 'codex-chat')
+        if (agentProvider === 'codex-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, 'codex-chat')
         if (agentProvider === 'claude-chat') {
           // Keep a remembered profile even when the list could not be loaded this time.
           const configDir = chatConfigDir ?? chatLaunch.configDir
-          saveChatLaunch(chatLaunchKey, { ...(configDir ? { configDir } : {}), permissionMode: chatLaunch.permissionMode })
+          saveChatLaunch(repoKey, { ...(configDir ? { configDir } : {}), permissionMode: chatLaunch.permissionMode })
         }
       }
       if (worktreeRequested) {
@@ -400,6 +431,7 @@ export function TmuxCreateControls({
         }
       }
       const result = requireSessionAgentLaunch(request, await onCreateSession(request))
+      saveStartWith(repoKey, agentProvider)
       const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory)
       setWorkingDirectoryHistory(nextHistory)
       setDirectoryHistoryOpen(false)
@@ -626,9 +658,9 @@ export function TmuxCreateControls({
             className="tmux-create__provider"
             value={agentProvider}
             disabled={unavailable}
-            onChange={(event) => setAgentProvider(event.target.value as SessionAgentProvider | 'shell')}
+            onChange={(event) => setAgentProvider(event.target.value as StartWith)}
           >
-            {SESSION_AGENT_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+            {START_WITH_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
           </select>
         </label>
         {agentProvider === 'claude-chat' || agentProvider === 'codex-chat' ? (
@@ -657,7 +689,7 @@ export function TmuxCreateControls({
             </label>
           </div>
         ) : null}
-        {agentProvider !== 'shell' && agentProvider !== 'opencode' ? (
+        {agentProvider !== 'none' && agentProvider !== 'shell' && agentProvider !== 'opencode' ? (
           <label>
             Opening prompt <span>optional</span>
             <textarea value={openingPrompt} onChange={(event) => setOpeningPrompt(event.target.value)} disabled={unavailable} rows={3} />
@@ -706,7 +738,13 @@ export function TmuxCreateControls({
       className="tmux-create"
       ref={detailsRef}
       onToggle={(event) => {
-        if (event.currentTarget.open) return
+        if (event.currentTarget.open) {
+          // This form stays mounted, so pick up choices remembered by the dialog meanwhile.
+          const startWith = loadStartWith(repoKey)
+          setAgentProvider(startWith)
+          setChatLaunch(loadChatLaunch(repoKey, startWith === 'codex-chat' ? 'codex-chat' : 'claude-chat'))
+          return
+        }
         if (sessionGroupId !== 'ungrouped') setWorkingDirectory(workingDirectoryHistory[0] ?? '')
         setSessionGroupId('ungrouped')
         setSessionGroupName('Ungrouped')
