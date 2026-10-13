@@ -392,6 +392,29 @@ describe('AgentSession state from Claude', () => {
     session.close()
   })
 
+  it('keeps the last plan reading when a later one fails', async () => {
+    const log = vi.fn()
+    const fake = fakeQuery()
+    let now = 1_000
+    const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, log }, fake.run, () => now, { messages: async () => [], title: async () => undefined })
+    const sessions: ChatSessionInfo[] = []
+    session.on('session', (info) => sessions.push(info))
+    void session.start()
+    await tick()
+    fake.planUsage.mockResolvedValueOnce({ subscription_type: 'max', rate_limits_available: true, rate_limits: null })
+    now = 100_000
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(sessions.at(-1)?.planUsage).toMatchObject({ updatedAt: 1_000 })
+    expect(log).toHaveBeenCalledWith("Couldn't read plan usage: Claude returned no limits")
+    now = 200_000
+    fake.push(system('session_state_changed', { state: 'idle' }))
+    await tick()
+    expect(fake.planUsage).toHaveBeenCalledTimes(3)
+    expect(sessions.at(-1)?.planUsage).toMatchObject({ updatedAt: 200_000 })
+    session.close()
+  })
+
   it('leaves the meter out, and stops asking, for a login without plan limits', async () => {
     const fake = fakeQuery()
     fake.planUsage.mockResolvedValueOnce({ subscription_type: null, rate_limits_available: false, rate_limits: null })

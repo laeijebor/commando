@@ -46,9 +46,17 @@ function limit(fields: Omit<ChatPlanLimit, 'resetsAt' | 'reached'>, resetsAt: nu
   }
 }
 
-/** The windows of a `/usage` report; null when the account has no plan limits. */
-export function toPlanUsage(report: unknown, now: number): ChatPlanUsage | null {
-  if (!isRecord(report) || report.rate_limits_available === false || !isRecord(report.rate_limits)) return null
+/** Plan limits don't apply to this login (API key, Bedrock, Vertex); they won't start mid-session. */
+export const NO_PLAN_LIMITS = 'no_plan_limits'
+
+/**
+ * The windows of a `/usage` report. Null when this reading failed (the usage
+ * fetch is down, or every window came back empty): the last reading stands.
+ */
+export function toPlanUsage(report: unknown, now: number): ChatPlanUsage | typeof NO_PLAN_LIMITS | null {
+  if (!isRecord(report)) return null
+  if (report.rate_limits_available === false) return NO_PLAN_LIMITS
+  if (!isRecord(report.rate_limits)) return null
   const rateLimits = report.rate_limits
   let limits: ChatPlanLimit[] = []
   if (Array.isArray(rateLimits.limits)) {
@@ -73,7 +81,24 @@ export function toPlanUsage(report: unknown, now: number): ChatPlanUsage | null 
   return { limits, ...(plan ? { plan } : {}), updatedAt: now }
 }
 
+/** The report rows the event's window types correspond to. */
 const EVENT_KINDS: Record<string, string> = { five_hour: 'session', seven_day: 'weekly_all' }
+const SCOPED_EVENT_MODELS: Record<string, string> = { seven_day_opus: 'Opus', seven_day_sonnet: 'Sonnet' }
+
+function eventRow(limits: readonly ChatPlanLimit[], type: string): number {
+  const kind = EVENT_KINDS[type]
+  if (kind) return limits.findIndex((entry) => entry.kind === kind)
+  const model = SCOPED_EVENT_MODELS[type]
+  return model ? limits.findIndex((entry) => entry.kind === 'weekly_scoped' && entry.title.includes(model)) : -1
+}
+
+function eventTitle(type: string): string {
+  const kind = EVENT_KINDS[type]
+  if (kind) return limitTitle(kind, undefined, undefined)
+  const model = SCOPED_EVENT_MODELS[type]
+  if (model) return `Weekly · ${model}`
+  return type === 'overage' ? 'Extra usage' : 'Weekly'
+}
 
 /**
  * Folds a mid-turn `rate_limit_event` into the last reading: fresh 5h and
@@ -83,36 +108,39 @@ const EVENT_KINDS: Record<string, string> = { five_hour: 'session', seven_day: '
 export function applyRateLimitEvent(current: ChatPlanUsage | undefined, info: SDKRateLimitInfo, now: number): ChatPlanUsage | undefined {
   const limits = [...(current?.limits ?? [])]
   let changed = false
-  const upsert = (kind: string, patch: Partial<ChatPlanLimit>) => {
-    const index = limits.findIndex((entry) => entry.kind === kind)
-    const base = index >= 0 ? limits[index]! : { kind, title: limitTitle(kind, undefined, undefined), percent: 0, severity: 'normal' as const }
-    const next: ChatPlanLimit = { ...base, ...patch }
+  const patch = (index: number, fields: Partial<ChatPlanLimit>) => {
+    const next: ChatPlanLimit = { ...limits[index]!, ...fields }
     if (!next.reached) delete next.reached
-    if (index >= 0) limits[index] = next
-    else limits.push(next)
+    limits[index] = next
     changed = true
   }
   const windows = (info as { unifiedWindows?: unknown }).unifiedWindows
   if (isRecord(windows)) {
-    for (const [key, kind] of Object.entries(EVENT_KINDS)) {
-      const window = windows[key]
+    for (const type of Object.keys(EVENT_KINDS)) {
+      const window = windows[type]
       if (!isRecord(window)) continue
       // Utilization here is a fraction (0.37), unlike the report's percentages.
       const used = typeof window.utilization === 'number' ? percent(window.utilization * 100) : undefined
       if (used === undefined) continue
-      const resetsAt = typeof window.resetsAt === 'number' && Number.isFinite(window.resetsAt) ? window.resetsAt * 1000 : undefined
+      const resetsAt = typeof window.resetsAt === 'number' && Number.isFinite(window.resetsAt) ? { resetsAt: window.resetsAt * 1000 } : {}
+      let index = eventRow(limits, type)
+      if (index < 0) index = limits.push({ kind: EVENT_KINDS[type]!, title: eventTitle(type), percent: used, severity: 'normal' }) - 1
       // A full window that dropped back under 100% has reset, so it is open again.
-      const reopened = used < 100 && limits.some((entry) => entry.kind === kind && entry.reached)
-      upsert(kind, { percent: used, reached: used >= 100, ...(reopened ? { severity: 'normal' as const } : {}), ...(resetsAt !== undefined ? { resetsAt } : {}) })
+      const reopened = used < 100 && limits[index]!.reached
+      patch(index, { percent: used, reached: used >= 100, ...(reopened ? { severity: 'normal' as const } : {}), ...resetsAt })
     }
   }
-  const kind = info.rateLimitType ? EVENT_KINDS[info.rateLimitType] ?? info.rateLimitType : undefined
-  if (kind && (info.status === 'allowed_warning' || info.status === 'rejected')) {
+  const type = info.rateLimitType
+  if (type && (info.status === 'allowed_warning' || info.status === 'rejected')) {
     const resetsAt = typeof info.resetsAt === 'number' ? { resetsAt: info.resetsAt * 1000 } : {}
-    const existing = limits.find((entry) => entry.kind === kind)
-    upsert(kind, info.status === 'rejected'
-      ? { severity: 'critical', reached: true, ...resetsAt }
-      : { severity: existing?.severity === 'critical' ? 'critical' : 'warning', ...resetsAt })
+    let index = eventRow(limits, type)
+    // A warning only colours a window we know; a refusal is worth a row of its own.
+    if (index < 0 && info.status === 'rejected') index = limits.push({ kind: EVENT_KINDS[type] ?? type, title: eventTitle(type), percent: 100, severity: 'critical' }) - 1
+    if (index >= 0) {
+      patch(index, info.status === 'rejected'
+        ? { severity: 'critical', reached: true, ...resetsAt }
+        : { severity: limits[index]!.severity === 'critical' ? 'critical' : 'warning', ...resetsAt })
+    }
   }
   if (!changed) return current
   return { ...current, limits, updatedAt: now }

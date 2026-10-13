@@ -222,7 +222,7 @@ function limitSeverity(limit: ChatPlanLimit): ChatPlanLimit['severity'] {
 }
 
 /** Re-renders on an interval, so reset countdowns and staleness keep up. */
-function useNow(intervalMs: number): number {
+function useClock(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), intervalMs)
@@ -241,7 +241,7 @@ function resetText(limit: ChatPlanLimit, now: number): string | null {
 /** The plan's 5h and weekly windows as two small bars, with every window in a popover. */
 export function PlanUsageMeter({ usage, profile }: { usage: ChatPlanUsage; profile: string | null }) {
   const [open, setOpen] = useState(false)
-  const now = useNow(30_000)
+  const now = useClock(30_000)
   const reached = reachedLimit(usage, now)
   const stale = isPlanUsageStale(usage, now)
   const age = formatReadingAge(usage.updatedAt, now)
@@ -263,7 +263,7 @@ export function PlanUsageMeter({ usage, profile }: { usage: ChatPlanUsage; profi
         {reached ? (
           <span>{shortLimitLabel(reached)} limit reached{reached.resetsAt !== undefined ? ` · resets ${formatResetTime(reached.resetsAt, now)}` : ''}</span>
         ) : headline.map((limit) => (
-          <span key={limit.kind} className={cn('flex items-center gap-1', SEVERITY_TEXT[limitSeverity(limit)])}>
+          <span key={`${limit.kind}:${limit.title}`} className={cn('flex items-center gap-1', SEVERITY_TEXT[limitSeverity(limit)])}>
             {shortLimitLabel(limit)}
             <span className="block h-1 w-6 overflow-hidden rounded-[2px] bg-accent" aria-hidden="true">
               <span className={cn('block h-full', SEVERITY_FILL[limitSeverity(limit)])} style={{ width: `${limit.percent}%` }} />
@@ -281,7 +281,7 @@ export function PlanUsageMeter({ usage, profile }: { usage: ChatPlanUsage; profi
           const severity = limitSeverity(limit)
           const reset = resetText(limit, now)
           return (
-            <div key={limit.kind} className="grid gap-1">
+            <div key={`${limit.kind}:${limit.title}`} className="grid gap-1">
               <div className="flex items-baseline justify-between gap-3 text-xs">
                 <span className="truncate text-foreground">{limit.title}</span>
                 <span className={cn('tabular-nums', severity === 'normal' ? 'text-muted-foreground' : SEVERITY_TEXT[severity])}>

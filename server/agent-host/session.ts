@@ -33,7 +33,7 @@ import {
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
-import { applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
+import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 export interface AgentSessionSpec {
   paneId: string
@@ -964,14 +964,17 @@ export class AgentSession {
       const report = await readUsage.call(handle, { skipBehaviors: true })
       if (read !== this.planUsageReads) return
       const usage = toPlanUsage(report, this.now())
-      if (!usage) {
-        // No plan limits apply to this login; they won't start mid-session.
+      if (usage === NO_PLAN_LIMITS) {
         this.stopPlanUsage()
         if (!this.info.planUsage) return
         const { planUsage: _gone, ...rest } = this.info
         this.info = rest
-      } else {
+      } else if (usage) {
         this.info = { ...this.info, planUsage: usage }
+      } else {
+        // The usage fetch failed this time; the last reading stands and shows as stale once it ages.
+        this.spec.log?.("Couldn't read plan usage: Claude returned no limits")
+        return
       }
       this.emitSession()
     } catch (error) {

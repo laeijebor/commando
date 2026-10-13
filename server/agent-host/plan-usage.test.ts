@@ -1,7 +1,7 @@
 import type { SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it } from 'vitest'
-import { parseChatSessionInfo } from '../../shared/agent-chat.js'
-import { applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
+import { parseChatSessionInfo, type ChatPlanUsage } from '../../shared/agent-chat.js'
+import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 // The shape SDK 0.3.295 / Claude Code 2.1.296 returned for a Max account.
 const REPORT = {
@@ -18,6 +18,9 @@ const REPORT = {
     ],
   },
 }
+
+/** A reading, for the cases that are one. */
+const reading = (report: unknown) => toPlanUsage(report, 5) as ChatPlanUsage
 
 const event = (info: Partial<SDKRateLimitInfo> & Record<string, unknown>) => ({ status: 'allowed', ...info }) as SDKRateLimitInfo
 
@@ -36,29 +39,30 @@ describe('toPlanUsage', () => {
 
   it('falls back to the 5h and 7d windows when the server sends no rows', () => {
     const { limits: _rows, ...rest } = REPORT.rate_limits
-    expect(toPlanUsage({ ...REPORT, rate_limits: rest }, 5)?.limits.map((limit) => [limit.kind, limit.percent])).toEqual([['session', 38], ['weekly_all', 43]])
+    expect(reading({ ...REPORT, rate_limits: rest }).limits.map((limit) => [limit.kind, limit.percent])).toEqual([['session', 38], ['weekly_all', 43]])
   })
 
   it('marks a full window as reached', () => {
     const report = { ...REPORT, rate_limits: { limits: [{ kind: 'session', group: 'session', percent: 100, severity: 'critical', resets_at: null }] } }
-    expect(toPlanUsage(report, 5)?.limits[0]).toEqual({ kind: 'session', title: 'Current session', percent: 100, severity: 'critical', reached: true })
+    expect(reading(report).limits[0]).toEqual({ kind: 'session', title: 'Current session', percent: 100, severity: 'critical', reached: true })
   })
 
-  it('is null for logins without plan limits and for unreadable reports', () => {
-    expect(toPlanUsage({ subscription_type: null, rate_limits_available: false, rate_limits: null }, 5)).toBeNull()
-    expect(toPlanUsage({ rate_limits_available: true, rate_limits: { limits: [] } }, 5)).toBeNull()
+  it('tells a login without plan limits apart from a reading that failed', () => {
+    expect(toPlanUsage({ subscription_type: null, rate_limits_available: false, rate_limits: null }, 5)).toBe(NO_PLAN_LIMITS)
+    expect(toPlanUsage({ subscription_type: 'max', rate_limits_available: true, rate_limits: null }, 5)).toBeNull()
+    expect(toPlanUsage({ rate_limits_available: true, rate_limits: { limits: null, five_hour: { utilization: null } } }, 5)).toBeNull()
     expect(toPlanUsage('nope', 5)).toBeNull()
   })
 
   it('survives the session-info parser the daemon and browser use', () => {
-    const planUsage = toPlanUsage(REPORT, 5)!
+    const planUsage = reading(REPORT)
     const info = parseChatSessionInfo({ paneId: '%1', provider: 'claude', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 1, planUsage })
     expect(info?.planUsage).toEqual(planUsage)
   })
 })
 
 describe('applyRateLimitEvent', () => {
-  const base = toPlanUsage(REPORT, 5)!
+  const base = reading(REPORT)
 
   it('updates the 5h and weekly windows from unifiedWindows fractions', () => {
     const next = applyRateLimitEvent(base, event({
@@ -82,7 +86,16 @@ describe('applyRateLimitEvent', () => {
     const warned = applyRateLimitEvent(base, event({ status: 'allowed_warning', rateLimitType: 'five_hour', resetsAt: 200 }), 9)
     expect(warned?.limits[0]).toMatchObject({ kind: 'session', severity: 'warning', resetsAt: 200_000 })
     const refused = applyRateLimitEvent(warned, event({ status: 'rejected', rateLimitType: 'seven_day_opus', resetsAt: 300 }), 10)
-    expect(refused?.limits.at(-1)).toMatchObject({ kind: 'seven_day_opus', severity: 'critical', reached: true, resetsAt: 300_000 })
+    expect(refused?.limits.at(-1)).toMatchObject({ kind: 'seven_day_opus', title: 'Weekly · Opus', percent: 100, severity: 'critical', reached: true, resetsAt: 300_000 })
+  })
+
+  it('colours the per-model row a warning is about, and adds none for a window it does not know', () => {
+    const opus = { ...base, limits: [...base.limits, { kind: 'weekly_scoped', title: 'Weekly · Opus', percent: 85, severity: 'normal' as const }] }
+    const warned = applyRateLimitEvent(opus, event({ status: 'allowed_warning', rateLimitType: 'seven_day_opus' }), 9)
+    expect(warned?.limits.map((limit) => [limit.title, limit.severity])).toEqual([
+      ['Current session', 'normal'], ['Weekly · all models', 'warning'], ['Weekly · Fable', 'normal'], ['Weekly · Opus', 'warning'],
+    ])
+    expect(applyRateLimitEvent(base, event({ status: 'allowed_warning', rateLimitType: 'seven_day_sonnet' }), 9)).toBe(base)
   })
 
   it('reopens a reached window once it drops back under 100%', () => {
