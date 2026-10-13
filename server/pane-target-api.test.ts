@@ -11,10 +11,11 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
 })
 
-async function request(options: { token?: string; pane?: string; method?: string } = {}) {
+async function request(options: { token?: string; pane?: string; method?: string; issued?: string[] } = {}) {
   const api = new PaneTargetApi({
     token: TOKEN,
     paneTarget: (paneId) => paneId === '%42' ? { targetId: TARGET } : null,
+    onMarkerIssued: (targetId) => options.issued?.push(targetId),
   })
   const server = createServer((incoming, response) => {
     api.handle(incoming, response, new URL(incoming.url ?? '/', 'http://127.0.0.1'))
@@ -34,19 +35,23 @@ async function request(options: { token?: string; pane?: string; method?: string
 
 describe('pane target marker API', () => {
   it('returns the canonical marker for the authenticated live pane', async () => {
-    const response = await request()
+    const issued: string[] = []
+    const response = await request({ issued })
 
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       targetId: TARGET,
       marker: `<!-- commando:v1 target=${TARGET} relation=created -->`,
     })
+    expect(issued).toEqual([TARGET])
   })
 
   it('rejects unauthorized, malformed, and missing panes', async () => {
-    expect((await request({ token: 'b'.repeat(32) })).status).toBe(401)
-    expect((await request({ pane: '42' })).status).toBe(400)
-    expect((await request({ pane: '%99' })).status).toBe(404)
-    expect((await request({ method: 'POST' })).status).toBe(405)
+    const issued: string[] = []
+    expect((await request({ token: 'b'.repeat(32), issued })).status).toBe(401)
+    expect((await request({ pane: '42', issued })).status).toBe(400)
+    expect((await request({ pane: '%99', issued })).status).toBe(404)
+    expect((await request({ method: 'POST', issued })).status).toBe(405)
+    expect(issued).toEqual([])
   })
 })

@@ -870,6 +870,20 @@ describe('HUD tabs', () => {
     const hudPrActionLabel = (subTab: 'Description' | 'Diff') => subTab === 'Description' ? 'Quick look at PR #12' : 'Open diff for PR #12: +379 -46'
     const prTabSelections = () => vi.mocked(fetch).mock.calls.filter(([url]) => /web-panes\/pr.*\/active-tab/.test(String(url)))
 
+    it('opens a PR from the chat strip in the pane\'s PR tab instead of the browser', async () => {
+      stubPr()
+      const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+      await renderAppWithSnapshot()
+      act(() => daemonMessage?.({ type: 'chat_state', chat: { paneId: adjacentPane.id, hostConnected: true, items: [],
+        session: { paneId: adjacentPane.id, provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 1 } } }))
+      const strip = await screen.findByRole('region', { name: 'Linked pull requests' })
+      fireEvent.click(within(strip).getByRole('link', { name: /#12/ }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      const panel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
+      await waitFor(() => expect(within(panel).getByRole('tab', { name: /Description/ })).toHaveAttribute('aria-selected', 'true'))
+      expect(open).not.toHaveBeenCalled()
+    })
+
     it.each(['Description', 'Diff'] as const)('waits for a cold startup pane cache and opens %s when the linked PR arrives', async (subTab) => {
       const cold = stubColdPr()
       const open = vi.spyOn(window, 'open').mockImplementation(() => null)

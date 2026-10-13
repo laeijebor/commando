@@ -235,18 +235,21 @@ describe('PR auto-fix API', () => {
       const watcher = new PrAutofixWatcher(new PrAutofixStore(directory), {
         target: (id) => id === TARGET_ID ? { paneId: '%1', busy: false, connected: true } : undefined,
         snapshot: async () => ({ state: 'open', url: 'https://github.com/acme/widgets/pull/12', headSha: 'abc', failingChecks: ['lint'], viewer: 'leo', comments: [] }), send,
+        linkedPrs: async () => [],
       })
       const api = createPrsApi('', autofixFetch(service, watcher))
       expect(await api.autofixStatus('acme/widgets', 12)).toBeNull()
-      expect(await api.setAutofix('acme/widgets', 12, true, '%1')).toMatchObject({ status: 'watching', enabled: true, targetId: TARGET_ID, rounds: 0 })
-      await watcher.tick()
+      // Enabling acts on the failure already on the PR without waiting for a poll.
+      expect(await api.setAutofix('acme/widgets', 12, true, '%1')).toMatchObject({ status: 'fix-requested', enabled: true, targetId: TARGET_ID, rounds: 1, lastEventAt: expect.any(Number) })
       expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('acme/widgets#12'))
-      expect(await api.autofixStatus('acme/widgets', 12)).toMatchObject({ status: 'fix-requested', rounds: 1, lastEventAt: expect.any(Number) })
-      expect(await api.setAutofix('acme/widgets', 12, false, '%999')).toMatchObject({ enabled: false, status: 'stopped' })
+      expect(await watcher.store.defaultChoice()).toMatchObject({ enabled: true })
       await watcher.tick()
       expect(send).toHaveBeenCalledOnce()
-      expect(await api.setAutofix('acme/widgets', 12, true, '%1')).toMatchObject({ enabled: true, rounds: 0, lastEventAt: null })
+      expect(await api.setAutofix('acme/widgets', 12, false, '%999')).toMatchObject({ enabled: false, status: 'stopped' })
+      expect(await watcher.store.defaultChoice()).toMatchObject({ enabled: false })
       await watcher.tick()
+      expect(send).toHaveBeenCalledOnce()
+      expect(await api.setAutofix('acme/widgets', 12, true, '%1')).toMatchObject({ enabled: true, rounds: 1 })
       expect(send).toHaveBeenCalledTimes(2)
       const status = await api.autofixStatus('acme/widgets', 12)
       expect(status).not.toHaveProperty('handledFailures')
@@ -262,7 +265,7 @@ describe('PR auto-fix API', () => {
       let agentExists = true
       const watcher = new PrAutofixWatcher(new PrAutofixStore(directory), {
         target: () => agentExists ? { paneId: '%1', busy: false, connected: true } : undefined,
-        snapshot: vi.fn(), send: vi.fn(),
+        snapshot: vi.fn(), send: vi.fn(), linkedPrs: async () => [],
       })
       const fetch = autofixFetch(service, watcher)
       const path = '/api/prs/autofix'

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatCommand, ChatItem, ChatSessionInfo, ChatState } from '../../shared/agent-chat'
 import { ChatComposer, type ChatInputServices, type ChatSendError } from './ChatComposer'
 import { ChatPane } from './ChatPane'
+import { readDraft, saveDraft } from './draftStore'
 
 const imageId = `${'a'.repeat(64)}.png`
 const commands: ChatCommand[] = [
@@ -47,6 +49,142 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+  localStorage.clear()
+})
+
+describe('draft persistence', () => {
+  const savedSession = { ...session, sessionId: 'draft-session' }
+  const savedKey = 'commando:chat-draft:draft-session'
+
+  it('debounces typing and removes the entry immediately when emptied', () => {
+    vi.useFakeTimers()
+    const { type } = renderComposer({ session: savedSession })
+    type('first')
+    act(() => { vi.advanceTimersByTime(200) })
+    type('latest')
+    act(() => { vi.advanceTimersByTime(299) })
+    expect(localStorage.getItem(savedKey)).toBeNull()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(readDraft(savedSession.sessionId)).toBe('latest')
+    type('')
+    expect(localStorage.getItem(savedKey)).toBeNull()
+    act(() => { vi.advanceTimersByTime(300) })
+    expect(localStorage.getItem(savedKey)).toBeNull()
+  })
+
+  it('flushes on unmount, restores on remount and clears on sending', () => {
+    const first = renderComposer({ session: savedSession })
+    first.type('  half typed\nnext line  ')
+    first.view.unmount()
+    expect(readDraft(savedSession.sessionId)).toBe('  half typed\nnext line  ')
+    const second = renderComposer({ session: { ...savedSession, paneId: '%99' } })
+    expect(second.input.value).toBe('  half typed\nnext line  ')
+    fireEvent.keyDown(second.input, { key: 'Enter' })
+    expect(second.onSend).toHaveBeenCalledWith('half typed\nnext line')
+    expect(localStorage.getItem(savedKey)).toBeNull()
+    second.view.unmount()
+    expect(renderComposer({ session: savedSession }).input.value).toBe('')
+  })
+
+  it('flushes pagehide and restores after a reload, including a carried draft only once', async () => {
+    const first = renderComposer({ session: savedSession })
+    first.type('draft before reload')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(readDraft(savedSession.sessionId)).toBe('draft before reload')
+    first.view.unmount()
+    // A fresh module has no in-memory record of taken carries, as after a page reload.
+    vi.resetModules()
+    const { ChatComposer: ReloadedComposer } = await import('./ChatComposer')
+    const onCarriedTaken = vi.fn()
+    render(<ReloadedComposer session={savedSession} hostConnected requests={[]} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} carried={{ id: 'reload-carry', text: 'queued\n\ndraft before reload', images: [] }} onCarriedTaken={onCarriedTaken} />)
+    expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue('queued\n\ndraft before reload')
+    expect(onCarriedTaken).toHaveBeenCalledWith('reload-carry', 0)
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(readDraft(savedSession.sessionId)).toBe('queued\n\ndraft before reload')
+  })
+
+  it('keeps sessions separate even when a tmux pane id is reused', () => {
+    const first = renderComposer({ session: savedSession })
+    first.type('private to this chat')
+    first.view.unmount()
+    const second = renderComposer({ session: { ...savedSession, sessionId: 'another-session' } })
+    expect(second.input.value).toBe('')
+    expect(localStorage.getItem('commando:chat-draft:%5')).toBeNull()
+    expect(readDraft(savedSession.sessionId)).toBe('private to this chat')
+  })
+
+  it('restores when the session id arrives, without overwriting text already typed', () => {
+    saveDraft(savedSession.sessionId, 'saved earlier')
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() }
+    const first = renderComposer()
+    first.view.rerender(<ChatComposer session={savedSession} hostConnected requests={[]} {...handlers} />)
+    expect(first.input.value).toBe('saved earlier')
+    first.view.unmount()
+    const second = renderComposer()
+    second.type('typed before the id arrived')
+    second.view.rerender(<ChatComposer session={savedSession} hostConnected requests={[]} {...handlers} />)
+    expect(second.input.value).toBe('typed before the id arrived')
+    second.view.unmount()
+    expect(readDraft(savedSession.sessionId)).toBe('typed before the id arrived')
+  })
+
+  it('keeps the latest draft under the correct key when the identity changes', () => {
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() }
+    const { type, view } = renderComposer({ session: savedSession })
+    type('first session')
+    view.rerender(<ChatComposer session={{ ...savedSession, sessionId: 'second-session' }} hostConnected requests={[]} {...handlers} />)
+    type('second session')
+    view.unmount()
+    expect(readDraft(savedSession.sessionId)).toBe('first session')
+    expect(readDraft('second-session')).toBe('second session')
+  })
+
+  it('restores under StrictMode without duplicating carried text', () => {
+    saveDraft(savedSession.sessionId, 'saved thought')
+    const onCarriedTaken = vi.fn()
+    render(<StrictMode><ChatComposer session={savedSession} hostConnected requests={[]} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} carried={{ id: 'strict-carry', text: 'saved thought', images: [] }} onCarriedTaken={onCarriedTaken} /></StrictMode>)
+    expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue('saved thought')
+    expect(onCarriedTaken).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets a late carried draft include the saved text while preserving newly typed text', () => {
+    saveDraft(savedSession.sessionId, 'saved thought')
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() }
+    const first = renderComposer({ session: savedSession })
+    first.view.rerender(<ChatComposer session={savedSession} hostConnected requests={[]} {...handlers} carried={{ id: 'late-carry', text: 'queued\n\nsaved thought', images: [] }} />)
+    expect(first.input.value).toBe('queued\n\nsaved thought')
+    first.view.unmount()
+    const second = renderComposer({ session: { ...savedSession, sessionId: 'new-session' } })
+    second.type('typed just now')
+    second.view.rerender(<ChatComposer session={{ ...savedSession, sessionId: 'new-session' }} hostConnected requests={[]} {...handlers} carried={{ id: 'new-text-carry', text: 'returned thought', images: [] }} />)
+    expect(second.input.value).toBe('returned thought\n\ntyped just now')
+  })
+
+  it('persists only text when images are attached', async () => {
+    const first = renderComposer({ session: savedSession })
+    first.type('describe this image')
+    fireEvent.paste(first.input, { clipboardData: { files: [new File(['image'], 'shot.png', { type: 'image/png' })], types: ['Files'] } })
+    await waitFor(() => expect(screen.queryByLabelText('Uploading')).toBeNull())
+    first.view.unmount()
+    expect(JSON.parse(localStorage.getItem(savedKey)!)).toEqual({ text: 'describe this image', updatedAt: expect.any(Number) })
+    expect(renderComposer({ session: savedSession }).input.value).toBe('describe this image')
+    expect(screen.queryByLabelText('Attached images')).toBeNull()
+  })
+
+  it('continues typing and sending when storage throws', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('Blocked') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Quota') })
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('Blocked') })
+    const { type, input, onSend, view } = renderComposer({ session: savedSession })
+    type('still works')
+    act(() => { window.dispatchEvent(new Event('pagehide')) })
+    expect(input.value).toBe('still works')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledWith('still works')
+    expect(() => view.unmount()).not.toThrow()
+  })
 })
 
 describe('the / menu', () => {

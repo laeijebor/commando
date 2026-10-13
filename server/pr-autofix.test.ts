@@ -13,6 +13,7 @@ const initial = () => setAutofixEnabled(null, repo, 12, targetId, true)
 const snapshot = (overrides: Partial<PrAutofixSnapshot> = {}): PrAutofixSnapshot => ({
   state: 'open', url: `https://github.com/${repo}/pull/12`, headSha: 'sha1', failingChecks: ['lint', 'test'], viewer: 'leo', comments: [], ...overrides,
 })
+const noLinkedPrs = async () => []
 const directories: string[] = []
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))) })
 async function store() {
@@ -107,7 +108,7 @@ describe('PR auto-fix persistence and delivery', () => {
     let busy = true
     let connected = true
     const send = vi.fn(() => false)
-    const deps = { snapshot: vi.fn(async () => snapshot()), target: () => ({ paneId: '%9', busy, connected }), send }
+    const deps = { snapshot: vi.fn(async () => snapshot()), linkedPrs: noLinkedPrs, target: () => ({ paneId: '%9', busy, connected }), send }
     const watcher = new PrAutofixWatcher(persisted, deps)
     await watcher.tick()
     expect(send).not.toHaveBeenCalled()
@@ -130,7 +131,7 @@ describe('PR auto-fix persistence and delivery', () => {
     await persisted.update(repo, 12, () => initial())
     const send = vi.fn()
     const read = vi.fn(async () => snapshot())
-    await new PrAutofixWatcher(persisted, { snapshot: read, target: () => undefined, send }).tick()
+    await new PrAutofixWatcher(persisted, { snapshot: read, linkedPrs: noLinkedPrs, target: () => undefined, send }).tick()
     expect(read).not.toHaveBeenCalled()
     expect(send).not.toHaveBeenCalled()
     expect(await persisted.get(repo, 12)).toMatchObject({ enabled: false, status: 'stopped', reason: 'Pane or agent no longer exists' })
@@ -144,7 +145,7 @@ describe('PR auto-fix persistence and delivery', () => {
     const reading = new Promise<void>((resolve) => { started = resolve })
     const read = () => { started(); return new Promise<PrAutofixSnapshot>((resolve) => { finish = resolve }) }
     const send = vi.fn(() => true)
-    const watcher = new PrAutofixWatcher(persisted, { snapshot: read, target: () => ({ paneId: '%1', busy: false, connected: true }), send })
+    const watcher = new PrAutofixWatcher(persisted, { snapshot: read, linkedPrs: noLinkedPrs, target: () => ({ paneId: '%1', busy: false, connected: true }), send })
     const tick = watcher.tick()
     await reading
     await persisted.update(repo, 12, (current) => setAutofixEnabled(current, repo, 12, targetId, false))
@@ -152,6 +153,58 @@ describe('PR auto-fix persistence and delivery', () => {
     await tick
     expect(send).not.toHaveBeenCalled()
     expect(await persisted.get(repo, 12)).toMatchObject({ enabled: false, rounds: 0 })
+  })
+
+  it('remembers the last choice and checks a watch on demand', async () => {
+    const persisted = await store()
+    expect(await persisted.defaultChoice()).toBeNull()
+    await persisted.update(repo, 12, () => initial())
+    await persisted.setDefaultChoice(true, 100)
+    expect(await persisted.defaultChoice()).toEqual({ enabled: true, at: 100 })
+    await persisted.setDefaultChoice(true, 200)
+    expect(await persisted.defaultChoice()).toEqual({ enabled: true, at: 100 })
+    expect(await persisted.get(repo, 12)).toMatchObject({ enabled: true })
+    const send = vi.fn(() => true)
+    const watcher = new PrAutofixWatcher(persisted, { snapshot: async () => snapshot(), linkedPrs: noLinkedPrs, target: () => ({ paneId: '%1', busy: false, connected: true }), send })
+    await watcher.check(repo, 12)
+    expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('- lint'))
+    await watcher.check('acme/other', 1)
+    expect(send).toHaveBeenCalledOnce()
+    await writeFile(join(persisted.directory, 'watches.json'), JSON.stringify({ version: 1, watches: [], default: { enabled: 'yes', at: 1 } }))
+    await expect(persisted.list()).rejects.toThrow('Invalid PR auto-fix default')
+  })
+
+  it('adopts new PRs from panes that asked for a marker when the remembered choice is on', async () => {
+    const persisted = await store()
+    const choiceAt = Date.parse('2026-10-12T12:00:00Z')
+    let now = choiceAt + 1_000
+    const linked = [
+      { repo, number: 12, state: 'open' as const, createdAt: '2026-10-12T12:05:00Z' },
+      { repo, number: 13, state: 'open' as const, createdAt: '2026-10-12T11:00:00Z' },
+      { repo, number: 14, state: 'merged' as const, createdAt: '2026-10-12T12:05:00Z' },
+      { repo, number: 15, state: 'open' as const, createdAt: '2026-10-12T12:06:00Z' },
+    ]
+    const linkedPrs = vi.fn(async () => linked)
+    const send = vi.fn(() => true)
+    const watcher = new PrAutofixWatcher(persisted, { snapshot: async () => snapshot(), linkedPrs,
+      target: (id) => id === targetId ? { paneId: '%1', busy: false, connected: true } : undefined, send, now: () => now })
+    await persisted.update(repo, 15, () => setAutofixEnabled(null, repo, 15, targetId, false))
+    await persisted.setDefaultChoice(true, choiceAt)
+    await watcher.tick()
+    expect(linkedPrs).not.toHaveBeenCalled()
+    watcher.noteMarkerRequest(targetId)
+    await watcher.tick()
+    expect((await persisted.list()).map((state) => [state.number, state.enabled])).toEqual([[15, false], [12, true]])
+    expect(send).toHaveBeenCalledOnce()
+    await persisted.setDefaultChoice(false, now)
+    linked.push({ repo, number: 16, state: 'open', createdAt: '2026-10-12T12:07:00Z' })
+    await watcher.tick()
+    expect(await persisted.get(repo, 16)).toBeNull()
+    await persisted.setDefaultChoice(true, choiceAt)
+    now += 31 * 60_000
+    linkedPrs.mockClear()
+    await watcher.tick()
+    expect(linkedPrs).not.toHaveBeenCalled()
   })
 
   it('delivers the reserved prompt through the actual daemon chat hub', async () => {
@@ -170,6 +223,7 @@ describe('PR auto-fix persistence and delivery', () => {
     await persisted.update(repo, 12, () => initial())
     const watcher = new PrAutofixWatcher(persisted, {
       snapshot: async () => snapshot(),
+      linkedPrs: noLinkedPrs,
       target: () => { const chat = hub.states()[0]; return chat ? { paneId: chat.paneId, connected: chat.hostConnected, busy: chat.session.status !== 'idle' } : undefined },
       send: (paneId, prompt) => hub.send(paneId, prompt, 'autofix-test'),
     })

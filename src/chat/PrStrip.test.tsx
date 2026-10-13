@@ -13,13 +13,13 @@ function pr(number: number, state: PanePrSummary['state'] = 'open'): PanePrSumma
     checks: { state: 'fail', total: 9, failed: 2, pending: 1, skipped: 3, runs: [], truncated: false } }
 }
 const status = (patch: Partial<PrAutofixStatus> = {}): PrAutofixStatus => ({ repo: 'acme/widgets', number: 12, targetId, enabled: true, status: 'watching', rounds: 0, lastEventAt: null, ...patch })
-function setup(prs = [pr(12)], current: PrAutofixStatus | null = null) {
+function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number) => void) {
   const api = {
     pane: vi.fn(async () => ({ targetId, totalCount: prs.length, pullRequests: prs, truncated: false, fetchedAt: Date.now() })),
     autofixStatus: vi.fn(async () => current),
     setAutofix: vi.fn(async (_repo: string, _number: number, enabled: boolean, _pane: string) => status({ enabled, status: enabled ? 'watching' : 'stopped', ...(!enabled ? { reason: 'Disabled' } : {}) })),
   } satisfies Pick<PrsApiClient, 'pane' | 'autofixStatus' | 'setAutofix'>
-  render(<PrStrip paneId="%1" api={api} connected />)
+  render(<PrStrip paneId="%1" api={api} connected {...(onOpenPr ? { onOpenPr } : {})} />)
   return api
 }
 afterEach(cleanup)
@@ -46,6 +46,16 @@ describe('chat PR strip', () => {
     expect(screen.queryByRole('button', { name: 'CI monitoring for PR #10' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
     expect(screen.queryByText('Merged')).not.toBeInTheDocument()
+  })
+
+  it('opens a PR in the side panel on a plain click and leaves modified clicks to the browser', async () => {
+    const onOpenPr = vi.fn()
+    setup([pr(12)], null, onOpenPr)
+    const link = await screen.findByRole('link', { name: '#12 Change 12' })
+    expect(fireEvent.click(link)).toBe(false)
+    expect(onOpenPr).toHaveBeenCalledWith('acme/widgets', 12)
+    expect(fireEvent.click(link, { metaKey: true })).toBe(true)
+    expect(onOpenPr).toHaveBeenCalledTimes(1)
   })
 
   it('shows grouped check counts, a checks link, and toggles monitoring through the API', async () => {

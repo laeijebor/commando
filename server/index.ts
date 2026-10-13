@@ -874,6 +874,7 @@ async function main(): Promise<void> {
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
     snapshot: (repo, number, targetId) => prs.autofixSnapshot(repo, number, targetId),
+    linkedPrs: async (targetId) => (await prs.listPanePullRequests(targetId)).pullRequests,
     target: (targetId) => {
       const pane = snapshot.panes.find((pane) => pane.targetId === targetId)
       const chat = pane && agentHosts.states().find((chat) => chat.paneId === pane.id)
@@ -1733,6 +1734,7 @@ async function main(): Promise<void> {
       const pane = paneForId(paneId)
       return pane ? { targetId: pane.targetId } : null
     },
+    onMarkerIssued: (targetId) => prAutofix.noteMarkerRequest(targetId),
   })
   const canvasThreads = new CanvasThreadsStore(defaultCanvasThreadsPath(port), (webPaneId) => broadcast({ type: 'canvas_threads_changed', webPaneId }))
   canvasPush = new CanvasPush({

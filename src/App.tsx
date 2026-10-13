@@ -350,6 +350,7 @@ type TerminalPaneProps = {
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
+  onChatOpenPr?: (repo: string, number: number) => void
   chatServices?: ChatInputServices
   chatFlow?: ChatFlowServices
   /** Why the daemon refused one of this pane's chat sends. */
@@ -432,6 +433,7 @@ export function TerminalPaneCard({
   onChatAnswer,
   onChatConfigure,
   onChatRestart,
+  onChatOpenPr,
   chatServices,
   chatFlow,
   chatSendError,
@@ -723,6 +725,7 @@ export function TerminalPaneCard({
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
             onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
+            {...(onChatOpenPr ? { onOpenPr: onChatOpenPr } : {})}
             {...(chatServices ? { services: chatServices } : {})}
             {...(chatFlow ? { flow: chatFlow } : {})}
             {...(chatSendError ? { sendError: chatSendError } : {})}
@@ -2014,6 +2017,22 @@ export function App() {
     })
   }
 
+  /** Selects a linked PR's side-panel tab on a sub-tab, restoring it first if it was closed. */
+  const revealPrTab = (paneId: string, repo: string, number: number, subTab: PrQuickLookTab): boolean | Promise<boolean> => {
+    const key = prPanelKey(repo, number)
+    const tab = builtinPanelTab(paneId, key)
+    const open = (selected = false) => {
+      setPrSelections((current) => ({ ...current, [tab.id]: { tab: subTab, revision: (current[tab.id]?.revision ?? 0) + 1 } }))
+      revealBuiltinTab(paneId, key, !selected)
+      return true
+    }
+    if (dismissedPrTabs[paneId]?.[key] === undefined) return open()
+    return restorePanePrTab(tab).then(() => open(true)).catch((error: unknown) => {
+      setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')
+      return true
+    })
+  }
+
   const openLoadedPanePr = (pr: PrSummary, subTab: PrQuickLookTab, refresh = true): boolean | Promise<boolean> => {
     const targetId = pr.commandoMarker?.targetId
     const matches = targetId ? snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? [] : []
@@ -2023,19 +2042,9 @@ export function App() {
     const list = cachedPanePrs(prsApi, pane.id)
     if (list?.targetId !== pane.targetId || !list.pullRequests.some((linked) => linked.repo.toLowerCase() === repo && linked.number === pr.number)) return false
     if (pane.sessionId !== selectedSessionId || pane.windowId !== activeGroup?.windowId) jumpToPane(pane.id, targetId)
-    const key = prPanelKey(repo, pr.number)
-    const tab = builtinPanelTab(pane.id, key)
-    const open = (selected = false) => {
-      setPrSelections((current) => ({ ...current, [tab.id]: { tab: subTab, revision: (current[tab.id]?.revision ?? 0) + 1 } }))
-      revealBuiltinTab(pane.id, key, !selected)
-      if (refresh) void refreshPanePrs(prsApi, pane.id)
-      return true
-    }
-    if (dismissedPrTabs[pane.id]?.[key] === undefined) return open()
-    return restorePanePrTab(tab).then(() => open(true)).catch((error: unknown) => {
-      setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')
-      return true
-    })
+    const opened = revealPrTab(pane.id, repo, pr.number, subTab)
+    if (refresh) void refreshPanePrs(prsApi, pane.id)
+    return opened
   }
 
   const latestOpenLoadedPanePr = useRef(openLoadedPanePr)
@@ -3731,6 +3740,7 @@ export function App() {
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
+                            onChatOpenPr={(repo, number) => { void revealPrTab(pane.id, repo, number, 'Description') }}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
                             chatUploading={chatUploads.has(pane.id)}
                             onSwitchToClaudeCode={() => switchChat(pane.id, 'after_turn')}
