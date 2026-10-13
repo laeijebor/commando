@@ -268,10 +268,13 @@ describe('tmux format parsers', () => {
 
   it('marks panes that idle until something is launched into them', () => {
     const idle = paneRow('%1', '0', '@1', '$1', '', 'tail', '/repo', '1', '0', '80', '24', '0', '0')
-    const empty = idle.replace(row('', '1234'), row('1', '1234'))
+    const empty = idle.replace(row('', '1234'), row('1234', '1234'))
+    const respawned = idle.replace(row('', '1234'), row('999', '1234'))
 
     expect(parsePanes(idle, targetIds)[0]).not.toHaveProperty('empty')
     expect(parsePanes(empty, targetIds)[0]).toMatchObject({ id: '%1', empty: true })
+    // A marker left by an idle process that is no longer the pane's process does not count.
+    expect(parsePanes(respawned, targetIds)[0]).not.toHaveProperty('empty')
   })
 
   it('drops malformed and unstable pane records', () => {

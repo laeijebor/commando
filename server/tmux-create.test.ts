@@ -365,9 +365,20 @@ describe('empty sessions', () => {
     expect(result.agentLaunch).toBeUndefined()
     expect(run.mock.calls.map(([args]) => args)).toEqual([
       ['-L', 'test', 'new-session', '-d', '-P', '-F', expect.any(String), '-s', 'work', '-c', '/tmp', emptyPaneCommand()],
-      ['-L', 'test', 'set-option', '-p', '-t', '%12', '@commando_empty', '1'],
+      ['-L', 'test', 'set-option', '-p', '-F', '-t', '%12', '@commando_empty', '#{pane_pid}'],
     ])
     expect(emptyPaneShellCommand()).toMatch(/exec tail -f \/dev\/null$/)
+  })
+
+  it('hands back a shell session instead of an orphan when the pane cannot be marked', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const run = vi.fn(async (args: readonly string[]): Promise<string> => {
+      if (args.includes('set-option')) throw new Error('tmux create command timed out')
+      return output()
+    })
+    const result = await new TmuxCreator(run, []).createSession({ name: 'work', empty: true })
+    expect(result.created.paneId).toBe('%12')
+    expect(run.mock.calls.at(-1)?.[0]).toEqual(['respawn-pane', '-k', '-t', '%12', 'exec "${SHELL:-/bin/sh}" -l'])
   })
 
   it('rejects an empty session that also starts an agent', async () => {
@@ -393,7 +404,7 @@ describe('empty sessions', () => {
     expect(run.mock.calls.find(([args]) => args.includes('new-session'))?.[0].at(-1)).toBe(emptyPaneCommand({ command: 'pnpm i', tmux: '/opt/bin/tmux' }))
     expect(run.mock.calls.some(([args]) => args.includes('set-option'))).toBe(false)
     // A failed preparation leaves a shell to investigate in, not an empty launcher.
-    expect(script.indexOf('pnpm i')).toBeLessThan(script.indexOf("'/opt/bin/tmux' set-option -p -t \"$TMUX_PANE\" @commando_empty 1"))
+    expect(script.indexOf('pnpm i')).toBeLessThan(script.indexOf("'/opt/bin/tmux' set-option -p -t \"$TMUX_PANE\" @commando_empty \"$$\""))
     expect(script.indexOf('exec "${SHELL:-/bin/sh}" -l')).toBeLessThan(script.indexOf('set-option'))
   })
 })
@@ -409,7 +420,7 @@ describe('launching into an empty pane', () => {
     const run = tmux('1')
     await new TmuxCreator(run, ['-L', 'test']).launchInEmptyPane({ paneId: '%3' })
     expect(run.mock.calls.map(([args]) => args)).toEqual([
-      ['-L', 'test', 'display-message', '-p', '-t', '%3', '#{@commando_empty}'],
+      ['-L', 'test', 'display-message', '-p', '-t', '%3', '#{==:#{@commando_empty},#{pane_pid}}'],
       ['-L', 'test', 'set-option', '-p', '-u', '-t', '%3', '@commando_empty'],
       ['-L', 'test', 'respawn-pane', '-k', '-t', '%3', 'exec "${SHELL:-/bin/sh}" -l'],
     ])
@@ -447,7 +458,7 @@ describe('launching into an empty pane', () => {
   it('marks the pane empty again when the launch fails', async () => {
     const run = tmux('1', { respawnFails: true })
     await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('respawn failed')
-    expect(run.mock.calls.at(-1)?.[0]).toEqual(['set-option', '-p', '-t', '%3', '@commando_empty', '1'])
+    expect(run.mock.calls.at(-1)?.[0]).toEqual(['set-option', '-p', '-F', '-t', '%3', '@commando_empty', '#{pane_pid}'])
   })
 })
 

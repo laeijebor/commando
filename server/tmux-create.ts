@@ -355,7 +355,8 @@ export function emptyPaneShellCommand(prepare?: { command: string; tmux: string 
       `  ${LOGIN_SHELL_COMMAND}`,
       'fi',
       "printf '[commando] Worktree preparation complete.\\n'",
-      `${shellQuote(prepare.tmux)} set-option -p -t "$TMUX_PANE" ${EMPTY_PANE_OPTION} 1 || ${LOGIN_SHELL_COMMAND}`,
+      // $$ is the pane's own process: this shell later execs the idle command in place.
+      `${shellQuote(prepare.tmux)} set-option -p -t "$TMUX_PANE" ${EMPTY_PANE_OPTION} "$$" || ${LOGIN_SHELL_COMMAND}`,
     ] : []),
     "printf '[commando] Nothing is running here yet. Start a shell or an agent from Commando.\\n'",
     'exec tail -f /dev/null',
@@ -547,12 +548,25 @@ export class TmuxCreator {
     } else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
     const created = parseCreatedTarget(await this.run(args), 'session')
     // A preparing pane marks itself once preparation succeeds.
-    if (empty && !prepareCommand) await this.setPaneEmpty(created.paneId, true)
+    if (empty && !prepareCommand) {
+      try {
+        await this.markPaneEmpty(created.paneId)
+      } catch (error) {
+        // The session exists either way: hand it back as a plain shell rather than orphan it.
+        console.warn('[commando] Could not mark the new pane empty; starting a shell in it', error)
+        await this.run([...this.socketArgs, 'respawn-pane', '-k', '-t', created.paneId, LOGIN_SHELL_COMMAND]).catch(() => undefined)
+      }
+    }
     return created
   }
 
-  private async setPaneEmpty(paneId: string, empty: boolean): Promise<void> {
-    await this.run([...this.socketArgs, 'set-option', '-p', ...(empty ? [] : ['-u']), '-t', paneId, EMPTY_PANE_OPTION, ...(empty ? ['1'] : [])])
+  /** The marker holds the idle process id, so a pane respawned outside Commando never reads as empty. */
+  private async markPaneEmpty(paneId: string): Promise<void> {
+    await this.run([...this.socketArgs, 'set-option', '-p', '-F', '-t', paneId, EMPTY_PANE_OPTION, '#{pane_pid}'])
+  }
+
+  private async unmarkPaneEmpty(paneId: string): Promise<void> {
+    await this.run([...this.socketArgs, 'set-option', '-p', '-u', '-t', paneId, EMPTY_PANE_OPTION])
   }
 
   /** Replaces an empty pane's idle process; a pane already running something is never touched. */
@@ -564,16 +578,16 @@ export class TmuxCreator {
     if (this.launching.has(input.paneId)) throw new Error('This pane is already starting something')
     this.launching.add(input.paneId)
     try {
-      const marker = await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{${EMPTY_PANE_OPTION}}`])
+      const marker = await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{==:#{${EMPTY_PANE_OPTION}},#{pane_pid}}`])
       if (marker.trim() !== '1') throw new Error('This pane is already running something')
-      await this.setPaneEmpty(input.paneId, false)
+      await this.unmarkPaneEmpty(input.paneId)
       try {
         await this.run([
           ...this.socketArgs, 'respawn-pane', '-k', '-t', input.paneId,
           ...(agentArgv ? [...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv)] : [LOGIN_SHELL_COMMAND]),
         ])
       } catch (error) {
-        await this.setPaneEmpty(input.paneId, true).catch(() => undefined)
+        await this.markPaneEmpty(input.paneId).catch(() => undefined)
         throw error
       }
     } finally {
