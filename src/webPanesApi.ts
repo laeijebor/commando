@@ -310,6 +310,9 @@ export const subscribeCanvasThreads = threads.subscribe
 const pending = createChannel<string>()
 export const publishCanvasPendingChanged = pending.publish
 export const subscribeCanvasPending = pending.subscribe
+const guideStates = createChannel<{ artifactId: string; file: string }>()
+export const publishGuideStateChanged = guideStates.publish
+export const subscribeGuideStates = guideStates.subscribe
 const refresh = createChannel<void>()
 export const publishCanvasRefresh = () => refresh.publish()
 export const subscribeCanvasRefresh = refresh.subscribe

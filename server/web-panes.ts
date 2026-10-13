@@ -169,7 +169,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   const parsedContent = parseWebPaneContent(content)
   if (parsedContent === null) return null
   const simulator = parsedContent?.kind === 'simulator'
-  const canvas = parsedContent?.kind === 'canvas'
+  const panelOnly = parsedContent?.kind === 'canvas' || parsedContent?.kind === 'guide'
   const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(url, allowedOrigins)
   if (decision.kind === 'invalid') return null
   return {
@@ -181,7 +181,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     windowId,
     anchorPaneId,
     placement: placement as WebPanePlacement,
-    dock: !canvas && dock === 'split' ? 'split' : 'panel',
+    dock: !panelOnly && dock === 'split' ? 'split' : 'panel',
     order: typeof order === 'number' ? order : -1,
     unseen: unseen === true,
     ...(typeof openRevision === 'number' ? { openRevision } : {}),
@@ -432,6 +432,7 @@ export class WebPaneService {
     if (content === null) throw new WebPaneError(400, input.content?.kind === 'canvas' ? 'Invalid canvas content' : input.content?.kind === 'guide' ? 'Invalid guide content' : 'Invalid simulator udid')
     const simulator = content?.kind === 'simulator' ? content : undefined
     const canvas = content?.kind === 'canvas' ? content : undefined
+    const panelOnly = content?.kind === 'canvas' || content?.kind === 'guide'
     if (simulator) {
       const existing = [...this.panes.values()].find((pane) => pane.content?.kind === 'simulator' && pane.content.udid === simulator.udid)
       if (existing) return existing
@@ -491,11 +492,11 @@ export class WebPaneService {
       windowId: input.windowId,
       anchorPaneId: input.anchorPaneId,
       placement,
-      dock: canvas ? 'panel' : input.dock ?? 'panel',
+      dock: panelOnly ? 'panel' : input.dock ?? 'panel',
       order: nextWebPaneOrder(this.list(), input.anchorPaneId),
       unseen: input.openedBy === 'agent',
-      ...(canvas || input.dock !== 'split' ? { layoutState: 'settled' as const } : {}),
-      ...(!canvas && input.dock === 'split' && input.anchorSize
+      ...(panelOnly || input.dock !== 'split' ? { layoutState: 'settled' as const } : {}),
+      ...(!panelOnly && input.dock === 'split' && input.anchorSize
         ? { layoutState: 'pending' as const, anchorSize: input.anchorSize }
         : {}),
       engine,
@@ -649,7 +650,7 @@ export class WebPaneService {
     const pane = this.panes.get(id)
     if (!pane) throw new WebPaneError(404, 'Web pane does not exist')
     if (dock !== 'panel' && dock !== 'split') throw new WebPaneError(400, 'Invalid dock')
-    if (dock === 'split' && pane.content?.kind === 'canvas') throw new WebPaneError(400, 'Canvas tabs cannot split out')
+    if (dock === 'split' && (pane.content?.kind === 'canvas' || pane.content?.kind === 'guide')) throw new WebPaneError(400, pane.content.kind === 'guide' ? 'Guide tabs cannot split out' : 'Canvas tabs cannot split out')
     if ((pane.dock ?? 'panel') === dock) return pane
     const size = parseAnchorSize(anchorSize)
     if (size === null || (dock === 'split' && !size)) throw new WebPaneError(400, 'Invalid anchor size')

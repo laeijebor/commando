@@ -6,6 +6,7 @@ import { NativeWebViewTile } from './NativeWebViewTile'
 import { ChromiumTileCard } from './ChromiumTileCard'
 import './web-pane.css'
 import { CanvasPane } from './CanvasPane'
+import { GuidePane } from './GuidePane'
 import { SimLiveView } from './SimLiveView'
 import type { PendingQueueApi } from './pendingQueueApi'
 
@@ -234,7 +235,7 @@ export function WebPaneCard({
     return () => window.clearTimeout(watchdog)
   }, [nativeChromium, nativeLoaded, webPane.url])
 
-  const dockAction = onDock && !detached && !detachedWindow && webPane.content?.kind !== 'canvas' ? (
+  const dockAction = onDock && !detached && !detachedWindow && webPane.content?.kind !== 'canvas' && webPane.content?.kind !== 'guide' ? (
     <button type="button" className="web-pane-button" onClick={onDock}
       title={webPane.dock === 'split' ? 'Back to panel' : 'Split out'}
       aria-label={webPane.dock === 'split' ? 'Back to panel' : 'Split out'}>
@@ -245,6 +246,12 @@ export function WebPaneCard({
   if (webPane.content?.kind === 'canvas') return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
       <CanvasPane key={`${webPane.content.artifactId}/${webPane.content.manifest}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
+    </article>
+  )
+
+  if (webPane.content?.kind === 'guide') return (
+    <article className="web-pane" data-web-pane-id={webPane.id}>
+      <GuidePane key={`${webPane.content.artifactId}/${webPane.content.file}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} file={webPane.content.file} artifactUrl={webPane.url} onTitle={onTitle} />
     </article>
   )
 
