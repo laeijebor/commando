@@ -7,6 +7,8 @@ import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
 import { ChatImageStore } from '../chat-images.js'
 import { chatResumeCommand, claudeCodeSwitchCommand, parseHostArgs, sessionFlags, terminalLine, withSessionSettings } from './main.js'
 import { AgentSession, PLAN_CAPTURED_MESSAGE, type SessionStore } from './session.js'
+import { createChatProviderSession } from './factory.js'
+import type { ChatProviderSession } from './provider.js'
 
 /** A stand-in for the SDK query: records prompts and lets the test push messages. */
 function fakeQuery() {
@@ -200,6 +202,20 @@ describe('AgentSession endings', () => {
 })
 
 describe('commando-agent arguments', () => {
+  it('parses Codex options and keeps the provider in resume commands', () => {
+    const args = parseHostArgs(['codex', '--model', 'gpt-5.4', '--effort', 'high', '--resume', 'abcd1234-0000'], { CLAUDE_CONFIG_DIR: '/x/.claudep' })
+    expect(args).toEqual({ provider: 'codex', permissionMode: 'default', model: 'gpt-5.4', effort: 'high', resume: 'abcd1234-0000' })
+    if (typeof args === 'string') throw new Error(args)
+    expect(chatResumeCommand('/c/commando-agent', args)).toBe('/c/commando-agent codex --model gpt-5.4 --effort high --permission-mode default')
+  })
+
+  it('lists both providers in help and rejects unsupported subcommands', () => {
+    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex>/)
+    expect(parseHostArgs(['cursor'], {})).toMatch(/^Usage/)
+    expect(parseHostArgs([], {})).toMatch(/^Usage/)
+    expect(parseHostArgs(['codex', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
+  })
+
   it('reads the config dir from the environment and flags, and maps permissions', () => {
     expect(parseHostArgs(['claude', '--dangerously-skip-permissions'], { CLAUDE_CONFIG_DIR: '/x/.claudep' }))
       .toEqual({ provider: 'claude', permissionMode: 'bypassPermissions', bypassAllowed: true, configDir: '/x/.claudep' })
@@ -207,12 +223,46 @@ describe('commando-agent arguments', () => {
       .toMatchObject({ configDir: '/y/.claudew', resume: 'abcdef12-34', model: 'opus', permissionMode: 'default' })
     expect(parseHostArgs(['claude', '--permission-mode', 'yolo'], {})).toMatch(/Unknown permission mode/)
     expect(parseHostArgs(['claude', '--resume', '$(rm -rf)'], {})).toMatch(/Invalid session id/)
-    expect(parseHostArgs(['codex'], {})).toMatch(/^Usage/)
+    expect(parseHostArgs(['codex'], {})).toEqual({ provider: 'codex', permissionMode: 'default' })
   })
 
   it('prints finished items as terminal lines and skips streaming ones', () => {
     expect(terminalLine({ id: 'a', turnId: 't', status: 'running', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text: 'partial' })).toBeNull()
     expect(terminalLine({ id: 'b', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'command', toolUseId: 'x', command: 'npm test' })).toContain('npm test')
+  })
+})
+
+describe('chat provider sessions', () => {
+  it('constructs Claude through the seam and refuses Codex before starting a session', async () => {
+    const spec = { paneId: '%3', cwd: '/work', permissionMode: 'default' as const, env: {}, claudePath: '/bin/claude' }
+    const session = await createChatProviderSession('claude', spec)
+    expect(session.snapshot().session).toMatchObject({ provider: 'claude', status: 'starting' })
+    expect(session.tui?.label).toBe('Claude Code')
+    session.close()
+    await expect(createChatProviderSession('codex', spec)).rejects.toThrow('Codex chat is not available yet')
+  })
+
+  it('keeps Claude TUI settings and readiness behind the optional capability', async () => {
+    const { session: claude, fake } = started({ claudePath: '/bin/claude', model: 'sonnet', effort: 'high', permissionMode: 'acceptEdits', bypassAllowed: true })
+    const session: ChatProviderSession = claude
+    await tick()
+    const tui = session.tui!
+    expect(() => tui.command(undefined, [], 'abcd1234-0000')).toThrow(/commando-agent launcher/)
+    expect(() => tui.command('/c/commando-agent', [], undefined)).toThrow('this chat has no conversation yet')
+    const info = session.snapshot().session
+    const args = withSessionSettings({ provider: 'claude', permissionMode: 'acceptEdits', bypassAllowed: true }, info)
+    const flags = [...sessionFlags(args), '--readable-dir', '/state/chat-plans/plan-a']
+    expect(tui.command('/c/commando-agent', flags, 'abcd1234-0000'))
+      .toBe(claudeCodeSwitchCommand({ ...args, readableDir: '/state/chat-plans/plan-a' }, '/bin/claude', '/c/commando-agent', 'abcd1234-0000'))
+    expect(tui.env).toEqual({ CLAUDE_CONFIG_DIR: '/home/me/.claudew' })
+    const ready = vi.fn()
+    tui.onReady(ready)
+    fake.push({ type: 'system', subtype: 'init', session_id: 'abcd1234-0000', model: 'claude-sonnet-5-5' } as SDKMessage)
+    await tick()
+    await tui.requestSwitch('after_turn')
+    expect(ready).toHaveBeenCalledOnce()
+    tui.endSwitch()
+    session.close()
   })
 })
 

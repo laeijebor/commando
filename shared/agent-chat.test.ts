@@ -33,6 +33,24 @@ describe('parseChatItem', () => {
 
 const session = { paneId: '%1', provider: 'claude', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 1 }
 
+describe('chat providers', () => {
+  it.each(['claude', 'codex'])('keeps %s on sessions, snapshots and updates', (provider) => {
+    const info = { ...session, provider }
+    expect(parseChatSessionInfo({ ...info, extra: 'dropped' })).toEqual(info)
+    expect(parseHostMessage({ type: 'session_snapshot', session: info, items: [] }))
+      .toEqual({ type: 'session_snapshot', session: info, items: [] })
+    expect(parseHostMessage({ type: 'session_update', session: info }))
+      .toEqual({ type: 'session_update', session: info })
+  })
+
+  it.each(['cursor', '', undefined, 7])('rejects unknown provider %s', (provider) => {
+    const info = { ...session, provider }
+    expect(parseChatSessionInfo(info)).toBeNull()
+    expect(parseHostMessage({ type: 'session_snapshot', session: info, items: [] })).toBeNull()
+    expect(parseHostMessage({ type: 'session_update', session: info })).toBeNull()
+  })
+})
+
 describe('chat settings', () => {
   it('accepts a picker change with known values only', () => {
     expect(parseChatSettingsChange({ model: 'sonnet', effort: 'high', permissionMode: 'plan', extra: 1 })).toEqual({ model: 'sonnet', effort: 'high', permissionMode: 'plan' })

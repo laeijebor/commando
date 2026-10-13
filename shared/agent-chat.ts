@@ -41,7 +41,7 @@ export function hostTakesSwitch(session: { hostVersion: number }): boolean {
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
-export type ChatProvider = 'claude'
+export type ChatProvider = 'claude' | 'codex'
 export type ChatItemStatus = 'running' | 'completed' | 'failed' | 'interrupted'
 export type ChatSessionStatus = 'starting' | 'idle' | 'running' | 'waiting' | 'closed' | 'error'
 
@@ -802,7 +802,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
 
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isRecord(value)) return null
-  if (!isPaneId(value.paneId) || value.provider !== 'claude' || typeof value.cwd !== 'string') return null
+  if (!isPaneId(value.paneId) || (value.provider !== 'claude' && value.provider !== 'codex') || typeof value.cwd !== 'string') return null
   if (!SESSION_STATUSES.has(value.status as ChatSessionStatus)) return null
   if (typeof value.hostPid !== 'number' || typeof value.hostVersion !== 'number') return null
   for (const key of ['sessionId', 'model', 'permissionMode', 'configDir', 'error', 'hostBuild', 'title', 'resumeCommand'] as const) {
@@ -815,7 +815,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   const queue = parseQueue(value.queue)
   return {
     paneId: value.paneId,
-    provider: 'claude',
+    provider: value.provider,
     cwd: value.cwd,
     status: value.status as ChatSessionStatus,
     hostPid: value.hostPid,

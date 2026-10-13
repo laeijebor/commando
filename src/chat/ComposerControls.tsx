@@ -18,6 +18,10 @@ export const PERMISSION_MODES: Record<ChatSessionPermissionMode, { label: string
   bypassPermissions: { label: 'Bypass permissions', description: 'Nothing asks first. Only for chats started with it.' },
 }
 
+export function providerLabel(session: Pick<ChatSessionInfo, 'provider'>): string {
+  return session.provider === 'claude' ? 'Claude' : 'Codex'
+}
+
 export function permissionLabel(mode: string): string {
   return PERMISSION_MODES[mode as ChatSessionPermissionMode]?.label ?? mode
 }
@@ -164,7 +168,7 @@ export function PermissionPicker({ session, disabled, onConfigure }: { session: 
               key={mode}
               checked={mode === current}
               label={PERMISSION_MODES[mode].label}
-              description={PERMISSION_MODES[mode].description}
+              description={PERMISSION_MODES[mode].description.replace('Claude', providerLabel(session))}
               onSelect={() => {
                 setOpen(false)
                 if (mode !== current) onConfigure({ permissionMode: mode })
