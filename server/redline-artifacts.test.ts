@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   defaultRedlineArtifactStatePath,
+  MAX_ARTIFACT_DIRS,
   REDLINE_ARTIFACT_TTL_MS,
   RedlineArtifactError,
   RedlineArtifactRegistry,
@@ -79,9 +80,9 @@ describe('RedlineArtifactRegistry', () => {
     expect(() => registry.register(filePath)).toThrow(RedlineArtifactError)
   })
 
-  it('caps registrations at 16', () => {
+  it('caps registrations at MAX_ARTIFACT_DIRS', () => {
     const registry = new RedlineArtifactRegistry()
-    for (let index = 0; index < 16; index += 1) registry.register(artifactDir())
+    for (let index = 0; index < MAX_ARTIFACT_DIRS; index += 1) registry.register(artifactDir())
     expect(() => registry.register(artifactDir())).toThrow(RedlineArtifactError)
   })
 
@@ -158,7 +159,7 @@ describe('RedlineArtifactRegistry', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
     let clock = 1_000
     const registry = new RedlineArtifactRegistry({ statePath, now: () => clock })
-    const expiredIds = Array.from({ length: 16 }, () => registry.register(realpathSync(artifactDir())).id)
+    const expiredIds = Array.from({ length: MAX_ARTIFACT_DIRS }, () => registry.register(realpathSync(artifactDir())).id)
     clock += REDLINE_ARTIFACT_TTL_MS + 1
     const dir = realpathSync(artifactDir())
     const { id } = registry.register(dir)
@@ -179,9 +180,9 @@ describe('RedlineArtifactRegistry', () => {
     expect(reborn.resolve(id, 'index.html')).toBeNull()
   })
 
-  it('keeps the 16 newest valid persisted entries', () => {
+  it('keeps the MAX_ARTIFACT_DIRS newest valid persisted entries', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
-    const artifacts = Array.from({ length: 17 }, (_, index) => ({
+    const artifacts = Array.from({ length: MAX_ARTIFACT_DIRS + 1 }, (_, index) => ({
       id: index.toString(16).padStart(16, '0'),
       dir: realpathSync(artifactDir()),
       registeredAt: index + 1,

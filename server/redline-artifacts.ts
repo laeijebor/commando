@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileS
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
 
-const MAX_ARTIFACT_DIRS = 16
+export const MAX_ARTIFACT_DIRS = 64
 
 /** Persisted registrations expire after a week — a review never runs that long. */
 export const REDLINE_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1_000
