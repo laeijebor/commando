@@ -420,6 +420,8 @@ function parseCreatedTarget(output: string, kind: TmuxCreatedTarget['kind']): Tm
 }
 
 export class TmuxCreator {
+  private readonly launching = new Set<string>()
+
   constructor(
     private readonly run: TmuxCreateCommandRunner = runTmuxCreateCommand,
     private readonly socketArgs: readonly string[] = tmuxSocketArgsFromEnv(),
@@ -558,18 +560,24 @@ export class TmuxCreator {
     if (typeof input.paneId !== 'string' || !PANE_ID.test(input.paneId)) throw new Error('Invalid tmux pane id')
     const agent = validatedAgent(input.agent)
     const agentArgv = agent ? await this.agentArgv(agent) : undefined
-    const marker = await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{${EMPTY_PANE_OPTION}}`])
-    if (marker.trim() !== '1') throw new Error('This pane is already running something')
-    // Clear the marker first so a second launch request cannot kill the first one.
-    await this.setPaneEmpty(input.paneId, false)
+    // The daemon is the only launcher, so this keeps a second request from killing the first.
+    if (this.launching.has(input.paneId)) throw new Error('This pane is already starting something')
+    this.launching.add(input.paneId)
     try {
-      await this.run([
-        ...this.socketArgs, 'respawn-pane', '-k', '-t', input.paneId,
-        ...(agentArgv ? [...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv)] : [LOGIN_SHELL_COMMAND]),
-      ])
-    } catch (error) {
-      await this.setPaneEmpty(input.paneId, true).catch(() => undefined)
-      throw error
+      const marker = await this.run([...this.socketArgs, 'display-message', '-p', '-t', input.paneId, `#{${EMPTY_PANE_OPTION}}`])
+      if (marker.trim() !== '1') throw new Error('This pane is already running something')
+      await this.setPaneEmpty(input.paneId, false)
+      try {
+        await this.run([
+          ...this.socketArgs, 'respawn-pane', '-k', '-t', input.paneId,
+          ...(agentArgv ? [...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv)] : [LOGIN_SHELL_COMMAND]),
+        ])
+      } catch (error) {
+        await this.setPaneEmpty(input.paneId, true).catch(() => undefined)
+        throw error
+      }
+    } finally {
+      this.launching.delete(input.paneId)
     }
   }
 

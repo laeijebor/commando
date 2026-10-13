@@ -431,6 +431,19 @@ describe('launching into an empty pane', () => {
     await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '3' })).rejects.toThrow('Invalid tmux pane id')
   })
 
+  it('refuses a second launch into a pane that is still starting', async () => {
+    let release!: (value: string) => void
+    const run = vi.fn(async (args: readonly string[]): Promise<string> => args.includes('display-message')
+      ? new Promise<string>((resolve) => { release = resolve })
+      : '')
+    const creator = new TmuxCreator(run, [])
+    const first = creator.launchInEmptyPane({ paneId: '%3' })
+    await expect(creator.launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('already starting')
+    release('1\n')
+    await first
+    expect(run.mock.calls.filter(([args]) => args.includes('respawn-pane'))).toHaveLength(1)
+  })
+
   it('marks the pane empty again when the launch fails', async () => {
     const run = tmux('1', { respawnFails: true })
     await expect(new TmuxCreator(run, []).launchInEmptyPane({ paneId: '%3' })).rejects.toThrow('respawn failed')
