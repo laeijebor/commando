@@ -1747,9 +1747,11 @@ async function main(): Promise<void> {
     if (!listening) return
     try {
       for (const lease of simLeaseRegistry.takeClosed(leasePaneExists)) {
-        void releaseClosedSimLease(lease)
-          .catch((error: unknown) => console.warn(`[sim-leases] could not release ${lease.udid} after its pane closed`, error))
-          .finally(() => simLeaseRegistry.finishRelease(lease.udid))
+        void releaseClosedSimLease(lease).then(() => true, (error: unknown) => {
+          console.warn(`[sim-leases] could not release ${lease.udid} after its pane closed`, error)
+          return false
+        }).then((released) => simLeaseRegistry.finishRelease(lease.udid, released))
+          .catch((error: unknown) => console.error('[sim-leases] failed to record a simulator release', error))
       }
     } catch (error) { console.error('[sim-leases] failed to end leases of closed panes', error) }
   }

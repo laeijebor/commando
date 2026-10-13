@@ -374,8 +374,10 @@ describe('SimWallApi', () => {
     } })
     expect(sims.find((sim) => sim.udid === B)).toMatchObject({ lease: null, endedLease: { reason: 'released' } })
     expect(sims.find((sim) => sim.udid === C)).toMatchObject({ lease: null, endedLease: null })
-    expect(registry.listEnded().map((entry) => entry.udid).sort()).toEqual([A, B])
+    // D's pane closed while its device was shut down: the release it is still owed keeps it until the daemon runs it.
+    expect(registry.listEnded().map((entry) => entry.udid).sort()).toEqual([A, B, D])
     registry.upsert('%2', target, { ...input, udid: A })
+    for (const lease of registry.takeClosed((pane) => pane !== '%9')) registry.finishRelease(lease.udid, true)
     devices.find((device) => device.udid === B)!.state = 'Shutdown'
     advance(2500)
     await vi.waitFor(async () => expect((await api.list()).find((sim) => sim.udid === A)).toMatchObject({ lease: { paneId: '%2' }, endedLease: null }))
