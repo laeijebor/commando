@@ -125,16 +125,25 @@ describe('CodexChatSession', () => {
     expect(turns()).toEqual(['priority', null])
     expect(session.snapshot().session.fast).toBeUndefined()
   })
-  it('shows a fast tier Codex already runs the thread on as fast mode', async () => {
-    const { session, client } = harness()
-    const request = client.request.getMockImplementation()!
-    client.request.mockImplementation(async (method, params) => {
-      const result = await request(method, params)
-      return method === 'thread/start' ? { ...(result as object), serviceTier: 'priority' } : result
-    })
-    await session.start()
-    expect(session.snapshot().session.fast).toBe(true)
-    session.close()
+  it('shows a new thread on a fast tier from config as fast mode, but keeps a resume without --fast standard', async () => {
+    const onFastTier = (spec: Partial<AgentSessionSpec>) => {
+      const result = harness(spec)
+      const request = result.client.request.getMockImplementation()!
+      result.client.request.mockImplementation(async (method, params) => {
+        const reply = await request(method, params)
+        return method === 'thread/start' || method === 'thread/resume' ? { ...(reply as object), serviceTier: 'priority' } : reply
+      })
+      return result
+    }
+    const fresh = onFastTier({})
+    await fresh.session.start()
+    expect(fresh.session.snapshot().session.fast).toBe(true)
+    fresh.session.close()
+    // The thread's last turn ran fast, then the chat turned fast off before restarting.
+    const resumed = onFastTier({ resume: thread.id })
+    await resumed.session.start()
+    expect(resumed.session.snapshot().session.fast).toBeUndefined()
+    resumed.session.close()
   })
   it('drops fast mode on a model without it, and refuses to turn it on there', async () => {
     const { session } = await running({ fast: true })
