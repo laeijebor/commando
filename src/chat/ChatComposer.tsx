@@ -784,7 +784,7 @@ export function ChatComposer({
         data-testid="chat-composer"
       >
         {relayTarget && onClearRelay ? <RelayChip provider={provider} label={relayTarget.label} onClear={onClearRelay} /> : null}
-        {planFollowUp ? <PlanReadyBanner provider={provider} title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
+        {planFollowUp ? <PlanReadyBanner provider={provider} session={session} title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
         {queue.length && onQueue ? (
           <QueuedMessages
             provider={provider}

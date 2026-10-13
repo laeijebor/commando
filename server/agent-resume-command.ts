@@ -334,6 +334,7 @@ export function buildChatResumeCommand(
   if (provider === 'claude' && !flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
   // A shell restored by tmux may not know which daemon to report to.
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
+  if (provider === 'codex' && launch.env.CODEX_HOME) env.push(`CODEX_HOME=${launch.env.CODEX_HOME}`)
   return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId].map(shellQuote).join(' ')
 }
 

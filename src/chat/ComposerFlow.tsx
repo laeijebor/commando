@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ImageIcon, ListChecks, MessageSquareShare, Pencil, SplitSquareHorizontal, X, Zap } from 'lucide-react'
-import type { ChatQueueAction, ChatQueuedMessage, ChatSessionPermissionMode } from '../../shared/agent-chat'
+import type { ChatQueueAction, ChatQueuedMessage, ChatSessionInfo, ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { permissionLabel } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { Button } from './ui/button'
@@ -93,7 +93,7 @@ export function QueuedMessages({ provider = 'Claude', queue, disabled, onChange,
 }
 
 /** "Plan ready", after t3code's ComposerPlanFollowUpBanner. */
-export function PlanReadyBanner({ provider = 'Claude', title, implementMode, refining }: { provider?: string; title: string; implementMode: ChatSessionPermissionMode; refining: boolean }) {
+export function PlanReadyBanner({ provider = 'Claude', session, title, implementMode, refining }: { provider?: string; session: Pick<ChatSessionInfo, 'provider'>; title: string; implementMode: ChatSessionPermissionMode; refining: boolean }) {
   return (
     <div className="flex min-w-0 items-start gap-2 border-b border-border bg-secondary px-3 py-2 text-xs text-muted-foreground" role="status" data-testid="plan-ready">
       <ListChecks className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
@@ -103,7 +103,7 @@ export function PlanReadyBanner({ provider = 'Claude', title, implementMode, ref
         <span className="block">
           {refining
             ? `Refine sends your notes; ${provider} stays in plan mode.`
-            : `Implement switches to ${permissionLabel(implementMode)} and sends the plan. Type to refine it instead.`}
+            : `Implement switches to ${permissionLabel(implementMode, session)} and sends the plan. Type to refine it instead.`}
         </span>
       </span>
     </div>
