@@ -46,6 +46,15 @@ function limit(fields: Omit<ChatPlanLimit, 'resetsAt' | 'reached'>, resetsAt: nu
   }
 }
 
+/** The windows a row-less `/usage` report names as fields: field, kind, title. */
+const NAMED_WINDOWS = [
+  ['five_hour', 'session', 'Current session'],
+  ['seven_day', 'weekly_all', 'Weekly · all models'],
+  ['seven_day_opus', 'weekly_scoped', 'Weekly · Opus'],
+  ['seven_day_sonnet', 'weekly_scoped', 'Weekly · Sonnet'],
+  ['seven_day_oauth_apps', 'weekly_scoped', 'Weekly · OAuth apps'],
+] as const
+
 /** Plan limits don't apply to this login (API key, Bedrock, Vertex); they won't start mid-session. */
 export const NO_PLAN_LIMITS = 'no_plan_limits'
 
@@ -67,22 +76,18 @@ export function toPlanUsage(report: unknown, now: number): ChatPlanUsage | typeo
       return [limit({ kind: row.kind, title: limitTitle(row.kind, row.group, row.scope), percent: used, severity: severity(row.severity) }, isoTime(row.resets_at))]
     })
   }
-  // A server that predates the rows still has the two headline windows.
+  // Without rows (an older server, or a cached answer) the windows are named fields.
   if (!limits.length) {
-    for (const [key, kind] of [['five_hour', 'session'], ['seven_day', 'weekly_all']] as const) {
-      const window = rateLimits[key]
-      if (!isRecord(window)) continue
+    const add = (window: unknown, kind: string, title: string) => {
+      if (!isRecord(window) || limits.some((entry) => entry.title === title)) return
       const used = percent(window.utilization)
-      if (used === undefined) continue
-      limits.push(limit({ kind, title: limitTitle(kind, undefined, undefined), percent: used, severity: 'normal' }, isoTime(window.resets_at)))
+      if (used !== undefined) limits.push(limit({ kind, title, percent: used, severity: 'normal' }, isoTime(window.resets_at)))
     }
-    // Per-model weekly windows (e.g. Fable) come separately in this shape.
+    for (const [key, kind, title] of NAMED_WINDOWS) add(rateLimits[key], kind, title)
+    // Per-model weekly windows (e.g. Fable) the named fields don't cover.
     for (const window of Array.isArray(rateLimits.model_scoped) ? rateLimits.model_scoped : []) {
-      if (!isRecord(window)) continue
-      const used = percent(window.utilization)
-      const name = displayName(window)
-      if (used === undefined || !name) continue
-      limits.push(limit({ kind: 'weekly_scoped', title: `Weekly · ${name}`, percent: used, severity: 'normal' }, isoTime(window.resets_at)))
+      const name = isRecord(window) ? displayName(window) : undefined
+      if (name) add(window, 'weekly_scoped', `Weekly · ${name}`)
     }
   }
   if (!limits.length) return null

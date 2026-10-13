@@ -43,6 +43,11 @@ describe('toPlanUsage', () => {
     expect(reading({ ...REPORT, rate_limits: { ...rest, model_scoped: modelScoped } }).limits.map((limit) => [limit.title, limit.percent])).toEqual([
       ['Current session', 38], ['Weekly · all models', 43], ['Weekly · Fable', 9],
     ])
+    // Named per-model fields count once, even when model_scoped repeats them.
+    const named = { ...rest, seven_day_opus: { utilization: 70, resets_at: null }, seven_day_oauth_apps: { utilization: 2, resets_at: null }, model_scoped: [{ display_name: 'Opus', utilization: 70, resets_at: null }] }
+    expect(reading({ ...REPORT, rate_limits: named }).limits.map((limit) => [limit.kind, limit.title, limit.percent])).toEqual([
+      ['session', 'Current session', 38], ['weekly_all', 'Weekly · all models', 43], ['weekly_scoped', 'Weekly · Opus', 70], ['weekly_scoped', 'Weekly · OAuth apps', 2],
+    ])
   })
 
   it('marks a full window as reached', () => {
