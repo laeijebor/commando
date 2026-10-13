@@ -499,6 +499,16 @@ describe('AgentSession settings', () => {
     expect(sessions.at(-1)?.fast).toBeUndefined()
   })
 
+  it('records a model switch even when Claude refuses to turn fast mode off', async () => {
+    const { fake, session, sessions, items } = started({ fast: true })
+    await tick()
+    fake.applyFlagSettings.mockRejectedValueOnce(new Error('busy'))
+    await session.configure({ model: 'sonnet' })
+    expect(sessions.at(-1)).toMatchObject({ selectedModel: 'sonnet', model: 'claude-sonnet-5-5' })
+    expect(sessions.at(-1)?.fast).toBeUndefined()
+    expect([...items.values()].flatMap((item) => item.kind === 'notice' ? [item.text] : [])).toEqual(["Couldn't turn fast mode off: busy"])
+  })
+
   it('says once why a fast chat runs at standard speed', async () => {
     const { fake, items } = started({ fast: true })
     await tick()

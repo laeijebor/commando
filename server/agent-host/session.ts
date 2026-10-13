@@ -846,6 +846,7 @@ export class AgentSession implements ChatProviderSession {
       this.emitItems(this.mapper.notice('error', "This session isn't running, so its settings can't change."))
       return
     }
+    let clearFast = false
     if (change.model !== undefined) {
       const option = this.info.models?.find((model) => model.value === change.model)
       if (this.info.models && !option) {
@@ -860,7 +861,7 @@ export class AgentSession implements ChatProviderSession {
           const keepEffort = effort && (!option || option.efforts?.includes(effort))
           // Fast mode stays on only while the model offers it, so a later switch back doesn't turn it on unasked.
           const keepFast = fast && (!option || option.supportsFast)
-          if (fast && !keepFast) await handle.applyFlagSettings({ fastMode: false })
+          clearFast = Boolean(fast && !keepFast)
           this.info = {
             ...rest,
             model: option?.resolvedModel ?? change.model,
@@ -872,6 +873,12 @@ export class AgentSession implements ChatProviderSession {
           this.emitItems(this.mapper.notice('error', `Couldn't switch the model: ${errorText(error)}`))
         }
       }
+    }
+    // After the switch is recorded, so a refusal here can't leave the chat naming the old model.
+    if (clearFast) {
+      await handle.applyFlagSettings({ fastMode: false }).catch((error: unknown) => {
+        this.emitItems(this.mapper.notice('error', `Couldn't turn fast mode off: ${errorText(error)}`))
+      })
     }
     // A stale picker can offer an effort the current model lacks, which would run as another.
     const running = selectedModelOption(this.info)

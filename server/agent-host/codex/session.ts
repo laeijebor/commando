@@ -219,8 +219,9 @@ export class CodexChatSession implements ChatProviderSession {
       const runningModel = this.info.selectedModel ?? string(response.model)
       this.update({ sessionId: thread.id, model: string(response.model), selectedModel: runningModel,
         ...(isChatEffort(response.reasoningEffort) && !this.info.effort ? { effort: response.reasoningEffort } : {}),
-        // A fast tier from Codex's config (or the resumed thread) shows as fast mode, so turns keep it.
-        ...(runningModel && response.serviceTier && response.serviceTier === this.fastTiers.get(runningModel) ? { fast: true } : {}),
+        // A new thread on a fast tier from Codex's config shows as fast mode, so turns keep it. A resumed
+        // thread reports the tier of its last turn, which an unsent fast-off pick (no --fast) overrides.
+        ...(!this.spec.resume && runningModel && response.serviceTier && response.serviceTier === this.fastTiers.get(runningModel) ? { fast: true } : {}),
         title: thread.name || thread.preview || undefined })
       if (this.spec.resume) {
         if (thread.historyMode === 'paginated') {
