@@ -41,8 +41,8 @@ function age(updatedAt: number, now: number): string {
   return days < 30 ? `${days}d ago` : new Date(updatedAt).toLocaleDateString()
 }
 
-function folder(path: string, home: string | undefined): string {
-  return home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path
+function folder(path: string): string {
+  return path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~')
 }
 
 /**
@@ -66,7 +66,8 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
   const [conversations, setConversations] = useState<ChatConversation[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const [index, setIndex] = useState(0)
+  /** The highlighted row; null until the keys or mouse move it. */
+  const [chosen, setIndex] = useState<number | null>(null)
   const [pending, setPending] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
@@ -82,8 +83,9 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
 
   const groups = useMemo(() => groupChatConversations(conversations ?? [], pane, query), [conversations, pane, query])
   const rows = useMemo(() => groups.flatMap((group) => group.conversations), [groups])
-  const selected = rows[Math.min(index, rows.length - 1)]
-  const home = /^(\/Users\/[^/]+|\/home\/[^/]+)/.exec(pane.path)?.[1]
+  // Start on the first conversation that isn't this chat's own.
+  const index = Math.min(chosen ?? Math.max(0, rows.findIndex((entry) => chatConversationKey(entry.provider, entry.sessionId) !== current)), Math.max(0, rows.length - 1))
+  const selected = rows[index]
 
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
@@ -108,7 +110,7 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
-      if (rows.length) setIndex((value) => (Math.min(value, rows.length - 1) + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length)
+      if (rows.length) setIndex((index + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length)
     } else if (event.key === 'Enter') {
       event.preventDefault()
       void pick(selected, event.metaKey || event.ctrlKey ? 'split' : 'replace')
@@ -127,7 +129,7 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
           <input
             ref={input}
             value={query}
-            onChange={(event) => { setQuery(event.target.value); setIndex(0) }}
+            onChange={(event) => { setQuery(event.target.value); setIndex(null) }}
             onKeyDown={onKeyDown}
             placeholder="Switch to a conversation…"
             aria-label="Search conversations"
@@ -148,16 +150,16 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
                 const position = row
                 const key = chatConversationKey(conversation.provider, conversation.sessionId)
                 const where = key === current ? 'This chat' : open.get(key) ? `Open in ${open.get(key)!.label}` : undefined
-                const detail = [age(conversation.updatedAt, now), folder(conversation.cwd, home), conversation.branch].filter(Boolean).join(' · ')
+                const detail = [age(conversation.updatedAt, now), folder(conversation.cwd), conversation.branch].filter(Boolean).join(' · ')
                 return (
                   <button
                     type="button"
                     id={`conversation-${conversation.provider}-${conversation.sessionId}`}
                     key={key}
                     role="option"
-                    aria-selected={position === Math.min(index, rows.length - 1)}
-                    className={position === Math.min(index, rows.length - 1) ? 'active' : ''}
-                    onMouseEnter={() => setIndex(position)}
+                    aria-selected={position === index}
+                    className={position === index ? 'active' : ''}
+                    onMouseMove={() => { if (index !== position) setIndex(position) }}
                     onClick={(event) => void pick(conversation, event.metaKey || event.ctrlKey ? 'split' : 'replace')}
                   >
                     <span className="command-icon"><History aria-hidden="true" /></span>

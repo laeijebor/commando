@@ -68,6 +68,9 @@ describe('ConversationPicker', () => {
     expect(screen.getByRole('option')).toHaveTextContent('This chat')
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onClose).toHaveBeenCalled()
+    // Unfiltered, the highlight starts past this chat's own conversation.
+    fireEvent.change(input, { target: { value: '' } })
+    expect(screen.getAllByRole('option').find((option) => option.getAttribute('aria-selected') === 'true')).toHaveTextContent('Open elsewhere')
     fireEvent.change(input, { target: { value: 'me/other' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(await screen.findByRole('alert')).toHaveTextContent('Its folder no longer exists')

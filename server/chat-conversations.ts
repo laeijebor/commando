@@ -1,6 +1,7 @@
 import { open, readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
+import { stripAttachmentNotes } from '../shared/agent-chat.js'
 import { isChatConversationSessionId, type ChatConversation, type ChatConversationProvider } from '../shared/chat-conversations.js'
 import type { PaneRepo } from '../shared/protocol.js'
 import { listClaudeProfiles } from './tmux-create.js'
@@ -73,7 +74,8 @@ function text(value: unknown): string {
 
 /** A prompt the person typed, not a command caveat, hook output or injected instructions. */
 function typedPrompt(value: string): string | undefined {
-  const trimmed = value.trim()
+  // Attached images add notes (Codex's `<image …>` tags, Commando's saved-path notes) after the text.
+  const trimmed = stripAttachmentNotes(value.replace(/<\/?image\b[^>]*>/g, ' ')).trim()
   if (!trimmed || trimmed.startsWith('<') || trimmed.startsWith('# AGENTS.md') || trimmed.startsWith('Base directory for this skill')) return undefined
   return trimmed
 }

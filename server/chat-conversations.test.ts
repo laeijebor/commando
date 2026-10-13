@@ -44,7 +44,7 @@ describe('ChatConversationIndex', () => {
       { type: 'ai-title', aiTitle: 'Reconnect fix' },
       { type: 'ai-title', aiTitle: 'Reconnect fix and tests' },
     ], 2_000_000)
-    await codexRollout(CODEX_ID, {}, [{ type: 'event_msg', payload: { type: 'user_message', message: 'Tidy the flags' } }], 3_000_000)
+    await codexRollout(CODEX_ID, {}, [{ type: 'event_msg', payload: { type: 'user_message', message: 'Tidy the <image name=[Image #1] path="/x/1.png">\n</image> flags' } }], 3_000_000)
     const { index: conversations } = index()
     expect(await conversations.list()).toEqual([
       { provider: 'codex', sessionId: CODEX_ID, cwd: '/work/app', title: 'Tidy the flags', updatedAt: 3_000_000, repoRoot: '/work/app', checkoutRoot: '/work/app' },
