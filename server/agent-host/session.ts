@@ -309,6 +309,8 @@ export class AgentSession implements ChatProviderSession {
   private planUsageAskedAt = 0
   /** Set when the account has no plan limits (API key, Bedrock) or the SDK lost the method. */
   private planUsageOff = false
+  /** The read awaiting its answer, or 0. */
+  private planUsageInFlight = 0
   private planUsageTimer: NodeJS.Timeout | undefined
   /** Set by interrupt(); the turn's error result then reads as interrupted. */
   private interruptRequested = false
@@ -1013,6 +1015,7 @@ export class AgentSession implements ChatProviderSession {
     }
     const read = ++this.planUsageReads
     this.planUsageAskedAt = this.now()
+    this.planUsageInFlight = read
     try {
       const report = await readUsage.call(handle, { skipBehaviors: true })
       if (read !== this.planUsageReads) return
@@ -1033,6 +1036,8 @@ export class AgentSession implements ChatProviderSession {
     } catch (error) {
       // The meter keeps the last reading, which shows as stale once it ages.
       if (this.info.status !== 'closed' && this.info.status !== 'error') this.spec.log?.(`Couldn't read plan usage: ${errorText(error)}`)
+    } finally {
+      if (this.planUsageInFlight === read) this.planUsageInFlight = 0
     }
   }
 
@@ -1199,8 +1204,11 @@ export class AgentSession implements ChatProviderSession {
       const usage = applyRateLimitEvent(this.info.planUsage, message.rate_limit_info, this.now())
       if (usage && usage !== this.info.planUsage) {
         // A /usage read already under way predates this; drop it, and let the next turn read again.
-        this.planUsageReads += 1
-        this.planUsageAskedAt = 0
+        if (this.planUsageInFlight) {
+          this.planUsageReads += 1
+          this.planUsageAskedAt = 0
+          this.planUsageInFlight = 0
+        }
         this.info = { ...this.info, planUsage: usage }
         this.emitSession()
       }
