@@ -4,7 +4,7 @@ import { requestKey } from './protocol.js'
 import type { CodexTransport } from './client.js'
 import { CodexChatSession, codexContextUsage, codexModels, codexPermissions, codexTuiSwitchCommand } from './session.js'
 import type { AgentSessionSpec } from '../session.js'
-import { parseChatSessionInfo } from '../../../shared/agent-chat.js'
+import { MAX_CHAT_ITEMS, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 
 const model = (id: string, efforts = ['low', 'medium', 'high']) => ({ id, model: id, upgrade: null, upgradeInfo: null, availabilityNux: null, displayName: id, description: 'Test model', modelSpecialty: null, hidden: false, supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], supportsPersonality: false, multiAgentVersion: null, additionalSpeedTiers: [], serviceTiers: [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: id === 'test-model' })
 const thread = { id: 'thread-123', sessionId: 'thread-123', forkedFromId: null, parentThreadId: null, preview: '', ephemeral: false, section: null, sectionEnteredAt: null, projectId: null, historyMode: 'legacy', modelProvider: 'openai', model: 'test-model', reasoningEffort: 'medium', createdAt: 1, updatedAt: 1, recencyAt: null, status: { type: 'idle' }, path: null, cwd: '/tmp', cliVersion: '0.159.3', originator: 'commando', source: 'appServer', threadSource: null, agentNickname: null, agentRole: null, gitInfo: null, name: null, turns: [] }
@@ -296,7 +296,7 @@ describe('Codex controls', () => {
 })
 
 describe('Codex paginated history and request validation', () => {
-  it('hydrates paginated threads in order with full items and cursors', async () => {
+  it('loads a short paginated thread fully and replays turns chronologically with unchanged ids', async () => {
     const { session, client } = harness({ resume: thread.id })
     const original = client.request.getMockImplementation()!
     client.request.mockImplementation(async (method, params) => {
@@ -304,16 +304,88 @@ describe('Codex paginated history and request validation', () => {
       if (method === 'thread/turns/list') {
         client.requests.push({ method, params })
         const second = 'cursor' in params && params.cursor === 'second'
-        const id = second ? 'newer' : 'older'
-        return { data: [turn(id, 'completed', [{ type: 'agentMessage', id, text: id, phase: null, memoryCitation: null, delivery: null, questions: null }])], nextCursor: second ? null : 'second', backwardsCursor: null }
+        const ids = second ? ['older'] : ['newest', 'newer']
+        return { data: ids.map((id) => turn(id, 'completed', [{ type: 'agentMessage', id, text: id, phase: null, memoryCitation: null, delivery: null, questions: null }])), nextCursor: second ? null : 'second', backwardsCursor: null }
       }
       return original(method, params)
     })
     await session.start()
-    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['older', 'newer'])
-    expect(client.requests.filter((request) => request.method === 'thread/turns/list')).toMatchObject([{ params: { itemsView: 'full', sortDirection: 'asc' } }, { params: { cursor: 'second' } }])
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['older', 'newer', 'newest'])
+    expect(session.snapshot().items.map((item) => item.id)).toEqual(['codex:older:older', 'codex:newer:newer', 'codex:newest:newest'])
+    expect(client.requests.filter((request) => request.method === 'thread/turns/list')).toMatchObject([{ params: { itemsView: 'full', sortDirection: 'desc' } }, { params: { cursor: 'second' } }])
     expect(client.requests.some((request) => request.method === 'thread/read')).toBe(false)
     session.close()
+  })
+  it('stops fetching a long paginated thread at the mapped chat item limit', async () => {
+    const { session, client } = harness({ resume: thread.id })
+    const original = client.request.getMockImplementation()!
+    const pageSize = 100
+    const itemsPerTurn = 10
+    const totalTurns = MAX_CHAT_ITEMS / itemsPerTurn + pageSize
+    client.request.mockImplementation(async (method, params) => {
+      if (method === 'thread/resume') return { thread: { ...thread, historyMode: 'paginated' }, model: 'test-model' }
+      if (method === 'thread/turns/list') {
+        client.requests.push({ method, params })
+        const offset = 'cursor' in params ? Number(params.cursor) : 0
+        return {
+          data: Array.from({ length: pageSize }, (_, index) => {
+            const id = String(totalTurns - offset - index)
+            return turn(id, 'completed', [
+              { type: 'fileChange', id: 'empty-change', changes: [] },
+              ...Array.from({ length: itemsPerTurn }, (_, item) => ({ type: 'agentMessage', id: String(item), text: `${id}:${item}` })),
+            ])
+          }),
+          nextCursor: String(offset + pageSize),
+        }
+      }
+      return original(method, params)
+    })
+    await session.start()
+    const requests = client.requests.filter((request) => request.method === 'thread/turns/list')
+    expect(requests).toHaveLength(2)
+    expect(requests).toMatchObject([
+      { params: { sortDirection: 'desc', itemsView: 'full' } },
+      { params: { cursor: '100', sortDirection: 'desc', itemsView: 'full' } },
+    ])
+    expect(requests.some(({ params }) => 'cursor' in params && params.cursor === '200')).toBe(false)
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().items).toHaveLength(MAX_CHAT_ITEMS)
+    const expected = Array.from({ length: MAX_CHAT_ITEMS }, (_, index) => `${pageSize + 1 + Math.floor(index / itemsPerTurn)}:${index % itemsPerTurn}`)
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(expected)
+    session.close()
+  })
+  it('rejects repeated history cursors', async () => {
+    const { session, client } = harness({ resume: thread.id })
+    const original = client.request.getMockImplementation()!
+    client.request.mockImplementation(async (method, params) => {
+      if (method === 'thread/resume') return { thread: { ...thread, historyMode: 'paginated' } }
+      if (method === 'thread/turns/list') {
+        client.requests.push({ method, params })
+        return { data: [], nextCursor: 'repeated' }
+      }
+      return original(method, params)
+    })
+    await session.start()
+    expect(client.requests.filter(({ method }) => method === 'thread/turns/list')).toHaveLength(2)
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('Codex repeated a history cursor') })
+    session.close()
+  })
+  it('stops hydration when closed during a history request', async () => {
+    const { session, client } = harness({ resume: thread.id })
+    const original = client.request.getMockImplementation()!
+    client.request.mockImplementation(async (method, params) => {
+      if (method === 'thread/resume') return { thread: { ...thread, historyMode: 'paginated' } }
+      if (method === 'thread/turns/list') {
+        client.requests.push({ method, params })
+        session.close()
+        return { data: [turn('late', 'completed', [{ type: 'agentMessage', id: 'late', text: 'late' }])], nextCursor: 'older' }
+      }
+      return original(method, params)
+    })
+    await session.start()
+    expect(client.requests.filter(({ method }) => method === 'thread/turns/list')).toHaveLength(1)
+    expect(session.snapshot().items).toEqual([])
+    expect(session.snapshot().session.status).toBe('closed')
   })
   it('rejects malformed permission profiles and secret questions instead of hanging', async () => {
     const { session, client } = await running()

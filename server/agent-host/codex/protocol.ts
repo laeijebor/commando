@@ -24,7 +24,7 @@ export interface ClientMethods {
   'thread/start': ThreadSettings
   'thread/resume': ThreadSettings & { threadId: string }
   'thread/read': { threadId: string; includeTurns: boolean }
-  'thread/turns/list': { threadId: string; cursor?: string; limit: number; sortDirection: 'asc'; itemsView: 'full' }
+  'thread/turns/list': { threadId: string; cursor?: string; limit: number; sortDirection: 'asc' | 'desc'; itemsView: 'full' }
   'turn/start': { threadId: string; input: UserInput[]; model?: string; effort?: string | null; approvalPolicy: ApprovalPolicy; approvalsReviewer: 'user'; sandboxPolicy: SandboxPolicy }
   'turn/steer': { threadId: string; expectedTurnId: string; input: UserInput[] }
   'turn/interrupt': { threadId: string; turnId: string }

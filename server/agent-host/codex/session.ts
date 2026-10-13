@@ -1,5 +1,6 @@
 import {
   AGENT_HOST_PROTOCOL_VERSION,
+  MAX_CHAT_ITEMS,
   MAX_CHAT_IMAGES,
   MAX_QUEUED_MESSAGES,
   isChatEffort,
@@ -36,6 +37,7 @@ import {
   rpcId,
   string,
   type ApprovalPolicy,
+  type CodexTurn,
   type RpcNotification,
   type RpcRequest,
   type SandboxMode,
@@ -207,14 +209,27 @@ export class CodexChatSession implements ChatProviderSession {
         if (thread.historyMode === 'paginated') {
           let cursor: string | undefined
           const seen = new Set<string>()
+          const history: CodexTurn[] = []
+          // Count with a separate mapper so reverse-order traversal cannot change
+          // the session mapper's notice ids or current turn.
+          const counter = new CodexItemMapper()
+          let itemCount = 0
           do {
-            const page = record(await this.client.request('thread/turns/list', { threadId: thread.id, ...(cursor ? { cursor } : {}), limit: 100, sortDirection: 'asc', itemsView: 'full' }))
+            const page = record(await this.client.request('thread/turns/list', { threadId: thread.id, ...(cursor ? { cursor } : {}), limit: 100, sortDirection: 'desc', itemsView: 'full' }))
+            if (this.closing) return
             const turns = parseThread({ id: thread.id, turns: page.data }).turns
-            this.emitItems(turns.flatMap((turn) => this.mapper.replay(turn)))
+            for (const turn of turns) {
+              history.push(turn)
+              counter.replay(turn)
+              itemCount = counter.list().length
+              if (itemCount >= MAX_CHAT_ITEMS) break
+            }
             cursor = string(page.nextCursor)
             if (cursor && seen.has(cursor)) throw new Error('Codex repeated a history cursor')
             if (cursor) seen.add(cursor)
-          } while (cursor && !this.closing)
+          } while (cursor && itemCount < MAX_CHAT_ITEMS && !this.closing)
+          if (this.closing) return
+          this.emitItems(history.reverse().flatMap((turn) => this.mapper.replay(turn)))
         } else {
           const read = record(await this.client.request('thread/read', { threadId: thread.id, includeTurns: true }))
           const history = parseThread(read.thread)

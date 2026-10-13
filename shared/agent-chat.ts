@@ -974,8 +974,10 @@ export function parseQueueIds(value: unknown): string[] | null | undefined {
   return value as string[]
 }
 
+export const MAX_CHAT_ITEMS = 2000
+
 /** Upserts items by id, keeping first-seen order. Returns a new array. */
-export function mergeChatItems(current: readonly ChatItem[], updates: readonly ChatItem[], limit = 2000): ChatItem[] {
+export function mergeChatItems(current: readonly ChatItem[], updates: readonly ChatItem[], limit = MAX_CHAT_ITEMS): ChatItem[] {
   if (updates.length === 0) return current as ChatItem[]
   const next = current.slice()
   const index = new Map(next.map((item, position) => [item.id, position]))
