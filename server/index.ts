@@ -488,6 +488,8 @@ async function repairStaleAgentHooks(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Leased simulators show in Commando's tabs; agents' Argent boots them without opening Simulator.app.
+  process.env.ARGENT_SIMULATOR_NO_WINDOW ??= '1'
   const port = configuredPort()
   const networkAccess = createNetworkAccess(port)
   const token = authToken()
