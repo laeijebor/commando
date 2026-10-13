@@ -54,9 +54,13 @@ async function files(directory: string, prefix = ''): Promise<string[]> {
   return nested.flat().sort()
 }
 
+// Installed copies have {{COMMANDO_REPO}} replaced by the checkout they came from.
 async function expectDistributed(source: string, destination: string) {
+  const checkout = source.slice(0, source.lastIndexOf('/skills'))
   for (const path of await files(source)) {
-    expect(await readFile(join(destination, path)), path).toEqual(await readFile(join(source, path)))
+    const canonical = await readFile(join(source, path))
+    const expected = canonical.includes('{{COMMANDO_REPO}}') ? Buffer.from(canonical.toString('utf8').replaceAll('{{COMMANDO_REPO}}', checkout)) : canonical
+    expect(await readFile(join(destination, path)), path).toEqual(expected)
   }
 }
 
@@ -69,6 +73,19 @@ describe('Commando skill distribution (isolated HOME and profiles)', () => {
     for (const root of f.roots) await expectDistributed(join(f.checkout, 'skills'), root)
     expect(await readFile(join(f.home, '.cursor/skills/redline/playbooks/plan.md'), 'utf8'))
       .toBe(await readFile(join(f.checkout, 'skills/redline/playbooks/plan.md'), 'utf8'))
+  })
+
+  it('points installed copies at this checkout\'s scripts and leaves the canonical copy untouched', async () => {
+    const f = await fixture()
+    const result = await run(f, ['guide'])
+    expect(result.code, result.stderr).toBe(0)
+    const canonical = await readFile(join(f.checkout, 'skills/guide/SKILL.md'), 'utf8')
+    expect(canonical).toContain('{{COMMANDO_REPO}}/scripts/commando-guide')
+    for (const root of f.roots) {
+      const installed = await readFile(join(root, 'guide/SKILL.md'), 'utf8')
+      expect(installed).not.toContain('{{COMMANDO_REPO}}')
+      expect(installed).toContain(`${f.checkout}/scripts/commando-guide state <webPaneId>`)
+    }
   })
 
   it('installs canvas by name through the existing skill discovery', async () => {
