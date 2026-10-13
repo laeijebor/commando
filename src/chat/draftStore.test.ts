@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readDraft, saveDraft } from './draftStore'
+import { loadDraft, readDraft, saveDraft } from './draftStore'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -20,6 +20,21 @@ describe('saved chat drafts', () => {
     saveDraft('first', '')
     expect(localStorage.getItem(key('first'))).toBeNull()
     expect(readDraft('second')).toBe('other chat')
+  })
+
+  it('keeps uploaded image refs with the text, and an image-only draft', () => {
+    const image = { id: `${'a'.repeat(64)}.png`, name: 'shot.png' }
+    saveDraft('first', 'look', [image])
+    saveDraft('second', '', [image])
+    expect(loadDraft('first')).toEqual({ text: 'look', images: [image] })
+    expect(loadDraft('second')).toEqual({ text: '', images: [image] })
+    saveDraft('second', '', [])
+    expect(localStorage.getItem(key('second'))).toBeNull()
+  })
+
+  it('restores the text but no images when the saved refs are malformed', () => {
+    localStorage.setItem(key('bad'), JSON.stringify({ text: 'kept', images: [{ id: '../escape' }], updatedAt: Date.now() }))
+    expect(loadDraft('bad')).toEqual({ text: 'kept', images: [] })
   })
 
   it('does nothing until a session has an identity', () => {

@@ -9,6 +9,7 @@ import { PaneAgentSwitch } from '../PaneAgentSwitch'
 import { PaneContextMenu } from '../PaneContextMenu'
 import { ChatComposer, type ChatDraft } from './ChatComposer'
 import { ChatPane, type ChatFlowServices } from './ChatPane'
+import { saveDraft } from './draftStore'
 
 const imageId = `${'c'.repeat(64)}.png`
 const session: ChatSessionInfo = { paneId: '%5', provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 5, sessionId: 'abcd1234-0000', permissionMode: 'default' }
@@ -50,14 +51,23 @@ describe('switching a chat to Claude Code', () => {
     expect(screen.getByRole('img', { name: 'shot.png' })).toBeInTheDocument()
     expect(onCarriedTaken).toHaveBeenCalledWith('carry-1', 1)
     cleanup()
-    // A remount restores the persisted text once; the carry isn't appended again, and images aren't persisted.
+    // A remount restores the persisted draft once; the carry isn't appended again.
     const again = composer({ carried, onCarriedTaken })
     expect(again.input.value).toBe('queued\n\ndraft')
-    expect(screen.queryByRole('img', { name: 'shot.png' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('img', { name: 'shot.png' })).toHaveLength(1)
+  })
+
+  it('skips carried images the saved draft already brought back', () => {
+    saveDraft(session.sessionId, 'draft', [{ id: imageId, name: 'shot.png' }])
+    const onCarriedTaken = vi.fn()
+    const other = { id: `${'d'.repeat(64)}.png`, name: 'queued.png' }
+    composer({ carried: { id: 'carry-saved', text: 'queued\n\ndraft', images: [other, { id: imageId, name: 'shot.png' }] }, onCarriedTaken })
+    expect(screen.getAllByRole('img').map((image) => image.getAttribute('alt'))).toEqual(['queued.png', 'shot.png'])
+    expect(onCarriedTaken).toHaveBeenCalledWith('carry-saved', 2)
   })
 
   it('restores only the carried images that fit, and the rest once there is room', () => {
-    const many = Array.from({ length: 12 }, (_, index) => ({ id: `${String(index % 10).repeat(64)}.png`, name: `shot-${index}.png` }))
+    const many = Array.from({ length: 12 }, (_, index) => ({ id: `${index.toString(16).padStart(64, '0')}.png`, name: `shot-${index}.png` }))
     const onCarriedTaken = vi.fn()
     const { rerender } = render(<ChatComposer session={session} hostConnected requests={[]} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} carried={{ id: 'carry-many', text: 'with images', images: many }} onCarriedTaken={onCarriedTaken} />)
     expect(screen.getAllByRole('img')).toHaveLength(10)
