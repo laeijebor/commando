@@ -1,11 +1,47 @@
-import { AGENT_HOST_PROTOCOL_VERSION, MAX_CHAT_IMAGES, MAX_QUEUED_MESSAGES, isChatEffort, isModelValue, type ChatAnswer, type ChatCommand, type ChatContextUsage, type ChatFileSearchResult, type ChatImageRef, type ChatItem, type ChatModelOption, type ChatQueueAction, type ChatQueuedMessage, type ChatSendOptions, type ChatSessionInfo, type ChatSessionPermissionMode, type ChatSettingsChange, type ChatSubagentTranscript, type ChatSwitchAction, type ChatTaskAction } from '../../../shared/agent-chat.js'
+import {
+  AGENT_HOST_PROTOCOL_VERSION,
+  MAX_CHAT_IMAGES,
+  MAX_QUEUED_MESSAGES,
+  isChatEffort,
+  isModelValue,
+  type ChatAnswer,
+  type ChatCommand,
+  type ChatContextUsage,
+  type ChatFileSearchResult,
+  type ChatImageRef,
+  type ChatItem,
+  type ChatModelOption,
+  type ChatQueueAction,
+  type ChatQueuedMessage,
+  type ChatSendOptions,
+  type ChatSessionInfo,
+  type ChatSessionPermissionMode,
+  type ChatSettingsChange,
+  type ChatSubagentTranscript,
+  type ChatSwitchAction,
+  type ChatTaskAction,
+} from '../../../shared/agent-chat.js'
 import { shellQuote } from '../../agent-resume-command.js'
 import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from '../provider.js'
 import type { AgentSessionSpec } from '../session.js'
 import { CodexRpcClient, type CodexTransport } from './client.js'
 import { CodexItemMapper, inputQuestions } from './items.js'
-import { list, parseThread, parsePermissions, record, requestKey, rpcId, string, type ApprovalPolicy, type RpcNotification, type RpcRequest, type SandboxMode, type SandboxPolicy, type UserInput } from './protocol.js'
+import {
+  list,
+  parseThread,
+  parsePermissions,
+  record,
+  requestKey,
+  rpcId,
+  string,
+  type ApprovalPolicy,
+  type RpcNotification,
+  type RpcRequest,
+  type SandboxMode,
+  type SandboxPolicy,
+  type UserInput,
+} from './protocol.js'
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 /**
@@ -18,11 +54,29 @@ export function codexPermissions(mode: ChatSessionPermissionMode, cwd: string): 
   if (mode === 'bypassPermissions') return { approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } }
   if (mode === 'plan') return { approvalPolicy: 'on-request', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
   if (mode !== 'default' && mode !== 'acceptEdits') throw new Error(`Codex does not support permission mode ${mode}`)
-  return { approvalPolicy: 'on-request', sandbox: 'workspace-write', sandboxPolicy: { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } }
+  return {
+    approvalPolicy: 'on-request',
+    sandbox: 'workspace-write',
+    sandboxPolicy: {
+      type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false,
+      excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+    },
+  }
 }
-export function codexTuiSwitchCommand(spec: Pick<AgentSessionSpec, 'model' | 'effort' | 'permissionMode' | 'cwd'>, executable: string, launcher: string, threadId: string, returnFlags: readonly string[]): string {
+export function codexTuiSwitchCommand(
+  spec: Pick<AgentSessionSpec, 'model' | 'effort' | 'permissionMode' | 'cwd'>,
+  executable: string,
+  launcher: string,
+  threadId: string,
+  returnFlags: readonly string[],
+): string {
   const permissions = codexPermissions(spec.permissionMode, spec.cwd)
-  const tui = [executable, 'resume', '--no-daemon', ...(spec.model ? ['--model', spec.model] : []), ...(spec.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(spec.effort)}`] : []), '--ask-for-approval', permissions.approvalPolicy, '--sandbox', permissions.sandbox, threadId].map(shellQuote).join(' ')
+  const tui = [
+    executable, 'resume', '--no-daemon',
+    ...(spec.model ? ['--model', spec.model] : []),
+    ...(spec.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(spec.effort)}`] : []),
+    '--ask-for-approval', permissions.approvalPolicy, '--sandbox', permissions.sandbox, threadId,
+  ].map(shellQuote).join(' ')
   // The existing return flag is a backwards-compatible host flag, shared by both providers.
   const back = ['exec', ...[launcher, 'codex', ...returnFlags, '--resume', threadId, '--from-claude-code'].map(shellQuote)].join(' ')
   return `exec /bin/bash -c ${shellQuote(`set -m; ${tui}; ${back}`)}`
@@ -33,7 +87,9 @@ export function codexContextUsage(value: unknown): ChatContextUsage | undefined 
   const max = usage.modelContextWindow
   const input = last.inputTokens
   const output = last.outputTokens
-  if (typeof max !== 'number' || !Number.isFinite(max) || max <= 0 || typeof input !== 'number' || !Number.isFinite(input) || input < 0 || typeof output !== 'number' || !Number.isFinite(output) || output < 0) return undefined
+  if (typeof max !== 'number' || !Number.isFinite(max) || max <= 0
+    || typeof input !== 'number' || !Number.isFinite(input) || input < 0
+    || typeof output !== 'number' || !Number.isFinite(output) || output < 0) return undefined
   // Totals are cumulative billing usage, not the size of the current context.
   return { usedTokens: input + output, maxTokens: max, autoCompact: true, categories: [{ name: 'Input', tokens: input }, { name: 'Output', tokens: output }] }
 }
@@ -78,19 +134,43 @@ export class CodexChatSession implements ChatProviderSession {
       return image ? { id: image.id } : undefined
     })
     this.files = new WorkspaceFileIndex(spec.cwd)
-    this.info = { paneId: spec.paneId, provider: 'codex', cwd: spec.cwd, status: 'starting', hostPid: process.pid, hostVersion: AGENT_HOST_PROTOCOL_VERSION,
-      ...(spec.resume ? { sessionId: spec.resume } : {}), permissionMode: spec.permissionMode === 'acceptEdits' ? 'default' : spec.permissionMode, bypassAllowed: spec.bypassAllowed || spec.permissionMode === 'bypassPermissions',
-      ...(spec.model ? { selectedModel: spec.model } : {}), ...(spec.effort ? { effort: spec.effort } : {}),
+    this.info = {
+      paneId: spec.paneId,
+      provider: 'codex',
+      cwd: spec.cwd,
+      status: 'starting',
+      hostPid: process.pid,
+      hostVersion: AGENT_HOST_PROTOCOL_VERSION,
+      ...(spec.resume ? { sessionId: spec.resume } : {}),
+      permissionMode: spec.permissionMode === 'acceptEdits' ? 'default' : spec.permissionMode,
+      bypassAllowed: spec.bypassAllowed || spec.permissionMode === 'bypassPermissions',
+      ...(spec.model ? { selectedModel: spec.model } : {}),
+      ...(spec.effort ? { effort: spec.effort } : {}),
       ...(spec.prePlanPermissionMode ? { prePlanPermissionMode: spec.prePlanPermissionMode } : {}),
-      ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}), ...(spec.resumeCommand ? { resumeCommand: spec.resumeCommand } : {}) }
+      ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}),
+      ...(spec.resumeCommand ? { resumeCommand: spec.resumeCommand } : {}),
+    }
     this.client.onNotification((message) => this.notification(message))
     this.client.onRequest((request) => this.serverRequest(request))
     this.client.onClose((error) => this.finish(error))
-    this.tui = { label: 'Codex TUI', env: { ...(spec.env.CODEX_HOME ? { CODEX_HOME: spec.env.CODEX_HOME } : {}), ...(spec.resumeCommand ? { COMMANDO_CHAT_RESUME: spec.resumeCommand } : {}) }, onReady: (listener) => this.readyListeners.push(listener), requestSwitch: (action) => this.requestSwitch(action),
+    this.tui = {
+      label: 'Codex TUI',
+      env: {
+        ...(spec.env.CODEX_HOME ? { CODEX_HOME: spec.env.CODEX_HOME } : {}),
+        ...(spec.resumeCommand ? { COMMANDO_CHAT_RESUME: spec.resumeCommand } : {}),
+      },
+      onReady: (listener) => this.readyListeners.push(listener),
+      requestSwitch: (action) => this.requestSwitch(action),
       command: (launcher, flags, id) => {
         if (!launcher || !id) throw new Error('Switching to Codex TUI needs the launcher and a thread id')
-        return codexTuiSwitchCommand({ cwd: spec.cwd, model: this.info.selectedModel, effort: this.info.effort, permissionMode: this.info.permissionMode as ChatSessionPermissionMode }, executable, launcher, id, flags)
-      }, handOver: () => { this.setQueue([]); this.close() }, endSwitch: (notice) => this.endSwitch(notice) }
+        return codexTuiSwitchCommand({
+          cwd: spec.cwd, model: this.info.selectedModel, effort: this.info.effort,
+          permissionMode: this.info.permissionMode as ChatSessionPermissionMode,
+        }, executable, launcher, id, flags)
+      },
+      handOver: () => { this.setQueue([]); this.close() },
+      endSwitch: (notice) => this.endSwitch(notice),
+    }
   }
   get paneId(): string { return this.spec.paneId }
   get busy(): boolean { return Boolean(this.activeTurn || this.sending || this.pending.size || this.queue.length || this.info.status === 'starting') }
@@ -175,29 +255,41 @@ export class CodexChatSession implements ChatProviderSession {
         if (!this.spec.images) throw new Error('Chat images are unavailable')
         input.push({ type: 'localImage', path: await this.spec.images.stage(image.id, threadId) })
       }
-      if (options.permissionMode) this.applySettings({ permissionMode: options.permissionMode })
       const active = this.activeTurn
       if (active && options.permissionMode) throw new Error('Permission changes apply to the next turn; wait for this turn to finish')
+      if (options.permissionMode) this.applySettings({ permissionMode: options.permissionMode })
       this.mapper.expectUser(trimmed, images, Boolean(active))
       try {
-        if (active) await this.client.request('turn/steer', { threadId, expectedTurnId: active, input })
-        else {
-          const { sandboxPolicy, approvalPolicy } = codexPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
-          const model = this.info.selectedModel
-          const effort = this.info.effort ?? null
-          this.update({ status: 'running' })
-          const result = record(await this.client.request('turn/start', { threadId, input, approvalPolicy, approvalsReviewer: 'user', sandboxPolicy,
-            ...(model ? { model } : {}), effort }))
-          const turnId = string(record(result.turn).id)
-          if (!turnId) throw new Error('Codex returned a turn without an id')
-          if (!this.endedTurns.has(turnId)) this.activeTurn = turnId
-          this.update({ model })
-        }
+        if (active) {
+          try {
+            await this.client.request('turn/steer', { threadId, expectedTurnId: active, input })
+          } catch (error) {
+            if (this.closing || this.activeTurn === active) throw error
+            // Completion can race with steer. Keep the same text and staged images.
+            this.mapper.forgetUser(trimmed)
+            this.mapper.expectUser(trimmed, images, false)
+            await this.startTurn(threadId, input)
+          }
+        } else await this.startTurn(threadId, input)
         if (!this.info.title && trimmed) this.update({ title: trimmed.slice(0, 80) })
       } catch (error) { this.mapper.forgetUser(trimmed); throw error }
     }).catch((error) => {
       if (!this.closing) { this.emitItems(this.mapper.notice('error', `Message not sent: ${errorText(error)}`)); if (!this.activeTurn) this.update({ status: 'idle' }) }
     }).finally(() => { this.sending--; this.switchReady(); this.flushQueue() })
+  }
+  private async startTurn(threadId: string, input: UserInput[]): Promise<void> {
+    const { sandboxPolicy, approvalPolicy } = codexPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
+    const model = this.info.selectedModel
+    const effort = this.info.effort ?? null
+    this.update({ status: 'running' })
+    const result = record(await this.client.request('turn/start', {
+      threadId, input, approvalPolicy, approvalsReviewer: 'user', sandboxPolicy,
+      ...(model ? { model } : {}), effort,
+    }))
+    const turnId = string(record(result.turn).id)
+    if (!turnId) throw new Error('Codex returned a turn without an id')
+    if (!this.endedTurns.has(turnId)) this.activeTurn = turnId
+    this.update({ model })
   }
   updateQueue(change: ChatQueueAction): void {
     const entry = this.queue.find((entry) => entry.id === change.id)
@@ -249,7 +341,13 @@ export class CodexChatSession implements ChatProviderSession {
       result = { answers: Object.fromEntries(questions.map(({ id, question }) => [id, { answers: answer.kind === 'question' ? [answer.answers[question.question] ?? answer.answers[id]!] : [] }])) }
     } else if (request.method === 'item/permissions/requestApproval') {
       const permissions = parsePermissions(params.permissions) ?? {}
-      result = { permissions: answer.kind === 'approval' && answer.decision !== 'deny' ? { ...(permissions.network ? { network: permissions.network } : {}), ...(permissions.fileSystem ? { fileSystem: permissions.fileSystem } : {}) } : {}, scope: answer.kind === 'approval' && answer.decision === 'allow_always' ? 'session' : 'turn' }
+      result = {
+        permissions: answer.kind === 'approval' && answer.decision !== 'deny' ? {
+          ...(permissions.network ? { network: permissions.network } : {}),
+          ...(permissions.fileSystem ? { fileSystem: permissions.fileSystem } : {}),
+        } : {},
+        scope: answer.kind === 'approval' && answer.decision === 'allow_always' ? 'session' : 'turn',
+      }
     } else result = { decision: answer.kind === 'approval' ? answer.decision === 'allow' ? 'accept' : answer.decision === 'allow_always' ? 'acceptForSession' : 'decline' : 'decline' }
     try { this.client.respond(request.id, result) } catch { return false }
     this.pending.delete(key)
@@ -261,7 +359,7 @@ export class CodexChatSession implements ChatProviderSession {
   private serverRequest(request: RpcRequest): boolean {
     if (!['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'item/tool/requestUserInput'].includes(request.method)) return false
     const params = record(request.params)
-    if (this.closing || params.threadId !== this.info.sessionId || !string(params.turnId) || !string(params.itemId)) {
+    if (this.closing || !this.info.sessionId || !string(params.threadId) || !string(params.turnId) || !string(params.itemId)) {
       this.client.reject(request.id, -32602, 'Invalid or inactive thread request')
       return true
     }
@@ -279,7 +377,11 @@ export class CodexChatSession implements ChatProviderSession {
   private cancelRequests(reason: string): void {
     for (const [key, request] of this.pending) {
       try {
-        this.client.respond(request.id, request.method === 'item/tool/requestUserInput' ? { answers: {} } : request.method === 'item/permissions/requestApproval' ? { permissions: {}, scope: 'turn' } : { decision: 'cancel' })
+        this.client.respond(request.id, request.method === 'item/tool/requestUserInput'
+          ? { answers: {} }
+          : request.method === 'item/permissions/requestApproval'
+            ? { permissions: {}, scope: 'turn' }
+            : { decision: 'cancel' })
       } catch { /* The child may already have exited. */ }
       this.emitItems(this.mapper.resolveRequest(key, { kind: 'cancelled', reason }))
     }
@@ -287,8 +389,8 @@ export class CodexChatSession implements ChatProviderSession {
   }
   private notification(message: RpcNotification): void {
     const params = record(message.params)
-    // Ignore notifications belonging to Codex's child threads, which have their own turns.
-    if (string(params.threadId) && this.info.sessionId && params.threadId !== this.info.sessionId) return
+    // Child threads have their own turns, but their requests still resolve in this chat.
+    if (string(params.threadId) && this.info.sessionId && params.threadId !== this.info.sessionId && message.method !== 'serverRequest/resolved') return
     if (message.method === 'thread/started' && !this.info.sessionId) {
       const id = string(record(params.thread).id)
       if (id) this.update({ sessionId: id })
@@ -337,7 +439,11 @@ export class CodexChatSession implements ChatProviderSession {
       if (change.permissionMode === 'bypassPermissions' && !this.info.bypassAllowed) throw new Error('Full access must be allowed at launch')
     }
     const mode = change.permissionMode === 'acceptEdits' ? 'default' : change.permissionMode
-    const prePlan = mode === 'plan' ? this.info.permissionMode === 'plan' ? this.info.prePlanPermissionMode : this.info.permissionMode as ChatSessionPermissionMode : mode ? undefined : this.info.prePlanPermissionMode
+    const prePlan = mode === 'plan'
+      ? this.info.permissionMode === 'plan'
+        ? this.info.prePlanPermissionMode
+        : this.info.permissionMode as ChatSessionPermissionMode
+      : mode ? undefined : this.info.prePlanPermissionMode
     const effort = change.effort ?? (this.info.effort && model?.efforts?.includes(this.info.effort) ? this.info.effort : undefined)
     this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
   }

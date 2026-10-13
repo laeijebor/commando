@@ -127,6 +127,25 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --resume ${SESSION}`)
   })
 
+  it('restores a Codex chat host instead of its app-server child, keeping permission flags and picker changes', async () => {
+    const host = 'node /c/server/agent-host/main.ts codex --permission-mode bypassPermissions'
+    let permissionMode = 'bypassPermissions'
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      chatSettings: () => ({ permissionMode, bypassAllowed: true }),
+      readProcessTable: vi.fn(async () => `  500 1 ${host}\n  700 500 /bin/codex app-server\n`),
+      readProcessEnvironment: vi.fn(async () => ''),
+    })
+    await resume.observeHookStatus(hookStatus({ provider: 'codex' }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)).toMatchObject({
+      provider: 'codex',
+      command: `/c/scripts/commando-agent codex --permission-mode bypassPermissions --resume ${SESSION}`,
+    })
+    permissionMode = 'plan'
+    await resume.observeHookStatus(hookStatus({ provider: 'codex' }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent codex --permission-mode plan --allow-dangerously-skip-permissions --resume ${SESSION}`)
+  })
+
   it('rebuilds a chat record when the chat\'s pickers change, so a resume keeps them', async () => {
     const host = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts claude --config-dir /Users/me/.claudew --model haiku --permission-mode default'
     let settings: { model?: string; effort?: string; permissionMode: string } | undefined

@@ -1,3 +1,22 @@
+import type { ChatHandoffInfo } from '../shared/agent-chat'
+import type { AgentStatus } from '../shared/protocol'
+
+/** A Codex handoff offers the way back even before the TUI's first notify hook. */
+export function paneChatHandoff(
+  paneId: string,
+  status: AgentStatus | undefined,
+  handoffs: readonly ChatHandoffInfo[],
+  legacySessionIds: ReadonlySet<string>,
+): ChatHandoffInfo | undefined {
+  const codex = handoffs.find((entry) => entry.paneId === paneId && entry.provider === 'codex')
+  if (codex) return codex
+  if (!status?.agentSessionId) return undefined
+  const entry = handoffs.find((entry) => entry.sessionId === status.agentSessionId)
+  if (entry && (entry.provider ?? 'claude') === status.provider) return entry
+  if (!entry && status.provider === 'claude' && legacySessionIds.has(status.agentSessionId)) return { sessionId: status.agentSessionId }
+  return undefined
+}
+
 /**
  * The pane header's two-way switch for a chat's conversation: the chat, or
  * Claude Code running the same conversation in the pane.

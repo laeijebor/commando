@@ -333,7 +333,7 @@ async function main(): Promise<void> {
     const sessionId = session.snapshot().session.sessionId
     // Validate the provider's launch prerequisites before saving or ending anything.
     tui.command(launcher, sessionFlags(settings), sessionId)
-    const saved = await host.handoff({ type: 'handoff', paneId, sessionId: sessionId!, cwd: process.cwd(), queue: session.queued, returnFlags: sessionFlags(settings) })
+    const saved = await host.handoff({ type: 'handoff', paneId, provider: session.snapshot().session.provider, sessionId: sessionId!, cwd: process.cwd(), queue: session.queued, returnFlags: sessionFlags(settings) })
     if (!saved.ok) throw new Error(saved.error ?? "Commando couldn't keep the chat's queue and draft")
     switching = true
     write(dim(`Switching to ${tui.label}…`))

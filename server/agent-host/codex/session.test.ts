@@ -113,6 +113,97 @@ describe('CodexChatSession', () => {
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error' })
     session.close()
   })
+  it('rejects a mid-turn permission change without applying it to settings or the next turn', async () => {
+    const { session, client } = await running({ bypassAllowed: true })
+    const before = session.snapshot().session
+    session.send('Change permissions', [], { permissionMode: 'bypassPermissions' })
+    await tick()
+    expect(session.snapshot().session).toEqual(before)
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('Permission changes apply to the next turn') })
+    expect(client.requests.filter(({ method }) => method === 'turn/steer')).toEqual([])
+    client.notify('turn/completed', { turn: turn('turn-1', 'completed') })
+    session.send('Next')
+    await tick()
+    expect(client.requests.at(-1)).toMatchObject({ method: 'turn/start', params: {
+      approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' },
+    } })
+    session.close()
+  })
+
+  it.each(['completed', 'changed'] as const)('retries a rejected steer as a new turn when the active turn is %s, preserving text and images', async (race) => {
+    const images = {
+      stage: vi.fn(async () => '/tmp/staged.png'),
+      stagedImage: () => ({ id: 'image', sessionId: thread.id }),
+    } as unknown as NonNullable<AgentSessionSpec['images']>
+    const { session, client } = await running({ images })
+    const original = client.request.getMockImplementation()!
+    client.request.mockImplementation(async (method, params) => {
+      if (method === 'turn/steer') {
+        client.requests.push({ method, params })
+        client.notify('turn/completed', { turn: turn('turn-1', 'completed') })
+        if (race === 'changed') client.notify('turn/started', { turn: turn('other-turn') })
+        throw new Error('Turn is no longer active')
+      }
+      return original(method, params)
+    })
+    session.send('Keep this text', [{ id: 'image' }], { delivery: 'steer' })
+    await tick()
+    expect(client.requests.slice(-2)).toMatchObject([
+      { method: 'turn/steer', params: { expectedTurnId: 'turn-1' } },
+      { method: 'turn/start', params: { input: [
+        { type: 'text', text: 'Keep this text', text_elements: [] },
+        { type: 'localImage', path: '/tmp/staged.png' },
+      ] } },
+    ])
+    expect(images.stage).toHaveBeenCalledOnce()
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'user_message', text: 'Keep this text', images: [{ id: 'image' }] })
+    expect(session.snapshot().items.at(-1)).not.toHaveProperty('steered')
+    expect(session.snapshot().session.status).toBe('running')
+    session.close()
+  })
+
+  it('reports a steer failure without starting another turn when the active turn has not changed', async () => {
+    const { session, client } = await running()
+    client.request.mockRejectedValueOnce(new Error('Transport failed'))
+    session.send('Steer')
+    await tick()
+    expect(client.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(1)
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Message not sent: Transport failed' })
+    expect(session.snapshot().session.status).toBe('running')
+    session.close()
+  })
+
+  it('renders and answers child-thread approvals and questions independently of main-thread requests', async () => {
+    const { session, client } = await running()
+    client.server('item/fileChange/requestApproval', 'main')
+    client.server('item/fileChange/requestApproval', 'child', { threadId: 'child-thread', turnId: 'child-turn' })
+    client.server('item/tool/requestUserInput', 'child-question', {
+      threadId: 'child-thread', turnId: 'child-turn',
+      questions: [{ id: 'choice', question: 'Which?', options: [{ label: 'A' }] }],
+    })
+    expect(client.errors).toEqual([])
+    expect(session.snapshot().items.filter((item) => item.kind === 'request')).toMatchObject([
+      { requestId: requestKey('main'), requestKind: 'approval' },
+      { requestId: requestKey('child'), requestKind: 'approval', turnId: 'child-turn' },
+      { requestId: requestKey('child-question'), requestKind: 'question', turnId: 'child-turn' },
+    ])
+    expect(session.answer(requestKey('child'), { kind: 'approval', decision: 'allow' })).toBe(true)
+    expect(session.answer(requestKey('child-question'), { kind: 'question', answers: { 'Which?': 'A' } })).toBe(true)
+    expect(client.replies).toEqual([
+      { id: 'child', result: { decision: 'accept' } },
+      { id: 'child-question', result: { answers: { choice: { answers: ['A'] } } } },
+    ])
+    expect(session.snapshot().session.status).toBe('waiting')
+    expect(session.answer(requestKey('main'), { kind: 'approval', decision: 'deny' })).toBe(true)
+    expect(session.snapshot().session.status).toBe('running')
+    client.server('item/fileChange/requestApproval', 'resolved-child', { threadId: 'child-thread' })
+    client.notify('serverRequest/resolved', { threadId: 'child-thread', requestId: 'resolved-child' })
+    expect(session.answer(requestKey('resolved-child'), { kind: 'approval', decision: 'allow' })).toBe(false)
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'request', answer: { kind: 'cancelled', reason: 'Resolved by Codex' } })
+    expect(session.snapshot().session.status).toBe('running')
+    session.close()
+  })
+
   it('cancels requests on interrupt and waits for turn/completed before sending the queue', async () => {
     const { session, client } = await running()
     client.server('item/commandExecution/requestApproval', 4, { command: 'pwd' })

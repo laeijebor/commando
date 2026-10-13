@@ -17,6 +17,19 @@ function harness() {
 }
 
 describe('CodexItemMapper', () => {
+  it('keeps steered user text and image refs on the completed upsert', () => {
+    const { mapper, notify } = harness()
+    const images = [{ id: `${'a'.repeat(64)}.png`, name: 'shot.png' }]
+    mapper.expectUser('Look', images, true)
+    const item = { type: 'userMessage', id: 'u', content: [{ type: 'text', text: 'Look' }, { type: 'localImage', path: '/tmp/staged.png' }] }
+    notify('item/started', { item })
+    notify('item/completed', { item })
+    expect(mapper.list()).toHaveLength(1)
+    expect(parseChatItem(mapper.list()[0])).toMatchObject({
+      kind: 'user_message', status: 'completed', text: 'Look', images, steered: true,
+    })
+  })
+
   it('upserts streaming assistant, reasoning summaries and user turns with stable ids/timestamps', () => {
     const { mapper, notify } = harness()
     mapper.expectUser('Hi', [], true)

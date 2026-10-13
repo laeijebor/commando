@@ -34,6 +34,14 @@ describe('parseChatItem', () => {
 const session = { paneId: '%1', provider: 'claude', cwd: '/w', status: 'idle', hostPid: 1, hostVersion: 1 }
 
 describe('chat providers', () => {
+  it('preserves optional handoff providers without changing legacy messages or version gates', () => {
+    const legacy = { type: 'handoff', paneId: '%1', sessionId: 'thread-123', cwd: '/w', queue: [], returnFlags: [] }
+    expect(parseHostMessage(legacy)).toEqual(legacy)
+    expect(parseHostMessage({ ...legacy, provider: 'codex' })).toEqual({ ...legacy, provider: 'codex' })
+    expect(parseHostMessage({ ...legacy, provider: 'claude' })).toEqual({ ...legacy, provider: 'claude' })
+    expect(parseHostMessage({ ...legacy, provider: 'other' })).toBeNull()
+  })
+
   it.each(['claude', 'codex'])('keeps %s on sessions, snapshots and updates', (provider) => {
     const info = { ...session, provider }
     expect(parseChatSessionInfo({ ...info, extra: 'dropped' })).toEqual(info)

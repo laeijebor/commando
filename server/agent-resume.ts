@@ -193,9 +193,10 @@ export class AgentResumeService {
     if (resume && resume.state !== 'resumed' && existing?.sessionId === status.agentSessionId) {
       this.setResume({ ...resume, state: 'resumed', error: undefined })
     }
-    const chatSettings = status.provider === 'claude' ? this.deps.chatSettings?.(pane.id) : undefined
+    const chatProvider = status.provider === 'claude' || status.provider === 'codex'
+    const chatSettings = chatProvider ? this.deps.chatSettings?.(pane.id) : undefined
     // A chat's settings, or the way back for Claude Code running a chat's conversation.
-    const chatReturn = status.provider === 'claude' && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
+    const chatReturn = chatProvider && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
     const chatKey = chatSettings ? JSON.stringify(chatSettings) : chatReturn ? `return:${chatReturn}` : undefined
     if (existing?.sessionId === status.agentSessionId && existing.provider === status.provider
       && existing.serverId === serverId && existing.path === pane.path
@@ -210,14 +211,14 @@ export class AgentResumeService {
     try {
       const rows = parseProcessTable(await (this.deps.readProcessTable ?? readProcessTable)())
       const readEnvironment = this.deps.readProcessEnvironment ?? readProcessEnvironment
-      // A chat host runs Claude as its child: resume the chat, never that child as a TUI.
-      const chatHost = status.provider === 'claude' ? findChatHost(rows, pane.processId) : null
+      // A chat host runs the provider as its child: resume the chat, never that child as a TUI.
+      const chatHost = chatProvider ? findChatHost(rows, pane.processId) : null
       const found = chatHost ? null : findAgentProcess(rows, pane.processId, status.provider)
       // Claude Code running a chat's conversation must be resuming that very conversation.
       const agent = found && chatReturn && !found.args.split(/\s+/).includes(status.agentSessionId) ? null : found
       const command = chatHost
         ? this.deps.chatLauncher
-          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess('claude', chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv, chatSettings)
+          ? buildChatResumeCommand(status.agentSessionId, this.deps.chatLauncher, launchFromProcess(status.provider, chatHost.args, await readEnvironment(chatHost.pid)), this.deps.chatEnv, chatSettings)
           : null
         : agent && withChatReturn(buildResumeCommand(status.provider, status.agentSessionId, launchFromProcess(
           status.provider, agent.args, await readEnvironment(agent.pid))), chatReturn)

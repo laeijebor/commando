@@ -88,12 +88,21 @@ export class CodexItemMapper {
   settle(turnId: string | undefined, state: Exclude<ChatItemStatus, 'running'>): ChatItem[] {
     return [...this.items.values()].flatMap((item) => {
       if (item.status !== 'running' || (turnId && item.turnId !== turnId)) return []
-      return [this.put({ ...item, status: state, updatedAt: this.now(), ...(item.kind === 'request' && !item.answer ? { answer: { kind: 'cancelled' as const, reason: 'The turn ended before this was answered.' } } : {}) })]
+      return [this.put({
+        ...item, status: state, updatedAt: this.now(),
+        ...(item.kind === 'request' && !item.answer
+          ? { answer: { kind: 'cancelled' as const, reason: 'The turn ended before this was answered.' } }
+          : {}),
+      })]
     })
   }
   replay(turn: CodexTurn): ChatItem[] {
     this.turnId = turn.id
-    return [...turn.items.flatMap((item) => this.item(turn.id, item, true)), ...this.settle(turn.id, status(turn.status, true)), ...(turn.error ? this.notice('error', turn.error.message, turn.id) : [])]
+    return [
+      ...turn.items.flatMap((item) => this.item(turn.id, item, true)),
+      ...this.settle(turn.id, status(turn.status, true)),
+      ...(turn.error ? this.notice('error', turn.error.message, turn.id) : []),
+    ]
   }
   notification({ method, params: raw }: RpcNotification): ChatItem[] {
     const params = record(raw)
@@ -156,7 +165,11 @@ export class CodexItemMapper {
           const image = path ? this.imageForPath?.(path) : undefined
           return image ? [image] : []
         })
-        return [this.put({ ...base, ...(previous?.kind === 'user_message' ? previous : {}), kind: 'user_message', text: message, status: 'completed', ...(images.length ? { images } : {}), ...(expected?.steered ? { steered: true } : {}) })]
+        return [this.put({
+          ...base, ...(previous?.kind === 'user_message' ? previous : {}),
+          kind: 'user_message', text: message, status: 'completed',
+          ...(images.length ? { images } : {}), ...(expected?.steered ? { steered: true } : {}),
+        })]
       }
       case 'agentMessage': case 'plan': case 'reasoning': {
         const kind = type === 'agentMessage' ? 'assistant_message' : type === 'plan' ? 'plan' : 'reasoning'

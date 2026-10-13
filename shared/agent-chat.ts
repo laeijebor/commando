@@ -42,6 +42,8 @@ export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
 export type ChatProvider = 'claude' | 'codex'
+/** Optional broadcast metadata; old daemons send just ids. Missing provider means Claude. */
+export type ChatHandoffInfo = { sessionId: string; paneId?: string; provider?: ChatProvider }
 export type ChatItemStatus = 'running' | 'completed' | 'failed' | 'interrupted'
 export type ChatSessionStatus = 'starting' | 'idle' | 'running' | 'waiting' | 'closed' | 'error'
 
@@ -409,11 +411,12 @@ export type HostToDaemonMessage =
   | ({ type: 'file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   | ({ type: 'subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
   /**
-   * The host is about to hand the conversation to Claude Code: the daemon keeps
+   * The host is about to hand the conversation to its TUI: the daemon keeps
    * its queue (and the client's draft) until the chat comes back, and the
-   * flags that bring it back. The host waits for `handoff_saved`.
+   * flags that bring it back. The host waits for `handoff_saved`. Provider is
+   * optional so version 5 hosts predating Codex still work as Claude hosts.
    */
-  | { type: 'handoff'; paneId: string; sessionId: string; cwd: string; queue: ChatQueuedMessage[]; returnFlags: string[] }
+  | { type: 'handoff'; paneId: string; sessionId: string; provider?: ChatProvider; cwd: string; queue: ChatQueuedMessage[]; returnFlags: string[] }
 
 /** A finished subagent's own turns, read from its saved transcript. */
 export interface ChatSubagentTranscript {
@@ -891,7 +894,10 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
         ? value.returnFlags as string[]
         : null
       if (!isPaneId(value.paneId) || !shortString(value.sessionId) || !shortString(value.cwd, 4096) || !queue || !flags) return null
-      return { type: 'handoff', paneId: value.paneId, sessionId: value.sessionId, cwd: value.cwd, queue, returnFlags: flags }
+      if (value.provider !== undefined && value.provider !== 'claude' && value.provider !== 'codex') return null
+      return withOptional({ type: 'handoff' as const, paneId: value.paneId, sessionId: value.sessionId, cwd: value.cwd, queue, returnFlags: flags }, {
+        provider: value.provider as ChatProvider | undefined,
+      })
     }
     default:
       return null
