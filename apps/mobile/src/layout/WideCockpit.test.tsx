@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
+import { useChatStore } from '../chat/store'
+import { chatState, item, session } from '../chat/testing'
 import { EMPTY_HOST_STATE } from '../daemon/state'
 import { useHostsStore } from '../hosts/store'
 import {
@@ -60,6 +62,7 @@ function jsonResponse(value: unknown): Response {
 beforeEach(() => {
   mockRouter.push.mockClear()
   useFocusStore.setState({ byHost: {} })
+  useChatStore.setState({ byHost: {} })
   useHostsStore.setState({
     hosts: [{
       id: 'host-1',
@@ -177,5 +180,25 @@ describe('the iPad cockpit', () => {
     // The pane's HUD strip and the answer card, with no sessions row now.
     expect(screen.getAllByText('Which auth flow should the companion use?')).toHaveLength(2)
     expect(screen.getByText('Owner email + password')).toBeTruthy()
+  })
+
+  it('draws a chat pane natively in the centre column', async () => {
+    useChatStore.setState({
+      byHost: {
+        'host-1': {
+          '%14': chatState({
+            paneId: '%14',
+            session: session({ paneId: '%14', title: 'Add approvals to the HUD', status: 'running' }),
+            items: [item('assistant_message', { text: 'The card now shows the request.' })],
+          }),
+        },
+      },
+    })
+    await renderCockpit()
+    expect(screen.getByTestId('chat-view')).toBeTruthy()
+    expect(screen.queryByTestId('terminal-surface')).toBeNull()
+    expect(screen.getByText('Add approvals to the HUD')).toBeTruthy()
+    expect(screen.getByText('commando · chat · working')).toBeTruthy()
+    expect(screen.getByText('The card now shows the request.')).toBeTruthy()
   })
 })

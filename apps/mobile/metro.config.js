@@ -1,10 +1,11 @@
 // Metro config for the Commando companion app.
 //
-// The app lives at <repo>/apps/mobile but imports `@commando/protocol` and
-// `@commando/tmux-create` from <repo>/shared, which is outside the project
+// The app lives at <repo>/apps/mobile but imports `@commando/protocol`,
+// `@commando/tmux-create` and the chat modules from <repo>/shared, which is outside the project
 // root. Metro only watches the project root by default, so the repo root is added to
 // `watchFolders` and the alias is resolved explicitly — the tsconfig path alias
 // only teaches TypeScript about it, not the bundler.
+const fs = require('node:fs')
 const path = require('node:path')
 const { getDefaultConfig } = require('expo/metro-config')
 
@@ -26,6 +27,21 @@ config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
   '@commando/protocol': path.join(repoRoot, 'shared', 'protocol.ts'),
   '@commando/tmux-create': path.join(repoRoot, 'shared', 'tmux-create.ts'),
+  '@commando/agent-chat': path.join(repoRoot, 'shared', 'agent-chat.ts'),
+  '@commando/chat-timeline': path.join(repoRoot, 'shared', 'chat-timeline.ts'),
+  '@commando/chat-composer': path.join(repoRoot, 'shared', 'chat-composer.ts'),
+}
+
+// The shared files import each other as `./agent-chat.js` (the daemon runs them
+// as Node ESM); Metro only finds the `.ts` source when told to.
+const sharedDir = path.join(repoRoot, 'shared')
+const resolveRequest = config.resolver.resolveRequest
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (path.dirname(context.originModulePath) === sharedDir && /^\.\/[\w-]+\.js$/.test(moduleName)) {
+    const source = path.join(sharedDir, moduleName.replace(/\.js$/, '.ts'))
+    if (fs.existsSync(source)) return { type: 'sourceFile', filePath: source }
+  }
+  return (resolveRequest ?? context.resolveRequest)(context, moduleName, platform)
 }
 
 module.exports = config
