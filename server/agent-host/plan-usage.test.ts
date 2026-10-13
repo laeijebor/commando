@@ -135,11 +135,14 @@ describe('applyCodexRateLimits', () => {
     const next = applyCodexRateLimits(first, { primary: { usedPercent: 93, windowDurationMins: 300, resetsAt: null }, secondary: null, planType: null }, 9)
     expect(next?.plan).toBe('pro')
     expect(next?.limits.map((limit) => [limit.kind, limit.percent, limit.severity])).toEqual([['session', 93, 'critical'], ['weekly_all', 9, 'normal']])
+    expect(next?.limits[0]?.resetsAt).toBe(1_800_000_000_000)
     expect(applyCodexRateLimits(first, { primary: null, secondary: null }, 9)).toBe(first)
   })
 
   it('names other window lengths and marks the fullest window when a limit is hit', () => {
     const next = applyCodexRateLimits(undefined, { ...snapshot, primary: { usedPercent: 99, windowDurationMins: 1_440, resetsAt: null }, secondary: null, rateLimitReachedType: 'rate_limit_reached' }, 5)
     expect(next?.limits).toEqual([{ kind: 'window_1440', title: '1d window', percent: 99, severity: 'critical', reached: true }])
+    const credits = applyCodexRateLimits(undefined, { ...snapshot, rateLimitReachedType: 'workspace_member_credits_depleted' }, 5)
+    expect(credits?.limits.some((limit) => limit.reached)).toBe(false)
   })
 })

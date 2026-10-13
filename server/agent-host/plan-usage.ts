@@ -172,15 +172,16 @@ export function applyCodexRateLimits(current: ChatPlanUsage | undefined, snapsho
     const used = isRecord(window) ? percent(window.usedPercent) : undefined
     if (used === undefined || !isRecord(window)) continue
     const { kind, title } = codexWindow(window.windowDurationMins, fallback)
-    const resetsAt = typeof window.resetsAt === 'number' && Number.isFinite(window.resetsAt) ? window.resetsAt * 1000 : undefined
-    const next = limit({ kind, title, percent: used, severity: gradedSeverity(used) }, resetsAt)
     const index = limits.findIndex((entry) => entry.kind === kind)
+    const resetsAt = typeof window.resetsAt === 'number' && Number.isFinite(window.resetsAt) ? window.resetsAt * 1000 : limits[index]?.resetsAt
+    const next = limit({ kind, title, percent: used, severity: gradedSeverity(used) }, resetsAt)
     if (index >= 0) limits[index] = next
     else limits.push(next)
     changed = true
   }
-  // Codex says a limit was hit but not which; the fullest window is the one.
-  if (typeof snapshot.rateLimitReachedType === 'string' && limits.length && !limits.some((entry) => entry.reached)) {
+  // Codex says a window limit was hit but not which; the fullest window is the one.
+  // Its other reasons are about workspace credits, not these windows.
+  if (snapshot.rateLimitReachedType === 'rate_limit_reached' && limits.length && !limits.some((entry) => entry.reached)) {
     const fullest = limits.reduce((top, entry, index) => entry.percent > limits[top]!.percent ? index : top, 0)
     limits[fullest] = { ...limits[fullest]!, severity: 'critical', reached: true }
     changed = true
