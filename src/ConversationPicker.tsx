@@ -76,13 +76,19 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
   const close = useRef(onClose)
   close.current = onClose
 
-  // It covers only its pane, so a click anywhere else closes it like a menu.
+  // It covers only its pane, so a click anywhere else closes it like a menu. A click
+  // into an embedded page never reaches this document; it only blurs the window.
   useEffect(() => {
-    const onMouseDown = (event: MouseEvent) => {
+    const onPointerDown = (event: Event) => {
       if (!(event.target instanceof Node) || !dialog.current?.contains(event.target)) close.current()
     }
-    document.addEventListener('mousedown', onMouseDown, true)
-    return () => document.removeEventListener('mousedown', onMouseDown, true)
+    const onBlur = () => close.current()
+    document.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('blur', onBlur)
+    }
   }, [])
 
   useEffect(() => {
