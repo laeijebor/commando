@@ -20,6 +20,7 @@ import {
 } from '../../shared/agent-chat'
 import type { AgentStatus, TmuxPane } from '../../shared/protocol'
 import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from '../chatLineage'
+import type { PrQuickLookTab } from '../PrQuickLook'
 import type { PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
 import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError } from './ChatComposer'
@@ -123,7 +124,7 @@ function ChatColumn({
   /** Restarts the host on the same conversation, to run the current code. */
   onRestart?: () => void
   /** Opens a linked PR in this pane's side panel. */
-  onOpenPr?: (repo: string, number: number) => void
+  onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   /** File search, pull requests and image uploads for the composer's menus. */
   services?: ChatInputServices
   /** Why the daemon refused a send (e.g. an image it no longer has). */

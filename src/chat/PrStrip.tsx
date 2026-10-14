@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { CheckCircle2, ChevronDown, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, XCircle } from 'lucide-react'
 import type { PrAutofixStatus } from '../../shared/pr-types'
 import { prMergeDisabledReason } from '../../shared/pr-merge'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { usePanePullRequests } from '../PanePullRequests'
 import { PrBadges } from '../PrBadges'
+import type { PrQuickLookTab } from '../PrQuickLook'
 import { cachedPrSummary, markPrMerged, refreshPanePrs } from '../prStore'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
@@ -122,10 +123,16 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
   )
 }
 
-export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; api: StripApi; connected: boolean; onOpenPr?: (repo: string, number: number) => void }) {
+export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; api: StripApi; connected: boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void }) {
   const list = usePanePullRequests(paneId, api, connected)
   const [expanded, setExpanded] = useState(false)
   if (!list?.pullRequests.length) return null
+  const openInPanel = (event: MouseEvent<HTMLAnchorElement>, pr: PanePrSummary, tab: PrQuickLookTab) => {
+    // Modified clicks keep the browser's open-in-new-tab behaviour.
+    if (!onOpenPr || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
+    event.preventDefault()
+    onOpenPr(pr.repo, pr.number, tab)
+  }
   const prs = [...list.pullRequests].sort((left, right) => Number(right.state === 'open') - Number(left.state === 'open'))
   return (
     <section className="chat-pr-strip" aria-label="Linked pull requests">
@@ -135,16 +142,11 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
           <div key={`${pr.repo}#${pr.number}`} className={`chat-pr-row ${pr.state}`}>
             <Icon className="size-4 shrink-0" />
             <a className="chat-pr-link" href={pr.url} target="_blank" rel="noopener noreferrer" title={`${pr.repo}#${pr.number}: ${pr.title}`}
-              onClick={(event) => {
-                // Modified clicks keep the browser's open-in-new-tab behaviour.
-                if (!onOpenPr || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
-                event.preventDefault()
-                onOpenPr(pr.repo, pr.number)
-              }}><span className="font-mono">#{pr.number}</span> <span className="truncate">{pr.title}</span></a>
+              onClick={(event) => openInPanel(event, pr, 'Description')}><span className="font-mono">#{pr.number}</span> <span className="truncate">{pr.title}</span></a>
             {pr.state === 'open' ? <>
               {/* The same shared PR status the HUD shows, updated as any view refreshes it. */}
               <span className="chat-pr-badges">
-                <PrBadges pr={pr} number={pr.number} />
+                <PrBadges pr={pr} number={pr.number} {...(onOpenPr ? { links: { url: pr.url, onClick: (tab, event) => openInPanel(event, pr, tab) } } : {})} />
                 <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} />
               </span>
             </> : <>

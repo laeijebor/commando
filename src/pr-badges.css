@@ -21,3 +21,7 @@
 .pr-diffstat .plus { color: var(--green); }
 .pr-diffstat .minus { color: var(--red); }
 .pr-chip.pr-stack-badge { color: var(--accent); }
+
+a.pr-chip-link { text-decoration: none; cursor: pointer; }
+a.pr-chip-link:hover,
+a.pr-chip-link:focus-visible { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); outline: none; }
