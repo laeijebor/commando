@@ -1600,6 +1600,7 @@ async function loadSimCli(): Promise<SimCliModule> {
 
 const simUdid = '11111111-1111-1111-1111-111111111111'
 const secondSimUdid = '22222222-2222-2222-2222-222222222222'
+const disableDictationCall = ['xcrun', ['simctl', 'spawn', simUdid, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false']]
 const fakeDevice = { udid: simUdid, name: 'iPhone 17', state: 'Shutdown', isAvailable: true }
 const fakeDevices = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-26-5': [fakeDevice] } }
 const fakeSlim = `${simUdid}  iPhone 17  iOS 26.5   booted · 170/170 slim\n`
@@ -1830,7 +1831,7 @@ describe('generated simulator lease CLI', () => {
       udid: simUdid, label: 'Session name · check empty state', originalName: 'Commando Pool 1',
     })
     expect(dependencies.run.mock.calls).toEqual([
-      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid]],
+      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid]], disableDictationCall,
       ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · check empty state']],
     ])
     expect(dependencies.request.mock.calls).toEqual([
@@ -1854,7 +1855,7 @@ describe('generated simulator lease CLI', () => {
     expect(deps.onPath).toHaveBeenCalledWith('simfleet')
     expect(deps.run.mock.calls.slice(1)).toEqual([
       ['simfleet', ['sim', 'boot', simUdid], '/main'], ['simfleet', ['claim', simUdid, 'Session name'], '/main'],
-      ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name']],
+      disableDictationCall, ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name']],
     ])
     expect(deps.request).toHaveBeenCalledWith('PUT', '', expect.objectContaining({ via: 'simfleet' }))
     const release = simDependencies({ ...fakeLease, via: 'simfleet' })
@@ -2005,7 +2006,7 @@ describe('generated simulator lease CLI', () => {
           ['simfleet', ['sim', 'boot', simUdid], '/original-main'],
           ['simfleet', ['claim', simUdid, label], '/original-main'],
         ] : [['simslim', ['on', simUdid]]]),
-        ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, label]],
+        disableDictationCall, ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, label]],
       ])
       expect(deps.exists).not.toHaveBeenCalled()
       expect(deps.onPath).not.toHaveBeenCalled()

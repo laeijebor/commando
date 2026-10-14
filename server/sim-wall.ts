@@ -486,6 +486,8 @@ export class SimWallApi {
         try {
           await this.booted(udid)
           await this.runner('simslim', ['on', udid])
+          // Slimming disables assistantd; leaving dictation on makes keyboard apps spin on availability checks.
+          await this.runner('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false'])
           json(response, 200, { ok: true })
         } finally {
           this.slimming.delete(udid)

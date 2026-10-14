@@ -1019,6 +1019,10 @@ async function runPoolCommand(args, request, run) {
   return { members: added }
 }
 
+// Slim boots disable assistantd, so UIKit's dictation-availability checks loop on the main thread once an app uses the keyboard.
+const disableDictation = (run, udid) =>
+  run('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false'])
+
 export function verifySlim(output, udid) {
   const line = output.split(/\r?\n/).find((entry) => entry.trim().split(/\s+/)[0]?.toUpperCase() === udid.toUpperCase())
   const match = line && /\bbooted\s*·\s*(\d+)\/(\d+)\s+slim\s*$/.exec(line)
@@ -1162,6 +1166,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
         await run('simfleet', ['sim', 'boot', udid], root)
         await run('simfleet', ['claim', udid, label], root)
       } else await run('simslim', ['on', udid])
+      await disableDictation(run, udid)
     }
     try {
       if (via !== 'adopted') verifySlim(await run('simslim', ['list', '--booted']), udid)

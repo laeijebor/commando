@@ -663,6 +663,7 @@ describe('SimWallApi', () => {
     expect((await call(api, `/${A}/slim`, 'POST')).status).toBe(409)
     gate.resolve()
     expect((await first).status).toBe(200)
+    expect(runner).toHaveBeenCalledWith('xcrun', ['simctl', 'spawn', A, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false'])
     expect((await call(api, `/${A}/snapshot.jpg`)).status).toBe(200)
     expect(runner.mock.calls.filter(([, args]) => args.includes('screenshot'))).toHaveLength(2)
     expect((await call(api, `/${A}/open`, 'POST')).status).toBe(200)
