@@ -663,6 +663,9 @@ describe('SimWallApi', () => {
     expect((await call(api, `/${A}/slim`, 'POST')).status).toBe(409)
     gate.resolve()
     expect((await first).status).toBe(200)
+    const order = runner.mock.calls.map(([command, args]) => command === 'simslim' ? args[0] : args[1])
+    expect(order.indexOf('spawn')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('spawn')).toBeLessThan(order.indexOf('on'))
     expect(runner).toHaveBeenCalledWith('xcrun', ['simctl', 'spawn', A, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false'])
     expect((await call(api, `/${A}/snapshot.jpg`)).status).toBe(200)
     expect(runner.mock.calls.filter(([, args]) => args.includes('screenshot'))).toHaveLength(2)
@@ -682,6 +685,20 @@ describe('SimWallApi', () => {
     fail = false
     expect((await call(api, `/${A}/snapshot.jpg`)).status).toBe(200)
     expect((await call(api, `/${A}/slim`, 'POST')).status).toBe(200)
+  })
+
+  it('does not slim when turning off dictation fails, so the action stays retryable', async () => {
+    const baseline = setup()
+    let fail = true
+    const { api, runner } = setup(async (command, args) => {
+      if (fail && args[1] === 'spawn') throw new Error('spawn failed')
+      return baseline.runner(command, args)
+    })
+    expect((await call(api, `/${A}/slim`, 'POST')).status).toBe(500)
+    expect(runner).not.toHaveBeenCalledWith('simslim', ['on', A])
+    fail = false
+    expect((await call(api, `/${A}/slim`, 'POST')).status).toBe(200)
+    expect(runner).toHaveBeenCalledWith('simslim', ['on', A])
   })
 
   it('treats reported devices without positive equal slim counts as unslimmed', async () => {

@@ -1900,7 +1900,7 @@ describe('generated simulator lease CLI', () => {
     const deps = simDependencies(fakeLease)
     await cli.runSimCommand(['lease'], deps)
     expect(deps.run.mock.calls).toEqual([
-      ['xcrun', ['simctl', 'list', 'devices', '--json']],
+      ['xcrun', ['simctl', 'list', 'devices', '--json']], disableDictationCall,
       ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · previous task']],
     ])
     expect(deps.request).toHaveBeenCalledWith('PATCH', '', { operation: 'operation-id', task: 'previous task' })
