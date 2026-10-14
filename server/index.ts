@@ -84,6 +84,8 @@ import { prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { ChatConversationIndex } from './chat-conversations.js'
+import { ChatConversationsApi } from './chat-conversations-api.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
 import {
   configuredAuthDatabasePath,
@@ -1862,6 +1864,23 @@ async function main(): Promise<void> {
     // A coalesced in-flight refresh can predate the new pane or its lineage options.
     refreshSnapshot: refreshSnapshotFresh,
   })
+  // Its own resolver: the panes' one forgets every folder a request doesn't name.
+  const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
+  const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const chatConversationsApi = new ChatConversationsApi({
+    index: chatConversations,
+    snapshot: () => snapshot,
+    chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
+    chatSessions: () => agentHosts.states().map((state) => state.session),
+    creator: tmuxCreator,
+    beforePaneCreated: async (paneId) => {
+      const windowId = paneForId(paneId)?.windowId
+      if (windowId) await tmux.releaseWindowPaneResizes(windowId)
+    },
+    refreshSnapshot: refreshSnapshotFresh,
+  })
+  // The first scan reads every transcript's head; do it before anyone opens the picker.
+  setTimeout(() => { void chatConversations.list().catch((error: unknown) => console.warn('[commando] Could not list chat conversations', error)) }, 5_000).unref()
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     guides,
@@ -2625,6 +2644,7 @@ async function main(): Promise<void> {
         if (await pushApi.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
+        if (await chatConversationsApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
           request,
           response,

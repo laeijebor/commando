@@ -44,6 +44,28 @@ function effectiveRank(provider: string, mode: ChatPermissionMode): number {
   return provider === 'codex-chat' && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
 }
 
+/** A chat's permission mode as the four a launch takes; others (auto, dontAsk) count as asking first. */
+function launchMode(chat: Pick<ChatSessionInfo, 'permissionMode'> | undefined): ChatPermissionMode {
+  return chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'
+}
+
+function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): number {
+  return effectiveRank(chat.provider === 'codex' ? 'codex-chat' : 'claude-chat', launchMode(chat))
+}
+
+/** The most permissive mode `provider` supports that does not exceed what `rank` allows. */
+function inheritedMode(provider: 'claude-chat' | 'codex-chat', rank: number): ChatPermissionMode {
+  const supported = provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
+  return [...supported].map((mode) => mode.value)
+    .filter((mode) => effectiveRank(provider, mode) <= rank)
+    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0] ?? 'plan'
+}
+
+/** The mode a chat started from `chat` gets: as permissive as it, never more. */
+export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>, provider: 'claude-chat' | 'codex-chat'): ChatPermissionMode {
+  return inheritedMode(provider, chatRank(chat))
+}
+
 class HttpError extends Error {
   constructor(readonly status: number, message: string) { super(message) }
 }
@@ -138,16 +160,14 @@ export class AgentChatsApi {
     const provider = input.agent ?? (chat ? (chat.provider === 'codex' ? 'codex-chat' : 'claude-chat') : this.dependencies.status(caller.id)?.provider)
     if (!provider || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) throw new HttpError(400, 'Unknown caller agent provider; specify --agent')
     const hosted = provider === 'claude-chat' || provider === 'codex-chat'
-    const callerMode = chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'
-    const callerRank = chat ? effectiveRank(chat.provider === 'codex' ? 'codex-chat' : 'claude-chat', callerMode) : PERMISSION_RANK.default
+    const callerMode = launchMode(chat)
+    const callerRank = chat ? chatRank(chat) : PERMISSION_RANK.default
     if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open claude-chat or codex-chat chats')
     if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat and codex-chat accept a permission mode')
     const supported = provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
     if (input.permissionMode !== undefined && !supported.some((mode) => mode.value === input.permissionMode)) throw new HttpError(400, `${provider} does not support permission mode ${input.permissionMode}`)
     // Inherit the most permissive mode the child supports that does not exceed the caller.
-    const permissionMode = input.permissionMode ?? [...supported].map((mode) => mode.value)
-      .filter((mode) => effectiveRank(provider, mode) <= callerRank)
-      .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0] ?? 'plan'
+    const permissionMode = input.permissionMode ?? (hosted ? inheritedMode(provider, callerRank) : 'plan')
     if (effectiveRank(provider, permissionMode) > callerRank) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
     if (!hosted) return { provider: provider as SessionAgentProvider }
     return { provider, permissionMode, ...(provider === 'claude-chat' && chat?.provider !== 'codex' && chat?.configDir ? { configDir: chat.configDir } : {}) }
