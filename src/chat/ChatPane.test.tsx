@@ -69,11 +69,11 @@ describe('ChatPane', () => {
     expect(screen.queryByRole('textbox', { name: 'Message Claude' })).toBeNull()
   })
 
-  it('renders messages, a folded work group and the session chips', () => {
+  it('renders messages, a faint activity line and the session chips', () => {
     renderPane(chat())
     expect(screen.getByText('Fix the queue')).toBeInTheDocument()
     expect(screen.getByText('drain()')).toBeInTheDocument()
-    const group = screen.getByRole('button', { name: 'Ran 1 command, edited 1 file, read 1 file' })
+    const group = screen.getByRole('button', { name: 'Edited 1 file +2 −1, ran 1 command, read 1 file' })
     expect(group).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(group)
     expect(screen.getByText('server/agent-resume.ts', { selector: 'span' })).toBeInTheDocument()
@@ -288,14 +288,29 @@ describe('thinking rows', () => {
     expect(thoughtLabel({ ...thought, status: 'running' } as Extract<ChatItem, { kind: 'reasoning' }>)).toBe('Thinking…')
   })
 
-  it('shows a collapsed row that opens to the summary, apart from the work group', () => {
+  it('folds a thought into a faint line that opens to its summary', () => {
     renderPane(chat({}, [thought]))
-    const row = screen.getByRole('button', { name: 'Thought for 14s' })
-    expect(row).toHaveAttribute('aria-expanded', 'false')
+    // The trailing thought starts a stretch of its own after the reply.
+    const line = screen.getByRole('button', { name: 'Thought · 14s' })
+    expect(line).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText(/Checking how the hub/)).toBeNull()
-    fireEvent.click(row)
+    // A lone step opens straight to its text.
+    fireEvent.click(line)
     expect(screen.getByText('Checking how the hub routes chat_send.')).toBeInTheDocument()
-    expect(deriveTimelineRows([...items, thought]).at(-1)).toMatchObject({ kind: 'thought', id: 'th' })
+  })
+
+  it('merges thinking between tools into one line that shows what runs now', () => {
+    const running: ChatItem = { ...base, id: 'run', status: 'running', kind: 'command', toolUseId: 'r', command: 'npm run typecheck' }
+    renderPane(chat({}, [thought, { ...items[2]!, id: 'read2' }, running]))
+    expect(screen.queryAllByRole('button', { name: /^Thought/ })).toHaveLength(0)
+    expect(screen.getByRole('button', { name: /^npm run typecheck · Read 1 file/ })).toBeInTheDocument()
+  })
+
+  it('shows a lone step with nothing to open as plain text, not a disabled button', () => {
+    const approval: ChatItem = { ...base, id: 'p', kind: 'request', requestId: 'p', requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', answer: { kind: 'approval', decision: 'allow' } }
+    renderPane(chat({}, [approval]))
+    expect(screen.getByText('Allowed Bash')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Allowed Bash/ })).toBeNull()
   })
 })
 

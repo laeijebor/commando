@@ -1,4 +1,4 @@
-import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Zap } from 'lucide-react'
@@ -9,8 +9,9 @@ import { providerLabel } from './ComposerControls'
 import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
 import { SubagentGroup, useNow } from './Subagents'
-import { deriveTimelineRows, patchLines, shortPath, thoughtLabel, type SubagentItem, type ReasoningItem, type TimelineRow, type WorkItem } from '../../shared/chat-timeline'
-import { WorkLogBlock, WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
+import { activitySummary, deriveTimelineRows, isWork, mergeActivityRows, patchLines, shortPath, thoughtLabel, type ActivityRow, type ActivitySummary, type QuietTimelineRow, type ReasoningItem, type SubagentItem, type WorkItem } from '../../shared/chat-timeline'
+import { elapsedLabel } from './turnFlow'
+import { WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
 
@@ -119,11 +120,20 @@ function WorkDetails({ item }: { item: WorkItem }) {
   }
 }
 
-function WorkEntry({ item, cwd }: { item: WorkItem; cwd: string }) {
-  const [open, setOpen] = useState(false)
+/** Row props that open and close a div-based disclosure from the mouse or keyboard. */
+function disclosure(toggle: () => void) {
+  return { onClick: toggle, role: 'button', tabIndex: 0, onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle() } } }
+}
+
+function DiffCounts({ additions, deletions }: { additions: number; deletions: number }) {
+  return <span className="shrink-0 font-mono text-2xs"><span className="text-success">+{additions}</span> <span className="text-destructive">−{deletions}</span></span>
+}
+
+function WorkEntry({ item, cwd, defaultOpen = false }: { item: WorkItem; cwd: string; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
   const expandable = hasDetails(item)
   const trailing = item.kind === 'file_change'
-    ? <span className="shrink-0 font-mono text-2xs"><span className="text-success">+{item.additions}</span> <span className="text-destructive">−{item.deletions}</span></span>
+    ? <DiffCounts additions={item.additions} deletions={item.deletions} />
     : item.kind === 'command' && item.isError
       ? <span className="shrink-0 text-2xs text-destructive">failed</span>
       : null
@@ -133,68 +143,102 @@ function WorkEntry({ item, cwd }: { item: WorkItem; cwd: string }) {
       label={workLabel(item, cwd)}
       trailing={trailing}
       aria-expanded={expandable ? open : undefined}
-      {...(expandable ? { onClick: () => setOpen((value) => !value), role: 'button', tabIndex: 0, onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setOpen((value) => !value) } } } : {})}
+      {...(expandable ? disclosure(() => setOpen((value) => !value)) : {})}
     >
       {open ? <WorkDetails item={item} /> : null}
     </WorkLogRow>
   )
 }
 
-function WorkGroup({ row, cwd }: { row: Extract<TimelineRow, { kind: 'work' }>; cwd: string }) {
-  const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  // Live groups show their rows; finished ones fold to a summary unless opened.
-  const open = userOpen ?? row.live
-  const single = row.items.length === 1
-  if (single) {
-    return <WorkLogBlock><WorkEntry item={row.items[0]!} cwd={cwd} /></WorkLogBlock>
-  }
+/** Claude's thinking inside an opened stretch: "Thought for 14s", opening to the text. */
+function ThoughtEntry({ item, defaultOpen = false }: { item: ReasoningItem; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
+  const expandable = Boolean(item.text)
   return (
-    <WorkLogBlock>
-      <button
-        type="button"
-        className="group flex min-h-6 w-full min-w-0 items-center gap-1.5 rounded-md px-0.5 text-left text-sm text-muted-foreground hover:text-foreground"
-        aria-expanded={open}
-        onClick={() => setUserOpen(!open)}
-      >
-        <span className="flex size-6 shrink-0 items-center justify-center">
-          {row.live ? <LoaderCircle className="size-3.5 animate-spin text-primary" aria-hidden="true" /> : <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} aria-hidden="true" />}
-        </span>
-        <span className="min-w-0 flex-1 truncate">{row.summary}</span>
-      </button>
+    <WorkLogRow
+      icon={<Diamond className={cn('size-3 text-primary', item.status === 'running' && 'chat-pulse')} aria-hidden="true" />}
+      label={<span className="italic text-muted-foreground">{thoughtLabel(item)}</span>}
+      aria-expanded={expandable ? open : undefined}
+      {...(expandable ? disclosure(() => setOpen((value) => !value)) : {})}
+    >
       {open ? (
-        <div className="ms-3 border-s border-border ps-2">
-          <WorkLogList>
-            {row.items.map((item) => <WorkEntry key={item.id} item={item} cwd={cwd} />)}
-          </WorkLogList>
-        </div>
+        <WorkLogDetails>
+          <div className="chat-thought italic text-muted-foreground"><Markdown text={item.text} /></div>
+        </WorkLogDetails>
       ) : null}
-    </WorkLogBlock>
+    </WorkLogRow>
   )
 }
 
-/** Claude's thinking summary: a collapsed "Thought for 14s" row that opens to the text. */
-function ThoughtRow({ item }: { item: ReasoningItem }) {
-  const [open, setOpen] = useState(false)
-  const running = item.status === 'running'
-  const expandable = Boolean(item.text)
+function SummaryText({ summary }: { summary: ActivitySummary }) {
   return (
-    <div className="pb-2">
-      <button
-        type="button"
-        className={cn('flex min-h-6 items-center gap-1.5 rounded-md px-0.5 text-left text-sm text-muted-foreground', expandable && 'hover:text-foreground')}
-        aria-expanded={expandable ? open : undefined}
-        disabled={!expandable}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span className="flex size-6 shrink-0 items-center justify-center">
-          <Diamond className={cn('size-3 text-primary', running && 'chat-pulse')} aria-hidden="true" />
-        </span>
-        {thoughtLabel(item)}
-        {expandable ? <ChevronRight className={cn('size-3 text-icon-muted transition-transform', open && 'rotate-90')} aria-hidden="true" /> : null}
-      </button>
+    <>
+      {summary.edits ? <>{summary.edits.label} <DiffCounts additions={summary.edits.additions} deletions={summary.edits.deletions} /></> : null}
+      {summary.edits && summary.rest ? ', ' : null}
+      {summary.rest}
+    </>
+  )
+}
+
+/**
+ * Everything between two messages as one faint line, so the conversation
+ * reads on its own. It brightens on hover and opens to every step in order.
+ * While live it names the step running now; failures always show.
+ */
+function ActivityGroup({ row, cwd }: { row: ActivityRow; cwd: string }) {
+  const { now } = use(TimelineContext)
+  const [open, setOpen] = useState(false)
+  const current = row.live ? [...row.items].reverse().find((item) => item.status === 'running') : undefined
+  const summary = activitySummary(row.items, row.live ? now : undefined)
+  const done = row.items.filter((item) => item !== current)
+  const work = row.items.filter(isWork)
+  // A lone step opens already showing its output, diff or thinking.
+  const lone = row.items.length === 1 ? row.items[0]! : undefined
+  const expandable = !lone || (isWork(lone) ? hasDetails(lone) : Boolean(lone.text))
+  let label: ReactNode
+  if (current) {
+    label = (
+      <>
+        {current.kind === 'reasoning' ? thoughtLabel(current) : workLabel(current, cwd)}
+        {done.some(isWork) ? <> · <SummaryText summary={activitySummary(done)} /></> : null}
+      </>
+    )
+  } else if (work.length === 1) {
+    const only = work[0]!
+    label = <>{workLabel(only, cwd)}{only.kind === 'file_change' ? <> <DiffCounts additions={only.additions} deletions={only.deletions} /></> : null}</>
+  } else {
+    label = <SummaryText summary={summary} />
+  }
+  const line = (
+    <>
+      <span className="flex size-3 shrink-0 items-center justify-center">
+        {current ? <LoaderCircle className="size-3 animate-spin text-primary" aria-hidden="true" /> : <span className="size-1 rounded-full bg-current" aria-hidden="true" />}
+      </span>
+      <span className="min-w-0 truncate">
+        {label}
+        {summary.failed ? <span className="text-destructive"> · {summary.failed} failed</span> : null}
+        {summary.elapsedMs !== null ? ` · ${elapsedLabel(summary.elapsedMs)}` : null}
+      </span>
+      {expandable ? <ChevronRight className={cn('size-3 shrink-0 opacity-0 transition group-hover/activity:opacity-100', open && 'rotate-90 opacity-100')} aria-hidden="true" /> : null}
+    </>
+  )
+  const lineClassName = cn(
+    'flex min-h-5 w-full min-w-0 items-center gap-2 rounded-md text-left text-xs transition-colors [&_.text-foreground]:text-inherit',
+    open || current ? 'text-muted-foreground' : 'text-faint',
+    expandable && 'hover:text-muted-foreground',
+  )
+  return (
+    <div className="group/activity -mt-1 pb-3">
+      {expandable
+        ? <button type="button" className={lineClassName} aria-expanded={open} onClick={() => setOpen((value) => !value)}>{line}</button>
+        : <div className={lineClassName}>{line}</div>}
       {open ? (
-        <div className="chat-thought ms-[18px] max-h-96 overflow-auto border-s-2 border-border ps-2.5 text-sm italic text-muted-foreground">
-          <Markdown text={item.text} />
+        <div className="ms-1.5 mt-1 border-s border-border ps-2">
+          <WorkLogList>
+            {row.items.map((item) => item.kind === 'reasoning'
+              ? <ThoughtEntry key={item.id} item={item} defaultOpen={item === lone} />
+              : <WorkEntry key={item.id} item={item} cwd={cwd} defaultOpen={item === lone} />)}
+          </WorkLogList>
         </div>
       ) : null}
     </div>
@@ -218,7 +262,7 @@ function UserText({ text }: { text: string }) {
   )
 }
 
-function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
+function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
   const context = use(TimelineContext)
   switch (row.kind) {
     case 'user':
@@ -244,10 +288,8 @@ function Row({ row, cwd }: { row: TimelineRow; cwd: string }) {
       return <SubagentGroup row={row} items={context.items} now={context.now} onTask={context.onTask} controlsDisabled={context.controlsDisabled} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
     case 'assistant':
       return <div className="pb-3"><Markdown text={row.item.text} /></div>
-    case 'work':
-      return <WorkGroup row={row} cwd={cwd} />
-    case 'thought':
-      return <ThoughtRow item={row.item} />
+    case 'activity':
+      return <ActivityGroup row={row} cwd={cwd} />
     case 'notice':
       return (
         <div className={cn('flex items-start gap-1.5 pb-2 text-xs', row.item.level === 'error' ? 'text-destructive' : 'text-muted-foreground')}>
@@ -275,8 +317,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onTask?: (action: ChatTaskAction, agent: SubagentItem) => void
   controlsDisabled?: boolean
 }) {
-  const rows = useMemo(() => deriveTimelineRows(items, scope), [items, scope])
-  const live = rows.some((row) => row.kind === 'subagents' && row.live)
+  const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
+  const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
   const now = useNow(live)
   const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled])
   const scroller = useRef<HTMLDivElement>(null)
@@ -299,7 +341,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
 
   const last = rows.at(-1)
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
-  const liveWork = ((last?.kind === 'work' || last?.kind === 'subagents') && last.live) || (last?.kind === 'thought' && last.item.status === 'running')
+  const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   return (
     <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4" data-testid="chat-timeline">
       <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">

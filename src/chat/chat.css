@@ -18,6 +18,7 @@
   --color-muted-foreground: var(--muted);
   --color-secondary-label: var(--text-soft);
   --color-icon-muted: var(--muted-dim);
+  --color-faint: var(--text-faint);
   --color-border: var(--border);
   --color-input: var(--border-mid);
   --color-ring: var(--accent);

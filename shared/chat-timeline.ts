@@ -54,7 +54,7 @@ export function withExternalAgentRuns(items: readonly ChatItem[], runs: readonly
   return [...(after.get(-1) ?? []), ...items.flatMap((item, index) => [item, ...(after.get(index) ?? [])])]
 }
 
-function isWork(item: ChatItem): item is WorkItem {
+export function isWork(item: ChatItem): item is WorkItem {
   return item.kind === 'command' || item.kind === 'file_change' || item.kind === 'tool' || item.kind === 'request'
 }
 
@@ -69,10 +69,13 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`
 }
 
-/** "Ran 2 commands, edited 3 files, read 2 files" — the collapsed work-group label. */
-export function workSummary(items: readonly WorkItem[]): string {
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+/** Work parts in label order: "ran 2 commands", "edited 3 files", …, keyed so callers can single one out. */
+function workParts(items: readonly WorkItem[]): { kind: 'commands' | 'edits' | 'other'; text: string }[] {
   let commands = 0
-  let edits = 0
   let reads = 0
   let searches = 0
   let tools = 0
@@ -80,21 +83,25 @@ export function workSummary(items: readonly WorkItem[]): string {
   const editedPaths = new Set<string>()
   for (const item of items) {
     if (item.kind === 'command') commands += 1
-    else if (item.kind === 'file_change') { edits += 1; editedPaths.add(item.path) }
+    else if (item.kind === 'file_change') editedPaths.add(item.path)
     else if (item.kind === 'request') requests += 1
     else if (item.toolName === 'Read') reads += 1
     else if (item.toolName === 'Grep' || item.toolName === 'Glob' || item.toolName === 'WebSearch') searches += 1
     else tools += 1
   }
-  const parts: string[] = []
-  if (commands) parts.push(`ran ${plural(commands, 'command', 'commands')}`)
-  if (edits) parts.push(`edited ${plural(editedPaths.size, 'file', 'files')}`)
-  if (reads) parts.push(`read ${plural(reads, 'file', 'files')}`)
-  if (searches) parts.push(`searched ${plural(searches, 'time', 'times')}`)
-  if (tools) parts.push(`used ${plural(tools, 'tool', 'tools')}`)
-  if (requests) parts.push(plural(requests, 'approval', 'approvals'))
-  const text = parts.join(', ')
-  return text.charAt(0).toUpperCase() + text.slice(1)
+  const parts: { kind: 'commands' | 'edits' | 'other'; text: string }[] = []
+  if (commands) parts.push({ kind: 'commands', text: `ran ${plural(commands, 'command', 'commands')}` })
+  if (editedPaths.size) parts.push({ kind: 'edits', text: `edited ${plural(editedPaths.size, 'file', 'files')}` })
+  if (reads) parts.push({ kind: 'other', text: `read ${plural(reads, 'file', 'files')}` })
+  if (searches) parts.push({ kind: 'other', text: `searched ${plural(searches, 'time', 'times')}` })
+  if (tools) parts.push({ kind: 'other', text: `used ${plural(tools, 'tool', 'tools')}` })
+  if (requests) parts.push({ kind: 'other', text: plural(requests, 'approval', 'approvals') })
+  return parts
+}
+
+/** "Ran 2 commands, edited 3 files, read 2 files" — the collapsed work-group label. */
+export function workSummary(items: readonly WorkItem[]): string {
+  return capitalize(workParts(items).map((part) => part.text).join(', '))
 }
 
 /**
@@ -233,4 +240,78 @@ export function collapsedPlanPreview(markdown: string, maxLines = 10): string {
   while (preview.length && !preview.at(-1)?.trim()) preview.pop()
   if (more) preview.push('', '…')
   return preview.join('\n')
+}
+
+// The web chat's quieter timeline: one faint line per stretch of activity.
+
+/** A step in a stretch of activity between two messages: tool work or the thinking around it. */
+export type ActivityItem = WorkItem | ReasoningItem
+export type ActivityRow = { kind: 'activity'; id: string; items: ActivityItem[]; live: boolean }
+export type QuietTimelineRow = Exclude<TimelineRow, { kind: 'work' | 'thought' }> | ActivityRow
+
+/**
+ * Merges adjacent work and thought rows, so each stretch between two
+ * messages (or plans, subagents and notices) becomes one activity row.
+ * Thinking interleaved with tools otherwise splits a stretch into many rows.
+ */
+export function mergeActivityRows(rows: readonly TimelineRow[]): QuietTimelineRow[] {
+  const merged: QuietTimelineRow[] = []
+  for (const row of rows) {
+    if (row.kind !== 'work' && row.kind !== 'thought') {
+      merged.push(row)
+      continue
+    }
+    const items = row.kind === 'work' ? row.items : [row.item]
+    const live = row.kind === 'work' ? row.live : row.item.status === 'running'
+    const last = merged.at(-1)
+    if (last?.kind === 'activity') {
+      last.items.push(...items)
+      last.live ||= live
+    } else {
+      merged.push({ kind: 'activity', id: `activity-${items[0]!.id}`, items: [...items], live })
+    }
+  }
+  return merged
+}
+
+export type ActivitySummary = {
+  /** "Edited 2 files" and the stretch's line counts; null when nothing was edited. */
+  edits: { label: string; additions: number; deletions: number } | null
+  /** The other steps, capitalised when they lead: "ran 2 commands, read 1 file". "Thought" for thinking alone. */
+  rest: string
+  /** Commands, edits and tools that reported an error. */
+  failed: number
+  /** From the first step's start to the last one's end (or `now` while live); null for untimed history. */
+  elapsedMs: number | null
+}
+
+/**
+ * The faint line's summary. Edits lead (they are what changed), failures are
+ * counted so quieting never hides them, and thinking isn't named unless it
+ * is all the stretch did.
+ */
+export function activitySummary(items: readonly ActivityItem[], now?: number): ActivitySummary {
+  const work = items.filter(isWork)
+  const parts = workParts(work)
+  const edited = parts.find((part) => part.kind === 'edits')
+  let additions = 0
+  let deletions = 0
+  let failed = 0
+  for (const item of work) {
+    if (item.kind === 'file_change') {
+      additions += item.additions
+      deletions += item.deletions
+    }
+    if (item.kind !== 'request' && (item.isError || item.status === 'failed')) failed += 1
+  }
+  const others = parts.filter((part) => part !== edited).map((part) => part.text).join(', ')
+  const rest = work.length ? (edited ? others : capitalize(others)) : 'Thought'
+  const start = Math.min(...items.map((item) => item.createdAt))
+  const end = now ?? Math.max(...items.map((item) => item.updatedAt))
+  return {
+    edits: edited ? { label: capitalize(edited.text), additions, deletions } : null,
+    rest,
+    failed,
+    elapsedMs: items.length && end - start >= 1000 ? end - start : null,
+  }
 }

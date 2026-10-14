@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatItem, ExternalAgentRun } from './agent-chat.js'
-import { deriveTimelineRows, withExternalAgentRuns } from './chat-timeline.js'
+import { activitySummary, deriveTimelineRows, mergeActivityRows, withExternalAgentRuns, type ActivityItem } from './chat-timeline.js'
 
 const base = { turnId: 'turn-1', status: 'completed' as const, createdAt: 1_000, updatedAt: 1_000 }
 const run = (id: string, startedAt = 2_000): ExternalAgentRun => ({ id, runtime: 'codex', label: 'Review tests', state: 'running', startedAt, updatedAt: startedAt })
@@ -51,5 +51,44 @@ describe('external run anchoring', () => {
 
   it('places a run before the first item when its launch predates retained history', () => {
     expect(withExternalAgentRuns([command('later', 'ls', 5_000)], [run('external-1')]).map((item) => item.id)).toEqual(['external-1', 'later'])
+  })
+})
+
+describe('quiet activity rows', () => {
+  const thought = (id: string, createdAt: number, updatedAt: number, status: 'completed' | 'running' = 'completed'): ChatItem => ({ ...base, id, kind: 'reasoning', text: 'Considering', createdAt, updatedAt, status })
+  const edit = (id: string, path: string, additions: number, deletions: number): ChatItem => ({ ...base, id, kind: 'file_change', toolUseId: id, toolName: 'Edit', path, additions, deletions })
+  const read = (id: string): ChatItem => ({ ...base, id, kind: 'tool', toolUseId: id, toolName: 'Read', title: 'src/a.ts' })
+  const user = (id: string, text: string): ChatItem => ({ ...base, id, kind: 'user_message', text })
+  const reply = (id: string): ChatItem => ({ ...base, id, kind: 'assistant_message', text: 'Done' })
+
+  it('merges thoughts and tool work between two messages into one row', () => {
+    const items = [user('u', 'Fix it'), thought('t1', 1_000, 4_000), read('r'), thought('t2', 5_000, 6_000), command('c', 'npm test', 6_000), reply('a1'), thought('t3', 7_000, 8_000), edit('e', 'a.ts', 1, 0), reply('a2')]
+    const rows = mergeActivityRows(deriveTimelineRows(items))
+    expect(rows.map((row) => row.kind)).toEqual(['user', 'activity', 'assistant', 'activity', 'assistant'])
+    expect(rows[1]).toMatchObject({ id: 'activity-t1', live: false, items: [{ id: 't1' }, { id: 'r' }, { id: 't2' }, { id: 'c' }] })
+  })
+
+  it('keeps subagents, plans and notices as their own rows between stretches', () => {
+    const items = [read('r1'), { ...base, id: 'n', kind: 'notice', level: 'info', text: 'Compacted' } as ChatItem, read('r2')]
+    expect(mergeActivityRows(deriveTimelineRows(items)).map((row) => row.kind)).toEqual(['activity', 'notice', 'activity'])
+  })
+
+  it('is live while any merged step runs', () => {
+    const rows = mergeActivityRows(deriveTimelineRows([read('r'), thought('t', 2_000, 2_000, 'running')]))
+    expect(rows).toMatchObject([{ kind: 'activity', live: true }])
+  })
+
+  it('leads with edits and their line counts, counts failures and ignores thinking', () => {
+    const items = [thought('t', 1_000, 3_000), edit('e1', 'a.ts', 4, 7), edit('e2', 'b.ts', 3, 1), edit('e3', 'a.ts', 1, 0), { ...command('c1', 'npm test'), isError: true }, { ...command('c2', 'npm test'), updatedAt: 42_000 }, read('r')] as ActivityItem[]
+    expect(activitySummary(items)).toEqual({ edits: { label: 'Edited 2 files', additions: 8, deletions: 8 }, rest: 'ran 2 commands, read 1 file', failed: 1, elapsedMs: 41_000 })
+  })
+
+  it('capitalises the rest when nothing was edited and names thinking only when it is alone', () => {
+    expect(activitySummary([read('r'), command('c', 'ls')] as ActivityItem[])).toMatchObject({ edits: null, rest: 'Ran 1 command, read 1 file', elapsedMs: null })
+    expect(activitySummary([thought('t', 1_000, 7_000)] as ActivityItem[])).toMatchObject({ edits: null, rest: 'Thought', elapsedMs: 6_000 })
+  })
+
+  it('times a live stretch to now', () => {
+    expect(activitySummary([thought('t', 1_000, 2_000, 'running')] as ActivityItem[], 20_000).elapsedMs).toBe(19_000)
   })
 })
