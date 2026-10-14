@@ -3912,6 +3912,37 @@ body.is-resizing-hud-pinned-note {
   font-size: 7px;
 }
 
+/* The ⌘P picker covers only its chat pane. */
+.conversation-picker-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 44px 10px 10px;
+  background: color-mix(in srgb, var(--surface-deep) 72%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.conversation-picker {
+  max-height: min(660px, 100%);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+}
+
+.conversation-picker .command-kind {
+  max-width: 34cqi;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container (max-width: 520px) {
+  .conversation-picker .palette-footer span:first-child {
+    display: none;
+  }
+}
+
 .conversation-picker-group {
   padding: 9px 12px 4px;
   color: var(--muted-dim);

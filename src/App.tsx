@@ -327,6 +327,8 @@ type TerminalPaneProps = {
   onSelectPane?: (id: string) => void
   attributionVisible?: boolean
   agentChatRequests?: AgentChatRequest[]
+  /** Shown over this pane only, such as the ⌘P conversation picker. */
+  overlay?: ReactNode
   onAnswerAgentChatRequest?: (id: string, decision: 'accepted' | 'dismissed') => Promise<void>
   status?: AgentStatus
   brief?: SessionBrief
@@ -429,6 +431,7 @@ export function TerminalPaneCard({
   onSelectPane,
   attributionVisible,
   agentChatRequests = [],
+  overlay,
   onAnswerAgentChatRequest,
   status,
   brief: suppliedBrief,
@@ -804,6 +807,7 @@ export function TerminalPaneCard({
           {agentChatRequests.map((request) => <AgentChatRequestCard key={request.id} request={request} onAnswer={onAnswerAgentChatRequest} />)}
         </div> : null}
       </div>
+      {overlay}
       <footer className="pane-footer">
         <span className={`input-indicator${connected && focused ? ' live' : ''}`} />
         <span className="pane-footer-focus">{!connected ? 'Read only while offline' : focused ? 'Focused / keys go here' : 'Click to focus'}</span>
@@ -2960,12 +2964,23 @@ export function App() {
       if (!connected || area !== 'workspace' || paletteOpen || !paneId || !chats[paneId] || (chatViews[paneId] ?? 'chat') !== 'chat') return
       event.preventDefault()
       event.stopPropagation()
+      if (event.repeat) return
       // Closes only a picker that is showing; one whose pane went away opens afresh.
-      if (!event.repeat) setConversationPaneId((current) => (current && chats[current] && paneMap.has(current) ? null : paneId))
+      const showing = conversationPaneId && chats[conversationPaneId] && paneMap.has(conversationPaneId)
+      setConversationPaneId(showing ? null : paneId)
+      // The picker shows in its pane, and closes once another pane takes focus.
+      if (!showing) setFocusedPaneId(paneId)
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
   })
+
+  // Like a menu, the picker closes when another pane is focused (a native terminal
+  // click reaches the page only as focus) or its pane leaves the screen.
+  const conversationPaneShown = area === 'workspace' && Boolean(conversationPaneId && allVisiblePaneIds.includes(conversationPaneId))
+  useEffect(() => {
+    if (conversationPaneId && (!conversationPaneShown || (effectivePaneId && effectivePaneId !== conversationPaneId))) setConversationPaneId(null)
+  }, [conversationPaneId, conversationPaneShown, effectivePaneId])
 
   useEffect(() => {
     const runPaneShortcut = (key: string) => {
@@ -3879,6 +3894,7 @@ export function App() {
                             onSelectPane={jumpToPane}
                             attributionVisible={attributionTargets.has(pane.targetId)}
                             agentChatRequests={Object.values(agentChatRequests).filter((request) => request.callerPaneId === pane.id && request.callerTargetId === pane.targetId)}
+                            {...(conversationPaneId === pane.id && conversationPicker ? { overlay: conversationPicker } : {})}
                             onAnswerAgentChatRequest={async (id, decision) => {
                               setPaneActionError('')
                               try {
@@ -4345,7 +4361,6 @@ export function App() {
           </section>
         </div>
       ) : null}
-      {conversationPicker}
     </div>
     </PlanUsageContext.Provider>
     </ChatStashContext.Provider>

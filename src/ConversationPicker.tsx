@@ -48,7 +48,8 @@ function folder(path: string): string {
 /**
  * ⌘P in a chat: past Claude and Codex conversations, this pane's worktree first,
  * then its repo, then everything else. Enter switches the pane to one, ⌘Enter
- * opens it beside; one that is already open is jumped to instead.
+ * opens it beside; one that is already open is jumped to instead. It shows over
+ * its pane only, leaving the rest of the workspace usable.
  */
 export function ConversationPicker({ pane, current, open, busy, load, onPick, onJump, onClose, now = Date.now() }: {
   pane: TmuxPane
@@ -71,6 +72,18 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
   const [pending, setPending] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
+  const dialog = useRef<HTMLElement>(null)
+  const close = useRef(onClose)
+  close.current = onClose
+
+  // It covers only its pane, so a click anywhere else closes it like a menu.
+  useEffect(() => {
+    const onMouseDown = (event: MouseEvent) => {
+      if (!(event.target instanceof Node) || !dialog.current?.contains(event.target)) close.current()
+    }
+    document.addEventListener('mousedown', onMouseDown, true)
+    return () => document.removeEventListener('mousedown', onMouseDown, true)
+  }, [])
 
   useEffect(() => {
     let live = true
@@ -122,8 +135,8 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
 
   let row = -1
   return (
-    <div className="palette-backdrop" data-native-terminal-occluder="" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <section className="command-palette conversation-picker" role="dialog" aria-modal="true" aria-label="Conversations">
+    <div className="conversation-picker-backdrop" data-native-terminal-occluder="" role="presentation">
+      <section className="command-palette conversation-picker" role="dialog" aria-label="Conversations" ref={dialog}>
         <div className="palette-search">
           <Search aria-hidden="true" />
           <input

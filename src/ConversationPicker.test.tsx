@@ -84,6 +84,16 @@ describe('ConversationPicker', () => {
 })
 
 describe('openConversationPanes', () => {
+  it('is not modal, and closes on a click anywhere outside it', async () => {
+    const { onClose } = renderPicker()
+    const dialog = screen.getByRole('dialog', { name: 'Conversations' })
+    expect(dialog).not.toHaveAttribute('aria-modal')
+    fireEvent.mouseDown((await screen.findAllByRole('option'))[0]!)
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.mouseDown(document.body)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
   it('maps chat conversations and hook-reported terminal sessions to their panes', () => {
     const chats = { '%1': { session: { provider: 'codex', sessionId: 'cccccccc-0001' } } } as unknown as Record<string, ChatState>
     const statuses = {
