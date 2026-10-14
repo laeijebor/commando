@@ -16,10 +16,11 @@ import { claudeCodeSwitchCommand as providerSwitchCommand } from './session.js'
 
 export { claudeCodeFlags } from './session.js'
 
-const USAGE = `Usage: commando-agent <claude|codex|muse> [options]
+const USAGE = `Usage: commando-agent <claude|codex|muse|cursor> [options]
 
 Runs a provider session in this tmux pane and shows it as a chat in Commando.
 Codex uses the local codex app-server and Muse uses muse serve, each with its existing login.
+Cursor uses the local Cursor SDK; use /login to sign in.
 
 Options:
   --config-dir DIR                 Claude config dir (default: $CLAUDE_CONFIG_DIR)
@@ -67,7 +68,7 @@ export interface HostArgs {
 export function parseHostArgs(argv: string[], env: Record<string, string | undefined>): HostArgs | string {
   const [provider, ...rest] = argv
   if (!isChatProvider(provider)) return USAGE
-  const args: HostArgs = { provider, permissionMode: 'default' }
+  const args: HostArgs = { provider, permissionMode: provider === 'cursor' ? 'bypassPermissions' : 'default', ...(provider === 'cursor' ? { bypassAllowed: true } : {}) }
   if (provider === 'claude' && env.CLAUDE_CONFIG_DIR) args.configDir = expandHome(env.CLAUDE_CONFIG_DIR)
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index]
