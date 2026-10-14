@@ -370,7 +370,7 @@ type TerminalPaneProps = {
   onChatAnswer?: (requestId: string, answer: ChatAnswer) => void
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
-  onChatOpenPr?: (repo: string, number: number) => void
+  onChatOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   chatServices?: ChatInputServices
   chatFlow?: ChatFlowServices
   /** Why the daemon refused one of this pane's chat sends. */
@@ -3919,7 +3919,7 @@ export function App() {
                             onChatAnswer={(chatRequestId, answer) => answerChat(pane.id, chatRequestId, answer)}
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
-                            onChatOpenPr={(repo, number) => { void revealPrTab(pane.id, repo, number, 'Description') }}
+                            onChatOpenPr={(repo, number, tab) => { void revealPrTab(pane.id, repo, number, tab) }}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
                             handoffProvider={paneChatHandoff(pane.id, agentStatuses[pane.id], chatHandoffEntries, chatHandoffs)?.provider}
                             chatUploading={chatUploads.has(pane.id)}

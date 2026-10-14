@@ -22,7 +22,7 @@ function mergeable(number: number, patch: Partial<PrSummary> = {}): PanePrSummar
   return { ...base, preview }
 }
 const status = (patch: Partial<PrAutofixStatus> = {}): PrAutofixStatus => ({ repo: 'acme/widgets', number: 12, targetId, enabled: true, status: 'watching', rounds: 0, lastEventAt: null, ...patch })
-function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number) => void) {
+function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number, tab: string) => void) {
   const api = {
     pane: vi.fn(async () => ({ targetId, totalCount: prs.length, pullRequests: prs, truncated: false, fetchedAt: Date.now() })),
     autofixStatus: vi.fn(async () => current),
@@ -73,9 +73,40 @@ describe('chat PR strip', () => {
     setup([pr(12)], null, onOpenPr)
     const link = await screen.findByRole('link', { name: '#12 Change 12' })
     expect(fireEvent.click(link)).toBe(false)
-    expect(onOpenPr).toHaveBeenCalledWith('acme/widgets', 12)
+    expect(onOpenPr).toHaveBeenCalledWith('acme/widgets', 12, 'Description')
     expect(fireEvent.click(link, { metaKey: true })).toBe(true)
     expect(onOpenPr).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the matching PR sub-tab from each status chip and keeps GitHub links for modified clicks', async () => {
+    const onOpenPr = vi.fn()
+    setup([{ ...pr(12), unresolvedThreads: 7, unansweredThreads: 2, conflicting: true }], null, onOpenPr)
+    const url = 'https://github.com/acme/widgets/pull/12'
+    const chips = [
+      ['Open diff for PR #12: +125 -16', `${url}/files`, 'Diff'],
+      ['Open checks for PR #12: ✗ 2 failing', `${url}/checks`, 'Checks'],
+      ['Open conversation for PR #12: 2 unanswered', url, 'Conversation'],
+      ['Open conversation for PR #12: 5 unresolved', url, 'Conversation'],
+      ['Open conflicts for PR #12: ⚠ conflicts', url, 'Conflicts'],
+    ] as const
+    await screen.findByRole('link', { name: '#12 Change 12' })
+    for (const [name, href, tab] of chips) {
+      const chip = screen.getByRole('link', { name })
+      expect(chip).toHaveAttribute('href', href)
+      expect(chip).toHaveAttribute('target', '_blank')
+      onOpenPr.mockClear()
+      expect(fireEvent.click(chip)).toBe(false)
+      expect(onOpenPr).toHaveBeenCalledWith('acme/widgets', 12, tab)
+      for (const modifier of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }]) expect(fireEvent.click(chip, modifier)).toBe(true)
+      expect(onOpenPr).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('leaves the status chips as plain text without an in-app opener', async () => {
+    setup([{ ...pr(12), unresolvedThreads: 2, conflicting: true }])
+    const row = (await screen.findByRole('link', { name: '#12 Change 12' })).closest('.chat-pr-row') as HTMLElement
+    expect(within(row).getAllByRole('link')).toHaveLength(1)
+    for (const chip of ['✗ 2 failing', '2 unanswered', '⚠ conflicts']) expect(within(row).getByText(chip).tagName).toBe('SPAN')
   })
 
   it('shows grouped check counts, a checks link, and toggles monitoring through the API', async () => {
@@ -84,7 +115,7 @@ describe('chat PR strip', () => {
     for (const [label, count] of [['Passed', '3'], ['Failed', '2'], ['Pending', '1'], ['Skipped', '3']]) {
       expect(within(dialog).getByText(label).parentElement).toHaveTextContent(count)
     }
-    expect(screen.getByRole('link', { name: 'Open checks for PR #12' })).toHaveAttribute('href', 'https://github.com/acme/widgets/pull/12/checks')
+    expect(within(dialog).getByRole('link', { name: 'Open checks for PR #12' })).toHaveAttribute('href', 'https://github.com/acme/widgets/pull/12/checks')
     const checkbox = screen.getByRole('checkbox', { name: 'Auto-fix CI & address comments' })
     expect(checkbox).not.toBeChecked()
     fireEvent.click(checkbox)
