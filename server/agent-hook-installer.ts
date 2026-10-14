@@ -1160,15 +1160,16 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
     if (!existing) {
       via = command === 'adopt' ? 'adopted' : context.repo?.root && await exists(join(context.repo.root, '.sim-fleet', 'project.json')) && await onPath('simfleet') ? 'simfleet' : 'simslim'
     }
-    if (via !== 'adopted' && (!existing || current.state !== 'Booted')) {
+    const boots = via !== 'adopted' && (!existing || current.state !== 'Booted')
+    if (boots) {
       if (via === 'simfleet') {
         const root = existing?.repo?.root ?? context.repo?.root
         await run('simfleet', ['sim', 'boot', udid], root)
         await run('simfleet', ['claim', udid, label], root)
       } else await run('simslim', ['on', udid])
-      await disableDictation(run, udid)
     }
     try {
+      if (boots) await disableDictation(run, udid)
       if (via !== 'adopted') verifySlim(await run('simslim', ['list', '--booted']), udid)
       await run('xcrun', ['simctl', 'rename', udid, label])
       const body = { operation, task: description, ...metadata }

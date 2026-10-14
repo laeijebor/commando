@@ -1874,6 +1874,27 @@ describe('generated simulator lease CLI', () => {
     expect(fallback.run).toHaveBeenCalledWith('simslim', ['on', simUdid])
   })
 
+  it('rolls back a fresh boot and claim when turning off dictation fails', async () => {
+    const cli = await loadSimCli()
+    for (const fleet of [false, true]) {
+      const deps = simDependencies()
+      deps.exists.mockResolvedValue(fleet)
+      deps.onPath.mockResolvedValue(fleet)
+      const run = deps.run.getMockImplementation()!
+      deps.run.mockImplementation(async (file, args, cwd) => {
+        if (args[1] === 'spawn') throw new Error('spawn failed')
+        return run(file, args, cwd)
+      })
+      await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow('spawn failed')
+      expect(deps.run.mock.calls.slice(-(fleet ? 3 : 2))).toEqual([
+        ['xcrun', ['simctl', 'rename', simUdid, 'iPhone 17']], ['xcrun', ['simctl', 'shutdown', simUdid]],
+        ...(fleet ? [['simfleet', ['release', simUdid], '/main']] : []),
+      ])
+      expect(deps.request).not.toHaveBeenCalledWith('PUT', '', expect.anything())
+      expect(deps.request).toHaveBeenCalledWith('DELETE', '/reservation', { operation: 'operation-id' })
+    }
+  })
+
   it('reuses and touches a lease without booting, relabels when tasks change and preserves the original name', async () => {
     const cli = await loadSimCli()
     const deps = simDependencies(fakeLease)
