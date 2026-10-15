@@ -100,13 +100,16 @@ describe('PR pane repository API', () => {
     expect(action).toHaveBeenCalledExactlyOnceWith('acme/widgets', 12, 'PRRT_123', 'reply', '**Fixed**')
   })
 
-  it('forwards explicit pane refresh and rejects malformed refresh values', async () => {
+  it('forwards explicit pane refresh and background reads and rejects malformed values', async () => {
     const service = new PrService({ runner: vi.fn() })
     const paneList = vi.spyOn(service, 'listPanePullRequests').mockResolvedValue({} as Awaited<ReturnType<PrService['listPanePullRequests']>>)
     const base = await startApi(() => '/workspace', () => TARGET_ID, service)
     expect((await fetch(`${base}/api/prs/pane?paneId=%251&refresh=1`)).status).toBe(200)
-    expect(paneList).toHaveBeenCalledWith(TARGET_ID, { refresh: true })
+    expect(paneList).toHaveBeenCalledWith(TARGET_ID, { refresh: true, background: false })
+    expect((await fetch(`${base}/api/prs/pane?paneId=%251&background=1`)).status).toBe(200)
+    expect(paneList).toHaveBeenLastCalledWith(TARGET_ID, { refresh: false, background: true })
     expect((await fetch(`${base}/api/prs/pane?paneId=%251&refresh=invalid`)).status).toBe(400)
+    expect((await fetch(`${base}/api/prs/pane?paneId=%251&background=yes`)).status).toBe(400)
   })
 
   it('serves conflict inspection as a read-only endpoint with actionable race errors', async () => {

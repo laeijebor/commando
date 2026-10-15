@@ -35,6 +35,16 @@ const THREAD_EXCERPT_CHARS = 140
 // GraphQL cost scales with page size × nested connections: 100 costs 5 points
 // per pane poll, 20 costs 1. Panes rarely link more; extras are flagged truncated.
 const PANE_PULL_REQUEST_PAGE_SIZE = 20
+// Pane reads that arrive together (page loads, the 5-minute background poll)
+// share one search: GitHub allows 5 ORs per query, and 5 UUIDs keep it under
+// the 256-character limit. 40 results cost 2 points instead of 5 × 1.
+const PANE_BATCH_TARGETS = 5
+const PANE_BATCH_PAGE_SIZE = 40
+const PANE_BATCH_WINDOW_MS = 15
+// Browsers send 6 requests at a time, so a page load's background reads arrive
+// in waves about one gh round trip apart. Background reads can wait for the
+// next wave instead of searching alone.
+const PANE_BACKGROUND_BATCH_WINDOW_MS = 1_500
 // Polling shares the gh user's GraphQL budget with agents and scripts, so it
 // stops early to leave them headroom and backs off when GitHub pushes back.
 const LOW_RATE_LIMIT_POINTS = 500
@@ -42,6 +52,10 @@ const RATE_LIMIT_BACKOFF_MS = 60_000
 const MAX_RATE_LIMIT_BACKOFF_MS = 15 * 60_000
 const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt cost limit }'
 const PR_METADATA_TTL_MS = 5 * 60_000
+// Background pane reads (session tree counts) poll every 5 minutes, so a page
+// load can reuse any pane list fetched within that window instead of
+// searching GitHub once per pane.
+const PANE_BACKGROUND_TTL_MS = 5 * 60_000
 const PR_CONVERSATION_TTL_MS = 60_000
 const PR_CHECKS_TTL_MS = 30_000
 
@@ -83,10 +97,10 @@ const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: In
   }
 }`
 const PANE_PULL_REQUESTS_QUERY = `
-query($targetQuery: String!) {
+query($targetQuery: String!, $first: Int!) {
   viewer { login }
   ${RATE_LIMIT_FIELD}
-  linked: search(query: $targetQuery, type: ISSUE, first: ${PANE_PULL_REQUEST_PAGE_SIZE}) {
+  linked: search(query: $targetQuery, type: ISSUE, first: $first) {
     issueCount
     nodes {
       ... on PullRequest {
@@ -198,6 +212,18 @@ export function githubDisabledReason(env: NodeJS.ProcessEnv, port: number, defau
   return port === defaultPort ? undefined : `GitHub is disabled on test daemons (port ${port}) — set COMMANDO_GITHUB=on to enable it`
 }
 
+/** Whether gh's stderr reports GitHub throttling, and which kind. */
+export function githubThrottle(stderr: string): 'primary' | 'secondary' | 'unknown' | null {
+  if (!/rate limit|abuse detection|HTTP 429/i.test(stderr)) return null
+  return /secondary|abuse detection/i.test(stderr) ? 'secondary' : /API rate limit exceeded/i.test(stderr) ? 'primary' : 'unknown'
+}
+
+/** Lets gh calls made outside PrService honour and feed its throttle. */
+export type GithubGate = {
+  pausedUntil(resource: 'rest' | 'graphql'): number
+  rateLimited(resource: 'rest' | 'graphql', stderr: string): void
+}
+
 function classifyGhFailure(error: import('node:child_process').ExecFileException, stderr: string): PrServiceError {
   if (error.code === 'ENOENT') {
     return new PrServiceError(503, 'gh_unavailable', 'The gh CLI is not installed on the daemon host')
@@ -208,9 +234,9 @@ function classifyGhFailure(error: import('node:child_process').ExecFileException
   if (/gh auth login|not logged in|authentication required|HTTP 401|Bad credentials/i.test(stderr)) {
     return new PrServiceError(401, 'auth_required', 'gh is not authenticated — run `gh auth login` on the daemon host')
   }
-  if (/rate limit|abuse detection|HTTP 429/i.test(stderr)) {
-    return new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached', undefined,
-      /secondary|abuse detection/i.test(stderr) ? 'secondary' : /API rate limit exceeded/i.test(stderr) ? 'primary' : undefined)
+  const throttle = githubThrottle(stderr)
+  if (throttle) {
+    return new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached', undefined, throttle === 'unknown' ? undefined : throttle)
   }
   if (/Could not resolve to a Repository/i.test(stderr)) {
     return new PrServiceError(404, 'repo_not_found', 'Repository was not found')
@@ -386,8 +412,8 @@ function scopedSearchQuery(repo: string, qualifier: 'author' | 'review-requested
   return `repo:${repo} is:pr ${qualifier}:@me${searchStateQualifier(filter)}`
 }
 
-function paneTargetSearchQuery(targetId: string, openOnly = false): string {
-  return `is:pr${openOnly ? ' is:open' : ''} in:body ${targetId} sort:created-desc`
+function paneTargetSearchQuery(targetIds: readonly string[], openOnly = false): string {
+  return `is:pr${openOnly ? ' is:open' : ''} in:body ${targetIds.join(' OR ')} sort:created-desc`
 }
 
 function parsePanePullRequest(node: JsonRecord, targetId: string, viewer: string): PanePrSummary | null {
@@ -691,6 +717,12 @@ export class PrService {
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
   private graphqlPausedUntil = 0
+  private paneBatch: {
+    waiters: Map<string, Array<{ resolve: (list: PanePrList) => void; reject: (cause: unknown) => void }>>
+    deadline: number
+    timer: ReturnType<typeof setTimeout>
+  } | null = null
+  private readonly paneBatchWindowMs: number
   private readonly backoffs = { rest: { until: 0, delay: 0 }, graphql: { until: 0, delay: 0 }, shared: { until: 0, delay: 0 } }
 
   constructor(options?: {
@@ -702,7 +734,10 @@ export class PrService {
     repoContextTtlMs?: number
     now?: () => number
     githubDisabledReason?: string
+    /** 0 disables batching of concurrent pane reads. */
+    paneBatchWindowMs?: number
   }) {
+    this.paneBatchWindowMs = options?.paneBatchWindowMs ?? PANE_BATCH_WINDOW_MS
     const disabledReason = options?.githubDisabledReason
     this.runner = disabledReason
       ? () => Promise.reject(new PrServiceError(503, 'github_disabled', disabledReason))
@@ -775,13 +810,22 @@ export class PrService {
     }
   }
 
+  readonly githubGate: GithubGate = {
+    pausedUntil: (resource) => this.pausedUntil(resource),
+    rateLimited: (resource, stderr) => { this.backOff(githubThrottle(stderr) === 'primary' ? resource : 'shared') },
+  }
+
+  // Low GraphQL budget must not block REST's separate primary budget.
+  // Unclassified upstream throttling remains shared (secondary limits can span both).
+  private pausedUntil(resource: 'rest' | 'graphql'): number {
+    return Math.max(this.backoffs.shared.until, this.backoffs[resource].until, resource === 'graphql' ? this.graphqlPausedUntil : 0)
+  }
+
   // Every polled GitHub read goes through here; user actions such as merge do not.
   private async ghRead(args: string[]): Promise<string> {
-    // Low GraphQL budget must not block REST's separate primary budget.
-    // Unclassified upstream throttling remains shared (secondary limits can span both).
     const resource = args[1] === 'graphql' ? 'graphql' : 'rest'
     const throttledUntil = Math.max(this.backoffs.shared.until, this.backoffs[resource].until)
-    const retryAt = Math.max(throttledUntil, resource === 'graphql' ? this.graphqlPausedUntil : 0)
+    const retryAt = this.pausedUntil(resource)
     if (this.now() < retryAt) throw rateLimited(retryAt, retryAt > throttledUntil)
     let output: string
     try {
@@ -851,12 +895,16 @@ export class PrService {
     return this.entities.repo(await this.refreshPullRequests(key, repo, filter, scope, entry))
   }
 
-  async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean } = {}): Promise<PanePrList> {
+  async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean; background?: boolean } = {}): Promise<PanePrList> {
     const targetId = validatePaneTargetId(targetIdInput)
     const cached = this.paneListCache.get(targetId)
-    if (cached?.refresh) return this.entities.pane(await cached.refresh)
-    if (!options.refresh && cached?.value && this.now() - cached.at < this.listTtlMs) return this.entities.pane(cached.value)
-    const promise = this.fetchPanePullRequests(targetId)
+    if (cached?.refresh) {
+      if (!options.background) this.expeditePaneBatch(targetId)
+      return this.entities.pane(await cached.refresh)
+    }
+    const ttl = options.background ? Math.max(this.listTtlMs, PANE_BACKGROUND_TTL_MS) : this.listTtlMs
+    if (!options.refresh && cached?.value && this.now() - cached.at < ttl) return this.entities.pane(cached.value)
+    const promise = this.queuePaneFetch(targetId, options.background === true)
     const entry: SwrCacheEntry<PanePrList> = { at: this.now(), value: cached?.value ?? null, refresh: promise }
     this.paneListCache.set(targetId, entry)
     this.trimPaneListCache()
@@ -867,6 +915,8 @@ export class PrService {
       return this.entities.pane(value)
     } catch (error) {
       if (this.paneListCache.get(targetId) === entry && !entry.value) this.paneListCache.delete(targetId)
+      // The kept value is as old as it was; a failure must not make it look fresh.
+      else entry.at = cached?.at ?? 0
       throw error
     } finally {
       entry.refresh = null
@@ -874,14 +924,69 @@ export class PrService {
     }
   }
 
+  private queuePaneFetch(targetId: string, background: boolean): Promise<PanePrList> {
+    if (this.paneBatchWindowMs <= 0) return this.fetchPanePullRequests(targetId)
+    return new Promise((resolve, reject) => {
+      const window = background ? Math.max(this.paneBatchWindowMs, PANE_BACKGROUND_BATCH_WINDOW_MS) : this.paneBatchWindowMs
+      const deadline = Date.now() + window
+      if (!this.paneBatch) {
+        this.paneBatch = { waiters: new Map(), deadline, timer: setTimeout(() => this.flushPaneBatch(), window) }
+      } else if (deadline < this.paneBatch.deadline) {
+        // A foreground read must not wait on a background batch's longer window.
+        clearTimeout(this.paneBatch.timer)
+        this.paneBatch.deadline = deadline
+        this.paneBatch.timer = setTimeout(() => this.flushPaneBatch(), window)
+      }
+      const waiters = this.paneBatch.waiters.get(targetId) ?? []
+      waiters.push({ resolve, reject })
+      this.paneBatch.waiters.set(targetId, waiters)
+      if (this.paneBatch.waiters.size >= PANE_BATCH_TARGETS) this.flushPaneBatch()
+    })
+  }
+
+  /** A foreground read must not wait on a background batch that already holds its pane. */
+  private expeditePaneBatch(targetId: string): void {
+    const batch = this.paneBatch
+    if (!batch?.waiters.has(targetId) || batch.deadline <= Date.now() + this.paneBatchWindowMs) return
+    clearTimeout(batch.timer)
+    batch.deadline = Date.now() + this.paneBatchWindowMs
+    batch.timer = setTimeout(() => this.flushPaneBatch(), this.paneBatchWindowMs)
+  }
+
+  private flushPaneBatch(): void {
+    const batch = this.paneBatch
+    if (!batch) return
+    this.paneBatch = null
+    clearTimeout(batch.timer)
+    const targets = [...batch.waiters.keys()]
+    const lists = targets.length === 1 ? [this.fetchPanePullRequests(targets[0])] : this.fetchPaneGroup(targets)
+    targets.forEach((targetId, index) => lists[index].then(
+      (list) => { for (const waiter of batch.waiters.get(targetId)!) waiter.resolve(list) },
+      (cause: unknown) => { for (const waiter of batch.waiters.get(targetId)!) waiter.reject(cause) },
+    ))
+  }
+
+  /** One search for several panes; falls back to one search each if GitHub truncates it. */
+  private fetchPaneGroup(targetIds: string[]): Promise<PanePrList>[] {
+    const group = this.searchPanes(targetIds, PANE_BATCH_PAGE_SIZE).then((result) => result.linked.truncated ? null : result)
+    return targetIds.map((targetId) => group.then((result) => result
+      ? this.paneListFrom(result, targetId, false, true)
+      : this.fetchPanePullRequests(targetId)))
+  }
+
   /** `openOnly` reads are partial, so they never replace the pane's shared entities. */
   private async fetchPanePullRequests(targetId: string, openOnly = false): Promise<PanePrList> {
+    return this.paneListFrom(await this.searchPanes([targetId], PANE_PULL_REQUEST_PAGE_SIZE, openOnly), targetId, openOnly)
+  }
+
+  private async searchPanes(targetIds: string[], first: number, openOnly = false) {
     const order = this.entities.beginRead()
     const fetchedAt = this.now()
     const output = await this.ghRead([
       'api', 'graphql',
       '-f', `query=${PANE_PULL_REQUESTS_QUERY}`,
-      '-f', `targetQuery=${paneTargetSearchQuery(targetId, openOnly)}`,
+      '-f', `targetQuery=${paneTargetSearchQuery(targetIds, openOnly)}`,
+      '-F', `first=${first}`,
     ])
     let payload: unknown
     try {
@@ -895,21 +1000,25 @@ export class PrService {
     }
     const data = objectField(payload, 'data')
     const viewer = optionalObject(data, 'viewer')
-    const linked = searchConnection(data, 'linked')
-    const pullRequests = linked.nodes
-      .map((node) => parsePanePullRequest(node, targetId, typeof viewer?.login === 'string' ? viewer.login : ''))
+    return { order, fetchedAt, viewer: typeof viewer?.login === 'string' ? viewer.login : '', linked: searchConnection(data, 'linked') }
+  }
+
+  private paneListFrom(result: Awaited<ReturnType<PrService['searchPanes']>>, targetId: string, openOnly: boolean, shared = false): PanePrList {
+    const pullRequests = result.linked.nodes
+      .map((node) => parsePanePullRequest(node, targetId, result.viewer))
       .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     const list: PanePrList = {
       targetId,
-      viewer: typeof viewer?.login === 'string' ? viewer.login : '',
-      totalCount: linked.totalCount,
+      viewer: result.viewer,
+      // A shared search's count spans every pane in it, and is only used untruncated.
+      totalCount: shared ? pullRequests.length : result.linked.totalCount,
       pullRequests,
-      truncated: linked.truncated,
-      fetchedAt,
+      truncated: result.linked.truncated,
+      fetchedAt: result.fetchedAt,
     }
     this.invalidateChangedReferences(list)
-    if (!openOnly) this.entities.ingest(list, order)
+    if (!openOnly) this.entities.ingest(list, result.order)
     return list
   }
 

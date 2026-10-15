@@ -101,6 +101,19 @@ describe('GitHub access per daemon', () => {
   })
 })
 
+describe('throttle gate for gh calls outside PrService', () => {
+  it('pauses polled reads when an outside call reports primary GraphQL throttling', async () => {
+    const runner = vi.fn(async () => '{}')
+    const service = new PrService({ runner, now: () => 1_000 })
+    expect(service.githubGate.pausedUntil('graphql')).toBe(0)
+    service.githubGate.rateLimited('graphql', 'gh: API rate limit exceeded for user ID 1')
+    expect(service.githubGate.pausedUntil('graphql')).toBe(61_000)
+    expect(service.githubGate.pausedUntil('rest')).toBe(0)
+    await expect(service.listPanePullRequests('00000000-0000-4000-8000-000000000000')).rejects.toMatchObject({ code: 'rate_limited' })
+    expect(runner).not.toHaveBeenCalled()
+  })
+})
+
 describe('merging pull requests', () => {
   it('hydrates native stack membership in the existing list query', async () => {
     const { service, runner } = serviceWith(graphqlPayload([pullRequestNode({ stackEntry: { position: 2, stack: { number: 7, size: 3, baseRefName: 'main' } } })]))
@@ -461,11 +474,72 @@ describe('pane PR status', () => {
     expect(runner).toHaveBeenCalledTimes(3)
   })
 
+  it('shares one search between panes read together and splits results by marker', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const node = (target: string, number: number) => pullRequestNode({ number,
+      body: `<!-- commando:v1 target=${target} relation=created -->`, repository: { nameWithOwner: 'acme/widgets' } })
+    const runner = vi.fn(async (_args: string[]) => JSON.stringify({ data: { viewer: { login: 'leo' },
+      linked: { issueCount: 3, nodes: [node(targetId, 12), node(other, 13), node(other, 14)] } } }))
+    const service = new PrService({ runner, now: () => 1 })
+    const [mine, theirs] = await Promise.all([service.listPanePullRequests(targetId), service.listPanePullRequests(other)])
+    expect(runner).toHaveBeenCalledOnce()
+    expect(runner.mock.calls[0][0]).toContain(`targetQuery=is:pr in:body ${targetId} OR ${other} sort:created-desc`)
+    expect(mine.pullRequests.map((pr) => pr.number)).toEqual([12])
+    expect(theirs.pullRequests.map((pr) => pr.number).sort()).toEqual([13, 14])
+    expect(theirs).toMatchObject({ totalCount: 2, truncated: false })
+  })
+
+  it('lets background reads wait for the next wave but never holds up a foreground read', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const runner = vi.fn(async (_args: string[]) => linkedPayload())
+    const service = new PrService({ runner, now: () => 1 })
+    const first = service.listPanePullRequests(targetId, { background: true })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(runner).not.toHaveBeenCalled()
+    const started = Date.now()
+    await Promise.all([first, service.listPanePullRequests(other)])
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(runner).toHaveBeenCalledOnce()
+    expect(runner.mock.calls[0][0]).toContain(`targetQuery=is:pr in:body ${targetId} OR ${other} sort:created-desc`)
+  })
+
+  it('speeds up a background batch when a foreground read wants the same pane', async () => {
+    const runner = vi.fn(async (_args: string[]) => linkedPayload())
+    const service = new PrService({ runner, now: () => 1 })
+    const background = service.listPanePullRequests(targetId, { background: true })
+    const started = Date.now()
+    await Promise.all([background, service.listPanePullRequests(targetId, { refresh: true })])
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(runner).toHaveBeenCalledOnce()
+  })
+
+  it('does not let a failed refresh make a kept pane list look fresh', async () => {
+    let now = 1
+    const runner = vi.fn().mockResolvedValueOnce(linkedPayload()).mockRejectedValueOnce(new PrServiceError(502, 'github_failed', 'GitHub request failed'))
+      .mockResolvedValue(linkedPayload({ title: 'Newer' }))
+    const service = new PrService({ runner, now: () => now, paneBatchWindowMs: 0 })
+    await service.listPanePullRequests(targetId)
+    now = 6 * 60_000
+    await expect(service.listPanePullRequests(targetId)).rejects.toMatchObject({ code: 'github_failed' })
+    expect((await service.listPanePullRequests(targetId, { background: true })).pullRequests[0].title).toBe('Newer')
+  })
+
+  it('searches panes separately when a shared search is truncated', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const runner = vi.fn(async (args: string[]) => args.some((arg) => arg.includes(' OR '))
+      ? JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 99, nodes: [] } } })
+      : linkedPayload())
+    const service = new PrService({ runner, now: () => 1 })
+    const [mine] = await Promise.all([service.listPanePullRequests(targetId), service.listPanePullRequests(other)])
+    expect(runner).toHaveBeenCalledTimes(3)
+    expect(mine.pullRequests.map((pr) => pr.number)).toEqual([12])
+  })
+
   it('deduplicates forced pane reads and ignores their older result after a newer repository query', async () => {
     let finish!: (output: string) => void
     const runner = vi.fn().mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve }))
       .mockResolvedValueOnce(graphqlPayload([pullRequestNode({ title: 'Latest', mergeable: 'CONFLICTING' })]))
-    const service = new PrService({ runner, now: () => 1 })
+    const service = new PrService({ runner, now: () => 1, paneBatchWindowMs: 0 })
     const first = service.listPanePullRequests(targetId, { refresh: true })
     const second = service.listPanePullRequests(targetId, { refresh: true })
     await service.listPullRequests('acme/widgets', 'open')
