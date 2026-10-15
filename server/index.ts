@@ -70,7 +70,7 @@ import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
 import { releaseClosedSimLease } from './sim-lease-release.js'
-import { AgentResumeService, readProcessTable } from './agent-resume.js'
+import { AgentResumeService, readPaneAgentLaunch, readProcessTable } from './agent-resume.js'
 import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
 import { ChatHandoffStore, type ChatHandoff } from './chat-handoffs.js'
 import { chatReturnCommand as buildHandoffReturnCommand, returnToChat } from './chat-return.js'
@@ -1860,6 +1860,7 @@ async function main(): Promise<void> {
     plans: chatPlans,
     prepareCommands: repoPrepareCommands,
     requests: agentChatRequests,
+    agentLaunch: readPaneAgentLaunch,
     beforePaneCreated: async (windowId) => { await tmux.releaseWindowPaneResizes(windowId) },
     // A coalesced in-flight refresh can predate the new pane or its lineage options.
     refreshSnapshot: refreshSnapshotFresh,

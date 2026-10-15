@@ -1,7 +1,7 @@
 import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Zap } from 'lucide-react'
+import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
 import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatTaskAction } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
@@ -276,7 +276,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
         <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
           {row.item.steered || row.item.relayTo ? (
             <span className="flex max-w-[85%] items-center gap-1 text-2xs text-muted-foreground">
-              {row.item.relayTo ? <MessageSquareShare className="size-3" aria-hidden="true" /> : <Zap className="size-3" aria-hidden="true" />}
+              {row.item.relayTo ? <MessageSquareShare className="size-3" aria-hidden="true" /> : <Rabbit className="size-3" aria-hidden="true" />}
               <span className="truncate">{row.item.relayTo ? `To @${row.item.relayTo.label}, relayed through main ${context.provider}` : `Steered: sent while ${context.provider} worked`}</span>
             </span>
           ) : null}

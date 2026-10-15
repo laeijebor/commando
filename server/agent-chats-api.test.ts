@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,8 @@ import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import { TmuxAgentLaunchCompatibilityError, type CreateTmuxSessionRequest, type TmuxCreateResponse } from '../shared/tmux-create.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
-import { AgentChatsApi } from './agent-chats-api.js'
+import { AgentChatsApi, terminalLaunchRank } from './agent-chats-api.js'
+import type { AgentLaunch } from './agent-resume-command.js'
 import { ChatPlanStore } from './chat-plans.js'
 import { GitWorktreeError } from './git-worktree.js'
 import { RepoPrepareCommands } from './repo-prepare-commands.js'
@@ -22,10 +23,13 @@ async function setup() {
   const dir = await mkdtemp(join(tmpdir(), 'commando-agent-chats-'))
   directories.push(dir)
   let now = 0
-  const parent = { id: '%1', targetId: 'parent-target', path: '/repo/linked/src', sessionId: '$1', windowId: '@1', title: 'parent', repo: { root: '/repo', name: 'repo', branch: 'parent-branch', isWorktree: true } } as TmuxPane
+  const parent = { id: '%1', targetId: 'parent-target', processId: 100, path: '/repo/linked/src', sessionId: '$1', windowId: '@1', title: 'parent', repo: { root: '/repo', name: 'repo', branch: 'parent-branch', isWorktree: true } } as TmuxPane
   const snapshot = { panes: [parent], sessions: [{ id: '$1', name: 'parent' }, { id: '$2', name: 'fix-bug' }], windows: [] } as unknown as CommandoSnapshot
   const statuses = new Map<string, AgentStatus>([['%1', { provider: 'codex', status: 'working' } as AgentStatus]])
   const chats = new Map<string, ChatSessionInfo>()
+  // What `ps` shows for each terminal pane's agent; a terminal Codex with no flags by default.
+  const launches = new Map<number, AgentLaunch | undefined>([[100, { args: ['codex'], env: {} }]])
+  const agentLaunch = vi.fn(async (pid: number) => launches.get(pid))
   const changed = vi.fn()
   const requests = new AgentChatRequests(changed, () => now)
   const prepareCommands = new RepoPrepareCommands(join(dir, 'prepare.json'))
@@ -54,7 +58,7 @@ async function setup() {
     agentToken: TOKEN, ownerAuthorized: async (request) => request.headers.authorization === 'Bearer owner', snapshot: () => snapshot,
     status: (id) => statuses.get(id), chatSession: (id) => chats.get(id), chatOwns: (id) => chats.has(id),
     sendChat, sendTerminal, agentLabel: () => 'codex · parent', creator: { createSession, createPane, setChatLineage },
-    prepareCommands, plans, requests, beforePaneCreated, refreshSnapshot, chatCliPath: '/test/hooks/commando-chat.mjs', now: () => now,
+    prepareCommands, plans, requests, agentLaunch, beforePaneCreated, refreshSnapshot, chatCliPath: '/test/hooks/commando-chat.mjs', now: () => now,
   })
   const call = async (method: string, path = '', value?: unknown, token = TOKEN, paneId = '%1') => {
     const request = Readable.from(value === undefined ? [] : [Buffer.from(JSON.stringify(value))]) as IncomingMessage
@@ -69,7 +73,7 @@ async function setup() {
     return { status, result }
   }
   const input = { title: 'Fix bug', prompt: 'Fix it\nTest it\tcarefully' }
-  return { api, call, input, snapshot, parent, statuses, chats, requests, changed, prepareCommands, plans, stash, createSession, createPane, setChatLineage, sendChat, sendTerminal, beforePaneCreated, refreshSnapshot, clock: (value: number) => { now = value } }
+  return { api, call, input, snapshot, parent, statuses, chats, launches, agentLaunch, requests, changed, prepareCommands, plans, stash, createSession, createPane, setChatLineage, sendChat, sendTerminal, beforePaneCreated, refreshSnapshot, clock: (value: number) => { now = value } }
 }
 
 describe('AgentChatsApi', () => {
@@ -86,7 +90,7 @@ describe('AgentChatsApi', () => {
     await s.prepareCommands.set('/repo', 'npm ci\nnpm run build')
     const { status, result } = await s.call('POST', '', s.input)
     expect(status).toBe(200)
-    expect(result).toMatchObject({ ok: true, location: 'session', sessionName: 'fix-bug-2', cwd: '/repo/worktrees/fix-bug', targetId: 'target-%10', worktree: { branch: 'fix-bug' }, agent: { provider: 'codex' } })
+    expect(result).toMatchObject({ ok: true, location: 'session', sessionName: 'fix-bug-2', cwd: '/repo/worktrees/fix-bug', targetId: 'target-%10', worktree: { branch: 'fix-bug' }, agent: { provider: 'codex-chat', permissionMode: 'default' } })
     expect(s.createSession).toHaveBeenCalledWith(expect.objectContaining({ name: 'fix-bug-2', cwd: '/repo', worktree: { branch: 'fix-bug', prepareCommand: 'npm ci\nnpm run build' } }))
     const prompt = s.createSession.mock.calls[0][0].agent!.prompt!
     expect(prompt).toContain('codex · parent, pane %1, session parent, branch parent-branch')
@@ -151,11 +155,11 @@ describe('AgentChatsApi', () => {
     expect(s.createSession).toHaveBeenCalledTimes(2)
   })
 
-  it('defaults a non-chat caller requesting claude-chat to default; can lower to plan', async () => {
+  it('gives a terminal Codex caller requesting claude-chat unprompted edits; can lower, never bypass', async () => {
     const s = await setup()
-    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'default' })
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
     expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'plan' })).result.agent.permissionMode).toBe('plan')
-    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'acceptEdits' })).status).toBe(403)
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'bypassPermissions' })).status).toBe(403)
   })
 
   it.each(['claude', 'codex', 'opencode', 'cursor'] as const)('refuses a plan-mode chat opening %s without charging a rate token', async (agent) => {
@@ -168,6 +172,65 @@ describe('AgentChatsApi', () => {
     for (let index = 0; index < 3; index++) {
       expect(await s.call('POST', '', s.input)).toMatchObject({ status: 200, result: { agent: { provider: 'claude-chat', permissionMode: 'plan' } } })
     }
+  })
+
+  it('opens a hosted chat on a terminal Claude caller\'s profile, as permissive as its launch flags', async () => {
+    const s = await setup()
+    s.statuses.set('%1', { provider: 'claude', status: 'working' } as AgentStatus)
+    s.launches.set(100, { args: ['/Users/leo/.local/bin/claude', '--dangerously-skip-permissions'], env: { CLAUDE_CONFIG_DIR: join(homedir(), '.claudew') } })
+    const opened = await s.call('POST', '', s.input)
+    expect(opened.result).toMatchObject({ agent: { provider: 'claude-chat', permissionMode: 'bypassPermissions', configDir: join(homedir(), '.claudew') } })
+    expect(opened.result.warning).toBeUndefined()
+    expect(s.agentLaunch).toHaveBeenCalledWith(100, 'claude')
+    expect(s.createSession).toHaveBeenLastCalledWith(expect.objectContaining({ agent: expect.objectContaining({ provider: 'claude-chat', configDir: join(homedir(), '.claudew') }) }))
+    // The profile also follows an explicit claude-chat, but never a Codex chat.
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'plan' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'plan', configDir: join(homedir(), '.claudew') })
+    expect((await s.call('POST', '', { ...s.input, agent: 'codex-chat' })).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'bypassPermissions' })
+  })
+
+  it('caps a terminal caller\'s chat at its launch mode and ignores a profile outside the home folder', async () => {
+    const s = await setup()
+    s.statuses.set('%1', { provider: 'claude', status: 'working' } as AgentStatus)
+    s.launches.set(100, { args: ['claude', '--permission-mode', 'acceptEdits'], env: { CLAUDE_CONFIG_DIR: '/tmp/.claudew' } })
+    const opened = await s.call('POST', '', s.input)
+    expect(opened.result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
+    expect(opened.result.warning).toContain('"/tmp/.claudew" is not a ~/.claude… folder')
+    expect(await s.call('POST', '', { ...s.input, permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403, result: { error: 'Cannot raise permission mode from acceptEdits to bypassPermissions' } })
+  })
+
+  it('falls back to the default profile, asking first, with a warning when the caller process is unreadable', async () => {
+    const s = await setup()
+    s.statuses.set('%1', { provider: 'claude', status: 'working' } as AgentStatus)
+    for (const unreadable of [async () => undefined, async () => { throw new Error('ps failed') }]) {
+      s.agentLaunch.mockImplementationOnce(unreadable).mockImplementationOnce(unreadable)
+      const opened = await s.call('POST', '', s.input)
+      expect(opened.result).toMatchObject({ agent: { provider: 'claude-chat', permissionMode: 'default' }, warning: expect.stringContaining('default profile') })
+      expect(opened.result.agent.configDir).toBeUndefined()
+    }
+  })
+
+  it('opens codex-chat from a terminal Codex caller, as permissive as its sandbox', async () => {
+    const s = await setup()
+    s.launches.set(100, { args: ['codex', '--dangerously-bypass-approvals-and-sandbox'], env: {} })
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'bypassPermissions' })
+    s.launches.set(100, { args: ['codex', '--sandbox=read-only'], env: {} })
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'codex-chat', permissionMode: 'plan' })
+  })
+
+  it('ranks terminal launch flags', () => {
+    expect(terminalLaunchRank('claude', ['claude'])).toBe(terminalLaunchRank('claude', ['claude', '--permission-mode=default']))
+    expect(terminalLaunchRank('claude', ['claude', '--permission-mode', 'auto'])).toBe(terminalLaunchRank('claude', ['claude']))
+    expect(terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan'])).toBeLessThan(terminalLaunchRank('claude', ['claude']))
+    expect(terminalLaunchRank('codex', ['codex'])).toBe(terminalLaunchRank('claude', ['claude', '--permission-mode', 'acceptEdits']))
+    const plan = terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan'])
+    expect(terminalLaunchRank('codex', ['codex', '-s', 'read-only'])).toBe(plan)
+    expect(terminalLaunchRank('codex', ['codex', '-c', 'sandbox_mode="read-only"'])).toBe(plan)
+    // ps splits argv on spaces: a prompt's words are not launch flags.
+    const asks = terminalLaunchRank('claude', ['claude'])
+    expect(terminalLaunchRank('claude', ['claude', 'what', 'does', '--dangerously-skip-permissions', 'do'])).toBe(asks)
+    expect(terminalLaunchRank('claude', ['claude', 'use', '--permission-mode', 'acceptEdits'])).toBe(asks)
+    expect(terminalLaunchRank('codex', ['codex', 'explain', '--dangerously-bypass-approvals-and-sandbox'])).toBe(terminalLaunchRank('codex', ['codex']))
+    expect(terminalLaunchRank('claude', ['vim', '--dangerously-skip-permissions'])).toBe(asks)
   })
 
   it('inherits codex-chat and its permission mode from a hosted Codex caller', async () => {
@@ -224,7 +287,7 @@ describe('AgentChatsApi', () => {
     const pending = await s.call('POST', '', s.input)
     expect(pending).toMatchObject({ status: 202, result: { ok: true, decision: 'pending', requestId: expect.stringMatching(/^cr-/) } })
     const id = pending.result.requestId
-    expect(s.requests.pending()[id]).toMatchObject({ callerPaneId: '%1', callerTargetId: 'parent-target', reason: 'rate', requestedBy: 'codex · parent', summary: { provider: 'codex', branch: 'fix-bug', promptPreview: s.input.prompt } })
+    expect(s.requests.pending()[id]).toMatchObject({ callerPaneId: '%1', callerTargetId: 'parent-target', reason: 'rate', requestedBy: 'codex · parent', summary: { provider: 'codex-chat', permissionMode: 'default', branch: 'fix-bug', promptPreview: s.input.prompt } })
     expect(s.createSession).toHaveBeenCalledTimes(3)
     expect((await s.call('POST', `/requests/${id}`, { decision: 'accepted' })).status).toBe(401)
     expect((await s.call('POST', `/requests/${id}`, { decision: 'accepted' }, 'owner')).result).toMatchObject({ decision: 'accepted', paneId: '%13', location: 'session' })

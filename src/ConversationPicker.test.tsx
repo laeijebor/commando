@@ -76,6 +76,33 @@ describe('ConversationPicker', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Its folder no longer exists')
   })
 
+  it('closes from the Esc button, including while a switch is pending', async () => {
+    const { input, onClose } = renderPicker({ open: new Map(), onPick: () => new Promise<void>(() => {}) })
+    await screen.findAllByRole('group')
+    fireEvent.change(input, { target: { value: 'Feature' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.getByLabelText('Switching')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversations' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('consumes Escape from the search input and focused results', async () => {
+    const { input, onClose } = renderPicker()
+    const options = await screen.findAllByRole('option')
+    const outerKeyDown = vi.fn()
+    document.addEventListener('keydown', outerKeyDown)
+    try {
+      for (const target of [input, options[0]!, screen.getByRole('button', { name: 'Close conversations' })]) {
+        target.focus()
+        expect(fireEvent.keyDown(target, { key: 'Escape' })).toBe(false)
+      }
+      expect(onClose).toHaveBeenCalledTimes(3)
+      expect(outerKeyDown).not.toHaveBeenCalled()
+    } finally {
+      document.removeEventListener('keydown', outerKeyDown)
+    }
+  })
+
   it('says when the switch would stop a running turn', async () => {
     renderPicker({ busy: true, open: new Map() })
     await screen.findAllByRole('group')

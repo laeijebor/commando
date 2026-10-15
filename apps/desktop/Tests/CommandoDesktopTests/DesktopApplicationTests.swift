@@ -8,6 +8,17 @@ private final class FirstResponderChildView: NSView {
 }
 
 @MainActor
+private final class EscapeResponderView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+    private(set) var receivedKeys: [UInt16] = []
+    override func keyDown(with event: NSEvent) {
+        receivedKeys.append(event.keyCode)
+        // Exercise the unhandled-key fallback through the window as well.
+        tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: self)
+    }
+}
+
+@MainActor
 private final class DesktopWebHostSpy: DesktopWebHosting {
     let rootView = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     private(set) var reloadCount = 0
@@ -604,6 +615,52 @@ final class DesktopApplicationTests: XCTestCase {
         XCTAssertFalse(delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
         XCTAssertTrue(delegate.applicationSupportsSecureRestorableState(NSApplication.shared))
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+    }
+
+    func testWindowDeliversEscapeToContentAndConsumesUnhandledCancellation() throws {
+        let window = DesktopWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false
+        )
+        let responder = EscapeResponderView(frame: .zero)
+        window.contentView?.addSubview(responder)
+        XCTAssertTrue(window.makeFirstResponder(responder))
+        defer {
+            _ = window.makeFirstResponder(nil)
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+
+        window.sendEvent(try XCTUnwrap(keyEvent(key: "\u{1b}", modifiers: [], keyCode: 53)))
+
+        XCTAssertEqual(responder.receivedKeys, [53])
+        XCTAssertTrue(window.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: nil))
+    }
+
+    func testWindowStillSendsEscapeToTheFocusedTerminal() throws {
+        var inputs: [Data] = []
+        let surface = TerminalSurface(
+            identity: .init(paneId: "%1", attachmentId: "window-escape"),
+            ariaLabel: "Terminal", prefersMetal: false
+        ) { event in
+            if case let .input(data) = event { inputs.append(data) }
+        }
+        let window = DesktopWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView?.addSubview(surface.view)
+        XCTAssertTrue(window.makeFirstResponder(surface.view))
+        defer {
+            _ = window.makeFirstResponder(nil)
+            surface.destroy()
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+
+        window.sendEvent(try XCTUnwrap(keyEvent(key: "\u{1b}", modifiers: [], keyCode: 53)))
+
+        XCTAssertEqual(inputs, [Data([0x1b])])
     }
 
     func testWindowRoutesControlVThroughTheFocusedTerminalResponderChain() throws {

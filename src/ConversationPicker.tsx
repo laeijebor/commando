@@ -133,16 +133,21 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
     } else if (event.key === 'Enter') {
       event.preventDefault()
       void pick(selected, event.metaKey || event.ctrlKey ? 'split' : 'replace')
-    } else if (event.key === 'Escape') {
-      event.preventDefault()
-      onClose()
     }
   }
 
   let row = -1
   return (
     <div className="conversation-picker-backdrop" data-native-terminal-occluder="" role="presentation">
-      <section className="command-palette conversation-picker" role="dialog" aria-label="Conversations" ref={dialog}>
+      <section className="command-palette conversation-picker" role="dialog" aria-label="Conversations" ref={dialog}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            onClose()
+          }
+        }}
+      >
         <div className="palette-search">
           <Search aria-hidden="true" />
           <input
@@ -155,7 +160,10 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
             aria-controls="conversation-results"
             aria-activedescendant={selected ? `conversation-${selected.provider}-${selected.sessionId}` : undefined}
           />
-          {pending ? <LoaderCircle className="spin" aria-label="Switching" /> : <kbd>Esc</kbd>}
+          {pending ? <LoaderCircle className="spin" aria-label="Switching" /> : null}
+          <button type="button" className="conversation-picker-close" aria-label="Close conversations" onClick={onClose}>
+            <kbd>Esc</kbd>
+          </button>
         </div>
         {error ? <div className="conversation-picker-error" role="alert">{error}</div> : null}
         <div className="command-results" id="conversation-results" role="listbox" ref={list}>
