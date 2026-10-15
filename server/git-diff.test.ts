@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   GitCommandFailure,
   GitDiffError,
@@ -266,6 +266,25 @@ describe('GitDiffInspector.summary', () => {
     now = 90_000
     await missingInspector.summary('/repo')
     expect(missingLookups()).toBe(2)
+  })
+
+  it('skips branch PR lookups while PR sync is paused and reports GitHub throttling', async () => {
+    let pausedUntil = 0
+    const github = { pausedUntil: vi.fn(() => pausedUntil), rateLimited: vi.fn() }
+    const found = fakeRepo({
+      pullRequestOutput: JSON.stringify({ number: 42, title: 'T', url: 'https://github.com/example/commando/pull/42', state: 'OPEN', isDraft: false }),
+    })
+    let now = 0
+    const inspector = new GitDiffInspector(found.execute, {}, () => now, undefined, github)
+    await inspector.summary('/repo')
+    pausedUntil = 60 * 60_000
+    now = 10 * 60_000
+    expect((await inspector.summary('/repo')).pullRequest?.number).toBe(42)
+    expect(found.calls.filter((entry) => entry.file === 'gh')).toHaveLength(1)
+
+    const throttled = fakeRepo({ pullRequestFailure: failure('gh: API rate limit exceeded for user ID 1 (HTTP 403)') })
+    await new GitDiffInspector(throttled.execute, {}, () => 0, undefined, { pausedUntil: () => 0, rateLimited: github.rateLimited }).summary('/repo')
+    expect(github.rateLimited).toHaveBeenCalledWith('graphql', expect.stringContaining('rate limit'))
   })
 
   it('ignores closed pull requests and malformed pull request URLs', async () => {

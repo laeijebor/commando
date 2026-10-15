@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { repoFromGithubRemote, validateRepo } from './prs.js'
+import { githubThrottle, repoFromGithubRemote, validateRepo, type GithubGate } from './prs.js'
 
 const COMMAND_TIMEOUT_MS = 5_000
 const DIFF_TIMEOUT_MS = 20_000
@@ -406,6 +406,7 @@ export class GitDiffInspector {
     private readonly environment: NodeJS.ProcessEnv = process.env,
     private readonly now: () => number = Date.now,
     private readonly readTextFile: (file: string) => Promise<string> = (file) => readFile(file, 'utf8'),
+    private readonly github?: GithubGate,
   ) {}
 
   async summary(cwd: string, target?: string, head?: string, baseFallbackRepo?: string, baseFallbackBranch?: string): Promise<GitDiffSummary> {
@@ -438,7 +439,8 @@ export class GitDiffInspector {
       return pullRequest && canonicalPullRequestUrl(pullRequest.url) === canonicalPullRequestUrl(reference.url)
         ? pullRequest
         : undefined
-    } catch {
+    } catch (error) {
+      this.noteGithubFailure(error)
       return undefined
     }
   }
@@ -895,6 +897,8 @@ export class GitDiffInspector {
   private cachedPullRequest(key: string, load: () => Promise<GitPullRequest | undefined>): Promise<GitPullRequest | undefined> {
     const now = this.now()
     const cached = this.pullRequestCache.get(key)
+    // While PR sync is paused, keep showing the last answer rather than spend the reserve.
+    if (this.github && now < this.github.pausedUntil('graphql')) return cached?.result ?? Promise.resolve(undefined)
     if (cached && now - cached.at < PULL_REQUEST_FOUND_TTL_MS) {
       // A missing PR expires sooner; an in-flight lookup is always shared.
       return cached.result.then((pullRequest) => pullRequest || now - cached.at < PULL_REQUEST_MISSING_TTL_MS
@@ -919,6 +923,10 @@ export class GitDiffInspector {
     return entry.result
   }
 
+  private noteGithubFailure(error: unknown): void {
+    if (this.github && error instanceof GitCommandFailure && githubThrottle(error.stderr)) this.github.rateLimited('graphql', error.stderr)
+  }
+
   private async lookUpCurrentPullRequest(root: string): Promise<GitPullRequest | undefined> {
     try {
       const { stdout } = await this.execute(
@@ -930,7 +938,8 @@ export class GitDiffInspector {
         }),
       )
       return parsePullRequest(stdout)
-    } catch {
+    } catch (error) {
+      this.noteGithubFailure(error)
       return undefined
     }
   }

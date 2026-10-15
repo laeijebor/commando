@@ -101,6 +101,19 @@ describe('GitHub access per daemon', () => {
   })
 })
 
+describe('throttle gate for gh calls outside PrService', () => {
+  it('pauses polled reads when an outside call reports primary GraphQL throttling', async () => {
+    const runner = vi.fn(async () => '{}')
+    const service = new PrService({ runner, now: () => 1_000 })
+    expect(service.githubGate.pausedUntil('graphql')).toBe(0)
+    service.githubGate.rateLimited('graphql', 'gh: API rate limit exceeded for user ID 1')
+    expect(service.githubGate.pausedUntil('graphql')).toBe(61_000)
+    expect(service.githubGate.pausedUntil('rest')).toBe(0)
+    await expect(service.listPanePullRequests('00000000-0000-4000-8000-000000000000')).rejects.toMatchObject({ code: 'rate_limited' })
+    expect(runner).not.toHaveBeenCalled()
+  })
+})
+
 describe('merging pull requests', () => {
   it('hydrates native stack membership in the existing list query', async () => {
     const { service, runner } = serviceWith(graphqlPayload([pullRequestNode({ stackEntry: { position: 2, stack: { number: 7, size: 3, baseRefName: 'main' } } })]))

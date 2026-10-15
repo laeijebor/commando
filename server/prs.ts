@@ -202,6 +202,18 @@ export function githubDisabledReason(env: NodeJS.ProcessEnv, port: number, defau
   return port === defaultPort ? undefined : `GitHub is disabled on test daemons (port ${port}) — set COMMANDO_GITHUB=on to enable it`
 }
 
+/** Whether gh's stderr reports GitHub throttling, and which kind. */
+export function githubThrottle(stderr: string): 'primary' | 'secondary' | 'unknown' | null {
+  if (!/rate limit|abuse detection|HTTP 429/i.test(stderr)) return null
+  return /secondary|abuse detection/i.test(stderr) ? 'secondary' : /API rate limit exceeded/i.test(stderr) ? 'primary' : 'unknown'
+}
+
+/** Lets gh calls made outside PrService honour and feed its throttle. */
+export type GithubGate = {
+  pausedUntil(resource: 'rest' | 'graphql'): number
+  rateLimited(resource: 'rest' | 'graphql', stderr: string): void
+}
+
 function classifyGhFailure(error: import('node:child_process').ExecFileException, stderr: string): PrServiceError {
   if (error.code === 'ENOENT') {
     return new PrServiceError(503, 'gh_unavailable', 'The gh CLI is not installed on the daemon host')
@@ -212,9 +224,9 @@ function classifyGhFailure(error: import('node:child_process').ExecFileException
   if (/gh auth login|not logged in|authentication required|HTTP 401|Bad credentials/i.test(stderr)) {
     return new PrServiceError(401, 'auth_required', 'gh is not authenticated — run `gh auth login` on the daemon host')
   }
-  if (/rate limit|abuse detection|HTTP 429/i.test(stderr)) {
-    return new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached', undefined,
-      /secondary|abuse detection/i.test(stderr) ? 'secondary' : /API rate limit exceeded/i.test(stderr) ? 'primary' : undefined)
+  const throttle = githubThrottle(stderr)
+  if (throttle) {
+    return new PrServiceError(429, 'rate_limited', 'GitHub rate limit reached', undefined, throttle === 'unknown' ? undefined : throttle)
   }
   if (/Could not resolve to a Repository/i.test(stderr)) {
     return new PrServiceError(404, 'repo_not_found', 'Repository was not found')
@@ -779,13 +791,22 @@ export class PrService {
     }
   }
 
+  readonly githubGate: GithubGate = {
+    pausedUntil: (resource) => this.pausedUntil(resource),
+    rateLimited: (resource, stderr) => { this.backOff(githubThrottle(stderr) === 'primary' ? resource : 'shared') },
+  }
+
+  // Low GraphQL budget must not block REST's separate primary budget.
+  // Unclassified upstream throttling remains shared (secondary limits can span both).
+  private pausedUntil(resource: 'rest' | 'graphql'): number {
+    return Math.max(this.backoffs.shared.until, this.backoffs[resource].until, resource === 'graphql' ? this.graphqlPausedUntil : 0)
+  }
+
   // Every polled GitHub read goes through here; user actions such as merge do not.
   private async ghRead(args: string[]): Promise<string> {
-    // Low GraphQL budget must not block REST's separate primary budget.
-    // Unclassified upstream throttling remains shared (secondary limits can span both).
     const resource = args[1] === 'graphql' ? 'graphql' : 'rest'
     const throttledUntil = Math.max(this.backoffs.shared.until, this.backoffs[resource].until)
-    const retryAt = Math.max(throttledUntil, resource === 'graphql' ? this.graphqlPausedUntil : 0)
+    const retryAt = this.pausedUntil(resource)
     if (this.now() < retryAt) throw rateLimited(retryAt, retryAt > throttledUntil)
     let output: string
     try {

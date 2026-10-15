@@ -1625,11 +1625,9 @@ async function main(): Promise<void> {
     },
   })
   const gitDiffApi = new GitDiffApi({
-    ...(githubOffReason ? {
-      inspector: new GitDiffInspector((file, args, options) => file === 'gh'
-        ? Promise.reject(new Error(githubOffReason))
-        : defaultGitProcessExecutor(file, args, options)),
-    } : {}),
+    inspector: new GitDiffInspector(githubOffReason
+      ? (file, args, options) => file === 'gh' ? Promise.reject(new Error(githubOffReason)) : defaultGitProcessExecutor(file, args, options)
+      : defaultGitProcessExecutor, process.env, Date.now, undefined, prs.githubGate),
     panePath: (paneId) => paneForId(paneId)?.path,
     repoInfo: (directory) => gitWorktrees.probe(directory),
     panePullRequestEvidence: async (paneId) => {
