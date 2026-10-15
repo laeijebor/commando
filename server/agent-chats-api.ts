@@ -43,14 +43,24 @@ type Dependencies = {
 }
 
 /**
- * Codex's default (workspace access) edits and runs commands without asking, like Claude's
- * acceptEdits; so do Muse's and Cursor's, inside their sandboxes.
+ * Compare each provider's modes by their access, rather than their shared mode names. Codex's
+ * default (workspace access) edits and runs commands without asking, like Claude's acceptEdits;
+ * so does Muse's, inside its sandbox.
  */
 function effectiveRank(provider: string, mode: ChatPermissionMode): number {
-  return (provider === 'codex-chat' || provider === 'muse-chat' || provider === 'cursor-chat') && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
+  if (provider === 'cursor-chat') {
+    const ranks: Partial<Record<ChatPermissionMode, number>> = {
+      bypassPermissions: PERMISSION_RANK.bypassPermissions,
+      auto: PERMISSION_RANK.bypassPermissions,
+      default: PERMISSION_RANK.acceptEdits,
+      plan: PERMISSION_RANK.plan,
+    }
+    return ranks[mode] ?? PERMISSION_RANK[mode]
+  }
+  return (provider === 'codex-chat' || provider === 'muse-chat') && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
 }
 
-/** Launch modes retain the existing asking-first rank for auto and unrecognized modes. */
+/** Claude auto and unrecognized modes retain their existing asking-first fallback. */
 function launchMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'> | undefined): ChatPermissionMode {
   if (chat?.permissionMode === 'auto' && chat.provider !== 'cursor') return 'default'
   return chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'

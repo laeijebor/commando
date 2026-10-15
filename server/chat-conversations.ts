@@ -19,6 +19,8 @@ const DEFAULT_LIMIT = 1000
 /** Bound SQLite reads across Cursor SDK workspaces, newest stores first. */
 const MAX_CURSOR_STORES = 200
 const MAX_TITLE = 200
+/** Unexpected store failures are reported once per path across all index instances. */
+const warnedCursorStores = new Set<string>()
 
 type TranscriptFile = { provider: ChatConversationProvider; file: string; configDir?: string; cwd?: string }
 type Candidate = TranscriptFile & { mtimeMs: number; size: number }
@@ -72,6 +74,19 @@ async function headAndTail(file: string, size: number): Promise<{ head: Record<s
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function warnCursorStoreError(file: string, error: unknown): void {
+  const { code, errcode, message } = record(error)
+  // Node exposes SQLite's primary/extended result as errcode; other wrappers use code.
+  const primaryCode = typeof errcode === 'number' ? errcode & 0xff : undefined
+  if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM'
+    || (typeof code === 'string' && /^SQLITE_(?:BUSY|CANTOPEN|LOCKED)(?:_|$)/.test(code))
+    || primaryCode === 5 || primaryCode === 6 || primaryCode === 14
+    || (typeof message === 'string' && /database (?:is )?(?:locked|busy)|unable to open database file/i.test(message))) return
+  if (warnedCursorStores.has(file)) return
+  warnedCursorStores.add(file)
+  console.warn('[commando] Could not read Cursor conversation store', file, error)
 }
 
 function text(value: unknown): string {
@@ -413,8 +428,8 @@ export class ChatConversationIndex {
             found.set(row.agent_id, { provider: 'cursor', sessionId: row.agent_id, cwd: row.workspace_ref, title, updatedAt })
           }
         }
-      } catch {
-        // Missing, unreadable, busy or incompatible stores do not hide other conversations.
+      } catch (error) {
+        warnCursorStoreError(candidate.file, error)
       } finally {
         database?.close()
       }

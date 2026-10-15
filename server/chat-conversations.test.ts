@@ -13,7 +13,7 @@ const lines = (...values: unknown[]) => `${values.map((value) => JSON.stringify(
 
 let home: string
 beforeEach(async () => { home = await mkdtemp(join(tmpdir(), 'commando-conversations-')) })
-afterEach(async () => { await rm(home, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await rm(home, { recursive: true, force: true }) })
 
 async function claudeTranscript(name: string, entries: unknown[], at: number, configDir = join(home, '.claudep')): Promise<string> {
   const project = join(configDir, 'projects', '-work-app')
@@ -371,12 +371,15 @@ describe('Cursor SQLite conversation stores', () => {
     expect((await index(1).index.list()).map((entry) => entry.title)).toEqual(['Newest Cursor'])
   })
 
-  it('returns an empty list when the Cursor projects directory does not exist', async () => {
+  it('returns an empty list without warning when the Cursor projects directory does not exist', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await index().index.list()).toEqual([])
     expect(await readdir(home)).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('skips corrupt databases, incompatible schemas and malformed rows without hiding valid conversations', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const corrupt = await cursorStore('-work-app', 'corrupt', [], 5_000_000)
     await writeFile(corrupt, 'not a SQLite database')
     const incompatible = await cursorStore('-work-app', 'incompatible', [], 4_000_000)
@@ -394,6 +397,44 @@ describe('Cursor SQLite conversation stores', () => {
     ], 3_000_000)
     await claudeTranscript(CLAUDE_ID, [user('Still here')], 1_000_000)
     expect((await index().index.list()).map((entry) => entry.title)).toEqual(['Cursor work', 'Still here'])
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn).toHaveBeenCalledWith('[commando] Could not read Cursor conversation store', corrupt, expect.any(Error))
+    expect(warn).toHaveBeenCalledWith('[commando] Could not read Cursor conversation store', incompatible, expect.any(Error))
+  })
+
+  it.each([
+    ['drop table agents', /no such table/],
+    ['alter table agents rename column name to renamed_name', /no such column/],
+  ] as const)('warns once per process and store path for schema changes: %s', async (schema, message) => {
+    const file = await cursorStore('-work-app', 'changed-schema', [], 1_000_000)
+    const database = new DatabaseSync(file)
+    try { database.exec(schema) } finally { database.close() }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const close = vi.spyOn(DatabaseSync.prototype, 'close')
+    const conversations = index().index
+    expect(await conversations.list()).toEqual([])
+    expect(await conversations.list()).toEqual([])
+    // A different index instance shares the process's warning history.
+    expect(await index().index.list()).toEqual([])
+    expect(warn).toHaveBeenCalledExactlyOnceWith('[commando] Could not read Cursor conversation store', file, expect.objectContaining({ message: expect.stringMatching(message) }))
+    expect(close).toHaveBeenCalledTimes(3)
+  })
+
+  it('silently skips locked stores and reads them once the lock is released', async () => {
+    const file = await cursorStore('-work-app', 'locked', [cursorRow()], 1_000_000)
+    const database = new DatabaseSync(file)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const conversations = index().index
+    try {
+      database.exec('begin exclusive')
+      expect(await conversations.list()).toEqual([])
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      database.exec('rollback')
+      database.close()
+    }
+    expect((await conversations.list()).map((entry) => entry.title)).toEqual(['Cursor work'])
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('treats New Agent and empty names as untitled, falling back to the conversation id', async () => {
