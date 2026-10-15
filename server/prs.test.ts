@@ -474,11 +474,37 @@ describe('pane PR status', () => {
     expect(runner).toHaveBeenCalledTimes(3)
   })
 
+  it('shares one search between panes read together and splits results by marker', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const node = (target: string, number: number) => pullRequestNode({ number,
+      body: `<!-- commando:v1 target=${target} relation=created -->`, repository: { nameWithOwner: 'acme/widgets' } })
+    const runner = vi.fn(async (_args: string[]) => JSON.stringify({ data: { viewer: { login: 'leo' },
+      linked: { issueCount: 3, nodes: [node(targetId, 12), node(other, 13), node(other, 14)] } } }))
+    const service = new PrService({ runner, now: () => 1 })
+    const [mine, theirs] = await Promise.all([service.listPanePullRequests(targetId), service.listPanePullRequests(other)])
+    expect(runner).toHaveBeenCalledOnce()
+    expect(runner.mock.calls[0][0]).toContain(`targetQuery=is:pr in:body ${targetId} OR ${other} sort:created-desc`)
+    expect(mine.pullRequests.map((pr) => pr.number)).toEqual([12])
+    expect(theirs.pullRequests.map((pr) => pr.number).sort()).toEqual([13, 14])
+    expect(theirs).toMatchObject({ totalCount: 2, truncated: false })
+  })
+
+  it('searches panes separately when a shared search is truncated', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const runner = vi.fn(async (args: string[]) => args.some((arg) => arg.includes(' OR '))
+      ? JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 99, nodes: [] } } })
+      : linkedPayload())
+    const service = new PrService({ runner, now: () => 1 })
+    const [mine] = await Promise.all([service.listPanePullRequests(targetId), service.listPanePullRequests(other)])
+    expect(runner).toHaveBeenCalledTimes(3)
+    expect(mine.pullRequests.map((pr) => pr.number)).toEqual([12])
+  })
+
   it('deduplicates forced pane reads and ignores their older result after a newer repository query', async () => {
     let finish!: (output: string) => void
     const runner = vi.fn().mockImplementationOnce(() => new Promise<string>((resolve) => { finish = resolve }))
       .mockResolvedValueOnce(graphqlPayload([pullRequestNode({ title: 'Latest', mergeable: 'CONFLICTING' })]))
-    const service = new PrService({ runner, now: () => 1 })
+    const service = new PrService({ runner, now: () => 1, paneBatchWindowMs: 0 })
     const first = service.listPanePullRequests(targetId, { refresh: true })
     const second = service.listPanePullRequests(targetId, { refresh: true })
     await service.listPullRequests('acme/widgets', 'open')
