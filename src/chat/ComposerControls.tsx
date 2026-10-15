@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Check, ChevronDown, Minimize2, Zap } from 'lucide-react'
 import { hostTakesSettings, selectedModelOption, type ChatContextUsage, type ChatPlanLimit, type ChatPlanUsage, type ChatSessionInfo, type ChatSettingsChange } from '../../shared/agent-chat'
-import { EFFORT_LABELS, fastModeOn, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
+import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { formatDuration, formatReadingAge, formatResetTime, headlineLimits, isLimitReached, isPlanUsageStale, reachedLimit, shortLimitLabel } from './planUsage'
 import { Button } from './ui/button'
@@ -64,8 +64,8 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
   const label = modelLabel(session)
   if (!label) return null
   const fast = fastModeOn(session)
-  const pill = [label, ...(session.effort ? [EFFORT_LABELS[session.effort]] : []), ...(fast ? ['Fast'] : [])].join(' · ')
-  if (!session.models?.length || !modelMenuAvailable(session)) return <Pill title={session.model}>{pill}</Pill>
+  const pill = [label, ...(session.effort ? [EFFORT_LABELS[session.effort]] : [])].join(' · ')
+  if (!session.models?.length || !modelMenuAvailable(session)) return <Pill title={session.model}>{pill}{fast ? ' · Fast' : ''}</Pill>
   const selected = selectedModelOption(session)
   const efforts = selected?.efforts ?? []
   const pick = (change: ChatSettingsChange) => {
@@ -73,62 +73,80 @@ export function ModelPicker({ session, disabled, onConfigure, open: controlledOp
     onConfigure(change)
   }
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PillTrigger label={pill} open={open} disabled={disabled} />
-      <PopoverPopup className="w-[300px]" aria-label="Model and effort">
-        <SectionLabel>Model</SectionLabel>
-        <div role="menu" aria-label="Model">
-          {session.models.map((model) => (
-            <MenuOption
-              key={model.value}
-              checked={model === selected}
-              label={model.displayName}
-              {...(model.description ? { description: model.description } : {})}
-              onSelect={() => pick({ model: model.value })}
-            />
-          ))}
-        </div>
-        {efforts.length ? (
-          <>
-            <div className="mx-0.5 my-1 h-px bg-border" />
-            <SectionLabel>Effort</SectionLabel>
-            <div role="radiogroup" aria-label="Effort" className="mx-2 mt-0.5 mb-1.5 inline-flex overflow-hidden rounded-md border border-input">
-              {efforts.map((effort) => (
-                <button
-                  key={effort}
-                  type="button"
-                  role="radio"
-                  aria-checked={session.effort === effort}
-                  onClick={() => pick({ effort })}
-                  className={cn('px-2 py-0.5 text-xs', session.effort === effort ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
-                >
-                  {EFFORT_LABELS[effort]}
-                </button>
-              ))}
-            </div>
-          </>
-        ) : null}
-        {selected?.supportsFast ? (
-          <>
-            <div className="mx-0.5 my-1 h-px bg-border" />
-            <button
-              type="button"
-              role="menuitemcheckbox"
-              aria-checked={fast}
-              onClick={() => pick({ fast: !fast })}
-              className={cn('flex w-full min-w-0 items-center gap-2 rounded-[5px] px-2 py-1 text-left', fast ? 'text-foreground' : 'text-secondary-label hover:bg-accent')}
-            >
-              <Zap className={cn('size-3 shrink-0', fast ? 'text-primary' : 'text-icon-muted')} aria-hidden="true" />
-              <span className="shrink-0">Fast mode</span>
-              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">Faster replies, higher usage</span>
-              <span className={cn('relative h-3.5 w-6 shrink-0 rounded-full transition-colors', fast ? 'bg-primary' : 'bg-input')} aria-hidden="true">
-                <span className={cn('absolute top-0.5 size-2.5 rounded-full bg-background transition-[left]', fast ? 'left-3' : 'left-0.5')} />
-              </span>
-            </button>
-          </>
-        ) : null}
-      </PopoverPopup>
-    </Popover>
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PillTrigger label={pill} open={open} disabled={disabled} />
+        <PopoverPopup className="w-[300px]" aria-label="Model and effort">
+          <SectionLabel>Model</SectionLabel>
+          <div role="menu" aria-label="Model">
+            {session.models.map((model) => (
+              <MenuOption
+                key={model.value}
+                checked={model === selected}
+                label={model.displayName}
+                {...(model.description ? { description: model.description } : {})}
+                onSelect={() => pick({ model: model.value })}
+              />
+            ))}
+          </div>
+          {efforts.length ? (
+            <>
+              <div className="mx-0.5 my-1 h-px bg-border" />
+              <SectionLabel>Effort</SectionLabel>
+              <div role="radiogroup" aria-label="Effort" className="mx-2 mt-0.5 mb-1.5 inline-flex overflow-hidden rounded-md border border-input">
+                {efforts.map((effort) => (
+                  <button
+                    key={effort}
+                    type="button"
+                    role="radio"
+                    aria-checked={session.effort === effort}
+                    onClick={() => pick({ effort })}
+                    className={cn('px-2 py-0.5 text-xs', session.effort === effort ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground')}
+                  >
+                    {EFFORT_LABELS[effort]}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : null}
+          {selected?.supportsFast ? (
+            <>
+              <div className="mx-0.5 my-1 h-px bg-border" />
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={fast}
+                onClick={() => pick({ fast: !fast })}
+                className={cn('flex w-full min-w-0 items-center gap-2 rounded-[5px] px-2 py-1 text-left', fast ? 'text-foreground' : 'text-secondary-label hover:bg-accent')}
+              >
+                <Zap className={cn('size-3 shrink-0', fast ? 'fill-current text-primary' : 'text-icon-muted')} aria-hidden="true" />
+                <span className="shrink-0">Fast mode</span>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">Faster replies, higher usage</span>
+                <span className={cn('relative h-3.5 w-6 shrink-0 rounded-full transition-colors', fast ? 'bg-primary' : 'bg-input')} aria-hidden="true">
+                  <span className={cn('absolute top-0.5 size-2.5 rounded-full bg-background transition-[left]', fast ? 'left-3' : 'left-0.5')} />
+                </span>
+              </button>
+            </>
+          ) : null}
+        </PopoverPopup>
+      </Popover>
+      {fastModeAvailable(session) ? (
+        <button
+          type="button"
+          aria-pressed={fast}
+          disabled={disabled}
+          title="Fast mode: faster replies, higher usage"
+          onClick={() => onConfigure({ fast: !fast })}
+          className={cn(
+            'flex shrink-0 cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-60',
+            fast ? 'border-primary/40 text-primary hover:bg-primary/10' : 'border-border text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <Zap className={cn('size-3 shrink-0', fast && 'fill-current')} aria-hidden="true" />
+          {fast ? 'Fast on' : 'Fast off'}
+        </button>
+      ) : null}
+    </>
   )
 }
 

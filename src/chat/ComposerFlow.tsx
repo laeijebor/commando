@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ImageIcon, ListChecks, MessageSquareShare, Pencil, SplitSquareHorizontal, X, Zap } from 'lucide-react'
+import { ChevronDown, ImageIcon, ListChecks, MessageSquareShare, Pencil, SplitSquareHorizontal, X, Rabbit } from 'lucide-react'
 import type { ChatQueueAction, ChatQueuedMessage, ChatSessionInfo, ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { permissionLabel } from '../../shared/chat-composer'
 import { cn } from './cn'
@@ -78,7 +78,7 @@ export function QueuedMessages({ provider = 'Claude', queue, disabled, onChange,
                 <Pencil aria-hidden="true" />
               </Button>
               <Button size="xs" variant="ghost-muted" disabled={disabled} title={`Send now and end ${provider}'s current turn at its next safe point`} onClick={() => onChange({ action: 'steer', id: queued.id })}>
-                <Zap aria-hidden="true" />
+                <Rabbit aria-hidden="true" />
                 Steer now
               </Button>
               <Button size="icon-xs" variant="ghost-muted" disabled={disabled} aria-label="Remove queued message" title="Remove" onClick={() => onChange({ action: 'remove', id: queued.id })}>

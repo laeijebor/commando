@@ -38,21 +38,35 @@ describe('ModelPicker', () => {
     expect(screen.getByRole('button', { name: 'Default' })).toBeInTheDocument()
   })
 
-  it('toggles fast mode on a model that offers it, and names it in the pill', async () => {
+  it('keeps the adjacent fast button and menu toggle in sync for supported models', async () => {
     const onConfigure = vi.fn()
     const fastModels = [{ ...models[1]!, supportsFast: true }, models[2]!]
     const view = render(<ModelPicker session={{ ...fresh, models: fastModels, selectedModel: 'opus' }} disabled={false} onConfigure={onConfigure} />)
+    const fastButton = screen.getByRole('button', { name: 'Fast off' })
+    expect(fastButton).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(fastButton)
+    expect(onConfigure).toHaveBeenLastCalledWith({ fast: true })
     fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
     const toggle = await screen.findByRole('menuitemcheckbox', { name: /Fast mode/ })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(toggle)
     expect(onConfigure).toHaveBeenCalledWith({ fast: true })
     view.rerender(<ModelPicker session={{ ...fresh, models: fastModels, selectedModel: 'opus', fast: true }} disabled={false} onConfigure={onConfigure} />)
-    expect(screen.getByRole('button', { name: 'Opus 5.5 · Fast' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Opus 5.5' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Fast on' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
+    expect(await screen.findByRole('menuitemcheckbox', { name: /Fast mode/ })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /Fast mode/ }))
+    expect(onConfigure).toHaveBeenLastCalledWith({ fast: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Fast on' }))
+    expect(onConfigure).toHaveBeenLastCalledWith({ fast: false })
+    view.rerender(<ModelPicker session={{ ...fresh, models: fastModels, selectedModel: 'opus', fast: true }} disabled onConfigure={onConfigure} />)
+    expect(screen.getByRole('button', { name: 'Fast on' })).toBeDisabled()
     // A model without fast mode neither offers nor claims it.
     view.rerender(<ModelPicker session={{ ...fresh, models: fastModels, selectedModel: 'sonnet', fast: true }} disabled={false} onConfigure={onConfigure} />)
     fireEvent.click(screen.getByRole('button', { name: 'Sonnet 5.5' }))
     expect(screen.queryByRole('menuitemcheckbox', { name: /Fast mode/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Fast (on|off)/ })).toBeNull()
   })
 
   it('shows nothing until Claude lists its models', () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
-import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Zap } from 'lucide-react'
+import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Rabbit } from 'lucide-react'
 import {
   CHAT_IMAGE_TYPES,
   MAX_CHAT_IMAGES,
@@ -973,7 +973,7 @@ export function ChatComposer({
           ) : null}
           {running && turnFlow && !relayTarget ? (
             <Button size="icon-sm" variant="outline" aria-label="Steer now" title={`Steer now (⌘Enter): ends ${provider}'s turn at its next safe point and sends this`} onClick={() => submit(true)} disabled={!canSend}>
-              <Zap aria-hidden="true" />
+              <Rabbit aria-hidden="true" />
             </Button>
           ) : null}
           {planFollowUp && onImplement && !refining ? (
