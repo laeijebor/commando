@@ -172,6 +172,15 @@ describe('PR store', () => {
     expect(api.pane).toHaveBeenCalledTimes(2)
   })
 
+  it('retries a failed foreground pane on the next tick', async () => {
+    vi.useFakeTimers()
+    const api = { pane: vi.fn().mockRejectedValueOnce(new Error('GitHub request failed')).mockResolvedValue(emptyList) }
+    render(<Subscriber api={api} />)
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(api.pane).toHaveBeenCalledTimes(2)
+  })
+
   it('pauses refresh while hidden and resumes when visibility returns', async () => {
     vi.useFakeTimers()
     let visibility: DocumentVisibilityState = 'visible'

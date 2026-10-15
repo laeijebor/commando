@@ -224,7 +224,8 @@ class PrStore {
   }
 
   private due<T>(entry: Entry<T>, now: number): boolean {
-    if (entry.foreground > 0 && entry.lastBackground) return true
+    // Visible lists retry a failure on the next tick; background ones wait their interval.
+    if (entry.foreground > 0 && (entry.lastBackground || entry.snapshot.list === null || entry.snapshot.error)) return true
     const interval = entry.foreground > 0 ? entry.interval : Math.max(entry.interval, PR_BACKGROUND_INTERVAL_MS)
     return now - entry.lastFetchedAt >= interval
   }
