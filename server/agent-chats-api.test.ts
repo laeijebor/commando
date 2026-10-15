@@ -166,7 +166,7 @@ describe('AgentChatsApi', () => {
     const s = await setup()
     s.chats.set('%1', { permissionMode: 'plan' } as ChatSessionInfo)
     for (const extra of [{ agent }, { agent, permissionMode: 'plan' }]) {
-      expect(await s.call('POST', '', { ...s.input, ...extra })).toMatchObject({ status: 403, result: { ok: false, error: 'A plan-mode chat can only open claude-chat or codex-chat chats' } })
+      expect(await s.call('POST', '', { ...s.input, ...extra })).toMatchObject({ status: 403, result: { ok: false, error: 'A plan-mode chat can only open hosted chats (claude-chat, codex-chat, muse-chat or cursor-chat)' } })
     }
     expect(s.createSession).not.toHaveBeenCalled()
     for (let index = 0; index < 3; index++) {
@@ -495,4 +495,29 @@ describe('AgentChatsApi', () => {
     s.setChatLineage.mockRejectedValueOnce(new Error('pane option failed'))
     expect(await s.call('POST', '', s.input)).toMatchObject({ status: 502, result: { ok: false, created: { paneId: '%11' }, error: expect.stringContaining('do not retry') } })
   })
+})
+
+
+it.each(['bypassPermissions', 'default', 'auto', 'plan'] as const)('inherits Cursor chat %s without carrying a Claude profile', async (permissionMode) => {
+  const s = await setup()
+  s.chats.set('%1', { provider: 'cursor', permissionMode, configDir: '/ignored' } as ChatSessionInfo)
+  expect(await s.call('POST', '', s.input)).toMatchObject({ status: 200, result: { agent: { provider: 'cursor-chat', permissionMode } } })
+  expect(s.createSession.mock.calls[0]![0].agent).not.toHaveProperty('configDir')
+})
+
+it.each([
+  ['bypassPermissions', 'bypassPermissions'], ['acceptEdits', 'default'], ['default', 'auto'], ['auto', 'auto'], ['plan', 'plan'],
+] as const)('caps Cursor child from Claude %s to %s', async (parentMode, childMode) => {
+  const s = await setup()
+  s.chats.set('%1', { provider: 'claude', permissionMode: parentMode } as ChatSessionInfo)
+  expect(await s.call('POST', '', { ...s.input, agent: 'cursor-chat' })).toMatchObject({ status: 200, result: { agent: { provider: 'cursor-chat', permissionMode: childMode } } })
+  if (parentMode !== 'bypassPermissions') expect(await s.call('POST', '', { ...s.input, agent: 'cursor-chat', permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403 })
+})
+
+it('validates Cursor modes without widening Claude or Codex launch modes', async () => {
+  const s = await setup()
+  s.chats.set('%1', { provider: 'cursor', permissionMode: 'bypassPermissions' } as ChatSessionInfo)
+  for (const permissionMode of ['acceptEdits', 'dontAsk']) expect(await s.call('POST', '', { ...s.input, agent: 'cursor-chat', permissionMode })).toMatchObject({ status: 400 })
+  for (const agent of ['claude-chat', 'codex-chat']) expect(await s.call('POST', '', { ...s.input, agent, permissionMode: 'auto' })).toMatchObject({ status: 400 })
+  expect((await s.call('POST', '', { ...s.input, agent: 'cursor-chat', permissionMode: 'auto' })).result.agent).toEqual({ provider: 'cursor-chat', permissionMode: 'auto' })
 })

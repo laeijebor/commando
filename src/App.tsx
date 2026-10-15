@@ -417,6 +417,7 @@ type TerminalPaneProps = {
 
 /** What clicking Claude Code in a chat's header does, or why it can't. */
 function claudeCodeSwitchTitle(chat: ChatState): string {
+  if (chat.session.provider === 'cursor') return 'Cursor chat does not support switching to a terminal UI'
   const label = providerTuiLabel(chat.session.provider)
   if (!chat.hostConnected) return 'The agent host is disconnected'
   if (!hostTakesSwitch(chat.session)) return `This chat started before switching to ${label}; restart it to switch`
@@ -2912,8 +2913,8 @@ export function App() {
     }
   }
 
-  /** A Codex or Muse chat launch with the permission mode remembered for the path's repository. */
-  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat'): Promise<SessionAgentLaunch> => {
+  /** A Codex, Muse or Cursor chat launch with the permission mode remembered for the path's repository. */
+  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat' | 'cursor-chat'): Promise<SessionAgentLaunch> => {
     const repoRoot = await gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined)
     return { provider, permissionMode: loadChatLaunch(repoRoot ?? path, provider).permissionMode }
   }
@@ -2943,7 +2944,7 @@ export function App() {
     try {
       const agent = choice === 'shell' ? undefined
         : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path)
-          : choice === 'codex-chat' || choice === 'muse-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
+          : choice === 'codex-chat' || choice === 'muse-chat' || choice === 'cursor-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
             : { provider: choice }
       await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
       // Focus lands once the snapshot swaps the launcher for the running pane.

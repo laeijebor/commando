@@ -851,27 +851,27 @@ export class AgentStatusRegistry {
   /** Hook evidence is scoped to the observed foreground process, never just the pane. */
   hasCursorHookProcess(paneId: string, command?: string): boolean {
     const record = this.records.get(paneId)
-    return record?.status.provider === 'cursor' && record.status.source === 'hook' &&
+    return !this.chatHosts.has(paneId) && record?.status.provider === 'cursor' && record.status.source === 'hook' &&
       !record.retainedCompletion && record.cursor?.ended === false && record.cursor.association !== undefined &&
       (command === undefined || (record.processCommand === command && /(?:^|\/)(?:agent|node|bun|deno|cursor-agent)$/i.test(command.trim())))
   }
 
   cursorAssociation(paneId: string): CursorHookAssociation | null {
     const record = this.records.get(paneId)
-    return record?.status.provider === 'cursor' && !record.retainedCompletion && !record.cursor?.ended
+    return !this.chatHosts.has(paneId) && record?.status.provider === 'cursor' && !record.retainedCompletion && record.cursor?.ended === false
       ? record.cursor?.association ?? null : null
   }
 
   acceptsCursorContext(paneId: string, session: string, association: CursorHookAssociation): boolean {
     const record = this.records.get(paneId)
-    return record?.status.provider === 'cursor' && record.providerSessionId === session &&
+    return !this.chatHosts.has(paneId) && record?.status.provider === 'cursor' && record.providerSessionId === session &&
       !record.cursor?.ended && record.cursor?.association !== undefined &&
       cursorProducerIdentity(record.cursor.association) === cursorProducerIdentity(association)
   }
 
   invalidateCursorAssociation(paneId: string, association: CursorHookAssociation): AgentStatusChange {
     const record = this.records.get(paneId)
-    if (!record?.cursor?.association || cursorProducerIdentity(record.cursor.association) !== cursorProducerIdentity(association)) return null
+    if (this.chatHosts.has(paneId) || !record?.cursor?.association || cursorProducerIdentity(record.cursor.association) !== cursorProducerIdentity(association)) return null
     record.cursor.candidate = null
     record.cursor.ended = true
     this.retireCursorTurn(paneId, record, true)

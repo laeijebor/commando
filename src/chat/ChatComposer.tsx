@@ -418,7 +418,7 @@ export function ChatComposer({
   const running = session.status === 'running' || session.status === 'waiting'
   const closed = session.status === 'closed' || session.status === 'error'
   // A switch to Claude Code takes the draft as it is; answers and Stop still work.
-  const switching = Boolean(session.claudeCodeSwitch)
+  const switching = session.provider !== 'cursor' && Boolean(session.claudeCodeSwitch)
   const disabled = !hostConnected || closed || switching
   const request = requests[0]
   // Hosts started before 1b·2 can't search files or take images.

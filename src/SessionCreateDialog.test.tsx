@@ -41,3 +41,42 @@ describe('Codex chat creation dialog', () => {
     expect(loadChatLaunch('/another', 'codex-chat')).toEqual({ permissionMode: 'bypassPermissions' })
   })
 })
+
+
+describe('Cursor chat creation dialog', () => {
+  it('offers Cursor beside Codex, defaults to full access and remembers the selected mode', async () => {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({
+      created: { kind: 'session', sessionId: '$1', sessionName: input.name, windowId: '@2', windowIndex: 0, windowName: 'chat', paneId: '%3', paneIndex: 0, panePath: '/tmp' },
+      agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' },
+    }))
+    const profiles = vi.fn(async () => [])
+    render(<SessionCreateDialog request={request} onClose={vi.fn()} onCreateSession={onCreateSession} loadClaudeProfiles={profiles} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cursor' } })
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/tmp' } })
+    expect(screen.getByRole('option', { name: 'Cursor chat' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Cursor' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor-chat' } })
+    expect(screen.getByLabelText('Permissions')).toHaveValue('bypassPermissions')
+    expect(Array.from((screen.getByLabelText('Permissions') as HTMLSelectElement).options).map((option) => option.text)).toEqual(['Full access', 'Sandboxed', 'Auto-review', 'Plan'])
+    expect(screen.queryByLabelText('Profile')).not.toBeInTheDocument()
+    expect(profiles).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Permissions'), { target: { value: 'auto' } })
+    fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: 'Hello Cursor' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'cursor-chat', permissionMode: 'auto', prompt: 'Hello Cursor' })
+    expect(loadChatLaunch('/tmp', 'cursor-chat')).toEqual({ permissionMode: 'auto' })
+  })
+  it('keeps Cursor preferences isolated and discards modes or profiles belonging to Claude', () => {
+    expect(loadChatLaunch('/work', 'cursor-chat')).toEqual({ permissionMode: 'bypassPermissions' })
+    saveChatLaunch('/work', { configDir: '/u/.claudep', permissionMode: 'acceptEdits' })
+    saveChatLaunch('/work', { permissionMode: 'plan' }, 'codex-chat')
+    saveChatLaunch('/work', { configDir: '/ignored', permissionMode: 'auto' }, 'cursor-chat')
+    expect(loadChatLaunch('/work')).toEqual({ configDir: '/u/.claudep', permissionMode: 'acceptEdits' })
+    expect(loadChatLaunch('/work', 'codex-chat')).toEqual({ permissionMode: 'plan' })
+    expect(loadChatLaunch('/another', 'cursor-chat')).toEqual({ permissionMode: 'auto' })
+    expect(JSON.parse(window.localStorage.getItem('commando.chat-launch.by-repo')!)).toMatchObject({ 'cursor:/work': { permissionMode: 'auto' } })
+    saveChatLaunch('/work', { permissionMode: 'acceptEdits' }, 'cursor-chat')
+    expect(loadChatLaunch('/work', 'cursor-chat')).toEqual({ permissionMode: 'bypassPermissions' })
+  })
+})

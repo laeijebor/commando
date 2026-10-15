@@ -1836,3 +1836,16 @@ describe('observed Cursor stop/response ordering', () => {
     expect(registry.openConversationStatus(paneId, 'vim', 'unknown')).toBeUndefined()
   })
 })
+
+
+it.each([false, true])('keeps Cursor chat status separate from TUI associations (prior hooks: %s)', (priorHooks) => {
+  const registry = new AgentStatusRegistry()
+  if (priorHooks) registry.applyCursorHook(paneId, { hook_event_name: 'sessionStart', conversation_id: 'old-cursor-tui', generation_id: 'g1' }, 0, 'node', association)
+  registry.applyChatHost(paneId, { provider: 'cursor', sessionId: 'agent-12345678-0000', status: 'working' }, 1)
+  expect(registry.get(paneId)).toMatchObject({ provider: 'cursor', status: 'working' })
+  expect(registry.hasCursorHookProcess(paneId)).toBe(false)
+  expect(registry.cursorAssociation(paneId)).toBeNull()
+  expect(registry.acceptsCursorContext(paneId, 'agent-12345678-0000', association)).toBe(false)
+  expect(registry.invalidateCursorAssociation(paneId, association)).toBeNull()
+  expect(registry.get(paneId)?.status).toBe('working')
+})

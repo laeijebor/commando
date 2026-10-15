@@ -287,3 +287,23 @@ describe('Codex chat resume and return', () => {
       .toBe('/c/launcher codex --permission-mode plan --resume abcdef12-3456 --from-claude-code')
   })
 })
+
+
+describe('Cursor chat restore', () => {
+  const id = 'agent-11111111-2222-3333-4444-555555555555'
+  it('restores the host with current model, speed and modes, dropping prompts, directories and every API key', () => {
+    const args = 'node /c/server/agent-host/main.ts cursor --permission-mode default --resume agent-old --prompt hello --model injected'
+    const launch = launchFromProcess('cursor', args, `${args} CURSOR_API_KEY=secret OPENAI_API_KEY=secret`)
+    expect(launch.env).toEqual({})
+    expect(buildChatResumeCommand(id, '/c/launcher', { ...launch, env: { CURSOR_API_KEY: 'secret', CLAUDE_CONFIG_DIR: '/ignored' } }, {
+      COMMANDO_PORT: '4410', CURSOR_API_KEY: 'secret', OPENAI_API_KEY: 'secret', OTHER_SECRET: 'secret',
+    }, { model: 'test-model', effort: 'high', fast: true, permissionMode: 'plan', prePlanPermissionMode: 'auto', bypassAllowed: true }))
+      .toBe(`env COMMANDO_PORT=4410 /c/launcher cursor --model test-model --effort high --fast --permission-mode plan --pre-plan-permission-mode auto --resume ${id}`)
+  })
+  it('carries launched auto-review, but never TUI handoff support', () => {
+    const args = 'node /c/server/agent-host/main.ts cursor --permission-mode auto'
+    expect(buildChatResumeCommand(id, '/c/launcher', launchFromProcess('cursor', args, args)))
+      .toBe(`/c/launcher cursor --permission-mode auto --resume ${id}`)
+    expect(chatReturnCommand(id, '/c/launcher', [], {}, 'cursor')).toBeNull()
+  })
+})
