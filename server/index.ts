@@ -1755,6 +1755,7 @@ async function main(): Promise<void> {
       return pane && session ? { sessionId: session.id, sessionName: session.name } : null
     },
     onChange: publishSessionBrief,
+    onComplete: (paneId) => publishAgentStatusChange(agentStatuses.declareComplete(paneId)),
   })
   const simLive = new SimLiveService({ log: (message) => console.log(`[sim-live] ${message}`) })
   const simLogs = new SimLogsService()

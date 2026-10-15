@@ -15,12 +15,14 @@ let server: Server
 let baseUrl: string
 let directory: string
 let changes: SessionBrief[]
+let completed: string[]
 let store: SessionBriefStore
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'commando-session-brief-api-'))
   store = new SessionBriefStore(join(directory, 'briefs.json'))
   changes = []
+  completed = []
   const api = new SessionBriefApi({
     token,
     store,
@@ -29,6 +31,7 @@ beforeEach(async () => {
       ? { sessionId: '$1', sessionName: 'commando' }
       : null,
     onChange: (brief) => changes.push(brief),
+    onComplete: (paneId) => completed.push(paneId),
     now: () => 123,
   })
   server = createServer((request, response) => {
@@ -65,6 +68,24 @@ function post(body: unknown, options: { token?: string; paneId?: string } = {}) 
 }
 
 describe('SessionBriefApi', () => {
+  it('treats state complete as the agent declaring the work finished', async () => {
+    const response = await post({ state: 'complete' })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, brief: null })
+    expect(completed).toEqual(['%1'])
+    expect(changes).toEqual([])
+  })
+
+  it('records the rest of a patch sent with state complete', async () => {
+    const response = await post({ state: 'complete', headline: 'All PRs open' })
+
+    expect(response.status).toBe(200)
+    const body = await response.json() as { brief: SessionBrief }
+    expect(body.brief).toMatchObject({ headline: 'All PRs open', state: 'working' })
+    expect(completed).toEqual(['%1'])
+  })
+
   it('records a bounded agent-authored update for the source pane', async () => {
     const response = await post({
       headline: 'Dry run verified',
