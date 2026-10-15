@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 import type { AgentResume, AgentStatus, TmuxPane } from '../shared/protocol.js'
 import {
+  type AgentLaunch,
   buildChatResumeCommand,
   type ChatResumeSettings,
   buildResumeCommand,
@@ -78,6 +79,12 @@ export const readProcessTable = (): Promise<string> => runPs(['-axwwo', 'pid=,pp
 
 /** argv followed by the environment. It can hold secrets: read named variables only, never log it. */
 export const readProcessEnvironment = (pid: number): Promise<string> => runPs(['-Eww', '-o', 'command=', '-p', String(pid)])
+
+/** The argv and profile variables of the provider's CLI running in a pane, if it is running. */
+export async function readPaneAgentLaunch(panePid: number, provider: ResumableProvider): Promise<AgentLaunch | undefined> {
+  const agent = findAgentProcess(parseProcessTable(await readProcessTable()), panePid, provider)
+  return agent ? launchFromProcess(provider, agent.args, await readProcessEnvironment(agent.pid)) : undefined
+}
 
 function validRecord(value: unknown): value is AgentResumeRecord {
   if (!value || typeof value !== 'object') return false

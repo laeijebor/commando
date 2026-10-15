@@ -7,11 +7,12 @@ import type { AgentChatFailure, AgentChatInput, AgentChatLaunch, AgentChatResult
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import { CHAT_PERMISSION_MODES, CODEX_CHAT_PERMISSION_MODES, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
+import type { AgentLaunch } from './agent-resume-command.js'
 import type { ChatPlanStore } from './chat-plans.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { GitWorktreeError, validateBranchName } from './git-worktree.js'
 import type { RepoPrepareCommands } from './repo-prepare-commands.js'
-import { TmuxCreateCommandError, type TmuxCreator } from './tmux-create.js'
+import { TmuxCreateCommandError, validClaudeConfigDir, type TmuxCreator } from './tmux-create.js'
 
 const ROOT = '/api/agent-chats'
 const PERMISSION_RANK: Record<ChatPermissionMode, number> = { plan: 0, default: 1, acceptEdits: 2, bypassPermissions: 3 }
@@ -35,6 +36,8 @@ type Dependencies = {
   beforePaneCreated: (windowId: string) => Promise<void>
   refreshSnapshot: () => Promise<unknown>
   requests: AgentChatRequests
+  /** The CLI running in a terminal pane: its argv and profile variables. */
+  agentLaunch?: (panePid: number, provider: 'claude' | 'codex') => Promise<AgentLaunch | undefined>
   chatCliPath?: string
   now?: () => number
 }
@@ -64,6 +67,36 @@ function inheritedMode(provider: 'claude-chat' | 'codex-chat', rank: number): Ch
 /** The mode a chat started from `chat` gets: as permissive as it, never more. */
 export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>, provider: 'claude-chat' | 'codex-chat'): ChatPermissionMode {
   return inheritedMode(provider, chatRank(chat))
+}
+
+type TerminalCaller = { provider: 'claude-chat' | 'codex-chat'; rank: number; configDir?: string; warning?: string }
+
+const modeOfRank = (rank: number): ChatPermissionMode =>
+  (Object.keys(PERMISSION_RANK) as ChatPermissionMode[]).find((mode) => PERMISSION_RANK[mode] === rank) ?? 'default'
+
+function flagValue(args: readonly string[], ...names: string[]): string | undefined {
+  for (const [index, arg] of args.entries()) {
+    for (const name of names) {
+      if (arg === name) return args[index + 1]
+      if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1)
+    }
+  }
+  return undefined
+}
+
+/**
+ * How permissive a terminal agent's launch flags make it. Mode switches made inside the TUI
+ * are not visible, so this is what it started with.
+ */
+export function terminalLaunchRank(provider: 'claude' | 'codex', args: readonly string[]): number {
+  if (provider === 'claude') {
+    if (args.includes('--dangerously-skip-permissions')) return PERMISSION_RANK.bypassPermissions
+    const mode = flagValue(args, '--permission-mode')
+    return mode && Object.hasOwn(PERMISSION_RANK, mode) ? PERMISSION_RANK[mode as ChatPermissionMode] : PERMISSION_RANK.default
+  }
+  if (args.includes('--dangerously-bypass-approvals-and-sandbox') || args.includes('--yolo')) return PERMISSION_RANK.bypassPermissions
+  // Codex's default sandbox writes the workspace without asking, like Claude's acceptEdits.
+  return flagValue(args, '-s', '--sandbox') === 'read-only' ? PERMISSION_RANK.plan : effectiveRank('codex-chat', 'default')
 }
 
 class HttpError extends Error {
@@ -155,13 +188,30 @@ export class AgentChatsApi {
     return pane
   }
 
-  private launch(input: AgentChatInput, caller: TmuxPane): AgentChatLaunch {
+  /**
+   * A terminal Claude Code or Codex caller opens the matching hosted chat, on the caller's
+   * own Claude profile and no more permissive than the flags it was launched with.
+   */
+  private async terminalCaller(caller: TmuxPane): Promise<TerminalCaller | undefined> {
+    const provider = this.dependencies.status(caller.id)?.provider
+    if (provider !== 'claude' && provider !== 'codex') return undefined
+    const hosted = provider === 'claude' ? 'claude-chat' : 'codex-chat'
+    const launch = caller.processId === undefined ? undefined
+      : await this.dependencies.agentLaunch?.(caller.processId, provider).catch(() => undefined)
+    if (!launch) return { provider: hosted, rank: PERMISSION_RANK.default, warning: `Could not read the caller's ${provider} process; the chat uses the default profile and asks before edits.` }
+    const configDir = launch.env.CLAUDE_CONFIG_DIR
+    return { provider: hosted, rank: terminalLaunchRank(provider, launch.args),
+      ...(provider === 'claude' && configDir && validClaudeConfigDir(configDir) ? { configDir } : {}) }
+  }
+
+  private async launch(input: AgentChatInput, caller: TmuxPane): Promise<{ launch: AgentChatLaunch; warning?: string }> {
     const chat = this.dependencies.chatSession(caller.id)
-    const provider = input.agent ?? (chat ? (chat.provider === 'codex' ? 'codex-chat' : 'claude-chat') : this.dependencies.status(caller.id)?.provider)
+    const terminal = chat ? undefined : await this.terminalCaller(caller)
+    const provider = input.agent ?? (chat ? (chat.provider === 'codex' ? 'codex-chat' : 'claude-chat') : terminal?.provider ?? this.dependencies.status(caller.id)?.provider)
     if (!provider || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) throw new HttpError(400, 'Unknown caller agent provider; specify --agent')
     const hosted = provider === 'claude-chat' || provider === 'codex-chat'
-    const callerMode = launchMode(chat)
-    const callerRank = chat ? chatRank(chat) : PERMISSION_RANK.default
+    const callerMode = chat ? launchMode(chat) : modeOfRank(terminal?.rank ?? PERMISSION_RANK.default)
+    const callerRank = chat ? chatRank(chat) : terminal?.rank ?? PERMISSION_RANK.default
     if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open claude-chat or codex-chat chats')
     if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat and codex-chat accept a permission mode')
     const supported = provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
@@ -169,11 +219,10 @@ export class AgentChatsApi {
     // Inherit the most permissive mode the child supports that does not exceed the caller.
     const permissionMode = input.permissionMode ?? (hosted ? inheritedMode(provider, callerRank) : 'plan')
     if (effectiveRank(provider, permissionMode) > callerRank) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
-    if (!hosted) return { provider: provider as SessionAgentProvider }
-    return { provider, permissionMode, ...(provider === 'claude-chat' && chat?.provider !== 'codex' && chat?.configDir ? { configDir: chat.configDir } : {}) }
+    if (!hosted) return { launch: { provider: provider as SessionAgentProvider } }
+    const configDir = provider !== 'claude-chat' ? undefined : chat ? (chat.provider !== 'codex' ? chat.configDir : undefined) : terminal?.configDir
+    return { launch: { provider, permissionMode, ...(configDir ? { configDir } : {}) }, ...(terminal?.warning && provider === terminal.provider ? { warning: terminal.warning } : {}) }
   }
-
-
 
   private take(buckets: Map<string, TokenBucketRateLimiter>, caller: TmuxPane, capacity: number, seconds: number): boolean {
     const live = new Set(this.dependencies.snapshot().panes.map((pane) => pane.targetId))
@@ -225,7 +274,7 @@ export class AgentChatsApi {
       } else if (url.pathname === ROOT && request.method === 'POST') {
         const waitMs = waitBudget(url)
         const input = parseInput(await body(request))
-        const launch = this.launch(input, caller)
+        const { launch } = await this.launch(input, caller)
         const reason = caller.openedBy ? 'depth' : !this.take(this.openBuckets, caller, 3, 120) ? 'rate' : undefined
         if (reason) {
           const approval = this.dependencies.requests.create({
@@ -282,10 +331,10 @@ export class AgentChatsApi {
       if (!caller) throw new HttpError(404, 'Caller pane no longer exists')
       const session = snapshot.sessions.find((session) => session.id === caller.sessionId)
       if (!session) throw new HttpError(404, 'Caller session no longer exists')
-      const launch = this.launch(input, caller)
+      const { launch, warning: launchWarning } = await this.launch(input, caller)
       const repo = caller.repo
       const branch = repo && effectiveChatBranch(input)
-      const warning = !repo ? 'Caller is not in a git repository; using its cwd without a worktree.' : undefined
+      const warning = [!repo ? 'Caller is not in a git repository; using its cwd without a worktree.' : undefined, launchWarning].filter(Boolean).join(' ') || undefined
       const cwd = input.location === 'session' && repo ? repo.root : caller.path
       const worktree = branch ? { branch, prepareCommand: await this.dependencies.prepareCommands.get(repo!.root) } : undefined
       const cliPath = this.dependencies.chatCliPath ?? join(homedir(), '.commando', 'hooks', 'commando-chat.mjs')
