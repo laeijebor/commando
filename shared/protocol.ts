@@ -63,6 +63,8 @@ export type AgentRecap = {
   outcome: 'done' | 'follow_up' | 'blocked' | 'failed' | 'cancelled'
   summary: string
   completedAt: number
+  /** The agent itself said all requested work is finished (a 🟢 ending or `--state complete`). */
+  declared?: true
 }
 
 export type AgentQuestionOption = {
@@ -116,6 +118,8 @@ export type AgentStatus = {
   confidence: 'high' | 'medium' | 'low'
   reason: string
   updatedAt: number
+  /** When the pane entered its current `done` run, so clients can tell a new turn ending from a repeat. */
+  settledAt?: number
   details?: AgentDetails
 }
 
@@ -733,6 +737,8 @@ export type ServerMessage =
   | { type: 'pane_mark'; mark: PaneMark }
   | { type: 'pane_mark_snapshot'; marks: PaneMark[] }
   | { type: 'pane_mark_removed'; targetId: string }
+  /** When the user last viewed each pane, by daemon clock. A snapshot replaces; an update merges. */
+  | { type: 'pane_seen'; seen: Record<string, number>; snapshot?: true }
   | {
       type: 'workspace'
       sessionId: string
@@ -829,6 +835,8 @@ export type SpecialKey =
 
 export type ClientMessage =
   | { type: 'subscribe'; paneIds: string[]; statusPaneIds?: string[] }
+  /** The user is looking at these panes now. */
+  | { type: 'mark_panes_seen'; paneIds: string[] }
   | { type: 'input'; paneId: string; data: string; requestId: string }
   | {
       type: 'input_bytes'

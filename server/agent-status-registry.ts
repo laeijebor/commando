@@ -750,6 +750,7 @@ function createRecap(
     outcome,
     summary: summary.slice(0, MAX_RECAP_SUMMARY_LENGTH),
     completedAt,
+    ...(outcome === 'done' && explicit?.outcome === 'done' ? { declared: true as const } : {}),
   }
 }
 
@@ -757,7 +758,8 @@ function setRecap(details: AgentDetails, recap: AgentRecap): void {
   const previous = details.recap
   details.recap = previous &&
     previous.outcome === recap.outcome &&
-    previous.summary === recap.summary
+    previous.summary === recap.summary &&
+    previous.declared === recap.declared
     ? previous
     : recap
 }
@@ -817,6 +819,8 @@ export class AgentStatusRegistry {
   // statuses cannot be re-derived, and degraded tmux listings must not drop them.
   private readonly missingSince = new Map<string, number>()
   private readonly chatHosts = new Map<string, ChatHostState>()
+  /** Panes whose agent ran `--state complete` during the current turn. */
+  private readonly completeDeclarations = new Set<string>()
 
   get(paneId: string): AgentStatus | undefined {
     const status = this.records.get(paneId)?.status
@@ -869,6 +873,7 @@ export class AgentStatusRegistry {
 
   remove(paneId: string): AgentStatusChange {
     this.missingSince.delete(paneId)
+    this.completeDeclarations.delete(paneId)
     this.chatHosts.delete(paneId)
     this.retiredCursorTurns.delete(paneId)
     this.cursorProducers.delete(paneId)
@@ -892,6 +897,7 @@ export class AgentStatusRegistry {
       if (now - since < PANE_EVICTION_GRACE_MS) continue
       this.missingSince.delete(paneId)
       this.records.delete(paneId)
+      this.completeDeclarations.delete(paneId)
       this.retiredCursorTurns.delete(paneId)
       this.cursorProducers.delete(paneId)
       changes.push({ type: 'remove', paneId })
@@ -911,7 +917,21 @@ export class AgentStatusRegistry {
     for (const paneId of this.chatHosts.keys()) {
       if (!retained.has(paneId) && !this.records.has(paneId)) this.chatHosts.delete(paneId)
     }
+    for (const paneId of this.completeDeclarations) {
+      if (!retained.has(paneId) && !this.records.has(paneId)) this.completeDeclarations.delete(paneId)
+    }
     return changes
+  }
+
+  /**
+   * The pane's agent says everything it was asked to do is finished. It holds
+   * for the rest of the turn, so the turn's recap is marked declared when it
+   * ends with an ordinary or 🟢 outcome; a 🟡 or 🔴 ending still wins.
+   */
+  declareComplete(paneId: string): AgentStatusChange {
+    this.completeDeclarations.add(paneId)
+    const record = this.records.get(paneId)
+    return record ? this.upsert(record) : null
   }
 
   /**
@@ -1801,8 +1821,9 @@ export class AgentStatusRegistry {
 
   private upsert(next: RegistryRecord): AgentStatusChange {
     const chat = this.chatHosts.get(next.status.paneId)
-    const record = chat && next.status.provider === chat.provider ? withChatHost(next, chat) : next
-    const previous = this.records.get(record.status.paneId)
+    const withHost = chat && next.status.provider === chat.provider ? withChatHost(next, chat) : next
+    const previous = this.records.get(withHost.status.paneId)
+    const record = this.settle(withHost, previous?.status)
     if (previous && sameStatus(previous.status, record.status)) {
       this.records.set(record.status.paneId, { ...record, status: previous.status })
       return null
@@ -1810,5 +1831,29 @@ export class AgentStatusRegistry {
     const stored = { ...record, status: cloneStatus(record.status) }
     this.records.set(record.status.paneId, stored)
     return { type: 'upsert', status: cloneStatus(stored.status) }
+  }
+
+  /**
+   * Stamps when the pane entered its current `done` run and applies a
+   * `--state complete` declaration to the turn's recap. A new turn (working
+   * after anything but a permission or question pause) forgets the declaration.
+   */
+  private settle(record: RegistryRecord, previous: AgentStatus | undefined): RegistryRecord {
+    const { paneId, status: kind } = record.status
+    if (kind === 'working' && previous?.status !== 'working' && previous?.status !== 'needs_input') {
+      this.completeDeclarations.delete(paneId)
+    }
+    const status = { ...record.status }
+    delete status.settledAt
+    if (kind === 'done') {
+      status.settledAt = previous?.status === 'done' && previous.settledAt !== undefined
+        ? previous.settledAt
+        : status.updatedAt
+      const recap = status.details?.recap
+      if (recap?.outcome === 'done' && !recap.declared && this.completeDeclarations.has(paneId)) {
+        status.details = { ...status.details!, recap: { ...recap, declared: true } }
+      }
+    }
+    return { ...record, status }
   }
 }
