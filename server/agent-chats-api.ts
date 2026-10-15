@@ -7,7 +7,7 @@ import type { AgentChatFailure, AgentChatInput, AgentChatLaunch, AgentChatResult
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import { CHAT_PERMISSION_MODES, CODEX_CHAT_PERMISSION_MODES, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
-import type { AgentLaunch } from './agent-resume-command.js'
+import { launchFlags, type AgentLaunch } from './agent-resume-command.js'
 import type { ChatPlanStore } from './chat-plans.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import { GitWorktreeError, validateBranchName } from './git-worktree.js'
@@ -74,29 +74,34 @@ type TerminalCaller = { provider: 'claude-chat' | 'codex-chat'; rank: number; co
 const modeOfRank = (rank: number): ChatPermissionMode =>
   (Object.keys(PERMISSION_RANK) as ChatPermissionMode[]).find((mode) => PERMISSION_RANK[mode] === rank) ?? 'default'
 
-function flagValue(args: readonly string[], ...names: string[]): string | undefined {
-  for (const [index, arg] of args.entries()) {
+function flagValue(flags: readonly string[], ...names: string[]): string | undefined {
+  for (const [index, flag] of flags.entries()) {
     for (const name of names) {
-      if (arg === name) return args[index + 1]
-      if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1)
+      if (flag === name) return flags[index + 1]
+      if (flag.startsWith(`${name}=`)) return flag.slice(name.length + 1)
     }
   }
   return undefined
 }
 
 /**
- * How permissive a terminal agent's launch flags make it. Mode switches made inside the TUI
- * are not visible, so this is what it started with.
+ * How permissive a terminal agent's launch flags make it. Only flags before the prompt count,
+ * so a prompt's words cannot raise it. Mode switches made inside the TUI, and modes set in the
+ * agent's config files, are not visible: this is what the command line started it with.
  */
 export function terminalLaunchRank(provider: 'claude' | 'codex', args: readonly string[]): number {
+  const flags = launchFlags(provider, args)
+  if (!flags) return PERMISSION_RANK.default
   if (provider === 'claude') {
-    if (args.includes('--dangerously-skip-permissions')) return PERMISSION_RANK.bypassPermissions
-    const mode = flagValue(args, '--permission-mode')
+    if (flags.includes('--dangerously-skip-permissions')) return PERMISSION_RANK.bypassPermissions
+    const mode = flagValue(flags, '--permission-mode')
     return mode && Object.hasOwn(PERMISSION_RANK, mode) ? PERMISSION_RANK[mode as ChatPermissionMode] : PERMISSION_RANK.default
   }
-  if (args.includes('--dangerously-bypass-approvals-and-sandbox') || args.includes('--yolo')) return PERMISSION_RANK.bypassPermissions
+  if (flags.includes('--dangerously-bypass-approvals-and-sandbox')) return PERMISSION_RANK.bypassPermissions
+  const config = flagValue(flags, '-c', '--config')
+  const readOnly = flagValue(flags, '-s', '--sandbox') === 'read-only' || /^sandbox_mode\s*=\s*["']?read-only/u.test(config ?? '')
   // Codex's default sandbox writes the workspace without asking, like Claude's acceptEdits.
-  return flagValue(args, '-s', '--sandbox') === 'read-only' ? PERMISSION_RANK.plan : effectiveRank('codex-chat', 'default')
+  return readOnly ? PERMISSION_RANK.plan : effectiveRank('codex-chat', 'default')
 }
 
 class HttpError extends Error {
@@ -199,9 +204,11 @@ export class AgentChatsApi {
     const launch = caller.processId === undefined ? undefined
       : await this.dependencies.agentLaunch?.(caller.processId, provider).catch(() => undefined)
     if (!launch) return { provider: hosted, rank: PERMISSION_RANK.default, warning: `Could not read the caller's ${provider} process; the chat uses the default profile and asks before edits.` }
-    const configDir = launch.env.CLAUDE_CONFIG_DIR
-    return { provider: hosted, rank: terminalLaunchRank(provider, launch.args),
-      ...(provider === 'claude' && configDir && validClaudeConfigDir(configDir) ? { configDir } : {}) }
+    const rank = terminalLaunchRank(provider, launch.args)
+    const configDir = provider === 'claude' ? launch.env.CLAUDE_CONFIG_DIR : undefined
+    if (!configDir) return { provider: hosted, rank }
+    return validClaudeConfigDir(configDir) ? { provider: hosted, rank, configDir }
+      : { provider: hosted, rank, warning: `The caller's CLAUDE_CONFIG_DIR ${JSON.stringify(configDir)} is not a ~/.claude… folder; the chat uses the default profile.` }
   }
 
   private async launch(input: AgentChatInput, caller: TmuxPane): Promise<{ launch: AgentChatLaunch; warning?: string }> {

@@ -192,17 +192,21 @@ describe('AgentChatsApi', () => {
     const s = await setup()
     s.statuses.set('%1', { provider: 'claude', status: 'working' } as AgentStatus)
     s.launches.set(100, { args: ['claude', '--permission-mode', 'acceptEdits'], env: { CLAUDE_CONFIG_DIR: '/tmp/.claudew' } })
-    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
+    const opened = await s.call('POST', '', s.input)
+    expect(opened.result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
+    expect(opened.result.warning).toContain('"/tmp/.claudew" is not a ~/.claude… folder')
     expect(await s.call('POST', '', { ...s.input, permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403, result: { error: 'Cannot raise permission mode from acceptEdits to bypassPermissions' } })
   })
 
   it('falls back to the default profile, asking first, with a warning when the caller process is unreadable', async () => {
     const s = await setup()
     s.statuses.set('%1', { provider: 'claude', status: 'working' } as AgentStatus)
-    s.launches.set(100, undefined)
-    const opened = await s.call('POST', '', s.input)
-    expect(opened.result).toMatchObject({ agent: { provider: 'claude-chat', permissionMode: 'default' }, warning: expect.stringContaining('default profile') })
-    expect(opened.result.agent.configDir).toBeUndefined()
+    for (const unreadable of [async () => undefined, async () => { throw new Error('ps failed') }]) {
+      s.agentLaunch.mockImplementationOnce(unreadable).mockImplementationOnce(unreadable)
+      const opened = await s.call('POST', '', s.input)
+      expect(opened.result).toMatchObject({ agent: { provider: 'claude-chat', permissionMode: 'default' }, warning: expect.stringContaining('default profile') })
+      expect(opened.result.agent.configDir).toBeUndefined()
+    }
   })
 
   it('opens codex-chat from a terminal Codex caller, as permissive as its sandbox', async () => {
@@ -218,8 +222,15 @@ describe('AgentChatsApi', () => {
     expect(terminalLaunchRank('claude', ['claude', '--permission-mode', 'auto'])).toBe(terminalLaunchRank('claude', ['claude']))
     expect(terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan'])).toBeLessThan(terminalLaunchRank('claude', ['claude']))
     expect(terminalLaunchRank('codex', ['codex'])).toBe(terminalLaunchRank('claude', ['claude', '--permission-mode', 'acceptEdits']))
-    expect(terminalLaunchRank('codex', ['codex', '--yolo'])).toBe(terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions']))
-    expect(terminalLaunchRank('codex', ['codex', '-s', 'read-only'])).toBe(terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan']))
+    const plan = terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan'])
+    expect(terminalLaunchRank('codex', ['codex', '-s', 'read-only'])).toBe(plan)
+    expect(terminalLaunchRank('codex', ['codex', '-c', 'sandbox_mode="read-only"'])).toBe(plan)
+    // ps splits argv on spaces: a prompt's words are not launch flags.
+    const asks = terminalLaunchRank('claude', ['claude'])
+    expect(terminalLaunchRank('claude', ['claude', 'what', 'does', '--dangerously-skip-permissions', 'do'])).toBe(asks)
+    expect(terminalLaunchRank('claude', ['claude', 'use', '--permission-mode', 'acceptEdits'])).toBe(asks)
+    expect(terminalLaunchRank('codex', ['codex', 'explain', '--dangerously-bypass-approvals-and-sandbox'])).toBe(terminalLaunchRank('codex', ['codex']))
+    expect(terminalLaunchRank('claude', ['vim', '--dangerously-skip-permissions'])).toBe(asks)
   })
 
   it('inherits codex-chat and its permission mode from a hosted Codex caller', async () => {

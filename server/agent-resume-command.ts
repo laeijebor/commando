@@ -191,6 +191,13 @@ function carriedFlags(flags: FlagSpec, rest: readonly string[]): string[] {
   return carried
 }
 
+/** The session-shaping flags an agent was launched with, without its prompt; null when it is not this provider's CLI. */
+export function launchFlags(provider: ResumableProvider, args: readonly string[]): string[] | null {
+  const spec = PROVIDERS[provider]
+  const found = executableOf(spec, args)
+  return found ? carriedFlags(spec.flags, found.rest.slice(spec.launcherArgs?.(found.rest) ?? 0)) : null
+}
+
 /**
  * The command line that resumes `sessionId` the way the agent was launched, or null when
  * the launch does not look like this provider's CLI.
