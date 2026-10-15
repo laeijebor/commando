@@ -418,6 +418,17 @@ describe('pane PR status', () => {
     await expect(service.autofixSnapshot('acme/widgets', 12, targetId)).rejects.toMatchObject({ code: 'pr_list_truncated' })
   })
 
+  it('finds an older open PR that fell off the truncated pane page', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      if (args.some((arg) => arg.includes('is:open'))) return linkedPayload({ state: 'MERGED' })
+      if (args.some((arg) => arg.startsWith('targetQuery='))) return JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 21, nodes: [] } } })
+      return JSON.stringify([[]])
+    })
+    const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json' })
+    expect((await service.autofixSnapshot('acme/widgets', 12, targetId)).state).toBe('merged')
+    expect(runner.mock.calls.filter(([args]) => args.some((arg) => arg.includes('is:open')))).toHaveLength(1)
+  })
+
   it('hydrates cached pane status and previews from a repo refresh without another pane query', async () => {
     let now = 1
     const runner = vi.fn().mockResolvedValueOnce(linkedPayload())

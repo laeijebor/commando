@@ -386,8 +386,8 @@ function scopedSearchQuery(repo: string, qualifier: 'author' | 'review-requested
   return `repo:${repo} is:pr ${qualifier}:@me${searchStateQualifier(filter)}`
 }
 
-function paneTargetSearchQuery(targetId: string): string {
-  return `is:pr in:body ${targetId} sort:created-desc`
+function paneTargetSearchQuery(targetId: string, openOnly = false): string {
+  return `is:pr${openOnly ? ' is:open' : ''} in:body ${targetId} sort:created-desc`
 }
 
 function parsePanePullRequest(node: JsonRecord, targetId: string, viewer: string): PanePrSummary | null {
@@ -794,9 +794,10 @@ export class PrService {
     try {
       payload = JSON.parse(output)
     } catch {
-      return output
+      return this.recovered(resource, output)
     }
-    if (!isRecord(payload)) return output
+    // Paginated REST reads return arrays; they still count as recovery.
+    if (!isRecord(payload)) return this.recovered(resource, output)
     const rateLimit = isRecord(payload.data) && isRecord(payload.data.rateLimit) ? payload.data.rateLimit : null
     if (rateLimit && typeof rateLimit.remaining === 'number' && rateLimit.remaining < LOW_RATE_LIMIT_POINTS) {
       const resetAt = typeof rateLimit.resetAt === 'string' ? Date.parse(rateLimit.resetAt) : NaN
@@ -806,6 +807,10 @@ export class PrService {
       const secondary = payload.errors.some((error) => isRecord(error) && typeof error.message === 'string' && /secondary|abuse/i.test(error.message))
       throw this.backOff(secondary ? 'shared' : resource)
     }
+    return this.recovered(resource, output)
+  }
+
+  private recovered(resource: 'rest' | 'graphql', output: string): string {
     this.backoffs[resource].delay = 0
     this.backoffs.shared.delay = 0
     return output
@@ -869,13 +874,14 @@ export class PrService {
     }
   }
 
-  private async fetchPanePullRequests(targetId: string): Promise<PanePrList> {
+  /** `openOnly` reads are partial, so they never replace the pane's shared entities. */
+  private async fetchPanePullRequests(targetId: string, openOnly = false): Promise<PanePrList> {
     const order = this.entities.beginRead()
     const fetchedAt = this.now()
     const output = await this.ghRead([
       'api', 'graphql',
       '-f', `query=${PANE_PULL_REQUESTS_QUERY}`,
-      '-f', `targetQuery=${paneTargetSearchQuery(targetId)}`,
+      '-f', `targetQuery=${paneTargetSearchQuery(targetId, openOnly)}`,
     ])
     let payload: unknown
     try {
@@ -903,7 +909,7 @@ export class PrService {
       fetchedAt,
     }
     this.invalidateChangedReferences(list)
-    this.entities.ingest(list, order)
+    if (!openOnly) this.entities.ingest(list, order)
     return list
   }
 
@@ -1085,8 +1091,15 @@ export class PrService {
 
   /** Shares pane membership/check reads with the UI; only opted-in PRs fetch comments. */
   async autofixSnapshot(repo: string, number: number, targetId: string): Promise<PrAutofixSnapshot> {
-    const list = await this.listPanePullRequests(targetId)
-    const pr = list.pullRequests.find((pr) => pr.repo.toLowerCase() === repo.toLowerCase() && pr.number === number)
+    let list = await this.listPanePullRequests(targetId)
+    const find = () => list.pullRequests.find((pr) => pr.repo.toLowerCase() === repo.toLowerCase() && pr.number === number)
+    let pr = find()
+    // The pane page is newest-first across all states; an older open PR can
+    // fall off it, so look among the pane's open PRs before giving up.
+    if (!pr && list.truncated) {
+      list = await this.fetchPanePullRequests(targetId, true)
+      pr = find()
+    }
     if (!pr) {
       // Search truncation is not evidence that the linked PR disappeared.
       if (list.truncated) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR list is incomplete')
