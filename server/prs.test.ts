@@ -503,6 +503,27 @@ describe('pane PR status', () => {
     expect(runner.mock.calls[0][0]).toContain(`targetQuery=is:pr in:body ${targetId} OR ${other} sort:created-desc`)
   })
 
+  it('speeds up a background batch when a foreground read wants the same pane', async () => {
+    const runner = vi.fn(async (_args: string[]) => linkedPayload())
+    const service = new PrService({ runner, now: () => 1 })
+    const background = service.listPanePullRequests(targetId, { background: true })
+    const started = Date.now()
+    await Promise.all([background, service.listPanePullRequests(targetId, { refresh: true })])
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(runner).toHaveBeenCalledOnce()
+  })
+
+  it('does not let a failed refresh make a kept pane list look fresh', async () => {
+    let now = 1
+    const runner = vi.fn().mockResolvedValueOnce(linkedPayload()).mockRejectedValueOnce(new PrServiceError(502, 'github_failed', 'GitHub request failed'))
+      .mockResolvedValue(linkedPayload({ title: 'Newer' }))
+    const service = new PrService({ runner, now: () => now, paneBatchWindowMs: 0 })
+    await service.listPanePullRequests(targetId)
+    now = 6 * 60_000
+    await expect(service.listPanePullRequests(targetId)).rejects.toMatchObject({ code: 'github_failed' })
+    expect((await service.listPanePullRequests(targetId, { background: true })).pullRequests[0].title).toBe('Newer')
+  })
+
   it('searches panes separately when a shared search is truncated', async () => {
     const other = '550e8400-e29b-41d4-a716-446655440000'
     const runner = vi.fn(async (args: string[]) => args.some((arg) => arg.includes(' OR '))

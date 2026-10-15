@@ -27,6 +27,9 @@ type Entry<T> = {
   lastFetchedAt: number
   retryAt: number
   inFlight: Promise<void> | null
+  /** The in-flight or last load accepted the server's older background cache. */
+  inFlightBackground: boolean
+  lastBackground: boolean
   /** `background`: no foreground subscriber, so the server may answer from an older cache. */
   load: (refresh: boolean, background: boolean) => Promise<T>
   sourceList: T | null
@@ -130,7 +133,8 @@ class PrStore {
   }
 
   private createEntry<T>(load: (refresh: boolean, background: boolean) => Promise<T>, empty: PrStoreSnapshot<T>, interval: number, project: (list: T) => T): Entry<T> {
-    return { snapshot: empty, listeners: new Set(), foreground: 0, background: 0, interval, lastFetchedAt: 0, retryAt: 0, inFlight: null, load, sourceList: null, project }
+    return { snapshot: empty, listeners: new Set(), foreground: 0, background: 0, interval, lastFetchedAt: 0, retryAt: 0, inFlight: null,
+      inFlightBackground: false, lastBackground: false, load, sourceList: null, project }
   }
 
   private subscribe<T extends PanePrList | PrList>(entry: Entry<T>, background: boolean, listener: () => void): () => void {
@@ -139,7 +143,9 @@ class PrStore {
     else entry.foreground += 1
     this.startScheduler()
     // Remounts (window switches, a second view of the same pane) reuse fresh data.
-    if (document.visibilityState !== 'hidden' && this.due(entry, Date.now())) void this.refresh(entry, false)
+    if (document.visibilityState !== 'hidden' && (entry.snapshot.list === null || entry.snapshot.error || this.due(entry, Date.now()))) {
+      void this.refresh(entry, false)
+    }
     return () => {
       entry.listeners.delete(listener)
       if (background) entry.background -= 1
@@ -149,12 +155,18 @@ class PrStore {
   }
 
   private refresh<T extends PanePrList | PrList>(entry: Entry<T>, force: boolean): Promise<void> {
-    if (entry.inFlight) return entry.inFlight
+    if (entry.inFlight) {
+      // A background read may answer from a cache minutes old: forced and foreground reads need their own.
+      if (entry.inFlightBackground && (force || entry.foreground > 0)) return entry.inFlight.then(() => this.refresh(entry, force))
+      return entry.inFlight
+    }
     const hasList = entry.snapshot.list !== null
     entry.snapshot = { ...entry.snapshot, loading: !hasList, polling: hasList, error: '', errorCode: '' }
     this.emit(entry)
     const order = this.entities.beginRead()
-    const operation = entry.load(force, entry.foreground === 0)
+    const background = !force && entry.foreground === 0
+    entry.inFlightBackground = background
+    const operation = entry.load(force, background)
       .then((list) => {
         this.entities.ingest(list, order)
         entry.sourceList = list
@@ -175,6 +187,7 @@ class PrStore {
       })
       .finally(() => {
         entry.lastFetchedAt = Date.now()
+        entry.lastBackground = background
         entry.inFlight = null
         this.emit(entry)
       })
@@ -211,7 +224,7 @@ class PrStore {
   }
 
   private due<T>(entry: Entry<T>, now: number): boolean {
-    if (entry.snapshot.list === null || entry.snapshot.error) return true
+    if (entry.foreground > 0 && entry.lastBackground) return true
     const interval = entry.foreground > 0 ? entry.interval : Math.max(entry.interval, PR_BACKGROUND_INTERVAL_MS)
     return now - entry.lastFetchedAt >= interval
   }

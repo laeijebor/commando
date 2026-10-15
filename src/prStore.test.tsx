@@ -148,6 +148,30 @@ describe('PR store', () => {
     expect(api.pane).toHaveBeenLastCalledWith('%12')
   })
 
+  it('gives a foreground view its own read instead of a background answer', async () => {
+    let finishBackground!: (list: PanePrList) => void
+    const api = { pane: vi.fn()
+      .mockImplementationOnce(() => new Promise<PanePrList>((resolve) => { finishBackground = resolve }))
+      .mockResolvedValue(emptyList) }
+    render(<Subscriber api={api} background />)
+    render(<Subscriber api={api} />)
+    await act(async () => { finishBackground(emptyList); await Promise.resolve() })
+    await act(async () => { await Promise.resolve() })
+    expect(api.pane.mock.calls).toEqual([['%12', { background: true }], ['%12']])
+  })
+
+  it('retries a failed background pane on its own interval, not every tick', async () => {
+    vi.useFakeTimers()
+    const api = { pane: vi.fn().mockRejectedValue(new Error('GitHub request failed')) }
+    render(<Subscriber api={api} background />)
+    await act(async () => { await Promise.resolve() })
+    expect(api.pane).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2 * 60_000) })
+    expect(api.pane).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(4 * 60_000) })
+    expect(api.pane).toHaveBeenCalledTimes(2)
+  })
+
   it('pauses refresh while hidden and resumes when visibility returns', async () => {
     vi.useFakeTimers()
     let visibility: DocumentVisibilityState = 'visible'

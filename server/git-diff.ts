@@ -440,7 +440,7 @@ export class GitDiffInspector {
         ? pullRequest
         : undefined
     } catch (error) {
-      this.noteGithubFailure(error)
+      if (this.noteGithubFailure(error)) throw error
       return undefined
     }
   }
@@ -916,15 +916,19 @@ export class GitDiffInspector {
     const current = this.pullRequestCache.get(key)
     // Concurrent callers that saw the same expired entry share one refresh.
     if (current && current !== previous) return current.result
-    const entry = { at: this.now(), result: load() }
+    // A throttled lookup keeps the previous answer rather than caching "no PR".
+    const entry = { at: this.now(), result: load().catch(() => previous?.result) }
     this.pullRequestCache.delete(key)
     this.pullRequestCache.set(key, entry)
     if (this.pullRequestCache.size > MAX_PULL_REQUEST_CACHE_ENTRIES) this.pullRequestCache.delete(this.pullRequestCache.keys().next().value!)
     return entry.result
   }
 
-  private noteGithubFailure(error: unknown): void {
-    if (this.github && error instanceof GitCommandFailure && githubThrottle(error.stderr)) this.github.rateLimited('graphql', error.stderr)
+  /** Reports GitHub throttling to PR sync; returns whether the failure was throttling. */
+  private noteGithubFailure(error: unknown): boolean {
+    if (!(error instanceof GitCommandFailure) || !githubThrottle(error.stderr)) return false
+    this.github?.rateLimited('graphql', error.stderr)
+    return true
   }
 
   private async lookUpCurrentPullRequest(root: string): Promise<GitPullRequest | undefined> {
@@ -939,7 +943,7 @@ export class GitDiffInspector {
       )
       return parsePullRequest(stdout)
     } catch (error) {
-      this.noteGithubFailure(error)
+      if (this.noteGithubFailure(error)) throw error
       return undefined
     }
   }

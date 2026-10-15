@@ -898,7 +898,10 @@ export class PrService {
   async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean; background?: boolean } = {}): Promise<PanePrList> {
     const targetId = validatePaneTargetId(targetIdInput)
     const cached = this.paneListCache.get(targetId)
-    if (cached?.refresh) return this.entities.pane(await cached.refresh)
+    if (cached?.refresh) {
+      if (!options.background) this.expeditePaneBatch(targetId)
+      return this.entities.pane(await cached.refresh)
+    }
     const ttl = options.background ? Math.max(this.listTtlMs, PANE_BACKGROUND_TTL_MS) : this.listTtlMs
     if (!options.refresh && cached?.value && this.now() - cached.at < ttl) return this.entities.pane(cached.value)
     const promise = this.queuePaneFetch(targetId, options.background === true)
@@ -912,6 +915,8 @@ export class PrService {
       return this.entities.pane(value)
     } catch (error) {
       if (this.paneListCache.get(targetId) === entry && !entry.value) this.paneListCache.delete(targetId)
+      // The kept value is as old as it was; a failure must not make it look fresh.
+      else entry.at = cached?.at ?? 0
       throw error
     } finally {
       entry.refresh = null
@@ -937,6 +942,15 @@ export class PrService {
       this.paneBatch.waiters.set(targetId, waiters)
       if (this.paneBatch.waiters.size >= PANE_BATCH_TARGETS) this.flushPaneBatch()
     })
+  }
+
+  /** A foreground read must not wait on a background batch that already holds its pane. */
+  private expeditePaneBatch(targetId: string): void {
+    const batch = this.paneBatch
+    if (!batch?.waiters.has(targetId) || batch.deadline <= Date.now() + this.paneBatchWindowMs) return
+    clearTimeout(batch.timer)
+    batch.deadline = Date.now() + this.paneBatchWindowMs
+    batch.timer = setTimeout(() => this.flushPaneBatch(), this.paneBatchWindowMs)
   }
 
   private flushPaneBatch(): void {
