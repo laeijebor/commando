@@ -518,13 +518,38 @@ describe('SessionTree', () => {
 
     const indicators = [...container.querySelectorAll('button.session-indicator')]
     expect(indicators).toHaveLength(1)
-    const label = 'Codex: needs input - Codex pane; Claude: working - Claude pane; Cursor: stale - Cursor pane'
+    const label = 'Codex: blocked on you - Codex pane; Claude: working - Claude pane; Cursor: idle - Cursor pane'
     expect(indicators[0]).toHaveAttribute('aria-label', label)
     expect(indicators[0]).toHaveAttribute('title', label)
     expect(indicators[0]).toHaveClass('needs_input')
     fireEvent.click(indicators[0])
     expect(onSelectPane).toHaveBeenCalledWith('%3')
     expect(container.querySelector('.live-dot')).not.toBeInTheDocument()
+  })
+
+  it('shows a turn ended since the pane was seen as to review, then idle once seen', () => {
+    const panes = [pane('%1', 0, 'Claude pane')]
+    const statuses = { '%1': { ...agentStatus('%1', 'claude', 'done'), settledAt: 10 } }
+    const props = {
+      token: 'token',
+      sessions: [{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }],
+      panes,
+      displayedPaneIds: ['%1'],
+      statuses,
+      selectedSessionId: null,
+      onSelectSession: vi.fn(),
+      onSelectPane: vi.fn(),
+      onSessionsChanged: vi.fn(),
+      onPreferencesChanged: vi.fn(),
+    }
+    const { container, rerender } = render(<SessionTree {...props} seen={{ '%1': 5 }} />)
+    const indicator = () => container.querySelector('button.session-indicator')
+    expect(indicator()).toHaveClass('review')
+    expect(indicator()).toHaveAttribute('title', 'Claude: to review - Claude pane')
+
+    rerender(<SessionTree {...props} seen={{ '%1': 10 }} />)
+    expect(indicator()).toHaveClass('idle')
+    expect(indicator()).toHaveAttribute('title', 'Claude: idle - Claude pane')
   })
 
   it('folds pane marks into the status indicator', () => {
