@@ -41,6 +41,10 @@ const PANE_PULL_REQUEST_PAGE_SIZE = 20
 const PANE_BATCH_TARGETS = 5
 const PANE_BATCH_PAGE_SIZE = 40
 const PANE_BATCH_WINDOW_MS = 15
+// Browsers send 6 requests at a time, so a page load's background reads arrive
+// in waves about one gh round trip apart. Background reads can wait for the
+// next wave instead of searching alone.
+const PANE_BACKGROUND_BATCH_WINDOW_MS = 1_500
 // Polling shares the gh user's GraphQL budget with agents and scripts, so it
 // stops early to leave them headroom and backs off when GitHub pushes back.
 const LOW_RATE_LIMIT_POINTS = 500
@@ -713,7 +717,11 @@ export class PrService {
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
   private graphqlPausedUntil = 0
-  private paneBatch: { waiters: Map<string, Array<{ resolve: (list: PanePrList) => void; reject: (cause: unknown) => void }>>; timer: ReturnType<typeof setTimeout> } | null = null
+  private paneBatch: {
+    waiters: Map<string, Array<{ resolve: (list: PanePrList) => void; reject: (cause: unknown) => void }>>
+    deadline: number
+    timer: ReturnType<typeof setTimeout>
+  } | null = null
   private readonly paneBatchWindowMs: number
   private readonly backoffs = { rest: { until: 0, delay: 0 }, graphql: { until: 0, delay: 0 }, shared: { until: 0, delay: 0 } }
 
@@ -893,7 +901,7 @@ export class PrService {
     if (cached?.refresh) return this.entities.pane(await cached.refresh)
     const ttl = options.background ? Math.max(this.listTtlMs, PANE_BACKGROUND_TTL_MS) : this.listTtlMs
     if (!options.refresh && cached?.value && this.now() - cached.at < ttl) return this.entities.pane(cached.value)
-    const promise = this.queuePaneFetch(targetId)
+    const promise = this.queuePaneFetch(targetId, options.background === true)
     const entry: SwrCacheEntry<PanePrList> = { at: this.now(), value: cached?.value ?? null, refresh: promise }
     this.paneListCache.set(targetId, entry)
     this.trimPaneListCache()
@@ -911,10 +919,19 @@ export class PrService {
     }
   }
 
-  private queuePaneFetch(targetId: string): Promise<PanePrList> {
+  private queuePaneFetch(targetId: string, background: boolean): Promise<PanePrList> {
     if (this.paneBatchWindowMs <= 0) return this.fetchPanePullRequests(targetId)
     return new Promise((resolve, reject) => {
-      this.paneBatch ??= { waiters: new Map(), timer: setTimeout(() => this.flushPaneBatch(), this.paneBatchWindowMs) }
+      const window = background ? Math.max(this.paneBatchWindowMs, PANE_BACKGROUND_BATCH_WINDOW_MS) : this.paneBatchWindowMs
+      const deadline = Date.now() + window
+      if (!this.paneBatch) {
+        this.paneBatch = { waiters: new Map(), deadline, timer: setTimeout(() => this.flushPaneBatch(), window) }
+      } else if (deadline < this.paneBatch.deadline) {
+        // A foreground read must not wait on a background batch's longer window.
+        clearTimeout(this.paneBatch.timer)
+        this.paneBatch.deadline = deadline
+        this.paneBatch.timer = setTimeout(() => this.flushPaneBatch(), window)
+      }
       const waiters = this.paneBatch.waiters.get(targetId) ?? []
       waiters.push({ resolve, reject })
       this.paneBatch.waiters.set(targetId, waiters)

@@ -489,6 +489,20 @@ describe('pane PR status', () => {
     expect(theirs).toMatchObject({ totalCount: 2, truncated: false })
   })
 
+  it('lets background reads wait for the next wave but never holds up a foreground read', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const runner = vi.fn(async (_args: string[]) => linkedPayload())
+    const service = new PrService({ runner, now: () => 1 })
+    const first = service.listPanePullRequests(targetId, { background: true })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(runner).not.toHaveBeenCalled()
+    const started = Date.now()
+    await Promise.all([first, service.listPanePullRequests(other)])
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(runner).toHaveBeenCalledOnce()
+    expect(runner.mock.calls[0][0]).toContain(`targetQuery=is:pr in:body ${targetId} OR ${other} sort:created-desc`)
+  })
+
   it('searches panes separately when a shared search is truncated', async () => {
     const other = '550e8400-e29b-41d4-a716-446655440000'
     const runner = vi.fn(async (args: string[]) => args.some((arg) => arg.includes(' OR '))
