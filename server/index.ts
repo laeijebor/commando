@@ -119,6 +119,7 @@ import {
   PaneScreenshotRegistry,
 } from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
+import { PaneSeen } from './pane-seen.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { brokerChatInteractions } from './chat-interactions.js'
 import { AgentRequestApi } from './agent-request-api.js'
@@ -651,6 +652,7 @@ async function main(): Promise<void> {
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
+  const paneSeen = new PaneSeen()
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
   let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
@@ -1497,6 +1499,7 @@ async function main(): Promise<void> {
         for (const change of agentStatuses.retainPaneIds(paneIds)) {
           publishAgentStatusChange(change)
         }
+        paneSeen.retain(paneIds)
         for (const paneId of paneTextTails.keys()) {
           if (!paneIds.has(paneId)) paneTextTails.delete(paneId)
         }
@@ -1976,6 +1979,11 @@ async function main(): Promise<void> {
 
   const handleClientMessage = (client: ClientState, message: ParsedClientMessage): void => {
     switch (message.type) {
+      case 'mark_panes_seen': {
+        const changed = paneSeen.mark(message.paneIds.filter(paneExists))
+        if (Object.keys(changed).length > 0) broadcast({ type: 'pane_seen', seen: changed })
+        break
+      }
       case 'subscribe': {
         const statusPaneIds = message.statusPaneIds ?? []
         if (
@@ -2492,6 +2500,7 @@ async function main(): Promise<void> {
       send(client, { type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
     })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
+    send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
     for (const { paneId, runs } of externalAgents.snapshots()) send(client, { type: 'chat_external_runs', paneId, runs })

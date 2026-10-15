@@ -335,6 +335,17 @@ describe('client message validation', () => {
   })
 })
 
+describe('mark_panes_seen messages', () => {
+  it('accepts unique pane ids and rejects anything else', () => {
+    expect(parseClientMessage({ type: 'mark_panes_seen', paneIds: ['%1', '%1', '%2'] })).toEqual({
+      ok: true,
+      message: { type: 'mark_panes_seen', paneIds: ['%1', '%2'] },
+    })
+    expect(parseClientMessage({ type: 'mark_panes_seen', paneIds: ['$1'] })).toMatchObject({ ok: false })
+    expect(parseClientMessage({ type: 'mark_panes_seen' })).toMatchObject({ ok: false })
+  })
+})
+
 describe('subscribe messages', () => {
   it('defaults statusPaneIds to an empty list and dedupes both sets', () => {
     expect(parseClientMessage({ type: 'subscribe', paneIds: ['%1', '%1'] })).toEqual({
