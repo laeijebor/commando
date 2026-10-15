@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  githubDisabledReason,
   PrService,
   PrServiceError,
   PrPreferencesStore,
@@ -83,6 +84,22 @@ function serviceWith(output: string | Error, options?: ConstructorParameters<typ
   const service = new PrService({ runner, preferencesPath: '/nonexistent/prs.json', ...options })
   return { service, runner }
 }
+
+describe('GitHub access per daemon', () => {
+  it('keeps test daemons off the shared GitHub budget unless enabled', () => {
+    expect(githubDisabledReason({}, 4310, 4310)).toBeUndefined()
+    expect(githubDisabledReason({}, 4424, 4310)).toMatch(/COMMANDO_GITHUB=on/)
+    expect(githubDisabledReason({ COMMANDO_GITHUB: 'on' }, 4424, 4310)).toBeUndefined()
+    expect(githubDisabledReason({ COMMANDO_GITHUB: 'off' }, 4310, 4310)).toMatch(/disabled/)
+  })
+
+  it('fails reads without spawning gh when disabled', async () => {
+    const runner = vi.fn(async () => '{}')
+    const service = new PrService({ runner, githubDisabledReason: 'off for tests' })
+    await expect(service.listPanePullRequests('00000000-0000-4000-8000-000000000000')).rejects.toMatchObject({ status: 503, code: 'github_disabled' })
+    expect(runner).not.toHaveBeenCalled()
+  })
+})
 
 describe('merging pull requests', () => {
   it('hydrates native stack membership in the existing list query', async () => {

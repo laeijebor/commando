@@ -60,7 +60,7 @@ import { ChromiumEngine } from './chromium-engine.js'
 import { WebTileRelay, webTilePathId } from './web-tile-relay.js'
 import { LinearService } from './linear.js'
 import { handleLinearApi } from './linear-api.js'
-import { PrService } from './prs.js'
+import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
 import { handleNotesApi } from './notes-api.js'
@@ -83,6 +83,7 @@ import { GitWorktreeService } from './git-worktree.js'
 import { prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
+import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
@@ -640,7 +641,9 @@ async function main(): Promise<void> {
   }
   const notes = new NoteVaultManager()
   const linear = new LinearService()
-  const prs = new PrService()
+  const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
+  if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
+  const prs = new PrService({ githubDisabledReason: githubOffReason })
   const gitWorktrees = new GitWorktreeService()
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
@@ -1622,6 +1625,11 @@ async function main(): Promise<void> {
     },
   })
   const gitDiffApi = new GitDiffApi({
+    ...(githubOffReason ? {
+      inspector: new GitDiffInspector((file, args, options) => file === 'gh'
+        ? Promise.reject(new Error(githubOffReason))
+        : defaultGitProcessExecutor(file, args, options)),
+    } : {}),
     panePath: (paneId) => paneForId(paneId)?.path,
     repoInfo: (directory) => gitWorktrees.probe(directory),
     panePullRequestEvidence: async (paneId) => {

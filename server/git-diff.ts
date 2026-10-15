@@ -126,7 +126,7 @@ export class GitCommandFailure extends Error {
   }
 }
 
-const defaultExecutor: GitProcessExecutor = (file, args, options) =>
+export const defaultGitProcessExecutor: GitProcessExecutor = (file, args, options) =>
   new Promise((resolve, reject) => {
     const child = execFile(file, [...args], options, (error, stdout, stderr) => {
       if (error) {
@@ -155,7 +155,7 @@ export async function renderDeltaPatch(
   patch: string,
   width: number,
   display: DiffDisplay = 'inline',
-  execute: GitProcessExecutor = defaultExecutor,
+  execute: GitProcessExecutor = defaultGitProcessExecutor,
   cwd = process.cwd(),
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
@@ -402,7 +402,7 @@ export class GitDiffInspector {
   private readonly pullRequestCache = new Map<string, { at: number; result: Promise<GitPullRequest | undefined> }>()
 
   constructor(
-    private readonly execute: GitProcessExecutor = defaultExecutor,
+    private readonly execute: GitProcessExecutor = defaultGitProcessExecutor,
     private readonly environment: NodeJS.ProcessEnv = process.env,
     private readonly now: () => number = Date.now,
     private readonly readTextFile: (file: string) => Promise<string> = (file) => readFile(file, 'utf8'),

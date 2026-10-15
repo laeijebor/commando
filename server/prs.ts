@@ -187,6 +187,17 @@ const defaultGitRunner: GitRunner = (args, cwd) =>
     )
   })
 
+/**
+ * Every daemon shares the gh user's API budget, so test daemons on other ports
+ * stay off GitHub unless COMMANDO_GITHUB=on. Returns why reads are disabled.
+ */
+export function githubDisabledReason(env: NodeJS.ProcessEnv, port: number, defaultPort: number): string | undefined {
+  const setting = env.COMMANDO_GITHUB?.trim().toLowerCase()
+  if (setting === 'on') return undefined
+  if (setting === 'off') return 'GitHub is disabled on this daemon (COMMANDO_GITHUB=off)'
+  return port === defaultPort ? undefined : `GitHub is disabled on test daemons (port ${port}) — set COMMANDO_GITHUB=on to enable it`
+}
+
 function classifyGhFailure(error: import('node:child_process').ExecFileException, stderr: string): PrServiceError {
   if (error.code === 'ENOENT') {
     return new PrServiceError(503, 'gh_unavailable', 'The gh CLI is not installed on the daemon host')
@@ -690,8 +701,12 @@ export class PrService {
     reposTtlMs?: number
     repoContextTtlMs?: number
     now?: () => number
+    githubDisabledReason?: string
   }) {
-    this.runner = options?.runner ?? defaultRunner
+    const disabledReason = options?.githubDisabledReason
+    this.runner = disabledReason
+      ? () => Promise.reject(new PrServiceError(503, 'github_disabled', disabledReason))
+      : options?.runner ?? defaultRunner
     this.stacks = new PrStackService(this.runner, (repo) => {
       this.invalidateDetailCaches(repo)
       this.entities.invalidate(repo)
