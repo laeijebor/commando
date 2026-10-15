@@ -401,7 +401,7 @@ function SubagentTimeline({ provider, agent, items, ownItems, transcript, cwd, o
               <Button size="xs" variant="outline" onClick={onRetry}>Retry</Button>
             </p>
           ) : null}
-          {report ? <div className="pb-3"><Markdown text={report} /></div> : null}
+          {report ? <div className="chat-reply pb-3"><Markdown text={report} /></div> : null}
         </>
       )}
       onOpenSubagent={onOpenSubagent}

@@ -96,6 +96,7 @@
 .commando-chat {
   --control-radius: 6px;
   --chat-content-max-width: 736px;
+  --chat-table-max-width: 1120px;
   font-family: var(--font-sans);
   color: var(--color-foreground);
   background: var(--color-background);
@@ -152,8 +153,16 @@
 }
 .chat-markdown pre code { padding: 0; border: 0; background: none; font-size: 12.5px; }
 .chat-markdown blockquote { padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--muted); }
-.chat-markdown table { border-collapse: collapse; display: block; overflow-x: auto; font-size: 13px; }
-.chat-markdown th, .chat-markdown td { padding: 4px 8px; border: 1px solid var(--border); text-align: left; }
+/* Tables scroll sideways rather than squeeze their columns. Cells wrap only between words, and
+   no column gets narrower than a short phrase, so a narrow pane scrolls instead of breaking letters. */
+.chat-table-scroll { overflow-x: auto; }
+.chat-markdown table { border-collapse: collapse; font-size: 13px; overflow-wrap: normal; }
+.chat-markdown th, .chat-markdown td { min-width: 7em; padding: 4px 8px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+/* A reply's table may use the timeline's full width when the text column is too narrow for it:
+   the scroller spans the timeline, and the frame sits on the text column until the table outgrows it. */
+.chat-timeline { container-type: inline-size; }
+.chat-reply .chat-table-scroll { width: 100cqw; margin-inline: calc((100% - 100cqw) / 2); }
+.chat-reply .chat-table-frame { width: max-content; min-width: min(100%, var(--chat-content-max-width)); max-width: min(100%, var(--chat-table-max-width)); margin-inline: auto; }
 .chat-markdown hr { border: 0; border-top: 1px solid var(--border); }
 
 @keyframes chat-pulse { 50% { opacity: 0.35; } }

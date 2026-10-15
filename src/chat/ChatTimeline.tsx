@@ -1,5 +1,5 @@
 import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Zap } from 'lucide-react'
 import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatTaskAction } from '../../shared/agent-chat'
@@ -14,6 +14,12 @@ import { elapsedLabel } from './turnFlow'
 import { WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
+const markdownComponents: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+  pre: MarkdownPre,
+  // Wide tables scroll sideways; the frame lets a reply's table grow past the text column.
+  table: ({ node: _node, ...props }) => <div className="chat-table-scroll"><div className="chat-table-frame"><table {...props} /></div></div>,
+}
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
 const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0, provider: 'Claude' })
@@ -21,7 +27,7 @@ const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number;
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="chat-markdown">
-      <ReactMarkdown remarkPlugins={markdownPlugins} components={{ a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />, pre: MarkdownPre }}>
+      <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
         {text}
       </ReactMarkdown>
     </div>
@@ -287,7 +293,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
     case 'subagents':
       return <SubagentGroup row={row} items={context.items} now={context.now} onTask={context.onTask} controlsDisabled={context.controlsDisabled} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
     case 'assistant':
-      return <div className="pb-3"><Markdown text={row.item.text} /></div>
+      return <div className="chat-reply pb-3"><Markdown text={row.item.text} /></div>
     case 'activity':
       return <ActivityGroup row={row} cwd={cwd} />
     case 'notice':
@@ -343,7 +349,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
   const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   return (
-    <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4" data-testid="chat-timeline">
+    <div ref={scroller} className="chat-timeline min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4" data-testid="chat-timeline">
       <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">
         {header}
         <TimelineContext value={context}>
