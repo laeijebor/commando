@@ -92,5 +92,18 @@ test('the ⌘P picker covers only its chat pane and closes when another pane is 
   await otherArticle.click({ position: { x: otherBox!.width / 2, y: otherBox!.height / 2 } })
   await expect(picker).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('picker-closed.png') })
+  // The visible hint is also a close control; Escape works after focus leaves search.
+  for (const dismiss of ['click', 'escape-search', 'escape-button'] as const) {
+    await chatArticle.getByRole('textbox').first().click()
+    await page.keyboard.press('Meta+p')
+    await expect(picker).toBeVisible()
+    const close = picker.getByRole('button', { name: 'Close conversations' })
+    if (dismiss === 'click') await close.click()
+    else {
+      if (dismiss === 'escape-button') await close.focus()
+      await page.keyboard.press('Escape')
+    }
+    await expect(picker).toHaveCount(0)
+  }
   expect(errors).toEqual([])
 })
