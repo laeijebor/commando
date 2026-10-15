@@ -208,8 +208,8 @@ export class SessionBriefApi {
       if (!target) throw new HttpError(404, 'Tmux pane does not exist')
       const parsed = parseSessionBriefPatch(await readJson(request))
       const { screenshots: _screenshots, complete, ...patch } = parsed
-      if (complete) this.dependencies.onComplete?.(paneId)
       if (complete && !parsed.screenshots && Object.keys(patch).length === 0) {
+        this.dependencies.onComplete?.(paneId)
         writeJson(response, 200, { ok: true, brief: null })
         return true
       }
@@ -225,6 +225,7 @@ export class SessionBriefApi {
         this.dependencies.now?.() ?? Date.now(),
       )
       this.dependencies.onChange(brief)
+      if (complete) this.dependencies.onComplete?.(paneId)
       writeJson(response, 200, { ok: true, brief })
       return true
     } catch (error) {

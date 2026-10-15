@@ -77,6 +77,14 @@ describe('SessionBriefApi', () => {
     expect(changes).toEqual([])
   })
 
+  it('does not declare the work complete when the rest of the patch fails', async () => {
+    vi.spyOn(store, 'applyAgentPatch').mockRejectedValueOnce(new Error('disk full'))
+    const response = await post({ state: 'complete', headline: 'All PRs open' })
+
+    expect(response.status).toBe(500)
+    expect(completed).toEqual([])
+  })
+
   it('records the rest of a patch sent with state complete', async () => {
     const response = await post({ state: 'complete', headline: 'All PRs open' })
 

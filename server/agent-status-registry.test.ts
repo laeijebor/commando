@@ -766,6 +766,18 @@ describe('AgentStatusRegistry', () => {
     expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
   })
 
+  it('keeps a declaration for a chat pane whose host still reports working at Stop', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyChatHost(paneId, { provider: 'claude', status: 'working', sessionId: claudeSessionId }, 1)
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 2)
+    registry.declareComplete(paneId)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'All done' }), 3)
+    expect(registry.get(paneId)).toMatchObject({ status: 'working', details: { recap: { declared: true } } })
+
+    registry.applyChatHost(paneId, { provider: 'claude', status: 'done', sessionId: claudeSessionId }, 4)
+    expect(registry.get(paneId)).toMatchObject({ status: 'done', details: { recap: { outcome: 'done', declared: true } } })
+  })
+
   it('applies a declaration made after the turn already ended', () => {
     const registry = new AgentStatusRegistry()
     registry.applyCodexEvent(paneId, codexEvent({ 'last-assistant-message': 'Merged' }), 10)

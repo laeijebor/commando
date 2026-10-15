@@ -1853,8 +1853,10 @@ export class AgentStatusRegistry {
         ? previous.settledAt
         : status.updatedAt
     }
+    // The recap carries the declaration even while a chat host still says
+    // working; the dot only reads it once the pane is done.
     if (this.completeDeclarations.has(paneId)) {
-      if (kind === 'done' && recap?.outcome === 'done' && !recap.declared) {
+      if (recap?.outcome === 'done' && !recap.declared) {
         status.details = { ...status.details!, recap: { ...recap, declared: true } }
       }
       if (endsTurn) this.completeDeclarations.delete(paneId)
