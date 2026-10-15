@@ -26,10 +26,15 @@ const REPOS_CACHE_TTL_MS = 5 * 60_000
 const REPO_CONTEXT_CACHE_TTL_MS = 5_000
 const PULL_REQUEST_PAGE_SIZE = 30
 const PULL_REQUEST_DETAIL_BATCH_SIZE = 5
+// Batched hydration costs several times the points of the single query, so a
+// repo that once timed out retries the single query after this long.
+const BATCHED_LIST_RETRY_MS = 30 * 60_000
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
-const PANE_PULL_REQUEST_PAGE_SIZE = 100
+// GraphQL cost scales with page size × nested connections: 100 costs 5 points
+// per pane poll, 20 costs 1. Panes rarely link more; extras are flagged truncated.
+const PANE_PULL_REQUEST_PAGE_SIZE = 20
 // Polling shares the gh user's GraphQL budget with agents and scripts, so it
 // stops early to leave them headroom and backs off when GitHub pushes back.
 const LOW_RATE_LIMIT_POINTS = 500
@@ -665,7 +670,7 @@ export class PrService {
   private readonly repoContextTtlMs: number
   private readonly now: () => number
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
-  private readonly batchedRepos = new Set<string>()
+  private readonly batchedRepos = new Map<string, number>()
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
   private readonly metadataCache: PrReadCache<JsonRecord>
   private readonly commentPagesCache: PrReadCache<JsonRecord[]>
@@ -956,7 +961,7 @@ export class PrService {
     ]
     let output: string
     const batchKey = `${repo.toLowerCase()}::${scope}`
-    if (this.batchedRepos.has(batchKey)) {
+    if ((this.batchedRepos.get(batchKey) ?? 0) > this.now()) {
       output = await this.fetchBatchedPullRequests(args)
     } else {
       try {
@@ -967,8 +972,9 @@ export class PrService {
         // GitHub can time out resolving details for busy repositories. Discover
         // the same full pages cheaply, then hydrate unique PRs in small batches.
         output = await this.fetchBatchedPullRequests(args)
-        this.batchedRepos.add(batchKey)
-        if (this.batchedRepos.size > MAX_LIST_CACHE_ENTRIES) this.batchedRepos.delete(this.batchedRepos.values().next().value!)
+        this.batchedRepos.delete(batchKey)
+        this.batchedRepos.set(batchKey, this.now() + BATCHED_LIST_RETRY_MS)
+        if (this.batchedRepos.size > MAX_LIST_CACHE_ENTRIES) this.batchedRepos.delete(this.batchedRepos.keys().next().value!)
       }
     }
     let payload: unknown

@@ -609,6 +609,32 @@ describe('pull request listing', () => {
     expect(runner).toHaveBeenCalledTimes(17)
   })
 
+  it('retries the single list query once the batched fallback expires', async () => {
+    const record = pullRequestNode({ id: 'PR_1', number: 1 })
+    let now = 0
+    let timeouts = 1
+    const runner = vi.fn(async (args: string[]) => {
+      const query = args.find((arg) => arg.startsWith('query='))!
+      if (query.includes('fragment PrFields on PullRequest { id }')) return graphqlPayload([{ id: 'PR_1' }], 1, 'leo')
+      if (query.includes('repository(owner:')) {
+        if (timeouts-- > 0) throw new PrServiceError(504, 'github_timeout', 'GitHub request timed out')
+        return graphqlPayload([record], 1, 'leo')
+      }
+      return JSON.stringify({ data: { nodes: [record] } })
+    })
+    const service = new PrService({ runner, now: () => now })
+    const single = () => runner.mock.calls.filter(([args]) => args.some((arg) => arg.includes('repository(owner:') && !arg.includes('fragment PrFields on PullRequest { id }'))).length
+    await service.listPullRequests('acme/widgets', 'open')
+    expect(single()).toBe(1)
+    now = 29 * 60_000
+    await service.listPullRequests('acme/widgets', 'open', { refresh: true })
+    expect(single()).toBe(1)
+    now = 31 * 60_000
+    const list = await service.listPullRequests('acme/widgets', 'open', { refresh: true })
+    expect(single()).toBe(2)
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([1])
+  })
+
   it.each([
     { errors: [{ message: 'detail query failed' }], data: { nodes: [] } },
     { data: { nodes: [] } },
