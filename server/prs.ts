@@ -42,6 +42,10 @@ const RATE_LIMIT_BACKOFF_MS = 60_000
 const MAX_RATE_LIMIT_BACKOFF_MS = 15 * 60_000
 const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt cost limit }'
 const PR_METADATA_TTL_MS = 5 * 60_000
+// Background pane reads (session tree counts) poll every 5 minutes, so a page
+// load can reuse any pane list fetched within that window instead of
+// searching GitHub once per pane.
+const PANE_BACKGROUND_TTL_MS = 5 * 60_000
 const PR_CONVERSATION_TTL_MS = 60_000
 const PR_CHECKS_TTL_MS = 30_000
 
@@ -851,11 +855,12 @@ export class PrService {
     return this.entities.repo(await this.refreshPullRequests(key, repo, filter, scope, entry))
   }
 
-  async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean } = {}): Promise<PanePrList> {
+  async listPanePullRequests(targetIdInput: unknown, options: { refresh?: boolean; background?: boolean } = {}): Promise<PanePrList> {
     const targetId = validatePaneTargetId(targetIdInput)
     const cached = this.paneListCache.get(targetId)
     if (cached?.refresh) return this.entities.pane(await cached.refresh)
-    if (!options.refresh && cached?.value && this.now() - cached.at < this.listTtlMs) return this.entities.pane(cached.value)
+    const ttl = options.background ? Math.max(this.listTtlMs, PANE_BACKGROUND_TTL_MS) : this.listTtlMs
+    if (!options.refresh && cached?.value && this.now() - cached.at < ttl) return this.entities.pane(cached.value)
     const promise = this.fetchPanePullRequests(targetId)
     const entry: SwrCacheEntry<PanePrList> = { at: this.now(), value: cached?.value ?? null, refresh: promise }
     this.paneListCache.set(targetId, entry)

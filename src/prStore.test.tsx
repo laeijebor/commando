@@ -128,6 +128,26 @@ describe('PR store', () => {
     expect(api.pane).toHaveBeenCalledTimes(2)
   })
 
+  it('lets background-only reads use the server cache and reuses fresh data on remount', async () => {
+    vi.useFakeTimers()
+    const api = { pane: vi.fn().mockResolvedValue(emptyList) }
+    const first = render(<Subscriber api={api} background />)
+    await act(async () => { await Promise.resolve() })
+    expect(api.pane).toHaveBeenLastCalledWith('%12', { background: true })
+    first.unmount()
+
+    const again = render(<Subscriber api={api} background />)
+    await act(async () => { await Promise.resolve() })
+    expect(api.pane).toHaveBeenCalledTimes(1)
+    again.unmount()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+    render(<Subscriber api={api} />)
+    await act(async () => { await Promise.resolve() })
+    expect(api.pane).toHaveBeenCalledTimes(2)
+    expect(api.pane).toHaveBeenLastCalledWith('%12')
+  })
+
   it('pauses refresh while hidden and resumes when visibility returns', async () => {
     vi.useFakeTimers()
     let visibility: DocumentVisibilityState = 'visible'

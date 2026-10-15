@@ -244,7 +244,9 @@ export async function handlePrsApi(
       if (!targetId) throw new PrServiceError(404, 'pane_not_found', 'Tmux pane does not exist')
       const refresh = url.searchParams.get('refresh')
       if (refresh !== null && refresh !== '1') throw new PrServiceError(400, 'invalid_request', 'Refresh must be 1')
-      json(response, 200, { list: await service.listPanePullRequests(targetId, { refresh: refresh === '1' }) })
+      const background = url.searchParams.get('background')
+      if (background !== null && background !== '1') throw new PrServiceError(400, 'invalid_request', 'Background must be 1')
+      json(response, 200, { list: await service.listPanePullRequests(targetId, { refresh: refresh === '1', background: background === '1' }) })
       return true
     }
 
