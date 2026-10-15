@@ -1835,8 +1835,9 @@ export class AgentStatusRegistry {
 
   /**
    * Stamps when the pane entered its current `done` run and applies a
-   * `--state complete` declaration to the turn's recap. A new turn (working
-   * after anything but a permission or question pause) forgets the declaration.
+   * `--state complete` declaration to the turn's recap. A fresh recap ends the
+   * turn: it restarts the `done` run (Codex can go done to done without a
+   * visible working state) and uses up the declaration, whatever the outcome.
    */
   private settle(record: RegistryRecord, previous: AgentStatus | undefined): RegistryRecord {
     const { paneId, status: kind } = record.status
@@ -1845,14 +1846,18 @@ export class AgentStatusRegistry {
     }
     const status = { ...record.status }
     delete status.settledAt
+    const recap = status.details?.recap
+    const endsTurn = recap !== undefined && recap.completedAt !== previous?.details?.recap?.completedAt
     if (kind === 'done') {
-      status.settledAt = previous?.status === 'done' && previous.settledAt !== undefined
+      status.settledAt = previous?.status === 'done' && previous.settledAt !== undefined && !endsTurn
         ? previous.settledAt
         : status.updatedAt
-      const recap = status.details?.recap
-      if (recap?.outcome === 'done' && !recap.declared && this.completeDeclarations.has(paneId)) {
+    }
+    if (this.completeDeclarations.has(paneId)) {
+      if (kind === 'done' && recap?.outcome === 'done' && !recap.declared) {
         status.details = { ...status.details!, recap: { ...recap, declared: true } }
       }
+      if (endsTurn) this.completeDeclarations.delete(paneId)
     }
     return { ...record, status }
   }

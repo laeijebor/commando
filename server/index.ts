@@ -1499,7 +1499,6 @@ async function main(): Promise<void> {
         for (const change of agentStatuses.retainPaneIds(paneIds)) {
           publishAgentStatusChange(change)
         }
-        paneSeen.retain(paneIds)
         for (const paneId of paneTextTails.keys()) {
           if (!paneIds.has(paneId)) paneTextTails.delete(paneId)
         }

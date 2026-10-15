@@ -1,7 +1,8 @@
 /**
  * When the user last looked at each pane, by daemon clock so it compares with
  * `AgentStatus.settledAt`. Kept in memory: after a restart every new turn
- * ending is unseen, which is what the sidebar should show anyway.
+ * ending is unseen, which is what the sidebar should show anyway. Entries are
+ * never pruned: a reused pane id's next turn ends after its old seen time.
  */
 export class PaneSeen {
   private readonly seen = new Map<string, number>()
@@ -19,12 +20,5 @@ export class PaneSeen {
 
   snapshot(): Record<string, number> {
     return Object.fromEntries(this.seen)
-  }
-
-  /** Forgets panes that no longer exist, so a reused pane id starts unseen. */
-  retain(paneIds: ReadonlySet<string>): void {
-    for (const paneId of this.seen.keys()) {
-      if (!paneIds.has(paneId)) this.seen.delete(paneId)
-    }
   }
 }

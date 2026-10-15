@@ -743,6 +743,29 @@ describe('AgentStatusRegistry', () => {
     expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
   })
 
+  it('restarts the done run and forgets a used declaration when Codex goes done to done', () => {
+    const registry = new AgentStatusRegistry()
+    registry.declareComplete(paneId)
+    registry.applyCodexEvent(paneId, codexEvent({ 'last-assistant-message': 'Shipped' }), 10)
+    expect(registry.get(paneId)).toMatchObject({ settledAt: 10, details: { recap: { declared: true } } })
+
+    registry.applyCodexEvent(paneId, codexEvent({ 'turn-id': 'turn-2', 'last-assistant-message': 'Tweaked copy' }), 20)
+    expect(registry.get(paneId)?.settledAt).toBe(20)
+    expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
+  })
+
+  it('uses up a declaration when the turn ends blocked', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 1)
+    registry.declareComplete(paneId)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: '🔴 Want me to merge?' }), 2)
+    expect(registry.get(paneId)?.status).toBe('needs_input')
+
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'two' }), 3)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Also did X' }), 4)
+    expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
+  })
+
   it('applies a declaration made after the turn already ended', () => {
     const registry = new AgentStatusRegistry()
     registry.applyCodexEvent(paneId, codexEvent({ 'last-assistant-message': 'Merged' }), 10)
