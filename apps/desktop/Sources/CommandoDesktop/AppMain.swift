@@ -32,9 +32,21 @@ final class DesktopWindow: NSWindow {
         return accepted
     }
 
+    // Escape belongs to the focused content. Keep fullscreen changes explicit
+    // through the View menu / Control-Command-F, even if content leaves it unhandled.
+    override func cancelOperation(_ sender: Any?) {}
+
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown {
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if event.keyCode == 53, modifiers.isEmpty, attachedSheet == nil {
+                // NSWindow can consume Escape to leave fullscreen before WebKit
+                // delivers it to the page. Route it straight to the first responder.
+                if let responder = firstResponder, responder !== self {
+                    responder.keyDown(with: event)
+                }
+                return
+            }
             if modifiers == .command,
                let key = event.charactersIgnoringModifiers?.lowercased(),
                key == "w" || key == "t",
