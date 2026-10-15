@@ -13,11 +13,9 @@ import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from 
 
 const errorText = (error: unknown) => string(record(error).message) ?? String(error)
 const EFFORT_PARAMETERS = ['effort', 'reasoning_effort', 'reasoning']
-export function cursorPermissions(mode: ChatSessionPermissionMode, prePlan?: ChatSessionPermissionMode): { sandboxOptions: { enabled: boolean }; autoReview?: boolean } {
-  if (mode === 'plan') {
-    if (prePlan === 'plan') throw new Error('Cursor pre-plan permission mode cannot be plan')
-    return cursorPermissions(prePlan ?? 'bypassPermissions')
-  }
+const AUTH_CODES = new Set(['UNAUTHENTICATED', 'NOT_LOGGED_IN', 'INVALID_AUTH_ID', 'AGENT_REQUIRES_LOGIN', 'AUTH_TOKEN_NOT_FOUND', 'AUTH_TOKEN_EXPIRED', 'UNAUTHORIZED', 'BAD_API_KEY', 'BAD_USER_API_KEY'])
+export function cursorPermissions(mode: ChatSessionPermissionMode, _prePlan?: ChatSessionPermissionMode): { sandboxOptions: { enabled: boolean }; autoReview?: boolean } {
+  if (mode === 'plan') return { sandboxOptions: { enabled: true } }
   if (mode === 'bypassPermissions') return { sandboxOptions: { enabled: false } }
   if (mode === 'default') return { sandboxOptions: { enabled: true } }
   if (mode === 'auto') return { sandboxOptions: { enabled: false }, autoReview: true }
@@ -41,7 +39,7 @@ export function cursorModelSelection(option: ModelListItem, effort?: ChatEffort,
 }
 export function isCursorAuthError(error: unknown): boolean {
   const value = record(error)
-  return value.name === 'AuthenticationError' || value.code === 'unauthenticated'
+  return value.name === 'AuthenticationError' || AUTH_CODES.has(string(value.code)?.toUpperCase() ?? '')
     || /invalid (user )?api key|api key is required|unauthenticated/i.test(errorText(error))
     || (value.error !== undefined && isCursorAuthError(value.error))
 }
@@ -65,6 +63,9 @@ export class CursorChatSession implements ChatProviderSession {
   private modelItems: ModelListItem[] = []
   private startPromise?: Promise<void>
   private loginController?: AbortController
+  private loginFinishing = false
+  private readonly apiKey?: string
+  private historyLoaded = false
   private active?: ActiveRun
   private stale = false
   private sending = 0
@@ -78,6 +79,7 @@ export class CursorChatSession implements ChatProviderSession {
 
   constructor(private readonly spec: AgentSessionSpec, sdk?: CursorSdk) {
     cursorPermissions(spec.permissionMode, spec.prePlanPermissionMode)
+    this.apiKey = spec.env.CURSOR_API_KEY
     this.sdk = sdk
     this.files = new WorkspaceFileIndex(spec.cwd)
     this.info = {
@@ -98,13 +100,13 @@ export class CursorChatSession implements ChatProviderSession {
   setResumeCommand(command: string): void { if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
   private safeError(error: unknown): string {
     const message = errorText(error)
-    const key = this.spec.env.CURSOR_API_KEY
+    const key = this.apiKey
     return (key ? message.split(key).join('[redacted]') : message).slice(0, 4096)
   }
   start(): Promise<void> { return this.startPromise ??= this.initialize() }
   private async initialize(): Promise<void> {
     try {
-      this.sdk ??= await loadCursorSdk(this.spec.log)
+      this.sdk ??= await loadCursorSdk((message) => this.spec.log?.(this.safeError(message)))
       if (this.closing) return
       const loggedIn = this.spec.env.CURSOR_API_KEY || (await this.sdk.authStatus()).status === 'logged-in'
       if (this.closing) return
@@ -115,14 +117,16 @@ export class CursorChatSession implements ChatProviderSession {
         return
       }
       await this.ready()
+      this.sendInitialPrompt()
     } catch (error) { this.startError(error) }
   }
   private startError(error: unknown): void {
     if (this.closing) return
     if (isCursorAuthError(error)) { this.authRequired(); return }
     const message = this.safeError(error)
-    this.emitItems(this.mapper.notice('error', `Couldn't start Cursor: ${message}`))
-    this.update({ status: 'error', error: message })
+    if (!this.agent) this.startPromise = undefined
+    this.emitItems(this.mapper.notice('error', `Couldn't start Cursor: ${message}${!this.agent ? '. Sending a message retries.' : ''}`))
+    this.update({ status: 'idle', error: message })
   }
   private async reloadModels(): Promise<void> {
     const items = await this.sdk!.listModels()
@@ -152,15 +156,24 @@ export class CursorChatSession implements ChatProviderSession {
     this.agent = agent
     this.stale = false
     this.update({ sessionId: agent.agentId })
-    if (this.spec.resume) {
-      const history = await this.sdk!.history(agent.agentId, this.spec.cwd)
-      if (this.closing) return
-      history.forEach((turn) => this.mapper.replay(turn))
-      this.emitItems(this.mapper.list())
+    if (this.spec.resume && !this.historyLoaded) {
+      this.historyLoaded = true
+      try {
+        const history = await this.sdk!.history(agent.agentId, this.spec.cwd)
+        if (this.closing) return
+        history.turns.forEach((turn) => this.mapper.replay(turn))
+        this.emitItems(this.mapper.list())
+        if (history.skipped) this.emitItems(this.mapper.notice('info', `${history.skipped} earlier Cursor turns couldn't be loaded.`))
+      } catch (error) {
+        if (this.closing) return
+        this.emitItems(this.mapper.notice('info', `Couldn't load this chat's earlier messages: ${this.safeError(error)}`))
+      }
     }
     this.update({ status: 'idle', error: undefined })
     this.listeners.commands.forEach((listener) => listener(this.commands))
-    if (this.spec.initialPrompt && !this.initialSent) { this.initialSent = true; this.send(this.spec.initialPrompt) }
+  }
+  private sendInitialPrompt(): void {
+    if (!this.closing && this.agent && this.spec.initialPrompt && !this.initialSent) { this.initialSent = true; this.send(this.spec.initialPrompt) }
   }
   private authRequired(): void {
     const reason = this.spec.env.CURSOR_API_KEY
@@ -183,11 +196,21 @@ export class CursorChatSession implements ChatProviderSession {
         this.emitItems(this.mapper.notice('info', `Log in to Cursor: ${url}`))
       } })
       if (this.closing || controller.signal.aborted) return
-      this.loginController = undefined
-      this.update({ login: undefined })
-      this.emitItems(this.mapper.notice('info', `Logged in to Cursor${email ? ` as ${email}` : ''}`))
-      try { if (!this.agent) await this.ready(); else await this.reloadModels() }
-      catch (error) { this.startError(error) }
+      // Prefer the saved browser login over a rejected environment key.
+      delete process.env.CURSOR_API_KEY
+      if (this.spec.env !== process.env) delete this.spec.env.CURSOR_API_KEY
+      this.loginFinishing = true
+      this.operations = this.operations.then(async () => {
+        if (this.closing || controller.signal.aborted) return
+        try { if (!this.agent) await this.ready(); else await this.reloadModels() }
+        catch (error) { this.startError(error); if (isCursorAuthError(error)) return }
+        if (this.closing || controller.signal.aborted) return
+        this.loginController = undefined
+        this.update({ login: undefined })
+        this.emitItems(this.mapper.notice('info', `Logged in to Cursor${email ? ` as ${email}` : ''}`))
+        this.sendInitialPrompt()
+      })
+      await this.operations
     } catch (error) {
       if (this.closing) return
       if (controller.signal.aborted) {
@@ -199,6 +222,7 @@ export class CursorChatSession implements ChatProviderSession {
         this.emitItems(this.mapper.notice('error', `Couldn't log in to Cursor: ${reason}`))
       }
     } finally {
+      this.loginFinishing = false
       if (this.loginController === controller) this.loginController = undefined
       if (controller.signal.aborted && !this.closing && this.info.login?.state === 'pending') {
         this.update({ login: { state: 'required' } })
@@ -213,13 +237,22 @@ export class CursorChatSession implements ChatProviderSession {
     if (trimmed === '/login') { void this.login(); return }
     if (!trimmed && !images.length) return
     if (this.closing) return
-    if (this.info.login || this.loginController) { this.emitItems(this.mapper.notice('error', 'Log in to Cursor first (use the Log in button)')); return }
+    if ((this.info.login || this.loginController) && !this.loginFinishing) {
+      // Let an already-resolved browser login schedule readiness before deciding whether to reject.
+      queueMicrotask(() => {
+        if (this.closing) return
+        if ((this.info.login || this.loginController) && !this.loginFinishing) this.emitItems(this.mapper.notice('error', 'Log in to Cursor first (use the Log in button)'))
+        else this.send(trimmed, images, options)
+      })
+      return
+    }
     if (options.relayTo) { this.emitItems(this.mapper.notice('error', 'Cursor subagent relay is not available in this chat.')); return }
     this.sending++
     this.operations = this.operations.then(async () => {
       await this.start()
       if (this.closing) return
       if (this.info.login || this.loginController) throw new Error('Log in to Cursor first (use the Log in button)')
+      if (!this.agent) return
       if (options.permissionMode && this.active) throw new Error('Permission changes apply to the next turn; wait for this turn to finish')
       if (options.permissionMode) this.applySettings({ permissionMode: options.permissionMode })
       if (images.length > MAX_CHAT_IMAGES) throw new Error('Too many images')

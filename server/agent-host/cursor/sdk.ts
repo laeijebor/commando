@@ -1,4 +1,6 @@
 import type { AgentOptions, ConversationTurn, ListResult, ListRunsOptions, ModelListItem, Run, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
+import { MAX_CHAT_ITEMS } from '../../../shared/agent-chat.js'
+import { CursorItemMapper, record, string } from './items.js'
 
 export interface CursorRun {
   wait(): Promise<RunResult>
@@ -10,6 +12,10 @@ export interface CursorAgent {
   send(message: SDKUserMessage, options: SendOptions): Promise<CursorRun>
   close(): void
 }
+export interface CursorHistory {
+  turns: ConversationTurn[]
+  skipped: number
+}
 /** Only the SDK operations the chat uses; tests never load the real SDK. */
 export interface CursorSdk {
   authStatus(): Promise<{ status: 'logged-in' | 'logged-out'; email?: string }>
@@ -17,29 +23,43 @@ export interface CursorSdk {
   listModels(): Promise<ModelListItem[]>
   create(options: AgentOptions): Promise<CursorAgent>
   resume(agentId: string, options: AgentOptions): Promise<CursorAgent>
-  history(agentId: string, cwd: string): Promise<ConversationTurn[]>
+  history(agentId: string, cwd: string): Promise<CursorHistory>
 }
 
 export async function cursorHistory(
   listRuns: (agentId: string, options: ListRunsOptions) => Promise<ListResult<Pick<Run, 'createdAt' | 'conversation'>>>,
   agentId: string, cwd: string, log?: (message: string) => void,
-): Promise<ConversationTurn[]> {
+): Promise<CursorHistory> {
   const runs: Pick<Run, 'createdAt' | 'conversation'>[] = []
+  const turns: ConversationTurn[] = []
+  const counter = new CursorItemMapper()
+  let skipped = 0
   let cursor: string | undefined
   const seen = new Set<string>()
   do {
-    const page = await listRuns(agentId, { runtime: 'local', cwd, ...(cursor ? { cursor } : {}) })
+    // Local run pages are oldest first with no sort option; collect metadata before reading conversations.
+    const page = await listRuns(agentId, { runtime: 'local', cwd, limit: 100, ...(cursor ? { cursor } : {}) })
     runs.push(...page.items)
     cursor = page.nextCursor
     if (cursor && seen.has(cursor)) throw new Error('Cursor repeated a history cursor')
     if (cursor) seen.add(cursor)
   } while (cursor)
-  const turns: ConversationTurn[] = []
-  for (const run of runs.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
-    try { turns.push(...await run.conversation()) }
-    catch { log?.('Could not read a Cursor run; skipping it.') }
+  for (const run of runs.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))) {
+    let conversation: ConversationTurn[]
+    try { conversation = await run.conversation() }
+    catch (error) {
+      skipped++
+      log?.(`Couldn't load a Cursor run: ${string(record(error).message) ?? String(error)}`)
+      continue
+    }
+    for (const turn of [...conversation].reverse()) {
+      turns.push(turn)
+      counter.replay(turn)
+      if (counter.list().length >= MAX_CHAT_ITEMS) break
+    }
+    if (counter.list().length >= MAX_CHAT_ITEMS) break
   }
-  return turns
+  return { turns: turns.reverse(), skipped }
 }
 
 export async function loadCursorSdk(log?: (message: string) => void): Promise<CursorSdk> {

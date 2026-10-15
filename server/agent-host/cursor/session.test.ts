@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentOptions, ConversationTurn, ModelListItem, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
+import type { AgentOptions, ModelListItem, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_IMAGES, MAX_CHAT_ITEMS, MAX_QUEUED_MESSAGES, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 import type { AgentSessionSpec } from '../session.js'
 import { CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
-import type { CursorAgent, CursorRun, CursorSdk } from './sdk.js'
+import type { CursorAgent, CursorHistory, CursorRun, CursorSdk } from './sdk.js'
 
 const models: ModelListItem[] = [
   { id: 'auto', displayName: 'Auto', description: 'Automatic' },
@@ -50,7 +50,7 @@ class FakeSdk implements CursorSdk {
   listModels = vi.fn(async () => models)
   create = vi.fn(async (_options: AgentOptions) => this.agent)
   resume = vi.fn(async (_id: string, _options: AgentOptions) => this.agent)
-  history = vi.fn(async (_id: string, _cwd: string): Promise<ConversationTurn[]> => [])
+  history = vi.fn(async (_id: string, _cwd: string): Promise<CursorHistory> => ({ turns: [], skipped: 0 }))
   delta(update: unknown, index = this.sends.length - 1) { this.sends[index].options.onDelta?.({ update: update as Parameters<NonNullable<SendOptions['onDelta']>>[0]['update'] }) }
 }
 function harness(spec: Partial<AgentSessionSpec> = {}) {
@@ -71,11 +71,12 @@ describe('Cursor helpers', () => {
     expect(cursorPermissions('bypassPermissions')).toEqual({ sandboxOptions: { enabled: false } })
     expect(cursorPermissions('default')).toEqual({ sandboxOptions: { enabled: true } })
     expect(cursorPermissions('auto')).toEqual({ sandboxOptions: { enabled: false }, autoReview: true })
-    expect(cursorPermissions('plan')).toEqual(cursorPermissions('bypassPermissions'))
+    expect(cursorPermissions('plan')).toEqual(cursorPermissions('default'))
     expect(cursorPermissions('plan', 'default')).toEqual(cursorPermissions('default'))
-    expect(cursorPermissions('plan', 'auto')).toEqual(cursorPermissions('auto'))
+    expect(cursorPermissions('plan', 'auto')).toEqual(cursorPermissions('default'))
+    expect(cursorPermissions('plan', 'bypassPermissions')).toEqual(cursorPermissions('default'))
     for (const mode of ['acceptEdits', 'dontAsk'] as const) expect(() => cursorPermissions(mode)).toThrow('does not support')
-    expect(() => cursorPermissions('plan', 'plan')).toThrow('cannot be plan')
+    expect(cursorPermissions('plan', 'plan')).toEqual(cursorPermissions('default'))
   })
   it('maps model capabilities and emits only declared parameter values', () => {
     expect(cursorModels([...models, { id: 'bad id', displayName: 'Bad' }])).toEqual([
@@ -90,6 +91,11 @@ describe('Cursor helpers', () => {
   it.each([{ name: 'AuthenticationError' }, { code: 'unauthenticated' }, new Error('[unknown] Invalid User API Key'), new Error('Invalid API key'), new Error('API key is required'), { status: 'error', error: { code: 'unauthenticated' } }])('recognizes auth rejection %j', (error) => {
     expect(isCursorAuthError(error)).toBe(true)
     expect(isCursorAuthError(new Error('Rate limit'))).toBe(false)
+  })
+  it.each(['unauthenticated', 'NOT_LOGGED_IN', 'INVALID_AUTH_ID', 'AGENT_REQUIRES_LOGIN', 'AUTH_TOKEN_NOT_FOUND', 'AUTH_TOKEN_EXPIRED', 'UNAUTHORIZED', 'BAD_API_KEY', 'BAD_USER_API_KEY'])('recognizes plain and nested auth code %s case-insensitively', (code) => {
+    expect(isCursorAuthError({ code, message: 'Session expired' })).toBe(true)
+    expect(isCursorAuthError({ status: 'error', error: { code, message: 'Session expired' } })).toBe(true)
+    expect(isCursorAuthError({ status: 'error', error: { code: code.toLowerCase(), message: 'Session expired' } })).toBe(true)
   })
   it('sniffs supported image magic bytes', () => {
     expect(cursorImageMime(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))).toBe('image/png')
@@ -133,6 +139,26 @@ describe('CursorChatSession', () => {
     expect(sdk.authStatus).not.toHaveBeenCalled()
     expect(sdk.create).toHaveBeenCalledWith({ model: { id: 'test-model', params: [{ id: 'reasoning_effort', value: 'high' }, { id: 'fast', value: 'true' }] }, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
     expect(parseChatSessionInfo(session.snapshot().session)).not.toBeNull()
+    session.close()
+  })
+  it.each([false, true])('serializes a send immediately after browser login behind readiness (existing agent: %s)', async (existing) => {
+    const { session, sdk } = harness({ model: 'test-model' })
+    if (!existing) sdk.authStatus.mockResolvedValue({ status: 'logged-out' })
+    await session.start()
+    const readModels = deferred<ModelListItem[]>()
+    sdk.listModels.mockReturnValueOnce(readModels.promise)
+    session.send('/login'); await tick()
+    sdk.loginResult.resolve({ email: 'user@example.com' })
+    session.send('Right after login')
+    await tick()
+    expect(session.snapshot().session.login).toEqual({ state: 'pending' })
+    expect(sdk.sends).toHaveLength(0)
+    expect(session.snapshot().items.some((item) => item.kind === 'notice' && item.text.startsWith('Logged in'))).toBe(false)
+    readModels.resolve(models); await tick()
+    expect(session.snapshot().session.login).toBeUndefined()
+    expect(sdk.sends).toHaveLength(1)
+    expect(sdk.sends[0]).toMatchObject({ message: { text: 'Right after login' }, options: { model: { id: 'test-model' } } })
+    expect(session.snapshot().items.some((item) => item.kind === 'notice' && item.level === 'error')).toBe(false)
     session.close()
   })
   it('streams deltas into one assistant message, then a command and another step', async () => {
@@ -214,22 +240,24 @@ describe('CursorChatSession', () => {
     session.close()
   })
   it('sends plan mode and maps createPlan, then Implement leaves plan mode', async () => {
-    const { session, sdk } = harness({ permissionMode: 'plan', prePlanPermissionMode: 'default' })
+    const { session, sdk } = harness({ permissionMode: 'plan', prePlanPermissionMode: 'bypassPermissions' })
     await session.start()
     session.send('Plan'); await tick()
     expect(sdk.sends[0].options.mode).toBe('plan')
     expect(sdk.create.mock.calls[0][0].local).toEqual({ cwd: '/tmp', sandboxOptions: { enabled: true } })
+    expect(session.snapshot().session.prePlanPermissionMode).toBe('bypassPermissions')
     sdk.delta({ type: 'tool-call-completed', callId: 'p', toolCall: { type: 'createPlan', args: { plan: '# Plan\nDo this' } } })
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'plan', text: '# Plan\nDo this' })
     sdk.runs[0].finish(); await tick()
-    session.send('Implement', [], { permissionMode: 'default' }); await tick()
+    session.send('Implement', [], { permissionMode: 'bypassPermissions' }); await tick()
     expect(sdk.sends[1].options.mode).toBe('agent')
     expect(session.snapshot().session.prePlanPermissionMode).toBeUndefined()
+    expect(sdk.resume).toHaveBeenCalledWith('agent-123', expect.objectContaining({ local: { cwd: '/tmp', sandboxOptions: { enabled: false } } }))
     session.close()
   })
   it('replays resumed history and retains only the newest items', async () => {
     const { session, sdk } = harness({ resume: 'old-agent' })
-    sdk.history.mockResolvedValue(Array.from({ length: MAX_CHAT_ITEMS + 1 }, (_, i) => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text: String(i) } }] } })))
+    sdk.history.mockResolvedValue({ skipped: 0, turns: Array.from({ length: MAX_CHAT_ITEMS + 1 }, (_, i) => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text: String(i) } }] } })) })
     await session.start()
     expect(sdk.resume).toHaveBeenCalledWith('old-agent', expect.objectContaining({ disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } }))
     expect(sdk.history).toHaveBeenCalledWith('agent-123', '/tmp')
@@ -240,7 +268,7 @@ describe('CursorChatSession', () => {
   it('requires login after a mid-run auth failure and requeues the input until login succeeds', async () => {
     const { session, sdk } = await running()
     session.send('Follow-up', [], { delivery: 'queue' }); await tick()
-    sdk.runs[0].finish('error', { message: 'Invalid User API Key' }); await tick()
+    sdk.runs[0].finish('error', { code: 'AUTH_TOKEN_EXPIRED', message: 'Session expired' }); await tick()
     expect(session.snapshot().session.login).toMatchObject({ state: 'required', reason: expect.stringContaining('saved login') })
     expect(session.queued.map((entry) => entry.text)).toEqual(['Hello', 'Follow-up'])
     session.send('Blocked'); expect(session.queued).toHaveLength(2)
@@ -248,6 +276,94 @@ describe('CursorChatSession', () => {
     sdk.loginResult.resolve({}); await tick()
     expect(sdk.sends[1].message.text).toBe('Hello\n\nFollow-up')
     expect(session.queued).toEqual([])
+    expect(sdk.create).toHaveBeenCalledTimes(1)
+    expect(sdk.listModels).toHaveBeenCalledTimes(2)
+    session.close()
+  })
+  it('keeps history failures informational and the resumed agent usable', async () => {
+    const { session, sdk } = harness({ resume: 'old-agent' })
+    sdk.history.mockRejectedValue(new Error('history unavailable'))
+    await session.start()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'info', text: "Couldn't load this chat's earlier messages: history unavailable" })
+    session.send('Continue'); await tick()
+    expect(sdk.sends[0].message.text).toBe('Continue')
+    session.close()
+  })
+  it('reports skipped history once and never replays history after re-login recreates the handle', async () => {
+    const { session, sdk } = harness({ resume: 'old-agent' })
+    sdk.history.mockResolvedValue({ skipped: 2, turns: [{ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text: 'Earlier' } }] } }] })
+    await session.start()
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'info', text: "2 earlier Cursor turns couldn't be loaded." })
+    await session.configure({ permissionMode: 'default' })
+    sdk.resume.mockRejectedValueOnce({ code: 'AUTH_TOKEN_EXPIRED', message: 'Session expired' })
+    session.send('Continue'); await tick()
+    session.send('/login'); await tick()
+    sdk.loginResult.resolve({}); await tick()
+    expect(sdk.history).toHaveBeenCalledTimes(1)
+    expect(sdk.resume).toHaveBeenCalledTimes(3)
+    expect(session.snapshot().items.filter((item) => item.kind === 'assistant_message' && item.text === 'Earlier')).toHaveLength(1)
+    expect(sdk.sends[0].message.text).toBe('Continue')
+    session.close()
+  })
+  it.each([false, true])('removes rejected environment keys after login and still redacts them (shared env: %s)', async (shared) => {
+    vi.stubEnv('CURSOR_API_KEY', 'rejected-test-key')
+    const env = shared ? process.env : { CURSOR_API_KEY: 'rejected-test-key' }
+    const { session, sdk } = harness({ env })
+    try {
+      sdk.listModels.mockRejectedValueOnce({ code: 'BAD_USER_API_KEY', message: 'Rejected' })
+      await session.start()
+      expect(session.snapshot().session.login?.state).toBe('required')
+      session.send('/login'); await tick()
+      sdk.loginResult.resolve({}); await tick()
+      expect(process.env.CURSOR_API_KEY).toBeUndefined()
+      expect(env.CURSOR_API_KEY).toBeUndefined()
+      expect(session.snapshot().session.login).toBeUndefined()
+      sdk.agent.send = async () => { throw new Error('Network error for rejected-test-key') }
+      session.send('Check redaction'); await tick()
+      expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: 'Message not sent: Network error for [redacted]' })
+      expect(JSON.stringify(session.snapshot())).not.toContain('rejected-test-key')
+    } finally { session.close(); await tick(); vi.unstubAllEnvs() }
+  })
+  it.each(['send', 'login'])('retries a startup failure without an agent on the next %s', async (retry) => {
+    const { session, sdk } = harness()
+    sdk.create.mockRejectedValueOnce(new Error('disk unavailable'))
+    await session.start()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: "Couldn't start Cursor: disk unavailable. Sending a message retries." })
+    session.send(retry === 'send' ? 'Retry' : '/login'); await tick()
+    if (retry === 'login') { sdk.loginResult.resolve({}); await tick(); session.send('Retry'); await tick() }
+    expect(sdk.create).toHaveBeenCalledTimes(2)
+    expect(sdk.sends[0].message.text).toBe('Retry')
+    expect(session.snapshot().session.status).toBe('running')
+    session.close()
+  })
+  it('recovers a ready failure after browser login on the next send', async () => {
+    const { session, sdk } = harness()
+    sdk.authStatus.mockResolvedValue({ status: 'logged-out' })
+    await session.start()
+    sdk.create.mockRejectedValueOnce(new Error('disk unavailable'))
+    session.send('/login'); await tick()
+    sdk.authStatus.mockResolvedValue({ status: 'logged-in' })
+    sdk.loginResult.resolve({}); await tick()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().session.login).toBeUndefined()
+    session.send('Retry ready'); await tick()
+    expect(sdk.create).toHaveBeenCalledTimes(2)
+    expect(sdk.sends[0].message.text).toBe('Retry ready')
+    session.close()
+  })
+  it('keeps the existing agent usable when reloading models after login fails', async () => {
+    const { session, sdk } = harness()
+    await session.start()
+    sdk.listModels.mockRejectedValueOnce(new Error('models unavailable'))
+    session.send('/login'); await tick()
+    sdk.loginResult.resolve({}); await tick()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().session.login).toBeUndefined()
+    expect(session.snapshot().items.some((item) => item.kind === 'notice' && item.level === 'error' && item.text.includes('models unavailable'))).toBe(true)
+    session.send('Continue'); await tick()
+    expect(sdk.sends[0].message.text).toBe('Continue')
     expect(sdk.create).toHaveBeenCalledTimes(1)
     expect(sdk.listModels).toHaveBeenCalledTimes(2)
     session.close()
@@ -274,7 +390,7 @@ describe('CursorChatSession', () => {
     const other = harness()
     other.sdk.create.mockRejectedValue(new Error('disk failed'))
     await other.session.start()
-    expect(other.session.snapshot().session).toMatchObject({ status: 'error', error: 'disk failed' })
+    expect(other.session.snapshot().session).toMatchObject({ status: 'idle', error: 'disk failed' })
     other.session.close()
     const failed = harness()
     failed.sdk.authStatus.mockResolvedValue({ status: 'logged-out' })

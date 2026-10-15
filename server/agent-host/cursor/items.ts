@@ -16,13 +16,14 @@ function todos(value: unknown): ChatTodo[] {
   })
 }
 const lines = (value: string) => value ? value.replace(/\n$/, '').split('\n') : []
-function changes(args: Record<string, unknown>): { additions: number; deletions: number; patch?: string } {
+function changes(args: Record<string, unknown>, edit?: Record<string, unknown>): { additions: number; deletions: number; patch?: string } {
   const old = string(args.old_string) ?? string(args.oldString) ?? string(args.oldText)
   const next = string(args.new_string) ?? string(args.newString) ?? string(args.newText) ?? string(args.fileText)
-  const patch = string(args.patch) ?? string(args.diff)
+  const patch = edit ? string(edit.diffString) : string(args.patch) ?? string(args.diff)
     ?? (next !== undefined ? [...lines(old ?? '').map((line) => `-${line}`), ...lines(next).map((line) => `+${line}`)].join('\n') : undefined)
-  return { additions: patch ? patch.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).length : 0,
-    deletions: patch ? patch.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length : 0,
+  const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+  return { additions: count(edit?.linesAdded) ?? (patch ? patch.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).length : 0),
+    deletions: count(edit?.linesRemoved) ?? (patch ? patch.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length : 0),
     ...(patch !== undefined ? { patch: patch.slice(0, MAX_TEXT) } : {}) }
 }
 const TITLES: Record<string, string> = { read: 'Read file', grep: 'Search text', glob: 'Find files', ls: 'List files', mcp: 'MCP tool', semSearch: 'Search code', readLints: 'Read diagnostics', generateImage: 'Generate image' }
@@ -140,7 +141,7 @@ export class CursorItemMapper {
         ...(call.result !== undefined ? { output: failed ? detail(result.error) : `${text(value.stdout)}${text(value.stderr)}`.slice(-MAX_TEXT) } : {}), ...error })]
       case 'edit': case 'write': case 'delete':
         if (!string(args.path)) return []
-        return [this.put({ ...base, kind: 'file_change', toolUseId: callId, toolName: type, path: text(args.path), ...changes(args), ...error })]
+        return [this.put({ ...base, kind: 'file_change', toolUseId: callId, toolName: type, path: text(args.path), ...changes(args, type === 'edit' ? value : undefined), ...error })]
       case 'updateTodos': return [this.put({ ...base, kind: 'todo_list', todos: todos(args.todos) })]
       case 'createPlan': return [this.put({ ...base, kind: 'plan', toolUseId: callId, text: text(args.plan) })]
       case 'task': return [this.put({ ...base, kind: 'subagent', toolUseId: callId, description: text(args.description).slice(0, 500), runtime: 'cursor',

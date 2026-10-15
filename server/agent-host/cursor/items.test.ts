@@ -38,12 +38,24 @@ describe('CursorItemMapper', () => {
   })
   it('maps file inputs conservatively and errors to failed items', () => {
     const mapper = new CursorItemMapper()
-    expect(tool(mapper, 'edit', { path: 'a', old_string: 'old\nline', new_string: 'new' })).toMatchObject({ kind: 'file_change', additions: 1, deletions: 2, patch: '-old\n-line\n+new' })
+    expect(tool(mapper, 'edit', { path: 'a' }, { status: 'success', value: { diffString: '-old\n-line\n+new', linesAdded: 1, linesRemoved: 2 } })).toMatchObject({ kind: 'file_change', additions: 1, deletions: 2, patch: '-old\n-line\n+new' })
     expect(tool(mapper, 'write', { path: 'b', fileText: 'one\ntwo\n' })).toMatchObject({ additions: 2, deletions: 0 })
     expect(tool(mapper, 'delete', { path: 'c' }, { status: 'error', error: 'denied' })).toMatchObject({ kind: 'file_change', additions: 0, deletions: 0, isError: true, status: 'failed' })
     expect(tool(mapper, 'shell', { command: 'false' }, { status: 'error', error: 'failed' })).toMatchObject({ kind: 'command', isError: true, status: 'failed' })
     const edits = mapper.list().filter((item) => item.kind === 'file_change')
     expect(edits.at(-1)).not.toHaveProperty('patch')
+  })
+  it('prefers edit result counts and only counts patch lines when a count is missing', () => {
+    const mapper = new CursorItemMapper()
+    const diffString = '--- a\n+++ a\n@@ -1,2 +1,1 @@\n-old\n-line\n+new'
+    expect(tool(mapper, 'edit', { path: 'a' }, { status: 'success', value: { diffString, linesAdded: 7, linesRemoved: 0 } }))
+      .toMatchObject({ patch: diffString, additions: 7, deletions: 0 })
+    expect(tool(mapper, 'edit', { path: 'a' }, { status: 'success', value: { diffString, linesRemoved: 5 } }))
+      .toMatchObject({ patch: diffString, additions: 1, deletions: 5 })
+    expect(tool(mapper, 'edit', { path: 'a' }, { status: 'success', value: { diffString } }))
+      .toMatchObject({ patch: diffString, additions: 1, deletions: 2 })
+    expect(tool(mapper, 'edit', { path: 'a' }, { status: 'success', value: { linesAdded: 3 } }))
+      .toMatchObject({ additions: 3, deletions: 0 })
   })
   it.each(['read', 'grep', 'glob', 'ls', 'mcp', 'semSearch', 'readLints', 'generateImage', 'futureTool'])('maps %s as a bounded generic tool', (type) => {
     const mapper = new CursorItemMapper()
