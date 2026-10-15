@@ -240,6 +240,34 @@ describe('GitDiffInspector.summary', () => {
     expect(call?.options.env).toMatchObject({ PATH: '/bin', GH_PROMPT_DISABLED: '1' })
   })
 
+  it('caches branch pull request lookups across summary polls', async () => {
+    const found = fakeRepo({
+      pullRequestOutput: JSON.stringify({ number: 42, title: 'T', url: 'https://github.com/example/commando/pull/42', state: 'OPEN', isDraft: false }),
+    })
+    let now = 0
+    const inspector = new GitDiffInspector(found.execute, {}, () => now)
+    const lookups = () => found.calls.filter((entry) => entry.file === 'gh').length
+    await inspector.summary('/repo')
+    now = 2 * 60_000
+    expect((await inspector.summary('/repo')).pullRequest?.number).toBe(42)
+    expect(lookups()).toBe(1)
+    now = 4 * 60_000
+    await inspector.summary('/repo')
+    expect(lookups()).toBe(2)
+
+    const missing = fakeRepo({ pullRequestOutput: '' })
+    now = 0
+    const missingInspector = new GitDiffInspector(missing.execute, {}, () => now)
+    const missingLookups = () => missing.calls.filter((entry) => entry.file === 'gh').length
+    await missingInspector.summary('/repo')
+    now = 30_000
+    await missingInspector.summary('/repo')
+    expect(missingLookups()).toBe(1)
+    now = 90_000
+    await missingInspector.summary('/repo')
+    expect(missingLookups()).toBe(2)
+  })
+
   it('ignores closed pull requests and malformed pull request URLs', async () => {
     const closed = fakeRepo({
       pullRequestOutput: JSON.stringify({

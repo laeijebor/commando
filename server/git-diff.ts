@@ -8,6 +8,12 @@ const DIFF_TIMEOUT_MS = 20_000
 const COMMAND_BUFFER_BYTES = 4 * 1024 * 1024
 const DIFF_BUFFER_BYTES = 32 * 1024 * 1024
 const SUMMARY_CACHE_TTL_MS = 5_000
+// Every pane's summary polls every 15s, and each PR lookup spends GitHub
+// GraphQL budget shared with agents. A found PR changes rarely; a missing one
+// is rechecked sooner so a freshly opened PR shows up within a minute.
+const PULL_REQUEST_FOUND_TTL_MS = 3 * 60_000
+const PULL_REQUEST_MISSING_TTL_MS = 60_000
+const MAX_PULL_REQUEST_CACHE_ENTRIES = 200
 const MAX_PULL_REQUEST_EVIDENCE_CHARS = 128 * 1024
 const MAX_AUTO_BASE_REFS = 4_000
 const MIN_DIFF_WIDTH = 60
@@ -393,6 +399,7 @@ export class GitDiffInspector {
   private readonly summaryCache = new Map<string, { at: number; result: Promise<GitDiffSummary> }>()
   private readonly branchesCache = new Map<string, { at: number; result: Promise<GitBranches> }>()
   private readonly autoBaseCache = new Map<string, { at: number; result: Promise<ResolvedBase> }>()
+  private readonly pullRequestCache = new Map<string, { at: number; result: Promise<GitPullRequest | undefined> }>()
 
   constructor(
     private readonly execute: GitProcessExecutor = defaultExecutor,
@@ -414,6 +421,10 @@ export class GitDiffInspector {
   async pullRequestFromEvidence(root: string, evidence: string): Promise<GitPullRequest | undefined> {
     const reference = latestPullRequestReference(evidence)
     if (!reference) return undefined
+    return this.cachedPullRequest(`${root}${NUL}#${reference.url}`, () => this.lookUpPullRequestReference(root, reference))
+  }
+
+  private async lookUpPullRequestReference(root: string, reference: { number: number; url: string }): Promise<GitPullRequest | undefined> {
     try {
       const { stdout } = await this.execute(
         'gh',
@@ -876,8 +887,39 @@ export class GitDiffInspector {
     return this.execute('git', args, this.options(cwd, COMMAND_TIMEOUT_MS, COMMAND_BUFFER_BYTES))
   }
 
-  private async currentPullRequest(root: string, branch: string): Promise<GitPullRequest | undefined> {
-    if (!branch || branch === 'HEAD') return undefined
+  private currentPullRequest(root: string, branch: string): Promise<GitPullRequest | undefined> {
+    if (!branch || branch === 'HEAD') return Promise.resolve(undefined)
+    return this.cachedPullRequest(`${root}${NUL}${branch}`, () => this.lookUpCurrentPullRequest(root))
+  }
+
+  private cachedPullRequest(key: string, load: () => Promise<GitPullRequest | undefined>): Promise<GitPullRequest | undefined> {
+    const now = this.now()
+    const cached = this.pullRequestCache.get(key)
+    if (cached && now - cached.at < PULL_REQUEST_FOUND_TTL_MS) {
+      // A missing PR expires sooner; an in-flight lookup is always shared.
+      return cached.result.then((pullRequest) => pullRequest || now - cached.at < PULL_REQUEST_MISSING_TTL_MS
+        ? pullRequest
+        : this.refreshPullRequest(key, cached, load))
+    }
+    return this.refreshPullRequest(key, cached, load)
+  }
+
+  private refreshPullRequest(
+    key: string,
+    previous: { at: number; result: Promise<GitPullRequest | undefined> } | undefined,
+    load: () => Promise<GitPullRequest | undefined>,
+  ): Promise<GitPullRequest | undefined> {
+    const current = this.pullRequestCache.get(key)
+    // Concurrent callers that saw the same expired entry share one refresh.
+    if (current && current !== previous) return current.result
+    const entry = { at: this.now(), result: load() }
+    this.pullRequestCache.delete(key)
+    this.pullRequestCache.set(key, entry)
+    if (this.pullRequestCache.size > MAX_PULL_REQUEST_CACHE_ENTRIES) this.pullRequestCache.delete(this.pullRequestCache.keys().next().value!)
+    return entry.result
+  }
+
+  private async lookUpCurrentPullRequest(root: string): Promise<GitPullRequest | undefined> {
     try {
       const { stdout } = await this.execute(
         'gh',
