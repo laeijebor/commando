@@ -177,7 +177,9 @@
 .commando-chat .chat-pr-strip > * { width: 100%; max-width: var(--chat-content-max-width); margin-inline: auto; }
 .commando-chat .chat-pr-row { display: flex; flex-wrap: wrap; align-items: center; row-gap: 4px; gap: 8px; min-width: 0; padding: 5px 8px; margin-bottom: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: var(--text-soft); }
 .commando-chat .chat-pr-row.merged { color: color-mix(in srgb, #b59bea 70%, var(--muted)); background: color-mix(in srgb, #a78bfa 8%, var(--surface-soft)); }
-.commando-chat .chat-pr-row.closed { opacity: .6; }
+.commando-chat .chat-pr-row.closed, .commando-chat .chat-pr-row.dismissed { opacity: .6; }
+.commando-chat .chat-pr-dismiss { display: flex; flex-shrink: 0; padding: 2px; border-radius: 4px; color: var(--muted); cursor: pointer; }
+.commando-chat .chat-pr-dismiss:hover { color: var(--text-soft); background: var(--surface-deep); }
 .commando-chat .chat-pr-link { display: flex; flex: 1 1 14rem; gap: 8px; min-width: 0; color: inherit; text-decoration: none; }
 /* HUD status chips, sized for the chat column; they move below the title before squeezing it. */
 .commando-chat .chat-pr-badges { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; margin-left: auto; }

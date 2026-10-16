@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
-import { CheckCircle2, ChevronDown, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, Undo2, X, XCircle } from 'lucide-react'
 import type { PrAutofixStatus } from '../../shared/pr-types'
 import { prMergeDisabledReason } from '../../shared/pr-merge'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
@@ -11,6 +11,26 @@ import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
 type StripApi = Pick<PrsApiClient, 'pane' | 'list' | 'merge' | 'autofixStatus' | 'setAutofix'> & Partial<Pick<PrsApiClient, 'storeKey'>>
+
+export const DISMISSED_PRS_STORAGE_KEY = 'commando.chat.dismissed-prs'
+const MAX_DISMISSED_PRS = 200
+
+function storedDismissedPrs(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string').slice(-MAX_DISMISSED_PRS) : []
+  } catch {
+    return []
+  }
+}
+
+function storeDismissedPrs(keys: string[]): void {
+  try {
+    window.localStorage.setItem(DISMISSED_PRS_STORAGE_KEY, JSON.stringify(keys.slice(-MAX_DISMISSED_PRS)))
+  } catch {
+    // Dismissal still works in memory when storage is unavailable.
+  }
+}
 
 export function autofixStatusText(status: PrAutofixStatus | null): string {
   if (!status) return 'Enable to watch CI failures and new comments'
@@ -126,6 +146,7 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
 export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; api: StripApi; connected: boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void }) {
   const list = usePanePullRequests(paneId, api, connected)
   const [expanded, setExpanded] = useState(false)
+  const [dismissed, setDismissed] = useState(storedDismissedPrs)
   if (!list?.pullRequests.length) return null
   const openInPanel = (event: MouseEvent<HTMLAnchorElement>, pr: PanePrSummary, tab: PrQuickLookTab) => {
     // Modified clicks keep the browser's open-in-new-tab behaviour.
@@ -133,13 +154,23 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
     event.preventDefault()
     onOpenPr(pr.repo, pr.number, tab)
   }
+  // Keyed by the pane's stable target so a reused tmux pane id starts clean.
+  const dismissKey = (pr: PanePrSummary) => `${list.targetId}:${pr.repo}#${pr.number}`
+  const updateDismissed = (keys: string[]) => { setDismissed(keys); storeDismissedPrs(keys) }
   const prs = [...list.pullRequests].sort((left, right) => Number(right.state === 'open') - Number(left.state === 'open'))
+  const shown = prs.filter((pr) => !dismissed.includes(dismissKey(pr)))
+  const hidden = prs.filter((pr) => dismissed.includes(dismissKey(pr)))
+  const restore = (pr: PanePrSummary) => {
+    updateDismissed(dismissed.filter((key) => key !== dismissKey(pr)))
+    if (hidden.length === 1) setExpanded(false)
+  }
   return (
     <section className="chat-pr-strip" aria-label="Linked pull requests">
-      {(expanded ? prs : prs.slice(0, 2)).map((pr) => {
+      {(expanded ? [...shown, ...hidden] : shown).map((pr) => {
         const Icon = pr.state === 'merged' ? GitMerge : GitPullRequest
+        const isDismissed = hidden.includes(pr)
         return (
-          <div key={`${pr.repo}#${pr.number}`} className={`chat-pr-row ${pr.state}`}>
+          <div key={`${pr.repo}#${pr.number}`} className={`chat-pr-row ${pr.state}${isDismissed ? ' dismissed' : ''}`}>
             <Icon className="size-4 shrink-0" />
             <a className="chat-pr-link" href={pr.url} target="_blank" rel="noopener noreferrer" title={`${pr.repo}#${pr.number}: ${pr.title}`}
               onClick={(event) => openInPanel(event, pr, 'Description')}><span className="font-mono">#{pr.number}</span> <span className="truncate">{pr.title}</span></a>
@@ -153,10 +184,13 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
               <span className="chat-pr-diff"><span className="text-success">+{pr.additions.toLocaleString('en-US')}</span> <span className="text-destructive">−{pr.deletions.toLocaleString('en-US')}</span></span>
               <span className="shrink-0">{pr.state === 'merged' ? 'Merged' : 'Closed'}</span>
             </>}
+            {isDismissed
+              ? <button type="button" className="chat-pr-dismiss" aria-label={`Restore PR #${pr.number}`} title="Restore" onClick={() => restore(pr)}><Undo2 className="size-3.5" /></button>
+              : <button type="button" className="chat-pr-dismiss" aria-label={`Dismiss PR #${pr.number}`} title="Dismiss" onClick={() => updateDismissed([...dismissed, dismissKey(pr)])}><X className="size-3.5" /></button>}
           </div>
         )
       })}
-      {prs.length > 2 ? <button type="button" className="chat-pr-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : `Show ${prs.length - 2} more`}</button> : null}
+      {hidden.length ? <button type="button" className="chat-pr-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : `Show ${hidden.length} more`}</button> : null}
     </section>
   )
 }

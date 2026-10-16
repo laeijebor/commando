@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import type { PrAutofixStatus, PrSummary } from '../../shared/pr-types'
-import { PrStrip } from './PrStrip'
+import { DISMISSED_PRS_STORAGE_KEY, PrStrip } from './PrStrip'
 
 const targetId = '123e4567-e89b-42d3-a456-426614174000'
 function pr(number: number, state: PanePrSummary['state'] = 'open'): PanePrSummary {
@@ -30,10 +30,10 @@ function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?
     list: vi.fn(async () => { throw new Error('unused') }),
     merge: vi.fn(async (_repo: string, _number: number, _head: string, _base?: string) => ({ merged: true as const })),
   } satisfies Pick<PrsApiClient, 'pane' | 'list' | 'merge' | 'autofixStatus' | 'setAutofix'>
-  render(<PrStrip paneId="%1" api={api} connected {...(onOpenPr ? { onOpenPr } : {})} />)
-  return api
+  const view = render(<PrStrip paneId="%1" api={api} connected {...(onOpenPr ? { onOpenPr } : {})} />)
+  return Object.assign(api, { view })
 }
-afterEach(cleanup)
+afterEach(() => { cleanup(); window.localStorage.clear() })
 async function openCi() {
   fireEvent.click(await screen.findByRole('button', { name: 'CI monitoring for PR #12' }))
   await screen.findByText('CI monitoring')
@@ -42,21 +42,43 @@ async function openCi() {
 }
 
 describe('chat PR strip', () => {
-  it('renders open PRs first, diffs and external links, and collapses more than two PRs', async () => {
+  it('renders every PR with open PRs first, diffs and external links', async () => {
     setup([pr(10, 'merged'), pr(11, 'closed'), pr(12), pr(13)])
     const section = await screen.findByRole('region', { name: 'Linked pull requests' })
-    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#12 Change 12', '#13 Change 13'])
-    expect(screen.getAllByText('+125')).toHaveLength(2)
-    expect(screen.getAllByText('−16')).toHaveLength(2)
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#12 Change 12', '#13 Change 13', '#10 Change 10', '#11 Change 11'])
+    expect(screen.getAllByText('+125')).toHaveLength(4)
+    expect(screen.getAllByText('−16')).toHaveLength(4)
     const link = screen.getByRole('link', { name: '#12 Change 12' })
     expect(link).toHaveAttribute('href', 'https://github.com/acme/widgets/pull/12')
     expect(link).toHaveAttribute('target', '_blank')
-    fireEvent.click(screen.getByRole('button', { name: 'Show 2 more' }))
     expect(screen.getByText('Merged').closest('.chat-pr-row')).toHaveClass('merged')
     expect(screen.getByText('Closed').closest('.chat-pr-row')).toHaveClass('closed')
     expect(screen.queryByRole('button', { name: 'CI monitoring for PR #10' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Show \d+ more/ })).not.toBeInTheDocument()
+  })
+
+  it('hides dismissed PRs behind Show more, restores them, and remembers dismissals per pane', async () => {
+    const { view } = setup([pr(10, 'merged'), pr(12), pr(13)])
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss PR #12' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss PR #10' }))
+    const section = screen.getByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#13 Change 13'])
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual([`${targetId}:acme/widgets#12`, `${targetId}:acme/widgets#10`])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 more' }))
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#13 Change 13', '#12 Change 12', '#10 Change 10'])
+    expect(screen.getByRole('link', { name: '#12 Change 12' }).closest('.chat-pr-row')).toHaveClass('dismissed')
     fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
-    expect(screen.queryByText('Merged')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '#12 Change 12' })).not.toBeInTheDocument()
+
+    view.unmount()
+    setup([pr(10, 'merged'), pr(12), pr(13)])
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 2 more' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore PR #12' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore PR #10' }))
+    expect(screen.getByRole('link', { name: '#12 Change 12' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
+    expect(screen.queryByRole('button', { name: /^Show/ })).not.toBeInTheDocument()
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual([])
   })
 
   it('shows the shared HUD status chips for open PRs only', async () => {
