@@ -91,9 +91,11 @@ button.session-indicator::before { width: 6px; height: 6px; content: ''; border-
    the 12px ring, so at rest the disc hides behind the dot. */
 .session-indicator.working::after { --pulse-rest-scale: 0.5; content: ''; position: absolute; top: 50%; left: 50%; z-index: -1; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 14%, transparent); transform: scale(var(--pulse-rest-scale)); animation: session-status-pulse 1.8s ease-in-out infinite; pointer-events: none; will-change: transform; }
 .session-indicator.needs_input::before { border-radius: 1px; background: var(--amber); transform: rotate(45deg); }
-.session-indicator.done::before { box-sizing: border-box; border: 2px solid var(--green); background: transparent; }
+.session-indicator.review::before { background: var(--green); }
+.session-indicator.idle::before { box-sizing: border-box; border: 1.5px solid var(--muted-dim); background: transparent; }
+/* A check: the bottom-left corner of a short box, turned. */
+.session-indicator.finished::before { box-sizing: border-box; width: 7px; height: 4px; border-radius: 0; border-left: 2px solid var(--green); border-bottom: 2px solid var(--green); background: transparent; transform: translateY(-1px) rotate(-45deg); }
 .session-indicator.failed::before { border-radius: 1px; background: var(--red); }
-.session-indicator.stale::before { box-sizing: border-box; border: 1px solid var(--muted-dim); background: transparent; }
 .session-indicator.unknown::before { width: 4px; height: 4px; background: var(--text-faint); }
 .session-indicator.mark { color: var(--muted-dim); }
 .session-indicator.mark::before { width: 4px; height: 11px; border-radius: 2px; background: currentColor; }

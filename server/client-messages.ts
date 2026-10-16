@@ -236,6 +236,16 @@ export function parseClientMessage(value: unknown): ParseResult {
         },
       }
     }
+    case 'mark_panes_seen': {
+      if (
+        !Array.isArray(value.paneIds) ||
+        value.paneIds.length > MAX_SUBSCRIBED_PANES ||
+        !value.paneIds.every(isPaneId)
+      ) {
+        return { ok: false, error: 'Invalid seen panes' }
+      }
+      return { ok: true, message: { type: 'mark_panes_seen', paneIds: [...new Set(value.paneIds)] } }
+    }
     case 'input': {
       const id = requestId(value.requestId)
       if (

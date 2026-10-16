@@ -16,7 +16,7 @@ import type { AgentChatRequest } from '../shared/agent-chats'
 import './session-ide.css'
 import type { PrsApiClient } from './prsApi'
 import { SessionPrCount } from './SessionPrCount'
-import { sessionIndicator } from './sessionIndicator'
+import { paneAttention, paneAttentionLabels, sessionIndicator } from './sessionIndicator'
 
 type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
@@ -29,6 +29,8 @@ type Props = {
   displayedPaneIds: string[]
   statuses: Record<string, AgentStatus>
   marks?: Record<string, PaneMark>
+  /** When the user last viewed each pane, by daemon clock. */
+  seen?: Record<string, number>
   agentChatRequests?: Record<string, AgentChatRequest>
   /** Leased simulators keyed by pane id. */
   simulators?: Record<string, SimulatorClaim>
@@ -54,22 +56,13 @@ const providerLabels: Record<AgentStatus['provider'], string> = {
   unknown: 'Unknown agent',
 }
 
-const statusLabels: Record<AgentStatus['status'], string> = {
-  working: 'working',
-  needs_input: 'needs input',
-  done: 'done',
-  failed: 'failed',
-  stale: 'stale',
-  unknown: 'unknown',
-}
-
 function paneLabel(pane: TmuxPane): string {
   if (pane.empty) return 'Nothing running yet'
   return pane.title || pane.command || `Pane ${pane.index}`
 }
 
-function statusLabel(status: AgentStatus, pane: TmuxPane): string {
-  return `${providerLabels[status.provider]}: ${statusLabels[status.status]} - ${paneLabel(pane)}`
+function statusLabel(status: AgentStatus, seenAt: number | undefined, pane: TmuxPane): string {
+  return `${providerLabels[status.provider]}: ${paneAttentionLabels[paneAttention(status, seenAt)]} - ${paneLabel(pane)}`
 }
 
 function markLabel(mark: PaneMark, pane: TmuxPane): string {
@@ -109,6 +102,7 @@ export function SessionTree(props: Props) {
   const sessionCreateTrigger = useRef<HTMLElement | null>(null)
   const preferenceSaveVersion = useRef(0)
   const marks = props.marks ?? {}
+  const seen = props.seen ?? {}
   const lineageSnapshot = { panes: props.panes, sessions: props.sessions }
   const displayedPaneOrder = new Map(props.displayedPaneIds.map((paneId, index) => [paneId, index]))
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
@@ -388,11 +382,11 @@ export function SessionTree(props: Props) {
               const sessionPanes = props.panes
                 .filter((pane) => pane.sessionId === session.id)
                 .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
-              const indicator = sessionIndicator(sessionPanes, props.statuses, marks)
+              const indicator = sessionIndicator(sessionPanes, props.statuses, marks, seen)
               const indicatorLabel = sessionPanes.flatMap((pane) => {
                 const status = props.statuses[pane.id]
                 const mark = marks[pane.targetId]
-                return [...(status ? [statusLabel(status, pane)] : []), ...(mark ? [markLabel(mark, pane)] : [])]
+                return [...(status ? [statusLabel(status, seen[pane.id], pane)] : []), ...(mark ? [markLabel(mark, pane)] : [])]
               }).join('; ')
               const simulatorPane = sessionPanes.find((pane) => props.simulators?.[pane.id])
               const simulator = simulatorPane && props.simulators?.[simulatorPane.id]

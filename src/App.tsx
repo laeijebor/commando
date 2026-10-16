@@ -180,6 +180,7 @@ import { createSessionManagementApi, type SessionTreePreferences } from './sessi
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { useDesktopWindowActivity } from './desktopWindowActivity'
+import { paneAttention, paneAttentionLabels } from './sessionIndicator'
 import { SessionTokenBroker } from './sessionTokenBroker'
 import { clearToken, getInitialToken, storeToken } from './sessionTokenStorage'
 import { getNativeWindowBridge, useDetachedWebPaneIds } from './nativeWindowBridge'
@@ -501,6 +502,8 @@ export function TerminalPaneCard({
   registerFocusable,
 }: TerminalPaneProps) {
   const paneLabel = pane.title || pane.command || `Pane ${pane.index}`
+  // The header is on screen, so a finished turn here reads as seen.
+  const headerAttention = status ? paneAttention(status, Number.POSITIVE_INFINITY) : null
   const showChat = Boolean(chat) && chatView === 'chat'
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -653,7 +656,7 @@ export function TerminalPaneCard({
           {paneTabs.length}<span className="pane-tab-count-detail"> {paneTabs.length === 1 ? 'tab' : 'tabs'}{paneTabs.some((tab) => tab.unseen) ? ` · ${paneTabs.filter((tab) => tab.unseen).length} new` : ''}</span>
         </span>)}
         {pane.dead ? <span className="pane-state dead">Dead</span> : null}
-        {status ? <span className={`pane-state ${status.status}`}>{status.status.replace('_', ' ')}</span> : null}
+        {headerAttention ? <span className={`pane-state ${headerAttention}`}>{paneAttentionLabels[headerAttention]}</span> : null}
         {mark ? (
           <span className={`pane-mark-chip tone-${mark.tone}`} title={`Pane status: ${mark.label}`}>
             <Bookmark aria-hidden="true" />
@@ -1091,6 +1094,7 @@ export function App() {
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
+  const [paneSeen, setPaneSeen] = useState<Record<string, number>>({})
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
@@ -1470,6 +1474,9 @@ export function App() {
       case 'pane_mark':
         setPaneMarks((current) => ({ ...current, [message.mark.targetId]: message.mark }))
         break
+      case 'pane_seen':
+        setPaneSeen((current) => message.snapshot ? message.seen : { ...current, ...message.seen })
+        break
       case 'pane_mark_snapshot':
         setPaneMarks(Object.fromEntries(message.marks.map((mark) => [mark.targetId, mark])))
         break
@@ -1848,6 +1855,21 @@ export function App() {
     : []
   const subscriptionKey = subscribedPaneIds.join('\u0000')
   const statusSubscriptionKey = statusOnlyPaneIds.join('\u0000')
+  // The selected session's panes are in front of the user while the window is
+  // active, so a turn that ended there is seen rather than left to review.
+  const unseenViewedPaneKey = desktopWindowActive
+    ? [...subscribedPaneIds, ...statusOnlyPaneIds]
+        .filter((paneId) => {
+          const settledAt = agentStatuses[paneId]?.settledAt
+          return settledAt !== undefined && settledAt > (paneSeen[paneId] ?? -Infinity)
+        })
+        .join('\u0000')
+    : ''
+
+  useEffect(() => {
+    if (!connected || !unseenViewedPaneKey) return
+    send({ type: 'mark_panes_seen', paneIds: unseenViewedPaneKey.split('\u0000').slice(0, 64) })
+  }, [connected, unseenViewedPaneKey, send])
 
   useEffect(() => {
     if (!connected || !selectedSessionId) return
@@ -3500,6 +3522,7 @@ export function App() {
               statuses={agentStatuses}
               agentChatRequests={agentChatRequests}
               marks={paneMarks}
+              seen={paneSeen}
               simulators={paneSimulators}
               selectedSessionId={selectedSessionId}
               onSelectSession={selectSession}
