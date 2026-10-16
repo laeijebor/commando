@@ -19,6 +19,8 @@ type SessionBriefApiDependencies = {
   store: SessionBriefStore
   paneTarget: (paneId: string) => { sessionId: string; sessionName: string } | null
   onChange: (brief: SessionBrief) => void
+  /** The pane's agent ran `--state complete`: it considers all requested work finished. */
+  onComplete?: (paneId: string) => void
   screenshots?: PaneScreenshotRegistry
   now?: () => number
 }
@@ -108,13 +110,16 @@ function optionalText(
 
 export type ParsedSessionBriefPatch = Omit<SessionBriefPatch, 'publishedScreenshots'> & {
   screenshots?: { dir: string }
+  /** `state: "complete"` is the agent declaring the work finished, not a brief state. */
+  complete?: true
 }
 
 export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSessionBriefPatch {
   const headline = optionalText(body, 'headline', 180, false)
   const recapMarkdown = optionalText(body, 'recapMarkdown', 2_000, true)
   const next = optionalText(body, 'next', 240, true)
-  const state = body.state
+  const complete = body.state === 'complete'
+  const state = complete ? undefined : body.state
   if (state !== undefined && (typeof state !== 'string' || !STATUS_KINDS.has(state as AgentStatusKind))) {
     throw new HttpError(400, 'state is invalid')
   }
@@ -162,7 +167,7 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
       throw new HttpError(400, 'screenshots.dir must exist and be a directory')
     }
   }
-  if (headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !update && !screenshots && !reference) {
+  if (headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !complete && !update && !screenshots && !reference) {
     throw new HttpError(400, 'At least one session brief field is required')
   }
   return {
@@ -173,6 +178,7 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
     ...(update ? { update } : {}),
     ...(screenshots ? { screenshots } : {}),
     ...(reference ? { reference } : {}),
+    ...(complete ? { complete } : {}),
   }
 }
 
@@ -201,11 +207,16 @@ export class SessionBriefApi {
       const target = this.dependencies.paneTarget(paneId)
       if (!target) throw new HttpError(404, 'Tmux pane does not exist')
       const parsed = parseSessionBriefPatch(await readJson(request))
+      const { screenshots: _screenshots, complete, ...patch } = parsed
+      if (complete && !parsed.screenshots && Object.keys(patch).length === 0) {
+        this.dependencies.onComplete?.(paneId)
+        writeJson(response, 200, { ok: true, brief: null })
+        return true
+      }
       const publishedScreenshots = parsed.screenshots
         ? await this.dependencies.screenshots?.register(paneId, parsed.screenshots.dir)
         : undefined
       if (parsed.screenshots && !publishedScreenshots) throw new Error('Screenshot registry is unavailable')
-      const { screenshots: _screenshots, ...patch } = parsed
       const brief = await this.dependencies.store.applyAgentPatch(
         target.sessionId,
         target.sessionName,
@@ -214,6 +225,7 @@ export class SessionBriefApi {
         this.dependencies.now?.() ?? Date.now(),
       )
       this.dependencies.onChange(brief)
+      if (complete) this.dependencies.onComplete?.(paneId)
       writeJson(response, 200, { ok: true, brief })
       return true
     } catch (error) {

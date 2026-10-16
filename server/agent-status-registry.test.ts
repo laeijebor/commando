@@ -700,8 +700,92 @@ describe('AgentStatusRegistry', () => {
       outcome,
       summary: 'Concise outcome',
       completedAt: 42,
+      ...(marker === '🟢' ? { declared: true } : {}),
     })
     expect(registry.get(paneId)?.status).toBe(outcome === 'blocked' ? 'needs_input' : 'done')
+  })
+
+  it('stamps when a pane settles into done and keeps it through repeat completions', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 1)
+    expect(registry.get(paneId)?.settledAt).toBeUndefined()
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'First' }), 5)
+    expect(registry.get(paneId)?.settledAt).toBe(5)
+    registry.applyClaudeHook(paneId, claudePayload('Notification', { notification_type: 'idle_prompt' }), 65)
+    expect(registry.get(paneId)?.settledAt).toBe(5)
+
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'two' }), 70)
+    expect(registry.get(paneId)?.settledAt).toBeUndefined()
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Second' }), 80)
+    expect(registry.get(paneId)?.settledAt).toBe(80)
+  })
+
+  it('marks the turn declared when the agent ran --state complete', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 1)
+    registry.declareComplete(paneId)
+    registry.applyClaudeHook(paneId, claudePayload('PreToolUse', { tool_name: 'Bash' }), 2)
+    registry.applyClaudeHook(paneId, claudePayload('PostToolUse', { tool_name: 'Bash' }), 3)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'PR opened' }), 4)
+    expect(registry.get(paneId)?.details?.recap).toMatchObject({ outcome: 'done', declared: true })
+
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'two' }), 5)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Another change' }), 6)
+    expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
+  })
+
+  it('lets a follow-up ending override a --state complete declaration', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 1)
+    registry.declareComplete(paneId)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: '🟡 One thing left' }), 2)
+    expect(registry.get(paneId)?.details?.recap).toMatchObject({ outcome: 'follow_up' })
+    expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
+  })
+
+  it('restarts the done run and forgets a used declaration when Codex goes done to done', () => {
+    const registry = new AgentStatusRegistry()
+    registry.declareComplete(paneId)
+    registry.applyCodexEvent(paneId, codexEvent({ 'last-assistant-message': 'Shipped' }), 10)
+    expect(registry.get(paneId)).toMatchObject({ settledAt: 10, details: { recap: { declared: true } } })
+
+    registry.applyCodexEvent(paneId, codexEvent({ 'turn-id': 'turn-2', 'last-assistant-message': 'Tweaked copy' }), 20)
+    expect(registry.get(paneId)?.settledAt).toBe(20)
+    expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
+  })
+
+  it('uses up a declaration when the turn ends blocked', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 1)
+    registry.declareComplete(paneId)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: '🔴 Want me to merge?' }), 2)
+    expect(registry.get(paneId)?.status).toBe('needs_input')
+
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'two' }), 3)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Also did X' }), 4)
+    expect(registry.get(paneId)?.details?.recap?.declared).toBeUndefined()
+  })
+
+  it('keeps a declaration for a chat pane whose host still reports working at Stop', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyChatHost(paneId, { provider: 'claude', status: 'working', sessionId: claudeSessionId }, 1)
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 2)
+    registry.declareComplete(paneId)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'All done' }), 3)
+    expect(registry.get(paneId)).toMatchObject({ status: 'working', details: { recap: { declared: true } } })
+
+    registry.applyChatHost(paneId, { provider: 'claude', status: 'done', sessionId: claudeSessionId }, 4)
+    expect(registry.get(paneId)).toMatchObject({ status: 'done', details: { recap: { outcome: 'done', declared: true } } })
+  })
+
+  it('applies a declaration made after the turn already ended', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyCodexEvent(paneId, codexEvent({ 'last-assistant-message': 'Merged' }), 10)
+    expect(registry.declareComplete(paneId)).toMatchObject({
+      type: 'upsert',
+      status: { status: 'done', settledAt: 10, details: { recap: { declared: true } } },
+    })
+    expect(registry.declareComplete('%9')).toBeNull()
   })
 
   it('uses the first useful final line and deterministic recap fallbacks', () => {
@@ -1329,6 +1413,7 @@ describe('AgentStatusRegistry', () => {
       outcome: 'done',
       summary: 'Second turn finished',
       completedAt: 4_000,
+      declared: true,
     })
   })
 

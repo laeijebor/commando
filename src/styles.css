@@ -1420,9 +1420,8 @@ kbd {
 }
 
 .pane-state.working,
-.pane-state.done { color: var(--green); }
-.pane-state.needs_input,
-.pane-state.stale { color: var(--amber); }
+.pane-state.finished { color: var(--green); }
+.pane-state.needs_input { color: var(--amber); }
 .pane-state.failed,
 .pane-state.dead { color: var(--red); }
 
