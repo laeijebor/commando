@@ -15,6 +15,8 @@ import type { CommandoSnapshot } from '../shared/protocol.js'
 import type { SessionAgentLaunch } from '../shared/tmux-create.js'
 import { inheritedChatPermissionMode } from './agent-chats-api.js'
 import type { ChatConversationIndex } from './chat-conversations.js'
+import { buildResumeCommand, isChatResumeCommand } from './agent-resume-command.js'
+import type { AgentResumeService } from './agent-resume.js'
 import type { TmuxCreator } from './tmux-create.js'
 import type { SessionBriefStore } from './session-briefs.js'
 import type { SessionPreferenceStore } from './session-preferences.js'
@@ -32,7 +34,8 @@ type Dependencies = {
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
-  creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'>
+  creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>
+  resumes: Pick<AgentResumeService, 'findConversation'>
   beforePaneCreated: (paneId: string) => Promise<void>
   refreshSnapshot: () => Promise<unknown>
 }
@@ -132,58 +135,93 @@ export class ChatConversationsApi {
   }
 
   private async resume(input: Record<string, unknown>): Promise<{ paneId: string }> {
-    const { paneId, provider, sessionId, placement } = input
-    if (typeof paneId !== 'string' || !/^%\d+$/.test(paneId)) throw new HttpError(400, 'paneId must be a tmux pane id')
+    const { provider, sessionId, placement } = input
+    if (input.paneId !== undefined && (typeof input.paneId !== 'string' || !/^%\d+$/.test(input.paneId))) throw new HttpError(400, 'paneId must be a tmux pane id')
+    if (input.paneId === undefined && placement !== 'session') throw new HttpError(400, 'paneId is required outside session placement')
     if (provider !== 'claude' && provider !== 'codex' && provider !== 'cursor' && provider !== 'opencode') throw new HttpError(400, 'Unsupported conversation provider')
     if (!isChatConversationSessionId(sessionId)) throw new HttpError(400, 'Invalid conversation id')
-    if (placement !== 'replace' && placement !== 'split') throw new HttpError(400, 'placement must be replace or split')
-    const pane = this.dependencies.snapshot().panes.find((entry) => entry.id === paneId)
-    if (!pane) throw new HttpError(404, 'That pane no longer exists')
-    const chat = this.dependencies.chatSession(paneId)
-    if (!chat) throw new HttpError(409, 'Conversations can only be switched from a chat pane')
+    if (placement !== 'replace' && placement !== 'split' && placement !== 'session') throw new HttpError(400, 'placement must be replace, split or session')
+    const snapshot = this.dependencies.snapshot()
+    const paneId = input.paneId as string | undefined
+    const pane = paneId ? snapshot.panes.find((entry) => entry.id === paneId) : undefined
+    if (paneId && !pane) throw new HttpError(404, 'That pane no longer exists')
+    const chat = paneId ? this.dependencies.chatSession(paneId) : undefined
     const open = this.dependencies.chatSessions().find((session) => session.provider === provider && session.sessionId === sessionId)
     if (open) throw new HttpError(409, open.paneId === paneId ? 'This chat is already on that conversation' : `That conversation is already open in pane ${open.paneId}`)
     // Claimed before anything awaits, so two panes can't both resume one conversation.
     const key = `${provider}:${sessionId}`
     if (this.reserved.has(key)) throw new HttpError(409, 'That conversation is already being opened')
-    if (this.busy.has(paneId)) throw new HttpError(409, 'This pane is already switching')
+    if (paneId && this.busy.has(paneId)) throw new HttpError(409, 'This pane is already switching')
     this.reserved.add(key)
-    this.busy.add(paneId)
+    if (paneId) this.busy.add(paneId)
     let launched = false
     try {
       // Only a conversation the daemon listed: its folder and profile come from the transcript, not the request.
       const conversation = await this.dependencies.index.find(provider as ChatConversationProvider, sessionId)
       if (!conversation) throw new HttpError(404, 'That conversation was not found')
       if (!(await stat(conversation.cwd).then((info) => info.isDirectory(), () => false))) throw new HttpError(409, `Its folder no longer exists: ${conversation.cwd}`)
-      const agentProvider = provider === 'codex' ? 'codex-chat' : 'claude-chat'
-      const launch: SessionAgentLaunch = provider === 'cursor' || provider === 'opencode' ? { provider, resume: sessionId } : {
-        provider: agentProvider,
-        permissionMode: inheritedChatPermissionMode(chat, agentProvider),
-        resume: sessionId,
-        ...(conversation.configDir ? { configDir: conversation.configDir } : {}),
+      const record = this.dependencies.resumes.findConversation(provider, sessionId)
+      const isTui = provider === 'cursor' || provider === 'opencode'
+        || (record ? !isChatResumeCommand(record.command) : !chat)
+      let agent: SessionAgentLaunch | undefined
+      let command: string | undefined
+      if (isTui && record) command = record.command
+      else if (isTui && (provider === 'claude' || provider === 'codex')) {
+        const env = conversation.configDir ? { [provider === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME']: conversation.configDir } : {}
+        command = buildResumeCommand(provider, sessionId, { args: [provider], env }) ?? undefined
+        if (!command) throw new HttpError(409, 'Could not build a resume command')
+      } else if (isTui && (provider === 'cursor' || provider === 'opencode')) agent = { provider, resume: sessionId }
+      else {
+        const agentProvider = provider === 'codex' ? 'codex-chat' : 'claude-chat'
+        agent = {
+          provider: agentProvider,
+          permissionMode: chat ? inheritedChatPermissionMode(chat, agentProvider) : 'default',
+          resume: sessionId,
+          ...(conversation.configDir ? { configDir: conversation.configDir } : {}),
+        }
       }
-      return await this.launch(paneId, conversation.cwd, launch, placement, () => { launched = true })
+      // Session ownership is daemon metadata, never supplied by the requester.
+      const brief = this.dependencies.briefs.conversationRecords().find((entry) => entry.provider === provider && entry.id === sessionId)
+      const session = brief ? { id: brief.sessionId, name: brief.sessionName } : conversation.session
+      const effectivePlacement = placement === 'replace' && !chat && !pane?.empty ? 'split' : placement
+      const fallback = paneId ?? snapshot.panes.find((entry) => entry.active)?.id ?? snapshot.panes[0]?.id
+      return await this.launch(fallback, conversation.cwd, agent, command, effectivePlacement, session, () => { launched = true })
     } catch (error) {
       if (error instanceof HttpError) throw error
       throw new HttpError(502, error instanceof Error ? error.message : String(error))
     } finally {
-      this.busy.delete(paneId)
+      if (paneId) this.busy.delete(paneId)
       // A launched chat's host reports the conversation shortly; until then it stays claimed.
       if (launched) setTimeout(() => this.reserved.delete(key), REGISTER_GRACE_MS).unref()
       else this.reserved.delete(key)
     }
   }
 
-  /** `started` runs once tmux has started the chat, even if a later step fails. */
-  private async launch(paneId: string, cwd: string, agent: SessionAgentLaunch, placement: ChatConversationPlacement, started: () => void): Promise<{ paneId: string }> {
-    if (placement === 'replace') {
-      await this.dependencies.creator.respawnChatPane(paneId, cwd, agent)
+  /** `started` reserves the conversation even if refreshing the snapshot fails. */
+  private async launch(paneId: string | undefined, cwd: string, agent: SessionAgentLaunch | undefined, command: string | undefined,
+    placement: ChatConversationPlacement, session: ChatConversation['session'], started: () => void): Promise<{ paneId: string }> {
+    const creator = this.dependencies.creator
+    if (placement === 'replace' && paneId) {
+      if (command !== undefined) await creator.respawnChatPane(paneId, cwd, undefined, command)
+      else await creator.respawnChatPane(paneId, cwd, agent)
       started()
       await this.dependencies.refreshSnapshot()
       return { paneId }
     }
-    await this.dependencies.beforePaneCreated(paneId)
-    const created = await this.dependencies.creator.createPane({ targetId: paneId, direction: 'horizontal', placement: 'after', cwd, agent })
+    const launch = agent ? { agent } : {}
+    let created: { paneId: string }
+    if (placement === 'session' && session && this.dependencies.snapshot().sessions.some((entry) => entry.id === session.id)) {
+      const input = { sessionId: session.id, cwd, ...launch }
+      created = command === undefined ? await creator.createWindow(input) : await creator.createWindow(input, command)
+    } else if (placement === 'session' && session?.name) {
+      const input = { name: session.name, cwd, ...launch }
+      created = (command === undefined ? await creator.createSession(input) : await creator.createSession(input, command)).created
+    } else {
+      if (!paneId) throw new HttpError(409, 'No pane is available to split beside')
+      await this.dependencies.beforePaneCreated(paneId)
+      const input = { targetId: paneId, direction: 'horizontal' as const, placement: 'after' as const, cwd, ...launch }
+      created = command === undefined ? await creator.createPane(input) : await creator.createPane(input, undefined, command)
+    }
     started()
     await this.dependencies.refreshSnapshot()
     if (!created.paneId) throw new HttpError(502, 'tmux did not report the new pane')
