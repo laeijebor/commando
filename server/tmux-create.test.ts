@@ -951,3 +951,41 @@ describe('Codex chat creation', () => {
     expect(run).not.toHaveBeenCalled()
   })
 })
+
+describe('server-owned resume commands', () => {
+  const command = "env CLAUDE_CONFIG_DIR='/home/me/.claudep' claude --dangerously-skip-permissions --resume abcdefgh"
+  it.each(['pane', 'window', 'session', 'respawn'] as const)('runs the exact command in cwd for %s', async (kind) => {
+    const run = runner()
+    const creator = new TmuxCreator(run, [], undefined, undefined, {})
+    if (kind === 'pane') await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: '/repo' }, undefined, command)
+    if (kind === 'window') await creator.createWindow({ sessionId: '$1', cwd: '/repo' }, command)
+    if (kind === 'session') await creator.createSession({ name: 'original', cwd: '/repo' }, command)
+    if (kind === 'respawn') await creator.respawnChatPane('%1', '/repo', undefined, command)
+    expect(run.mock.calls[0]![0]).toContain('/repo')
+    expect(run.mock.calls[0]![0].at(-1)).toBe(agentLaunchPaneCommand(['/bin/sh', '-c', command], undefined, {}))
+  })
+
+  it.each(['', 'echo bad\ncommand', 'echo bad\rcommand', 'echo bad\tcommand', 'echo bad\0command', 'echo bad\u0085command', 'x'.repeat(8193)])('rejects invalid commands on every creation path', async (command) => {
+    const run = runner()
+    const creator = new TmuxCreator(run)
+    await expect(creator.createPane({ targetId: '%1', direction: 'horizontal' }, undefined, command)).rejects.toThrow('Invalid resume command')
+    await expect(creator.createWindow({ sessionId: '$1' }, command)).rejects.toThrow('Invalid resume command')
+    await expect(creator.createSession({ name: 'original' }, command)).rejects.toThrow('Invalid resume command')
+    await expect(creator.respawnChatPane('%1', '/repo', undefined, command)).rejects.toThrow('Invalid resume command')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('does not take resume commands from creation input objects', async () => {
+    const run = runner()
+    const creator = new TmuxCreator(run)
+    await creator.createWindow({ sessionId: '$1', resumeCommand: 'echo untrusted' } as never)
+    expect(run.mock.calls[0]![0]).not.toContain('echo untrusted')
+  })
+
+  it('supports chat launches in a new window', async () => {
+    const run = runner()
+    const creator = new TmuxCreator(run, [], undefined, undefined, {})
+    await creator.createWindow({ sessionId: '$1', cwd: '/repo', agent: { provider: 'codex-chat', resume: 'abcdefgh' } })
+    expect(run.mock.calls[0]![0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'codex', '--permission-mode', 'default', '--resume', 'abcdefgh'], undefined, {}))
+  })
+})

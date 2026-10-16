@@ -4879,3 +4879,9 @@ body.is-resizing-hud-pinned-note {
 .side-panel-pr-state.merged, .side-panel-pr-indicator.merged { color: var(--purple); }
 .side-panel-pr-state.closed, .side-panel-pr-indicator.closed { color: var(--red); }
 .side-panel-pr-indicator { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+
+.conversation-picker-anchor {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+}

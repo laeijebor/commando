@@ -131,6 +131,7 @@ export type CreateTmuxWindowRequest = {
   sessionId: string
   name?: string
   cwd?: string
+  agent?: SessionAgentLaunch
 }
 
 export type CreateTmuxPaneRequest = {

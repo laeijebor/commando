@@ -150,7 +150,7 @@ type NativeTerminalBridgeEvent =
       pageId: string
       eventSequence: number
       type: 'host.shortcut'
-      payload: { key: 'k' | 'w' | 't' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'; metaKey: true }
+      payload: { key: 'k' | 'w' | 't' | 'T' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'; metaKey: true }
     }
 
 export type NativeTerminalNegotiation =
@@ -328,7 +328,7 @@ function validatePayload(type: string, payload: Record<string, unknown>): boolea
     case 'host.shortcut':
       return hasOnlyKeys(payload, ['key', 'metaKey']) &&
         typeof payload.key === 'string' &&
-        /^(?:[kwt]|[1-9])$/.test(payload.key) &&
+        /^(?:[kwtT]|[1-9])$/.test(payload.key) &&
         payload.metaKey === true
     default:
       return false
@@ -374,7 +374,7 @@ export class NativeTerminalBridge {
   private hitRegionsSupported = false
   private themeSupported = false
   private readonly attachments = new Map<string, AttachmentRecord>()
-  private readonly shortcutListeners = new Set<(key: 'k' | 'w' | 't' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void>()
+  private readonly shortcutListeners = new Set<(key: 'k' | 'w' | 't' | 'T' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void>()
   private readonly previousReceiver = window.__commandoNativeTerminalReceive
   private readonly receiver = (value: unknown) => this.receive(value)
 
@@ -488,7 +488,7 @@ export class NativeTerminalBridge {
   }
 
   subscribeHostShortcuts(
-    listener: (key: 'k' | 'w' | 't' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void,
+    listener: (key: 'k' | 'w' | 't' | 'T' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => void,
   ): () => void {
     this.shortcutListeners.add(listener)
     return () => this.shortcutListeners.delete(listener)
@@ -614,7 +614,7 @@ export class NativeTerminalBridge {
     if (event.type === 'host.shortcut') {
       for (const listener of this.shortcutListeners) listener(event.payload.key)
       window.dispatchEvent(new CustomEvent(NATIVE_TERMINAL_SHORTCUT_EVENT, {
-        detail: { key: event.payload.key, metaKey: true },
+        detail: { key: event.payload.key, metaKey: true, ...(event.payload.key === 'T' ? { shiftKey: true } : {}) },
       }))
       return
     }

@@ -44,6 +44,7 @@ type Props = {
   ides?: SessionIde[]
   ideSessionId?: string | null
   onOpenIde?: (sessionId: string) => void
+  onResumeChat?: (sessionId: string) => void
   prsApi?: PrsApiClient
   connected?: boolean
 }
@@ -460,7 +461,7 @@ export function SessionTree(props: Props) {
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}
-      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>{props.onOpenIde ? <button type="button" role="menuitem" onClick={() => { props.onOpenIde?.(menu.sessionId); setMenu(null) }}><Code2 /> Open IDE</button> : null}<button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
+      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>{props.onOpenIde ? <button type="button" role="menuitem" onClick={() => { props.onOpenIde?.(menu.sessionId); setMenu(null) }}><Code2 /> Open IDE</button> : null}<button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>{props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
     </div>
   )
 }
