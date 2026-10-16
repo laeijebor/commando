@@ -9,6 +9,7 @@ import {
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
   type ServerMessage,
+  type AgentSessionRef,
   type WebPane,
   type WebPaneEngine,
   type WebPanePlacement,
@@ -24,17 +25,22 @@ const WEB_PANE_ID = /^w-[0-9a-f]{8}$/
 const TMUX_SOCKET_HASH = /^[0-9a-f]{64}$/
 const MAX_ALLOWED_ORIGINS = 64
 const MAX_DISMISSED_PR_TABS = 200
+const MAX_PARKED_WEB_PANES = 300
+const PARKED_WEB_PANE_TTL_MS = 30 * 24 * 60 * 60 * 1_000
+const AGENT_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/
 const PLACEMENTS: readonly WebPanePlacement[] = ['right', 'below', 'auto']
 const SIM_UDID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
 const LAYOUT_STATES = ['pending', 'settled'] as const
 
 type PersistedWebPane = WebPane & { tmuxSocketHash?: string }
+type ParkedWebPane = { pane: PersistedWebPane; parkedAt: number }
 
 type StateFile = {
-  version: 1
+  version: 2
   allowedOrigins: string[]
   panes: PersistedWebPane[]
+  parkedPanes: ParkedWebPane[]
   activeTabs: Record<string, string>
   dismissedPrTabs: Record<string, Record<string, string>>
 }
@@ -98,6 +104,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function parseAgentSession(value: unknown): AgentSessionRef | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !AGENT_SESSION_ID.test(value.id)) return undefined
+  if (value.provider !== 'claude' && value.provider !== 'codex' && value.provider !== 'opencode' && value.provider !== 'cursor') return undefined
+  return { provider: value.provider, id: value.id }
+}
+
+function agentSessionKey(session: AgentSessionRef): string {
+  return `${session.provider}:${session.id}`
+}
+
 function parseAnchorSize(value: unknown): { cols: number; rows: number } | undefined | null {
   if (value === undefined) return undefined
   if (!isRecord(value)) return null
@@ -140,10 +156,11 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   if (!isRecord(value)) return null
   const {
     content, id, url, title, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
-    engine, openedBy, openerLabel,
+    engine, openedBy, openerLabel, agentSession,
     status, createdAt, tmuxSocketHash, dock, order, unseen, openRevision,
   } = value
   const parsedAnchorSize = parseAnchorSize(anchorSize)
+  const parsedAgentSession = parseAgentSession(agentSession)
   if (
     typeof id !== 'string' || !WEB_PANE_ID.test(id) ||
     typeof url !== 'string' ||
@@ -157,6 +174,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     typeof placement !== 'string' || !PLACEMENTS.includes(placement as WebPanePlacement) ||
     (layoutState !== undefined && !LAYOUT_STATES.includes(layoutState as typeof LAYOUT_STATES[number])) ||
     parsedAnchorSize === null ||
+    (agentSession !== undefined && !parsedAgentSession) ||
     // Records persisted before the engine field existed default to webkit.
     (engine !== undefined && !ENGINES.includes(engine as WebPaneEngine)) ||
     (openedBy !== 'agent' && openedBy !== 'user') ||
@@ -180,6 +198,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     sessionId,
     windowId,
     anchorPaneId,
+    ...(parsedAgentSession ? { agentSession: parsedAgentSession } : {}),
     placement: placement as WebPanePlacement,
     dock: !panelOnly && dock === 'split' ? 'split' : 'panel',
     order: typeof order === 'number' ? order : -1,
@@ -201,7 +220,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
 }
 
 function parseState(value: unknown): StateFile {
-  if (!isRecord(value) || value.version !== 1) {
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) {
     throw new Error('Web pane state file has an invalid structure')
   }
   const allowedOrigins: string[] = []
@@ -258,7 +277,18 @@ function parseState(value: unknown): StateFile {
       dismissedPrTabs[anchor] = Object.fromEntries(Object.entries(valid).slice(-MAX_DISMISSED_PR_TABS))
     }
   }
-  return { version: 1, allowedOrigins, panes, activeTabs, dismissedPrTabs }
+  const parkedPanes: ParkedWebPane[] = []
+  const ids = new Set(panes.map((pane) => pane.id))
+  if (value.version === 2 && Array.isArray(value.parkedPanes)) {
+    for (const entry of value.parkedPanes) {
+      if (!isRecord(entry) || !Number.isSafeInteger(entry.parkedAt) || (entry.parkedAt as number) < 0) continue
+      const pane = parseWebPane(entry.pane, originSet)
+      if (!pane?.agentSession || !pane.tmuxSocketHash || ids.has(pane.id)) continue
+      ids.add(pane.id)
+      parkedPanes.push({ pane, parkedAt: entry.parkedAt as number })
+    }
+  }
+  return { version: 2, allowedOrigins, panes, parkedPanes, activeTabs, dismissedPrTabs }
 }
 
 type WebPaneEnvironment = Record<string, string | undefined>
@@ -339,6 +369,7 @@ type PruneWindow = { id: string; sessionId: string; paneIds: readonly string[] }
 export class WebPaneService {
   readonly statePath: string
   private readonly panes = new Map<string, WebPane>()
+  private readonly parkedPanes = new Map<string, ParkedWebPane[]>()
   private activeTabs: Record<string, string> = {}
   private dismissedPrTabs: Record<string, Record<string, string>> = {}
   private readonly paneSocketHashes = new Map<string, string>()
@@ -354,6 +385,7 @@ export class WebPaneService {
     now: () => number = Date.now,
     migrationStatePath = statePath === undefined ? defaultMigrationStatePath() : undefined,
     socketIdentity = tmuxSocketIdentity(process.env),
+    private readonly resolveAgentSession: (paneId: string) => AgentSessionRef | undefined = () => undefined,
   ) {
     this.statePath = statePath ?? defaultWebPaneStatePath()
     this.now = now
@@ -379,7 +411,7 @@ export class WebPaneService {
     }
     const raw: unknown = JSON.parse(content)
     const state = parseState(raw)
-    const needsMigration = isRecord(raw) && (!isRecord(raw.activeTabs) ||
+    const needsMigration = isRecord(raw) && (raw.version !== 2 || !isRecord(raw.activeTabs) ||
       (Array.isArray(raw.panes) && raw.panes.some((pane) => isRecord(pane) &&
         (pane.dock === undefined || pane.order === undefined || pane.unseen === undefined))))
     this.allowedOrigins.clear()
@@ -387,15 +419,21 @@ export class WebPaneService {
     this.activeTabs = state.activeTabs
     this.dismissedPrTabs = state.dismissedPrTabs
     this.panes.clear()
+    this.parkedPanes.clear()
     this.paneSocketHashes.clear()
     for (const persistedPane of state.panes) {
       const { tmuxSocketHash: persistedSocketHash, ...pane } = persistedPane
       this.panes.set(pane.id, pane)
       if (persistedSocketHash) this.paneSocketHashes.set(pane.id, persistedSocketHash)
     }
+    for (const entry of state.parkedPanes) {
+      const key = agentSessionKey(entry.pane.agentSession!)
+      this.parkedPanes.set(key, [...(this.parkedPanes.get(key) ?? []), entry])
+    }
+    const parkedChanged = this.trimParkedPanes()
     // Copy rather than move so an isolated daemon cannot take ownership of
     // legacy panes that actually belong to another tmux socket.
-    if (migrated || needsMigration) this.persist()
+    if (migrated || needsMigration || parkedChanged) this.persist()
   }
 
   list(): WebPane[] {
@@ -428,6 +466,8 @@ export class WebPaneService {
   }
 
   open(input: OpenWebPaneInput): WebPane {
+    const agentSession = parseAgentSession(this.resolveAgentSession(input.anchorPaneId))
+    if (agentSession && this.stampAgentSession(input, agentSession)) this.persist()
     const content = parseWebPaneContent(input.content)
     if (content === null) throw new WebPaneError(400, input.content?.kind === 'canvas' ? 'Invalid canvas content' : input.content?.kind === 'guide' ? 'Invalid guide content' : 'Invalid simulator udid')
     const simulator = content?.kind === 'simulator' ? content : undefined
@@ -491,6 +531,7 @@ export class WebPaneService {
       sessionId: input.sessionId,
       windowId: input.windowId,
       anchorPaneId: input.anchorPaneId,
+      ...(agentSession ? { agentSession } : {}),
       placement,
       dock: panelOnly ? 'panel' : input.dock ?? 'panel',
       order: nextWebPaneOrder(this.list(), input.anchorPaneId),
@@ -793,14 +834,95 @@ export class WebPaneService {
     return changed
   }
 
+  private stampAgentSession(
+    anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>,
+    agentSession: AgentSessionRef,
+  ): boolean {
+    let changed = false
+    for (const [id, pane] of this.panes) {
+      if (pane.agentSession || pane.anchorPaneId !== anchor.anchorPaneId ||
+        pane.sessionId !== anchor.sessionId || pane.windowId !== anchor.windowId ||
+        this.paneSocketHashes.get(id) !== this.socketHash) continue
+      this.panes.set(id, { ...pane, agentSession: { ...agentSession } })
+      changed = true
+    }
+    return changed
+  }
+
+  /** Adopts late conversation evidence once, and brings that conversation's tabs back. */
+  reconcileAgentSession(anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>): boolean {
+    const agentSession = parseAgentSession(this.resolveAgentSession(anchor.anchorPaneId))
+    let changed = this.trimParkedPanes()
+    if (agentSession) {
+      changed = this.stampAgentSession(anchor, agentSession) || changed
+      const key = agentSessionKey(agentSession)
+      const entries = this.parkedPanes.get(key) ?? []
+      const remaining: ParkedWebPane[] = []
+      for (const entry of entries) {
+        if (entry.pane.tmuxSocketHash !== this.socketHash || this.panes.size >= MAX_WEB_PANES) {
+          remaining.push(entry)
+          continue
+        }
+        const { tmuxSocketHash: _socketHash, ...pane } = entry.pane
+        const restored: WebPane = {
+          ...pane, ...anchor,
+          order: nextWebPaneOrder(this.list(), anchor.anchorPaneId),
+        }
+        delete restored.layoutState
+        delete restored.anchorSize
+        if (restored.dock === 'panel') restored.layoutState = 'settled'
+        this.panes.set(restored.id, restored)
+        this.paneSocketHashes.set(restored.id, this.socketHash)
+        changed = true
+      }
+      if (remaining.length) this.parkedPanes.set(key, remaining)
+      else this.parkedPanes.delete(key)
+    }
+    if (changed) {
+      this.reconcileActiveTabs()
+      this.persist()
+    }
+    return changed
+  }
+
+  private park(pane: WebPane): void {
+    const key = agentSessionKey(pane.agentSession!)
+    this.parkedPanes.set(key, [...(this.parkedPanes.get(key) ?? []), {
+      pane: { ...pane, tmuxSocketHash: this.paneSocketHashes.get(pane.id) },
+      parkedAt: this.now(),
+    }])
+    this.releaseActiveTab(pane)
+    this.panes.delete(pane.id)
+    this.paneSocketHashes.delete(pane.id)
+  }
+
+  private trimParkedPanes(): boolean {
+    const all = [...this.parkedPanes.values()].flat()
+    const owned = all.filter((entry) => entry.pane.tmuxSocketHash === this.socketHash)
+      .sort((a, b) => b.parkedAt - a.parkedAt)
+    const capacity = Math.max(0, MAX_PARKED_WEB_PANES - (all.length - owned.length))
+    const keep = new Set(owned.filter((entry) => this.now() - entry.parkedAt < PARKED_WEB_PANE_TTL_MS).slice(0, capacity))
+    let changed = false
+    for (const [key, entries] of this.parkedPanes) {
+      // A daemon may load legacy shared state, but never consumes another socket's tabs.
+      const remaining = entries.filter((entry) => entry.pane.tmuxSocketHash !== this.socketHash || keep.has(entry))
+      if (remaining.length === entries.length) continue
+      changed = true
+      if (remaining.length) this.parkedPanes.set(key, remaining)
+      else this.parkedPanes.delete(key)
+    }
+    return changed
+  }
+
   /**
-   * Drops panes whose window disappeared and re-anchors panes whose anchor
-   * pane died to the window's first surviving pane. Foreign-owned panes are
+   * Parks conversation tabs whose anchors disappeared. Drops other panes whose
+   * window disappeared and re-anchors their dead anchors to the window's first
+   * surviving pane. Foreign-owned panes are
    * outside this daemon's authority; unstamped legacy panes stay conservative
    * when their whole session is absent. Returns true when anything changed.
    */
   prune(currentWindows: readonly PruneWindow[]): boolean {
-    if (this.panes.size === 0 && Object.keys(this.activeTabs).length === 0 && Object.keys(this.dismissedPrTabs).length === 0) return false
+    if (this.panes.size === 0 && this.parkedPanes.size === 0 && Object.keys(this.activeTabs).length === 0 && Object.keys(this.dismissedPrTabs).length === 0) return false
     const totalPaneCount = currentWindows.reduce(
       (count, window) => count + window.paneIds.length,
       0,
@@ -817,7 +939,7 @@ export class WebPaneService {
       windows.set(window.id, window)
       windowsBySession.set(window.sessionId, windows)
     }
-    let changed = false
+    let changed = this.trimParkedPanes()
     // Built-in selections have no window or socket metadata. Only a complete,
     // matching snapshot can prove their anchors disappeared.
     let canPruneActiveTabs = currentWindows.every((window) => window.paneIds.length > 0)
@@ -827,20 +949,26 @@ export class WebPaneService {
         canPruneActiveTabs = false
         continue
       }
+      if (pane.agentSession && paneSocketHash === undefined) {
+        canPruneActiveTabs = false
+        continue
+      }
       const sessionWindows = windowsBySession.get(pane.sessionId)
       if (!sessionWindows) {
         if (paneSocketHash === undefined) {
           canPruneActiveTabs = false
           continue
         }
-        this.panes.delete(id)
+        if (pane.agentSession) this.park(pane)
+        else this.panes.delete(id)
         this.paneSocketHashes.delete(id)
         changed = true
         continue
       }
       const window = sessionWindows.get(pane.windowId)
       if (!window) {
-        this.panes.delete(id)
+        if (pane.agentSession) this.park(pane)
+        else this.panes.delete(id)
         this.paneSocketHashes.delete(id)
         changed = true
         continue
@@ -850,6 +978,11 @@ export class WebPaneService {
       // the web pane's anchor disappeared.
       if (window.paneIds.length === 0) continue
       if (!window.paneIds.includes(pane.anchorPaneId)) {
+        if (pane.agentSession) {
+          this.park(pane)
+          changed = true
+          continue
+        }
         this.releaseActiveTab(pane)
         const reanchored: WebPane = {
           ...pane, anchorPaneId: window.paneIds[0],
@@ -862,6 +995,7 @@ export class WebPaneService {
         changed = true
       }
     }
+    changed = this.trimParkedPanes() || changed
     if (changed) this.reconcileActiveTabs()
     if (canPruneActiveTabs) {
       const livePaneIds = new Set(currentWindows.flatMap((window) => window.paneIds))
@@ -882,10 +1016,11 @@ export class WebPaneService {
       this.titleWriteTimer = null
     }
     const state: StateFile = {
-      version: 1,
+      version: 2,
       allowedOrigins: [...this.allowedOrigins],
       activeTabs: { ...this.activeTabs },
       dismissedPrTabs: this.panelDismissedPrTabs(),
+      parkedPanes: [...this.parkedPanes.values()].flat(),
       panes: [...this.panes.values()].map((pane) => {
         const socketHash = this.paneSocketHashes.get(pane.id)
         return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}) }
