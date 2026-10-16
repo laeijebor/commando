@@ -25,6 +25,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
+  AgentSessionRef,
   AgentStatus,
   ClientMessage,
   CommandoSnapshot,
@@ -536,7 +537,7 @@ async function main(): Promise<void> {
   await paneMarks.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted pane marks', error)
   })
-  const webPanes = new WebPaneService()
+  const webPanes = new WebPaneService(undefined, Date.now, undefined, undefined, (paneId) => resolveWebPaneAgentSession(paneId))
   await webPanes.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted web panes', error)
   })
@@ -652,6 +653,21 @@ async function main(): Promise<void> {
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
+  const resolveWebPaneAgentSession = (paneId: string): AgentSessionRef | undefined => {
+    const pane = paneForId(paneId)
+    if (!pane || pane.dead) return undefined
+    const foreground = processStatusForPane(pane).provider
+    const hook = agentStatuses.liveHookStatus(paneId, pane.command)
+    // Ignore delegated child agents and process/title inference. Hooks can arrive
+    // before the brief sync, so prefer fresh foreground evidence when available.
+    if (hook?.agentSessionId && /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/.test(hook.agentSessionId) &&
+      hook.provider !== 'unknown' && (foreground === 'unknown' || hook.provider === foreground)) {
+      return { provider: hook.provider, id: hook.agentSessionId }
+    }
+    const brief = sessionBriefs.get(paneId)
+    if (brief?.agentSessionEnded || brief?.targetId !== pane.targetId || brief.sessionId !== pane.sessionId) return undefined
+    return brief.agentSession
+  }
   const paneSeen = new PaneSeen()
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
@@ -758,7 +774,15 @@ async function main(): Promise<void> {
     assembleClientSessionBriefs(sessionBriefs.values(), clientBriefDependencies())
   )
 
+  const reconcileWebPaneAgentSession = (paneId: string): boolean => {
+    const pane = snapshot.panes.find((candidate) => candidate.id === paneId)
+    return pane ? webPanes.reconcileAgentSession({
+      anchorPaneId: pane.id, sessionId: pane.sessionId, windowId: pane.windowId,
+    }) : false
+  }
+
   const publishSessionBrief = (brief: SessionBrief): Promise<void> => {
+    if (reconcileWebPaneAgentSession(brief.paneId)) publishWebPanes()
     const pane = snapshot.panes.find((candidate) => candidate.id === brief.paneId)
     const previousTargetId = briefTargetIds.get(brief.paneId)
     const previous = previousTargetId === undefined || previousTargetId === pane?.targetId
@@ -801,6 +825,7 @@ async function main(): Promise<void> {
 
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
     if (change?.type === 'upsert') {
+      if (reconcileWebPaneAgentSession(change.status.paneId)) publishWebPanes()
       void canvasPush?.statusChanged(change.status.paneId)
       void guides?.statusChanged(change.status.paneId)
     }
@@ -1537,13 +1562,18 @@ async function main(): Promise<void> {
           companion?.publish()
         }
         const webPanesPruned = webPanes.prune(snapshot.windows)
+        let webPaneConversationsChanged = false
+        // Hooks can precede pane discovery, and loaded briefs need no new hook.
+        for (const paneId of paneIds) {
+          webPaneConversationsChanged = reconcileWebPaneAgentSession(paneId) || webPaneConversationsChanged
+        }
         // Legacy tiles and pending first-render splits resolve from the first
         // healthy snapshot that shows their anchor geometry.
         const webPaneLayoutMetadataResolved = webPanes.resolveLayoutMetadata((paneId) => {
           const pane = paneForId(paneId)
           return pane ? { cols: pane.width, rows: pane.height } : undefined
         })
-        if (webPanesPruned || webPaneLayoutMetadataResolved) {
+        if (webPanesPruned || webPaneConversationsChanged || webPaneLayoutMetadataResolved) {
           publishWebPanes()
         }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)

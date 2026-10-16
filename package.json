@@ -14,6 +14,7 @@
     "desktop:test": "swift test --package-path apps/desktop",
     "desktop:build": "bash scripts/build-desktop-app.sh",
     "desktop:install": "bash scripts/install-desktop-app.sh",
+    "desktop:release": "bash scripts/desktop-release.sh",
     "island:dev": "swift run --package-path apps/island CommandoIsland",
     "island:test": "swift test --package-path apps/island",
     "island:build": "bash scripts/build-island-app.sh",
