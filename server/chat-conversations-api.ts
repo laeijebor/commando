@@ -64,7 +64,7 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 /**
- * The chat's ⌘P picker: lists past conversations, and resumes one as a chat,
+ * The chat's ⌘P picker: lists past conversations, and resumes one as a chat or TUI,
  * in the asking chat's pane or in a new pane beside it. A resumed chat gets
  * the asking chat's permission mode, never more.
  */
@@ -98,7 +98,7 @@ export class ChatConversationsApi {
   private async resume(input: Record<string, unknown>): Promise<{ paneId: string }> {
     const { paneId, provider, sessionId, placement } = input
     if (typeof paneId !== 'string' || !/^%\d+$/.test(paneId)) throw new HttpError(400, 'paneId must be a tmux pane id')
-    if (provider !== 'claude' && provider !== 'codex') throw new HttpError(400, 'provider must be claude or codex')
+    if (provider !== 'claude' && provider !== 'codex' && provider !== 'cursor' && provider !== 'opencode') throw new HttpError(400, 'Unsupported conversation provider')
     if (!isChatConversationSessionId(sessionId)) throw new HttpError(400, 'Invalid conversation id')
     if (placement !== 'replace' && placement !== 'split') throw new HttpError(400, 'placement must be replace or split')
     const pane = this.dependencies.snapshot().panes.find((entry) => entry.id === paneId)
@@ -120,7 +120,7 @@ export class ChatConversationsApi {
       if (!conversation) throw new HttpError(404, 'That conversation was not found')
       if (!(await stat(conversation.cwd).then((info) => info.isDirectory(), () => false))) throw new HttpError(409, `Its folder no longer exists: ${conversation.cwd}`)
       const agentProvider = provider === 'codex' ? 'codex-chat' : 'claude-chat'
-      const launch: SessionAgentLaunch = {
+      const launch: SessionAgentLaunch = provider === 'cursor' || provider === 'opencode' ? { provider, resume: sessionId } : {
         provider: agentProvider,
         permissionMode: inheritedChatPermissionMode(chat, agentProvider),
         resume: sessionId,

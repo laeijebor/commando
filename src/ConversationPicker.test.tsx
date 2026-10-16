@@ -40,6 +40,15 @@ function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0
 }
 
 describe('ConversationPicker', () => {
+  it('labels Cursor and OpenCode conversations', async () => {
+    renderPicker({ load: async () => [
+      conversation('aaaaaaaa-0005', 'Cursor work', pane.path, 1, { provider: 'cursor' }),
+      conversation('ses_session123', 'OpenCode work', pane.path, 2, { provider: 'opencode' }),
+    ] })
+    const options = await screen.findAllByRole('option')
+    expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode'])
+  })
+
   it('groups this worktree, then this repo, then everything else, newest first', async () => {
     renderPicker()
     const groups = await screen.findAllByRole('group')

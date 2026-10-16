@@ -27,7 +27,7 @@ export type SessionAgentLaunch = {
   permissionMode?: ChatPermissionMode
   /** claude-chat only: one stashed plan's folder, which this chat alone may read. */
   readableDir?: string
-  /** Chat providers only: the conversation to carry on. */
+  /** Chat providers, Cursor and OpenCode: the conversation to carry on. */
   resume?: string
 }
 
@@ -88,6 +88,8 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]
   }
+  if (launch.provider === 'cursor' && launch.resume) return [executable, `--resume=${launch.resume}`]
+  if (launch.provider === 'opencode' && launch.resume) return [executable, '-s', launch.resume]
   if (!launch.prompt?.trim()) return [executable]
   if (launch.provider === 'opencode') return [executable, `--prompt=${launch.prompt}`]
   // Claude's Commander parser dispatches exact command names even after `--`.

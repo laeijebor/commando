@@ -1,5 +1,5 @@
 /**
- * Past Claude and Codex conversations the daemon found on disk, for the chat's
+ * Past agent conversations the daemon found on disk, for the chat's
  * ⌘P picker: switch a chat pane to one, or resume one in a new pane.
  */
 
@@ -10,7 +10,7 @@ export const CHAT_CONVERSATION_ROUTES = {
   resume: '/api/chat-conversations/resume',
 } as const
 
-export type ChatConversationProvider = 'claude' | 'codex'
+export type ChatConversationProvider = 'claude' | 'codex' | 'cursor' | 'opencode'
 
 export interface ChatConversation {
   provider: ChatConversationProvider
@@ -52,8 +52,8 @@ export const CHAT_CONVERSATION_SCOPE_LABELS: Record<ChatConversationScope, strin
   other: 'Everything else',
 }
 
-/** Matches the ids the chat host accepts for `--resume`. */
-const SESSION_ID = /^[A-Za-z0-9-]{8,80}$/
+/** OpenCode uses `ses_` ids; all accepted ids remain plain shell words. */
+const SESSION_ID = /^(?:[A-Za-z0-9-]{8,80}|ses_[A-Za-z0-9]{4,76})$/
 
 export function isChatConversationSessionId(value: unknown): value is string {
   return typeof value === 'string' && SESSION_ID.test(value)
@@ -115,7 +115,7 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
   const list = isRecord(value) && Array.isArray(value.conversations) ? value.conversations : []
   return list.flatMap((entry): ChatConversation[] => {
     if (!isRecord(entry)) return []
-    if ((entry.provider !== 'claude' && entry.provider !== 'codex') || !isChatConversationSessionId(entry.sessionId)) return []
+    if ((entry.provider !== 'claude' && entry.provider !== 'codex' && entry.provider !== 'cursor' && entry.provider !== 'opencode') || !isChatConversationSessionId(entry.sessionId)) return []
     const cwd = optionalString(entry.cwd)
     const title = optionalString(entry.title, 500)
     if (!cwd || title === undefined || typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) return []

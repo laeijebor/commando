@@ -157,9 +157,10 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined || resume !== undefined)) {
+  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
     throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
   }
+  if (resume !== undefined && provider !== 'claude-chat' && provider !== 'codex-chat' && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (provider === 'codex-chat' && (configDir !== undefined || readableDir !== undefined)) throw new Error('Codex chat does not accept a Claude profile or readable folder')
   if (provider === 'codex-chat' && permissionMode !== undefined && !CODEX_CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) throw new Error('Unsupported Codex permission mode')
@@ -626,13 +627,13 @@ export class TmuxCreator {
   }
 
   /**
-   * Replaces a chat pane's host with a chat on another conversation, in that
+   * Replaces a chat pane's host with a chat or TUI on another conversation, in that
    * conversation's folder. The caller checks the pane runs a chat.
    */
   async respawnChatPane(paneId: string, cwd: string, launch: SessionAgentLaunch): Promise<void> {
     if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
     const agent = validatedAgent(launch)
-    if (!agent || (agent.provider !== 'claude-chat' && agent.provider !== 'codex-chat')) throw new Error('Only a chat can take over a chat pane')
+    if (!agent || (agent.provider !== 'claude-chat' && agent.provider !== 'codex-chat' && !((agent.provider === 'cursor' || agent.provider === 'opencode') && agent.resume))) throw new Error('Only a chat or resumed TUI can take over a chat pane')
     const directory = validatedPath(cwd)
     if (!directory) throw new Error('A folder is required')
     if (this.launching.has(paneId)) throw new Error('This pane is already starting something')
