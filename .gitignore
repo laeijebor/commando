@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.dist-staging/
+dist.previous/
 .DS_Store
 *.log
 coverage/

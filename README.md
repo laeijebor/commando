@@ -42,6 +42,23 @@ COMMANDO_OWNER_EMAIL=leo@ijebor.com npm start
 
 The production daemon serves the compiled app and prints its `127.0.0.1` URL.
 
+### Desktop release build
+
+For everyday use, run the desktop app as a Release build against a production daemon instead of `npm run desktop:dev`. The dev setup loads the Vite dev server (React's development build) and, in Debug, draws terminals without Metal; both cost noticeably more CPU.
+
+```bash
+# Stop npm run desktop:dev first; both use port 4310.
+COMMANDO_TOKEN=<your token> npm run desktop:release -- install
+```
+
+`install` creates `~/.commando/desktop-release.env` (port, token and any other daemon variables), builds the web UI and the Release app, installs `/Applications/Commando.app`, and registers a launchd agent (`dev.commando.daemon`) that keeps `NODE_ENV=production` running through a login shell. It also puts a **Rebuild Commando** icon on the Desktop, which rebuilds from this checkout, restarts the daemon and relaunches the app, posting a notification when it finishes or fails (log: `~/.commando/logs/rebuild.log`; daemon log: `~/.commando/logs/daemon.log`).
+
+```bash
+npm run desktop:release -- rebuild   # same as the Desktop icon
+npm run desktop:release -- stop      # quit the app and unload the daemon, e.g. before npm run desktop:dev
+npm run desktop:release -- start     # load the daemon again and open the app
+```
+
 ## Commands
 
 ```bash
