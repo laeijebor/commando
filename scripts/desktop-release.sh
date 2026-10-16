@@ -7,7 +7,7 @@
 #   desktop-release.sh install  build and install everything, then start it
 #   desktop-release.sh rebuild  rebuild from this checkout, restart the daemon, relaunch the app
 #   desktop-release.sh start    start the daemon agent and open the app
-#   desktop-release.sh stop     quit the app and unload the daemon agent (e.g. before npm run desktop:dev)
+#   desktop-release.sh stop     quit the app and disable the daemon agent (e.g. before npm run desktop:dev)
 #   desktop-release.sh daemon   run the production daemon in the foreground (what the agent executes)
 
 set -euo pipefail
@@ -23,7 +23,10 @@ icon_dir="${COMMANDO_RELEASE_ICON_DIR:-$HOME/Desktop}"
 app="$install_dir/Commando.app"
 rebuild_icon="$icon_dir/Rebuild Commando.app"
 agent_plist="$HOME/Library/LaunchAgents/$label.plist"
-domain="gui/$(id -u)"
+service="gui/$(id -u)/$label"
+rebuild_lock="$state_dir/desktop-release.lock"
+rebuild_log="$log_dir/rebuild.log"
+web_staging="$root/.dist-staging"
 lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
 log() { printf '[desktop-release] %s\n' "$*"; }
@@ -54,16 +57,36 @@ load_env() {
     [[ -n "${COMMANDO_TOKEN:-}" ]] || fail "COMMANDO_TOKEN is not set in $env_file"
 }
 
-# Build into a staging directory and swap it in, so a failed build never
-# leaves the running daemon without a UI.
-build_web() {
-    local staging="$root/.dist-staging"
-    log "Building the web UI"
-    (cd "$root" && node_modules/.bin/tsc -b && node_modules/.bin/vite build --outDir "$staging" --emptyOutDir)
-    rm -rf "$root/dist.previous"
-    [[ -d "$root/dist" ]] && mv "$root/dist" "$root/dist.previous"
-    mv "$staging" "$root/dist"
-    rm -rf "$root/dist.previous"
+# The agent and the Rebuild icon point at this checkout, so it must outlive
+# them: a worktree is normally removed once its branch merges.
+require_main_checkout() {
+    [[ "$(git -C "$root" rev-parse --git-dir)" == "$(git -C "$root" rev-parse --git-common-dir)" ]] && return 0
+    [[ -n "${COMMANDO_RELEASE_ALLOW_WORKTREE:-}" ]] && return 0
+    fail "$root is a git worktree; install from the main checkout"
+}
+
+agent_pid() {
+    launchctl print "$service" 2>/dev/null | awk '$1 == "pid" { print $3; exit }'
+}
+
+agent_loaded() {
+    launchctl print "$service" >/dev/null 2>&1
+}
+
+unload_agent() {
+    agent_loaded || return 0
+    launchctl bootout "$service" 2>/dev/null || true
+    for _ in {1..50}; do
+        agent_loaded || return 0
+        sleep 0.2
+    done
+    fail "Could not unload $service"
+}
+
+ensure_port_free() {
+    local listener
+    listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+    [[ -z "$listener" ]] || fail "Port $port is already in use (pid $listener). Stop npm run desktop:dev first."
 }
 
 app_pid() {
@@ -82,12 +105,20 @@ quit_app() {
     kill "$pid" 2>/dev/null || true
 }
 
+build_web() {
+    log "Building the web UI"
+    (cd "$root" && node_modules/.bin/tsc -b && node_modules/.bin/vite build --outDir "$web_staging" --emptyOutDir)
+}
+
 # The app gets no shell environment when opened from Finder or the Dock, so the
-# daemon URL and token go into its Info.plist as LSEnvironment.
+# daemon URL and token go into its Info.plist as LSEnvironment. That happens on
+# a private copy: dist/ is served over HTTP without authentication.
 build_app() {
     log "Building the Release desktop app"
     COMMANDO_DESKTOP_BUILD_MODE=release bash "$root/scripts/build-desktop-app.sh"
-    local staged="$root/dist/Commando.app"
+    app_staging="$(mktemp -d)/Commando.app"
+    mv "$root/dist/Commando.app" "$app_staging"
+    chmod -R go-rwx "$(dirname "$app_staging")"
     local launch_env
     launch_env="$(COMMANDO_PORT="$port" node -e '
         const port = process.env.COMMANDO_PORT
@@ -96,18 +127,24 @@ build_app() {
             COMMANDO_PORT: port,
             COMMANDO_DESKTOP_URL: `http://127.0.0.1:${port}/#token=${token}`,
         }))')"
-    plutil -replace LSEnvironment -json "$launch_env" "$staged/Contents/Info.plist"
+    plutil -replace LSEnvironment -json "$launch_env" "$app_staging/Contents/Info.plist"
     local identity="${COMMANDO_CODESIGN_IDENTITY:--}"
-    if [[ "$identity" == "-" ]]; then
-        codesign --force --deep --sign - --timestamp=none "$staged"
-    else
-        codesign --force --deep --sign "$identity" "$staged"
-    fi
+    local sign_args=(--force --deep --sign "$identity")
+    [[ "$identity" == "-" ]] && sign_args+=(--timestamp=none)
+    codesign "${sign_args[@]}" "$app_staging"
+}
 
+# Everything is built before anything is swapped, and the swap is followed
+# straight away by the daemon restart, so the running UI never sees web assets
+# from a different build than the daemon serving them.
+install_builds() {
     quit_app
+    rm -rf "$root/dist"
+    mv "$web_staging" "$root/dist"
     mkdir -p "$install_dir"
     rm -rf "$app"
-    cp -R "$staged" "$app"
+    mv "$app_staging" "$app"
+    rmdir "$(dirname "$app_staging")"
     "$lsregister" -f "$app" >/dev/null 2>&1 || true
     log "Installed $app"
 }
@@ -115,7 +152,8 @@ build_app() {
 write_agent() {
     mkdir -p "$log_dir" "$(dirname "$agent_plist")"
     # A login, interactive zsh gives the daemon (and the agents it launches) the
-    # same PATH and environment as a terminal.
+    # same PATH and environment as a terminal. Without ProcessType launchd
+    # applies background CPU and I/O limits.
     cat >"$agent_plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -137,6 +175,8 @@ write_agent() {
         <key>COMMANDO_RELEASE_STATE_DIR</key>
         <string>$state_dir</string>
     </dict>
+    <key>ProcessType</key>
+    <string>Interactive</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -156,35 +196,36 @@ PLIST
     plutil -lint "$agent_plist" >/dev/null
 }
 
-agent_loaded() {
-    launchctl print "$domain/$label" >/dev/null 2>&1
-}
-
+# Wait for a process other than the one that was running before: the old
+# daemon keeps answering while it shuts down.
 wait_for_daemon() {
+    local previous_pid="${1:-}" pid
     for _ in {1..120}; do
-        [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/")" == 200 ]] && return 0
+        pid="$(agent_pid)"
+        if [[ -n "$pid" && "$pid" != "$previous_pid" ]] &&
+            [[ "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" || true)" == 200 ]]; then
+            return 0
+        fi
         sleep 0.5
     done
-    fail "The daemon did not answer on port $port; see $log_dir/daemon.log"
-}
-
-ensure_port_free() {
-    local listener
-    listener="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
-    [[ -z "$listener" ]] || fail "Port $port is already in use (pid $listener). Stop npm run desktop:dev first."
+    fail "The daemon did not come up on port $port; see $log_dir/daemon.log"
 }
 
 restart_daemon() {
+    [[ -f "$agent_plist" ]] || fail "Missing $agent_plist; run: $script install"
+    launchctl enable "$service"
     if agent_loaded; then
+        local previous_pid
+        previous_pid="$(agent_pid)"
         log "Restarting the daemon"
-        launchctl kickstart -k "$domain/$label"
+        launchctl kickstart -k "$service"
+        wait_for_daemon "$previous_pid"
     else
         ensure_port_free
-        [[ -f "$agent_plist" ]] || fail "Missing $agent_plist; run: $script install"
         log "Starting the daemon agent"
-        launchctl bootstrap "$domain" "$agent_plist"
+        launchctl bootstrap "gui/$(id -u)" "$agent_plist"
+        wait_for_daemon
     fi
-    wait_for_daemon
 }
 
 make_rebuild_icon() {
@@ -195,19 +236,27 @@ make_rebuild_icon() {
     log "Created $rebuild_icon"
 }
 
-rebuild_lock="$state_dir/desktop-release.lock"
-rebuild_log="$log_dir/rebuild.log"
+take_rebuild_lock() {
+    mkdir -p "$log_dir"
+    if [[ -f "$rebuild_lock" ]] && kill -0 "$(cat "$rebuild_lock")" 2>/dev/null; then
+        notify "A rebuild is already running"
+        fail "A rebuild is already running (pid $(cat "$rebuild_lock"))"
+    fi
+    echo $$ >"$rebuild_lock"
+    trap finish_rebuild EXIT
+}
 
 finish_rebuild() {
     local status=$?
-    rmdir "$rebuild_lock" 2>/dev/null || true
+    rm -f "$rebuild_lock"
     (( status == 0 )) || notify "Rebuild failed. Log: $rebuild_log"
 }
 
+# install also (re)writes the agent once the builds succeed, so a failed first
+# install leaves no agent behind to restart at every login.
 rebuild() {
-    mkdir -p "$log_dir"
-    mkdir "$rebuild_lock" 2>/dev/null || fail "A rebuild is already running (remove $rebuild_lock if it is stale)"
-    trap finish_rebuild EXIT
+    local installing="${1:-}"
+    take_rebuild_lock
     exec > >(tee "$rebuild_log") 2>&1
 
     local revision
@@ -218,6 +267,12 @@ rebuild() {
     agent_loaded || ensure_port_free
     build_web
     build_app
+    install_builds
+    if [[ -n "$installing" ]]; then
+        unload_agent
+        write_agent
+        make_rebuild_icon
+    fi
     restart_daemon
     open "$app"
     notify "Rebuilt ${revision%% *} and relaunched"
@@ -241,10 +296,9 @@ run_daemon() {
 
 case "${1:-}" in
     install)
+        require_main_checkout
         ensure_env_file
-        write_agent
-        make_rebuild_icon
-        rebuild
+        rebuild installing
         ;;
     rebuild) rebuild ;;
     start)
@@ -254,7 +308,9 @@ case "${1:-}" in
         ;;
     stop)
         quit_app
-        if agent_loaded; then launchctl bootout "$domain/$label"; fi
+        # Disabling persists across logins, so the agent stays off until start.
+        launchctl disable "$service"
+        unload_agent
         log "Stopped the release daemon and app"
         ;;
     daemon) run_daemon ;;

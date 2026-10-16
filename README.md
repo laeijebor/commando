@@ -55,9 +55,11 @@ COMMANDO_TOKEN=<your token> npm run desktop:release -- install
 
 ```bash
 npm run desktop:release -- rebuild   # same as the Desktop icon
-npm run desktop:release -- stop      # quit the app and unload the daemon, e.g. before npm run desktop:dev
-npm run desktop:release -- start     # load the daemon again and open the app
+npm run desktop:release -- stop      # quit the app and disable the daemon (also across logins), e.g. before npm run desktop:dev
+npm run desktop:release -- start     # enable the daemon again and open the app
 ```
+
+Run `install` from the main checkout: the agent and the Rebuild icon point at it. The daemon runs the server code straight from that checkout, so server changes on `main` take effect at the next daemon restart (normally a rebuild), while UI changes need the rebuild.
 
 ## Commands
 
