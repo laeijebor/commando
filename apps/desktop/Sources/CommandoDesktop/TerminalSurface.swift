@@ -398,6 +398,11 @@ final class HostedTerminalView: TerminalView {
                 return true
             }
         }
+        if shortcutModifiers == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "t" {
+            if !event.isARepeat { shortcutWasPressed?("T") }
+            return true
+        }
         if shortcutModifiers == .command,
            let key = event.charactersIgnoringModifiers?.lowercased(),
            key == "k" || (key.count == 1 && ("1"..."9").contains(key)) {

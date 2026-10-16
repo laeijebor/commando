@@ -33,10 +33,10 @@ export interface ChatConversation {
 }
 
 /** `replace` switches the chat pane to the conversation; `split` resumes it in a new pane beside it. */
-export type ChatConversationPlacement = 'replace' | 'split'
+export type ChatConversationPlacement = 'replace' | 'split' | 'session'
 
 export interface ResumeChatConversationRequest {
-  paneId: string
+  paneId?: string
   provider: ChatConversationProvider
   sessionId: string
   placement: ChatConversationPlacement

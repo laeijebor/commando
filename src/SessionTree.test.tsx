@@ -901,3 +901,22 @@ describe('agent chat sidebar', () => {
     expect(screen.queryByRole('button', { name: 'claude wants to open a chat' })).not.toBeInTheDocument()
   })
 })
+
+it('offers Resume a chat between Rename and Archive and passes the session id', async () => {
+  const onResumeChat = vi.fn()
+  render(<SessionTree
+    token="token" sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }]}
+    panes={[pane('%1', 0, 'Agent pane')]} displayedPaneIds={['%1']} statuses={{}} selectedSessionId="$1"
+    onSelectSession={vi.fn()} onSelectPane={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()}
+    onResumeChat={onResumeChat} connected
+  />)
+  await screen.findByRole('button', { name: 'Group sessions manually', pressed: true })
+  fireEvent.click(screen.getByRole('button', { name: 'Actions for work' }))
+  const items = screen.getAllByRole('menuitem').map((item) => item.textContent?.trim())
+  expect(items.indexOf('Resume a chat…')).toBe(items.indexOf('Rename') + 1)
+  expect(items.indexOf('Archive session')).toBe(items.indexOf('Resume a chat…') + 1)
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Resume a chat…' }))
+  expect(onResumeChat).toHaveBeenCalledWith('$1')
+  expect(onResumeChat).toHaveBeenCalledTimes(1)
+  expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+})

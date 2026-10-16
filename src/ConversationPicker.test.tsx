@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ChatState } from '../shared/agent-chat'
@@ -218,5 +218,60 @@ describe('openConversationPanes', () => {
       ['claude:aaaaaaaa-0001', { paneId: '%2', label: 'pane %2' }],
       ['codex:cccccccc-0001', { paneId: '%1', label: 'pane %1' }],
     ])
+  })
+})
+
+describe('resume entry points', () => {
+  it.each([
+    ['replace', false, 'Switch this pane'],
+    ['replace', true, 'Switch (stops this turn)'],
+    ['split', false, 'Open beside'],
+    ['session', false, 'In its session'],
+  ] as const)('shows Enter placement %s and resumes accordingly', async (defaultPlacement, busy, label) => {
+    const { input, onPick } = renderPicker({ defaultPlacement, busy, open: new Map() })
+    await screen.findAllByRole('option')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent(`Enter ${label}`)
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    expect(onPick).toHaveBeenCalledWith(conversations[3], defaultPlacement)
+  })
+
+  it('resumes in its session with option-Enter and only shows the hint for a session row', async () => {
+    const { input, onPick } = renderPicker({ open: new Map() })
+    await screen.findAllByRole('option')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('⌥Enter In its session')
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter', altKey: true }) })
+    expect(onPick).toHaveBeenCalledWith(conversations[3], 'session')
+  })
+
+  it('omits the option-Enter hint for a conversation outside Commando', async () => {
+    const { input } = renderPicker()
+    await screen.findAllByRole('option')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    // "work" also matches the other row's worktree path.
+    fireEvent.change(input, { target: { value: 'Elsewhere work other' } })
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Elsewhere work')
+    expect(input).toHaveAttribute('aria-activedescendant', 'conversation-claude-aaaaaaaa-0001')
+    expect(screen.getByRole('contentinfo')).not.toHaveTextContent('⌥Enter')
+  })
+
+  it('starts filtered to a session and lets the user dismiss its chip', async () => {
+    const { input, onPick, onJump } = renderPicker({ initialSessionFilter: { id: '$2', name: 'vivi' }, defaultPlacement: 'session' })
+    expect(await screen.findAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('Main checkout work')
+    const chip = screen.getByRole('button', { name: 'Clear session filter: vivi' })
+    expect(chip).toHaveTextContent('Session: vivi')
+    fireEvent.click(chip)
+    expect(screen.queryByRole('button', { name: 'Clear session filter: vivi' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('option')).toHaveLength(conversations.length)
+    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Open elsewhere')
+    fireEvent.change(input, { target: { value: 'Feature work' } })
+    // Both rows match via their paths; choose the closed conversation explicitly.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Feature work')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('Enter In its session')
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter', metaKey: true }) })
+    expect(onPick).toHaveBeenCalledWith(conversations[2], 'split')
+    expect(onJump).not.toHaveBeenCalled()
   })
 })

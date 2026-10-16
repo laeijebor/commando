@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
+import type { AgentResumeRecord } from './agent-resume.js'
 import type { ConversationBriefRecord } from './session-briefs.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
@@ -35,18 +36,21 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string }[]; groups?: { id: string; name: string; sessionIds: string[] }[]; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string }[]; groups?: { id: string; name: string; sessionIds: string[] }[]; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
     respawnChatPane: vi.fn(async () => {}),
+    createWindow: vi.fn(async () => ({ paneId: '%10' }) as never),
+    createSession: vi.fn(async () => ({ created: { paneId: '%11' } }) as never),
     createPane: vi.fn(async () => ({ paneId: '%9' }) as never),
   }
   const api = new ChatConversationsApi({
     index: { list: vi.fn(async () => [conversation]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
+    resumes: { findConversation: (provider, sessionId) => options.resumeRecord ? { targetId: 'target', provider, sessionId, path: folder, command: 'env codex resume ' + ID, serverId: 'test', updatedAt: 1, ...options.resumeRecord } : undefined },
     briefs: { conversationRecords: () => options.records ?? [] },
     sessionPreferences: { read: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [] }) },
-    snapshot: () => ({ sessions: options.sessions ?? [], panes: [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
+    snapshot: () => ({ sessions: options.sessions ?? [], panes: [{ id: '%1', empty: options.empty }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
     creator: options.creator ?? creator,
@@ -156,14 +160,96 @@ describe('ChatConversationsApi', () => {
     }
   })
 
-  it('refuses unknown conversations, non-chat panes, open conversations and missing folders', async () => {
+  it('refuses unknown conversations, open conversations and missing folders', async () => {
     expect(await setup().resume({ sessionId: '22222222-0000' })).toMatchObject({ status: 404 })
-    expect(await setup().resume({ paneId: '%2' })).toMatchObject({ status: 409, body: { error: expect.stringContaining('from a chat pane') } })
     const open = setup({ chats: [chat(), chat({ paneId: '%2', provider: 'codex', sessionId: ID })] })
     expect(await open.resume({})).toMatchObject({ status: 409, body: { error: 'That conversation is already open in pane %2' } })
     const gone = setup({ conversation: { cwd: join(folder, 'deleted') } })
     expect(await gone.resume({})).toMatchObject({ status: 409, body: { error: expect.stringContaining('no longer exists') } })
     expect(await setup().resume({ placement: 'elsewhere' })).toMatchObject({ status: 400 })
     expect(open.creator.respawnChatPane).not.toHaveBeenCalled()
+  })
+})
+
+describe('resume placement and launch selection', () => {
+  it.each([
+    ['chat', false, true, 'replace', 'respawnChatPane'],
+    ['chat split', false, true, 'split', 'createPane'],
+    ['empty', true, false, 'replace', 'respawnChatPane'],
+    ['empty split', true, false, 'split', 'createPane'],
+    ['terminal', false, false, 'replace', 'createPane'],
+    ['terminal split', false, false, 'split', 'createPane'],
+  ] as const)('%s follows safe placement', async (_name, empty, isChat, placement, method) => {
+    const { resume, creator } = setup({ empty, chats: isChat ? [chat()] : [] })
+    expect(await resume({ placement })).toMatchObject({ status: 200 })
+    expect(creator[method]).toHaveBeenCalledOnce()
+    if (method === 'createPane') expect(creator.respawnChatPane).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])('opens in its original session (exists: %s), without a requester', async (exists) => {
+    const { resume, creator } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$7', sessionName: 'original', paneOpen: false, references: [], updatedAt: 1 }],
+      sessions: exists ? [{ id: '$7', name: 'original' }] : [],
+    })
+    expect(await resume({ paneId: undefined, placement: 'session', session: { id: '$9', name: 'untrusted' } })).toMatchObject({ status: 200, body: { paneId: exists ? '%10' : '%11' } })
+    if (exists) expect(creator.createWindow).toHaveBeenCalledWith({ sessionId: '$7', cwd: folder }, `env codex resume ${ID}`)
+    else expect(creator.createSession).toHaveBeenCalledWith({ name: 'original', cwd: folder }, `env codex resume ${ID}`)
+    expect(creator.createPane).not.toHaveBeenCalled()
+    expect(creator.respawnChatPane).not.toHaveBeenCalled()
+  })
+
+  it('falls back to a split when the conversation has no session, including without a requester', async () => {
+    for (const paneId of ['%1', undefined]) {
+      const { resume, creator } = setup()
+      expect(await resume({ paneId, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%9' } })
+      expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ targetId: '%1', cwd: folder }), ...(paneId ? [] : [undefined, `env codex resume ${ID}`]))
+    }
+  })
+
+  it('reuses the recorded TUI command verbatim from a chat or terminal, ignoring request commands', async () => {
+    const command = `env CLAUDE_CONFIG_DIR='/home/me/.claudep' claude --dangerously-skip-permissions --resume ${ID}`
+    for (const chats of [[chat()], []]) {
+      const { resume, creator } = setup({ chats, resumeRecord: { command }, conversation: { provider: 'claude' } })
+      expect(await resume({ provider: 'claude', placement: 'split', command: 'echo untrusted' })).toMatchObject({ status: 200 })
+      expect(creator.createPane).toHaveBeenCalledWith({ targetId: '%1', direction: 'horizontal', placement: 'after', cwd: folder }, undefined, command)
+    }
+  })
+
+  it.each([
+    `/checkout/scripts/commando-agent claude --resume ${ID}`,
+    `env COMMANDO_PORT=4410 '/checkout with spaces/scripts/commando-agent' codex --resume ${ID}`,
+    '$COMMANDO_CHAT_RESUME',
+    '${COMMANDO_CHAT_RESUME}',
+  ])('recognises saved chat command %s, and uses indexed profile and inherited permissions', async (command) => {
+    const { resume, creator } = setup({ conversation: { provider: 'claude', configDir: join(homedir(), '.claudep') }, resumeRecord: { command }, chats: [chat({ permissionMode: 'plan' })] })
+    expect(await resume({ provider: 'claude', command: 'echo untrusted' })).toMatchObject({ status: 200 })
+    expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'claude-chat', resume: ID, configDir: join(homedir(), '.claudep'), permissionMode: 'plan' })
+  })
+
+  it('resumes a saved chat from outside a chat with default permissions', async () => {
+    const { resume, creator } = setup({ chats: [], resumeRecord: { command: `commando-agent codex --resume ${ID}` } })
+    expect(await resume({})).toMatchObject({ status: 200 })
+    expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'codex-chat', resume: ID, permissionMode: 'default' } }))
+  })
+
+  it.each(['claude', 'codex'] as const)('builds a profiled %s TUI without a record from a terminal or empty pane', async (provider) => {
+    for (const empty of [false, true]) {
+      const { resume, creator } = setup({ chats: [], empty, conversation: { provider, configDir: '/home/me/profile with spaces' } })
+      expect(await resume({ provider })).toMatchObject({ status: 200 })
+      const command = provider === 'claude'
+        ? `env 'CLAUDE_CONFIG_DIR=/home/me/profile with spaces' claude --resume ${ID}`
+        : `env 'CODEX_HOME=/home/me/profile with spaces' codex resume ${ID}`
+      if (empty) expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, undefined, command)
+      else expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ cwd: folder }), undefined, command)
+    }
+  })
+
+  it('requires a valid requester outside session placement and still reserves session launches', async () => {
+    const { resume, creator } = setup({ conversation: { session: { id: '$7', name: 'original' } }, sessions: [{ id: '$7', name: 'original' }] })
+    expect(await resume({ paneId: undefined })).toMatchObject({ status: 400 })
+    expect(await resume({ paneId: 'bad', placement: 'session' })).toMatchObject({ status: 400 })
+    const results = await Promise.all([resume({ paneId: undefined, placement: 'session' }), resume({ paneId: undefined, placement: 'session' })])
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409])
+    expect(creator.createWindow).toHaveBeenCalledOnce()
   })
 })

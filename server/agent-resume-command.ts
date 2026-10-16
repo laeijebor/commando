@@ -366,3 +366,9 @@ export function buildChatReturnCommand(
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
   return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId, '--from-claude-code'].map(shellQuote).join(' ')
 }
+
+/** Saved chat launchers must return through the host rather than start a second CLI. */
+export function isChatResumeCommand(command: string): boolean {
+  return /(?:^|[\s'"/])commando-agent['"]?\s+(?:claude|codex)(?:\s|$)/u.test(command)
+    || /\$\{?COMMANDO_CHAT_RESUME\}?/u.test(command)
+}

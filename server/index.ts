@@ -1880,6 +1880,7 @@ async function main(): Promise<void> {
   const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
+    resumes: agentResume,
     briefs: sessionBriefs,
     sessionPreferences: new SessionPreferenceStore(),
     snapshot: () => snapshot,
