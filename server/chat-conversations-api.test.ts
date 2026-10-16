@@ -8,6 +8,7 @@ import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
 const ID = '11111111-2222-3333-4444-555555555555'
 let folder: string
@@ -33,7 +34,7 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[] } = {}) {
+function setup(options: { conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -45,7 +46,7 @@ function setup(options: { conversation?: Partial<ChatConversation>; chats?: Chat
     snapshot: () => ({ panes: [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
-    creator,
+    creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
     refreshSnapshot: vi.fn(async () => {}),
   })
@@ -58,6 +59,24 @@ function setup(options: { conversation?: Partial<ChatConversation>; chats?: Chat
 }
 
 describe('ChatConversationsApi', () => {
+  it.each([
+    ['cursor', ID, ['agent', `--resume=${ID}`]],
+    ['opencode', 'ses_ed3f6d576ffeGGkSAFgSk4Snvz', ['opencode', '-s', 'ses_ed3f6d576ffeGGkSAFgSk4Snvz']],
+  ] as const)('resumes %s with the TUI argv and indexed cwd, in either placement', async (provider, sessionId, argv) => {
+    for (const placement of ['split', 'replace'] as const) {
+      const run = vi.fn(async (_args: readonly string[]) => ['$1', 'test', '@1', '0', 'test', '%9', '1', folder, folder].join('\u001f'))
+      const resolve = vi.fn(async (name: string) => `/host/bin/${name}`)
+      const creator = new TmuxCreator(run, ['-L', 'conversation-test'], undefined, resolve, {})
+      const { resume } = setup({ creator, conversation: { provider, sessionId } })
+      expect(await resume({ provider, sessionId, placement, cwd: '/untrusted/request' })).toMatchObject({ status: 200, body: { paneId: placement === 'split' ? '%9' : '%1' } })
+      const args = run.mock.calls[0]![0]
+      expect(args).toContain(placement === 'split' ? 'split-window' : 'respawn-pane')
+      expect(args.slice(args.indexOf('-c'), args.indexOf('-c') + 2)).toEqual(['-c', folder])
+      expect(args.at(-1)).toBe(agentLaunchPaneCommand([`/host/bin/${argv[0]}`, ...argv.slice(1)], undefined, {}))
+      expect(resolve).toHaveBeenCalledWith(argv[0], {})
+    }
+  })
+
   it('lists conversations', async () => {
     const { api, conversation } = setup()
     const { fake, result } = response()

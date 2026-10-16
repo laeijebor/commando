@@ -191,7 +191,7 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
                   >
                     <span className="command-icon"><History aria-hidden="true" /></span>
                     <span><strong>{conversation.title}</strong><small>{detail}</small></span>
-                    <span className="command-kind">{where ?? (conversation.provider === 'codex' ? 'Codex' : 'Claude')}</span>
+                    <span className="command-kind">{where ?? ({ claude: 'Claude', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode' }[conversation.provider])}</span>
                   </button>
                 )
               })}
