@@ -3037,6 +3037,7 @@ export function App() {
   const conversationPicker = conversationPane && conversationChat ? (
     <ConversationPicker
       pane={conversationPane}
+      sessionName={sessionMap.get(conversationPane.sessionId)?.name ?? conversationPane.sessionId}
       {...(conversationChat.session.sessionId ? { current: chatConversationKey(conversationChat.session.provider, conversationChat.session.sessionId) } : {})}
       open={openConversationPanes(chats, agentStatuses, (paneId) => {
         const pane = paneMap.get(paneId)

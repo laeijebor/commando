@@ -3,8 +3,6 @@
  * ⌘P picker: switch a chat pane to one, or resume one in a new pane.
  */
 
-import type { PaneRepo } from './protocol.js'
-
 export const CHAT_CONVERSATION_ROUTES = {
   list: '/api/chat-conversations',
   resume: '/api/chat-conversations/resume',
@@ -27,6 +25,11 @@ export interface ChatConversation {
   repoRoot?: string
   /** The checkout (main or worktree) `cwd` is in. */
   checkoutRoot?: string
+  session?: { id: string; name: string; group?: string }
+  headline?: string
+  refs?: { label: string; url?: string }[]
+  paneOpen?: boolean
+  profile?: string
 }
 
 /** `replace` switches the chat pane to the conversation; `split` resumes it in a new pane beside it. */
@@ -44,14 +47,6 @@ export interface ResumeChatConversationResponse {
   paneId: string
 }
 
-export type ChatConversationScope = 'worktree' | 'repo' | 'other'
-
-export const CHAT_CONVERSATION_SCOPE_LABELS: Record<ChatConversationScope, string> = {
-  worktree: 'This worktree',
-  repo: 'This repo',
-  other: 'Everything else',
-}
-
 /** OpenCode uses `ses_` ids; all accepted ids remain plain shell words. */
 const SESSION_ID = /^(?:[A-Za-z0-9-]{8,80}|ses_[A-Za-z0-9]{4,76})$/
 
@@ -63,43 +58,49 @@ export function chatConversationKey(provider: ChatConversationProvider, sessionI
   return `${provider}:${sessionId}`
 }
 
-function within(path: string, root: string): boolean {
-  return path === root || path.startsWith(root.endsWith('/') ? root : `${root}/`)
-}
-
-/**
- * Where a conversation sits relative to a pane: its checkout, another checkout of
- * its repo, or elsewhere. Outside a repo only the pane's own folder counts as "this".
- */
-export function chatConversationScope(conversation: ChatConversation, pane: { path: string; repo?: PaneRepo }): ChatConversationScope {
-  if (!pane.repo) return conversation.cwd === pane.path ? 'worktree' : 'other'
-  const checkout = pane.repo.worktreeRoot ?? pane.repo.root
-  // A known checkout decides: a worktree nested inside the main checkout is still its own.
-  if (conversation.checkoutRoot ? conversation.checkoutRoot === checkout : within(conversation.cwd, checkout)) return 'worktree'
-  return conversation.repoRoot === pane.repo.root ? 'repo' : 'other'
-}
-
-/** Case-insensitive match of every word in the query against the title, folder and branch. */
+/** Case-insensitive match of every query word across conversation and session metadata. */
 export function matchesChatConversation(conversation: ChatConversation, query: string): boolean {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-  if (!words.length) return true
-  const haystack = `${conversation.title} ${conversation.cwd} ${conversation.branch ?? ''} ${conversation.provider}`.toLowerCase()
+  const haystack = [conversation.session?.name, conversation.session?.group, conversation.headline,
+    conversation.title, ...(conversation.refs ?? []).map((ref) => ref.label), conversation.branch,
+    conversation.cwd, conversation.provider, conversation.profile].filter(Boolean).join(' ').toLowerCase()
   return words.every((word) => haystack.includes(word))
 }
 
-/** The picker's groups in order (this worktree, this repo, everything else), newest first, empty ones left out. */
+export type ChatConversationGroup = { id: string; label: string; conversations: ChatConversation[] }
+
+/** The current session first, other sessions by recency, then conversations outside Commando. */
 export function groupChatConversations(
   conversations: readonly ChatConversation[],
-  pane: { path: string; repo?: PaneRepo },
+  session: { id: string; name: string },
   query = '',
-): { scope: ChatConversationScope; conversations: ChatConversation[] }[] {
-  const groups: Record<ChatConversationScope, ChatConversation[]> = { worktree: [], repo: [], other: [] }
-  for (const conversation of conversations) {
-    if (matchesChatConversation(conversation, query)) groups[chatConversationScope(conversation, pane)].push(conversation)
+): ChatConversationGroup[] {
+  const groups = new Map<string, ChatConversationGroup>()
+  const currentId = `session:${session.name}`
+  for (const conversation of [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)) {
+    if (!matchesChatConversation(conversation, query)) continue
+    // tmux reuses numeric ids after a restart; only an open pane can vouch for one.
+    const isCurrent = conversation.session && (conversation.session.name === session.name
+      || (conversation.paneOpen && conversation.session.id === session.id))
+    const id = isCurrent ? currentId : conversation.session ? `session:${conversation.session.name}` : 'outside'
+    let group = groups.get(id)
+    if (!group) {
+      const label = isCurrent ? `This session · ${session.name}` : conversation.session
+        ? [conversation.session.name, conversation.session.group].filter(Boolean).join(' · ') : 'Outside Commando'
+      group = { id, label, conversations: [] }
+      groups.set(id, group)
+    }
+    group.conversations.push(conversation)
   }
-  return (['worktree', 'repo', 'other'] as const)
-    .map((scope) => ({ scope, conversations: groups[scope].sort((a, b) => b.updatedAt - a.updatedAt) }))
-    .filter((group) => group.conversations.length)
+  return [...groups.values()].sort((a, b) => {
+    const rank = (id: string) => id === currentId ? 0 : id === 'outside' ? 2 : 1
+    return rank(a.id) - rank(b.id) || b.conversations[0]!.updatedAt - a.conversations[0]!.updatedAt
+  })
+}
+
+export function chatConversationProviderLabel(conversation: ChatConversation): string {
+  return conversation.provider === 'claude' && conversation.profile ? conversation.profile
+    : { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode' }[conversation.provider]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -123,6 +124,16 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
     const configDir = optionalString(entry.configDir)
     const repoRoot = optionalString(entry.repoRoot)
     const checkoutRoot = optionalString(entry.checkoutRoot)
+    const headline = optionalString(entry.headline, 500)
+    const profile = optionalString(entry.profile, 500)
+    const session = isRecord(entry.session) && optionalString(entry.session.id, 128) && optionalString(entry.session.name, 128)
+      ? { id: entry.session.id as string, name: entry.session.name as string,
+          ...(optionalString(entry.session.group, 128) ? { group: entry.session.group as string } : {}) } : undefined
+    const refs = Array.isArray(entry.refs) ? entry.refs.slice(0, 20).flatMap((ref) => {
+      if (!isRecord(ref) || !optionalString(ref.label)) return []
+      const url = optionalString(ref.url)
+      return [{ label: ref.label as string, ...(url ? { url } : {}) }]
+    }) : undefined
     return [{
       provider: entry.provider,
       sessionId: entry.sessionId,
@@ -130,6 +141,11 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
       title,
       updatedAt: entry.updatedAt,
       ...(branch ? { branch } : {}),
+      ...(session ? { session } : {}),
+      ...(headline ? { headline } : {}),
+      ...(profile ? { profile } : {}),
+      ...(refs ? { refs } : {}),
+      ...(typeof entry.paneOpen === 'boolean' ? { paneOpen: entry.paneOpen } : {}),
       ...(configDir ? { configDir } : {}),
       ...(repoRoot ? { repoRoot } : {}),
       ...(checkoutRoot ? { checkoutRoot } : {}),

@@ -30,6 +30,16 @@ type LegacySessionBrief = Omit<SessionBrief, 'paneId' | 'targetId'>
 
 type BriefPaneIdentity = { paneId: string; targetId: string; sessionId: string; sessionName: string }
 
+export type ConversationBriefRecord = AgentSessionRef & {
+  sessionId: string
+  sessionName: string
+  targetId?: string
+  paneOpen: boolean
+  headline?: string
+  references: SessionReference[]
+  updatedAt: number
+}
+
 export type SessionBriefPatch = {
   headline?: string
   recapMarkdown?: string | null
@@ -648,6 +658,33 @@ export class SessionBriefStore {
     return [...this.briefs.values()]
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .map(cloneBrief)
+  }
+
+  /** Conversation ownership survives pane closure and subsequent agents in the same pane. */
+  conversationRecords(): ConversationBriefRecord[] {
+    const records = new Map<string, ConversationBriefRecord>()
+    const add = (brief: SessionBrief, session: AgentSessionRef, content: Pick<SessionBrief, 'headline' | 'references'> & { headlineSource?: SessionBrief['headlineSource'] }, updatedAt: number, paneOpen: boolean) => {
+      const key = `${session.provider}:${session.id}`
+      const previous = records.get(key)
+      if (previous && (previous.paneOpen !== paneOpen ? previous.paneOpen : previous.updatedAt >= updatedAt)) return
+      records.set(key, {
+        ...session,
+        sessionId: brief.sessionId,
+        sessionName: brief.sessionName,
+        ...(brief.targetId ? { targetId: brief.targetId } : {}),
+        paneOpen,
+        ...(content.headlineSource === 'agent' ? { headline: content.headline } : {}),
+        references: (content.references ?? []).map((reference) => ({ ...reference })),
+        updatedAt,
+      })
+    }
+    for (const [briefs, live] of [[this.detached, false], [this.briefs, true]] as const) {
+      for (const brief of briefs.values()) {
+        if (brief.agentSession) add(brief, brief.agentSession, brief, brief.updatedAt, live)
+        for (const earlier of brief.earlierSessions ?? []) add(brief, earlier.agentSession, earlier, earlier.endedAt, false)
+      }
+    }
+    return [...records.values()]
   }
 
   /** Rebind by durable identity; absence during resurrection must not erase disk history. */
