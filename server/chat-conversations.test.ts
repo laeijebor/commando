@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatConversationIndex } from './chat-conversations.js'
 
@@ -33,10 +35,129 @@ const user = (content: unknown, extra: Record<string, unknown> = {}) => ({ type:
 
 function index(limit?: number) {
   const resolveRepos = vi.fn(async (paths: readonly string[]) => new Map(paths.map((path) => [path, { root: '/work/app', name: 'app', branch: 'feature', isWorktree: false }])))
-  return { index: new ChatConversationIndex({ home, codexHome: join(home, '.codex'), claudeConfigDirs: async () => [join(home, '.claudep')], resolveRepos, ...(limit ? { limit } : {}) }), resolveRepos }
+  return { index: new ChatConversationIndex({ home, codexHome: join(home, '.codex'), xdgDataHome: join(home, '.local', 'share'), claudeConfigDirs: async () => [join(home, '.claudep')], resolveRepos, ...(limit ? { limit } : {}) }), resolveRepos }
+}
+
+const cursorProject = (cwd: string) => cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+async function cursorTranscript(id: string, cwd: string, options: { flat?: boolean; sidecar?: boolean; store?: boolean; at?: number } = {}) {
+  const root = join(home, '.cursor')
+  const transcripts = join(root, 'projects', cursorProject(cwd), 'agent-transcripts')
+  const directory = options.flat ? transcripts : join(transcripts, id)
+  await mkdir(directory, { recursive: true })
+  const file = join(directory, `${id}.jsonl`)
+  await writeFile(file, lines(
+    { role: 'assistant', message: { content: [{ type: 'text', text: '<user_query>Not the user</user_query>' }] } },
+    { role: 'user', message: { content: [{ type: 'text', text: '<timestamp>ignored</timestamp>\n<user_query>\nReply with the word ok.\n</user_query>' }] } },
+    { role: 'user', message: { content: [{ type: 'text', text: '<user_query>Later prompt</user_query>' }] } },
+  ))
+  await utimes(file, (options.at ?? 1_000_000) / 1000, (options.at ?? 1_000_000) / 1000)
+  const chat = join(root, 'chats', createHash('md5').update(cwd).digest('hex'), id)
+  await mkdir(chat, { recursive: true })
+  if (options.store !== false) await writeFile(join(chat, 'store.db'), 'fixture')
+  if (options.sidecar !== false) await writeFile(join(chat, 'meta.json'), JSON.stringify({ cwd }))
+  return { file, chat }
+}
+
+async function opencodeDb(dataHome = join(home, '.local', 'share')) {
+  await mkdir(join(dataHome, 'opencode'), { recursive: true })
+  const db = new DatabaseSync(join(dataHome, 'opencode', 'opencode.db'))
+  db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_updated INTEGER, time_archived INTEGER)')
+  return db
 }
 
 describe('ChatConversationIndex', () => {
+  it.each([false, true])('indexes CLI Cursor transcripts (flat: %s), with exact cwd from the sidecar', async (flat) => {
+    const cwd = join(home, 'workspace with spaces-and-dashes')
+    await mkdir(cwd)
+    const { file } = await cursorTranscript(CLAUDE_ID, cwd, { flat })
+    const { index: conversations } = index()
+    expect(await conversations.list()).toMatchObject([{ provider: 'cursor', sessionId: CLAUDE_ID, cwd, title: 'Reply with the word ok.', updatedAt: 1_000_000 }])
+    expect(await conversations.list()).toMatchObject([{ title: 'Reply with the word ok.' }])
+    await writeFile(file, lines({ role: 'user', message: { content: [{ type: 'text', text: `<user_query>${'x'.repeat(220)}</user_query>` }] } }))
+    await utimes(file, 2000, 2000)
+    expect(await conversations.list()).toMatchObject([{ title: `${'x'.repeat(199)}…`, updatedAt: 2_000_000 }])
+  })
+
+  it('resolves lossy Cursor project paths against the filesystem and uses the chat hash to disambiguate', async () => {
+    const cwd = join(await realpath(home), 'ambiguous-path', 'with spaces')
+    await mkdir(cwd, { recursive: true })
+    await mkdir(join(await realpath(home), 'ambiguous', 'path-with-spaces'), { recursive: true })
+    expect(cursorProject(cwd)).toBe(cursorProject(join(await realpath(home), 'ambiguous', 'path-with-spaces')))
+    await cursorTranscript(CLAUDE_ID, cwd, { sidecar: false })
+    expect(await index().index.list()).toMatchObject([{ provider: 'cursor', cwd }])
+  })
+
+  it('reads a Cursor first prompt beyond the initial head slice and deduplicates both transcript layouts', async () => {
+    const { file } = await cursorTranscript(CLAUDE_ID, home)
+    await writeFile(file, lines(
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(300 * 1024) }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '<user_query>First real prompt</user_query>' }] } },
+    ))
+    await utimes(file, 2000, 2000)
+    await cursorTranscript(CLAUDE_ID, home, { flat: true })
+    expect(await index().index.list()).toMatchObject([{ provider: 'cursor', title: 'First real prompt', updatedAt: 2_000_000 }])
+  })
+
+  it('excludes SDK ids, transcripts without a CLI store, and unresolved Cursor workspaces', async () => {
+    await cursorTranscript(`agent-${CLAUDE_ID}`, home)
+    await cursorTranscript(CODEX_ID, home, { store: false })
+    await cursorTranscript(CLAUDE_ID, join(home, 'missing'), { sidecar: false })
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it('rejects a Cursor sidecar pointing at a different workspace hash', async () => {
+    const { chat } = await cursorTranscript(CLAUDE_ID, join(home, 'missing'))
+    await writeFile(join(chat, 'meta.json'), JSON.stringify({ cwd: home }))
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it('reads only top-level unarchived OpenCode sessions, refreshing rows and sharing the global limit', async () => {
+    const db = await opencodeDb()
+    const id = 'ses_ed3f6d576ffeGGkSAFgSk4Snvz'
+    try {
+      const insert = db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)')
+      insert.run(id, null, home, 'OpenCode title', 3_000_000, null)
+      insert.run('ses_child123', id, home, 'Child', 9_000_000, null)
+      insert.run('ses_archived', null, home, 'Archived', 9_000_000, 1)
+      insert.run('ses_bad;id', null, home, 'Invalid id', 9_000_000, null)
+      await claudeTranscript(CLAUDE_ID, [user('Claude')], 1_000_000)
+      await cursorTranscript(CODEX_ID, home, { at: 2_000_000 })
+      const { index: conversations } = index(2)
+      expect(await conversations.list()).toMatchObject([
+        { provider: 'opencode', sessionId: id, cwd: home, title: 'OpenCode title', updatedAt: 3_000_000 },
+        { provider: 'cursor', updatedAt: 2_000_000 },
+      ])
+      db.prepare('UPDATE session SET title = ? WHERE id = ?').run('Renamed', id)
+      expect(await conversations.list()).toMatchObject([{ title: 'Renamed' }, { provider: 'cursor' }])
+    } finally { db.close() }
+  })
+
+  it('honours XDG_DATA_HOME for OpenCode', async () => {
+    const dataHome = join(home, 'xdg-data')
+    const db = await opencodeDb(dataHome)
+    db.prepare('INSERT INTO session VALUES (?, NULL, ?, ?, ?, NULL)').run('ses_session123', home, 'XDG session', 1000)
+    db.close()
+    vi.stubEnv('XDG_DATA_HOME', dataHome)
+    try {
+      const conversations = new ChatConversationIndex({ home, codexHome: join(home, '.codex'), resolveRepos: async () => new Map() })
+      expect(await conversations.list()).toMatchObject([{ provider: 'opencode', title: 'XDG session' }])
+    } finally { vi.unstubAllEnvs() }
+  })
+
+  it('ignores missing, locked and malformed OpenCode databases', async () => {
+    const { index: conversations } = index()
+    expect(await conversations.list()).toEqual([])
+    const db = await opencodeDb()
+    try {
+      db.exec("INSERT INTO session VALUES ('ses_session123', NULL, '/work', 'Locked', 1000, NULL); BEGIN EXCLUSIVE")
+      expect(await conversations.list()).toEqual([])
+      db.exec('ROLLBACK')
+      expect(await conversations.list()).toMatchObject([{ title: 'Locked' }])
+    } finally { db.close() }
+    await writeFile(join(home, '.local', 'share', 'opencode', 'opencode.db'), 'not sqlite')
+    expect(await conversations.list()).toEqual([])
+  })
+
   it('lists Claude and Codex conversations newest first, with titles, folders and repos', async () => {
     await claudeTranscript(CLAUDE_ID, [
       user('<local-command-caveat>ignored</local-command-caveat>'),
