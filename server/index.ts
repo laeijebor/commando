@@ -87,6 +87,7 @@ import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { SessionPreferenceStore } from './session-preferences.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
 import {
   configuredAuthDatabasePath,
@@ -1879,6 +1880,8 @@ async function main(): Promise<void> {
   const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
+    briefs: sessionBriefs,
+    sessionPreferences: new SessionPreferenceStore(),
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),

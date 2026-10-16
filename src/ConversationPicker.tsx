@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { History, LoaderCircle, Search } from 'lucide-react'
 import type { ChatState } from '../shared/agent-chat'
 import {
-  CHAT_CONVERSATION_SCOPE_LABELS,
+  chatConversationProviderLabel,
   chatConversationKey,
   groupChatConversations,
   type ChatConversation,
@@ -42,17 +42,13 @@ function age(updatedAt: number, now: number): string {
 }
 
 function folder(path: string): string {
-  return path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~')
+  return path.replace(/\/+$/, '').split('/').pop() || '/'
 }
 
-/**
- * ⌘P in a chat: past Claude and Codex conversations, this pane's worktree first,
- * then its repo, then everything else. Enter switches the pane to one, ⌘Enter
- * opens it beside; one that is already open is jumped to instead. It shows over
- * its pane only, leaving the rest of the workspace usable.
- */
-export function ConversationPicker({ pane, current, open, busy, load, onPick, onJump, onClose, now = Date.now() }: {
+/** Session-first conversation history; open conversations jump to their existing pane. */
+export function ConversationPicker({ pane, sessionName, current, open, busy, load, onPick, onJump, onClose, now = Date.now() }: {
   pane: TmuxPane
+  sessionName: string
   /** The conversation this chat runs, if Claude has reported it. */
   current?: string
   open: OpenConversationPanes
@@ -67,6 +63,7 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
   const [conversations, setConversations] = useState<ChatConversation[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<string | null>(null)
   /** The highlighted row; null until the keys or mouse move it. */
   const [chosen, setIndex] = useState<number | null>(null)
   const [pending, setPending] = useState(false)
@@ -100,7 +97,12 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
     return () => { live = false }
   }, [load])
 
-  const groups = useMemo(() => groupChatConversations(conversations ?? [], pane, query), [conversations, pane, query])
+  const providers = useMemo(() => [...new Set((conversations ?? []).map(chatConversationProviderLabel))].sort(), [conversations])
+  const groups = useMemo(() => groupChatConversations((conversations ?? []).filter((conversation) =>
+    filter === null || (filter === 'closed' ? conversation.session && !conversation.paneOpen
+      && chatConversationKey(conversation.provider, conversation.sessionId) !== current
+      && !open.has(chatConversationKey(conversation.provider, conversation.sessionId)) : chatConversationProviderLabel(conversation) === filter)),
+    { id: pane.sessionId, name: sessionName }, query), [conversations, pane.sessionId, sessionName, query, filter, current, open])
   const rows = useMemo(() => groups.flatMap((group) => group.conversations), [groups])
   // Start on the first conversation that isn't this chat's own.
   const index = Math.min(chosen ?? Math.max(0, rows.findIndex((entry) => chatConversationKey(entry.provider, entry.sessionId) !== current)), Math.max(0, rows.length - 1))
@@ -155,7 +157,7 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
             value={query}
             onChange={(event) => { setQuery(event.target.value); setIndex(null) }}
             onKeyDown={onKeyDown}
-            placeholder="Switch to a conversation…"
+            placeholder="Find a conversation, session or PR…"
             aria-label="Search conversations"
             aria-controls="conversation-results"
             aria-activedescendant={selected ? `conversation-${selected.provider}-${selected.sessionId}` : undefined}
@@ -165,19 +167,27 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
             <kbd>Esc</kbd>
           </button>
         </div>
-        {error ? <div className="conversation-picker-error" role="alert">{error}</div> : null}
+        <div className="conversation-picker-filters" aria-label="Filter conversations">
+          {[{ value: null, label: 'All' }, ...providers.map((label) => ({ value: label, label })), { value: 'closed', label: 'Closed panes' }].map((chip) => (
+            <button key={chip.label} type="button" aria-pressed={filter === chip.value}
+              onClick={() => { setFilter(filter === chip.value ? null : chip.value); setIndex(null) }}>{chip.label}</button>
+          ))}
+          {error ? <div className="conversation-picker-error" role="alert">{error}</div> : null}
+        </div>
         <div className="command-results" id="conversation-results" role="listbox" ref={list}>
           {conversations === null && !error ? <div className="palette-empty">Loading conversations…</div> : null}
           {conversations && !rows.length ? <div className="palette-empty">{query ? `No conversation matches "${query}".` : 'No past conversations found.'}</div> : null}
           {groups.map((group) => (
-            <div role="group" aria-label={CHAT_CONVERSATION_SCOPE_LABELS[group.scope]} key={group.scope}>
-              <div className="conversation-picker-group">{CHAT_CONVERSATION_SCOPE_LABELS[group.scope]}</div>
+            <div role="group" aria-label={group.label} key={group.id}>
+              <div className="conversation-picker-group"><span>{group.label}</span><span>{group.conversations.length} {group.conversations.length === 1 ? 'chat' : 'chats'}</span></div>
               {group.conversations.map((conversation) => {
                 row += 1
                 const position = row
                 const key = chatConversationKey(conversation.provider, conversation.sessionId)
-                const where = key === current ? 'This chat' : open.get(key) ? `Open in ${open.get(key)!.label}` : undefined
-                const detail = [age(conversation.updatedAt, now), folder(conversation.cwd), conversation.branch].filter(Boolean).join(' · ')
+                const where = key === current ? 'This chat' : open.get(key) ? `Open in ${open.get(key)!.label}`
+                  : conversation.paneOpen ? '● open' : conversation.session ? 'closed pane' : undefined
+                const folderName = folder(conversation.cwd)
+                const detail = [age(conversation.updatedAt, now), folderName, conversation.branch !== folderName ? conversation.branch : undefined, conversation.profile].filter(Boolean).join(' · ')
                 return (
                   <button
                     type="button"
@@ -190,8 +200,18 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
                     onClick={(event) => void pick(conversation, event.metaKey || event.ctrlKey ? 'split' : 'replace')}
                   >
                     <span className="command-icon"><History aria-hidden="true" /></span>
-                    <span><strong>{conversation.title}</strong><small>{detail}</small></span>
-                    <span className="command-kind">{where ?? ({ claude: 'Claude', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode' }[conversation.provider])}</span>
+                    <span>
+                      <strong>{conversation.headline ?? conversation.title}</strong>
+                      {conversation.headline ? <span className="conversation-picker-title">{conversation.title}</span> : null}
+                      <small>{detail}</small>
+                      {conversation.refs?.length ? <span className="conversation-picker-refs">{conversation.refs.slice(0, 3).map((ref, index) => (
+                        <span key={index} title={ref.url}>{ref.label}</span>
+                      ))}</span> : null}
+                    </span>
+                    <span className="command-kind">
+                      <span>{chatConversationProviderLabel(conversation)}</span>
+                      {where ? <span className={where === 'closed pane' ? 'conversation-picker-closed' : 'conversation-picker-open'}>{where}</span> : null}
+                    </span>
                   </button>
                 )
               })}

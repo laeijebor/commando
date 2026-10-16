@@ -3959,9 +3959,12 @@ body.is-resizing-hud-pinned-note {
   }
 }
 
-.conversation-picker-group {
+.conversation-picker .conversation-picker-group {
   padding: 9px 12px 4px;
-  color: var(--muted-dim);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-dim);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -3972,10 +3975,89 @@ body.is-resizing-hud-pinned-note {
   min-width: 0;
 }
 
-.conversation-picker .command-results strong,
-.conversation-picker .command-results small {
-  display: block;
+.conversation-picker .command-results strong {
+  display: -webkit-box;
   overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.conversation-picker .conversation-picker-title {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-picker .command-kind {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-transform: none;
+}
+
+.conversation-picker .command-kind > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-picker .conversation-picker-open {
+  color: var(--green);
+}
+
+.conversation-picker .conversation-picker-closed {
+  color: var(--amber);
+}
+
+.conversation-picker .conversation-picker-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.conversation-picker .conversation-picker-filters button {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 7px;
+  cursor: pointer;
+}
+
+.conversation-picker .conversation-picker-filters button[aria-pressed="true"],
+.conversation-picker .conversation-picker-filters button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.conversation-picker .conversation-picker-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.conversation-picker .conversation-picker-refs > span {
+  max-width: 100%;
+  padding: 2px 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--cyan) 50%, transparent);
+  border-radius: 4px;
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

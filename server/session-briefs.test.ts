@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { AgentStatus } from '../shared/protocol.js'
+import type { AgentStatus, SessionBrief } from '../shared/protocol.js'
 import { AgentStatusRegistry } from './agent-status-registry.js'
 import { association } from './cursor-hook-test-fixtures.js'
 import { defaultSessionBriefStatePath, parseSessionBrief, SessionBriefStore } from './session-briefs.js'
@@ -865,5 +865,46 @@ describe('agent sessions in one pane', () => {
     expect(briefs.get('%1')?.earlierSessions?.map((session) => session.agentSession.id)).toEqual([
       'session-6-abcdef', 'session-5-abcdef', 'session-4-abcdef', 'session-3-abcdef', 'session-2-abcdef',
     ])
+  })
+})
+
+
+describe('conversationRecords', () => {
+  it('merges live, detached and earlier conversations with open first, then newest, ignoring hook headlines', async () => {
+    const briefs = await store()
+    const target = '550e8400-e29b-41d4-a716-446655440000'
+    const base: SessionBrief = { paneId: '%1', targetId: target, sessionId: '$1', sessionName: 'vivi', state: 'done',
+      headline: 'Agent headline', headlineSource: 'agent', updates: [], updatedAt: 10,
+      agentSession: { provider: 'claude', id: 'conversation-1' }, references: [{ kind: 'issue', value: 'https://example.com/540', label: 'PR #540' }] }
+    const detached: SessionBrief = { ...base, paneId: '%9', sessionId: '$9', sessionName: 'closed', updatedAt: 100,
+      headline: 'Newer but detached', earlierSessions: [
+        { agentSession: { provider: 'codex', id: 'conversation-2' }, headline: 'Earlier work', headlineSource: 'agent', updates: [], endedAt: 80 },
+        { agentSession: { provider: 'cursor', id: 'conversation-3' }, headline: 'Running tests', headlineSource: 'hook', updates: [], endedAt: 70 },
+        { agentSession: { provider: 'opencode', id: 'conversation-4' }, headline: 'Legacy hook noise', updates: [], endedAt: 60 },
+      ] }
+    const live: SessionBrief = { ...base, earlierSessions: [
+      { agentSession: { provider: 'codex', id: 'conversation-2' }, headline: 'Older work', headlineSource: 'agent', updates: [], endedAt: 5 },
+    ] }
+    const second: SessionBrief = { ...base, paneId: '%2', agentSession: { provider: 'cursor', id: 'conversation-5' },
+      headline: 'Claude is idle', headlineSource: 'hook', updatedAt: 20, earlierSessions: [
+        { agentSession: { provider: 'cursor', id: 'conversation-3' }, headline: 'Older headline', headlineSource: 'agent', updates: [], endedAt: 6 },
+    ] }
+    await mkdir(dirname(briefs.statePath), { recursive: true })
+    await writeFile(briefs.statePath, JSON.stringify({ version: 4, briefs: { '%1': live, '%2': second }, detached: { [target]: detached } }))
+    await briefs.load()
+    const before = await readFile(briefs.statePath, 'utf8')
+    const records = briefs.conversationRecords()
+    expect(records).toHaveLength(5)
+    expect(records.find((record) => record.id === 'conversation-1')).toEqual({ provider: 'claude', id: 'conversation-1',
+      sessionId: '$1', sessionName: 'vivi', targetId: target, paneOpen: true, headline: 'Agent headline', references: base.references, updatedAt: 10 })
+    expect(records.find((record) => record.id === 'conversation-2')).toMatchObject({ sessionId: '$9', paneOpen: false, headline: 'Earlier work', updatedAt: 80 })
+    for (const id of ['conversation-3', 'conversation-4', 'conversation-5']) {
+      expect(records.find((record) => record.id === id)).not.toHaveProperty('headline')
+    }
+    expect(records.find((record) => record.id === 'conversation-5')).toMatchObject({ paneOpen: true })
+    records.find((record) => record.id === 'conversation-1')!.references[0]!.label = 'mutated'
+    expect(briefs.conversationRecords().find((record) => record.id === 'conversation-1')?.references[0]?.label).toBe('PR #540')
+    expect(await readFile(briefs.statePath, 'utf8')).toBe(before)
+    expect(briefs.values()).toHaveLength(2)
   })
 })
