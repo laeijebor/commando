@@ -1,6 +1,8 @@
+import { createReadStream } from 'node:fs'
 import { open, readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { stripAttachmentNotes } from '../shared/agent-chat.js'
 import { isChatConversationSessionId, type ChatConversation, type ChatConversationProvider } from '../shared/chat-conversations.js'
 import type { PaneRepo } from '../shared/protocol.js'
@@ -8,9 +10,10 @@ import { listClaudeProfiles } from './tmux-create.js'
 
 /** Enough of a transcript's start for its folder and first prompt, and of its end for its latest title. */
 const HEAD_BYTES = 256 * 1024
+const MAX_HEAD_BYTES = 16 * 1024 * 1024
 const TAIL_BYTES = 256 * 1024
 /** The picker lists this many of the newest conversations. */
-const DEFAULT_LIMIT = 300
+const DEFAULT_LIMIT = 1000
 const MAX_TITLE = 200
 
 type Candidate = { provider: ChatConversationProvider; file: string; mtimeMs: number; size: number; configDir?: string }
@@ -52,11 +55,13 @@ function jsonLines(text: string, { dropFirst, dropLast }: { dropFirst: boolean; 
   })
 }
 
-async function headAndTail(file: string, size: number): Promise<{ head: Record<string, unknown>[]; tail: Record<string, unknown>[] }> {
-  const head = jsonLines(await readSlice(file, 0, Math.min(size, HEAD_BYTES)), { dropFirst: false, dropLast: size > HEAD_BYTES })
-  if (size <= HEAD_BYTES) return { head, tail: head }
+async function headAndTail(file: string, size: number): Promise<{ head: Record<string, unknown>[]; tail: Record<string, unknown>[]; headEnd: number }> {
+  const startText = await readSlice(file, 0, Math.min(size, HEAD_BYTES))
+  const head = jsonLines(startText, { dropFirst: false, dropLast: size > HEAD_BYTES })
+  if (size <= HEAD_BYTES) return { head, tail: head, headEnd: size }
+  const headEnd = Buffer.byteLength(startText.slice(0, startText.lastIndexOf('\n') + 1))
   const start = Math.max(HEAD_BYTES, size - TAIL_BYTES)
-  return { head, tail: jsonLines(await readSlice(file, start, size - start), { dropFirst: true, dropLast: false }) }
+  return { head, tail: jsonLines(await readSlice(file, start, size - start), { dropFirst: true, dropLast: false }), headEnd }
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -76,6 +81,12 @@ function text(value: unknown): string {
 function typedPrompt(value: string): string | undefined {
   // Attached images add notes (Codex's `<image …>` tags, Commando's saved-path notes) after the text.
   const trimmed = stripAttachmentNotes(value.replace(/<\/?image\b[^>]*>/g, ' ')).trim()
+  const command = trimmed.match(/<command-name>\s*(\/[^\s<]+)\s*<\/command-name>/)?.[1]
+  if (command) {
+    const args = trimmed.match(/<command-args>([\s\S]*?)<\/command-args>/)?.[1]?.trim()
+    if (!args && /^\/(clear|compact|resume|help|status|context|cost|exit|quit)$/.test(command)) return undefined
+    return args ? `${command} ${args}` : command
+  }
   if (!trimmed || trimmed.startsWith('<') || trimmed.startsWith('# AGENTS.md') || trimmed.startsWith('Base directory for this skill')) return undefined
   return trimmed
 }
@@ -88,19 +99,39 @@ function shortTitle(value: string): string {
 export async function parseClaudeTranscript(file: string, size: number, configDir?: string): Promise<Parsed> {
   const sessionId = basename(file, '.jsonl')
   if (!isChatConversationSessionId(sessionId)) return null
-  const { head, tail } = await headAndTail(file, size)
+  const { head, tail, headEnd } = await headAndTail(file, size)
   let cwd: string | undefined
   let branch: string | undefined
   let prompt: string | undefined
-  for (const entry of head) {
+  const readEntry = (entry: Record<string, unknown>): boolean => {
     // `claude -p` runs are one-off jobs, not conversations to carry on.
-    if (entry.entrypoint === 'sdk-cli') return null
+    if (entry.entrypoint === 'sdk-cli') return false
     if (!cwd && typeof entry.cwd === 'string') cwd = entry.cwd
     if (!branch && typeof entry.gitBranch === 'string' && entry.gitBranch !== 'HEAD') branch = entry.gitBranch
     if (!prompt && entry.type === 'user' && !entry.isMeta && !entry.isSidechain) prompt = typedPrompt(text(record(entry.message).content))
+    return true
+  }
+  for (const entry of head) {
+    if (!readEntry(entry)) return null
     if (cwd && branch && prompt) break
   }
-  if (!cwd || !prompt) return null
+  // Inline images can push the first prompt beyond the head slice, or span it entirely.
+  if ((!cwd || !prompt) && headEnd < size) {
+    const stream = createReadStream(file, { start: headEnd, end: Math.min(size, MAX_HEAD_BYTES) - 1 })
+    const reader = createInterface({ input: stream, crlfDelay: Infinity })
+    try {
+      for await (const line of reader) {
+        for (const entry of jsonLines(line, { dropFirst: false, dropLast: false })) {
+          if (!readEntry(entry)) return null
+        }
+        if (cwd && prompt) break
+      }
+    } finally {
+      reader.close()
+      stream.destroy()
+    }
+  }
+  if (!cwd) return null
   let title: string | undefined
   // The newest title wins: a name the person gave it, else Claude's own.
   for (const key of ['customTitle', 'aiTitle', 'summary'] as const) {
@@ -110,7 +141,9 @@ export async function parseClaudeTranscript(file: string, size: number, configDi
     }
     if (title) break
   }
-  return { provider: 'claude', sessionId, cwd, title: shortTitle(title ?? prompt), ...(branch ? { branch } : {}), ...(configDir ? { configDir } : {}) }
+  const label = title ?? prompt
+  if (!label) return null
+  return { provider: 'claude', sessionId, cwd, title: shortTitle(label), ...(branch ? { branch } : {}), ...(configDir ? { configDir } : {}) }
 }
 
 /** Most rollouts are `codex exec` jobs; their first line says so, so only that is read for them. */
