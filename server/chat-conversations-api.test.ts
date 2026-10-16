@@ -1,12 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { PassThrough } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
+import type { ConversationBriefRecord } from './session-briefs.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
@@ -34,7 +35,7 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string }[]; groups?: { id: string; name: string; sessionIds: string[] }[]; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -43,7 +44,9 @@ function setup(options: { conversation?: Partial<ChatConversation>; chats?: Chat
   }
   const api = new ChatConversationsApi({
     index: { list: vi.fn(async () => [conversation]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
-    snapshot: () => ({ panes: [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
+    briefs: { conversationRecords: () => options.records ?? [] },
+    sessionPreferences: { read: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [] }) },
+    snapshot: () => ({ sessions: options.sessions ?? [], panes: [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
     creator: options.creator ?? creator,
@@ -82,6 +85,47 @@ describe('ChatConversationsApi', () => {
     const { fake, result } = response()
     expect(await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))).toBe(true)
     expect(result).toMatchObject({ status: 200, body: { conversations: [conversation] } })
+  })
+
+  it('enriches only indexed conversations with their live session, group, headline, links and Claude profile', async () => {
+    const record: ConversationBriefRecord = { provider: 'claude', id: ID, sessionId: '$1', sessionName: 'vivi', paneOpen: false,
+      headline: 'Session picker ready', updatedAt: 10, references: [
+        { kind: 'url', value: 'https://example.com/preview' },
+        { kind: 'issue', value: 'https://example.com/540', label: 'PR #540' },
+        { kind: 'deployment', value: 'https://example.com/deploy', label: 'Preview', url: 'https://example.com/custom' },
+        { kind: 'feature_flag', value: 'hidden' }, { kind: 'session', value: 'codex resume abcdefgh' },
+        { kind: 'build', value: 'build-1' }, { kind: 'release', value: 'v1' },
+      ] }
+    const { api, conversation } = setup({ conversation: { provider: 'claude', configDir: '/home/me/.claudep' },
+      records: [record, { ...record, provider: 'codex', id: 'delegate-not-indexed' }],
+      sessions: [{ id: '$1', name: 'vivi' }], groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }] })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ ...conversation,
+      session: { id: '$1', name: 'vivi', group: 'Subscriptions' }, headline: 'Session picker ready', paneOpen: false, profile: 'claudep', refs: [
+        { label: 'https://example.com/preview', url: 'https://example.com/preview' },
+        { label: 'PR #540', url: 'https://example.com/540' }, { label: 'Preview', url: 'https://example.com/custom' },
+      ],
+    }] } })
+  })
+
+  it('preserves the brief name and omits a group when a live session reused its id', async () => {
+    const { api, conversation } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$1', sessionName: 'old-work', paneOpen: false, references: [], updatedAt: 10 }],
+      sessions: [{ id: '$1', name: 'Chat' }], groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }],
+    })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result.body).toEqual({ conversations: [{ ...conversation, session: { id: '$1', name: 'old-work' }, paneOpen: false, refs: [] }] })
+  })
+
+  it.each([undefined, join(homedir(), '.claude')])('omits the default Claude profile (%s) and stale session groups', async (configDir) => {
+    const { api, conversation } = setup({ conversation: { provider: 'claude', ...(configDir ? { configDir } : {}) },
+      records: [{ provider: 'claude', id: ID, sessionId: '$9', sessionName: 'closed session', paneOpen: false, references: [], updatedAt: 10 }],
+      groups: [{ id: 'g1', name: 'Old group', sessionIds: ['$9'] }] })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result.body).toEqual({ conversations: [{ ...conversation, session: { id: '$9', name: 'closed session' }, paneOpen: false, refs: [] }] })
   })
 
   it('switches the chat pane to the conversation in its own folder, never above the chat\'s permissions', async () => {

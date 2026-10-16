@@ -1,17 +1,23 @@
 import { stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import {
   CHAT_CONVERSATION_ROUTES,
+  chatConversationKey,
   isChatConversationSessionId,
   type ChatConversationPlacement,
   type ChatConversationProvider,
+  type ChatConversation,
 } from '../shared/chat-conversations.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
 import type { SessionAgentLaunch } from '../shared/tmux-create.js'
 import { inheritedChatPermissionMode } from './agent-chats-api.js'
 import type { ChatConversationIndex } from './chat-conversations.js'
 import type { TmuxCreator } from './tmux-create.js'
+import type { SessionBriefStore } from './session-briefs.js'
+import type { SessionPreferenceStore } from './session-preferences.js'
 
 const MAX_BODY_BYTES = 4 * 1024
 /** How long a resumed conversation stays reserved after launch, until its new host registers. */
@@ -20,6 +26,8 @@ const REGISTER_GRACE_MS = 15_000
 type Dependencies = {
   index: Pick<ChatConversationIndex, 'list' | 'find'>
   snapshot: () => CommandoSnapshot
+  briefs: Pick<SessionBriefStore, 'conversationRecords'>
+  sessionPreferences: Pick<SessionPreferenceStore, 'read'>
   /** The chat a pane runs, if it is a chat pane. */
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
@@ -81,7 +89,7 @@ export class ChatConversationsApi {
     try {
       if (url.pathname === CHAT_CONVERSATION_ROUTES.list) {
         if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
-        json(response, 200, { conversations: await this.dependencies.index.list() })
+        json(response, 200, { conversations: await this.list() })
         return true
       }
       if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
@@ -93,6 +101,34 @@ export class ChatConversationsApi {
       if (status === 500) console.warn('[commando] Chat conversation resume failed', error)
     }
     return true
+  }
+
+  private async list(): Promise<ChatConversation[]> {
+    const [conversations, preferences] = await Promise.all([
+      this.dependencies.index.list(),
+      this.dependencies.sessionPreferences.read(),
+    ])
+    const records = new Map(this.dependencies.briefs.conversationRecords().map((record) => [`${record.provider}:${record.id}`, record]))
+    const sessions = new Map(this.dependencies.snapshot().sessions.map((session) => [session.id, session]))
+    return conversations.map((conversation) => {
+      const brief = records.get(chatConversationKey(conversation.provider, conversation.sessionId))
+      const session = brief ? sessions.get(brief.sessionId) : undefined
+      const group = session && session.name === brief?.sessionName
+        ? preferences.groups.find((group) => group.sessionIds.includes(session.id))?.name : undefined
+      const profile = conversation.provider === 'claude' && conversation.configDir && resolve(conversation.configDir) !== join(homedir(), '.claude')
+        ? basename(conversation.configDir).replace(/^\./, '') : undefined
+      return {
+        ...conversation,
+        ...(profile ? { profile } : {}),
+        ...(brief ? {
+          session: { id: brief.sessionId, name: brief.sessionName, ...(group ? { group } : {}) },
+          ...(brief.headline ? { headline: brief.headline } : {}),
+          refs: brief.references.filter((reference) => reference.kind === 'url' || reference.kind === 'issue' || reference.kind === 'deployment')
+            .map((reference) => ({ label: reference.label ?? reference.value, url: reference.url ?? reference.value })),
+          paneOpen: brief.paneOpen,
+        } : {}),
+      }
+    })
   }
 
   private async resume(input: Record<string, unknown>): Promise<{ paneId: string }> {
