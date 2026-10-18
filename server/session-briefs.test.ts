@@ -176,6 +176,29 @@ describe('SessionBriefStore', () => {
   const targetId = '550e8400-e29b-41d4-a716-446655440000'
   const identity = { paneId: '%1', targetId, sessionId: '$1', sessionName: 'original' }
 
+  it('records when a pane closed, so its conversation reports a closedAt from detach time, not its last update', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(1_000)
+      const briefs = await store()
+      const closed = { ...identity, paneId: '%2', targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8' }
+      await briefs.reconcilePanes([identity, closed])
+      await briefs.syncFromStatuses('$1', 'original', [{ ...status(closed.paneId, 'working', 100, 'Working'), agentSessionId: 'earlier-chat' }], 100)
+      await briefs.applyAgentPatch('$1', 'original', closed.paneId, { recapMarkdown: 'Keep this conversation' }, 101)
+      await briefs.syncFromStatuses('$1', 'original', [{ ...status(closed.paneId, 'working', 200, 'Next'), agentSessionId: 'current-chat' }], 200)
+      vi.setSystemTime(5_000)
+      await briefs.reconcilePanes([identity])
+      const records = new Map(briefs.conversationRecords().map((record) => [record.id, record]))
+      expect(records.get('current-chat')).toMatchObject({ paneOpen: false, closedAt: 5_000 })
+      expect(records.get('earlier-chat')).toMatchObject({ paneOpen: false, closedAt: 200 })
+      const replay = new SessionBriefStore(briefs.statePath)
+      await replay.load()
+      expect(replay.conversationRecords().find((record) => record.id === 'current-chat')).toMatchObject({ closedAt: 5_000 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('persists session renames for live, detached and earlier conversations after a pane closes', async () => {
     const briefs = await store()
     const closed = { ...identity, paneId: '%2', targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8' }
