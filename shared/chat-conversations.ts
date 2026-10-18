@@ -31,6 +31,8 @@ export interface ChatConversation {
   headline?: string
   refs?: { label: string; url?: string }[]
   paneOpen?: boolean
+  /** When its pane closed (or a newer chat replaced it there); only for closed panes. */
+  closedAt?: number
   profile?: string
 }
 
@@ -150,6 +152,7 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
       ...(profile ? { profile } : {}),
       ...(refs ? { refs } : {}),
       ...(typeof entry.paneOpen === 'boolean' ? { paneOpen: entry.paneOpen } : {}),
+      ...(typeof entry.closedAt === 'number' && Number.isFinite(entry.closedAt) ? { closedAt: entry.closedAt } : {}),
       ...(configDir ? { configDir } : {}),
       ...(repoRoot ? { repoRoot } : {}),
       ...(checkoutRoot ? { checkoutRoot } : {}),

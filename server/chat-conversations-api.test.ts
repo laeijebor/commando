@@ -193,7 +193,7 @@ describe('ChatConversationsApi', () => {
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
     expect(result).toMatchObject({ status: 200, body: { conversations: [{ ...conversation,
-      session: { id: '$1', name: 'vivi', group: 'Subscriptions' }, headline: 'Session picker ready', paneOpen: false, profile: 'claudep', refs: [
+      session: { id: '$1', name: 'vivi', group: 'Subscriptions' }, headline: 'Session picker ready', paneOpen: false, closedAt: 10, profile: 'claudep', refs: [
         { label: 'https://example.com/preview', url: 'https://example.com/preview' },
         { label: 'PR #540', url: 'https://example.com/540' }, { label: 'Preview', url: 'https://example.com/custom' },
       ],
@@ -274,7 +274,7 @@ describe('ChatConversationsApi', () => {
     })
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
-    expect(result.body).toEqual({ conversations: [{ ...conversation, session: { id: '$1', name: 'old-work' }, paneOpen: false, refs: [] }] })
+    expect(result.body).toEqual({ conversations: [{ ...conversation, session: { id: '$1', name: 'old-work' }, paneOpen: false, closedAt: 10, refs: [] }] })
   })
 
   it.each([undefined, join(homedir(), '.claude')])('omits the default Claude profile (%s) and stale session groups', async (configDir) => {
@@ -283,7 +283,7 @@ describe('ChatConversationsApi', () => {
       groups: [{ id: 'g1', name: 'Old group', sessionIds: ['$9'] }] })
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
-    expect(result.body).toEqual({ conversations: [{ ...conversation, session: { id: '$9', name: 'closed session' }, paneOpen: false, refs: [] }] })
+    expect(result.body).toEqual({ conversations: [{ ...conversation, session: { id: '$9', name: 'closed session' }, paneOpen: false, closedAt: 10, refs: [] }] })
   })
 
   it('lists hosted chats as open even when their pane command is not an agent', async () => {
