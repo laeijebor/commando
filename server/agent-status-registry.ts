@@ -837,6 +837,15 @@ export class AgentStatusRegistry {
     return cloneStatus(record.status)
   }
 
+  /** SessionStart hooks reserve an open conversation before a prompt binds the process command. */
+  openConversationStatus(paneId: string, processCommand: string): AgentStatus | undefined {
+    const live = this.liveHookStatus(paneId, processCommand)
+    if (live) return live
+    const record = this.records.get(paneId)
+    if (record?.status.source !== 'hook' || record.retainedCompletion || record.processCommand !== null) return undefined
+    return cloneStatus(record.status)
+  }
+
   /** Hook evidence is scoped to the observed foreground process, never just the pane. */
   hasCursorHookProcess(paneId: string, command?: string): boolean {
     const record = this.records.get(paneId)
