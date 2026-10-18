@@ -100,7 +100,8 @@ describe('Codex chat launch', () => {
 describe('Muse chat launch', () => {
   it('launches the host with Muse, its resume target and literal prompt text', () => {
     expect(sessionAgentArgv({ provider: 'muse-chat', permissionMode: 'bypassPermissions', resume: '01a14dc2-082e-7781-9892-8b5bc1fea332', prompt: 'hi' }))
-      .toEqual(['commando-agent', 'muse', '--permission-mode', 'bypassPermissions', '--resume', '01a14dc2-082e-7781-9892-8b5bc1fea332', '--prompt', 'hi'])
+      .toEqual(['commando-agent', 'muse', '--permission-mode', 'bypassPermissions', '--yolo', '--resume', '01a14dc2-082e-7781-9892-8b5bc1fea332', '--prompt', 'hi'])
+    expect(sessionAgentArgv({ provider: 'muse-chat', permissionMode: 'acceptEdits' })).toEqual(['commando-agent', 'muse', '--permission-mode', 'acceptEdits'])
     expect(chatPermissionModes('muse-chat').map((mode) => mode.value)).toEqual(['default', 'acceptEdits', 'bypassPermissions'])
   })
 })

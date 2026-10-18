@@ -135,7 +135,9 @@ export class MuseChatSession implements ChatProviderSession {
 
   constructor(private readonly spec: AgentSessionSpec, client?: MuseTransport, private readonly executable = 'muse') {
     museApprovalMode(spec.permissionMode)
-    this.fullAccess = spec.permissionMode === 'bypassPermissions'
+    // Full access needs both: bypassPermissions alone, from before --yolo existed, meant approve-everything inside the sandbox.
+    this.fullAccess = spec.permissionMode === 'bypassPermissions' && spec.fullAccess === true
+    const permissionMode = spec.permissionMode === 'bypassPermissions' && !this.fullAccess ? 'acceptEdits' : spec.permissionMode
     this.client = client ?? new MuseRpcClient({
       sandbox: !this.fullAccess,
       cwd: spec.cwd,
@@ -152,9 +154,10 @@ export class MuseChatSession implements ChatProviderSession {
       hostPid: process.pid,
       hostVersion: AGENT_HOST_PROTOCOL_VERSION,
       ...(spec.resume ? { sessionId: spec.resume } : {}),
-      permissionMode: spec.permissionMode,
+      permissionMode,
       // Full access needs a host started without the sandbox, so only such a chat has it.
-      bypassAllowed: spec.permissionMode === 'bypassPermissions',
+      bypassAllowed: this.fullAccess,
+      sandboxed: !this.fullAccess,
       ...(spec.model ? { selectedModel: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
       ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}),
