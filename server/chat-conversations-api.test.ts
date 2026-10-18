@@ -362,6 +362,12 @@ describe('ChatConversationsApi', () => {
     }
   })
 
+  it('does not treat a hook status in a dead remain-on-exit pane as open', async () => {
+    const status: AgentStatus = { paneId: '%2', provider: 'codex', agentSessionId: ID, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now() }
+    const { resume } = setup({ agentSessions: [status], panes: [{ id: '%1', command: 'zsh' }, { id: '%2', command: 'codex', dead: true } as never] })
+    expect(await resume({})).toMatchObject({ status: 200 })
+  })
+
   it.each([
     { source: 'process' },
     { source: 'heuristic' },
