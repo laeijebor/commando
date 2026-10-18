@@ -33,7 +33,7 @@ const SIM_UDID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
 const LAYOUT_STATES = ['pending', 'settled'] as const
 
-type PersistedWebPane = WebPane & { tmuxSocketHash?: string }
+type PersistedWebPane = WebPane & { tmuxSocketHash?: string; awaitingAgentSession?: true }
 type ParkedWebPane = { pane: PersistedWebPane; parkedAt: number }
 
 type StateFile = {
@@ -156,7 +156,7 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
   if (!isRecord(value)) return null
   const {
     content, id, url, title, sessionId, windowId, anchorPaneId, placement, layoutState, anchorSize,
-    engine, openedBy, openerLabel, agentSession,
+    engine, openedBy, openerLabel, agentSession, awaitingAgentSession,
     status, createdAt, tmuxSocketHash, dock, order, unseen, openRevision,
   } = value
   const parsedAnchorSize = parseAnchorSize(anchorSize)
@@ -198,7 +198,8 @@ function parseWebPane(value: unknown, allowedOrigins: ReadonlySet<string>): Pers
     sessionId,
     windowId,
     anchorPaneId,
-    ...(parsedAgentSession ? { agentSession: parsedAgentSession } : {}),
+    ...(!simulator && parsedAgentSession ? { agentSession: parsedAgentSession } : {}),
+    ...(!simulator && !parsedAgentSession && awaitingAgentSession === true ? { awaitingAgentSession: true as const } : {}),
     placement: placement as WebPanePlacement,
     dock: !panelOnly && dock === 'split' ? 'split' : 'panel',
     order: typeof order === 'number' ? order : -1,
@@ -283,7 +284,7 @@ function parseState(value: unknown): StateFile {
     for (const entry of value.parkedPanes) {
       if (!isRecord(entry) || !Number.isSafeInteger(entry.parkedAt) || (entry.parkedAt as number) < 0) continue
       const pane = parseWebPane(entry.pane, originSet)
-      if (!pane?.agentSession || !pane.tmuxSocketHash || ids.has(pane.id)) continue
+      if (!pane?.agentSession || pane.content?.kind === 'simulator' || !pane.tmuxSocketHash || ids.has(pane.id)) continue
       ids.add(pane.id)
       parkedPanes.push({ pane, parkedAt: entry.parkedAt as number })
     }
@@ -373,6 +374,7 @@ export class WebPaneService {
   private activeTabs: Record<string, string> = {}
   private dismissedPrTabs: Record<string, Record<string, string>> = {}
   private readonly paneSocketHashes = new Map<string, string>()
+  private readonly awaitingAgentSession = new Set<string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
   private titleWriteTimer: ReturnType<typeof setTimeout> | null = null
@@ -386,6 +388,7 @@ export class WebPaneService {
     migrationStatePath = statePath === undefined ? defaultMigrationStatePath() : undefined,
     socketIdentity = tmuxSocketIdentity(process.env),
     private readonly resolveAgentSession: (paneId: string) => AgentSessionRef | undefined = () => undefined,
+    private readonly isAgentRunning: (paneId: string) => boolean = () => false,
   ) {
     this.statePath = statePath ?? defaultWebPaneStatePath()
     this.now = now
@@ -412,6 +415,8 @@ export class WebPaneService {
     const raw: unknown = JSON.parse(content)
     const state = parseState(raw)
     const needsMigration = isRecord(raw) && (raw.version !== 2 || !isRecord(raw.activeTabs) ||
+      (Array.isArray(raw.parkedPanes) && raw.parkedPanes.some((entry) => isRecord(entry) &&
+        isRecord(entry.pane) && isRecord(entry.pane.content) && entry.pane.content.kind === 'simulator')) ||
       (Array.isArray(raw.panes) && raw.panes.some((pane) => isRecord(pane) &&
         (pane.dock === undefined || pane.order === undefined || pane.unseen === undefined))))
     this.allowedOrigins.clear()
@@ -421,9 +426,11 @@ export class WebPaneService {
     this.panes.clear()
     this.parkedPanes.clear()
     this.paneSocketHashes.clear()
+    this.awaitingAgentSession.clear()
     for (const persistedPane of state.panes) {
-      const { tmuxSocketHash: persistedSocketHash, ...pane } = persistedPane
+      const { tmuxSocketHash: persistedSocketHash, awaitingAgentSession, ...pane } = persistedPane
       this.panes.set(pane.id, pane)
+      if (awaitingAgentSession) this.awaitingAgentSession.add(pane.id)
       if (persistedSocketHash) this.paneSocketHashes.set(pane.id, persistedSocketHash)
     }
     for (const entry of state.parkedPanes) {
@@ -446,6 +453,11 @@ export class WebPaneService {
     return this.panes.get(id)
   }
 
+  /** Parked tabs still own durable resources such as canvas discussions. */
+  parkedIds(): string[] {
+    return [...this.parkedPanes.values()].flatMap((entries) => entries.map(({ pane }) => pane.id))
+  }
+
   /** Returns true only when a Chromium page title changes. */
   setTitle(id: string, title: string): boolean {
     const pane = this.panes.get(id)
@@ -466,11 +478,11 @@ export class WebPaneService {
   }
 
   open(input: OpenWebPaneInput): WebPane {
-    const agentSession = parseAgentSession(this.resolveAgentSession(input.anchorPaneId))
-    if (agentSession && this.stampAgentSession(input, agentSession)) this.persist()
     const content = parseWebPaneContent(input.content)
     if (content === null) throw new WebPaneError(400, input.content?.kind === 'canvas' ? 'Invalid canvas content' : input.content?.kind === 'guide' ? 'Invalid guide content' : 'Invalid simulator udid')
     const simulator = content?.kind === 'simulator' ? content : undefined
+    const agentSession = simulator ? undefined : parseAgentSession(this.resolveAgentSession(input.anchorPaneId))
+    if (agentSession && this.stampAgentSession(input, agentSession)) this.persist()
     const canvas = content?.kind === 'canvas' ? content : undefined
     const panelOnly = content?.kind === 'canvas' || content?.kind === 'guide'
     if (simulator) {
@@ -547,6 +559,7 @@ export class WebPaneService {
       createdAt: this.now(),
     }
     this.panes.set(pane.id, pane)
+    if (!simulator && !agentSession && this.isAgentRunning(input.anchorPaneId)) this.awaitingAgentSession.add(pane.id)
     if (pane.dock === 'panel' && !this.activeTabs[pane.anchorPaneId]) this.activeTabs[pane.anchorPaneId] = pane.id
     this.paneSocketHashes.set(pane.id, this.socketHash)
     this.persist()
@@ -690,6 +703,7 @@ export class WebPaneService {
     this.releaseActiveTab(pane)
     this.panes.delete(id)
     this.paneSocketHashes.delete(id)
+    this.awaitingAgentSession.delete(id)
     this.persist()
     return true
   }
@@ -735,7 +749,10 @@ export class WebPaneService {
       throw new WebPaneError(400, 'Web panes can only move within their window')
     }
     const reanchoring = target.anchorPaneId !== pane.anchorPaneId
-    if (reanchoring) this.releaseActiveTab(pane)
+    if (reanchoring) {
+      this.releaseActiveTab(pane)
+      this.awaitingAgentSession.delete(id)
+    }
     const moved: WebPane = {
       ...pane,
       anchorPaneId: target.anchorPaneId,
@@ -840,10 +857,11 @@ export class WebPaneService {
   ): boolean {
     let changed = false
     for (const [id, pane] of this.panes) {
-      if (pane.agentSession || pane.anchorPaneId !== anchor.anchorPaneId ||
+      if (pane.agentSession || pane.content?.kind === 'simulator' || !this.awaitingAgentSession.has(id) || pane.anchorPaneId !== anchor.anchorPaneId ||
         pane.sessionId !== anchor.sessionId || pane.windowId !== anchor.windowId ||
         this.paneSocketHashes.get(id) !== this.socketHash) continue
       this.panes.set(id, { ...pane, agentSession: { ...agentSession } })
+      this.awaitingAgentSession.delete(id)
       changed = true
     }
     return changed
@@ -959,17 +977,19 @@ export class WebPaneService {
           canPruneActiveTabs = false
           continue
         }
-        if (pane.agentSession) this.park(pane)
+        if (pane.agentSession && pane.content?.kind !== 'simulator') this.park(pane)
         else this.panes.delete(id)
         this.paneSocketHashes.delete(id)
+        this.awaitingAgentSession.delete(id)
         changed = true
         continue
       }
       const window = sessionWindows.get(pane.windowId)
       if (!window) {
-        if (pane.agentSession) this.park(pane)
+        if (pane.agentSession && pane.content?.kind !== 'simulator') this.park(pane)
         else this.panes.delete(id)
         this.paneSocketHashes.delete(id)
+        this.awaitingAgentSession.delete(id)
         changed = true
         continue
       }
@@ -978,12 +998,13 @@ export class WebPaneService {
       // the web pane's anchor disappeared.
       if (window.paneIds.length === 0) continue
       if (!window.paneIds.includes(pane.anchorPaneId)) {
-        if (pane.agentSession) {
+        if (pane.agentSession && pane.content?.kind !== 'simulator') {
           this.park(pane)
           changed = true
           continue
         }
         this.releaseActiveTab(pane)
+        this.awaitingAgentSession.delete(id)
         const reanchored: WebPane = {
           ...pane, anchorPaneId: window.paneIds[0],
           order: nextWebPaneOrder(this.list(), window.paneIds[0]),
@@ -1023,7 +1044,8 @@ export class WebPaneService {
       parkedPanes: [...this.parkedPanes.values()].flat(),
       panes: [...this.panes.values()].map((pane) => {
         const socketHash = this.paneSocketHashes.get(pane.id)
-        return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}) }
+        return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}),
+          ...(this.awaitingAgentSession.has(pane.id) ? { awaitingAgentSession: true as const } : {}) }
       }),
     }
     this.writes = this.writes

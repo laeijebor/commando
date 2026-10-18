@@ -53,8 +53,10 @@ describe('conversation-owned web panes', () => {
     const path = await temporaryStatePath()
     const sessions = new Map<string, AgentSessionRef>()
     const resolve = (paneId: string) => sessions.get(paneId)
-    const service = track(new WebPaneService(path, now, undefined, 'owner', resolve))
-    return { path, sessions, resolve, service }
+    const runningAgents = new Set<string>()
+    const isAgentRunning = (paneId: string) => runningAgents.has(paneId)
+    const service = track(new WebPaneService(path, now, undefined, 'owner', resolve, isAgentRunning))
+    return { path, sessions, resolve, service, runningAgents, isAgentRunning }
   }
 
   it.each(['agent', 'user'] as const)('stamps %s opens, including built-in content, from the anchor conversation', async (openedBy) => {
@@ -65,14 +67,15 @@ describe('conversation-owned web panes', () => {
       { url: 'http://localhost/review' },
       { url: 'http://localhost/canvas', content: { kind: 'canvas' as const, artifactId: '0123456789abcdef', manifest: 'canvas.json' } },
       { url: 'http://localhost/guide', content: { kind: 'guide' as const, artifactId: '0123456789abcdef', file: 'guide.md' } },
-      { url: '', content: { kind: 'simulator' as const, udid: '00000000-0000-0000-0000-000000000001' } },
     ]) {
       expect(service.open({ ...anchor, ...input, openedBy }).agentSession).toEqual(conversation)
     }
   })
 
   it('stamps late evidence once, including URL reopens, and never moves live tabs on a conversation change', async () => {
-    const { service, sessions } = await setup()
+    const { service, sessions, runningAgents } = await setup()
+    runningAgents.add(anchor.anchorPaneId)
+    runningAgents.add('%13')
     const pane = service.open({ ...anchor, url: 'http://localhost/review' })
     expect(pane.agentSession).toBeUndefined()
     sessions.set(anchor.anchorPaneId, conversation)
@@ -85,6 +88,76 @@ describe('conversation-owned web panes', () => {
     expect(service.reconcileAgentSession(anchor)).toBe(false)
     expect(service.get(pane.id)).toMatchObject({ ...anchor, agentSession: conversation })
     expect(service.open({ ...anchor, url: 'http://localhost/new' }).agentSession?.id).toBe('next-session-123')
+  })
+
+  it.each(['agent', 'user'] as const)('only adopts %s tabs opened during agent startup, including across restart', async (openedBy) => {
+    const { path, service, sessions, resolve, runningAgents, isAgentRunning } = await setup()
+    const shell = service.open({ ...anchor, openedBy, url: 'http://localhost/shell' })
+    runningAgents.add(anchor.anchorPaneId)
+    // Reopening an old tab during startup must not make it eligible for adoption.
+    service.open({ ...anchor, openedBy, url: shell.url })
+    const startup = service.open({ ...anchor, openedBy, url: 'http://localhost/startup' })
+    expect(startup).not.toHaveProperty('awaitingAgentSession')
+    expect(service.list().every((pane) => !('awaitingAgentSession' in pane))).toBe(true)
+    await service.flush()
+    const state = JSON.parse(await readFile(path, 'utf8'))
+    expect(state.panes.find((pane: WebPane) => pane.id === shell.id)).not.toHaveProperty('awaitingAgentSession')
+    expect(state.panes.find((pane: WebPane) => pane.id === startup.id).awaitingAgentSession).toBe(true)
+    const loaded = track(new WebPaneService(path, Date.now, undefined, 'owner', resolve, isAgentRunning))
+    await loaded.load()
+    sessions.set(anchor.anchorPaneId, conversation)
+    expect(loaded.reconcileAgentSession(anchor)).toBe(true)
+    expect(loaded.get(shell.id)?.agentSession).toBeUndefined()
+    expect(loaded.get(startup.id)?.agentSession).toEqual(conversation)
+    expect(loaded.open({ ...anchor, openedBy, url: shell.url }).agentSession).toBeUndefined()
+    expect(loaded.reconcileAgentSession(anchor)).toBe(false)
+    await loaded.flush()
+    expect(JSON.parse(await readFile(path, 'utf8')).panes.every((pane: Record<string, unknown>) => !('awaitingAgentSession' in pane))).toBe(true)
+  })
+
+  it.each(['anchor', 'window', 'session'] as const)('never stamps or parks simulator tabs on %s death', async (death) => {
+    const { path, service, sessions, runningAgents } = await setup()
+    runningAgents.add(anchor.anchorPaneId)
+    const content = { kind: 'simulator' as const, udid: '00000000-0000-0000-0000-000000000001' }
+    const startup = service.open({ ...anchor, url: '', content })
+    sessions.set(anchor.anchorPaneId, conversation)
+    expect(service.reconcileAgentSession(anchor)).toBe(false)
+    expect(service.get(startup.id)?.agentSession).toBeUndefined()
+    service.close(startup.id)
+    const known = service.open({ ...anchor, url: '', content })
+    expect(known.agentSession).toBeUndefined()
+    await service.flush()
+    expect(JSON.parse(await readFile(path, 'utf8')).panes[0]).not.toHaveProperty('awaitingAgentSession')
+    const windows = death === 'anchor' ? survivingWindow : death === 'window'
+      ? [{ id: '@4', sessionId: '$1', paneIds: ['%13'] }]
+      : [{ id: '@9', sessionId: '$2', paneIds: ['%40'] }]
+    service.prune(windows)
+    expect(service.parkedIds()).toEqual([])
+    if (death === 'anchor') expect(service.get(known.id)?.anchorPaneId).toBe('%13')
+    else expect(service.get(known.id)).toBeUndefined()
+  })
+
+  it('drops old parked simulator records and strips ownership from live simulators on load', async () => {
+    const { path, service, sessions, resolve } = await setup()
+    sessions.set(anchor.anchorPaneId, conversation)
+    const tab = service.open({ ...anchor, url: 'http://localhost/parked' })
+    service.prune(survivingWindow)
+    await service.flush()
+    const state = JSON.parse(await readFile(path, 'utf8'))
+    const entry = state.parkedPanes[0]
+    entry.pane.content = { kind: 'simulator', udid: '00000000-0000-0000-0000-000000000001' }
+    state.panes = [{ ...entry.pane, id: 'w-00000001', awaitingAgentSession: true }]
+    await writeFile(path, JSON.stringify(state))
+    const loaded = track(new WebPaneService(path, Date.now, undefined, 'owner', resolve))
+    await loaded.load()
+    expect(loaded.parkedIds()).toEqual([])
+    expect(loaded.get('w-00000001')).not.toHaveProperty('agentSession')
+    expect(loaded.get('w-00000001')).not.toHaveProperty('awaitingAgentSession')
+    sessions.set(destination.anchorPaneId, conversation)
+    expect(loaded.reconcileAgentSession(destination)).toBe(false)
+    expect(loaded.get(tab.id)).toBeUndefined()
+    await loaded.flush()
+    expect(JSON.parse(await readFile(path, 'utf8')).parkedPanes).toEqual([])
   })
 
   it.each(['anchor', 'window', 'session'] as const)('parks stamped tabs on %s death and keeps unstamped behavior', async (death) => {

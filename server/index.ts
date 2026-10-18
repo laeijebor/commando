@@ -537,7 +537,8 @@ async function main(): Promise<void> {
   await paneMarks.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted pane marks', error)
   })
-  const webPanes = new WebPaneService(undefined, Date.now, undefined, undefined, (paneId) => resolveWebPaneAgentSession(paneId))
+  const webPanes = new WebPaneService(undefined, Date.now, undefined, undefined,
+    (paneId) => resolveWebPaneAgentSession(paneId), (paneId) => isWebPaneAgentRunning(paneId))
   await webPanes.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted web panes', error)
   })
@@ -633,7 +634,7 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
-    canvasThreads.retain(liveIds)
+    canvasThreads.retain(new Set([...liveIds, ...webPanes.parkedIds()]))
     webPaneAgentRequests.retain(liveIds)
     canvasSpotlight.retain(liveIds)
     canvasPush?.retain(liveIds)
@@ -653,6 +654,12 @@ async function main(): Promise<void> {
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
+  const isWebPaneAgentRunning = (paneId: string): boolean => {
+    const pane = paneForId(paneId)
+    if (!pane || pane.dead) return false
+    const hook = agentStatuses.liveHookStatus(paneId, pane.command)
+    return processStatusForPane(pane).provider !== 'unknown' || (hook !== undefined && hook.provider !== 'unknown')
+  }
   const resolveWebPaneAgentSession = (paneId: string): AgentSessionRef | undefined => {
     const pane = paneForId(paneId)
     if (!pane || pane.dead) return undefined
@@ -1994,7 +2001,7 @@ async function main(): Promise<void> {
   canvasSnapshots.prune()
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
   canvasWatch.sync(webPanes.list())
-  canvasThreads.retain(new Set(webPanes.list().map((pane) => pane.id)))
+  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.parkedIds()]))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),

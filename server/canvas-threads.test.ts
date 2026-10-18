@@ -1,15 +1,104 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebPaneFeedbackNote } from '../shared/protocol.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
+import { WebPaneService } from './web-panes.js'
 
 let dir: string
+const paneServices: WebPaneService[] = []
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'canvas-threads-')) })
-afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+afterEach(async () => {
+  await Promise.all(paneServices.splice(0).map((service) => service.flush()))
+  rmSync(dir, { recursive: true, force: true })
+})
 const note: WebPaneFeedbackNote = { selector: '#row', tag: 'button', rect: { x: 2, y: 3, width: 10, height: 20 }, comment: 'Fix row', pageUrl: 'http://localhost/Settings.html', capturedAt: 100,
   deliveryKey: 'delivery', reviewKey: 'pending:w-12345678:1', canvas: { frameId: 'settings', point: { x: 5, y: 7 }, label: 'Row', labelId: 'row' } }
+
+describe('canvas threads for conversation-owned tabs', () => {
+  const anchor = { anchorPaneId: '%12', sessionId: '$1', windowId: '@3', openedBy: 'agent' as const }
+  const destination = { anchorPaneId: '%40', sessionId: '$2', windowId: '@9' }
+  const survivingWindow = [{ id: '@3', sessionId: '$1', paneIds: ['%13'] }]
+  const content = { kind: 'canvas' as const, artifactId: '0123456789abcdef', manifest: 'canvas.json' }
+  const resolve = () => ({ provider: 'claude' as const, id: 'conversation-123' })
+  const serviceAt = (now: () => number) => {
+    const service = new WebPaneService(join(dir, 'panes.json'), now, undefined, 'owner', resolve)
+    paneServices.push(service)
+    return service
+  }
+  // The daemon uses this union both when publishing changes and on startup.
+  const retain = (store: CanvasThreadsStore, service: WebPaneService) =>
+    store.retain(new Set([...service.list().map((pane) => pane.id), ...service.parkedIds()]))
+
+  it('keeps discussions through park, restart and restore, then releases them at the parked TTL', async () => {
+    let now = 1_000
+    const service = serviceAt(() => now)
+    const path = join(dir, 'threads.json')
+    const store = new CanvasThreadsStore(path)
+    const tab = service.open({ ...anchor, url: 'http://localhost/canvas', content })
+    store.record(tab.id, [note])
+    store.reply(tab.id, store.list(tab.id)[0].id, 'Kept reply', true)
+    const discussion = store.list(tab.id)
+    service.prune(survivingWindow)
+    expect(service.list()).toEqual([])
+    expect(service.parkedIds()).toEqual([tab.id])
+    retain(store, service)
+    expect(store.list(tab.id)).toEqual(discussion)
+    await service.flush()
+    const loaded = serviceAt(() => now)
+    await loaded.load()
+    const restoredStore = new CanvasThreadsStore(path)
+    retain(restoredStore, loaded)
+    expect(restoredStore.list(tab.id)).toEqual(discussion)
+    expect(loaded.reconcileAgentSession(destination)).toBe(true)
+    expect(loaded.parkedIds()).toEqual([])
+    retain(restoredStore, loaded)
+    expect(loaded.get(tab.id)?.anchorPaneId).toBe(destination.anchorPaneId)
+    expect(restoredStore.list(tab.id)).toEqual(discussion)
+    loaded.prune(survivingWindow)
+    now += 30 * 24 * 60 * 60 * 1_000
+    expect(loaded.prune(survivingWindow)).toBe(true)
+    expect(loaded.parkedIds()).toEqual([])
+    retain(restoredStore, loaded)
+    expect(new CanvasThreadsStore(path).list(tab.id)).toEqual([])
+  })
+
+  it('releases only the oldest discussion when parking exceeds the cap', async () => {
+    let now = 1_000
+    const service = serviceAt(() => now)
+    const tab = service.open({ ...anchor, url: 'http://localhost/canvas', content })
+    service.prune(survivingWindow)
+    await service.flush()
+    const state = JSON.parse(readFileSync(service.statePath, 'utf8'))
+    const oldest = state.parkedPanes[0]
+    oldest.parkedAt = 1
+    state.parkedPanes.push(...Array.from({ length: 299 }, (_, index) => ({
+      pane: { ...oldest.pane, id: `w-${index.toString(16).padStart(8, '0')}` }, parkedAt: index + 2,
+    })))
+    writeFileSync(service.statePath, JSON.stringify(state))
+    const loaded = serviceAt(() => now)
+    await loaded.load()
+    const path = join(dir, 'threads.json'), store = new CanvasThreadsStore(path)
+    const keptId = state.parkedPanes[299].pane.id
+    store.record(tab.id, [note])
+    store.record(keptId, [note])
+    retain(store, loaded)
+    expect(store.list(tab.id)).toHaveLength(1)
+    now++
+    const newest = loaded.open({ ...anchor, url: 'http://localhost/new', content })
+    store.record(newest.id, [note])
+    loaded.prune(survivingWindow)
+    expect(loaded.parkedIds()).toHaveLength(300)
+    expect(loaded.parkedIds()).not.toContain(tab.id)
+    retain(store, loaded)
+    const restoredStore = new CanvasThreadsStore(path)
+    expect(restoredStore.list(tab.id)).toEqual([])
+    expect(restoredStore.list(keptId)).toHaveLength(1)
+    expect(restoredStore.list(newest.id)).toHaveLength(1)
+  })
+})
+
 describe('CanvasThreadsStore', () => {
   it('persists sent pins, deduplicates retries across restart and preserves them after feedback acknowledgement', () => {
     const path = join(dir, 'threads.json'), changed = vi.fn(), store = new CanvasThreadsStore(path, changed)
