@@ -351,7 +351,31 @@ describe('resume placement and launch selection', () => {
     }
   })
 
-  it('creates a session only when no exact live name or recorded id matches', async () => {
+  it.each(['brief', 'index'] as const)('creates the recorded session when its id was reused by an unrelated session (source: %s)', async (source) => {
+    const { resume, creator } = setup({
+      ...(source === 'brief'
+        ? { records: [{ provider: 'codex' as const, id: ID, sessionId: '$3', sessionName: 'api', paneOpen: false, references: [], updatedAt: 1 }] }
+        : { conversation: { session: { id: '$3', name: 'api' } } }),
+      sessions: [{ id: '$3', name: 'web' }],
+    })
+    expect(await resume({ paneId: undefined, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%11' } })
+    expect(creator.createSession).toHaveBeenCalledWith({ name: 'api', cwd: folder }, `env codex resume ${ID}`)
+    expect(creator.createWindow).not.toHaveBeenCalled()
+    expect(creator.createPane).not.toHaveBeenCalled()
+    expect(creator.respawnChatPane).not.toHaveBeenCalled()
+  })
+
+  it('uses the recorded id when no session name was recorded', async () => {
+    const { resume, creator } = setup({
+      conversation: { session: { id: '$3', name: '' } },
+      sessions: [{ id: '$3', name: 'web' }],
+    })
+    expect(await resume({ paneId: undefined, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%10' } })
+    expect(creator.createWindow).toHaveBeenCalledWith({ sessionId: '$3', cwd: folder }, `env codex resume ${ID}`)
+    expect(creator.createSession).not.toHaveBeenCalled()
+  })
+
+  it('creates a session when no exact live name matches', async () => {
     const { resume, creator } = setup({
       conversation: { session: { id: '$7', name: 'original' } },
       sessions: [{ id: '$8', name: 'original-copy' }, { id: '$9', name: 'Original' }],
