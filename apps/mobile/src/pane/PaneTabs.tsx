@@ -1,50 +1,49 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Keyboard, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
-import { fetchGitSummary, fetchPanePrs, type GitDiffSummary, type PanePrSummary } from '../daemon/paneApi'
+import { fetchGitSummary } from '../daemon/paneApi'
+import { useAppActive } from '../daemon/useAppActive'
+import { usePollingQuery } from '../daemon/usePollingQuery'
+import { usePanePrs } from './usePanePrs'
+import { selectedPaneTab, rememberPaneTab } from './tabSelection'
 import { useHostState } from '../daemon/store'
 import type { Host } from '../hosts/types'
 import type { WebPane } from '@commando/protocol'
 import { useTheme } from '../theme'
 import { PaneInfoSections } from '../ui/PaneInfo'
 import { Button } from '../ui/primitives'
-import { openTile, closeTile, confirmTile } from '../tiles/api'
+import { openTile, closeTile, confirmTile, markTileSeen } from '../tiles/api'
 import { paneTabs, type PaneTab } from './tabs'
+import { tileWasViewed } from '../tiles/seen'
 
-export function PaneTabs({ host, paneId, chat, header, children, onOpenTile }: { host?: Host; paneId?: string; chat: boolean; header: ReactNode; children: ReactNode; onOpenTile: (tile: WebPane) => void }): React.JSX.Element {
+export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, active = true }: { host?: Host; paneId?: string; active?: boolean; chat: boolean; header: ReactNode; children: ReactNode; onOpenTile: (tile: WebPane) => void }): React.JSX.Element {
   const theme = useTheme()
   const state = useHostState(host?.id)
-  const [selected, setSelected] = useState('body')
-  const [summary, setSummary] = useState<GitDiffSummary | null>(null)
-  const [prs, setPrs] = useState<PanePrSummary[]>([])
-  useEffect(() => {
-    let current = true
-    setSummary(null); setPrs([])
-    if (!host || !paneId) return
-    const load = () => {
-      void fetchGitSummary(host, paneId).then((value) => { if (current) setSummary(value) }, () => undefined)
-      void fetchPanePrs(host, paneId).then((value) => { if (current) setPrs(value?.pullRequests ?? []) }, () => undefined)
-    }
-    load()
-    const timer = setInterval(load, 15_000)
-    return () => { current = false; clearInterval(timer) }
-  }, [host, paneId])
+  const foreground = useAppActive(active)
+  const selectionKey = `${host?.id}:${paneId}`
+  const [selected, setSelected] = useState(() => selectedPaneTab(selectionKey))
+  const summary = usePollingQuery(`git:${host?.id}:${host?.baseUrl}:${paneId}`, () => fetchGitSummary(host!, paneId!), foreground && Boolean(host && paneId)).data
+  const prs = usePanePrs(host, paneId ? [paneId] : [], foreground).flatMap((list) => list.pullRequests)
   const tabs = paneTabs({ paneId: paneId ?? '', chat, webPanes: state.webPanes, summary, prs, dismissed: state.dismissedPrTabs?.[paneId ?? ''] })
   const tab = tabs.find((candidate) => candidate.id === selected) ?? tabs[0]!
+  useEffect(() => {
+    if (!host || tab.kind !== 'web' || !tileWasViewed(tab.tile, foreground)) return
+    void markTileSeen(host, tab.id).catch(() => undefined)
+  }, [foreground, host, tab.id, tab.kind, tab.kind === 'web' && tab.tile.unseen])
   return <View style={styles.root}>
     {header}
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={[styles.strip, { borderBottomColor: theme.border }]} contentContainerStyle={styles.tabs}>
-      {tabs.map((entry) => <Pressable key={entry.id} accessibilityRole="tab" accessibilityLabel={entry.label} accessibilityState={{ selected: entry.id === tab.id }} onPress={() => { Keyboard.dismiss(); setSelected(entry.id) }} style={[styles.tab, { borderBottomColor: entry.id === tab.id ? theme.accent : 'transparent' }]}>
+    <ScrollView horizontal keyboardShouldPersistTaps="handled" showsHorizontalScrollIndicator={false} style={[styles.strip, { borderBottomColor: theme.border }]} contentContainerStyle={styles.tabs}>
+      {tabs.map((entry) => <Pressable key={entry.id} accessibilityRole="tab" hitSlop={4} accessibilityLabel={entry.kind === 'pr' ? `PR ${entry.label} ${entry.state}` : entry.label} accessibilityState={{ selected: entry.id === tab.id }} onPress={() => { Keyboard.dismiss(); setSelected(entry.id); rememberPaneTab(selectionKey, entry.id) }} style={[styles.tab, { borderBottomColor: entry.id === tab.id ? theme.accent : 'transparent' }]}>
         <Feather name={tabIcon(entry)} size={14} color={entry.id === tab.id ? theme.accent : theme.muted} />
         <Text numberOfLines={1} style={[styles.label, { color: entry.id === tab.id ? theme.text : theme.muted }]}>{entry.label}</Text>
         {entry.kind === 'changes' ? <Text style={styles.counts}><Text style={{ color: theme.green }}>+{entry.additions}</Text> <Text style={{ color: theme.red }}>−{entry.deletions}</Text></Text> : null}
-        {entry.kind === 'pr' ? <Text style={[styles.state, { color: entry.state === 'closed' ? theme.red : entry.state === 'merged' ? theme.accent : entry.state === 'draft' ? theme.muted : theme.green }]}>{entry.state}</Text> : null}
+        {entry.kind === 'pr' ? <View accessibilityLabel={entry.state} style={[styles.dot, { backgroundColor: entry.state === 'closed' ? theme.red : entry.state === 'merged' ? theme.accent : entry.state === 'draft' ? theme.muted : theme.green }]} /> : null}
         {entry.kind === 'web' && entry.tile.unseen ? <View accessibilityLabel="Unseen" style={[styles.dot, { backgroundColor: theme.accent }]} /> : null}
       </Pressable>)}
     </ScrollView>
     <View style={[styles.root, tab.kind !== 'body' && styles.hidden]} accessibilityElementsHidden={tab.kind !== 'body'} importantForAccessibility={tab.kind !== 'body' ? 'no-hide-descendants' : 'auto'}>{children}</View>
     {host && paneId && tab.kind !== 'body' ? tab.kind === 'web' ? <WebTabCard key={tab.id} host={host} tab={tab} onOpenTile={onOpenTile} /> : <ScrollView key={tab.id} contentContainerStyle={styles.sections}>
-      <PaneInfoSections host={host} paneId={paneId} brief={state.briefs[paneId]} status={state.agentStatuses[paneId]} pane={state.snapshot?.panes.find((pane) => pane.id === paneId)} ports={state.snapshot?.ports ?? []} sections={[tab.kind]} prFilter={tab.kind === 'pr' ? { repo: tab.pr.repo, number: tab.pr.number } : undefined} />
+      <PaneInfoSections active={foreground} host={host} paneId={paneId} brief={state.briefs[paneId]} status={state.agentStatuses[paneId]} pane={state.snapshot?.panes.find((pane) => pane.id === paneId)} ports={state.snapshot?.ports ?? []} sections={[tab.kind]} prFilter={tab.kind === 'pr' ? { repo: tab.pr.repo, number: tab.pr.number } : undefined} />
     </ScrollView> : null}
   </View>
 }
@@ -76,10 +75,10 @@ function WebTabCard({ host, tab, onOpenTile }: { host: Host; tab: Extract<PaneTa
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
   hidden: { display: 'none' },
-  strip: { flexGrow: 0, borderBottomWidth: StyleSheet.hairlineWidth, maxHeight: 48 },
-  tabs: { paddingHorizontal: 12, gap: 6 },
-  tab: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10, borderBottomWidth: 2 },
-  label: { fontSize: 13, fontWeight: '600', maxWidth: 160 },
+  strip: { height: 48, flexGrow: 0, flexShrink: 0, borderBottomWidth: StyleSheet.hairlineWidth },
+  tabs: { paddingLeft: 10, paddingRight: 28, gap: 3, alignItems: 'stretch' },
+  tab: { flexShrink: 0, minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, borderBottomWidth: 2 },
+  label: { flexShrink: 0, fontSize: 13, fontWeight: '600' },
   counts: { fontSize: 11, fontVariant: ['tabular-nums'] },
   state: { fontSize: 10 },
   dot: { width: 5, height: 5, borderRadius: 3 },

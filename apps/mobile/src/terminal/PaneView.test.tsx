@@ -82,3 +82,16 @@ describe('the pane view', () => {
     expect(screen.getByTestId('chat-input').props.value).toBe('meant for chat A')
   })
 })
+
+it('keeps a terminal draft per host and pane after switching windows and remounting the composer', async () => {
+  const view = render(pane('%40'))
+  await act(async () => undefined)
+  fireEvent.changeText(screen.getByLabelText('Message the agent'), 'terminal A draft')
+  view.rerender(pane('%30'))
+  await act(async () => undefined)
+  expect(screen.getByLabelText('Message the agent').props.value).toBe('')
+  fireEvent.changeText(screen.getByLabelText('Message the agent'), 'terminal B draft')
+  view.rerender(pane('%40'))
+  await act(async () => undefined)
+  expect(screen.getByLabelText('Message the agent').props.value).toBe('terminal A draft')
+})

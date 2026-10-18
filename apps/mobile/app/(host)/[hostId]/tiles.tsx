@@ -11,7 +11,7 @@ import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
 import { useHostsStore } from '../../../src/hosts/store'
 import { useTheme } from '../../../src/theme'
 import { closeTile, confirmTile, openTile } from '../../../src/tiles/api'
-import { buildTileRows, groupTileRows } from '../../../src/tiles/list'
+import { buildTileRows, groupTileRows, tileTitle } from '../../../src/tiles/list'
 import { OpenTileSheet, type OpenTileRequest } from '../../../src/tiles/OpenTileSheet'
 import { TileListRow } from '../../../src/tiles/TileListRow'
 import { EmptyState, ScreenTitle, SectionHeader } from '../../../src/ui/primitives'
@@ -64,7 +64,7 @@ export default function TilesScreen(): React.JSX.Element {
   const onClose = useCallback(
     (tile: WebPane): void => {
       if (!host) return
-      Alert.alert('Close this tile?', `${tile.url}`, [
+      Alert.alert('Close this tile?', tileTitle(tile), [
         { style: 'cancel', text: 'Keep it' },
         {
           style: 'destructive',

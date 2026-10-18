@@ -89,7 +89,7 @@ export function WideCockpit({
   }
 
   const sessions = (
-    <SessionsPanel hostId={hostId}
+    <SessionsPanel active={screenFocused && (mode === 'wide' || sheetOpen)} hostId={hostId}
       onChangeView={changeView}
       onSelectPane={focusPane}
       onSelectRow={(row) => focusPane(row.paneId)}
@@ -101,7 +101,7 @@ export function WideCockpit({
 
   const sessionsColumn = (
     <View style={styles.sessionsInner}>
-      <ScrollView contentContainerStyle={styles.sessionsBody}>{sessions}</ScrollView>
+      <View style={{ flex: 1, minHeight: 0 }}>{sessions}</View>
       <View style={[styles.sessionsFooter, { borderTopColor: theme.border }]}>
         <Button
           label="+ New session"
@@ -142,7 +142,7 @@ export function WideCockpit({
                 if (canStream(tile)) {
                   router.push({
                     pathname: '/(host)/[hostId]/tile/[tileId]',
-                    params: { hostId, tileId: tile.id },
+                    params: { hostId, tileId: tile.id, fromPaneId: paneId },
                   })
                   return
                 }
@@ -164,7 +164,7 @@ export function WideCockpit({
         </View>
 
         <View style={[styles.hudColumn, { borderLeftColor: theme.border }]}>
-          <HudColumn host={host} paneId={paneId} state={state} />
+          <HudColumn active={screenFocused} host={host} paneId={paneId} state={state} />
         </View>
       </View>
 
@@ -245,10 +245,12 @@ function CockpitStatusRow({
  * and the Info sections under it.
  */
 function HudColumn({
+  active,
   host,
   paneId,
   state,
 }: {
+  active: boolean
   host: Host | undefined
   paneId: string | undefined
   state: HostDaemonState
@@ -299,7 +301,7 @@ function HudColumn({
         </Card>
       )}
 
-      <PaneInfoSections
+      <PaneInfoSections active={active}
         brief={state.briefs[paneId]}
         host={host}
         // A new pane starts from nothing rather than showing the last one's
@@ -334,7 +336,6 @@ const styles = StyleSheet.create({
   columns: { flex: 1, flexDirection: 'row', minHeight: 0 },
   sessionsColumn: { width: SESSIONS_COLUMN_WIDTH, borderRightWidth: 1 },
   sessionsInner: { flex: 1, minHeight: 0 },
-  sessionsBody: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 16, gap: 12 },
   sessionsFooter: { padding: 12, borderTopWidth: StyleSheet.hairlineWidth },
   terminalColumn: { flex: 1, minWidth: 0 },
   hudColumn: { width: HUD_COLUMN_WIDTH, borderLeftWidth: 1 },

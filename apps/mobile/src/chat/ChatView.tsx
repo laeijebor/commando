@@ -120,7 +120,7 @@ export class ChatErrorBoundary extends Component<{ children: ReactNode; fallback
 
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
-  banner: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
+  banner: { flexShrink: 0, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
   bannerText: { flex: 1, fontSize: 12.5, lineHeight: 17 },
   waiting: { fontSize: 13, textAlign: 'center', padding: 12 },
 })

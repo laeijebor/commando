@@ -25,6 +25,7 @@ import { sessionIdentityForName } from '@commando/session-identity'
 import { providerPresentation } from '../ui/providerPresentation'
 import { useSessionPreferences } from '../ui/sessionPreferences'
 import { PaneTabs } from '../pane/PaneTabs'
+import { useAppActive } from '../daemon/useAppActive'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { Composer } from './Composer'
@@ -62,18 +63,20 @@ export type PaneViewProps = {
 export function PaneView(props: PaneViewProps): React.JSX.Element {
   const chat = useChat(props.host?.id, props.paneId)
   const state = useDaemonConnection(props.host)
+  const client = useDaemonClient(props.host)
+  const active = useAppActive(props.active)
   const settledAt = props.paneId ? state.agentStatuses[props.paneId]?.settledAt : undefined
   useEffect(() => {
-    if (props.active && props.host && props.paneId) useSessionPreferences.getState().visit(props.host.id, props.paneId)
-  }, [props.host?.id, props.paneId, props.active, settledAt])
+    if (active && props.host && props.paneId && state.phase === 'live') useSessionPreferences.getState().visit(props.host.id, props.paneId, client)
+  }, [props.host?.id, props.paneId, active, settledAt, client, state.phase])
   // Keyed so the iPad's centre column starts each chat afresh (its draft, scroll and error boundary).
   return chat && props.host
     ? <ChatPane key={`${props.host.id}:${chat.paneId}`} {...props} chat={chat} host={props.host} />
     : <TerminalPane {...props} />
 }
 
-/** A chat pane: the nav and window chips over the native chat. */
-function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWindow }: PaneViewProps & { host: Host; chat: ChatState }): React.JSX.Element {
+/** A chat pane: session identity and pane tabs over the native chat. */
+function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: PaneViewProps & { host: Host; chat: ChatState }): React.JSX.Element {
   const theme = useTheme()
   const state = useDaemonConnection(host)
   const client = useDaemonClient(host)
@@ -81,15 +84,15 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
   const identities = useSessionPreferences((store) => store.identities[host.id])
   const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
   return (
-    <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} chat header={
+    <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} active={active} chat header={
       <PaneNav
         {...(onBack ? { onBack } : {})}
         {...(onInfo ? { onInfo } : {})}
+        provider={chat.session.provider}
         identity={sessionIdentityForName(identities ?? {}, context.title)}
         subtitle={`${sessionIdentityForName(identities ?? {}, context.title).codename} · ${providerPresentation(chat.session.provider).name} · ${chatStatusWord(chat.session.status)}`}
         title={context.title}
       /> } onOpenTile={onOpenTile}>
-      <PaneChips context={context} onOpenTile={onOpenTile} onSelectWindow={onSelectWindow} />
       <View onLayout={keyboard.onLayout} ref={keyboard.ref} style={[styles.body, { paddingBottom: keyboard.overlap ?? 0 }]}>
         <ChatErrorBoundary
           fallback={(error) => (
@@ -224,7 +227,7 @@ function TerminalPane({
   }, [raw, send])
 
   return (
-    <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} chat={false} header={
+    <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} active={active} chat={false} header={
       <PaneNav
         fit={fit}
         {...(onBack ? { onBack } : {})}
@@ -279,6 +282,7 @@ function TerminalPane({
 
         <KeyBar disabled={!live} onPress={(item) => void handleKey(item)} />
         <Composer
+          draftKey={host && paneId ? `${host.id}:${paneId}` : undefined}
           disabled={!live}
           notice={notice}
           onRawBackspace={() => send([{ kind: 'key', key: 'Backspace' }])}

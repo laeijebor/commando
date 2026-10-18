@@ -23,7 +23,7 @@ it('honours dismissed PR signatures and distinguishes same-number PRs from diffe
   const base = PANE_PRS.pullRequests[0]!
   const prs = [{ ...base, repo: 'owner/a', number: 7, state: 'closed' as const }, { ...base, repo: 'owner/b', number: 7, state: 'open' as const, isDraft: true }]
   const tabs = paneTabs({ paneId: '%14', chat: true, prs, webPanes: [] })
-  expect(tabs.filter((tab) => tab.kind === 'pr').map((tab) => [tab.label, tab.state])).toEqual([['PR owner/b #7', 'draft'], ['PR owner/a #7', 'closed']])
+  expect(tabs.filter((tab) => tab.kind === 'pr').map((tab) => [tab.label, tab.state])).toEqual([['owner/b #7', 'draft'], ['owner/a #7', 'closed']])
   const hidden = paneTabs({ paneId: '%14', chat: true, prs, webPanes: [], dismissed: { 'pr:owner:b:7': `open|true|${base.updatedAt}` } })
   expect(hidden.filter((tab) => tab.kind === 'pr')).toHaveLength(1)
 })

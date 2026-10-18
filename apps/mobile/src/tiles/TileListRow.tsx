@@ -11,7 +11,7 @@ import Feather from '@expo/vector-icons/Feather'
 
 import { useTheme } from '../theme'
 import { Button, Card, Pill, withAlpha } from '../ui/primitives'
-import { canStream, unstreamableReason, type TileRow } from './list'
+import { canStream, tileTitle, unstreamableReason, type TileRow } from './list'
 
 const CLOSE_TRAVEL = 96
 
@@ -92,7 +92,7 @@ export function TileListRow({
           <Card>
             <View style={styles.header}>
               <View style={styles.identity}>
-                <Text numberOfLines={1} style={[styles.host, { color: theme.text }]}>{row.host}</Text>
+                <Text numberOfLines={1} style={[styles.host, { color: theme.text }]}>{tileTitle(row.tile)}</Text>
                 <Text numberOfLines={1} style={[styles.path, { color: theme.muted }]}>{row.path}</Text>
               </View>
               <Pill label={row.engine} tone={row.engine === 'chromium' ? 'claude' : 'mute'} />
@@ -132,6 +132,8 @@ export function TileListRow({
                   />
                 </View>
               </View>
+            ) : row.tile.content ? (
+              <Text style={[styles.confirmBody, { color: theme.muted }]}>{reason}. Follow its agent here; this native view remains on the Mac.</Text>
             ) : row.engine === 'webkit' ? (
               <View style={[styles.confirm, { borderColor: theme.borderMid }]}>
                 <Text style={[styles.confirmBody, { color: theme.muted }]}>

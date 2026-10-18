@@ -1,4 +1,5 @@
-import { Tabs } from 'expo-router'
+import { Tabs, BottomTabBar, type BottomTabBarProps } from 'expo-router/js-tabs'
+import { isHostTab, visibleHostTabs } from '../../../src/layout/hostTabs'
 import Feather from '@expo/vector-icons/Feather'
 
 import { useTheme } from '../../../src/theme'
@@ -12,6 +13,7 @@ export default function HostTabsLayout(): React.JSX.Element {
   const theme = useTheme()
   return (
     <Tabs
+      tabBar={(props: BottomTabBarProps) => isHostTab(props.state.routes[props.state.index]?.name ?? '') ? <BottomTabBar {...props} state={visibleHostTabs(props.state)} /> : null}
       screenOptions={{
         headerShown: false,
         sceneStyle: { backgroundColor: theme.bg },

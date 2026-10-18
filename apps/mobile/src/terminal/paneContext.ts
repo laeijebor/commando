@@ -7,6 +7,7 @@ import type {
   WebPane,
 } from '@commando/protocol'
 
+import { tileTitle } from '../tiles/list'
 import { providerLabel } from '../agents/selectors'
 
 export type PaneWindowChip = {
@@ -96,10 +97,4 @@ export function buildPaneContext(
 }
 
 /** `https://example.com/path` → `example.com`, for a tile chip's label. */
-export function tileLabel(tile: WebPane): string {
-  try {
-    return new URL(tile.url).host || tile.url
-  } catch {
-    return tile.url
-  }
-}
+export function tileLabel(tile: WebPane): string { return tileTitle(tile) }

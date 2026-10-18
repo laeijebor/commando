@@ -43,18 +43,20 @@ export class DemoDaemonClient extends DaemonClient {
   override send(message: OutgoingMessage): string | null {
     if (!this.openDemo) return null
     const requestId = message.requestId ?? nextRequestId()
+    if (message.type === 'mark_panes_seen') this.emit({ type: 'pane_seen', seen: Object.fromEntries(message.paneIds.map((id) => [id, Date.now()])) })
     const chat = 'paneId' in message ? useChatStore.getState().byHost[this.hostId]?.[message.paneId] : undefined
     if (!chat) return requestId
     if (message.type === 'chat_send') {
       this.emit({ type: 'chat_items', paneId: chat.paneId, items: [item('user_message', { text: message.text, images: message.images })] })
       this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'running' }, hostConnected: true })
       const reply = item('assistant_message', { text: 'I’m on it.', status: 'running' })
-      this.later(() => this.emit({ type: 'chat_items', paneId: chat.paneId, items: [reply] }), 900)
-      this.later(() => {
+      const chunks = ['I’m on it.', 'I’m on it. The next pass keeps the desktop hierarchy', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout easier to scan.']
+      chunks.forEach((text, index) => this.later(() => {
         if (reply.kind !== 'assistant_message') return
-        this.emit({ type: 'chat_items', paneId: chat.paneId, items: [{ ...reply, text: 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout easier to scan.', status: 'completed', updatedAt: Date.now() }] })
-        this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'idle' }, hostConnected: true })
-      }, 1400)
+        const done = index === chunks.length - 1
+        this.emit({ type: 'chat_items', paneId: chat.paneId, items: [{ ...reply, text, status: done ? 'completed' : 'running', updatedAt: Date.now() }] })
+        if (done) this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'idle' }, hostConnected: true })
+      }, 250 + index * 450))
     } else if (message.type === 'chat_interrupt') {
       this.timers.forEach(clearTimeout); this.timers.clear()
       this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'idle' }, hostConnected: true })

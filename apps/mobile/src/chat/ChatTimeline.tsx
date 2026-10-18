@@ -441,7 +441,7 @@ function SubagentRows({ items }: { items: SubagentItem[] }): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  list: { flex: 1, minHeight: 0 },
+  list: { flex: 1, minHeight: 0, overflow: 'hidden' },
   jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   jumpLabel: { fontSize: 12.5, fontWeight: '700' },
   content: { paddingHorizontal: 20, paddingVertical: 24, flexGrow: 1, width: '100%', maxWidth: 776, alignSelf: 'center' },

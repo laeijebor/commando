@@ -25,6 +25,7 @@ function RootStack(): React.JSX.Element {
       <StatusBar style="light" />
       <Stack
         screenOptions={{
+          headerShown: false,
           headerStyle: { backgroundColor: theme.bg },
           headerTintColor: theme.accent,
           headerTitleStyle: { color: theme.text },
@@ -32,8 +33,8 @@ function RootStack(): React.JSX.Element {
         }}
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(host)" options={{ headerShown: false }} />
-        <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+        <Stack.Screen name="(host)/[hostId]" options={{ headerShown: false }} />
+        <Stack.Screen name="settings" options={{ title: 'Settings', headerShown: true }} />
       </Stack>
     </>
   )

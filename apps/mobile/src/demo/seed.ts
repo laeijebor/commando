@@ -6,7 +6,7 @@ import { chatState, item, session } from '../chat/testing'
 
 export function demoMessages(now = Date.now()): ServerMessage[] {
   if (!__DEV__) throw new Error('Demo is only available in development')
-  const names = ['remote-chat', 'pane-tabs', 'feedback-retry', 'design-review', 'auth-refresh', 'native-preview', 'release-notes', 'quiet-search']
+  const names = ['remote-chat', 'pane-tabs', 'feedback-retry', 'design-review', 'auth-refresh', 'native-preview', 'release-journal', 'search-garden']
   const repos = ['commando', 'commando', 'lavish', 'lavish', 'atlas', 'atlas', 'island', 'island']
   const providers: AgentProvider[] = ['claude', 'codex', 'cursor', 'muse', 'codex', 'claude', 'muse', 'cursor']
   const kinds: AgentStatus['status'][] = ['needs_input', 'working', 'working', 'done', 'failed', 'stale', 'done', 'done']
@@ -32,7 +32,7 @@ export function demoMessages(now = Date.now()): ServerMessage[] {
       item('todo_list', { todos: [{ content: 'Session identities', status: 'completed' }, { content: 'Pane tabs', status: 'in_progress' }, { content: 'Phone screenshots', status: 'pending' }] }),
     ]
     if (i === 0) items.push(item('request', { status: 'running', requestId: 'demo-question', requestKind: 'question', toolName: 'AskUserQuestion', title: 'Choose the reply layout', questions: [{ header: 'Layout', question: 'How should the reply read?', options: [{ label: 'Quiet and spacious', description: 'Flat replies, room for code' }, { label: 'Compact' }], multiSelect: false }] }))
-    return chatState({ paneId: pane.id, session: session({ paneId: pane.id, provider, cwd: pane.path, status: i === 0 ? 'waiting' : kinds[i] === 'working' ? 'running' : kinds[i] === 'failed' ? 'error' : 'idle', title: headlines[i] ?? pane.title, error: kinds[i] === 'failed' ? 'The token expired while the refresh test was running.' : undefined, models: undefined, model: undefined }), items })
+    return chatState({ paneId: pane.id, session: session({ paneId: pane.id, provider, cwd: pane.path, status: i === 0 ? 'waiting' : kinds[i] === 'working' ? 'running' : kinds[i] === 'failed' ? 'error' : 'idle', title: headlines[i] ?? pane.title, error: kinds[i] === 'failed' ? 'The token expired while the refresh test was running.' : undefined, permissionMode: providers[i] === 'cursor' ? undefined : 'default', effort: undefined, models: undefined, model: undefined }), items })
   })
   const webPanes: WebPane[] = [
     { id: 'demo-browser', title: 'Companion preview', url: 'http://localhost:5273', sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 1, unseen: true, engine: 'chromium', openedBy: 'agent', status: 'open', createdAt: now - 60_000 },
@@ -43,5 +43,5 @@ export function demoMessages(now = Date.now()): ServerMessage[] {
   return [{ type: 'snapshot', snapshot }, { type: 'agent_status_snapshot', statuses }, { type: 'session_brief_snapshot', briefs }, { type: 'chat_snapshot', chats }, { type: 'web_panes', webPanes }]
 }
 export function demoIdentities(): Record<string, ReturnType<typeof deriveSessionIdentity>> {
-  return Object.fromEntries(['remote-chat', 'pane-tabs', 'feedback-retry', 'design-review', 'auth-refresh', 'native-preview', 'release-notes', 'quiet-search'].map((name) => [name, deriveSessionIdentity(name)]))
+  return Object.fromEntries(['remote-chat', 'pane-tabs', 'feedback-retry', 'design-review', 'auth-refresh', 'native-preview', 'release-journal', 'search-garden'].map((name) => [name, deriveSessionIdentity(name)]))
 }

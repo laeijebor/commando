@@ -1,10 +1,11 @@
 import { pendingRequests } from '@commando/chat-timeline'
 import { DemoDaemonClient } from './client'
-import { demoMessages } from './seed'
+import { demoMessages, demoIdentities } from './seed'
 import { demoHost, isDemoHost, autoDemoEnabled } from './flags'
 import { demoResponse } from './http'
 import { useDaemonStore } from '../daemon/store'
 import { useChatStore } from '../chat/store'
+import { useSessionPreferences } from '../ui/sessionPreferences'
 import { buildChatGroups } from '../ui/chatListModel'
 
 beforeEach(() => {
@@ -39,10 +40,13 @@ it('appends the user immediately and updates one assistant item like a stream af
   client.send({ type: 'chat_send', paneId: '%demo3', text: 'Use the spacious layout' })
   const chat = () => useChatStore.getState().byHost[client.hostId]!['%demo3']!
   expect(chat().items.at(-1)).toMatchObject({ kind: 'user_message', text: 'Use the spacious layout' })
-  jest.advanceTimersByTime(950)
+  jest.advanceTimersByTime(250)
+  const firstText = chat().items.at(-1)
+  jest.advanceTimersByTime(450)
+  expect(chat().items.at(-1)).not.toEqual(firstText)
   const replyId = chat().items.at(-1)!.id
   expect(chat().items.at(-1)).toMatchObject({ kind: 'assistant_message', status: 'running' })
-  jest.advanceTimersByTime(500)
+  jest.advanceTimersByTime(900)
   expect(chat().items.at(-1)).toMatchObject({ id: replyId, status: 'completed' })
   expect(chat().session.status).toBe('idle')
   expect(listener).toHaveBeenCalled()
@@ -80,4 +84,21 @@ it('is unreachable when the production build disables __DEV__ even with the envi
     if (flag === undefined) delete process.env.EXPO_PUBLIC_COMMANDO_DEMO
     else process.env.EXPO_PUBLIC_COMMANDO_DEMO = flag
   }
+})
+
+it('uses distinct demo animals and recent PR dates', async () => {
+  const identities = Object.values(demoIdentities())
+  expect(new Set(identities.map((identity) => identity.glyph)).size).toBe(identities.length)
+  const body = await demoResponse('/api/prs/pane?paneId=%demo0', {}).json()
+  expect(Date.now() - Date.parse(body.list.pullRequests[0].updatedAt)).toBe(120_000)
+})
+it('broadcasts authoritative seen state and clears a viewed web tab through the fake API', async () => {
+  const client = new DemoDaemonClient({ host: demoHost() })
+  client.start()
+  client.send({ type: 'mark_panes_seen', paneIds: ['%demo0'] })
+  expect(useSessionPreferences.getState().seen[client.hostId]?.['%demo0']).toBe(Date.now())
+  const tile = useDaemonStore.getState().byHost[client.hostId]!.webPanes.find((entry) => entry.unseen)!
+  demoResponse(`/api/web-panes/${tile.id}/seen`, { method: 'POST' })
+  expect(useDaemonStore.getState().byHost[client.hostId]!.webPanes.find((entry) => entry.id === tile.id)?.unseen).toBe(false)
+  client.stop()
 })

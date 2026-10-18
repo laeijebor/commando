@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useLocalSearchParams, useRouter } from 'expo-router'
-import { Pressable, RefreshControl, ScrollView, StyleSheet } from 'react-native'
+import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
+import { Pressable, StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
@@ -24,6 +24,7 @@ export default function SessionsScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
   const mode = useLayoutMode()
+  const focused = useIsFocused()
   const { hostId, focus } = useLocalSearchParams<{ hostId: string; focus?: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const refreshReachability = useHostsStore((state) => state.refreshReachability)
@@ -72,28 +73,17 @@ export default function SessionsScreen(): React.JSX.Element {
         title="Chats"
         trailing={<Pill label={host?.name ?? 'host'} tone="mute" />}
       />
-      <ScrollView
-        contentContainerStyle={styles.body}
-        refreshControl={
-          <RefreshControl
-            onRefresh={() => {
-              if (!hostId) return
-              setRefreshing(true)
-              void refreshReachability(hostId).finally(() => setRefreshing(false))
-            }}
-            refreshing={refreshing}
-            tintColor={theme.muted}
-          />
-        }
-      >
-        <SessionsPanel hostId={hostId}
+        <SessionsPanel active={focused} refreshing={refreshing} onRefresh={() => {
+          if (!hostId) return
+          setRefreshing(true)
+          void refreshReachability(hostId).finally(() => setRefreshing(false))
+        }} hostId={hostId}
           onChangeView={changeView}
           onSelectPane={openPane}
           onSelectRow={openRow}
           state={state}
           view={view}
         />
-      </ScrollView>
 
       <Pressable
         accessibilityLabel="New session"
@@ -112,7 +102,6 @@ export default function SessionsScreen(): React.JSX.Element {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  body: { paddingHorizontal: 16, paddingBottom: 96, gap: 12 },
   fab: {
     position: 'absolute',
     right: 20,

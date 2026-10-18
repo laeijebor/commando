@@ -1,7 +1,12 @@
-import { useRouter } from 'expo-router'
+import { useEffect } from 'react'
+import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
+import { markTileSeen } from '../tiles/api'
+import { useAppActive } from '../daemon/useAppActive'
+import { useHostsStore } from '../hosts/store'
+import { tileReturnTarget } from '../tiles/returnToPane'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 
@@ -9,10 +14,14 @@ import { withAlpha } from '../ui/primitives'
 export function DemoTileScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
+  const { hostId, fromPaneId, tileId } = useLocalSearchParams<{ hostId: string; fromPaneId?: string; tileId: string }>()
+  const host = useHostsStore((store) => store.hosts.find((entry) => entry.id === hostId))
+  const foreground = useAppActive(useIsFocused())
+  useEffect(() => { if (foreground && host && tileId) void markTileSeen(host, tileId).catch(() => undefined) }, [foreground, host, tileId])
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: theme.bg }]}>
       <View style={[styles.nav, { borderBottomColor: theme.border }]}>
-        <Pressable accessibilityLabel="Back to chat" onPress={() => router.back()} style={styles.back}>
+        <Pressable accessibilityLabel="Back to chat" onPress={() => router.replace(tileReturnTarget(hostId, fromPaneId))} style={styles.back}>
           <Feather name="chevron-left" size={25} color={theme.accent} />
         </Pressable>
         <View style={styles.navText}>

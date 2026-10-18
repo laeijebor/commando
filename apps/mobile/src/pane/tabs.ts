@@ -1,3 +1,4 @@
+import { tileTitle } from '../tiles/list'
 import type { WebPane } from '@commando/protocol'
 import type { GitDiffSummary, PanePrSummary } from '../daemon/paneApi'
 
@@ -20,14 +21,12 @@ export function paneTabs({ paneId, chat, webPanes, summary, prs = [], dismissed 
   for (const pr of [...prs].sort((a, b) => priority[a.state] - priority[b.state] || b.updatedAt.localeCompare(a.updatedAt))) {
     const key = `pr:${pr.repo.toLowerCase().replace('/', ':')}:${pr.number}`
     if (dismissed[key] === `${pr.state}|${pr.isDraft}|${pr.updatedAt}`) continue
-    tabs.push({ id: key, kind: 'pr', label: `PR ${counts.get(pr.number)! > 1 ? `${pr.repo} ` : ''}#${pr.number}`, pr, state: pr.isDraft && pr.state === 'open' ? 'draft' : pr.state })
+    tabs.push({ id: key, kind: 'pr', label: `${counts.get(pr.number)! > 1 ? `${pr.repo} ` : ''}#${pr.number}`, pr, state: pr.isDraft && pr.state === 'open' ? 'draft' : pr.state })
   }
   const web = webPanes.filter((tile) => tile.anchorPaneId === paneId && tile.dock !== 'split').sort((a, b) => (a.order ?? a.createdAt) - (b.order ?? b.createdAt) || a.createdAt - b.createdAt || a.id.localeCompare(b.id))
   for (const tile of web) {
     const content = tile.content?.kind ?? 'browser'
-    let fallback: string = content === 'browser' ? 'Web' : content.charAt(0).toUpperCase() + content.slice(1)
-    try { if (content === 'browser') fallback = new URL(tile.url).host || fallback } catch { /* Non-URL built-ins use their kind. */ }
-    tabs.push({ id: tile.id, kind: 'web', label: tile.title || fallback, tile, content })
+    tabs.push({ id: tile.id, kind: 'web', label: tileTitle(tile), tile, content })
   }
   return tabs
 }

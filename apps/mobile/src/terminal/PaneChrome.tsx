@@ -4,6 +4,7 @@ import Feather from '@expo/vector-icons/Feather'
 import type { AgentStatus, WebPane } from '@commando/protocol'
 
 import type { SessionIdentity } from '@commando/session-identity'
+import { ProviderMark } from '../ui/ProviderMark'
 import { SessionAvatar } from '../ui/SessionAvatar'
 import { statusLabel, useTheme } from '../theme'
 import { Dot, ProgressBar, StatusDot, withAlpha } from '../ui/primitives'
@@ -17,12 +18,14 @@ import { tileLabel, type PaneContext, type PaneWindowChip } from './paneContext'
 export function PaneNav({
   title,
   identity,
+  provider,
   subtitle,
   fit,
   onToggleFit,
   onBack,
   onInfo,
 }: {
+  provider?: string
   identity?: SessionIdentity
   title: string
   subtitle: string
@@ -69,6 +72,7 @@ export function PaneNav({
           <Text style={[styles.fitLabel, { color: fit ? theme.accent : theme.muted }]}>Fit</Text>
         </Pressable>
       ) : null}
+      {provider ? <ProviderMark provider={provider} /> : null}
       {onInfo ? (
         <Pressable accessibilityLabel="Pane info" hitSlop={10} accessibilityRole="button" onPress={onInfo}>
           <Text style={[styles.action, { color: theme.accent }]}>Info</Text>
