@@ -26,6 +26,7 @@ type SessionManagementDependencies = {
   prepareSessionWorktreeDeletion?: (sessionId: string) => Promise<SessionWorktreeDeletionPlan>
   afterSessionDeleted?: (sessionId: string) => void
   afterSessionRestored?: (sessionId: string) => void
+  afterSessionRenamed?: (sessionId: string, previousName: string, name: string) => void | Promise<void>
   beforeWindowDeleted?: (windowId: string) => void | Promise<void>
   onSessionsChanged?: () => void | Promise<void>
 }
@@ -168,7 +169,9 @@ export class SessionManagementApi {
           } catch (error) {
             throw new HttpError(400, error instanceof Error ? error.message : 'Invalid session name')
           }
+          const previousName = this.dependencies.currentSessions().find((session) => session.id === route.sessionId)!.name
           await this.actions.rename(route.sessionId, name)
+          await this.dependencies.afterSessionRenamed?.(route.sessionId, previousName, name)
           await this.dependencies.onSessionsChanged?.()
           writeJson(response, 200, { ok: true, sessionId: route.sessionId, name })
           return true

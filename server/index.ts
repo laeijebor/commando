@@ -1420,6 +1420,7 @@ async function main(): Promise<void> {
 
   const refreshSnapshot = (): Promise<CommandoSnapshot> => {
     if (snapshotRefresh) return snapshotRefresh
+    const previousServerId = tmux.serverId
     snapshotRefresh = tmux
       .discover(snapshotRevision + 1)
       .then(async (nextSnapshot) => {
@@ -1435,6 +1436,7 @@ async function main(): Promise<void> {
         const previousCommands = new Map(
           snapshot.panes.map((pane) => [pane.id, pane.command]),
         )
+        const previousSessionNames = new Map(snapshot.sessions.map((session) => [session.id, session.name]))
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
@@ -1450,12 +1452,22 @@ async function main(): Promise<void> {
           broadcast({ type: 'pane_mark_removed', targetId })
         }
 
-        const briefsChanged = await sessionBriefs.reconcilePanes(
+        let briefsChanged = false
+        // Compare live snapshots from the same tmux server, never saved ids after a restart.
+        if (previousServerId && previousServerId === tmux.serverId) {
+          for (const session of snapshot.sessions) {
+            const previousName = previousSessionNames.get(session.id)
+            if (previousName !== undefined && previousName !== session.name) {
+              briefsChanged = await sessionBriefs.renameSession(session.id, previousName, session.name) || briefsChanged
+            }
+          }
+        }
+        briefsChanged = await sessionBriefs.reconcilePanes(
           snapshot.panes.map((pane) => ({
             paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId,
             sessionName: snapshot.sessions.find((session) => session.id === pane.sessionId)?.name ?? pane.sessionId,
           })),
-        )
+        ) || briefsChanged
         if (briefsChanged) {
           await queueBriefPublication(async () => {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
@@ -1604,6 +1616,13 @@ async function main(): Promise<void> {
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
+    afterSessionRenamed: async (sessionId, previousName, name) => {
+      if (await sessionBriefs.renameSession(sessionId, previousName, name)) {
+        await queueBriefPublication(async () => {
+          broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
+        })
+      }
+    },
     prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, {
       currentPanes: async () => (await refreshSnapshotFresh()).panes,
       currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
