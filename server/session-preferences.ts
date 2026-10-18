@@ -260,6 +260,12 @@ export class SessionPreferenceStore {
     this.statePath = statePath
   }
 
+  /** Reconcile for display without persisting changes from this reader's snapshot. */
+  async loadReadOnly(currentSessions: readonly SessionIdentity[] = []): Promise<SessionTreePreferences> {
+    await this.writes
+    return reconcileSessionTreePreferences(await this.readState(), currentSessions)
+  }
+
   async load(currentSessions: readonly SessionIdentity[] = []): Promise<SessionTreePreferences> {
     await this.writes
     const stored = await this.readState()
