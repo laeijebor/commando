@@ -189,6 +189,11 @@ export class AgentResumeService {
     return this.records.get(targetId)
   }
 
+  findConversation(provider: ResumableProvider, sessionId: string): AgentResumeRecord | undefined {
+    return [...this.records.values()].filter((record) => record.provider === provider && record.sessionId === sessionId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+  }
+
   snapshot(): AgentResume[] {
     return [...this.resumes.values()]
   }

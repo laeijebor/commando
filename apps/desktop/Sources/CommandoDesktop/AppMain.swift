@@ -47,6 +47,13 @@ final class DesktopWindow: NSWindow {
                 }
                 return
             }
+            if modifiers == [.command, .shift],
+               event.charactersIgnoringModifiers?.lowercased() == "t",
+               let paneShortcutWasPressed,
+               attachedSheet == nil {
+                if !event.isARepeat { paneShortcutWasPressed("T") }
+                return
+            }
             if modifiers == .command,
                let key = event.charactersIgnoringModifiers?.lowercased(),
                key == "w" || key == "t",

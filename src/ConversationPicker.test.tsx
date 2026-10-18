@@ -1,32 +1,35 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ChatState } from '../shared/agent-chat'
 import type { ChatConversation } from '../shared/chat-conversations'
-import type { AgentStatus, TmuxPane } from '../shared/protocol'
+import type { TmuxPane } from '../shared/protocol'
+import { deriveSessionIdentity } from '../shared/session-identity'
 import { ConversationPicker, openConversationPanes } from './ConversationPicker'
 
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn() })
 afterEach(cleanup)
 
 const NOW = Date.UTC(2026, 9, 13, 21)
-const pane = { id: '%1', path: '/Users/me/app-worktrees/feature', repo: { root: '/Users/me/app', name: 'app', branch: 'feature', isWorktree: true, worktreeRoot: '/Users/me/app-worktrees/feature' } } as TmuxPane
+const pane = { id: '%1', sessionId: '$1', path: '/Users/me/app-worktrees/feature', repo: { root: '/Users/me/app', name: 'app', branch: 'feature', isWorktree: true, worktreeRoot: '/Users/me/app-worktrees/feature' } } as TmuxPane
 const conversation = (sessionId: string, title: string, cwd: string, minutesAgo: number, extra: Partial<ChatConversation> = {}): ChatConversation => ({
   provider: 'claude', sessionId, title, cwd, updatedAt: NOW - minutesAgo * 60_000, repoRoot: cwd.startsWith('/Users/me/app') ? '/Users/me/app' : '/Users/me/other', checkoutRoot: cwd, ...extra,
 })
 const conversations = [
   conversation('aaaaaaaa-0001', 'Elsewhere work', '/Users/me/other', 1),
-  conversation('aaaaaaaa-0002', 'Main checkout work', '/Users/me/app', 5),
-  conversation('aaaaaaaa-0003', 'Feature work', '/Users/me/app-worktrees/feature', 90, { branch: 'feature' }),
-  conversation('aaaaaaaa-0004', 'Open elsewhere', '/Users/me/app-worktrees/feature', 2),
+  conversation('aaaaaaaa-0002', 'Main checkout work', '/Users/me/app', 5, { session: { id: '$2', name: 'vivi', group: 'Subscriptions' } }),
+  conversation('aaaaaaaa-0003', 'Feature work', '/Users/me/app-worktrees/feature', 90, { branch: 'feature', session: { id: '$1', name: 'current' } }),
+  conversation('aaaaaaaa-0004', 'Open elsewhere', '/Users/me/app-worktrees/feature', 2, { session: { id: '$1', name: 'current' } }),
 ]
 
 function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0]> = {}) {
   const props = {
     pane,
-    open: new Map([['claude:aaaaaaaa-0004', { paneId: '%7', label: 'Review' }]]),
+    sessionName: 'current',
+    chats: { '%7': { session: { provider: 'claude', sessionId: 'aaaaaaaa-0004' } } } as unknown as Record<string, ChatState>,
+    paneLabel: () => 'Review',
     busy: false,
     load: vi.fn(async () => conversations),
     onPick: vi.fn(async () => {}),
@@ -40,13 +43,127 @@ function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0
 }
 
 describe('ConversationPicker', () => {
-  it('groups this worktree, then this repo, then everything else, newest first', async () => {
+  it('labels Muse, Cursor and OpenCode conversations', async () => {
+    renderPicker({ load: async () => [
+      conversation('aaaaaaaa-0005', 'Cursor work', pane.path, 1, { provider: 'cursor' }),
+      conversation('ses_session123', 'OpenCode work', pane.path, 2, { provider: 'opencode' }),
+      conversation('aaaaaaaa-0006', 'Muse work', pane.path, 3, { provider: 'muse' }),
+    ] })
+    const options = await screen.findAllByRole('option')
+    expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode', 'Muse'])
+  })
+
+  it.each(['muse', 'cursor', 'opencode'] as const)('jumps to a server-verified live %s TUI instead of resuming it', async (provider) => {
+    const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
+    const { input, onJump, onPick } = renderPicker({
+      load: async () => [conversation(sessionId, 'Open terminal work', pane.path, 1, { provider, openPaneId: '%7' })],
+      chats: {},
+    })
+    expect(await screen.findByRole('option')).toHaveTextContent('Open in Review')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onJump).toHaveBeenCalledWith('%7')
+    expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it.each(['claude', 'codex', 'muse', 'cursor', 'opencode'] as const)('resumes an exited %s TUI now running vim when the server reports no open pane', async (provider) => {
+    const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
+    const past = conversation(sessionId, 'Exited terminal work', pane.path, 1, { provider })
+    const { input, onJump, onPick } = renderPicker({
+      load: async () => [past],
+      chats: {},
+      pane: { ...pane, command: 'vim' },
+    })
+    expect(await screen.findByRole('option')).not.toHaveTextContent('Open in Review')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('Switch this pane')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(onPick).toHaveBeenCalledWith(past, 'replace'))
+    expect(onJump).not.toHaveBeenCalled()
+  })
+
+  it('groups this session, then other sessions, then Outside Commando, newest first', async () => {
     renderPicker()
     const groups = await screen.findAllByRole('group')
-    expect(groups.map((group) => group.getAttribute('aria-label'))).toEqual(['This worktree', 'This repo', 'Everything else'])
+    expect(groups.map((group) => group.getAttribute('aria-label'))).toEqual(['This session · current', 'vivi · Subscriptions', 'Outside Commando'])
     expect(within(groups[0]!).getAllByRole('option').map((option) => option.querySelector('strong')?.textContent)).toEqual(['Open elsewhere', 'Feature work'])
-    expect(within(groups[0]!).getAllByRole('option')[1]).toHaveTextContent('2h ago · ~/app-worktrees/feature · feature')
+    expect(within(groups[0]!).getAllByRole('option')[1]!.querySelector('small')).toHaveTextContent(/^2h ago · feature$/)
     expect(within(groups[0]!).getAllByRole('option')[0]).toHaveTextContent('Open in Review')
+    expect(groups[0]!.querySelector('.conversation-picker-group')).toHaveTextContent(`This session · current${deriveSessionIdentity('current').codename}2 chats`)
+    expect(groups[1]!.querySelector('.conversation-picker-group')).toHaveTextContent(`vivi · Subscriptions${deriveSessionIdentity('vivi').codename}1 chat`)
+    expect(groups[1]!.querySelector('.conversation-picker-group')).not.toHaveTextContent('1 chats')
+  })
+
+  it('omits a branch equal to the folder while retaining a different branch and the profile', async () => {
+    renderPicker({ load: async () => [
+      conversation('aaaaaaaa-0010', 'Matching branch', '/repo/chat/', 1, { branch: 'chat', profile: 'claudew' }),
+      conversation('aaaaaaaa-0011', 'Different branch', '/repo/chat', 2, { branch: 'main' }),
+    ] })
+    const options = await screen.findAllByRole('option')
+    expect(options[0]!.querySelector('small')).toHaveTextContent(/^1m ago · chat · claudew$/)
+    expect(options[1]!.querySelector('small')).toHaveTextContent(/^2m ago · chat · main$/)
+  })
+
+  it('shows the agent headline, original title, folder, profile, at most three refs and pane states', async () => {
+    const enriched = conversation('aaaaaaaa-0005', 'Original Claude title', '/repo/picker/', 2, {
+      headline: 'Session-first picker ready', branch: 'feature', profile: 'claudep', session: { id: '$1', name: 'current' }, paneOpen: true,
+      refs: [{ label: 'PR #540', url: 'https://example.com/540' }, { label: 'Preview' }, { label: 'Issue #99' }, { label: 'Fourth ref' }],
+    })
+    const { input } = renderPicker({ load: async () => [enriched, conversations[2]!] })
+    const options = await screen.findAllByRole('option')
+    expect(input).toHaveAttribute('placeholder', 'Find a conversation, session or PR…')
+    expect(options[0]!.querySelector('strong')).toHaveTextContent('Session-first picker ready')
+    expect(options[0]!.querySelector('.conversation-picker-title')).toHaveTextContent('Original Claude title')
+    expect(options[0]!.querySelector('small')).toHaveTextContent('2m ago · picker · feature · claudep')
+    expect(options[0]!.querySelector('.command-kind')).toHaveTextContent('claudep● open')
+    expect(options[1]!.querySelector('.command-kind')).toHaveTextContent('Claudeclosed pane')
+    expect(options[0]!.querySelectorAll('.conversation-picker-refs > span')).toHaveLength(3)
+    expect(screen.queryByText('Fourth ref')).not.toBeInTheDocument()
+    for (const query of ['540', '#540', 'Original ready claudep']) {
+      fireEvent.change(input, { target: { value: query } })
+      expect(screen.getAllByRole('option')).toHaveLength(1)
+      expect(screen.getByRole('option')).toHaveTextContent('PR #540')
+    }
+  })
+
+  it('filters by provider/profile and closed panes, toggles back to All, and preserves input navigation', async () => {
+    const entries = [
+      conversation('aaaaaaaa-0010', 'Personal', '/repo', 1, { profile: 'claudep', paneOpen: true, session: { id: '$1', name: 'current' } }),
+      conversation('aaaaaaaa-0011', 'Work', '/repo', 2, { profile: 'claudew', paneOpen: false, session: { id: '$1', name: 'current' } }),
+      conversation('aaaaaaaa-0012', 'Codex work', '/repo', 3, { provider: 'codex' }),
+      conversation('aaaaaaaa-0013', 'Cursor work', '/repo', 4, { provider: 'cursor' }),
+      conversation('ses_session123', 'OpenCode work', '/repo', 5, { provider: 'opencode' }),
+      ...conversations,
+    ]
+    const { input, onJump } = renderPicker({ load: async () => entries, current: 'claude:aaaaaaaa-0002' })
+    await screen.findAllByRole('option')
+    for (const label of ['All', 'claudep', 'claudew', 'Codex', 'Cursor', 'OpenCode', 'Closed panes']) {
+      const chip = screen.getByRole('button', { name: label })
+      expect(chip).toHaveAttribute('type', 'button')
+      expect(chip).not.toHaveAttribute('tabindex', '-1')
+    }
+    const personal = screen.getByRole('button', { name: 'claudep' })
+    fireEvent.click(personal)
+    expect(personal).toHaveAttribute('aria-pressed', 'true')
+    // Arrow/Enter shortcuts live on the input, so a chip must hand focus back.
+    expect(input).toHaveFocus()
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('Personal')
+    fireEvent.click(personal)
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Codex' }))
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('Codex work')
+    fireEvent.click(screen.getByRole('button', { name: 'Closed panes' }))
+    expect(screen.getAllByRole('option').map((option) => option.querySelector('strong')?.textContent)).toEqual(['Work', 'Feature work'])
+    fireEvent.change(input, { target: { value: 'feature' } })
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(input).toHaveAttribute('aria-activedescendant', 'conversation-claude-aaaaaaaa-0011')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(input).toHaveAttribute('aria-activedescendant', 'conversation-claude-aaaaaaaa-0004')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onJump).toHaveBeenCalledWith('%7')
   })
 
   it('switches this pane with Enter, opens beside with ⌘Enter, and jumps to an open one', async () => {
@@ -77,7 +194,7 @@ describe('ConversationPicker', () => {
   })
 
   it('closes from the Esc button, including while a switch is pending', async () => {
-    const { input, onClose } = renderPicker({ open: new Map(), onPick: () => new Promise<void>(() => {}) })
+    const { input, onClose } = renderPicker({ chats: {}, onPick: () => new Promise<void>(() => {}) })
     await screen.findAllByRole('group')
     fireEvent.change(input, { target: { value: 'Feature' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -104,7 +221,7 @@ describe('ConversationPicker', () => {
   })
 
   it('says when the switch would stop a running turn', async () => {
-    renderPicker({ busy: true, open: new Map() })
+    renderPicker({ busy: true, chats: {} })
     await screen.findAllByRole('group')
     expect(screen.getByRole('contentinfo')).toHaveTextContent('Enter Switch (stops this turn)')
   })
@@ -123,15 +240,135 @@ describe('openConversationPanes', () => {
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 
-  it('maps chat conversations and hook-reported terminal sessions to their panes', () => {
+  it('maps server-verified terminal conversations and hosted chats to their panes', () => {
     const chats = { '%1': { session: { provider: 'codex', sessionId: 'cccccccc-0001' } } } as unknown as Record<string, ChatState>
-    const statuses = {
-      '%2': { provider: 'claude', source: 'hook', agentSessionId: 'aaaaaaaa-0001' },
-      '%3': { provider: 'claude', source: 'heuristic', agentSessionId: 'aaaaaaaa-0002' },
-    } as unknown as Record<string, AgentStatus>
-    expect([...openConversationPanes(chats, statuses, (paneId) => `pane ${paneId}`)]).toEqual([
+    const listed = [
+      conversation('aaaaaaaa-0001', 'Claude', pane.path, 1, { openPaneId: '%2' }),
+      conversation('aaaaaaaa-0002', 'Exited', pane.path, 1),
+      conversation('aaaaaaaa-0003', 'Cursor', pane.path, 1, { provider: 'cursor', openPaneId: '%4' }),
+      conversation('ses_session123', 'OpenCode', pane.path, 1, { provider: 'opencode', openPaneId: '%5' }),
+    ]
+    expect([...openConversationPanes(chats, listed, (paneId) => `pane ${paneId}`)]).toEqual([
       ['claude:aaaaaaaa-0001', { paneId: '%2', label: 'pane %2' }],
+      ['cursor:aaaaaaaa-0003', { paneId: '%4', label: 'pane %4' }],
+      ['opencode:ses_session123', { paneId: '%5', label: 'pane %5' }],
       ['codex:cccccccc-0001', { paneId: '%1', label: 'pane %1' }],
     ])
   })
+
+  it('keeps hosted chats authoritative when list data is missing or older', () => {
+    const chats = { '%7': { session: { provider: 'claude', sessionId: 'aaaaaaaa-0005' } } } as unknown as Record<string, ChatState>
+    for (const listed of [[], [conversation('aaaaaaaa-0005', 'Old host', pane.path, 1, { openPaneId: '%2' })]]) {
+      expect(openConversationPanes(chats, listed, () => 'Review').get('claude:aaaaaaaa-0005')).toEqual({ paneId: '%7', label: 'Review' })
+    }
+  })
+})
+
+describe('resume entry points', () => {
+  it.each([
+    ['replace', false, 'Switch this pane'],
+    ['replace', true, 'Switch (stops this turn)'],
+    ['split', false, 'Open beside'],
+    ['session', false, 'In its session'],
+  ] as const)('shows Enter placement %s and resumes accordingly', async (defaultPlacement, busy, label) => {
+    const { input, onPick } = renderPicker({ defaultPlacement, busy, chats: {} })
+    await screen.findAllByRole('option')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent(`Enter ${label}`)
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    expect(onPick).toHaveBeenCalledWith(conversations[3], defaultPlacement)
+  })
+
+  it('resumes in its session with option-Enter and only shows the hint for a session row', async () => {
+    const { input, onPick } = renderPicker({ chats: {} })
+    await screen.findAllByRole('option')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('⌥Enter In its session')
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter', altKey: true }) })
+    expect(onPick).toHaveBeenCalledWith(conversations[3], 'session')
+  })
+
+  it('omits the option-Enter hint for a conversation outside Commando', async () => {
+    const { input } = renderPicker()
+    await screen.findAllByRole('option')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    // "work" also matches the other row's worktree path.
+    fireEvent.change(input, { target: { value: 'Elsewhere work other' } })
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Elsewhere work')
+    expect(input).toHaveAttribute('aria-activedescendant', 'conversation-claude-aaaaaaaa-0001')
+    expect(screen.getByRole('contentinfo')).not.toHaveTextContent('⌥Enter')
+  })
+
+  it('starts filtered to a session and lets the user dismiss its chip', async () => {
+    const { input, onPick, onJump } = renderPicker({ initialSessionFilter: { id: '$2', name: 'vivi' }, defaultPlacement: 'session' })
+    expect(await screen.findAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('Main checkout work')
+    const chip = screen.getByRole('button', { name: 'Clear session filter: vivi' })
+    expect(chip).toHaveTextContent('Session: vivi')
+    fireEvent.click(chip)
+    expect(screen.queryByRole('button', { name: 'Clear session filter: vivi' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('option')).toHaveLength(conversations.length)
+    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Open elsewhere')
+    fireEvent.change(input, { target: { value: 'Feature work' } })
+    // Both rows match via their paths; choose the closed conversation explicitly.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Feature work')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('Enter In its session')
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter', metaKey: true }) })
+    expect(onPick).toHaveBeenCalledWith(conversations[2], 'split')
+    expect(onJump).not.toHaveBeenCalled()
+  })
+
+  it('shows closed chats with renamed ownership while excluding history from a reused session id', async () => {
+    const closed = conversation('aaaaaaaa-0010', 'Closed before rename', '/repo', 1, {
+      session: { id: '$2', name: 'renamed' }, paneOpen: false,
+    })
+    const previousServer = conversation('aaaaaaaa-0011', 'Unrelated old session', '/repo', 2, {
+      session: { id: '$2', name: 'previous-server' }, paneOpen: false,
+    })
+    const { input, onPick } = renderPicker({
+      initialSessionFilter: { id: '$2', name: 'renamed' }, defaultPlacement: 'session',
+      load: async () => [closed, previousServer], chats: {},
+    })
+    expect(await screen.findAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('Closed before rename')
+    expect(screen.getByRole('option')).toHaveTextContent('closed pane')
+    expect(screen.queryByText('Unrelated old session')).not.toBeInTheDocument()
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    expect(onPick).toHaveBeenCalledWith(closed, 'session')
+  })
+})
+
+
+it('shows the agent title on the secondary line and searches it, falling back to the transcript title', async () => {
+  const { input } = renderPicker({ load: async () => [
+    conversation('aaaaaaaa-0100', 'Transcript first prompt', pane.path, 1, { headline: 'Latest turn update', agentTitle: 'Stable topic name' }),
+    conversation('aaaaaaaa-0101', 'Fallback transcript title', pane.path, 2, { headline: 'Another update' }),
+  ] })
+  const rows = await screen.findAllByRole('option')
+  expect(rows[0]!.querySelector('strong')).toHaveTextContent('Latest turn update')
+  expect(rows[0]!.querySelector('.conversation-picker-title')).toHaveTextContent('Stable topic name')
+  expect(rows[1]!.querySelector('.conversation-picker-title')).toHaveTextContent('Fallback transcript title')
+  fireEvent.change(input, { target: { value: 'stable topic' } })
+  expect(screen.getAllByRole('option')).toHaveLength(1)
+  expect(screen.getByRole('option')).toHaveTextContent('Stable topic name')
+})
+
+
+it('shows session avatars and muted codenames, glyph tiles, and History outside Commando', async () => {
+  const identity = { ...deriveSessionIdentity('current'), glyph: '🐢', glyphSource: 'user' as const }
+  renderPicker({ sessionIdentities: { current: identity } })
+  await screen.findAllByRole('option')
+  const currentGroup = screen.getByRole('group', { name: 'This session · current' })
+  expect(currentGroup.querySelector('.conversation-picker-group .session-avatar svg')).toBeInTheDocument()
+  expect(currentGroup.querySelector('.conversation-picker-codename')).toHaveTextContent(identity.codename)
+  for (const row of within(currentGroup).getAllByRole('option')) {
+    expect(row.querySelector('.session-glyph-tile')).toHaveTextContent('🐢')
+    expect(row.querySelector('.lucide-history')).not.toBeInTheDocument()
+  }
+  const historical = screen.getByRole('group', { name: 'vivi · Subscriptions' })
+  expect(historical.querySelector('.session-avatar svg')).toBeInTheDocument()
+  expect(historical.querySelector('.conversation-picker-codename')).toHaveTextContent(deriveSessionIdentity('vivi').codename)
+  const outside = screen.getByRole('group', { name: 'Outside Commando' })
+  expect(outside.querySelector('.lucide-history')).toBeInTheDocument()
+  expect(outside.querySelector('.session-avatar')).not.toBeInTheDocument()
 })

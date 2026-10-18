@@ -5,7 +5,7 @@ import { isAbsolute } from 'node:path'
 
 import type { AgentStatusKind, SessionBrief, SessionBriefUpdateKind } from '../shared/protocol.js'
 import type { SessionBriefPatch, SessionBriefStore } from './session-briefs.js'
-import { SessionReferenceLimitError, referenceFieldsValid, referenceKindIsValid, referenceValueIsUrl, referenceValueLimit } from './session-briefs.js'
+import { SessionReferenceLimitError, cleanConversationTitle, referenceFieldsValid, referenceKindIsValid, referenceValueIsUrl, referenceValueLimit } from './session-briefs.js'
 import { PaneScreenshotError, type PaneScreenshotRegistry } from './pane-screenshots.js'
 
 const API_PATH = '/api/session-brief'
@@ -115,6 +115,8 @@ export type ParsedSessionBriefPatch = Omit<SessionBriefPatch, 'publishedScreensh
 }
 
 export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSessionBriefPatch {
+  const title = body.title === undefined ? undefined : cleanConversationTitle(body.title)
+  if (title === null) throw new HttpError(400, 'title is invalid')
   const headline = optionalText(body, 'headline', 180, false)
   const recapMarkdown = optionalText(body, 'recapMarkdown', 2_000, true)
   const next = optionalText(body, 'next', 240, true)
@@ -167,10 +169,11 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
       throw new HttpError(400, 'screenshots.dir must exist and be a directory')
     }
   }
-  if (headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !complete && !update && !screenshots && !reference) {
+  if (title === undefined && headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !complete && !update && !screenshots && !reference) {
     throw new HttpError(400, 'At least one session brief field is required')
   }
   return {
+    ...(title ? { title } : {}),
     ...(headline ? { headline } : {}),
     ...(recapMarkdown !== undefined ? { recapMarkdown } : {}),
     ...(next !== undefined ? { next } : {}),

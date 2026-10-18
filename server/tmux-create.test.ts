@@ -945,6 +945,16 @@ describe('Codex chat creation', () => {
     expect(response.agentLaunch).toMatchObject({ provider: 'codex-chat', paneId: '%12' })
     expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'codex', '--permission-mode', 'plan', '--prompt', 'Hello'], undefined, {}))
   })
+  it('resumes Muse through its chat host when replacing a chat pane', async () => {
+    const run = runner()
+    await new TmuxCreator(run, [], undefined, vi.fn(), {}).respawnChatPane('%12', '/tmp', {
+      provider: 'muse-chat', resume: '0199ea33-1234-7000-8000-123456789abc', permissionMode: 'default',
+    })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([
+      COMMANDO_AGENT_LAUNCHER, 'muse', '--permission-mode', 'default', '--resume', '0199ea33-1234-7000-8000-123456789abc',
+    ], undefined, {}))
+  })
+
   it('starts the Muse chat host with its permission mode and refuses Claude-only settings', async () => {
     const run = runner()
     const response = await new TmuxCreator(run, [], undefined, vi.fn(), {}).createSession({ name: 'muse-chat', cwd: '/tmp', agent: { provider: 'muse-chat', permissionMode: 'bypassPermissions', prompt: 'Hello' } })
@@ -958,5 +968,43 @@ describe('Codex chat creation', () => {
     const run = runner()
     await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'codex-chat', ...settings } } as never)).rejects.toThrow(/Codex/)
     expect(run).not.toHaveBeenCalled()
+  })
+})
+
+describe('server-owned resume commands', () => {
+  const command = "env CLAUDE_CONFIG_DIR='/home/me/.claudep' claude --dangerously-skip-permissions --resume abcdefgh"
+  it.each(['pane', 'window', 'session', 'respawn'] as const)('runs the exact command in cwd for %s', async (kind) => {
+    const run = runner()
+    const creator = new TmuxCreator(run, [], undefined, undefined, {})
+    if (kind === 'pane') await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: '/repo' }, undefined, command)
+    if (kind === 'window') await creator.createWindow({ sessionId: '$1', cwd: '/repo' }, command)
+    if (kind === 'session') await creator.createSession({ name: 'original', cwd: '/repo' }, command)
+    if (kind === 'respawn') await creator.respawnChatPane('%1', '/repo', undefined, command)
+    expect(run.mock.calls[0]![0]).toContain('/repo')
+    expect(run.mock.calls[0]![0].at(-1)).toBe(agentLaunchPaneCommand(['/bin/sh', '-c', command], undefined, {}))
+  })
+
+  it.each(['', 'echo bad\ncommand', 'echo bad\rcommand', 'echo bad\tcommand', 'echo bad\0command', 'echo bad\u0085command', 'x'.repeat(8193)])('rejects invalid commands on every creation path', async (command) => {
+    const run = runner()
+    const creator = new TmuxCreator(run)
+    await expect(creator.createPane({ targetId: '%1', direction: 'horizontal' }, undefined, command)).rejects.toThrow('Invalid resume command')
+    await expect(creator.createWindow({ sessionId: '$1' }, command)).rejects.toThrow('Invalid resume command')
+    await expect(creator.createSession({ name: 'original' }, command)).rejects.toThrow('Invalid resume command')
+    await expect(creator.respawnChatPane('%1', '/repo', undefined, command)).rejects.toThrow('Invalid resume command')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('does not take resume commands from creation input objects', async () => {
+    const run = runner()
+    const creator = new TmuxCreator(run)
+    await creator.createWindow({ sessionId: '$1', resumeCommand: 'echo untrusted' } as never)
+    expect(run.mock.calls[0]![0]).not.toContain('echo untrusted')
+  })
+
+  it('supports chat launches in a new window', async () => {
+    const run = runner()
+    const creator = new TmuxCreator(run, [], undefined, undefined, {})
+    await creator.createWindow({ sessionId: '$1', cwd: '/repo', agent: { provider: 'codex-chat', resume: 'abcdefgh' } })
+    expect(run.mock.calls[0]![0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'codex', '--permission-mode', 'default', '--resume', 'abcdefgh'], undefined, {}))
   })
 })

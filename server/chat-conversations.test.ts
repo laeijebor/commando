@@ -1,7 +1,10 @@
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { parseChatConversations } from '../shared/chat-conversations.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 
 const CLAUDE_ID = '11111111-2222-3333-4444-555555555555'
@@ -33,10 +36,139 @@ const user = (content: unknown, extra: Record<string, unknown> = {}) => ({ type:
 
 function index(limit?: number) {
   const resolveRepos = vi.fn(async (paths: readonly string[]) => new Map(paths.map((path) => [path, { root: '/work/app', name: 'app', branch: 'feature', isWorktree: false }])))
-  return { index: new ChatConversationIndex({ home, codexHome: join(home, '.codex'), claudeConfigDirs: async () => [join(home, '.claudep')], resolveRepos, ...(limit ? { limit } : {}) }), resolveRepos }
+  return { index: new ChatConversationIndex({ home, codexHome: join(home, '.codex'), xdgDataHome: join(home, '.local', 'share'), claudeConfigDirs: async () => [join(home, '.claudep')], resolveRepos, ...(limit ? { limit } : {}) }), resolveRepos }
+}
+
+const cursorProject = (cwd: string) => cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+async function cursorTranscript(id: string, cwd: string, options: { flat?: boolean; sidecar?: boolean; store?: boolean; at?: number } = {}) {
+  const root = join(home, '.cursor')
+  const transcripts = join(root, 'projects', cursorProject(cwd), 'agent-transcripts')
+  const directory = options.flat ? transcripts : join(transcripts, id)
+  await mkdir(directory, { recursive: true })
+  const file = join(directory, `${id}.jsonl`)
+  await writeFile(file, lines(
+    { role: 'assistant', message: { content: [{ type: 'text', text: '<user_query>Not the user</user_query>' }] } },
+    { role: 'user', message: { content: [{ type: 'text', text: '<timestamp>ignored</timestamp>\n<user_query>\nReply with the word ok.\n</user_query>' }] } },
+    { role: 'user', message: { content: [{ type: 'text', text: '<user_query>Later prompt</user_query>' }] } },
+  ))
+  await utimes(file, (options.at ?? 1_000_000) / 1000, (options.at ?? 1_000_000) / 1000)
+  const chat = join(root, 'chats', createHash('md5').update(cwd).digest('hex'), id)
+  await mkdir(chat, { recursive: true })
+  if (options.store !== false) await writeFile(join(chat, 'store.db'), 'fixture')
+  if (options.sidecar !== false) await writeFile(join(chat, 'meta.json'), JSON.stringify({ cwd }))
+  return { file, chat }
+}
+
+async function opencodeDb(dataHome = join(home, '.local', 'share')) {
+  await mkdir(join(dataHome, 'opencode'), { recursive: true })
+  const db = new DatabaseSync(join(dataHome, 'opencode', 'opencode.db'))
+  db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_updated INTEGER, time_archived INTEGER)')
+  return db
 }
 
 describe('ChatConversationIndex', () => {
+  it.each([false, true])('indexes CLI Cursor transcripts (flat: %s), with exact cwd from the sidecar', async (flat) => {
+    const cwd = join(home, 'workspace with spaces-and-dashes')
+    await mkdir(cwd)
+    const { file } = await cursorTranscript(CLAUDE_ID, cwd, { flat })
+    const { index: conversations } = index()
+    expect(await conversations.list()).toMatchObject([{ provider: 'cursor', sessionId: CLAUDE_ID, cwd, title: 'Reply with the word ok.', updatedAt: 1_000_000 }])
+    expect(await conversations.list()).toMatchObject([{ title: 'Reply with the word ok.' }])
+    await writeFile(file, lines({ role: 'user', message: { content: [{ type: 'text', text: `<user_query>${'x'.repeat(220)}</user_query>` }] } }))
+    await utimes(file, 2000, 2000)
+    expect(await conversations.list()).toMatchObject([{ title: `${'x'.repeat(199)}…`, updatedAt: 2_000_000 }])
+  })
+
+  it('resolves lossy Cursor project paths against the filesystem and uses the chat hash to disambiguate', async () => {
+    const cwd = join(await realpath(home), 'ambiguous-path', 'with spaces')
+    await mkdir(cwd, { recursive: true })
+    await mkdir(join(await realpath(home), 'ambiguous', 'path-with-spaces'), { recursive: true })
+    expect(cursorProject(cwd)).toBe(cursorProject(join(await realpath(home), 'ambiguous', 'path-with-spaces')))
+    await cursorTranscript(CLAUDE_ID, cwd, { sidecar: false })
+    expect(await index().index.list()).toMatchObject([{ provider: 'cursor', cwd }])
+  })
+
+  it('reads a Cursor first prompt beyond the initial head slice and deduplicates both transcript layouts', async () => {
+    const { file } = await cursorTranscript(CLAUDE_ID, home)
+    await writeFile(file, lines(
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'x'.repeat(300 * 1024) }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '<user_query>First real prompt</user_query>' }] } },
+    ))
+    await utimes(file, 2000, 2000)
+    await cursorTranscript(CLAUDE_ID, home, { flat: true })
+    expect(await index().index.list()).toMatchObject([{ provider: 'cursor', title: 'First real prompt', updatedAt: 2_000_000 }])
+  })
+
+  it('excludes SDK ids, transcripts without a CLI store, and unresolved Cursor workspaces', async () => {
+    await cursorTranscript(`agent-${CLAUDE_ID}`, home)
+    await cursorTranscript(CODEX_ID, home, { store: false })
+    await cursorTranscript(CLAUDE_ID, join(home, 'missing'), { sidecar: false })
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it('rejects a Cursor sidecar pointing at a different workspace hash', async () => {
+    const { chat } = await cursorTranscript(CLAUDE_ID, join(home, 'missing'))
+    await writeFile(join(chat, 'meta.json'), JSON.stringify({ cwd: home }))
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it('reads only top-level unarchived OpenCode sessions, refreshing rows and sharing the global limit', async () => {
+    const db = await opencodeDb()
+    const id = 'ses_ed3f6d576ffeGGkSAFgSk4Snvz'
+    try {
+      const insert = db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)')
+      insert.run(id, null, home, 'OpenCode title', 3_000_000, null)
+      insert.run('ses_child123', id, home, 'Child', 9_000_000, null)
+      insert.run('ses_archived', null, home, 'Archived', 9_000_000, 1)
+      insert.run('ses_bad;id', null, home, 'Invalid id', 9_000_000, null)
+      await claudeTranscript(CLAUDE_ID, [user('Claude')], 1_000_000)
+      await cursorTranscript(CODEX_ID, home, { at: 2_000_000 })
+      const { index: conversations } = index(2)
+      expect(await conversations.list()).toMatchObject([
+        { provider: 'opencode', sessionId: id, cwd: home, title: 'OpenCode title', updatedAt: 3_000_000 },
+        { provider: 'cursor', updatedAt: 2_000_000 },
+      ])
+      db.prepare('UPDATE session SET title = ? WHERE id = ?').run('Renamed', id)
+      expect(await conversations.list()).toMatchObject([{ title: 'Renamed' }, { provider: 'cursor' }])
+    } finally { db.close() }
+  })
+
+  it('honours XDG_DATA_HOME for OpenCode', async () => {
+    const dataHome = join(home, 'xdg-data')
+    const db = await opencodeDb(dataHome)
+    db.prepare('INSERT INTO session VALUES (?, NULL, ?, ?, ?, NULL)').run('ses_session123', home, 'XDG session', 1000)
+    db.close()
+    vi.stubEnv('XDG_DATA_HOME', dataHome)
+    try {
+      const conversations = new ChatConversationIndex({ home, codexHome: join(home, '.codex'), resolveRepos: async () => new Map() })
+      expect(await conversations.list()).toMatchObject([{ provider: 'opencode', title: 'XDG session' }])
+    } finally { vi.unstubAllEnvs() }
+  })
+
+  it('shortens long OpenCode titles so the client keeps the conversation', async () => {
+    const db = await opencodeDb()
+    try {
+      db.prepare('INSERT INTO session VALUES (?, NULL, ?, ?, ?, NULL)').run('ses_session123', home, 'x'.repeat(600), 1000)
+      const conversations = await index().index.list()
+      expect(conversations).toMatchObject([{ provider: 'opencode', sessionId: 'ses_session123', title: `${'x'.repeat(199)}…` }])
+      expect(parseChatConversations({ conversations })).toEqual(conversations)
+    } finally { db.close() }
+  })
+
+  it('ignores missing, locked and malformed OpenCode databases', async () => {
+    const { index: conversations } = index()
+    expect(await conversations.list()).toEqual([])
+    const db = await opencodeDb()
+    try {
+      db.exec("INSERT INTO session VALUES ('ses_session123', NULL, '/work', 'Locked', 1000, NULL); BEGIN EXCLUSIVE")
+      expect(await conversations.list()).toEqual([])
+      db.exec('ROLLBACK')
+      expect(await conversations.list()).toMatchObject([{ title: 'Locked' }])
+    } finally { db.close() }
+    await writeFile(join(home, '.local', 'share', 'opencode', 'opencode.db'), 'not sqlite')
+    expect(await conversations.list()).toEqual([])
+  })
+
   it('lists Claude and Codex conversations newest first, with titles, folders and repos', async () => {
     await claudeTranscript(CLAUDE_ID, [
       user('<local-command-caveat>ignored</local-command-caveat>'),
@@ -59,6 +191,110 @@ describe('ChatConversationIndex', () => {
     await writeFile(join(home, '.codex', 'session_index.jsonl'), lines({ id: CODEX_ID, thread_name: 'Named thread' }))
     const titles = (await index().index.list()).map((conversation) => conversation.title)
     expect(titles).toEqual(['My name', 'Named thread'])
+  })
+
+  it.each([false, true])('reads an image prompt beyond the head slice (with preamble: %s)', async (preamble) => {
+    const imagePrompt = user([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.alloc(300 * 1024).toString('base64') } },
+      { type: 'text', text: 'Fix the screenshot layout' },
+    ])
+    expect(Buffer.byteLength(lines(imagePrompt))).toBeGreaterThan(256 * 1024)
+    await claudeTranscript(CLAUDE_ID, [
+      ...(preamble ? [user('<local-command-caveat>画像 ignored</local-command-caveat>')] : []),
+      imagePrompt,
+    ], 1_000)
+    const { index: conversations } = index()
+    expect(await conversations.list()).toMatchObject([{ title: 'Fix the screenshot layout', cwd: '/work/app' }])
+    expect(await conversations.list()).toMatchObject([{ title: 'Fix the screenshot layout' }])
+  })
+
+  it('continues looking for cwd when the prompt is already in the head', async () => {
+    await claudeTranscript(CLAUDE_ID, [
+      { type: 'user', message: { content: 'Keep the first prompt' } },
+      { type: 'assistant', cwd: '/work/app', message: { content: 'x'.repeat(300 * 1024) } },
+      user('Later prompt'),
+    ], 1_000)
+    expect(await index().index.list()).toMatchObject([{ title: 'Keep the first prompt', cwd: '/work/app' }])
+  })
+
+  it('keeps the tail title lookup after extending the head scan', async () => {
+    await claudeTranscript(CLAUDE_ID, [
+      user([{ type: 'image', source: { data: 'A'.repeat(600 * 1024) } }, { type: 'text', text: 'First prompt' }]),
+      { type: 'custom-title', customTitle: 'Screenshot fix' },
+      { type: 'ai-title', aiTitle: 'Later AI title' },
+    ], 1_000)
+    expect(await index().index.list()).toMatchObject([{ title: 'Screenshot fix' }])
+  })
+
+  it('stops looking for a prompt at the hard byte budget', async () => {
+    await claudeTranscript(CLAUDE_ID, [
+      { type: 'assistant', cwd: '/work/app', message: { content: 'x'.repeat(16 * 1024 * 1024) } },
+      user('Beyond the budget'),
+    ], 1_000)
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it.each([
+    ['<command-message>sic</command-message>\n<command-name>/sic</command-name>\n<command-args>  Now do X  </command-args>', '/sic Now do X'],
+    ['<command-name>/sic</command-name>\n<command-args> </command-args>', '/sic'],
+    ['<command-name>/compact</command-name>\n<command-args>Keep the API changes</command-args>', '/compact Keep the API changes'],
+  ])('uses a slash-command opener as typed text: %s', async (content, title) => {
+    await claudeTranscript(CLAUDE_ID, [user(content)], 1_000)
+    expect(await index().index.list()).toMatchObject([{ title }])
+  })
+
+  it.each(['clear', 'compact', 'resume', 'help', 'status', 'context', 'cost', 'exit', 'quit'])('skips /%s without arguments and keeps looking for a real prompt', async (command) => {
+    await claudeTranscript(CLAUDE_ID, [user(`<command-name>/${command}</command-name>\n<command-args> </command-args>`), user('Real prompt')], 1_000)
+    expect(await index().index.list()).toMatchObject([{ title: 'Real prompt' }])
+  })
+
+  it.each(['customTitle', 'aiTitle', 'summary'])('lists a conversation with %s even without a typed prompt', async (key) => {
+    await claudeTranscript(CLAUDE_ID, [
+      user('<local-command-stdout>ignored</local-command-stdout>'),
+      { type: 'assistant', message: { content: 'x'.repeat(600 * 1024) } },
+      { [key]: 'Saved title' },
+    ], 1_000)
+    expect(await index().index.list()).toMatchObject([{ title: 'Saved title', cwd: '/work/app' }])
+  })
+
+  it('still excludes jobs, injected content, meta and sidechain prompts, invalid ids and empty files', async () => {
+    await claudeTranscript(CLAUDE_ID, [user('Run once', { entrypoint: 'sdk-cli' }), { aiTitle: 'Job title' }], 1_000)
+    await claudeTranscript('22222222-2222-3333-4444-555555555555', [
+      user('<hook-output>ignored</hook-output>'),
+      user('<local-command-caveat>ignored</local-command-caveat>'),
+      user('<local-command-stdout>ignored</local-command-stdout>'),
+      user('Base directory for this skill: /skills/test'),
+      user('# AGENTS.md instructions'),
+      user('Meta prompt', { isMeta: true }),
+      user('Sidechain prompt', { isSidechain: true }),
+    ], 1_000)
+    await claudeTranscript('invalid_session', [user('Invalid')], 1_000)
+    const empty = await claudeTranscript('33333333-2222-3333-4444-555555555555', [], 1_000)
+    await writeFile(empty, '')
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it('still excludes sdk-cli jobs discovered beyond the head slice', async () => {
+    await claudeTranscript(CLAUDE_ID, [
+      user([{ type: 'image', source: { data: 'A'.repeat(300 * 1024) } }, { type: 'text', text: 'Run once' }], { entrypoint: 'sdk-cli' }),
+      { aiTitle: 'Job title' },
+    ], 1_000)
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it('still requires a cwd even when there is a title', async () => {
+    await claudeTranscript(CLAUDE_ID, [{ aiTitle: 'Missing folder' }], 1_000)
+    expect(await index().index.list()).toEqual([])
+  })
+
+  it('defaults to the newest 1000 conversations', async () => {
+    await Promise.all(Array.from({ length: 1001 }, (_, number) => claudeTranscript(
+      `${String(number).padStart(8, '0')}-2222-3333-4444-555555555555`, [user(`Prompt ${number}`)], (number + 1) * 1_000,
+    )))
+    const conversations = await index().index.list()
+    expect(conversations).toHaveLength(1000)
+    expect(conversations[0]?.title).toBe('Prompt 1000')
+    expect(conversations.at(-1)?.title).toBe('Prompt 1')
   })
 
   it('leaves out one-off jobs, subagent threads and transcripts without a typed prompt', async () => {

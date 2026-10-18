@@ -68,6 +68,18 @@ function post(body: unknown, options: { token?: string; paneId?: string } = {}) 
 }
 
 describe('SessionBriefApi', () => {
+  it('normalises a title-only patch and records agent authorship', async () => {
+    const response = await post({ title: '  Stable  conversation\n titles  ' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ brief: { title: 'Stable conversation titles', titleSource: 'agent' } })
+  })
+
+  it.each([null, 3, '', 'ab', 'a'.repeat(81), 'bad\u0000title'])('rejects invalid titles (%s)', async (title) => {
+    const response = await post({ title })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: 'title is invalid' })
+  })
+
   it('treats state complete as the agent declaring the work finished', async () => {
     const response = await post({ state: 'complete' })
 

@@ -6,6 +6,7 @@ import {
   findChatHost,
   buildResumeCommand,
   findAgentProcess,
+  isChatResumeCommand,
   isShellCommand,
   launchFromProcess,
   parseProcessTable,
@@ -90,6 +91,54 @@ describe('buildResumeCommand', () => {
     expect(buildResumeCommand('claude', SESSION, { args: ['vim'], env: {} })).toBeNull()
     expect(buildResumeCommand('codex', 'codex:%3', { args: ['codex'], env: {} })).toBeNull()
     expect(buildResumeCommand('claude', 'id; rm -rf /', { args: [CLAUDE], env: {} })).toBeNull()
+  })
+})
+
+describe('isChatResumeCommand', () => {
+  it.each(['claude', 'codex', 'muse'] as const)('recognises %s resume and return commands from the builders, with or without an environment prefix', (provider) => {
+    const environments: Record<string, string>[] = [{}, { COMMANDO_PORT: '4410', COMMANDO_SOCKET: "/tmp/O'Brien/commando socket" }]
+    for (const launcher of ['/c/scripts/commando-agent', "/checkout with spaces/O'Brien/scripts/commando-agent"]) {
+      for (const daemonEnv of environments) {
+        const flags = ['--permission-mode', 'plan', '--model', 'custom model']
+        const commands = [
+          buildChatResumeCommand(SESSION, launcher, {
+            args: ['node', '/c/server/agent-host/main.ts', provider, ...flags],
+            env: provider === 'claude' ? { CLAUDE_CONFIG_DIR: "/Users/me/Claude's profile" } : {},
+          }, daemonEnv),
+          chatReturnCommand(SESSION, launcher, flags, daemonEnv, provider),
+        ]
+        for (const command of commands) {
+          expect(command).not.toBeNull()
+          expect(isChatResumeCommand(command!)).toBe(true)
+          // Saved commands may also quote plain words such as the provider.
+          expect(isChatResumeCommand(command!.replace(` ${provider} `, ` '${provider}' `))).toBe(true)
+          expect(isChatResumeCommand(command!.replace(` ${provider} `, ` "${provider}" `))).toBe(true)
+        }
+      }
+    }
+  })
+
+  it.each(['claude', 'codex', 'muse'] as const)('does not mistake a %s TUI command for a chat', (provider) => {
+    const command = buildResumeCommand(provider, SESSION, { args: [provider], env: {} })
+    expect(command).not.toBeNull()
+    expect(isChatResumeCommand(command!)).toBe(false)
+    expect(isChatResumeCommand(`${provider} --resume ${SESSION}`)).toBe(false)
+  })
+
+  it.each([
+    `echo ${shellQuote(`/c/scripts/commando-agent claude --resume ${SESSION}`)}`,
+    `claude --append-system-prompt ${shellQuote('/c/scripts/commando-agent codex')} --resume ${SESSION}`,
+    `env ${shellQuote('NOTE=/c/scripts/commando-agent claude')} echo hello`,
+    `/c/scripts/commando-agent-helper claude --resume ${SESSION}`,
+    `/c/scripts/commando-agent cursor --resume ${SESSION}`,
+    "/c/scripts/commando-agent 'claude",
+    '',
+  ])('rejects a launcher mentioned only in an argument, a different executable or malformed command: %s', (command) => {
+    expect(isChatResumeCommand(command)).toBe(false)
+  })
+
+  it.each(['$COMMANDO_CHAT_RESUME', '${COMMANDO_CHAT_RESUME}'])('recognises the saved chat placeholder %s', (command) => {
+    expect(isChatResumeCommand(command)).toBe(true)
   })
 })
 
