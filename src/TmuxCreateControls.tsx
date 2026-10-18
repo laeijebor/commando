@@ -16,6 +16,7 @@ import {
   type TmuxCreatedTarget,
   type TmuxCreatedWorktree,
   type TmuxCreateResponse,
+  chatLaunchPermission,
 } from '../shared/tmux-create'
 import { loadChatLaunch, saveChatLaunch, type ChatLaunchPreference } from './chatLaunchPreferences'
 import './tmux-create.css'
@@ -445,7 +446,7 @@ export function TmuxCreateControls({
         request.agent = {
           provider: agentProvider,
           ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
-          ...(agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
+          ...(agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat' ? chatLaunchPermission(agentProvider, chatLaunch.permissionMode) : {}),
           ...(agentProvider === 'claude-chat' ? {
             ...((chatConfigDir ?? chatLaunch.configDir) ? { configDir: chatConfigDir ?? chatLaunch.configDir } : {}),
             permissionMode: chatLaunch.permissionMode,

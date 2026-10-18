@@ -158,15 +158,26 @@ export function providerLabel(session: Pick<ChatSessionInfo, 'provider'>): strin
   return session.provider === 'claude' ? 'Claude' : session.provider === 'muse' ? 'Muse' : session.provider === 'cursor' ? 'Cursor' : 'Codex'
 }
 
-export function permissionLabel(mode: string, session?: Pick<ChatSessionInfo, 'provider'>): string {
-  const permission = mode as ChatSessionPermissionMode
+type PermissionSession = Pick<ChatSessionInfo, 'provider'> & Partial<Pick<ChatSessionInfo, 'sandboxed'>>
+
+/**
+ * Muse hosts from before full access report no `sandboxed`; their bypassPermissions is the
+ * sandboxed approve-everything, so it reads as that.
+ */
+function shownMode<M extends string>(mode: M, session?: PermissionSession): M | 'acceptEdits' {
+  return session?.provider === 'muse' && mode === 'bypassPermissions' && session.sandboxed === undefined ? 'acceptEdits' : mode
+}
+
+export function permissionLabel(mode: string, session?: PermissionSession): string {
+  const permission = shownMode(mode, session) as ChatSessionPermissionMode
   return providerPermissionModes(session)?.[permission]?.label
     ?? PERMISSION_MODES[permission]?.label ?? mode
 }
 
-export function permissionDescription(mode: ChatSessionPermissionMode, session?: Pick<ChatSessionInfo, 'provider'>): string {
-  return providerPermissionModes(session)?.[mode]?.description
-    ?? PERMISSION_MODES[mode].description.replace('Claude', session ? providerLabel(session) : 'Claude')
+export function permissionDescription(mode: ChatSessionPermissionMode, session?: PermissionSession): string {
+  const shown = shownMode(mode, session)
+  return providerPermissionModes(session)?.[shown]?.description
+    ?? PERMISSION_MODES[shown].description.replace('Claude', session ? providerLabel(session) : 'Claude')
 }
 
 /** Whether the model menu can open: the host takes settings and has listed its models. */
@@ -201,7 +212,11 @@ export function permissionModeOptions(session: ChatSessionInfo): ChatSessionPerm
   if (session.provider === 'cursor') return ['bypassPermissions', 'default', 'auto', 'plan']
   const current = session.permissionMode
   // Muse's sandbox is set when its host starts: a full-access chat stays one, and others never become one.
-  if (session.provider === 'muse') return current === 'bypassPermissions' ? ['bypassPermissions'] : ['default', 'acceptEdits']
+  if (session.provider === 'muse') {
+    // An older host maps acceptEdits to asking; its own bypassPermissions is its approve-everything.
+    if (session.sandboxed === undefined) return session.bypassAllowed || current === 'bypassPermissions' ? ['default', 'bypassPermissions'] : ['default']
+    return session.sandboxed ? ['default', 'acceptEdits'] : ['bypassPermissions']
+  }
   const supportsAuto = selectedModelOption(session)?.supportsAutoMode ?? false
   return (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
     mode === current
