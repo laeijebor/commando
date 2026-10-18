@@ -94,12 +94,19 @@ export class ConversationTitles {
       if (!eligibleRecords.length || this.stopped || this.disabled()) return
       const conversations = await this.options.index.list()
       const indexed = new Map(conversations.map((conversation) => [`${conversation.provider}:${conversation.sessionId}`, conversation]))
+      let unindexed = false
       for (const record of eligibleRecords) {
         if (this.stopped || this.disabled()) break
         const key = `${record.provider}:${record.id}`
         const conversation = indexed.get(key)
         const now = (this.options.now ?? Date.now)()
-        if (!conversation || record.title || (this.state!.attempts[key] ?? 0) >= 2) continue
+        if (!conversation) {
+          // Deleted, never indexed (e.g. a delegate run) or past the index cap: give up, or every tick rescans.
+          this.state!.attempts[key] = 2
+          unindexed = true
+          continue
+        }
+        if (record.title || (this.state!.attempts[key] ?? 0) >= 2) continue
         if (!record.latestHeadline && !record.headline && now - record.updatedAt < 10 * 60_000) continue
         this.state!.launches = this.state!.launches.filter((time) => time > now - 60 * 60_000)
         if (this.state!.launches.length >= 20) break
@@ -139,6 +146,7 @@ export class ConversationTitles {
           // CLI/auth/output failures get one later attempt; the persisted count bounds retries.
         }
       }
+      if (unindexed) await this.persist()
     } finally {
       this.running = false
     }
