@@ -85,9 +85,16 @@ export class ConversationTitles {
     this.running = true
     try {
       await this.load()
+      const eligibleRecords = this.options.briefs.conversationRecords().filter((record) => {
+        const key = `${record.provider}:${record.id}`
+        const now = (this.options.now ?? Date.now)()
+        return !record.title && (this.state!.attempts[key] ?? 0) < 2
+          && (record.latestHeadline || record.headline || now - record.updatedAt >= 10 * 60_000)
+      })
+      if (!eligibleRecords.length || this.stopped || this.disabled()) return
       const conversations = await this.options.index.list()
       const indexed = new Map(conversations.map((conversation) => [`${conversation.provider}:${conversation.sessionId}`, conversation]))
-      for (const record of this.options.briefs.conversationRecords()) {
+      for (const record of eligibleRecords) {
         if (this.stopped || this.disabled()) break
         const key = `${record.provider}:${record.id}`
         const conversation = indexed.get(key)
@@ -101,6 +108,10 @@ export class ConversationTitles {
         await this.persist()
         try {
           const env = { ...(this.options.env ?? process.env) }
+          // Background title queries must not inherit the daemon's pane identity or hook context.
+          delete env.TMUX
+          delete env.TMUX_PANE
+          delete env.COMMANDO_CHAT_RESUME
           if (conversation.configDir && conversation.provider === 'claude') env.CLAUDE_CONFIG_DIR = conversation.configDir
           const executable = await (this.options.resolveExecutable ?? resolveAgentExecutable)(SESSION_AGENT_EXECUTABLES.claude, env)
           if (this.stopped || this.disabled()) break
