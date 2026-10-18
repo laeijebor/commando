@@ -12,6 +12,7 @@ vi.mock('node:child_process', () => ({ spawn: () => { throw new Error('Real CLI 
 const directories: string[] = []
 afterEach(async () => {
   vi.useRealTimers()
+  vi.unstubAllEnvs()
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
@@ -70,6 +71,41 @@ describe('ConversationTitles', () => {
     await generator.tick()
     expect(fixture.spawn).toHaveBeenCalledTimes(1)
     expect(fixture.records[1]!.title).toBe('Agent topic title')
+  })
+
+  it.each(['injected', 'process'] as const)('strips pane context from the spawned %s environment without changing the parent', async (source) => {
+    const fixture = await setup()
+    const paneEnv = { TMUX: '/tmp/tmux-test/default,123,0', TMUX_PANE: '%42', COMMANDO_CHAT_RESUME: 'commando-agent claude' }
+    const parentEnv: NodeJS.ProcessEnv = { ...fixture.options.env, ...paneEnv }
+    if (source === 'process') {
+      for (const [key, value] of Object.entries(parentEnv)) vi.stubEnv(key, value)
+    }
+    const env = source === 'process' ? undefined : parentEnv
+    await new ConversationTitles({ ...fixture.options, env }).tick()
+    const spawnedEnv = (fixture.spawn.mock.calls as unknown as [string, string[], { env: NodeJS.ProcessEnv }][])[0]![2].env
+    for (const [key, value] of Object.entries(paneEnv)) {
+      expect(spawnedEnv).not.toHaveProperty(key)
+      expect((env ?? process.env)[key]).toBe(value)
+    }
+    expect(spawnedEnv.PATH).toBe('/resolved/bin')
+    expect(spawnedEnv.CLAUDE_CONFIG_DIR).toBe('/Users/me/.claudep')
+    expect((env ?? process.env).CLAUDE_CONFIG_DIR).toBe('/daemon/profile')
+  })
+
+  it.each(['empty', 'titled', 'too young', 'exhausted'] as const)('skips indexing when brief records are %s', async (kind) => {
+    const fixture = await setup(kind === 'empty' ? 0 : 1)
+    if (kind === 'titled') fixture.records[0]!.title = 'Existing conversation title'
+    if (kind === 'too young') delete fixture.records[0]!.latestHeadline
+    if (kind === 'exhausted') {
+      await writeFile(`${fixture.options.briefs.statePath}.generated-titles.json`, JSON.stringify({
+        attempts: { 'claude:conversation-0': 2 }, launches: [],
+      }))
+    }
+    const generator = new ConversationTitles(fixture.options)
+    await generator.tick()
+    await generator.tick()
+    expect(fixture.options.index.list).not.toHaveBeenCalled()
+    expect(fixture.spawn).not.toHaveBeenCalled()
   })
 
   it('has one generation in flight across overlapping ticks', async () => {
