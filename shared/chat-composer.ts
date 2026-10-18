@@ -137,18 +137,27 @@ const CODEX_PERMISSION_MODES: Partial<typeof PERMISSION_MODES> = {
   bypassPermissions: { label: 'Full access', description: 'Full filesystem access without approval prompts.' },
 }
 
+const MUSE_PERMISSION_MODES: Partial<typeof PERMISSION_MODES> = {
+  default: { label: 'Ask when needed', description: 'Tools run in the sandbox; Muse asks before going beyond it.' },
+  bypassPermissions: { label: 'Approve everything', description: 'Muse runs every tool without asking. The sandbox stays on.' },
+}
+
+function providerPermissionModes(session?: Pick<ChatSessionInfo, 'provider'>): Partial<typeof PERMISSION_MODES> | undefined {
+  return session?.provider === 'codex' ? CODEX_PERMISSION_MODES : session?.provider === 'muse' ? MUSE_PERMISSION_MODES : undefined
+}
+
 export function providerLabel(session: Pick<ChatSessionInfo, 'provider'>): string {
-  return session.provider === 'claude' ? 'Claude' : 'Codex'
+  return session.provider === 'claude' ? 'Claude' : session.provider === 'muse' ? 'Muse' : 'Codex'
 }
 
 export function permissionLabel(mode: string, session?: Pick<ChatSessionInfo, 'provider'>): string {
   const permission = mode as ChatSessionPermissionMode
-  return (session?.provider === 'codex' ? CODEX_PERMISSION_MODES[permission]?.label : undefined)
+  return providerPermissionModes(session)?.[permission]?.label
     ?? PERMISSION_MODES[permission]?.label ?? mode
 }
 
 export function permissionDescription(mode: ChatSessionPermissionMode, session?: Pick<ChatSessionInfo, 'provider'>): string {
-  return (session?.provider === 'codex' ? CODEX_PERMISSION_MODES[mode]?.description : undefined)
+  return providerPermissionModes(session)?.[mode]?.description
     ?? PERMISSION_MODES[mode].description.replace('Claude', session ? providerLabel(session) : 'Claude')
 }
 
@@ -185,8 +194,8 @@ export function permissionModeOptions(session: ChatSessionInfo): ChatSessionPerm
   const supportsAuto = selectedModelOption(session)?.supportsAutoMode ?? false
   return (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
     mode === current
-    || mode === 'default' || mode === 'plan'
-    || (session.provider !== 'codex' && (mode === 'acceptEdits' || (mode === 'auto' && supportsAuto)))
+    || mode === 'default' || (mode === 'plan' && session.provider !== 'muse')
+    || (session.provider === 'claude' && (mode === 'acceptEdits' || (mode === 'auto' && supportsAuto)))
     || (mode === 'bypassPermissions' && session.bypassAllowed)
   ))
 }

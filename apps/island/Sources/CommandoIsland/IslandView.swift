@@ -799,6 +799,7 @@ private func providerUsageColor(_ provider: AgentProvider) -> Color {
     case .codex: .cyan
     case .opencode: .mint
     case .cursor: .primary
+    case .muse: .purple
     case .unknown: .secondary
     }
 }

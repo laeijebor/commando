@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { AgentChatFailure, AgentChatInput, AgentChatLaunch, AgentChatResult } from '../shared/agent-chats.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
-import { CHAT_PERMISSION_MODES, CODEX_CHAT_PERMISSION_MODES, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
+import { CHAT_PERMISSION_MODES, chatLaunchProvider, chatPermissionModes, isChatLaunchProvider, type ChatLaunchProvider, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { launchFlags, type AgentLaunch } from './agent-resume-command.js'
 import type { ChatPlanStore } from './chat-plans.js'
@@ -37,14 +37,17 @@ type Dependencies = {
   refreshSnapshot: () => Promise<unknown>
   requests: AgentChatRequests
   /** The CLI running in a terminal pane: its argv and profile variables. */
-  agentLaunch?: (panePid: number, provider: 'claude' | 'codex') => Promise<AgentLaunch | undefined>
+  agentLaunch?: (panePid: number, provider: 'claude' | 'codex' | 'muse') => Promise<AgentLaunch | undefined>
   chatCliPath?: string
   now?: () => number
 }
 
-/** Codex's default (workspace access) edits and runs commands without asking, like Claude's acceptEdits. */
+/**
+ * Codex's default (workspace access) edits and runs commands without asking, like Claude's
+ * acceptEdits; so does Muse's, inside its sandbox.
+ */
 function effectiveRank(provider: string, mode: ChatPermissionMode): number {
-  return provider === 'codex-chat' && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
+  return (provider === 'codex-chat' || provider === 'muse-chat') && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
 }
 
 /** A chat's permission mode as the four a launch takes; others (auto, dontAsk) count as asking first. */
@@ -52,24 +55,31 @@ function launchMode(chat: Pick<ChatSessionInfo, 'permissionMode'> | undefined): 
   return chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'
 }
 
-function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): number {
-  return effectiveRank(chat.provider === 'codex' ? 'codex-chat' : 'claude-chat', launchMode(chat))
+/**
+ * What a caller in `mode` may hand on. Muse's approve-everything mode keeps its sandbox, so
+ * it grants no more than acceptEdits; opening one still needs a bypass caller.
+ */
+function grantRank(provider: string, mode: ChatPermissionMode): number {
+  return provider === 'muse-chat' && mode === 'bypassPermissions' ? PERMISSION_RANK.acceptEdits : effectiveRank(provider, mode)
 }
 
-/** The most permissive mode `provider` supports that does not exceed what `rank` allows. */
-function inheritedMode(provider: 'claude-chat' | 'codex-chat', rank: number): ChatPermissionMode {
-  const supported = provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
-  return [...supported].map((mode) => mode.value)
+function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): number {
+  return grantRank(chatLaunchProvider(chat.provider), launchMode(chat))
+}
+
+/** The most permissive mode `provider` supports that does not exceed what `rank` allows, if any does. */
+function inheritedMode(provider: ChatLaunchProvider, rank: number): ChatPermissionMode | undefined {
+  return [...chatPermissionModes(provider)].map((mode) => mode.value)
     .filter((mode) => effectiveRank(provider, mode) <= rank)
-    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0] ?? 'plan'
+    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0]
 }
 
 /** The mode a chat started from `chat` gets: as permissive as it, never more. */
-export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>, provider: 'claude-chat' | 'codex-chat'): ChatPermissionMode {
-  return inheritedMode(provider, chatRank(chat))
+export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>, provider: ChatLaunchProvider): ChatPermissionMode {
+  return inheritedMode(provider, chatRank(chat)) ?? 'plan'
 }
 
-type TerminalCaller = { provider: 'claude-chat' | 'codex-chat'; rank: number; configDir?: string; warning?: string }
+type TerminalCaller = { provider: ChatLaunchProvider; rank: number; configDir?: string; warning?: string }
 
 const modeOfRank = (rank: number): ChatPermissionMode =>
   (Object.keys(PERMISSION_RANK) as ChatPermissionMode[]).find((mode) => PERMISSION_RANK[mode] === rank) ?? 'default'
@@ -89,9 +99,19 @@ function flagValue(flags: readonly string[], ...names: string[]): string | undef
  * so a prompt's words cannot raise it. Mode switches made inside the TUI, and modes set in the
  * agent's config files, are not visible: this is what the command line started it with.
  */
-export function terminalLaunchRank(provider: 'claude' | 'codex', args: readonly string[]): number {
+export function terminalLaunchRank(provider: 'claude' | 'codex' | 'muse', args: readonly string[]): number {
   const flags = launchFlags(provider, args)
   if (!flags) return PERMISSION_RANK.default
+  if (provider === 'muse') {
+    const approval = flagValue(flags, '--approval-mode')
+    const unasked = flags.includes('--disable-approval') || approval === 'never'
+    if (flags.includes('--yolo') || (unasked && flags.includes('--disable-sandbox'))) return PERMISSION_RANK.bypassPermissions
+    // Without approvals Muse still runs inside its sandbox.
+    if (unasked) return grantRank('muse-chat', 'bypassPermissions')
+    if (flags.includes('--disable-write')) return PERMISSION_RANK.plan
+    // `untrusted` asks before anything runs; Muse's default (on-request) runs sandboxed tools unasked.
+    return approval === 'untrusted' ? PERMISSION_RANK.default : effectiveRank('muse-chat', 'default')
+  }
   if (provider === 'claude') {
     if (flags.includes('--dangerously-skip-permissions')) return PERMISSION_RANK.bypassPermissions
     const mode = flagValue(flags, '--permission-mode')
@@ -199,8 +219,8 @@ export class AgentChatsApi {
    */
   private async terminalCaller(caller: TmuxPane): Promise<TerminalCaller | undefined> {
     const provider = this.dependencies.status(caller.id)?.provider
-    if (provider !== 'claude' && provider !== 'codex') return undefined
-    const hosted = provider === 'claude' ? 'claude-chat' : 'codex-chat'
+    if (provider !== 'claude' && provider !== 'codex' && provider !== 'muse') return undefined
+    const hosted = chatLaunchProvider(provider)
     const launch = caller.processId === undefined ? undefined
       : await this.dependencies.agentLaunch?.(caller.processId, provider).catch(() => undefined)
     if (!launch) return { provider: hosted, rank: PERMISSION_RANK.default, warning: `Could not read the caller's ${provider} process; the chat uses the default profile and asks before edits.` }
@@ -214,20 +234,21 @@ export class AgentChatsApi {
   private async launch(input: AgentChatInput, caller: TmuxPane): Promise<{ launch: AgentChatLaunch; warning?: string }> {
     const chat = this.dependencies.chatSession(caller.id)
     const terminal = chat ? undefined : await this.terminalCaller(caller)
-    const provider = input.agent ?? (chat ? (chat.provider === 'codex' ? 'codex-chat' : 'claude-chat') : terminal?.provider ?? this.dependencies.status(caller.id)?.provider)
+    const provider = input.agent ?? (chat ? chatLaunchProvider(chat.provider) : terminal?.provider ?? this.dependencies.status(caller.id)?.provider)
     if (!provider || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) throw new HttpError(400, 'Unknown caller agent provider; specify --agent')
-    const hosted = provider === 'claude-chat' || provider === 'codex-chat'
-    const callerMode = chat ? launchMode(chat) : modeOfRank(terminal?.rank ?? PERMISSION_RANK.default)
+    const hosted = isChatLaunchProvider(provider)
     const callerRank = chat ? chatRank(chat) : terminal?.rank ?? PERMISSION_RANK.default
+    // A Muse chat names what it may grant, so a sandboxed bypass reads as acceptEdits.
+    const callerMode = chat && chat.provider !== 'muse' ? launchMode(chat) : modeOfRank(callerRank)
     if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open claude-chat or codex-chat chats')
-    if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat and codex-chat accept a permission mode')
-    const supported = provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
-    if (input.permissionMode !== undefined && !supported.some((mode) => mode.value === input.permissionMode)) throw new HttpError(400, `${provider} does not support permission mode ${input.permissionMode}`)
+    if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat, codex-chat and muse-chat accept a permission mode')
+    if (input.permissionMode !== undefined && (!hosted || !chatPermissionModes(provider).some((mode) => mode.value === input.permissionMode))) throw new HttpError(400, `${provider} does not support permission mode ${input.permissionMode}`)
     // Inherit the most permissive mode the child supports that does not exceed the caller.
     const permissionMode = input.permissionMode ?? (hosted ? inheritedMode(provider, callerRank) : 'plan')
+    if (!permissionMode) throw new HttpError(403, `${provider} has no permission mode as restricted as ${callerMode}; its most careful mode runs sandboxed tools without asking`)
     if (effectiveRank(provider, permissionMode) > callerRank) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
     if (!hosted) return { launch: { provider: provider as SessionAgentProvider } }
-    const configDir = provider !== 'claude-chat' ? undefined : chat ? (chat.provider !== 'codex' ? chat.configDir : undefined) : terminal?.configDir
+    const configDir = provider !== 'claude-chat' ? undefined : chat ? (chatLaunchProvider(chat.provider) === 'claude-chat' ? chat.configDir : undefined) : terminal?.configDir
     return { launch: { provider, permissionMode, ...(configDir ? { configDir } : {}) }, ...(terminal?.warning && provider === terminal.provider ? { warning: terminal.warning } : {}) }
   }
 

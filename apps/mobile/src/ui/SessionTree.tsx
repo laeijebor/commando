@@ -253,6 +253,7 @@ function shortProvider(provider: string): string {
   if (provider === 'codex') return 'CX'
   if (provider === 'opencode') return 'OC'
   if (provider === 'cursor') return 'CU'
+  if (provider === 'muse') return 'MU'
   return 'sh'
 }
 

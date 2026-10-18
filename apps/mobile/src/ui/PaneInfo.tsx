@@ -687,6 +687,7 @@ function providerName(status: AgentStatus): string {
   if (status.provider === 'codex') return 'Codex'
   if (status.provider === 'opencode') return 'OpenCode'
   if (status.provider === 'cursor') return 'Cursor'
+  if (status.provider === 'muse') return 'Muse'
   return 'Shell'
 }
 

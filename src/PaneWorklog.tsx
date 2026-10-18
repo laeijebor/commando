@@ -190,7 +190,7 @@ function SessionReferenceRow({
 
 function agentLabel(provider: AgentProvider): string {
   // The picker says "Claude (terminal)" to tell it from Claude chat; a worklog just names the agent.
-  return SESSION_AGENT_CHOICES.find((choice) => choice.value === provider)?.label.replace(/ \(terminal\)$/, '') ?? 'agent'
+  return SESSION_AGENT_CHOICES.find((choice) => choice.value === provider)?.label.replace(/ \(terminal\)$/, '') ?? (provider === 'muse' ? 'Muse' : 'agent')
 }
 
 function resumeMessage(resume: AgentResume): string {

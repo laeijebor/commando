@@ -2,7 +2,7 @@ import type { AgentChatRequest } from './agent-chats.js'
 import type { ExternalAgentRun, ChatAnswer, ChatCommand, ChatFileSearchResult, ChatHandoffInfo, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 import type { ChatStashEntry } from './chat-stash.js'
 
-export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'unknown'
+export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'muse' | 'unknown'
 
 export type AgentStatusKind =
   | 'working'

@@ -75,7 +75,7 @@ const MAX_EARLIER_SESSIONS = 5
 const MAX_EARLIER_UPDATES = 30
 /** Real conversation ids only; Codex's `codex:%N` stand-in must not split a worklog. */
 const AGENT_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/
-const AGENT_PROVIDERS = new Set<AgentProvider>(['claude', 'codex', 'opencode', 'cursor'])
+const AGENT_PROVIDERS = new Set<AgentProvider>(['claude', 'codex', 'opencode', 'cursor', 'muse'])
 const UPDATE_KINDS = new Set<SessionBriefUpdateKind>(['changed', 'decision', 'check', 'blocker', 'note', 'screenshots'])
 const STATUS_KINDS = new Set<AgentStatusKind>(['working', 'needs_input', 'done', 'failed', 'stale', 'unknown'])
 const TASK_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'completed', 'cancelled'])

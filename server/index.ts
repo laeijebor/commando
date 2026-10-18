@@ -109,7 +109,7 @@ import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
-import { AGENT_HOST_WS_PATH } from '../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatProvider } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -1527,7 +1527,7 @@ async function main(): Promise<void> {
           const live = agentStatuses.liveHookStatus(paneId, pane.command)
           if (live) return live
           const status = agentStatuses.get(paneId)
-          const switched = status?.source === 'hook' && (status.provider === 'claude' || status.provider === 'codex') && status.agentSessionId !== undefined
+          const switched = status?.source === 'hook' && isChatProvider(status.provider) && status.agentSessionId !== undefined
             && chatHandoffs.inClaudeCode().includes(status.agentSessionId)
           return switched ? status : undefined
         })

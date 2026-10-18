@@ -165,7 +165,7 @@ export class AgentStatusHookApi {
       if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
 
       const provider = url.pathname.slice(`${API_ROOT}/`.length)
-      if (provider !== 'claude' && provider !== 'codex' && provider !== 'opencode' && provider !== 'cursor') {
+      if (provider !== 'claude' && provider !== 'codex' && provider !== 'opencode' && provider !== 'cursor' && provider !== 'muse') {
         throw new HttpError(404, 'Not found')
       }
       const targetPaneId = paneId(request)
@@ -199,17 +199,19 @@ export class AgentStatusHookApi {
         cursorAssociation = association ?? null
         if (!association) throw new HttpError(403, 'Cursor foreground association could not be verified')
         change = this.dependencies.registry.applyCursorHook(targetPaneId, body, updatedAt, processCommand, association)
-      } else if (provider === 'claude') {
+      } else if (provider === 'claude' || provider === 'muse') {
         requiredString(body, 'hook_event_name')
         requiredString(body, 'session_id')
         // The chat host shows and answers its own prompts, so a hook request
-        // must not linger as a pending interaction nobody can resolve.
-        if (this.dependencies.chatOwnsPane?.(targetPaneId)) delete body.request
+        // must not linger as a pending interaction nobody can resolve. The Muse
+        // bridge never holds a prompt open.
+        if (provider === 'muse' || this.dependencies.chatOwnsPane?.(targetPaneId)) delete body.request
         change = this.dependencies.registry.applyClaudeHook(
           targetPaneId,
           body,
           updatedAt,
           processCommand,
+          provider,
         )
       } else if (provider === 'codex') {
         const event = body.event

@@ -19,6 +19,7 @@ import {
   type ChatSessionInfo,
   type ChatSessionPermissionMode,
   type ChatSettingsChange,
+  providerTuiLabel,
 } from '../../shared/agent-chat'
 import { prepareImage, type PreparedImage } from './attachImages'
 import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
@@ -261,7 +262,8 @@ function menuGroups(
     const natives = [
       ...(modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
       ...(fastModeAvailable(session) ? [{ name: 'fast', description: fastModeOn(session) ? 'Turn fast mode off' : 'Turn fast mode on' }] : []),
-      ...(hostTakesSettings(session) && session.permissionMode
+      // Muse has no plan mode.
+      ...(hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
         ? [{ name: 'plan', description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
         : []),
     ].filter((native) => native.name.includes(query))
@@ -658,7 +660,7 @@ export function ChatComposer({
         taken += 1
       }
       const waiting = carried.images.length - taken
-      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'} ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
+      if (waiting) setAttachError(`${waiting} image${waiting === 1 ? '' : 's'} from before ${providerTuiLabel(session.provider)} ${waiting === 1 ? "doesn't" : "don't"} fit in this message yet; ${waiting === 1 ? 'it comes' : 'they come'} back once you send or remove attachments`)
       if (!carried.text && taken === 0) return
       restored = taken
       takenCarries.set(carried.id, restored)
@@ -905,7 +907,7 @@ export function ChatComposer({
           placeholder={!hostConnected
             ? 'Reconnecting to the agent host…'
             : switching
-              ? `Switching to ${session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'}…`
+              ? `Switching to ${providerTuiLabel(session.provider)}…`
                 : closed
                 ? 'This session has ended'
                 : relayTarget

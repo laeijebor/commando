@@ -242,6 +242,48 @@ describe('AgentChatsApi', () => {
     expect(await s.call('POST', '', { ...s.input, permissionMode: 'acceptEdits' })).toMatchObject({ status: 400, result: { error: 'codex-chat does not support permission mode acceptEdits' } })
   })
 
+  it('inherits muse-chat from a hosted Muse caller, which ranks with acceptEdits', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'muse', permissionMode: 'default' } as ChatSessionInfo)
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
+    expect(await s.call('POST', '', { ...s.input, permissionMode: 'plan' })).toMatchObject({ status: 400, result: { error: 'muse-chat does not support permission mode plan' } })
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
+    expect(await s.call('POST', '', { ...s.input, permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403 })
+  })
+
+  it('opens muse-chat from a terminal Muse caller, as permissive as its approval flags', async () => {
+    const s = await setup()
+    s.statuses.set('%1', { provider: 'muse', status: 'working' } as AgentStatus)
+    s.launches.set(100, { args: ['/Users/me/.local/bin/muse-bin-1.4.10-R6427.1', '--yolo'], env: {} })
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })
+    s.launches.set(100, { args: ['/Users/me/.local/bin/muse-bin-1.4.10-R6427.1', 'fix', '--yolo'], env: {} })
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
+    expect(terminalLaunchRank('muse', ['muse', '--yolo'])).toBe(terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions']))
+    expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'untrusted'])).toBe(terminalLaunchRank('claude', ['claude']))
+    expect(terminalLaunchRank('muse', ['muse', '--disable-write'])).toBe(terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan']))
+  })
+
+  it('lets a sandboxed approve-everything Muse caller grant no more than acceptEdits', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'muse', permissionMode: 'bypassPermissions', bypassAllowed: true } as ChatSessionInfo)
+    expect(await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403, result: { error: 'Cannot raise permission mode from acceptEdits to bypassPermissions' } })
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
+    // Opening a Muse approve-everything chat still takes a bypass caller.
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
+    expect(await s.call('POST', '', { ...s.input, permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403 })
+    const bypass = terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions'])
+    const acceptEdits = terminalLaunchRank('claude', ['claude', '--permission-mode', 'acceptEdits'])
+    expect(terminalLaunchRank('muse', ['muse', '--disable-approval'])).toBe(acceptEdits)
+    expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'never', '--disable-sandbox'])).toBe(bypass)
+  })
+
+  it('refuses a muse-chat for a caller that asks before edits, since Muse has no mode that careful', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'claude', permissionMode: 'default' } as ChatSessionInfo)
+    expect(await s.call('POST', '', { ...s.input, agent: 'muse-chat' })).toMatchObject({ status: 403, result: { error: expect.stringContaining('muse-chat has no permission mode as restricted as default') } })
+    expect(s.createSession).not.toHaveBeenCalled()
+  })
+
   it('applies chat permission rules to an explicit codex-chat child', async () => {
     const s = await setup()
     s.chats.set('%1', { provider: 'claude', permissionMode: 'acceptEdits', configDir: '/Users/leo/.claudep' } as ChatSessionInfo)

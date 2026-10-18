@@ -1,3 +1,4 @@
+import type { ChatProvider } from './agent-chat.js'
 export const TMUX_CREATE_ROUTES = {
   session: '/api/tmux/sessions',
   window: '/api/tmux/windows',
@@ -16,7 +17,19 @@ export type TmuxSplitPlacement = 'before' | 'after'
  * Interactive CLIs supported by creation; provider names are not executable names.
  * `claude-chat` runs Claude through Commando's agent host and shows it as a chat.
  */
-export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
+export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
+/** The providers that run through Commando's agent host as a chat. */
+export type ChatLaunchProvider = 'claude-chat' | 'codex-chat' | 'muse-chat'
+export function isChatLaunchProvider(provider: unknown): provider is ChatLaunchProvider {
+  return provider === 'claude-chat' || provider === 'codex-chat' || provider === 'muse-chat'
+}
+/** The agent host's name for a chat provider: `commando-agent <name>`. */
+export function chatHostProvider(provider: ChatLaunchProvider): ChatProvider {
+  return provider === 'codex-chat' ? 'codex' : provider === 'muse-chat' ? 'muse' : 'claude'
+}
+export function chatLaunchProvider(provider: ChatProvider): ChatLaunchProvider {
+  return provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : 'claude-chat'
+}
 export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
 export type SessionAgentLaunch = {
   provider: SessionAgentProvider
@@ -44,6 +57,16 @@ export const CODEX_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; 
   { value: 'bypassPermissions', label: 'Full access' },
 ]
 
+/** Muse has no plan mode; "Ask when needed" is its own default. */
+export const MUSE_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
+  { value: 'default', label: 'Ask when needed' },
+  { value: 'bypassPermissions', label: 'Approve everything' },
+]
+
+export function chatPermissionModes(provider: ChatLaunchProvider): readonly { value: ChatPermissionMode; label: string }[] {
+  return provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : provider === 'muse-chat' ? MUSE_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
+}
+
 /** A Claude config dir the daemon found in the home folder. */
 export type ClaudeProfile = { name: string; configDir: string; /** Last session activity, ms. */ lastUsedAt?: number }
 
@@ -63,6 +86,7 @@ export const SESSION_AGENT_CHOICES = [
   { value: 'shell', label: 'Shell' },
   { value: 'claude-chat', label: 'Claude chat' },
   { value: 'codex-chat', label: 'Codex chat' },
+  { value: 'muse-chat', label: 'Muse chat' },
   { value: 'claude', label: 'Claude (terminal)' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
@@ -70,16 +94,16 @@ export const SESSION_AGENT_CHOICES = [
 ] as const
 
 export const SESSION_AGENT_EXECUTABLES: Record<SessionAgentProvider, string> = {
-  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
+  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', 'muse-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
 }
 
 /** Keep prompt data out of the shell and CLI option/subcommand parsers. */
 export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
   const executable = SESSION_AGENT_EXECUTABLES[launch.provider]
-  if (launch.provider === 'claude-chat' || launch.provider === 'codex-chat') {
+  if (isChatLaunchProvider(launch.provider)) {
     return [
       executable,
-      launch.provider === 'codex-chat' ? 'codex' : 'claude',
+      chatHostProvider(launch.provider),
       ...(launch.provider === 'claude-chat' && launch.configDir ? ['--config-dir', launch.configDir] : []),
       '--permission-mode', launch.permissionMode ?? 'default',
       ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),

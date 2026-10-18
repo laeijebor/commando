@@ -223,6 +223,12 @@ describe('the / menu', () => {
     expect(commandGroup).not.toHaveTextContent('moves to start')
   })
 
+  it('offers no /plan in a Muse chat, which has no plan mode', () => {
+    render(<ChatComposer session={{ ...session, provider: 'muse' }} hostConnected requests={[]} commands={commands} services={services()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message Muse' }), { target: { value: '/' } })
+    expect(within(menu()).getByRole('group', { name: 'Commands' })).not.toHaveTextContent('/plan')
+  })
+
   it('filters as you type and inserts the pick with Enter', () => {
     const { input, type, onSend } = renderComposer()
     type('/re')

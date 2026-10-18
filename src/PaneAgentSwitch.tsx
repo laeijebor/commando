@@ -1,15 +1,15 @@
-import type { ChatHandoffInfo } from '../shared/agent-chat'
+import { providerTuiLabel, type ChatHandoffInfo, type ChatProvider } from '../shared/agent-chat'
 import type { AgentStatus } from '../shared/protocol'
 
-/** A Codex handoff offers the way back even before the TUI's first notify hook. */
+/** A Codex or Muse handoff belongs to its pane, so it offers the way back before the TUI's first hook. */
 export function paneChatHandoff(
   paneId: string,
   status: AgentStatus | undefined,
   handoffs: readonly ChatHandoffInfo[],
   legacySessionIds: ReadonlySet<string>,
 ): ChatHandoffInfo | undefined {
-  const codex = handoffs.find((entry) => entry.paneId === paneId && entry.provider === 'codex')
-  if (codex) return codex
+  const paneHandoff = handoffs.find((entry) => entry.paneId === paneId && entry.provider !== undefined && entry.provider !== 'claude')
+  if (paneHandoff) return paneHandoff
   if (!status?.agentSessionId) return undefined
   const entry = handoffs.find((entry) => entry.sessionId === status.agentSessionId)
   if (entry && (entry.provider ?? 'claude') === status.provider) return entry
@@ -32,7 +32,7 @@ export function PaneAgentSwitch({
   onClaudeCode,
 }: {
   mode: 'chat' | 'claude-code'
-  provider?: 'claude' | 'codex'
+  provider?: ChatProvider
   /** The chat's pane shows its host's log (from the pane menu); Chat goes back to the chat. */
   hostLogShown?: boolean
   chatDisabled?: boolean
@@ -42,7 +42,7 @@ export function PaneAgentSwitch({
   onChat: () => void
   onClaudeCode: () => void
 }) {
-  const label = provider === 'codex' ? 'Codex TUI' : 'Claude Code'
+  const label = providerTuiLabel(provider)
   return (
     <span className="pane-agent-switch" role="group" aria-label="Show this conversation as">
       <button
