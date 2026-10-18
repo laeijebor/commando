@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { parseChatConversations } from '../shared/chat-conversations.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 
 const CLAUDE_ID = '11111111-2222-3333-4444-555555555555'
@@ -142,6 +143,16 @@ describe('ChatConversationIndex', () => {
       const conversations = new ChatConversationIndex({ home, codexHome: join(home, '.codex'), resolveRepos: async () => new Map() })
       expect(await conversations.list()).toMatchObject([{ provider: 'opencode', title: 'XDG session' }])
     } finally { vi.unstubAllEnvs() }
+  })
+
+  it('shortens long OpenCode titles so the client keeps the conversation', async () => {
+    const db = await opencodeDb()
+    try {
+      db.prepare('INSERT INTO session VALUES (?, NULL, ?, ?, ?, NULL)').run('ses_session123', home, 'x'.repeat(600), 1000)
+      const conversations = await index().index.list()
+      expect(conversations).toMatchObject([{ provider: 'opencode', sessionId: 'ses_session123', title: `${'x'.repeat(199)}…` }])
+      expect(parseChatConversations({ conversations })).toEqual(conversations)
+    } finally { db.close() }
   })
 
   it('ignores missing, locked and malformed OpenCode databases', async () => {

@@ -260,11 +260,6 @@ export class SessionPreferenceStore {
     this.statePath = statePath
   }
 
-  async read(): Promise<SessionTreePreferences> {
-    await this.writes
-    return this.readState()
-  }
-
   async load(currentSessions: readonly SessionIdentity[] = []): Promise<SessionTreePreferences> {
     await this.writes
     const stored = await this.readState()
