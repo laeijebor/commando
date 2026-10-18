@@ -265,16 +265,25 @@ describe('AgentChatsApi', () => {
 
   it('lets a sandboxed approve-everything Muse caller grant no more than acceptEdits', async () => {
     const s = await setup()
-    s.chats.set('%1', { provider: 'muse', permissionMode: 'bypassPermissions', bypassAllowed: true } as ChatSessionInfo)
+    s.chats.set('%1', { provider: 'muse', permissionMode: 'acceptEdits' } as ChatSessionInfo)
     expect(await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403, result: { error: 'Cannot raise permission mode from acceptEdits to bypassPermissions' } })
     expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
     // Opening a Muse approve-everything chat still takes a bypass caller.
     expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
-    expect(await s.call('POST', '', { ...s.input, permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403 })
+    expect(await s.call('POST', '', { ...s.input, permissionMode: 'acceptEdits' })).toMatchObject({ status: 403 })
     const bypass = terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions'])
     const acceptEdits = terminalLaunchRank('claude', ['claude', '--permission-mode', 'acceptEdits'])
     expect(terminalLaunchRank('muse', ['muse', '--disable-approval'])).toBe(acceptEdits)
     expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'never', '--disable-sandbox'])).toBe(bypass)
+  })
+
+  it('passes full access (--yolo) on between Muse and bypass callers', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'muse', permissionMode: 'bypassPermissions', bypassAllowed: true } as ChatSessionInfo)
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'bypassPermissions' })
+    s.chats.set('%1', { provider: 'claude', permissionMode: 'bypassPermissions' } as ChatSessionInfo)
+    expect((await s.call('POST', '', { ...s.input, agent: 'muse-chat' })).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })
   })
 
   it('refuses a muse-chat for a caller that asks before edits, since Muse has no mode that careful', async () => {

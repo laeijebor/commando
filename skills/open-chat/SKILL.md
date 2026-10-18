@@ -26,9 +26,11 @@ chat opens the same kind of chat, and so does a terminal `claude`, `codex` or `m
 Claude child keeps the caller's profile (`CLAUDE_CONFIG_DIR`, such as `~/.claudew`).
 A terminal caller's permissions come from its launch flags. `--agent claude-chat|codex-chat|muse-chat|claude|codex|cursor|opencode`
 selects another provider. `--permission-mode plan|default|acceptEdits|bypassPermissions`
-(Codex chats: `plan|default|bypassPermissions`; Muse chats: `default|bypassPermissions`) can lower a chat's permissions but
+(Codex chats: `plan|default|bypassPermissions`; Muse chats: `default|acceptEdits|bypassPermissions`) can lower a chat's permissions but
 never raise them. Codex's `default` (workspace access) and Muse's `default` (sandboxed
-tools run without asking) both rank with Claude's `acceptEdits`.
+tools run without asking) both rank with Claude's `acceptEdits`. Muse's `acceptEdits`
+approves everything inside its sandbox and needs a `bypassPermissions` caller; Muse's
+`bypassPermissions` is full access (`--yolo`, no sandbox).
 
 The CLI reads `TMUX_PANE`, `COMMANDO_PORT` (default 4310), and the private hook
 token automatically. `COMMANDO_AGENT_HOOK_TOKEN_PATH` can override its token file.
