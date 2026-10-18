@@ -1,3 +1,4 @@
+import { isChatProvider, providerTuiLabel } from '../shared/agent-chat.js'
 import type { AgentStatus } from '../shared/protocol.js'
 import { buildChatReturnCommand, findAgentProcess, findChatHost, isShellCommand, parseProcessTable } from './agent-resume-command.js'
 import type { ChatHandoff } from './chat-handoffs.js'
@@ -45,11 +46,12 @@ export async function returnToChat(deps: ChatReturnDeps, paneId: string): Promis
   const sleep = deps.sleep ?? defaultSleep
   if (deps.chatOwnsPane(paneId)) return 'This pane already shows the chat'
   const status = deps.status(paneId)
-  const sessionId = status?.provider === 'claude' || status?.provider === 'codex' ? status.agentSessionId : undefined
+  const sessionId = status && isChatProvider(status.provider) ? status.agentSessionId : undefined
   const paneHandoff = deps.handoffForPane?.(paneId)
-  const handoff = (paneHandoff?.provider === 'codex' ? paneHandoff : undefined) ?? (sessionId ? deps.handoff(sessionId) : undefined)
+  // Codex and Muse handoffs belong to their pane; Claude's are found by conversation.
+  const handoff = (paneHandoff?.provider && paneHandoff.provider !== 'claude' ? paneHandoff : undefined) ?? (sessionId ? deps.handoff(sessionId) : undefined)
   const provider = handoff?.provider ?? 'claude'
-  const label = provider === 'codex' ? 'Codex TUI' : 'Claude Code'
+  const label = providerTuiLabel(provider)
   if (!handoff || handoff.returnedAt !== undefined || (provider === 'claude' && status?.provider !== 'claude')) return `This pane isn't running ${label} on a chat's conversation`
   const matchingStatus = status?.provider === provider && status.agentSessionId === handoff.sessionId ? status : undefined
   if (matchingStatus?.status === 'working') return `${label} is working. Switch back to the chat once it finishes.`
@@ -60,7 +62,7 @@ export async function returnToChat(deps: ChatReturnDeps, paneId: string): Promis
   if (findChatHost(rows, panePid)) return 'This pane already runs the chat'
   const agent = findAgentProcess(rows, panePid, provider)
   if (!agent) return `Couldn't find ${label} in this pane`
-  if (provider === 'codex' && !agent.args.split(/\s+/).includes(handoff.sessionId)) return "This pane isn't running Codex TUI on a chat's conversation"
+  if (provider !== 'claude' && !agent.args.split(/\s+/).includes(handoff.sessionId)) return `This pane isn't running ${label} on a chat's conversation`
   try {
     deps.signal(agent.pid, 'SIGTERM')
   } catch (error) {

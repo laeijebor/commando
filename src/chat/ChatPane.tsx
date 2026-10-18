@@ -17,6 +17,8 @@ import {
   type ChatSubagentTranscript,
   type ChatSwitchAction,
   type ChatTaskAction,
+  providerName,
+  providerTuiLabel,
 } from '../../shared/agent-chat'
 import type { AgentStatus, TmuxPane } from '../../shared/protocol'
 import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from '../chatLineage'
@@ -331,12 +333,12 @@ function ChatColumn({
 
 /** A switch to Claude Code waiting for the turn to end (Cancel, or Switch now to interrupt it), or under way. */
 function ClaudeCodeSwitchBanner({ state, disabled, onSwitch, provider }: {
-  provider: 'claude' | 'codex'
+  provider: ChatProvider
   state: ChatClaudeCodeSwitch
   disabled: boolean
   onSwitch?: (action: ChatSwitchAction) => void
 }) {
-  const label = provider === 'codex' ? 'Codex TUI' : 'Claude Code'
+  const label = providerTuiLabel(provider)
   return (
     <div className="px-4 pt-2">
       <div className="mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-secondary-label" role="status" data-testid="claude-code-switch">
@@ -346,7 +348,7 @@ function ClaudeCodeSwitchBanner({ state, disabled, onSwitch, provider }: {
           <>
             <Button size="xs" variant="outline" disabled={disabled} onClick={() => onSwitch('cancel')}>Cancel</Button>
             {state === 'after_turn' ? (
-              <Button size="xs" disabled={disabled} onClick={() => onSwitch('now')} title={`Interrupt ${provider === 'codex' ? 'Codex' : 'Claude'}'s turn and switch`}>Switch now</Button>
+              <Button size="xs" disabled={disabled} onClick={() => onSwitch('now')} title={`Interrupt ${providerName(provider)}'s turn and switch`}>Switch now</Button>
             ) : null}
           </>
         ) : null}

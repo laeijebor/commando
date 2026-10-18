@@ -117,6 +117,7 @@ const PROVIDER_NAMES: Record<Exclude<AgentProvider, 'unknown'>, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   cursor: 'Cursor',
+  muse: 'Muse',
 }
 
 function providerName(provider: AgentProvider): string {
@@ -1095,11 +1096,13 @@ export class AgentStatusRegistry {
     })
   }
 
+  /** Claude Code hooks, and Muse's, which use the same events and payloads. */
   applyClaudeHook(
     paneId: string,
     payload: unknown,
     updatedAt = Date.now(),
     processCommand: string | null = null,
+    provider: 'claude' | 'muse' = 'claude',
   ): AgentStatusChange {
     if (!isRecord(payload)) return null
     if (isCursorInvocation(payload) || inferAgentProvider(processCommand ?? '', '', '').provider === 'cursor') return null
@@ -1108,10 +1111,10 @@ export class AgentStatusRegistry {
     if (!eventName || !sessionId) return null
 
     if (eventName === 'SessionEnd') {
-      return this.removeProviderSession(paneId, 'claude', sessionId)
+      return this.removeProviderSession(paneId, provider, sessionId)
     }
     const previous = this.records.get(paneId)
-    const sameSession = previous?.status.provider === 'claude' &&
+    const sameSession = previous?.status.provider === provider &&
       previous.providerSessionId === sessionId
     const agentSessionName = stringProperty(payload, 'session_title', 120)
       ?? (sameSession ? (previous.status.agentSessionName ?? null) : null)
@@ -1121,7 +1124,7 @@ export class AgentStatusRegistry {
       sameSession
     ) return null
     const startsProviderWork = eventName === 'SessionStart' || eventName === 'UserPromptSubmit'
-    if (!this.acceptHookProcess(paneId, 'claude', processCommand, startsProviderWork)) return null
+    if (!this.acceptHookProcess(paneId, provider, processCommand, startsProviderWork)) return null
 
     let status: AgentStatusKind | null = null
     if (eventName === 'SessionStart') status = 'unknown'
@@ -1203,7 +1206,8 @@ export class AgentStatusRegistry {
         updatedAt,
         eventName === 'PostToolUseFailure',
       )
-      if (activityState === 'completed') {
+      // Muse prompts are never held here, so any tool result means it was answered.
+      if (activityState === 'completed' || provider === 'muse') {
         syncAttention(details, pendingRequests)
       }
     }
@@ -1221,7 +1225,7 @@ export class AgentStatusRegistry {
       (eventName === 'PreToolUse' && status === 'needs_input') ||
       (eventName === 'Notification' && status === 'needs_input')
     ) {
-      const attention = setAttention(details, payload.attention, 'claude')
+      const attention = setAttention(details, payload.attention, provider)
       const request = parseInteractionRequest(payload.request, updatedAt)
       if (request) {
         addPendingRequest(
@@ -1254,7 +1258,7 @@ export class AgentStatusRegistry {
       clearRunningChecks(details, runningChecks)
       delete details.currentActivity
       const recap = createRecap(
-        'claude',
+        provider,
         status,
         details,
         pendingRequests.size > 0,
@@ -1270,7 +1274,7 @@ export class AgentStatusRegistry {
     return this.upsert({
       status: attachDetails(hookStatus(
         paneId,
-        'claude',
+        provider,
         sessionId,
         agentSessionName,
         status,
@@ -1752,7 +1756,7 @@ export class AgentStatusRegistry {
       record.providerSessionId !== sessionId
     ) return null
     if (
-      (provider === 'claude' || provider === 'cursor') &&
+      (provider === 'claude' || provider === 'cursor' || provider === 'muse') &&
       hasRetainableRecap(record)
     ) {
       const previousCommand = record.processCommand

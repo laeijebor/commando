@@ -223,8 +223,8 @@ describe('commando-agent arguments', () => {
     expect(sessionFlags(withSessionSettings(args, info))).not.toContain('--fast')
   })
 
-  it('lists both providers in help and rejects unsupported subcommands', () => {
-    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex>/)
+  it('lists every provider in help and rejects unsupported subcommands', () => {
+    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse>/)
     expect(parseHostArgs(['cursor'], {})).toMatch(/^Usage/)
     expect(parseHostArgs([], {})).toMatch(/^Usage/)
     expect(parseHostArgs(['codex', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)

@@ -53,6 +53,8 @@ function providerInitials(provider: AgentProvider) {
       return 'OC'
     case 'cursor':
       return 'CU'
+    case 'muse':
+      return 'MU'
     case 'unknown':
       return 'AG'
   }

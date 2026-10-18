@@ -22,13 +22,13 @@ Without a git repository, the new chat uses your current directory.
 
 Use `--prompt "brief"` instead of `--prompt-file` for a short brief. The provider
 and its permission mode are inherited from the caller: a hosted Claude or Codex
-chat opens the same kind of chat, and so does a terminal `claude` or `codex`. A
+chat opens the same kind of chat, and so does a terminal `claude`, `codex` or `muse`. A
 Claude child keeps the caller's profile (`CLAUDE_CONFIG_DIR`, such as `~/.claudew`).
-A terminal caller's permissions come from its launch flags. `--agent claude-chat|codex-chat|claude|codex|cursor|opencode`
+A terminal caller's permissions come from its launch flags. `--agent claude-chat|codex-chat|muse-chat|claude|codex|cursor|opencode`
 selects another provider. `--permission-mode plan|default|acceptEdits|bypassPermissions`
-(Codex chats: `plan|default|bypassPermissions`) can lower a chat's permissions but
-never raise them. Codex's `default` (workspace access) edits without asking, so it
-ranks with Claude's `acceptEdits`.
+(Codex chats: `plan|default|bypassPermissions`; Muse chats: `default|bypassPermissions`) can lower a chat's permissions but
+never raise them. Codex's `default` (workspace access) and Muse's `default` (sandboxed
+tools run without asking) both rank with Claude's `acceptEdits`.
 
 The CLI reads `TMUX_PANE`, `COMMANDO_PORT` (default 4310), and the private hook
 token automatically. `COMMANDO_AGENT_HOOK_TOKEN_PATH` can override its token file.

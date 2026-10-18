@@ -3,6 +3,7 @@
  * ⌘P picker: switch a chat pane to one, or resume one in a new pane.
  */
 
+import type { ChatProvider } from './agent-chat.js'
 import type { PaneRepo } from './protocol.js'
 
 export const CHAT_CONVERSATION_ROUTES = {
@@ -10,7 +11,7 @@ export const CHAT_CONVERSATION_ROUTES = {
   resume: '/api/chat-conversations/resume',
 } as const
 
-export type ChatConversationProvider = 'claude' | 'codex'
+export type ChatConversationProvider = ChatProvider
 
 export interface ChatConversation {
   provider: ChatConversationProvider

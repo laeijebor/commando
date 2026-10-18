@@ -6,7 +6,8 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   CHAT_PERMISSION_MODES,
-  CODEX_CHAT_PERMISSION_MODES,
+  chatPermissionModes,
+  isChatLaunchProvider,
   defaultWorktreePath,
   EMPTY_PANE_OPTION,
   SESSION_AGENT_EXECUTABLES,
@@ -157,12 +158,13 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined || resume !== undefined)) {
+  if (!isChatLaunchProvider(provider) && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined || resume !== undefined)) {
     throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
   }
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
-  if (provider === 'codex-chat' && (configDir !== undefined || readableDir !== undefined)) throw new Error('Codex chat does not accept a Claude profile or readable folder')
-  if (provider === 'codex-chat' && permissionMode !== undefined && !CODEX_CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) throw new Error('Unsupported Codex permission mode')
+  const chatName = provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : 'Claude'
+  if (chatName !== 'Claude' && (configDir !== undefined || readableDir !== undefined)) throw new Error(`${chatName} chat does not accept a Claude profile or readable folder`)
+  if (isChatLaunchProvider(provider) && permissionMode !== undefined && !chatPermissionModes(provider).some((mode) => mode.value === permissionMode)) throw new Error(`Unsupported ${chatName} permission mode`)
   // Only one stashed plan's own folder: a chat must not be handed any other path.
   if (readableDir !== undefined && !isChatPlanDir(readableDir)) {
     throw new Error('A chat can only be given a stashed plan folder to read')
@@ -523,7 +525,7 @@ export class TmuxCreator {
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
     const argv = sessionAgentArgv(agent)
-    argv[0] = (agent.provider === 'claude-chat' || agent.provider === 'codex-chat')
+    argv[0] = isChatLaunchProvider(agent.provider)
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
     return argv
@@ -632,7 +634,7 @@ export class TmuxCreator {
   async respawnChatPane(paneId: string, cwd: string, launch: SessionAgentLaunch): Promise<void> {
     if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
     const agent = validatedAgent(launch)
-    if (!agent || (agent.provider !== 'claude-chat' && agent.provider !== 'codex-chat')) throw new Error('Only a chat can take over a chat pane')
+    if (!agent || !isChatLaunchProvider(agent.provider)) throw new Error('Only a chat can take over a chat pane')
     const directory = validatedPath(cwd)
     if (!directory) throw new Error('A folder is required')
     if (this.launching.has(paneId)) throw new Error('This pane is already starting something')

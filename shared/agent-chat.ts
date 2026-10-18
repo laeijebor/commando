@@ -41,7 +41,18 @@ export function hostTakesSwitch(session: { hostVersion: number }): boolean {
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
-export type ChatProvider = 'claude' | 'codex'
+export type ChatProvider = 'claude' | 'codex' | 'muse'
+export const CHAT_PROVIDERS: readonly ChatProvider[] = ['claude', 'codex', 'muse']
+/** The provider's own terminal UI, which a chat can hand its conversation to. */
+export function providerTuiLabel(provider: ChatProvider | undefined): string {
+  return provider === 'codex' ? 'Codex TUI' : provider === 'muse' ? 'Muse TUI' : 'Claude Code'
+}
+export function providerName(provider: ChatProvider | undefined): string {
+  return provider === 'codex' ? 'Codex' : provider === 'muse' ? 'Muse' : 'Claude'
+}
+export function isChatProvider(value: unknown): value is ChatProvider {
+  return typeof value === 'string' && (CHAT_PROVIDERS as readonly string[]).includes(value)
+}
 /** Optional broadcast metadata; old daemons send just ids. Missing provider means Claude. */
 export type ChatHandoffInfo = { sessionId: string; paneId?: string; provider?: ChatProvider }
 export type ChatItemStatus = 'running' | 'completed' | 'failed' | 'interrupted'
@@ -892,7 +903,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
 
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isRecord(value)) return null
-  if (!isPaneId(value.paneId) || (value.provider !== 'claude' && value.provider !== 'codex') || typeof value.cwd !== 'string') return null
+  if (!isPaneId(value.paneId) || !isChatProvider(value.provider) || typeof value.cwd !== 'string') return null
   if (!SESSION_STATUSES.has(value.status as ChatSessionStatus)) return null
   if (typeof value.hostPid !== 'number' || typeof value.hostVersion !== 'number') return null
   for (const key of ['sessionId', 'model', 'permissionMode', 'configDir', 'error', 'hostBuild', 'title', 'resumeCommand'] as const) {
@@ -984,7 +995,7 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
         ? value.returnFlags as string[]
         : null
       if (!isPaneId(value.paneId) || !shortString(value.sessionId) || !shortString(value.cwd, 4096) || !queue || !flags) return null
-      if (value.provider !== undefined && value.provider !== 'claude' && value.provider !== 'codex') return null
+      if (value.provider !== undefined && !isChatProvider(value.provider)) return null
       return withOptional({ type: 'handoff' as const, paneId: value.paneId, sessionId: value.sessionId, cwd: value.cwd, queue, returnFlags: flags }, {
         provider: value.provider as ChatProvider | undefined,
       })

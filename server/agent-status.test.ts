@@ -19,6 +19,11 @@ describe('agent inference', () => {
     })
   })
 
+  it('identifies Muse by its versioned binary but never from the word in pane output', () => {
+    expect(inferAgentProvider('muse-bin-1.4.10-R6427.1', '', '')).toMatchObject({ provider: 'muse', source: 'process' })
+    expect(inferAgentProvider('zsh', '', 'a muse for the ages')).toMatchObject({ provider: 'unknown' })
+  })
+
   it('discovers supported agent processes without treating captured history as live work', () => {
     expect(inferAgentProcessStatus({
       paneId: '%1',

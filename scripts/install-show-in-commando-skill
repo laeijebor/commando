@@ -23,6 +23,12 @@ destination_roots=(
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   destination_roots+=("$CLAUDE_CONFIG_DIR/skills")
 fi
+# Muse reads native skills from its config folder, ahead of the Claude copies it
+# also imports. Only install there once Muse has created that folder.
+muse_config="${XDG_CONFIG_HOME:-$HOME/.config}/muse"
+if [ -d "$muse_config" ]; then
+  destination_roots+=("$muse_config/skills")
+fi
 
 skill_dirs=("$skills_root"/*/)
 if [ "$#" -gt 0 ]; then

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { isChatImageId, type ChatCarriedDraft, type ChatHandoffInfo, type ChatImageRef, type ChatQueuedMessage } from '../shared/agent-chat.js'
+import { isChatImageId, isChatProvider, type ChatCarriedDraft, type ChatHandoffInfo, type ChatImageRef, type ChatQueuedMessage } from '../shared/agent-chat.js'
 import { tmuxServerStateSuffix } from './agent-resume.js'
 import { isValidAgentSessionId } from './agent-resume-command.js'
 
@@ -40,7 +40,7 @@ function validEntry(value: unknown): value is ChatHandoff {
   if (!value || typeof value !== 'object') return false
   const entry = value as ChatHandoff
   return typeof entry.sessionId === 'string' && isValidAgentSessionId(entry.sessionId)
-    && (entry.provider === undefined || entry.provider === 'claude' || entry.provider === 'codex')
+    && (entry.provider === undefined || isChatProvider(entry.provider))
     && (entry.paneId === undefined || /^%\d+$/.test(entry.paneId))
     && typeof entry.cwd === 'string' && entry.cwd.startsWith('/')
     && Array.isArray(entry.returnFlags) && entry.returnFlags.every((flag) => typeof flag === 'string')

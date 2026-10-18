@@ -160,6 +160,8 @@ import {
   type ChatState,
   type ChatSubagentTranscript,
   type ChatSwitchAction,
+  type ChatProvider,
+  providerTuiLabel,
 } from '../shared/agent-chat'
 import type { ChatStashEntry } from '../shared/chat-stash'
 import { createSimsApi, type SimsApiClient } from './simsApi'
@@ -384,7 +386,7 @@ type TerminalPaneProps = {
   onDismissChatActionError?: () => void
   /** The pane runs Claude Code on a conversation that started as a chat. */
   claudeCodeFromChat?: boolean
-  handoffProvider?: 'claude' | 'codex'
+  handoffProvider?: ChatProvider
   /** The chat's composer has an image still uploading. */
   chatUploading?: boolean
   onSwitchToClaudeCode?: () => void
@@ -414,7 +416,7 @@ type TerminalPaneProps = {
 
 /** What clicking Claude Code in a chat's header does, or why it can't. */
 function claudeCodeSwitchTitle(chat: ChatState): string {
-  const label = chat.session.provider === 'codex' ? 'Codex TUI' : 'Claude Code'
+  const label = providerTuiLabel(chat.session.provider)
   if (!chat.hostConnected) return 'The agent host is disconnected'
   if (!hostTakesSwitch(chat.session)) return `This chat started before switching to ${label}; restart it to switch`
   if (!chat.session.sessionId) return `Send a message first: ${label} resumes a conversation`
@@ -2889,10 +2891,10 @@ export function App() {
     }
   }
 
-  /** A Codex chat launch with the permission mode remembered for the path's repository. */
-  const rememberedCodexChatLaunch = async (path: string): Promise<SessionAgentLaunch> => {
+  /** A Codex or Muse chat launch with the permission mode remembered for the path's repository. */
+  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat'): Promise<SessionAgentLaunch> => {
     const repoRoot = await gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined)
-    return { provider: 'codex-chat', permissionMode: loadChatLaunch(repoRoot ?? path, 'codex-chat').permissionMode }
+    return { provider, permissionMode: loadChatLaunch(repoRoot ?? path, provider).permissionMode }
   }
 
   /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */
@@ -2920,7 +2922,7 @@ export function App() {
     try {
       const agent = choice === 'shell' ? undefined
         : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path)
-          : choice === 'codex-chat' ? await rememberedCodexChatLaunch(pane.path)
+          : choice === 'codex-chat' || choice === 'muse-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
             : { provider: choice }
       await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
       // Focus lands once the snapshot swaps the launcher for the running pane.

@@ -3,7 +3,8 @@
  * Regenerate reference bindings: codex app-server generate-ts --out /tmp/codex-ts
  * Incoming payloads remain unknown until checked: the experimental protocol can grow.
  */
-export type RpcId = string | number
+import { record } from '../rpc-client.js'
+export { record, requestKey, rpcId, type RpcId, type RpcNotification, type RpcRequest } from '../rpc-client.js'
 export type ApprovalPolicy = 'on-request' | 'never'
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
 export type SandboxPolicy =
@@ -30,8 +31,6 @@ export interface ClientMethods {
   'turn/interrupt': { threadId: string; turnId: string }
   'account/rateLimits/read': Record<string, never>
 }
-export interface RpcRequest { id: RpcId; method: string; params: unknown }
-export interface RpcNotification { method: string; params: unknown }
 export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel'
 export interface InputQuestion {
   id: string; header: string; question: string; isOther: boolean; isSecret: boolean
@@ -57,15 +56,9 @@ export interface FileChange { path: string; kind: { type: 'add' | 'delete' | 'up
 export interface CodexTurn { id: string; status: string; items: unknown[]; error?: { message: string } | null }
 export interface CodexThread { id: string; name?: string | null; preview?: string; historyMode?: string; turns: CodexTurn[] }
 
-export function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
 export function string(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined }
 export function list(value: unknown): unknown[] { return Array.isArray(value) ? value : [] }
-export function rpcId(value: unknown): value is RpcId {
-  return (typeof value === 'string' && value.length > 0) || (typeof value === 'number' && Number.isFinite(value))
-}
-export function requestKey(id: RpcId): string { return `${typeof id}:${id}` }
+
 export function parseThread(value: unknown): CodexThread {
   const thread = record(value)
   if (!string(thread.id)) throw new Error('Codex returned a thread without an id')

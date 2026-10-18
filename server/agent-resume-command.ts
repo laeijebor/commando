@@ -1,5 +1,5 @@
-import { basename } from 'node:path'
-import type { ChatProvider } from '../shared/agent-chat.js'
+import { basename, dirname, join } from 'node:path'
+import { isChatProvider, type ChatProvider } from '../shared/agent-chat.js'
 import type { AgentProvider } from '../shared/protocol.js'
 
 export type ResumableProvider = Exclude<AgentProvider, 'unknown'>
@@ -25,6 +25,8 @@ type FlagSpec = {
 
 type ProviderSpec = {
   executables: readonly string[]
+  /** Other executable names, such as a versioned binary a launcher script execs. */
+  executablePattern?: RegExp
   /** Arguments a launcher script inserts before the user's own. */
   launcherArgs?: (rest: readonly string[]) => number
   env: readonly string[]
@@ -34,6 +36,8 @@ type ProviderSpec = {
 
 // Only flags that shape the session are carried over. Everything else is dropped: prompts,
 // old resume/continue targets, print mode, and flags whose values may contain spaces.
+const MUSE_BINARY = /^muse-bin-\d[\w.-]*$/
+
 const PROVIDERS: Record<ResumableProvider, ProviderSpec> = {
   claude: {
     executables: ['claude'],
@@ -119,6 +123,25 @@ const PROVIDERS: Record<ResumableProvider, ProviderSpec> = {
     },
     resume: (executable, flags, id) => [...executable, ...flags, `--resume=${id}`],
   },
+  muse: {
+    executables: ['muse'],
+    // The `muse` launcher script execs a versioned `muse-bin-<version>` beside itself.
+    executablePattern: MUSE_BINARY,
+    env: ['XDG_CONFIG_HOME', 'XDG_DATA_HOME'],
+    flags: {
+      bare: ['--yolo', '--trust-workspace', '--disable-approval', '--disable-sandbox', '--disable-write', '--disable-shell', '--disable-request-user-input', '--parallel-tool-calls', '--no-parallel-tool-calls', '--no-session-log'],
+      single: ['--provider', '--preset', '--model', '--reasoning-effort', '--effort', '--approval-mode', '--permission-profile', '--approval-judge', '--sandbox-network', '--workspace', '--contributor-mode', '--base-url'],
+      dropped: ['--image', '-w', '--worktree', '--worktree-base', '--worktree-existing', '--agents'],
+    },
+    // Resume through the launcher so an updated binary is picked up.
+    resume: (executable, flags, id) => [museLauncher(executable), ...flags, 'resume', id],
+  },
+}
+
+function museLauncher(executable: readonly string[]): string {
+  const first = executable[0]!
+  if (!MUSE_BINARY.test(basename(first))) return first
+  return first.includes('/') ? join(dirname(first), 'muse') : 'muse'
 }
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/
@@ -147,7 +170,7 @@ export function shellQuote(word: string): string {
 function executableOf(spec: ProviderSpec, args: readonly string[]): { executable: string[]; rest: readonly string[] } | null {
   const [first, second] = args
   if (!first) return null
-  if (spec.executables.includes(basename(first))) return { executable: [first], rest: args.slice(1) }
+  if (spec.executables.includes(basename(first)) || spec.executablePattern?.test(basename(first))) return { executable: [first], rest: args.slice(1) }
   // npm installs run the CLI script under a JavaScript runtime, from a path naming the package.
   if (SCRIPT_RUNTIMES.has(basename(first)) && second && spec.executables.some((name) => second.includes(name))) {
     return { executable: [first, second], rest: args.slice(2) }
@@ -336,7 +359,7 @@ export function buildChatResumeCommand(
   if (!isValidAgentSessionId(sessionId)) return null
   const entry = launch.args.findIndex((word) => word.endsWith(CHAT_HOST_ENTRY))
   const provider = launch.args[entry + 1]
-  if (entry < 0 || (provider !== 'claude' && provider !== 'codex')) return null
+  if (entry < 0 || !isChatProvider(provider)) return null
   // Commando puts --prompt last; everything after it is prompt text, never flags.
   const rest = launch.args.slice(entry + 2)
   const promptAt = rest.indexOf('--prompt')
@@ -346,6 +369,7 @@ export function buildChatResumeCommand(
   // A shell restored by tmux may not know which daemon to report to.
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
   if (provider === 'codex' && launch.env.CODEX_HOME) env.push(`CODEX_HOME=${launch.env.CODEX_HOME}`)
+  if (provider === 'muse') for (const name of ['XDG_CONFIG_HOME', 'XDG_DATA_HOME']) if (launch.env[name]) env.push(`${name}=${launch.env[name]}`)
   return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId].map(shellQuote).join(' ')
 }
 

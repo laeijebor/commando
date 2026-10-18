@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { History, LoaderCircle, Search } from 'lucide-react'
-import type { ChatState } from '../shared/agent-chat'
+import { isChatProvider, providerName, type ChatState } from '../shared/agent-chat'
 import {
   CHAT_CONVERSATION_SCOPE_LABELS,
   chatConversationKey,
@@ -21,7 +21,7 @@ export function openConversationPanes(
   const open = new Map<string, { paneId: string; label: string }>()
   for (const [paneId, status] of Object.entries(statuses)) {
     // Only a hook knows the session for sure; a guessed one could jump to the wrong pane.
-    if (status.source !== 'hook' || !status.agentSessionId || (status.provider !== 'claude' && status.provider !== 'codex')) continue
+    if (status.source !== 'hook' || !status.agentSessionId || !isChatProvider(status.provider)) continue
     open.set(chatConversationKey(status.provider, status.agentSessionId), { paneId, label: label(paneId) })
   }
   for (const [paneId, chat] of Object.entries(chats)) {
@@ -191,7 +191,7 @@ export function ConversationPicker({ pane, current, open, busy, load, onPick, on
                   >
                     <span className="command-icon"><History aria-hidden="true" /></span>
                     <span><strong>{conversation.title}</strong><small>{detail}</small></span>
-                    <span className="command-kind">{where ?? (conversation.provider === 'codex' ? 'Codex' : 'Claude')}</span>
+                    <span className="command-kind">{where ?? providerName(conversation.provider)}</span>
                   </button>
                 )
               })}
