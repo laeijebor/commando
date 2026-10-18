@@ -157,9 +157,10 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined || resume !== undefined)) {
+  if (provider !== 'claude-chat' && provider !== 'codex-chat' && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
     throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
   }
+  if (resume !== undefined && provider !== 'claude-chat' && provider !== 'codex-chat' && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (provider === 'codex-chat' && (configDir !== undefined || readableDir !== undefined)) throw new Error('Codex chat does not accept a Claude profile or readable folder')
   if (provider === 'codex-chat' && permissionMode !== undefined && !CODEX_CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) throw new Error('Unsupported Codex permission mode')
@@ -440,15 +441,16 @@ export class TmuxCreator {
     private readonly launchEnv: LaunchEnvironment = process.env,
   ) {}
 
-  async createSession(input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> {
+  /** resumeCommand is server-owned; HTTP creation handlers never forward it. */
+  async createSession(input: CreateTmuxSessionRequest, resumeCommand?: string): Promise<TmuxCreateResponse> {
     const name = validatedName(input.name, 'session name', true)
     const windowName = optionalName(input.windowName, 'window name')
     const cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
     if (input.empty !== undefined && typeof input.empty !== 'boolean') throw new Error('empty must be a boolean')
     const empty = input.empty === true
-    if (empty && agent) throw new Error('An empty session cannot also start an agent')
-    const agentArgv = agent ? await this.agentArgv(agent) : undefined
+    if (empty && (agent || resumeCommand !== undefined)) throw new Error('An empty session cannot also start an agent')
+    const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     const acknowledgment = (created: TmuxCreatedTarget): Pick<TmuxCreateResponse, 'agentLaunch'> => agent
       ? { agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } }
       : {}
@@ -519,6 +521,15 @@ export class TmuxCreator {
     } catch {
       return false
     }
+  }
+
+  private resumeArgv(command: string | undefined, agent?: SessionAgentLaunch): string[] | undefined {
+    if (command === undefined) return undefined
+    if (agent) throw new Error('A resume command cannot also start an agent')
+    if (typeof command !== 'string' || !command.trim() || Buffer.byteLength(command) > 8192 || CONTROL_CHARACTER.test(command)) {
+      throw new Error('Invalid resume command: expected a bounded command without control characters')
+    }
+    return ['/bin/sh', '-c', command]
   }
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
@@ -626,13 +637,14 @@ export class TmuxCreator {
   }
 
   /**
-   * Replaces a chat pane's host with a chat on another conversation, in that
-   * conversation's folder. The caller checks the pane runs a chat.
+   * The caller permits replacement only for a chat or an empty pane.
+   * resumeCommand is server-owned, as on creation.
    */
-  async respawnChatPane(paneId: string, cwd: string, launch: SessionAgentLaunch): Promise<void> {
+  async respawnChatPane(paneId: string, cwd: string, launch?: SessionAgentLaunch, resumeCommand?: string): Promise<void> {
     if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
     const agent = validatedAgent(launch)
-    if (!agent || (agent.provider !== 'claude-chat' && agent.provider !== 'codex-chat')) throw new Error('Only a chat can take over a chat pane')
+    const resumeArgv = this.resumeArgv(resumeCommand, agent)
+    if (!resumeArgv && (!agent || (agent.provider !== 'claude-chat' && agent.provider !== 'codex-chat' && !((agent.provider === 'cursor' || agent.provider === 'opencode') && agent.resume)))) throw new Error('Only a chat or resumed TUI can take over a chat pane')
     const directory = validatedPath(cwd)
     if (!directory) throw new Error('A folder is required')
     if (this.launching.has(paneId)) throw new Error('This pane is already starting something')
@@ -640,19 +652,21 @@ export class TmuxCreator {
     try {
       await this.run([
         ...this.socketArgs, 'respawn-pane', '-k', '-t', paneId, '-c', directory,
-        ...this.agentEnvironmentArgs(), agentLaunchPaneCommand(await this.agentArgv(agent), undefined, this.launchEnv),
+        ...this.agentEnvironmentArgs(), agentLaunchPaneCommand(resumeArgv ?? await this.agentArgv(agent!), undefined, this.launchEnv),
       ])
     } finally {
       this.launching.delete(paneId)
     }
   }
 
-  async createWindow(input: CreateTmuxWindowRequest): Promise<TmuxCreatedTarget> {
+  async createWindow(input: CreateTmuxWindowRequest, resumeCommand?: string): Promise<TmuxCreatedTarget> {
     if (typeof input.sessionId !== 'string' || !SESSION_ID.test(input.sessionId)) {
       throw new Error('Invalid tmux session id')
     }
     const name = optionalName(input.name, 'window name')
     const cwd = validatedPath(input.cwd)
+    const agent = validatedAgent(input.agent)
+    const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     const args = [
       ...this.socketArgs,
       'new-window',
@@ -665,12 +679,14 @@ export class TmuxCreator {
     ]
     if (name) args.push('-n', name)
     if (cwd) args.push('-c', cwd)
+    if (agentArgv) args.push(...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, undefined, this.launchEnv))
     return parseCreatedTarget(await this.run(args), 'window')
   }
 
   async createPane(
     input: CreateTmuxPaneRequest,
     beforeCreate?: () => void | Promise<void>,
+    resumeCommand?: string,
   ): Promise<TmuxCreatedTarget & { worktree?: TmuxCreatedWorktree; agentLaunch?: SessionAgentLaunchAcknowledgment }> {
     if (
       typeof input.targetId !== 'string' ||
@@ -686,7 +702,7 @@ export class TmuxCreator {
     }
     let cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
-    const agentArgv = agent ? await this.agentArgv(agent) : undefined
+    const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     if (input.worktree !== undefined && (!input.worktree || typeof input.worktree !== 'object' || Array.isArray(input.worktree))) throw new Error('worktree must be an object')
     const branch = input.worktree ? validatedName(input.worktree.branch, 'branch name') : undefined
     const path = input.worktree ? validatedPath(input.worktree.path) : undefined

@@ -1,3 +1,4 @@
+import { isSessionName } from '../shared/session-identity'
 import {
   Activity,
   AlertTriangle,
@@ -110,7 +111,7 @@ import { SessionIdeView } from './SessionIdeView'
 import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { createChatConversationsApi } from './chatConversationsApi'
-import { ConversationPicker, openConversationPanes } from './ConversationPicker'
+import { ConversationPicker } from './ConversationPicker'
 import { chatConversationKey } from '../shared/chat-conversations'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
@@ -1166,8 +1167,10 @@ export function App() {
   const [draggedPane, setDraggedPane] = useState<DraggedItem | null>(null)
   const [dropPreview, setDropPreview] = useState<{ paneId: string; placement: 'right' | 'below' } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  /** The chat pane whose ⌘P conversation picker is open. */
+  /** The workspace pane whose conversation picker is open. */
   const [conversationPaneId, setConversationPaneId] = useState<string | null>(null)
+  const [conversationSessionFilter, setConversationSessionFilter] = useState<{ id: string; name: string } | undefined>()
+  const reopeningConversation = useRef(false)
   const [paletteQuery, setPaletteQuery] = useState('')
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [themeName, setThemeName] = useState<ThemeName>(() => storedTheme())
@@ -1191,6 +1194,7 @@ export function App() {
     paneId: string
     expectedTargetId?: string
     highlight?: boolean
+    waitForCreation?: boolean
   } | null>(null)
   const [paneMenu, setPaneMenu] = useState<{ paneId: string; x: number; y: number } | null>(null)
   const [renamingPaneId, setRenamingPaneId] = useState<string | null>(null)
@@ -1956,8 +1960,14 @@ export function App() {
   useEffect(() => {
     if (!pendingPaneFocus) return
     const pane = paneMap.get(pendingPaneFocus.paneId)
+    if (!pane && pendingPaneFocus.waitForCreation) return
     if (!pane || (pendingPaneFocus.expectedTargetId && pane.targetId !== pendingPaneFocus.expectedTargetId)) {
       setPendingPaneFocus(null)
+      return
+    }
+    if (pane.sessionId !== selectedSessionId) {
+      setArea('workspace')
+      setSelectedSessionId(pane.sessionId)
       return
     }
     const group = groups.find((candidate) => candidate.paneIds.includes(pendingPaneFocus.paneId))
@@ -2504,7 +2514,18 @@ export function App() {
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
   const chatConversationsApi = useMemo(() => createChatConversationsApi(token), [token])
-  const loadConversations = useCallback(() => chatConversationsApi.list(), [chatConversationsApi])
+  const loadConversations = useCallback(async () => {
+    const conversations = await chatConversationsApi.list()
+    const names = [...new Set(conversations.flatMap((conversation) => conversation.session ? [conversation.session.name] : []).filter(isSessionName))].slice(0, 500)
+    try {
+      const preferences = await createSessionManagementApi(token).ensureIdentities(names)
+      setSessionTreePreferences(preferences)
+    } catch {
+      // History stays usable if preference storage is temporarily unavailable;
+      // the picker can derive the same marks until the next successful load.
+    }
+    return conversations
+  }, [chatConversationsApi, token])
   const paneManagementApi = createPaneManagementApi(token)
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
@@ -2976,33 +2997,88 @@ export function App() {
     }
   }
 
-  // ⌘P in a chat pane lists past conversations to switch to (instead of printing the page).
+  // The workspace picker also resumes beside running terminals and into empty panes.
   useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p') return
-      const target = event.target instanceof Element ? event.target.closest('[data-pane-id]')?.getAttribute('data-pane-id') : undefined
-      const paneId = target ?? focusedPaneId
-      // Only in the workspace: elsewhere the last focused chat is hidden.
-      if (!connected || area !== 'workspace' || paletteOpen || !paneId || !chats[paneId] || (chatViews[paneId] ?? 'chat') !== 'chat') return
-      event.preventDefault()
-      event.stopPropagation()
-      if (event.repeat) return
+    // Only in the workspace: elsewhere the last focused chat is hidden.
+    const canToggle = (paneId: string | null | undefined): paneId is string => Boolean(connected && area === 'workspace' && !paletteOpen && paneId && paneMap.has(paneId))
+    const toggle = (paneId: string) => {
       // Closes only a picker that is showing; one whose pane went away opens afresh.
-      const showing = conversationPaneId && chats[conversationPaneId] && paneMap.has(conversationPaneId)
+      const showing = conversationPaneId && paneMap.has(conversationPaneId)
+      setConversationSessionFilter(undefined)
       setConversationPaneId(showing ? null : paneId)
       // The picker shows in its pane, and closes once another pane takes focus.
       if (!showing) setFocusedPaneId(paneId)
     }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p') return
+      const target = event.target instanceof Element ? event.target.closest('[data-pane-id]')?.getAttribute('data-pane-id') : undefined
+      const paneId = target ?? focusedPaneId
+      if (!canToggle(paneId)) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.repeat) return
+      toggle(paneId)
+    }
+    // A focused native terminal keeps ⌘P from the page; the desktop app forwards it instead.
+    const onNativeShortcut = (event: Event) => {
+      if ((event as CustomEvent<{ key?: string }>).detail?.key === 'p' && canToggle(focusedPaneId)) toggle(focusedPaneId)
+    }
     window.addEventListener('keydown', onKeyDown, true)
-    return () => window.removeEventListener('keydown', onKeyDown, true)
+    window.addEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    }
   })
 
   // Like a menu, the picker closes when another pane is focused (a native terminal
   // click reaches the page only as focus) or its pane leaves the screen.
   const conversationPaneShown = area === 'workspace' && Boolean(conversationPaneId && allVisiblePaneIds.includes(conversationPaneId))
   useEffect(() => {
-    if (conversationPaneId && (!conversationPaneShown || (effectivePaneId && effectivePaneId !== conversationPaneId))) setConversationPaneId(null)
-  }, [conversationPaneId, conversationPaneShown, effectivePaneId])
+    if (conversationPaneId && (!conversationPaneShown || (effectivePaneId && effectivePaneId !== conversationPaneId && pendingPaneFocus?.paneId !== conversationPaneId))) setConversationPaneId(null)
+  }, [conversationPaneId, conversationPaneShown, effectivePaneId, pendingPaneFocus])
+
+  const reopenConversation = async () => {
+    if (!connected || area !== 'workspace' || paletteOpen || reopeningConversation.current) return
+    reopeningConversation.current = true
+    try {
+      // Most recently closed, not most recently written; skip any that is open somewhere after all.
+      const conversation = (await loadConversations()).filter((entry) => entry.session && entry.paneOpen === false && !entry.openPaneId)
+        .sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt))[0]
+      if (!conversation) {
+        const message = 'No closed agent conversation to reopen'
+        setPaneActionError(message)
+        window.setTimeout(() => setPaneActionError((current) => current === message ? '' : current), 3000)
+        return
+      }
+      const paneId = await chatConversationsApi.resume({ provider: conversation.provider, sessionId: conversation.sessionId, placement: 'session' })
+      setConversationPaneId(null)
+      setPendingPaneFocus({ paneId, waitForCreation: true })
+    } catch (error) {
+      setPaneActionError(error instanceof Error ? error.message : 'Could not reopen conversation')
+    } finally {
+      reopeningConversation.current = false
+    }
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!event.metaKey || !event.shiftKey || event.ctrlKey || event.altKey || event.key.toLowerCase() !== 't') return
+      if (!connected || area !== 'workspace' || paletteOpen) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!event.repeat) void reopenConversation()
+    }
+    const onNativeShortcut = (event: Event) => {
+      if ((event as CustomEvent<{ key?: string }>).detail?.key === 'T') void reopenConversation()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    }
+  })
 
   useEffect(() => {
     const runPaneShortcut = (key: string) => {
@@ -3034,20 +3110,26 @@ export function App() {
 
   const conversationPane = conversationPaneId ? paneMap.get(conversationPaneId) : undefined
   const conversationChat = conversationPaneId ? chats[conversationPaneId] : undefined
-  const conversationPicker = conversationPane && conversationChat ? (
+  const conversationPicker = conversationPane ? (
     <ConversationPicker
+      key={`${conversationPane.id}:${conversationSessionFilter?.id ?? ''}`}
       pane={conversationPane}
-      {...(conversationChat.session.sessionId ? { current: chatConversationKey(conversationChat.session.provider, conversationChat.session.sessionId) } : {})}
-      open={openConversationPanes(chats, agentStatuses, (paneId) => {
+      sessionIdentities={sessionTreePreferences.sessionIdentities}
+      {...(conversationSessionFilter ? { initialSessionFilter: conversationSessionFilter } : {})}
+      defaultPlacement={conversationSessionFilter ? 'session' : conversationChat || conversationPane.empty ? 'replace' : 'split'}
+      sessionName={sessionMap.get(conversationPane.sessionId)?.name ?? conversationPane.sessionId}
+      {...(conversationChat?.session.sessionId ? { current: chatConversationKey(conversationChat.session.provider, conversationChat.session.sessionId) } : {})}
+      chats={chats}
+      paneLabel={(paneId) => {
         const pane = paneMap.get(paneId)
         return (pane && sessionMap.get(pane.sessionId)?.name) ?? paneId
-      })}
-      busy={conversationChat.session.status === 'running' || conversationChat.session.status === 'waiting'}
+      }}
+      busy={conversationChat?.session.status === 'running' || conversationChat?.session.status === 'waiting'}
       load={loadConversations}
       onPick={async (conversation, placement) => {
         const paneId = await chatConversationsApi.resume({ paneId: conversationPane.id, provider: conversation.provider, sessionId: conversation.sessionId, placement })
         setConversationPaneId(null)
-        setPendingPaneFocus({ paneId })
+        setPendingPaneFocus({ paneId, waitForCreation: true })
       }}
       onJump={(paneId) => {
         setConversationPaneId(null)
@@ -3533,6 +3615,17 @@ export function App() {
               ides={sessionIdes}
               ideSessionId={area === 'ide' ? selectedSessionId : null}
               onOpenIde={(sessionId) => { void openSessionIde(sessionId) }}
+              onResumeChat={(sessionId) => {
+                const session = sessionMap.get(sessionId)
+                const panes = snapshot?.panes.filter((pane) => pane.sessionId === sessionId) ?? []
+                const pane = panes.find((pane) => pane.windowId === session?.activeWindowId && pane.active)
+                  ?? panes.find((pane) => pane.active) ?? panes[0]
+                if (!session || !pane) return
+                jumpToPane(pane.id)
+                setActiveTabs((current) => ({ ...current, [sessionId]: pane.windowId }))
+                setConversationSessionFilter({ id: session.id, name: session.name })
+                setConversationPaneId(pane.id)
+              }}
               creation={{
                 disabled: !connected,
                 onCreateSession: tmuxCreateApi.createSession,
@@ -3904,7 +3997,11 @@ export function App() {
                         if (pane.empty) {
                           return [
                             pane.id,
-                            <EmptyPane key={rendererIdentity} pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />,
+                            <div key={rendererIdentity} className="conversation-picker-anchor" data-pane-id={pane.id}
+                              onPointerDown={() => setFocusedPaneId(pane.id)} onFocusCapture={() => setFocusedPaneId(pane.id)}>
+                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
+                              {conversationPaneId === pane.id ? conversationPicker : null}
+                            </div>,
                           ] as const
                         }
                         return [

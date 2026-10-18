@@ -29,7 +29,10 @@ type Entry<T> = {
   inFlight: Promise<void> | null
   /** The in-flight or last load accepted the server's older background cache. */
   inFlightBackground: boolean
+  inFlightJustStarted: boolean
   lastBackground: boolean
+  /** Repo lists revalidate whenever shown (the server answers from its own cache). */
+  revalidateOnSubscribe: boolean
   /** `background`: no foreground subscriber, so the server may answer from an older cache. */
   load: (refresh: boolean, background: boolean) => Promise<T>
   sourceList: T | null
@@ -122,6 +125,7 @@ class PrStore {
         EMPTY_REPO,
         scope === 'everyone' ? PR_EVERYONE_INTERVAL_MS : PR_FOREGROUND_INTERVAL_MS,
         (list) => this.entities.repo(list),
+        true,
       )
       this.repos.set(key, entry)
     }
@@ -132,9 +136,9 @@ class PrStore {
     return `${repo.toLowerCase()}\0${filter}\0${scope}`
   }
 
-  private createEntry<T>(load: (refresh: boolean, background: boolean) => Promise<T>, empty: PrStoreSnapshot<T>, interval: number, project: (list: T) => T): Entry<T> {
+  private createEntry<T>(load: (refresh: boolean, background: boolean) => Promise<T>, empty: PrStoreSnapshot<T>, interval: number, project: (list: T) => T, revalidateOnSubscribe = false): Entry<T> {
     return { snapshot: empty, listeners: new Set(), foreground: 0, background: 0, interval, lastFetchedAt: 0, retryAt: 0, inFlight: null,
-      inFlightBackground: false, lastBackground: false, load, sourceList: null, project }
+      inFlightBackground: false, inFlightJustStarted: false, lastBackground: false, revalidateOnSubscribe, load, sourceList: null, project }
   }
 
   private subscribe<T extends PanePrList | PrList>(entry: Entry<T>, background: boolean, listener: () => void): () => void {
@@ -143,7 +147,8 @@ class PrStore {
     else entry.foreground += 1
     this.startScheduler()
     // Remounts (window switches, a second view of the same pane) reuse fresh data.
-    if (document.visibilityState !== 'hidden' && (entry.snapshot.list === null || entry.snapshot.error || this.due(entry, Date.now()))) {
+    if (document.visibilityState !== 'hidden'
+      && (entry.revalidateOnSubscribe || entry.snapshot.list === null || entry.snapshot.error || this.due(entry, Date.now()))) {
       void this.refresh(entry, false)
     }
     return () => {
@@ -157,7 +162,9 @@ class PrStore {
   private refresh<T extends PanePrList | PrList>(entry: Entry<T>, force: boolean): Promise<void> {
     if (entry.inFlight) {
       // A background read may answer from a cache minutes old: forced and foreground reads need their own.
-      if (entry.inFlightBackground && (force || entry.foreground > 0)) return entry.inFlight.then(() => this.refresh(entry, force))
+      if (entry.inFlightBackground && (force || (entry.foreground > 0 && !entry.inFlightJustStarted))) {
+        return entry.inFlight.then(() => this.refresh(entry, force))
+      }
       return entry.inFlight
     }
     const hasList = entry.snapshot.list !== null
@@ -166,6 +173,10 @@ class PrStore {
     const order = this.entities.beginRead()
     const background = !force && entry.foreground === 0
     entry.inFlightBackground = background
+    // Views mounting in the same pass (a session count and its visible pane)
+    // share this read; due() refreshes the visible one next tick if it was background.
+    entry.inFlightJustStarted = true
+    queueMicrotask(() => { entry.inFlightJustStarted = false })
     const operation = entry.load(force, background)
       .then((list) => {
         this.entities.ingest(list, order)

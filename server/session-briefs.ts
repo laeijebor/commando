@@ -30,7 +30,23 @@ type LegacySessionBrief = Omit<SessionBrief, 'paneId' | 'targetId'>
 
 type BriefPaneIdentity = { paneId: string; targetId: string; sessionId: string; sessionName: string }
 
+export type ConversationBriefRecord = AgentSessionRef & {
+  sessionId: string
+  sessionName: string
+  targetId?: string
+  paneOpen: boolean
+  headline?: string
+  title?: string
+  /** Hook headlines also supply context for generated titles, without changing picker headlines. */
+  latestHeadline?: string
+  references: SessionReference[]
+  updatedAt: number
+  /** When it stopped running in a pane: detach time, or when a newer chat replaced it there. */
+  closedAt?: number
+}
+
 export type SessionBriefPatch = {
+  title?: string
   headline?: string
   recapMarkdown?: string | null
   next?: string | null
@@ -76,6 +92,17 @@ function cleanText(value: unknown, maximum: number): string | null {
   const text = value.trim()
   if (!text || text.length > maximum || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text)) return null
   return text
+}
+
+export function cleanConversationTitle(value: unknown): string | null {
+  if (typeof value !== 'string' || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) return null
+  const title = value.trim().replace(/\s+/g, ' ')
+  return title.length >= 3 && title.length <= 80 ? title : null
+}
+
+function titleFields(value: Record<string, unknown>): Pick<SessionBrief, 'title' | 'titleSource'> {
+  const title = cleanConversationTitle(value.title)
+  return title ? { title, ...(value.titleSource === 'agent' || value.titleSource === 'generated' ? { titleSource: value.titleSource } : {}) } : {}
 }
 
 function cleanOptionalText(value: unknown, maximum: number): string | undefined | null {
@@ -203,10 +230,10 @@ export const SESSION_COMMAND_MAX = 300
  * text into the pane, so accept only plain argv-style words: no shell metacharacters, quotes,
  * newlines or control characters.
  */
-const SESSION_COMMAND = /^[A-Za-z][\w.-]*(?: [\w.:/=@+,-]+)*$/
+const SESSION_COMMAND = /^(?:[A-Za-z][\w.-]*|\/[\w./-]+)(?: [\w.:/=@+,-]+)*$/
 
 export function validSessionCommand(value: string): boolean {
-  return value.length <= SESSION_COMMAND_MAX && SESSION_COMMAND.test(value)
+  return value.length <= SESSION_COMMAND_MAX && !/[\r\n]/.test(value) && SESSION_COMMAND.test(value)
 }
 
 export function referenceValueLimit(kind: unknown): number {
@@ -248,6 +275,8 @@ function parseList<T>(value: unknown, maximum: number, parse: (item: unknown, in
 
 function parseEarlierSession(value: unknown): EarlierAgentSession | null {
   if (!isRecord(value)) return null
+  if ((value.title !== undefined && !cleanConversationTitle(value.title))
+    || (value.titleSource !== undefined && value.titleSource !== 'agent' && value.titleSource !== 'generated')) return null
   const agentSession = parseAgentSessionRef(value.agentSession)
   const headline = cleanText(value.headline, MAX_HEADLINE)
   const recapMarkdown = cleanOptionalText(value.recapMarkdown, MAX_RECAP)
@@ -260,6 +289,7 @@ function parseEarlierSession(value: unknown): EarlierAgentSession | null {
     || !references || !updates || !safeInteger(value.endedAt)) return null
   return {
     agentSession,
+    ...titleFields(value),
     headline,
     ...(value.headlineSource === 'hook' || value.headlineSource === 'agent' ? { headlineSource: value.headlineSource } : {}),
     ...(recapMarkdown ? { recapMarkdown } : {}),
@@ -274,7 +304,7 @@ function parseEarlierSession(value: unknown): EarlierAgentSession | null {
 }
 
 /** Session history is supplementary: a malformed entry is dropped, never a reason to reject the worklog. */
-function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief, 'agentSession' | 'earlierSessions' | 'agentSessionEnded'> {
+function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief, 'agentSession' | 'earlierSessions' | 'agentSessionEnded' | 'detachedAt'> {
   const agentSession = parseAgentSessionRef(value.agentSession)
   const earlierSessions = Array.isArray(value.earlierSessions)
     ? value.earlierSessions.slice(0, MAX_EARLIER_SESSIONS).map(parseEarlierSession).filter((entry) => entry !== null)
@@ -283,6 +313,7 @@ function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief,
     ...(agentSession ? { agentSession } : {}),
     ...(earlierSessions.length ? { earlierSessions } : {}),
     ...(value.agentSessionEnded === true ? { agentSessionEnded: true as const } : {}),
+    ...(Number.isSafeInteger(value.detachedAt) && (value.detachedAt as number) > 0 ? { detachedAt: value.detachedAt as number } : {}),
   }
 }
 
@@ -303,7 +334,7 @@ function cloneEarlierSession(session: EarlierAgentSession): EarlierAgentSession 
 
 /** Lifecycle-only history (a delegated `codex exec`, an empty start) is not worth a slot. */
 function conversationProducedWork(brief: SessionBrief): boolean {
-  return Boolean(brief.recapMarkdown || brief.tasks?.length || brief.references?.length || brief.screenshots?.length)
+  return Boolean(brief.title || brief.recapMarkdown || brief.tasks?.length || brief.references?.length || brief.screenshots?.length)
     || brief.updates.some((update) => update.source === 'agent' || update.author === 'user')
 }
 
@@ -319,6 +350,7 @@ function startAgentSession(current: SessionBrief, next: AgentSessionRef | null, 
   if (previous && conversationProducedWork(current)) {
     earlier.unshift({
       agentSession: previous,
+      ...(current.title ? { title: current.title, titleSource: current.titleSource } : {}),
       headline: current.headline,
       headlineSource: current.headlineSource,
       ...(current.recapMarkdown ? { recapMarkdown: current.recapMarkdown, ...(current.recapSource ? { recapSource: current.recapSource } : {}) } : {}),
@@ -331,13 +363,14 @@ function startAgentSession(current: SessionBrief, next: AgentSessionRef | null, 
     })
   }
   const {
-    recapMarkdown: _recap, recapSource: _recapSource, tasks: _tasks, screenshots: _screenshots,
+    title: _title, titleSource: _titleSource, recapMarkdown: _recap, recapSource: _recapSource, tasks: _tasks, screenshots: _screenshots,
     references: _references, next: _next, earlierSessions: _earlier, agentSession: _session,
     agentSessionEnded: _ended, ...pane
   } = current
   return {
     ...pane,
     ...(next ? { agentSession: next } : {}),
+    ...(returning?.title ? { title: returning.title, titleSource: returning.titleSource } : {}),
     headline: returning?.headline ?? current.headline,
     headlineSource: returning?.headlineSource ?? 'hook',
     ...(returning?.recapMarkdown ? { recapMarkdown: returning.recapMarkdown, ...(returning.recapSource ? { recapSource: returning.recapSource } : {}) } : {}),
@@ -352,6 +385,8 @@ function startAgentSession(current: SessionBrief, next: AgentSessionRef | null, 
 
 function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   if (!isRecord(value)) return null
+  if ((value.title !== undefined && !cleanConversationTitle(value.title))
+    || (value.titleSource !== undefined && value.titleSource !== 'agent' && value.titleSource !== 'generated')) return null
   const sessionName = cleanText(value.sessionName, 128)
   const headline = cleanText(value.headline, MAX_HEADLINE)
   const recapMarkdown = cleanOptionalText(value.recapMarkdown, MAX_RECAP)
@@ -390,6 +425,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   return {
     sessionId: value.sessionId,
     sessionName,
+    ...titleFields(value),
     state: value.state as AgentStatusKind,
     headline,
     headlineSource: value.headlineSource,
@@ -650,6 +686,84 @@ export class SessionBriefStore {
       .map(cloneBrief)
   }
 
+  /** Conversation ownership survives pane closure and subsequent agents in the same pane. */
+  conversationRecords(): ConversationBriefRecord[] {
+    const records = new Map<string, ConversationBriefRecord>()
+    const add = (brief: SessionBrief, session: AgentSessionRef, content: Pick<SessionBrief, 'title' | 'headline' | 'references'> & { headlineSource?: SessionBrief['headlineSource'] }, updatedAt: number, paneOpen: boolean, closedAt?: number) => {
+      const key = `${session.provider}:${session.id}`
+      const previous = records.get(key)
+      if (previous && (previous.paneOpen !== paneOpen ? previous.paneOpen : previous.updatedAt >= updatedAt)) return
+      records.set(key, {
+        ...session,
+        sessionId: brief.sessionId,
+        sessionName: brief.sessionName,
+        ...(brief.targetId ? { targetId: brief.targetId } : {}),
+        paneOpen,
+        ...(content.title ? { title: content.title } : {}),
+        latestHeadline: content.headline,
+        ...(content.headlineSource === 'agent' ? { headline: content.headline } : {}),
+        references: (content.references ?? []).map((reference) => ({ ...reference })),
+        updatedAt,
+        ...(!paneOpen && closedAt !== undefined ? { closedAt } : {}),
+      })
+    }
+    for (const [briefs, live] of [[this.detached, false], [this.briefs, true]] as const) {
+      for (const brief of briefs.values()) {
+        if (brief.agentSession) add(brief, brief.agentSession, brief, brief.updatedAt, live, brief.detachedAt ?? brief.updatedAt)
+        for (const earlier of brief.earlierSessions ?? []) add(brief, earlier.agentSession, earlier, earlier.endedAt, false, earlier.endedAt)
+      }
+    }
+    return [...records.values()]
+  }
+
+  /** Recheck ownership after generation: an agent may have titled or moved the conversation. */
+  async applyGeneratedTitle(session: AgentSessionRef, value: string): Promise<SessionBrief[]> {
+    const title = cleanConversationTitle(value)
+    if (!title) throw new Error('Invalid generated conversation title')
+    const changed: SessionBrief[] = []
+    for (const briefs of [this.briefs, this.detached]) {
+      for (const [key, brief] of briefs) {
+        let touched = false
+        const next = cloneBrief(brief)
+        if (!next.title && next.agentSession && sameAgentSession(next.agentSession, session)) {
+          next.title = title
+          next.titleSource = 'generated'
+          touched = true
+        }
+        for (const earlier of next.earlierSessions ?? []) {
+          if (!earlier.title && sameAgentSession(earlier.agentSession, session)) {
+            earlier.title = title
+            earlier.titleSource = 'generated'
+            touched = true
+          }
+        }
+        if (touched) {
+          briefs.set(key, next)
+          if (briefs === this.briefs) changed.push(cloneBrief(next))
+        }
+      }
+    }
+    await this.persist()
+    return changed
+  }
+
+  /** Only an observed live rename may rewrite history; tmux session ids can be reused. */
+  async renameSession(sessionId: string, previousName: string, name: string): Promise<boolean> {
+    if (!SESSION_ID.test(sessionId)) throw new Error('Invalid tmux session id')
+    if (!cleanText(previousName, 128) || !cleanText(name, 128)) throw new Error('Invalid tmux session name')
+    if (previousName === name) return false
+    let changed = false
+    for (const records of [this.briefs, this.detached]) {
+      for (const [key, brief] of records) {
+        if (brief.sessionId !== sessionId || brief.sessionName !== previousName) continue
+        records.set(key, { ...brief, sessionName: name })
+        changed = true
+      }
+    }
+    if (changed) await this.persist()
+    return changed
+  }
+
   /** Rebind by durable identity; absence during resurrection must not erase disk history. */
   async reconcilePanes(panes: readonly BriefPaneIdentity[]): Promise<boolean> {
     this.livePanes = new Map(panes.map((pane) => [pane.paneId, pane]))
@@ -677,7 +791,7 @@ export class SessionBriefStore {
     if (!changed) return false
     const attachedTargets = new Set([...retained.values()].map((brief) => brief.targetId))
     for (const brief of this.briefs.values()) {
-      if (brief.targetId && !attachedTargets.has(brief.targetId)) this.detached.set(brief.targetId, brief)
+      if (brief.targetId && !attachedTargets.has(brief.targetId)) this.detached.set(brief.targetId, { ...brief, detachedAt: Date.now() })
     }
     for (const targetId of attachedTargets) if (targetId) this.detached.delete(targetId)
     this.briefs.clear()
@@ -744,6 +858,7 @@ export class SessionBriefStore {
         sessionId,
         sessionName: cleanSessionName,
         state: status.status,
+        ...(current?.title ? { title: current.title, titleSource: current.titleSource } : {}),
         headline: current?.headlineSource === 'agent'
           ? current.headline
           : statusHeadline(status).slice(0, MAX_HEADLINE),
@@ -794,6 +909,7 @@ export class SessionBriefStore {
     patch: SessionBriefPatch,
     now = Date.now(),
   ): Promise<SessionBrief> {
+    if (patch.title !== undefined && !cleanConversationTitle(patch.title)) throw new Error('Invalid session brief title')
     if (!SESSION_ID.test(sessionId) || !PANE_ID.test(paneId)) throw new Error('Invalid tmux target')
     const cleanSessionName = cleanText(sessionName, 128)
     if (!cleanSessionName) throw new Error('Invalid tmux session name')
@@ -857,6 +973,8 @@ export class SessionBriefStore {
       sessionId,
       sessionName: cleanSessionName,
       state: patch.state ?? current?.state ?? 'working',
+      ...(patch.title !== undefined ? { title: patch.title, titleSource: 'agent' as const }
+        : current?.title ? { title: current.title, titleSource: current.titleSource } : {}),
       headline,
       headlineSource: patch.headline
         ? 'agent'
@@ -912,7 +1030,7 @@ export class SessionBriefStore {
     let changed = false
     for (const [paneId, brief] of this.briefs) {
       if (retained.has(brief.sessionId)) continue
-      if (brief.targetId) this.detached.set(brief.targetId, brief)
+      if (brief.targetId) this.detached.set(brief.targetId, { ...brief, detachedAt: Date.now() })
       this.briefs.delete(paneId)
       changed = true
     }

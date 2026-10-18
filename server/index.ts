@@ -1,4 +1,5 @@
 import { AgentChatsApi } from './agent-chats-api.js'
+import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
@@ -88,6 +89,7 @@ import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { SessionPreferenceStore } from './session-preferences.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
 import {
   configuredAuthDatabasePath,
@@ -134,6 +136,7 @@ import { PushApi } from './push-api.js'
 import { PushDeviceRegistry } from './push-devices.js'
 import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
+import { detectSessionRenames } from './session-renames.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
 import {
@@ -729,6 +732,8 @@ async function main(): Promise<void> {
     panes: [],
     ports: [],
   }
+  // Keep this paired with snapshot: discovery can change tmux.serverId before failing.
+  let snapshotServerId: string | null = null
   let snapshotRefresh: Promise<CommandoSnapshot> | null = null
   // Until tmux has been read once, an empty snapshot must not look like every pane closed.
   let snapshotReady = false
@@ -1454,6 +1459,7 @@ async function main(): Promise<void> {
     snapshotRefresh = tmux
       .discover(snapshotRevision + 1)
       .then(async (nextSnapshot) => {
+        const nextServerId = tmux.serverId
         const repos = await paneRepos.resolve(nextSnapshot.panes.map((pane) => pane.path))
         for (const pane of nextSnapshot.panes) {
           const repo = repos.get(pane.path)
@@ -1467,9 +1473,14 @@ async function main(): Promise<void> {
           snapshot.panes.map((pane) => [pane.id, pane.command]),
         )
         const previousPanes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
+        const sessionRenames = detectSessionRenames(
+          { serverId: snapshotServerId, sessions: snapshot.sessions },
+          { serverId: nextServerId, sessions: nextSnapshot.sessions },
+        )
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
+        snapshotServerId = nextServerId
         snapshotReady = true
         // Invalidate pending tab ownership before any brief/status publication
         // can stamp it with evidence from a replacement foreground agent.
@@ -1491,12 +1502,16 @@ async function main(): Promise<void> {
           broadcast({ type: 'pane_mark_removed', targetId })
         }
 
-        const briefsChanged = await sessionBriefs.reconcilePanes(
+        let briefsChanged = false
+        for (const { sessionId, previousName, name } of sessionRenames) {
+          briefsChanged = await sessionBriefs.renameSession(sessionId, previousName, name) || briefsChanged
+        }
+        briefsChanged = await sessionBriefs.reconcilePanes(
           snapshot.panes.map((pane) => ({
             paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId,
             sessionName: snapshot.sessions.find((session) => session.id === pane.sessionId)?.name ?? pane.sessionId,
           })),
-        )
+        ) || briefsChanged
         if (briefsChanged) {
           await queueBriefPublication(async () => {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
@@ -1650,6 +1665,13 @@ async function main(): Promise<void> {
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
+    afterSessionRenamed: async (sessionId, previousName, name) => {
+      if (await sessionBriefs.renameSession(sessionId, previousName, name)) {
+        await queueBriefPublication(async () => {
+          broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
+        })
+      }
+    },
     prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, {
       currentPanes: async () => (await refreshSnapshotFresh()).panes,
       currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
@@ -1924,11 +1946,17 @@ async function main(): Promise<void> {
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
   const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
+  conversationTitles.start()
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
+    resumes: agentResume,
+    briefs: sessionBriefs,
+    sessionPreferences: new SessionPreferenceStore(),
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
+    agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {
       const windowId = paneForId(paneId)?.windowId
@@ -2871,6 +2899,7 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()
     simLogs.close()
