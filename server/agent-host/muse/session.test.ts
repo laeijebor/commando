@@ -28,7 +28,7 @@ class FakeMuse implements MuseTransport {
     if (method === 'session/start') return { session: { sessionId: SESSION, modelId: 'muse-wonder-1.0', approvalMode: { mode: values.approvalMode } } }
     if (method === 'session/resume') {
       if (this.failResume) throw this.failResume
-      return { session: { sessionId: SESSION, modelId: 'muse-wonder-1.0', name: 'Old chat', approvalMode: { mode: 'onRequest' } }, history: this.history }
+      return { session: { sessionId: SESSION, modelId: 'muse-wonder-1.0', name: 'wheat-horologium', nameOrigin: 'automatic', title: 'Old chat', approvalMode: { mode: 'onRequest' } }, history: this.history }
     }
     if (method === 'skill/list') return { skills: [{ selector: 'ab-testing', description: 'Plan an A/B test', source: 'user' }, { selector: 'bundled:git', displayName: 'git', source: 'bundled' }] }
     if (method === 'turn/start') {

@@ -208,7 +208,7 @@ export class MuseChatSession implements ChatProviderSession {
     const sessionId = string(session.sessionId)
     if (!sessionId) throw new Error('Muse returned a session without an id')
     this.unloaded = false
-    const title = string(session.name) ?? string(session.title)
+    const title = museTitle(session)
     this.update({ sessionId, ...(string(session.modelId) ? { model: session.modelId as string } : {}), ...(title ? { title } : {}) })
     if (resume) {
       // A resumed session re-applies this chat's picks, which may differ from how it last ran.
@@ -408,7 +408,7 @@ export class MuseChatSession implements ChatProviderSession {
         return
       }
       case 'session/modelChanged': if (string(params.modelId)) this.update({ model: params.modelId as string }); return
-      case 'session/nameChanged': if (string(params.name)) this.update({ title: params.name as string }); return
+      case 'session/nameChanged': if (params.nameOrigin === 'custom' && string(params.name)) this.update({ title: params.name as string }); return
       case 'session/closed': if (params.reason === 'idle') this.unloaded = true; return
       case 'skill/changed': void this.loadCommands(); return
       case 'approval/requested': this.ask('approval', params); return
@@ -500,6 +500,11 @@ export class MuseChatSession implements ChatProviderSession {
     this.update({ status: failed || this.info.status === 'error' ? 'error' : 'closed', ...(failed ? { error: errorText(error) } : {}) })
     this.listeners.closed.forEach((listener) => listener())
   }
+}
+
+/** A name the person gave the session, else its first prompt; Muse's generated names read as noise. */
+export function museTitle(session: Record<string, unknown>): string | undefined {
+  return (session.nameOrigin === 'custom' ? string(session.name) : undefined) ?? string(session.title) ?? string(session.firstUserPrompt)?.slice(0, 80)
 }
 
 /** The offered choice that matches the chat's decision; Muse only takes ids it offered. */
