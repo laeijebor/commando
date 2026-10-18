@@ -12,6 +12,7 @@ import {
   type ChatConversation,
 } from '../shared/chat-conversations.js'
 import type { AgentStatus, CommandoSnapshot } from '../shared/protocol.js'
+import { repositoryContainers } from '../shared/session-repositories.js'
 import type { SessionAgentLaunch } from '../shared/tmux-create.js'
 import { inheritedChatPermissionMode } from './agent-chats-api.js'
 import type { ChatConversationIndex } from './chat-conversations.js'
@@ -27,7 +28,7 @@ type Dependencies = {
   index: Pick<ChatConversationIndex, 'list' | 'find'>
   snapshot: () => CommandoSnapshot
   briefs: Pick<SessionBriefStore, 'conversationRecords'>
-  sessionPreferences: Pick<SessionPreferenceStore, 'read'>
+  sessionPreferences: Pick<SessionPreferenceStore, 'load'>
   /** The chat a pane runs, if it is a chat pane. */
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
@@ -106,17 +107,20 @@ export class ChatConversationsApi {
   }
 
   private async list(): Promise<ChatConversation[]> {
+    const snapshot = this.dependencies.snapshot()
     const [conversations, preferences] = await Promise.all([
       this.dependencies.index.list(),
-      this.dependencies.sessionPreferences.read(),
+      this.dependencies.sessionPreferences.load(snapshot.sessions),
     ])
     const records = new Map(this.dependencies.briefs.conversationRecords().map((record) => [`${record.provider}:${record.id}`, record]))
-    const sessions = new Map(this.dependencies.snapshot().sessions.map((session) => [session.id, session]))
+    const sessions = new Map(snapshot.sessions.map((session) => [session.id, session]))
+    const groups = preferences.groupingMode === 'manual'
+      ? preferences.groups : repositoryContainers(preferences, snapshot.sessions, snapshot.panes)
     return conversations.map((conversation) => {
       const brief = records.get(chatConversationKey(conversation.provider, conversation.sessionId))
       const session = brief ? sessions.get(brief.sessionId) : undefined
       const group = session && session.name === brief?.sessionName
-        ? preferences.groups.find((group) => group.sessionIds.includes(session.id))?.name : undefined
+        ? groups.find((group) => group.sessionIds.includes(session.id))?.name : undefined
       const profile = conversation.provider === 'claude' && conversation.configDir && resolve(conversation.configDir) !== join(homedir(), '.claude')
         ? basename(conversation.configDir).replace(/^\./, '') : undefined
       return {

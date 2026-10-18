@@ -6,9 +6,10 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
-import type { AgentStatus, CommandoSnapshot } from '../shared/protocol.js'
+import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import type { ConversationBriefRecord } from './session-briefs.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
 const ID = '11111111-2222-3333-4444-555555555555'
@@ -35,7 +36,7 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string }[]; groups?: { id: string; name: string; sessionIds: string[] }[]; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; agentSessions?: AgentStatus[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: Pick<TmuxPane, 'id' | 'sessionId' | 'windowId' | 'index' | 'repo'>[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'load'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; agentSessions?: AgentStatus[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -45,8 +46,8 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
   const api = new ChatConversationsApi({
     index: { list: vi.fn(async () => [conversation]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
     briefs: { conversationRecords: () => options.records ?? [] },
-    sessionPreferences: { read: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [] }) },
-    snapshot: () => ({ sessions: options.sessions ?? [], panes: [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
+    sessionPreferences: options.sessionPreferences ?? { load: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [], groupingMode: options.groupingMode }) },
+    snapshot: () => ({ sessions: options.sessions?.map((session) => ({ windowIds: ['@1'], ...session })) ?? [], panes: options.panes ?? [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
     agentSessions: () => options.agentSessions ?? [],
@@ -99,7 +100,7 @@ describe('ChatConversationsApi', () => {
       ] }
     const { api, conversation } = setup({ conversation: { provider: 'claude', configDir: '/home/me/.claudep' },
       records: [record, { ...record, provider: 'codex', id: 'delegate-not-indexed' }],
-      sessions: [{ id: '$1', name: 'vivi' }], groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }] })
+      sessions: [{ id: '$1', name: 'vivi' }], groupingMode: 'manual', groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }] })
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
     expect(result).toMatchObject({ status: 200, body: { conversations: [{ ...conversation,
@@ -110,10 +111,69 @@ describe('ChatConversationsApi', () => {
     }] } })
   })
 
-  it('preserves the brief name and omits a group when a live session reused its id', async () => {
+  it.each([undefined, 'repository'] as const)('uses the sidebar repository container label instead of stale manual membership (mode: %s)', async (groupingMode) => {
+    const repo = { root: '/repos/commando', name: 'commando', branch: 'feature', isWorktree: true }
+    const otherRepo = { root: '/repos/other', name: 'other', branch: 'main', isWorktree: false }
+    const { api, conversation } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$1', sessionName: 'work', paneOpen: false, references: [], updatedAt: 10 }],
+      sessions: [{ id: '$1', name: 'work', windowIds: ['@2', '@1'] }], groupingMode,
+      groups: [{ id: 'g1', name: 'Old manual group', sessionIds: ['$1'] }],
+      panes: [
+        { id: '%1', sessionId: '$1', windowId: '@1', index: 0, repo: otherRepo },
+        { id: '%3', sessionId: '$1', windowId: '@2', index: 1, repo: otherRepo },
+        { id: '%2', sessionId: '$1', windowId: '@2', index: 0, repo },
+      ],
+    })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ ...conversation, session: { id: '$1', name: 'work', group: 'commando' } }] } })
+  })
+
+  it.each([true, false])('uses the sidebar fallback container when the first pane has no repository (other repo panes: %s)', async (hasRepo) => {
+    const repo = { root: '/repos/commando', name: 'commando', branch: 'main', isWorktree: false }
+    const otherRepo = { root: '/repos/other', name: 'other', branch: 'main', isWorktree: false }
+    const { api } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$1', sessionName: 'work', paneOpen: false, references: [], updatedAt: 10 }],
+      sessions: [{ id: '$1', name: 'work' }],
+      groups: [{ id: 'g1', name: 'Old manual group', sessionIds: ['$1'] }],
+      panes: [
+        { id: '%1', sessionId: '$1', windowId: '@1', index: 0 },
+        ...hasRepo ? [
+          { id: '%2', sessionId: '$1', windowId: '@1', index: 1, repo: otherRepo },
+          { id: '%3', sessionId: '$1', windowId: '@1', index: 2, repo },
+          { id: '%4', sessionId: '$1', windowId: '@1', index: 3, repo },
+        ] : [],
+      ],
+    })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$1', name: 'work', group: hasRepo ? 'commando' : 'No repository' } }] } })
+  })
+
+  it('loads manual membership by name after tmux renumbers session ids', async () => {
+    const path = join(folder, 'session-tree.json')
+    await new SessionPreferenceStore(path).replace({
+      version: 1, groupingMode: 'manual',
+      groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }], ungroupedSessionIds: [],
+    }, [{ id: '$1', name: 'vivi' }])
+    const preferences = new SessionPreferenceStore(path)
+    const load = vi.spyOn(preferences, 'load')
+    const { api } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$8', sessionName: 'vivi', paneOpen: false, references: [], updatedAt: 10 }],
+      sessions: [{ id: '$8', name: 'vivi' }, { id: '$1', name: 'scratch' }], sessionPreferences: preferences,
+    })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$8', name: 'vivi', group: 'Subscriptions' } }] } })
+    expect(load).toHaveBeenCalledWith([
+      { id: '$8', name: 'vivi', windowIds: ['@1'] }, { id: '$1', name: 'scratch', windowIds: ['@1'] },
+    ])
+  })
+
+  it.each(['manual', 'repository'] as const)('preserves the brief name and omits a group when a live session reused its id in %s mode', async (groupingMode) => {
     const { api, conversation } = setup({
       records: [{ provider: 'codex', id: ID, sessionId: '$1', sessionName: 'old-work', paneOpen: false, references: [], updatedAt: 10 }],
-      sessions: [{ id: '$1', name: 'Chat' }], groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }],
+      sessions: [{ id: '$1', name: 'Chat' }], groupingMode, groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }],
     })
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
