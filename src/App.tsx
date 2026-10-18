@@ -3093,7 +3093,7 @@ export function App() {
       defaultPlacement={conversationSessionFilter ? 'session' : conversationChat || conversationPane.empty ? 'replace' : 'split'}
       sessionName={sessionMap.get(conversationPane.sessionId)?.name ?? conversationPane.sessionId}
       {...(conversationChat?.session.sessionId ? { current: chatConversationKey(conversationChat.session.provider, conversationChat.session.sessionId) } : {})}
-      open={openConversationPanes(chats, agentStatuses, (paneId) => {
+      open={openConversationPanes(chats, agentStatuses, paneMap, (paneId) => {
         const pane = paneMap.get(paneId)
         return (pane && sessionMap.get(pane.sessionId)?.name) ?? paneId
       })}

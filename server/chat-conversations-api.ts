@@ -30,12 +30,12 @@ type Dependencies = {
   index: Pick<ChatConversationIndex, 'list' | 'find'>
   snapshot: () => CommandoSnapshot
   briefs: Pick<SessionBriefStore, 'conversationRecords'>
-  sessionPreferences: Pick<SessionPreferenceStore, 'load'>
+  sessionPreferences: Pick<SessionPreferenceStore, 'loadReadOnly'>
   /** The chat a pane runs, if it is a chat pane. */
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
-  /** Agent sessions reported by the daemon's status registry. */
+  /** Live hook sessions matching their pane's current process; excludes retained completions. */
   agentSessions: () => AgentStatus[]
   creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>
   resumes: Pick<AgentResumeService, 'findConversation'>
@@ -113,7 +113,7 @@ export class ChatConversationsApi {
     const snapshot = this.dependencies.snapshot()
     const [conversations, preferences] = await Promise.all([
       this.dependencies.index.list(),
-      this.dependencies.sessionPreferences.load(snapshot.sessions),
+      this.dependencies.sessionPreferences.loadReadOnly(snapshot.sessions),
     ])
     const records = new Map(this.dependencies.briefs.conversationRecords().map((record) => [`${record.provider}:${record.id}`, record]))
     const sessions = new Map(snapshot.sessions.map((session) => [session.id, session]))
@@ -218,9 +218,9 @@ export class ChatConversationsApi {
     }
     const launch = agent ? { agent } : {}
     const sessions = placement === 'session' && session ? this.dependencies.snapshot().sessions : []
-    // tmux can renumber sessions after a restart; prefer their recorded name.
-    const liveSession = session ? sessions.find((entry) => entry.name === session.name)
-      ?? sessions.find((entry) => entry.id === session.id) : undefined
+    // tmux can reuse ids after a restart; a recorded name must match exactly.
+    const liveSession = session ? sessions.find((entry) => session.name
+      ? entry.name === session.name : entry.id === session.id) : undefined
     let created: { paneId: string }
     if (liveSession) {
       const input = { sessionId: liveSession.id, cwd, ...launch }
