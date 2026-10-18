@@ -24,6 +24,7 @@ type HostsState = {
   cookies: Record<string, string>
   hydrate: () => Promise<void>
   addHost: (input: { name: string; baseUrl: string; auth?: HostAuth; requirePersistence?: boolean }) => Promise<Host>
+  savePairedHost: (input: { name: string; baseUrl: string; token: string; pairing: NonNullable<Host['pairing']> }) => Promise<Host>
   updateHost: (id: string, patch: Partial<Omit<Host, 'id'>>) => Promise<void>
   removeHost: (id: string) => Promise<void>
   setCookie: (id: string, cookie: string | null) => void
@@ -72,6 +73,29 @@ export const useHostsStore = create<HostsState>((set, get) => ({
     return host
   },
 
+  savePairedHost: async ({ name, baseUrl, token, pairing }) => {
+    const urls = pairing.urls.map((url) => new URL(url).origin)
+    const existing = get().hosts.find((host) => urls.includes(new URL(host.baseUrl).origin))
+      ?? get().hosts.find((host) => host.pairing?.name === pairing.name && host.pairing.urls.some((url) => urls.includes(new URL(url).origin)))
+    const host: Host = {
+      ...existing,
+      id: existing?.id ?? createHostId(),
+      name: existing?.name ?? name,
+      baseUrl: normaliseBaseUrl(baseUrl),
+      auth: { kind: 'token', token },
+      pairing: { name: pairing.name, urls },
+    }
+    const hosts = existing ? get().hosts.map((current) => current.id === host.id ? host : current) : [...get().hosts, host]
+    // Do not publish replacement credentials until the keychain write succeeds.
+    await saveHosts(hosts, true)
+    disconnectHost(host.id)
+    const cookies = { ...get().cookies }
+    delete cookies[host.id]
+    set({ hosts, cookies })
+    void get().refreshReachability(host.id)
+    return host
+  },
+
   updateHost: async (id, patch) => {
     const hosts = get().hosts.map((host) => (host.id === id ? { ...host, ...patch } : host))
     set({ hosts })
@@ -106,7 +130,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
     if (!host) return
     set({ reachability: { ...get().reachability, [id]: { state: 'checking' } } })
     const result = await probeHost(host)
-    if (!get().hosts.some((candidate) => candidate.id === id)) return
+    if (get().hosts.find((candidate) => candidate.id === id) !== host) return
     set({ reachability: { ...get().reachability, [id]: result } })
   },
 

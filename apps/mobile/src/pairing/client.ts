@@ -39,6 +39,7 @@ function cancelled(): Error { const error = new Error('Pairing cancelled'); erro
 
 /** The deadline covers headers AND body; the race also bounds native stalled reads. */
 async function pairingFetch(baseUrl: string, path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<{ status: number; ok: boolean; text: string }> {
+  if (signal?.aborted) throw cancelled()
   const controller = new AbortController()
   let rejectAbort: (error: Error) => void = () => undefined
   const aborted = new Promise<never>((_, reject) => { rejectAbort = reject })
@@ -54,22 +55,53 @@ async function pairingFetch(baseUrl: string, path: string, init: RequestInit = {
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
 }
 
-export async function claimPairing(link: PairingLink, deviceName: string, platform: PairingClaimRequest['platform'], onTrying?: (url: string) => void, signal?: AbortSignal): Promise<PairingClaimResponse & { baseUrl: string }> {
-  let baseUrl: string | undefined
-  let atsBlocked = false
-  for (const url of link.urls) {
-    if (signal?.aborted) throw cancelled()
-    onTrying?.(url)
-    try {
-      const health = await pairingFetch(url, '/api/health', {}, signal)
-      // Health stays private; 401 proves the daemon is reachable without widening auth.
-      if (health.ok || health.status === 401) { baseUrl = url; break }
-    } catch (error) {
-      if (signal?.aborted) throw cancelled()
-      atsBlocked ||= isAtsError(error)
+/** Race addresses, preserving QR preference among successes within 400ms of the first. */
+async function probePairingUrls(urls: string[], signal?: AbortSignal): Promise<string> {
+  if (signal?.aborted) throw cancelled()
+  return new Promise<string>((resolve, reject) => {
+    const controllers = urls.map(() => new AbortController())
+    let remaining = urls.length
+    let best: number | undefined
+    let atsBlocked = false
+    let finished = false
+    let grace: ReturnType<typeof setTimeout> | undefined
+    const finish = (error?: Error) => {
+      if (finished) return
+      finished = true
+      clearTimeout(grace)
+      signal?.removeEventListener('abort', abort)
+      for (const controller of controllers) controller.abort()
+      if (error) reject(error)
+      else if (best !== undefined) resolve(urls[best]!)
+      else reject(new Error(atsBlocked ? ATS_BLOCKED : UNREACHABLE))
     }
-  }
-  if (!baseUrl) throw new Error(atsBlocked ? ATS_BLOCKED : UNREACHABLE)
+    const abort = () => finish(cancelled())
+    signal?.addEventListener('abort', abort, { once: true })
+    if (!urls.length) { finish(); return }
+    urls.forEach((url, index) => {
+      void (async () => {
+        try {
+          const health = await pairingFetch(url, '/api/health', {}, controllers[index]!.signal)
+          // Health remains private: 401 proves reachability without sending credentials.
+          if (!finished && (health.ok || health.status === 401)) {
+            if (best === undefined) grace = setTimeout(() => finish(), 400)
+            best = Math.min(best ?? index, index)
+          }
+        } catch (error) {
+          if (!finished) atsBlocked ||= isAtsError(error)
+        } finally {
+          remaining -= 1
+          if (!finished && (best === 0 || remaining === 0)) finish()
+        }
+      })()
+    })
+  })
+}
+
+export async function claimPairing(link: PairingLink, deviceName: string, platform: PairingClaimRequest['platform'], onTrying?: (url: string) => void, signal?: AbortSignal): Promise<PairingClaimResponse & { baseUrl: string }> {
+  const baseUrl = await probePairingUrls(link.urls, signal)
+  if (signal?.aborted) throw cancelled()
+  onTrying?.(baseUrl)
   let response: Awaited<ReturnType<typeof pairingFetch>>
   try {
     const body: PairingClaimRequest = { code: link.code, deviceName, platform }

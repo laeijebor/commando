@@ -100,3 +100,15 @@ it('lets Cancel abort pairing while a response body is stalled', async () => {
   expect(signal?.aborted).toBe(true)
   expect(mockRouter.back).toHaveBeenCalled()
 })
+
+it('re-pairs into the existing host id and opens its existing Chats route', async () => {
+  mockParams = params
+  const existing = { id: 'existing-mac', name: 'Work Mac', baseUrl: params.u[0]!, auth: { kind: 'token' as const, token: 'old-token' } }
+  useHostsStore.setState({ hosts: [existing], selectedHostId: existing.id })
+  open()
+  await act(async () => fireEvent.press(screen.getByText('Pair')))
+  expect(useHostsStore.getState().hosts).toHaveLength(1)
+  expect(useHostsStore.getState().hosts[0]).toMatchObject({ id: existing.id, name: existing.name, baseUrl: result.baseUrl, auth: { kind: 'token', token: result.token } })
+  expect(useHostsStore.getState().selectedHostId).toBe(existing.id)
+  expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/(host)/[hostId]/sessions', params: { hostId: existing.id } })
+})

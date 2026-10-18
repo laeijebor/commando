@@ -16,6 +16,7 @@ function isHost(value: unknown): value is Host {
   if (typeof candidate.id !== 'string' || !candidate.id) return false
   if (typeof candidate.name !== 'string') return false
   if (typeof candidate.baseUrl !== 'string' || !candidate.baseUrl) return false
+  if (candidate.pairing !== undefined && (!candidate.pairing || typeof candidate.pairing.name !== 'string' || !Array.isArray(candidate.pairing.urls) || !candidate.pairing.urls.every((url) => typeof url === 'string'))) return false
   const auth: unknown = candidate.auth
   if (typeof auth !== 'object' || auth === null) return false
   const kind = (auth as { kind?: unknown }).kind

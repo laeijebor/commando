@@ -82,7 +82,7 @@ export default function PairScreen(): React.JSX.Element {
       const store = useHostsStore.getState()
       await store.hydrate()
       if (controller.signal.aborted) return
-      const host = await useHostsStore.getState().addHost({ name: result.name, baseUrl: result.baseUrl, auth: { kind: 'token', token: result.token }, requirePersistence: true })
+      const host = await useHostsStore.getState().savePairedHost({ name: result.name, baseUrl: result.baseUrl, token: result.token, pairing: { name: link.name, urls: link.urls } })
       useHostsStore.getState().rememberHost(host.id)
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined)
       if (mounted.current && !controller.signal.aborted) router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
@@ -114,7 +114,7 @@ export default function PairScreen(): React.JSX.Element {
           <View style={[styles.grab, { backgroundColor: theme.borderStrong }]} />
           <Text style={[styles.title, { color: theme.text }]}>Pair with {link?.name}?</Text>
           <Text style={[styles.instruction, { color: theme.muted }]}>Connect using {trying ?? link?.urls[0]}</Text>
-          {(link?.urls.length ?? 0) > 1 ? <Text style={[styles.addresses, { color: theme.muted }]}>Other addresses tried in order: {link?.urls.slice(1).join(', ')}</Text> : null}
+          {(link?.urls.length ?? 0) > 1 ? <Text style={[styles.addresses, { color: theme.muted }]}>Other pairing addresses: {link?.urls.slice(1).join(', ')}</Text> : null}
           <Text style={{ color: theme.muted }}>This phone will have its own access token. Revoke it any time from Pair a phone on your Mac.</Text>
           {error ? <Text accessibilityRole="alert" style={[styles.error, { color: theme.red }]}>{error}</Text> : null}
           <Button label={busy ? 'Pairing…' : 'Pair'} busy={busy} onPress={() => void confirm()} variant="primary" />

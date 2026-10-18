@@ -285,8 +285,9 @@ sources need Metro's transformer, not Vite's.
 Choose **Pair a phone** beside **Machine / Local sessions** in the Mac's web or
 desktop app. Use the iPhone Camera (opens `commando://pair?...`) or the companion's
 **Hosts → Scan QR code** action, also available in **Add host**. Confirm the
-machine name and addresses; Commando probes them in order and opens its Chats
-list after saving this phone's token in SecureStore. Manual add-host and sign-in
+machine name and addresses; Commando probes them in parallel, briefly preferring
+earlier addresses, then opens Chats after saving this phone's token in SecureStore.
+Re-pairing a known machine updates its existing host row and keeps its preferences. Manual add-host and sign-in
 continue to work.
 
 Codes expire after two minutes, work once, and are replaced by **New code**. If

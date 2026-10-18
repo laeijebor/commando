@@ -9,6 +9,8 @@ export type Host = {
   /** Absolute origin of the daemon, e.g. `http://studio.tail-1a2b.ts.net:4310`. */
   baseUrl: string
   auth: HostAuth
+  /** QR identity retained even when pairing chooses another advertised address. */
+  pairing?: { name: string; urls: string[] }
 }
 
 export type HostReachability = {
