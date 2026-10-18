@@ -21,7 +21,7 @@ export function openConversationPanes(
   const open = new Map<string, { paneId: string; label: string }>()
   for (const [paneId, status] of Object.entries(statuses)) {
     // Only a hook knows the session for sure; a guessed one could jump to the wrong pane.
-    if (status.source !== 'hook' || !status.agentSessionId || (status.provider !== 'claude' && status.provider !== 'codex')) continue
+    if (status.source !== 'hook' || !status.agentSessionId || status.provider === 'unknown') continue
     open.set(chatConversationKey(status.provider, status.agentSessionId), { paneId, label: label(paneId) })
   }
   for (const [paneId, chat] of Object.entries(chats)) {

@@ -340,7 +340,7 @@ export class ChatConversationIndex {
       db = new DatabaseSync(this.opencodeDb, { readOnly: true })
       return db.prepare('SELECT id, directory, title, time_updated FROM session WHERE parent_id IS NULL AND time_archived IS NULL').all().flatMap((row) => {
         if (!isChatConversationSessionId(row.id) || typeof row.directory !== 'string' || !isAbsolute(row.directory) || typeof row.title !== 'string' || !row.title.trim() || typeof row.time_updated !== 'number' || !Number.isFinite(row.time_updated)) return []
-        return [{ provider: 'opencode' as const, sessionId: row.id, cwd: row.directory, title: row.title, updatedAt: row.time_updated }]
+        return [{ provider: 'opencode' as const, sessionId: row.id, cwd: row.directory, title: shortTitle(row.title), updatedAt: row.time_updated }]
       })
     } catch {
       return []

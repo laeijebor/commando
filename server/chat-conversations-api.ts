@@ -7,7 +7,7 @@ import {
   type ChatConversationPlacement,
   type ChatConversationProvider,
 } from '../shared/chat-conversations.js'
-import type { CommandoSnapshot } from '../shared/protocol.js'
+import type { AgentStatus, CommandoSnapshot } from '../shared/protocol.js'
 import type { SessionAgentLaunch } from '../shared/tmux-create.js'
 import { inheritedChatPermissionMode } from './agent-chats-api.js'
 import type { ChatConversationIndex } from './chat-conversations.js'
@@ -24,6 +24,8 @@ type Dependencies = {
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
+  /** Agent sessions reported by the daemon's status registry. */
+  agentSessions: () => AgentStatus[]
   creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'>
   beforePaneCreated: (paneId: string) => Promise<void>
   refreshSnapshot: () => Promise<unknown>
@@ -101,11 +103,13 @@ export class ChatConversationsApi {
     if (provider !== 'claude' && provider !== 'codex' && provider !== 'cursor' && provider !== 'opencode') throw new HttpError(400, 'Unsupported conversation provider')
     if (!isChatConversationSessionId(sessionId)) throw new HttpError(400, 'Invalid conversation id')
     if (placement !== 'replace' && placement !== 'split') throw new HttpError(400, 'placement must be replace or split')
-    const pane = this.dependencies.snapshot().panes.find((entry) => entry.id === paneId)
+    const snapshot = this.dependencies.snapshot()
+    const pane = snapshot.panes.find((entry) => entry.id === paneId)
     if (!pane) throw new HttpError(404, 'That pane no longer exists')
     const chat = this.dependencies.chatSession(paneId)
     if (!chat) throw new HttpError(409, 'Conversations can only be switched from a chat pane')
     const open = this.dependencies.chatSessions().find((session) => session.provider === provider && session.sessionId === sessionId)
+      ?? this.dependencies.agentSessions().find((status) => status.source === 'hook' && status.provider === provider && status.agentSessionId === sessionId && snapshot.panes.some((pane) => pane.id === status.paneId))
     if (open) throw new HttpError(409, open.paneId === paneId ? 'This chat is already on that conversation' : `That conversation is already open in pane ${open.paneId}`)
     // Claimed before anything awaits, so two panes can't both resume one conversation.
     const key = `${provider}:${sessionId}`

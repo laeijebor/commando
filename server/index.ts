@@ -1882,6 +1882,7 @@ async function main(): Promise<void> {
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
+    agentSessions: () => agentStatuses.values(),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {
       const windowId = paneForId(paneId)?.windowId
