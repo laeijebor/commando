@@ -690,7 +690,7 @@ describe('pull request listing', () => {
       if (query.includes('fragment PrFields on PullRequest { id }')) return discovery
       if (query.includes('repository(owner:')) throw failure
       const ids = JSON.parse(query.match(/nodes\(ids: (\[[^\]]*\])/)![1]) as string[]
-      expect(ids.length).toBeLessThanOrEqual(5)
+      expect(ids.length).toBeLessThanOrEqual(15)
       active++
       maxActive = Math.max(maxActive, active)
       await new Promise((resolve) => setTimeout(resolve, 1))
@@ -705,36 +705,11 @@ describe('pull request listing', () => {
     expect(list.truncated).toBe(true)
     expect(list.mineTruncated).toBe(true)
     expect(maxActive).toBe(3)
-    expect(runner).toHaveBeenCalledTimes(9) // failed query + discovery + seven unique detail batches
+    expect(runner).toHaveBeenCalledTimes(5) // failed query + discovery + three unique detail batches
+    // A list longer than one batch goes straight to discovery next time.
     await service.listPullRequests('acme/widgets', 'open', { refresh: true })
     expect(runner.mock.calls.filter(([args]) => args.some((arg) => arg.includes('repository(owner:') && !arg.includes('fragment PrFields on PullRequest { id }')))).toHaveLength(1)
-    expect(runner).toHaveBeenCalledTimes(17)
-  })
-
-  it('retries the single list query once the batched fallback expires', async () => {
-    const record = pullRequestNode({ id: 'PR_1', number: 1 })
-    let now = 0
-    let timeouts = 1
-    const runner = vi.fn(async (args: string[]) => {
-      const query = args.find((arg) => arg.startsWith('query='))!
-      if (query.includes('fragment PrFields on PullRequest { id }')) return graphqlPayload([{ id: 'PR_1' }], 1, 'leo')
-      if (query.includes('repository(owner:')) {
-        if (timeouts-- > 0) throw new PrServiceError(504, 'github_timeout', 'GitHub request timed out')
-        return graphqlPayload([record], 1, 'leo')
-      }
-      return JSON.stringify({ data: { nodes: [record] } })
-    })
-    const service = new PrService({ runner, now: () => now })
-    const single = () => runner.mock.calls.filter(([args]) => args.some((arg) => arg.includes('repository(owner:') && !arg.includes('fragment PrFields on PullRequest { id }'))).length
-    await service.listPullRequests('acme/widgets', 'open')
-    expect(single()).toBe(1)
-    now = 29 * 60_000
-    await service.listPullRequests('acme/widgets', 'open', { refresh: true })
-    expect(single()).toBe(1)
-    now = 31 * 60_000
-    const list = await service.listPullRequests('acme/widgets', 'open', { refresh: true })
-    expect(single()).toBe(2)
-    expect(list.pullRequests.map((pr) => pr.number)).toEqual([1])
+    expect(runner).toHaveBeenCalledTimes(9)
   })
 
   it.each([
@@ -751,6 +726,29 @@ describe('pull request listing', () => {
     await expect(service.listPullRequests('acme/widgets', 'open')).rejects.toMatchObject({ status: 502 })
     expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests).toHaveLength(1)
     expect(runner).toHaveBeenCalledTimes(4)
+  })
+
+  it('reads a short list in one query and a long one in batches, switching as it changes size', async () => {
+    let records = Array.from({ length: 20 }, (_, index) => pullRequestNode({ id: `PR_${index}`, number: index + 1 }))
+    const runner = vi.fn(async (args: string[]) => {
+      const query = args.find((arg) => arg.startsWith('query='))!
+      if (query.includes('fragment PrFields on PullRequest { id }')) return graphqlPayload(records.map(({ id }) => ({ id })), records.length, 'leo')
+      if (query.includes('repository(owner:')) return graphqlPayload(records, records.length, 'leo')
+      const ids = JSON.parse(query.match(/nodes\(ids: (\[[^\]]*\])/)![1]) as string[]
+      return JSON.stringify({ data: { nodes: records.filter((record) => ids.includes(record.id as string)) } })
+    })
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    const single = () => runner.mock.calls.filter(([args]) => args.some((arg) => arg.includes('repository(owner:') && !arg.includes('fragment PrFields on PullRequest { id }'))).length
+    const list = (refresh = true) => service.listPullRequests('acme/widgets', 'open', { scope: 'everyone', refresh })
+    expect((await list(false)).pullRequests).toHaveLength(20)
+    expect(single()).toBe(1)
+    expect((await list()).pullRequests).toHaveLength(20)
+    expect(single()).toBe(1)
+    expect(runner).toHaveBeenCalledTimes(1 + 1 + 2) // single, then discovery + two batches of 15
+    records = records.slice(0, 10)
+    await list()
+    await list()
+    expect(single()).toBe(2)
   })
 
   it('runs a single gh graphql call and normalizes the summary fields', async () => {
@@ -1348,7 +1346,7 @@ describe('GitHub rate limit backpressure', () => {
 
   it('pauses batched detail hydration once the budget runs low', async () => {
     const now = Date.parse('2026-10-03T10:00:00Z')
-    const records = Array.from({ length: 30 }, (_, index) => pullRequestNode({ id: `PR_${index}`, number: index + 1 }))
+    const records = Array.from({ length: 60 }, (_, index) => pullRequestNode({ id: `PR_${index}`, number: index + 1 }))
     const discovery = graphqlPayload(records.map(({ id }) => ({ id })), 733)
     const runner = vi.fn(async (args: string[]) => {
       const query = args.find((arg) => arg.startsWith('query='))!
@@ -1365,7 +1363,7 @@ describe('GitHub rate limit backpressure', () => {
 
     await expect(service.listPullRequests('acme/widgets', 'open', { scope: 'everyone' })).rejects.toMatchObject({ code: 'rate_limited' })
     // Discovery, the timed-out full query, and one detail batch per worker before the pause.
-    expect(runner.mock.calls.length).toBeLessThan(2 + 6)
+    expect(runner.mock.calls.length).toBe(2 + 3)
   })
 
   it('asks GitHub for the remaining budget in polled list queries', async () => {
