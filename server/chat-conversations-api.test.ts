@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
-import type { CommandoSnapshot } from '../shared/protocol.js'
+import type { AgentStatus, CommandoSnapshot } from '../shared/protocol.js'
 import type { ConversationBriefRecord } from './session-briefs.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
@@ -35,7 +35,7 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string }[]; groups?: { id: string; name: string; sessionIds: string[] }[]; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string }[]; groups?: { id: string; name: string; sessionIds: string[] }[]; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; agentSessions?: AgentStatus[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -49,6 +49,7 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     snapshot: () => ({ sessions: options.sessions ?? [], panes: [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
+    agentSessions: () => options.agentSessions ?? [],
     creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
     refreshSnapshot: vi.fn(async () => {}),
@@ -165,5 +166,34 @@ describe('ChatConversationsApi', () => {
     expect(await gone.resume({})).toMatchObject({ status: 409, body: { error: expect.stringContaining('no longer exists') } })
     expect(await setup().resume({ placement: 'elsewhere' })).toMatchObject({ status: 400 })
     expect(open.creator.respawnChatPane).not.toHaveBeenCalled()
+  })
+
+  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation in another live pane after the reservation expires', async (provider) => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const sessionId = provider === 'opencode' ? 'ses_session123' : ID
+      const agentSessions: AgentStatus[] = []
+      const { creator, resume } = setup({ conversation: { provider, sessionId }, chats: [chat(), chat({ paneId: '%2' })], agentSessions })
+      expect(await resume({ paneId: '%2', provider, sessionId })).toMatchObject({ status: 200 })
+      agentSessions.push({ paneId: '%2', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now() })
+      vi.advanceTimersByTime(15_000)
+      expect(await resume({ provider, sessionId })).toMatchObject({ status: 409, body: { error: 'That conversation is already open in pane %2' } })
+      expect(creator.respawnChatPane).toHaveBeenCalledTimes(1)
+      expect(creator.createPane).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    { source: 'process' },
+    { source: 'heuristic' },
+    { paneId: '%99' },
+    { provider: 'cursor' },
+    { agentSessionId: 'bbbbbbbb-0000' },
+  ] as const)('does not block resume for an unverified, closed or different agent session: %j', async (overrides) => {
+    const status: AgentStatus = { paneId: '%2', provider: 'codex', agentSessionId: ID, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now(), ...overrides }
+    const { resume } = setup({ agentSessions: [status] })
+    expect(await resume({})).toMatchObject({ status: 200 })
   })
 })
