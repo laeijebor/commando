@@ -135,6 +135,7 @@ import { PushApi } from './push-api.js'
 import { PushDeviceRegistry } from './push-devices.js'
 import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
+import { detectSessionRenames } from './session-renames.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
 import {
@@ -708,6 +709,8 @@ async function main(): Promise<void> {
     panes: [],
     ports: [],
   }
+  // Keep this paired with snapshot: discovery can change tmux.serverId before failing.
+  let snapshotServerId: string | null = null
   let snapshotRefresh: Promise<CommandoSnapshot> | null = null
   // Until tmux has been read once, an empty snapshot must not look like every pane closed.
   let snapshotReady = false
@@ -1421,10 +1424,10 @@ async function main(): Promise<void> {
 
   const refreshSnapshot = (): Promise<CommandoSnapshot> => {
     if (snapshotRefresh) return snapshotRefresh
-    const previousServerId = tmux.serverId
     snapshotRefresh = tmux
       .discover(snapshotRevision + 1)
       .then(async (nextSnapshot) => {
+        const nextServerId = tmux.serverId
         const repos = await paneRepos.resolve(nextSnapshot.panes.map((pane) => pane.path))
         for (const pane of nextSnapshot.panes) {
           const repo = repos.get(pane.path)
@@ -1437,10 +1440,14 @@ async function main(): Promise<void> {
         const previousCommands = new Map(
           snapshot.panes.map((pane) => [pane.id, pane.command]),
         )
-        const previousSessionNames = new Map(snapshot.sessions.map((session) => [session.id, session.name]))
+        const sessionRenames = detectSessionRenames(
+          { serverId: snapshotServerId, sessions: snapshot.sessions },
+          { serverId: nextServerId, sessions: nextSnapshot.sessions },
+        )
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
+        snapshotServerId = nextServerId
         snapshotReady = true
         releaseClosedSimLeases()
         lastTmuxError = ''
@@ -1454,14 +1461,8 @@ async function main(): Promise<void> {
         }
 
         let briefsChanged = false
-        // Compare live snapshots from the same tmux server, never saved ids after a restart.
-        if (previousServerId && previousServerId === tmux.serverId) {
-          for (const session of snapshot.sessions) {
-            const previousName = previousSessionNames.get(session.id)
-            if (previousName !== undefined && previousName !== session.name) {
-              briefsChanged = await sessionBriefs.renameSession(session.id, previousName, session.name) || briefsChanged
-            }
-          }
+        for (const { sessionId, previousName, name } of sessionRenames) {
+          briefsChanged = await sessionBriefs.renameSession(sessionId, previousName, name) || briefsChanged
         }
         briefsChanged = await sessionBriefs.reconcilePanes(
           snapshot.panes.map((pane) => ({
