@@ -26,6 +26,7 @@ function changes(args: Record<string, unknown>, edit?: Record<string, unknown>):
     deletions: count(edit?.linesRemoved) ?? (patch ? patch.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length : 0),
     ...(patch !== undefined ? { patch: patch.slice(0, MAX_TEXT) } : {}) }
 }
+export const QUESTION_REFUSED = "Cursor tried to ask a question, which it can't do in a Commando chat; it continues without an answer. Reply in the chat if it needs one."
 const TITLES: Record<string, string> = { read: 'Read file', grep: 'Search text', glob: 'Find files', ls: 'List files', mcp: 'MCP tool', semSearch: 'Search code', readLints: 'Read diagnostics', generateImage: 'Generate image' }
 
 export class CursorItemMapper {
@@ -144,6 +145,8 @@ export class CursorItemMapper {
         return [this.put({ ...base, kind: 'file_change', toolUseId: callId, toolName: type, path: text(args.path), ...changes(args, type === 'edit' ? value : undefined), ...error })]
       case 'updateTodos': return [this.put({ ...base, kind: 'todo_list', todos: todos(args.todos) })]
       case 'createPlan': return [this.put({ ...base, kind: 'plan', toolUseId: callId, text: text(args.plan) })]
+      // The local SDK refuses questions without showing them; say so rather than leave a dead tool row.
+      case 'askQuestion': return [this.put({ ...base, status: 'completed', kind: 'notice', level: 'info', text: QUESTION_REFUSED })]
       case 'task': return [this.put({ ...base, kind: 'subagent', toolUseId: callId, description: text(args.description).slice(0, 500), runtime: 'cursor',
         state: failed ? 'failed' : complete ? 'completed' : 'running', prompt: text(args.prompt), model: string(args.model),
         subagentType: string(record(args.subagentType).name) ?? string(record(args.subagentType).kind), agentId: string(value.agentId) ?? string(args.agentId) ?? string(args.resume),

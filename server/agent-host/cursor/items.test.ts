@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_CHAT_ITEMS, parseChatItem } from '../../../shared/agent-chat.js'
-import { CursorItemMapper } from './items.js'
+import { CursorItemMapper, QUESTION_REFUSED } from './items.js'
 
 const tool = (mapper: CursorItemMapper, type: string, args: unknown, result?: unknown) => mapper.delta({ type: 'tool-call-completed', callId: type, toolCall: { type, args, result } }).at(-1)
 describe('CursorItemMapper', () => {
@@ -21,6 +21,16 @@ describe('CursorItemMapper', () => {
     expect(mapper.list().at(-2)).toMatchObject({ command: 'pwd', output: '/w', status: 'completed' })
     mapper.settle('t', 'completed')
     expect(mapper.list().every((item) => item.status === 'completed')).toBe(true)
+    expect(mapper.list().every((item) => parseChatItem(item))).toBe(true)
+  })
+  it('shows a refused question as one notice, live and in replay', () => {
+    const mapper = new CursorItemMapper()
+    mapper.begin('t')
+    mapper.delta({ type: 'tool-call-started', callId: 'q', toolCall: { type: 'askQuestion', args: { questions: [] } } })
+    mapper.delta({ type: 'tool-call-completed', callId: 'q', toolCall: { type: 'askQuestion', args: { questions: [] }, result: { status: 'error' } } })
+    expect(mapper.list()).toMatchObject([{ kind: 'notice', level: 'info', status: 'completed', text: QUESTION_REFUSED }])
+    mapper.replay({ type: 'agentConversationTurn', turn: { steps: [{ type: 'toolCall', message: { type: 'askQuestion', args: {} } }] } })
+    expect(mapper.list().filter((item) => item.kind === 'notice')).toHaveLength(2)
     expect(mapper.list().every((item) => parseChatItem(item))).toBe(true)
   })
   it('maps reasoning, summaries, plans and todos, ignoring unrelated updates', () => {
