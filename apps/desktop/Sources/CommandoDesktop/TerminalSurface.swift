@@ -405,7 +405,7 @@ final class HostedTerminalView: TerminalView {
         }
         if shortcutModifiers == .command,
            let key = event.charactersIgnoringModifiers?.lowercased(),
-           key == "k" || (key.count == 1 && ("1"..."9").contains(key)) {
+           key == "k" || key == "p" || (key.count == 1 && ("1"..."9").contains(key)) {
             shortcutWasPressed?(key)
             return true
         }

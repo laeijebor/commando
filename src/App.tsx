@@ -2987,15 +2987,9 @@ export function App() {
 
   // The workspace picker also resumes beside running terminals and into empty panes.
   useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p') return
-      const target = event.target instanceof Element ? event.target.closest('[data-pane-id]')?.getAttribute('data-pane-id') : undefined
-      const paneId = target ?? focusedPaneId
-      // Only in the workspace: elsewhere the last focused chat is hidden.
-      if (!connected || area !== 'workspace' || paletteOpen || !paneId || !paneMap.has(paneId)) return
-      event.preventDefault()
-      event.stopPropagation()
-      if (event.repeat) return
+    // Only in the workspace: elsewhere the last focused chat is hidden.
+    const canToggle = (paneId: string | null | undefined): paneId is string => Boolean(connected && area === 'workspace' && !paletteOpen && paneId && paneMap.has(paneId))
+    const toggle = (paneId: string) => {
       // Closes only a picker that is showing; one whose pane went away opens afresh.
       const showing = conversationPaneId && paneMap.has(conversationPaneId)
       setConversationSessionFilter(undefined)
@@ -3003,8 +2997,26 @@ export function App() {
       // The picker shows in its pane, and closes once another pane takes focus.
       if (!showing) setFocusedPaneId(paneId)
     }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'p') return
+      const target = event.target instanceof Element ? event.target.closest('[data-pane-id]')?.getAttribute('data-pane-id') : undefined
+      const paneId = target ?? focusedPaneId
+      if (!canToggle(paneId)) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.repeat) return
+      toggle(paneId)
+    }
+    // A focused native terminal keeps ⌘P from the page; the desktop app forwards it instead.
+    const onNativeShortcut = (event: Event) => {
+      if ((event as CustomEvent<{ key?: string }>).detail?.key === 'p' && canToggle(focusedPaneId)) toggle(focusedPaneId)
+    }
     window.addEventListener('keydown', onKeyDown, true)
-    return () => window.removeEventListener('keydown', onKeyDown, true)
+    window.addEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener(NATIVE_TERMINAL_SHORTCUT_EVENT, onNativeShortcut)
+    }
   })
 
   // Like a menu, the picker closes when another pane is focused (a native terminal
