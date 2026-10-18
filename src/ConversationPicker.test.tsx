@@ -50,6 +50,19 @@ describe('ConversationPicker', () => {
     expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode'])
   })
 
+  it.each(['cursor', 'opencode'] as const)('jumps to a hook-reported %s conversation instead of resuming it', async (provider) => {
+    const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
+    const status: AgentStatus = { paneId: '%7', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
+    const { input, onJump, onPick } = renderPicker({
+      load: async () => [conversation(sessionId, 'Open terminal work', pane.path, 1, { provider })],
+      open: openConversationPanes({}, { '%7': status }, () => 'Review'),
+    })
+    expect(await screen.findByRole('option')).toHaveTextContent('Open in Review')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onJump).toHaveBeenCalledWith('%7')
+    expect(onPick).not.toHaveBeenCalled()
+  })
+
   it('groups this session, then other sessions, then Outside Commando, newest first', async () => {
     renderPicker()
     const groups = await screen.findAllByRole('group')
@@ -213,9 +226,16 @@ describe('openConversationPanes', () => {
     const statuses = {
       '%2': { provider: 'claude', source: 'hook', agentSessionId: 'aaaaaaaa-0001' },
       '%3': { provider: 'claude', source: 'heuristic', agentSessionId: 'aaaaaaaa-0002' },
+      '%4': { provider: 'cursor', source: 'hook', agentSessionId: 'aaaaaaaa-0003' },
+      '%5': { provider: 'opencode', source: 'hook', agentSessionId: 'ses_session123' },
+      '%6': { provider: 'cursor', source: 'process', agentSessionId: 'aaaaaaaa-0004' },
+      '%7': { provider: 'opencode', source: 'heuristic', agentSessionId: 'ses_session456' },
+      '%8': { provider: 'unknown', source: 'hook', agentSessionId: 'aaaaaaaa-0005' },
     } as unknown as Record<string, AgentStatus>
     expect([...openConversationPanes(chats, statuses, (paneId) => `pane ${paneId}`)]).toEqual([
       ['claude:aaaaaaaa-0001', { paneId: '%2', label: 'pane %2' }],
+      ['cursor:aaaaaaaa-0003', { paneId: '%4', label: 'pane %4' }],
+      ['opencode:ses_session123', { paneId: '%5', label: 'pane %5' }],
       ['codex:cccccccc-0001', { paneId: '%1', label: 'pane %1' }],
     ])
   })

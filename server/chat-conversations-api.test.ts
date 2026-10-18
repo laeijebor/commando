@@ -6,10 +6,12 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
-import type { CommandoSnapshot } from '../shared/protocol.js'
+import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import type { AgentResumeRecord } from './agent-resume.js'
+import { buildChatResumeCommand, buildChatReturnCommand } from './agent-resume-command.js'
 import type { ConversationBriefRecord } from './session-briefs.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
 const ID = '11111111-2222-3333-4444-555555555555'
@@ -36,7 +38,7 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string }[]; groups?: { id: string; name: string; sessionIds: string[] }[]; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: Pick<TmuxPane, 'id' | 'sessionId' | 'windowId' | 'index' | 'repo'>[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'load'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; agentSessions?: AgentStatus[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -49,10 +51,11 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     index: { list: vi.fn(async () => [conversation]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
     resumes: { findConversation: (provider, sessionId) => options.resumeRecord ? { targetId: 'target', provider, sessionId, path: folder, command: 'env codex resume ' + ID, serverId: 'test', updatedAt: 1, ...options.resumeRecord } : undefined },
     briefs: { conversationRecords: () => options.records ?? [] },
-    sessionPreferences: { read: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [] }) },
-    snapshot: () => ({ sessions: options.sessions ?? [], panes: [{ id: '%1', empty: options.empty }, { id: '%2' }] }) as unknown as CommandoSnapshot,
+    sessionPreferences: options.sessionPreferences ?? { load: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [], groupingMode: options.groupingMode }) },
+    snapshot: () => ({ sessions: options.sessions?.map((session) => ({ windowIds: ['@1'], ...session })) ?? [], panes: options.panes ?? [{ id: '%1', empty: options.empty }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
+    agentSessions: () => options.agentSessions ?? [],
     creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
     refreshSnapshot: vi.fn(async () => {}),
@@ -102,7 +105,7 @@ describe('ChatConversationsApi', () => {
       ] }
     const { api, conversation } = setup({ conversation: { provider: 'claude', configDir: '/home/me/.claudep' },
       records: [record, { ...record, provider: 'codex', id: 'delegate-not-indexed' }],
-      sessions: [{ id: '$1', name: 'vivi' }], groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }] })
+      sessions: [{ id: '$1', name: 'vivi' }], groupingMode: 'manual', groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }] })
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
     expect(result).toMatchObject({ status: 200, body: { conversations: [{ ...conversation,
@@ -113,10 +116,69 @@ describe('ChatConversationsApi', () => {
     }] } })
   })
 
-  it('preserves the brief name and omits a group when a live session reused its id', async () => {
+  it.each([undefined, 'repository'] as const)('uses the sidebar repository container label instead of stale manual membership (mode: %s)', async (groupingMode) => {
+    const repo = { root: '/repos/commando', name: 'commando', branch: 'feature', isWorktree: true }
+    const otherRepo = { root: '/repos/other', name: 'other', branch: 'main', isWorktree: false }
+    const { api, conversation } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$1', sessionName: 'work', paneOpen: false, references: [], updatedAt: 10 }],
+      sessions: [{ id: '$1', name: 'work', windowIds: ['@2', '@1'] }], groupingMode,
+      groups: [{ id: 'g1', name: 'Old manual group', sessionIds: ['$1'] }],
+      panes: [
+        { id: '%1', sessionId: '$1', windowId: '@1', index: 0, repo: otherRepo },
+        { id: '%3', sessionId: '$1', windowId: '@2', index: 1, repo: otherRepo },
+        { id: '%2', sessionId: '$1', windowId: '@2', index: 0, repo },
+      ],
+    })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ ...conversation, session: { id: '$1', name: 'work', group: 'commando' } }] } })
+  })
+
+  it.each([true, false])('uses the sidebar fallback container when the first pane has no repository (other repo panes: %s)', async (hasRepo) => {
+    const repo = { root: '/repos/commando', name: 'commando', branch: 'main', isWorktree: false }
+    const otherRepo = { root: '/repos/other', name: 'other', branch: 'main', isWorktree: false }
+    const { api } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$1', sessionName: 'work', paneOpen: false, references: [], updatedAt: 10 }],
+      sessions: [{ id: '$1', name: 'work' }],
+      groups: [{ id: 'g1', name: 'Old manual group', sessionIds: ['$1'] }],
+      panes: [
+        { id: '%1', sessionId: '$1', windowId: '@1', index: 0 },
+        ...hasRepo ? [
+          { id: '%2', sessionId: '$1', windowId: '@1', index: 1, repo: otherRepo },
+          { id: '%3', sessionId: '$1', windowId: '@1', index: 2, repo },
+          { id: '%4', sessionId: '$1', windowId: '@1', index: 3, repo },
+        ] : [],
+      ],
+    })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$1', name: 'work', group: hasRepo ? 'commando' : 'No repository' } }] } })
+  })
+
+  it('loads manual membership by name after tmux renumbers session ids', async () => {
+    const path = join(folder, 'session-tree.json')
+    await new SessionPreferenceStore(path).replace({
+      version: 1, groupingMode: 'manual',
+      groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }], ungroupedSessionIds: [],
+    }, [{ id: '$1', name: 'vivi' }])
+    const preferences = new SessionPreferenceStore(path)
+    const load = vi.spyOn(preferences, 'load')
+    const { api } = setup({
+      records: [{ provider: 'codex', id: ID, sessionId: '$8', sessionName: 'vivi', paneOpen: false, references: [], updatedAt: 10 }],
+      sessions: [{ id: '$8', name: 'vivi' }, { id: '$1', name: 'scratch' }], sessionPreferences: preferences,
+    })
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$8', name: 'vivi', group: 'Subscriptions' } }] } })
+    expect(load).toHaveBeenCalledWith([
+      { id: '$8', name: 'vivi', windowIds: ['@1'] }, { id: '$1', name: 'scratch', windowIds: ['@1'] },
+    ])
+  })
+
+  it.each(['manual', 'repository'] as const)('preserves the brief name and omits a group when a live session reused its id in %s mode', async (groupingMode) => {
     const { api, conversation } = setup({
       records: [{ provider: 'codex', id: ID, sessionId: '$1', sessionName: 'old-work', paneOpen: false, references: [], updatedAt: 10 }],
-      sessions: [{ id: '$1', name: 'Chat' }], groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }],
+      sessions: [{ id: '$1', name: 'Chat' }], groupingMode, groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }],
     })
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
@@ -169,6 +231,48 @@ describe('ChatConversationsApi', () => {
     expect(await setup().resume({ placement: 'elsewhere' })).toMatchObject({ status: 400 })
     expect(open.creator.respawnChatPane).not.toHaveBeenCalled()
   })
+
+  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation in another live pane after the reservation expires', async (provider) => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const sessionId = provider === 'opencode' ? 'ses_session123' : ID
+      const agentSessions: AgentStatus[] = []
+      const { creator, resume } = setup({ conversation: { provider, sessionId }, chats: [chat(), chat({ paneId: '%2' })], agentSessions })
+      expect(await resume({ paneId: '%2', provider, sessionId })).toMatchObject({ status: 200 })
+      agentSessions.push({ paneId: '%2', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now() })
+      vi.advanceTimersByTime(15_000)
+      expect(await resume({ provider, sessionId })).toMatchObject({ status: 409, body: { error: 'That conversation is already open in pane %2' } })
+      expect(creator.respawnChatPane).toHaveBeenCalledTimes(1)
+      expect(creator.createPane).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation for every placement, including without a requester', async (provider) => {
+    const sessionId = provider === 'opencode' ? 'ses_session123' : ID
+    for (const input of [{ placement: 'replace' }, { placement: 'split' }, { placement: 'session' }, { placement: 'session', paneId: undefined }]) {
+      const status: AgentStatus = { paneId: '%2', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now() }
+      const { creator, resume } = setup({ conversation: { provider, sessionId, session: { id: '$7', name: 'original' } }, agentSessions: [status] })
+      expect(await resume({ provider, sessionId, ...input })).toMatchObject({ status: 409, body: { error: 'That conversation is already open in pane %2' } })
+      expect(creator.respawnChatPane).not.toHaveBeenCalled()
+      expect(creator.createPane).not.toHaveBeenCalled()
+      expect(creator.createWindow).not.toHaveBeenCalled()
+      expect(creator.createSession).not.toHaveBeenCalled()
+    }
+  })
+
+  it.each([
+    { source: 'process' },
+    { source: 'heuristic' },
+    { paneId: '%99' },
+    { provider: 'cursor' },
+    { agentSessionId: 'bbbbbbbb-0000' },
+  ] as const)('does not block resume for an unverified, closed or different agent session: %j', async (overrides) => {
+    const status: AgentStatus = { paneId: '%2', provider: 'codex', agentSessionId: ID, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now(), ...overrides }
+    const { resume } = setup({ agentSessions: [status] })
+    expect(await resume({})).toMatchObject({ status: 200 })
+  })
 })
 
 describe('resume placement and launch selection', () => {
@@ -198,6 +302,31 @@ describe('resume placement and launch selection', () => {
     expect(creator.respawnChatPane).not.toHaveBeenCalled()
   })
 
+  it.each([false, true])('opens a window in the session with the recorded name after tmux renumbers it (old id reused: %s)', async (reused) => {
+    for (const paneId of ['%1', undefined]) {
+      const { resume, creator } = setup({
+        records: [{ provider: 'codex', id: ID, sessionId: '$7', sessionName: 'original', paneOpen: false, references: [], updatedAt: 1 }],
+        sessions: [{ id: '$8', name: 'original-copy' }, { id: '$9', name: 'original' }, ...reused ? [{ id: '$7', name: 'unrelated' }] : []],
+        chats: [],
+      })
+      expect(await resume({ paneId, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%10' } })
+      expect(creator.createWindow).toHaveBeenCalledWith({ sessionId: '$9', cwd: folder }, `env codex resume ${ID}`)
+      expect(creator.createSession).not.toHaveBeenCalled()
+      expect(creator.createPane).not.toHaveBeenCalled()
+      expect(creator.respawnChatPane).not.toHaveBeenCalled()
+    }
+  })
+
+  it('creates a session only when no exact live name or recorded id matches', async () => {
+    const { resume, creator } = setup({
+      conversation: { session: { id: '$7', name: 'original' } },
+      sessions: [{ id: '$8', name: 'original-copy' }, { id: '$9', name: 'Original' }],
+    })
+    expect(await resume({ paneId: undefined, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%11' } })
+    expect(creator.createSession).toHaveBeenCalledWith({ name: 'original', cwd: folder }, `env codex resume ${ID}`)
+    expect(creator.createWindow).not.toHaveBeenCalled()
+  })
+
   it('falls back to a split when the conversation has no session, including without a requester', async () => {
     for (const paneId of ['%1', undefined]) {
       const { resume, creator } = setup()
@@ -224,6 +353,27 @@ describe('resume placement and launch selection', () => {
     const { resume, creator } = setup({ conversation: { provider: 'claude', configDir: join(homedir(), '.claudep') }, resumeRecord: { command }, chats: [chat({ permissionMode: 'plan' })] })
     expect(await resume({ provider: 'claude', command: 'echo untrusted' })).toMatchObject({ status: 200 })
     expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'claude-chat', resume: ID, configDir: join(homedir(), '.claudep'), permissionMode: 'plan' })
+  })
+
+  it.each(['claude', 'codex'] as const)('resumes builder-generated %s chats with server-owned settings in a renumbered session', async (provider) => {
+    const launcher = "/checkout with spaces/O'Brien/scripts/commando-agent"
+    const flags = ['--permission-mode', 'bypassPermissions']
+    const daemonEnv = { COMMANDO_PORT: '4410' }
+    const commands = [
+      buildChatResumeCommand(ID, launcher, { args: ['node', '/c/server/agent-host/main.ts', provider, ...flags], env: {} }, daemonEnv),
+      buildChatReturnCommand(ID, launcher, flags, daemonEnv, provider),
+    ]
+    for (const command of commands) {
+      expect(command).not.toBeNull()
+      const { resume, creator } = setup({
+        conversation: { provider, session: { id: '$7', name: 'original' } },
+        sessions: [{ id: '$9', name: 'original' }],
+        resumeRecord: { command: command! }, chats: [],
+      })
+      expect(await resume({ provider, paneId: undefined, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%10' } })
+      expect(creator.createWindow).toHaveBeenCalledWith({ sessionId: '$9', cwd: folder, agent: { provider: `${provider}-chat`, resume: ID, permissionMode: 'default' } })
+      expect(creator.createSession).not.toHaveBeenCalled()
+    }
   })
 
   it('resumes a saved chat from outside a chat with default permissions', async () => {
