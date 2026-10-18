@@ -120,7 +120,7 @@ const GroupHeader = memo(function GroupHeader({ entry, toggle }: { entry: Extrac
 const SessionListRow = memo(function SessionListRow({ row, host, active, select }: { row: SessionRow; host?: Host; active: boolean; select: (paneId: string) => void }) {
   const theme = useTheme()
   const prs = usePanePrs(host, row.paneIds, active)
-  const prCount = new Set(prs.flatMap((list) => list.pullRequests.map((pr) => `${pr.repo}:${pr.number}`))).size
+  const prCount = prs.some((result) => result.error) ? 0 : new Set(prs.flatMap((result) => result.data?.pullRequests.map((pr) => `${pr.repo}:${pr.number}`) ?? [])).size
   const [, tick] = useState(0)
   useEffect(() => {
     if (!active) return

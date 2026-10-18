@@ -1,5 +1,5 @@
 import type { AgentProvider } from '@commando/protocol'
-import { act, render, screen } from '@testing-library/react-native'
+import { act, cleanup, render, screen } from '@testing-library/react-native'
 
 import type { Host } from '../hosts/types'
 import {
@@ -118,4 +118,36 @@ describe('the pane Info sheet', () => {
     expect(screen.getByText(/answer-channel/u)).toBeTruthy()
     expect(screen.getByLabelText('Open sheet.png')).toBeTruthy()
   })
+})
+
+it('shows a failed uncached PR lookup instead of leaving the section loading', async () => {
+  globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/api/prs/pane')) return new Response(JSON.stringify({ error: 'GitHub is disabled' }), { status: 503 })
+    if (url.includes('/api/git/summary')) return jsonResponse(GIT_SUMMARY)
+    return jsonResponse({})
+  }) as unknown as typeof fetch
+  await renderSheet()
+  expect(screen.getByRole('alert')).toHaveTextContent('GitHub is disabled')
+  expect(screen.queryByText('Looking for linked pull requests…')).toBeNull()
+})
+it('keeps linked PRs visible with the error when refreshing cached data fails', async () => {
+  jest.useFakeTimers()
+  try {
+    await renderSheet()
+    expect(screen.getByText('feat: owner-auth companion channel')).toBeTruthy()
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/prs/pane')) return new Response(JSON.stringify({ error: 'GitHub authentication expired' }), { status: 401 })
+      if (url.includes('/api/git/summary')) return jsonResponse(GIT_SUMMARY)
+      return jsonResponse({})
+    }) as unknown as typeof fetch
+    await act(async () => { jest.advanceTimersByTime(60_000) })
+    expect(screen.getByRole('alert')).toHaveTextContent('GitHub authentication expired')
+    expect(screen.getByText('feat: owner-auth companion channel')).toBeTruthy()
+    expect(screen.queryByText('Looking for linked pull requests…')).toBeNull()
+  } finally {
+    cleanup()
+    jest.useRealTimers()
+  }
 })

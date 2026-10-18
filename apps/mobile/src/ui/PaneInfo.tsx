@@ -115,8 +115,9 @@ export function PaneInfoSections({
   const query = usePollingQuery(`git:${host.id}:${host.baseUrl}:${paneId}`, () => fetchGitSummary(host, paneId), foreground && (sections.includes('changes') || sections.includes('pr')), GIT_POLL_INTERVAL_MS)
   const summary = query.data ?? null
   const summaryError = query.error instanceof Error ? query.error.message : null
-  const prs = usePanePrs(host, [paneId], foreground && sections.includes('pr'))[0] ?? null
-  const prError = null
+  const prQuery = usePanePrs(host, [paneId], foreground && sections.includes('pr'))[0]
+  const prs = prQuery?.data ?? null
+  const prError = prQuery?.error
   const [prDetails, setPrDetails] = useState<Record<number, PrDetail>>({})
   const [diff, setDiff] = useState<{ file: string; diff: string } | null>(null)
   const [diffError, setDiffError] = useState<string | null>(null)
@@ -356,6 +357,7 @@ export function PaneInfoSections({
       {shows('pr') ? (
         <View onLayout={onSectionLayout('pr')} style={styles.section}>
           <SectionHeader label="Pull request" note={prs?.totalCount ? String(prs.totalCount) : undefined} />
+          {prError ? <Text accessibilityRole="alert" style={{ color: theme.red }}>{prError}</Text> : null}
           {prs?.pullRequests.length ? (
             prs.pullRequests.filter((pr) => !prFilter || (pr.repo === prFilter.repo && pr.number === prFilter.number)).map((pullRequest) => (
               <Pressable
@@ -401,8 +403,8 @@ export function PaneInfoSections({
                 </View>
               </Card>
             </Pressable>
-          ) : (
-            <Meta>{prError ?? 'No pull request links this pane yet.'}</Meta>
+          ) : prError ? null : (
+            <Meta>{prs ? 'No pull request links this pane yet.' : 'Looking for linked pull requests…'}</Meta>
           )}
         </View>
       ) : null}
