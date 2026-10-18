@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { isChatProvider } from '../shared/agent-chat.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 import type { AgentResume, AgentStatus, TmuxPane } from '../shared/protocol.js'
 import {
@@ -201,7 +202,7 @@ export class AgentResumeService {
     if (resume && resume.state !== 'resumed' && existing?.sessionId === status.agentSessionId) {
       this.setResume({ ...resume, state: 'resumed', error: undefined })
     }
-    const chatProvider = status.provider === 'claude' || status.provider === 'codex'
+    const chatProvider = isChatProvider(status.provider)
     const chatSettings = chatProvider ? this.deps.chatSettings?.(pane.id) : undefined
     // A chat's settings, or the way back for Claude Code running a chat's conversation.
     const chatReturn = chatProvider && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
@@ -230,9 +231,9 @@ export class AgentResumeService {
       } else if (!chatHost && agent) {
         const launch = launchFromProcess(status.provider, agent.args, await readEnvironment(agent.pid))
         // `env` on the TUI does not carry across the semicolon to the returning chat.
-        const returnCommand = chatReturn && status.provider === 'codex' && launch.env.CODEX_HOME
-          ? `env ${shellQuote(`CODEX_HOME=${launch.env.CODEX_HOME}`)} ${chatReturn}`
-          : chatReturn
+        const returnEnv = status.provider === 'codex' ? ['CODEX_HOME'] : status.provider === 'muse' ? ['XDG_CONFIG_HOME', 'XDG_DATA_HOME'] : []
+        const carried = returnEnv.filter((name) => launch.env[name]).map((name) => shellQuote(`${name}=${launch.env[name]}`))
+        const returnCommand = chatReturn && carried.length ? `env ${carried.join(' ')} ${chatReturn}` : chatReturn
         command = withChatReturn(buildResumeCommand(status.provider, status.agentSessionId, launch), returnCommand)
       }
       const record: AgentResumeRecord | null = command ? {

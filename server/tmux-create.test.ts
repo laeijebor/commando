@@ -945,6 +945,15 @@ describe('Codex chat creation', () => {
     expect(response.agentLaunch).toMatchObject({ provider: 'codex-chat', paneId: '%12' })
     expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'codex', '--permission-mode', 'plan', '--prompt', 'Hello'], undefined, {}))
   })
+  it('starts the Muse chat host with its permission mode and refuses Claude-only settings', async () => {
+    const run = runner()
+    const response = await new TmuxCreator(run, [], undefined, vi.fn(), {}).createSession({ name: 'muse-chat', cwd: '/tmp', agent: { provider: 'muse-chat', permissionMode: 'bypassPermissions', prompt: 'Hello' } })
+    expect(response.agentLaunch).toMatchObject({ provider: 'muse-chat', paneId: '%12' })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'muse', '--permission-mode', 'bypassPermissions', '--prompt', 'Hello'], undefined, {}))
+    for (const settings of [{ permissionMode: 'plan' }, { configDir: '/Users/dev/.claude' }]) {
+      await expect(new TmuxCreator(runner(), []).createSession({ name: 'test', agent: { provider: 'muse-chat', ...settings } } as never)).rejects.toThrow(/Muse/)
+    }
+  })
   it.each([{ configDir: '/Users/dev/.claude' }, { readableDir: '/tmp' }, { permissionMode: 'acceptEdits' }])('rejects incompatible Codex launch settings %j', async (settings) => {
     const run = runner()
     await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'codex-chat', ...settings } } as never)).rejects.toThrow(/Codex/)

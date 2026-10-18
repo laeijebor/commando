@@ -1,5 +1,5 @@
 import { basename, dirname, join } from 'node:path'
-import type { ChatProvider } from '../shared/agent-chat.js'
+import { isChatProvider, type ChatProvider } from '../shared/agent-chat.js'
 import type { AgentProvider } from '../shared/protocol.js'
 
 export type ResumableProvider = Exclude<AgentProvider, 'unknown'>
@@ -359,7 +359,7 @@ export function buildChatResumeCommand(
   if (!isValidAgentSessionId(sessionId)) return null
   const entry = launch.args.findIndex((word) => word.endsWith(CHAT_HOST_ENTRY))
   const provider = launch.args[entry + 1]
-  if (entry < 0 || (provider !== 'claude' && provider !== 'codex')) return null
+  if (entry < 0 || !isChatProvider(provider)) return null
   // Commando puts --prompt last; everything after it is prompt text, never flags.
   const rest = launch.args.slice(entry + 2)
   const promptAt = rest.indexOf('--prompt')
@@ -369,6 +369,7 @@ export function buildChatResumeCommand(
   // A shell restored by tmux may not know which daemon to report to.
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
   if (provider === 'codex' && launch.env.CODEX_HOME) env.push(`CODEX_HOME=${launch.env.CODEX_HOME}`)
+  if (provider === 'muse') for (const name of ['XDG_CONFIG_HOME', 'XDG_DATA_HOME']) if (launch.env[name]) env.push(`${name}=${launch.env[name]}`)
   return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId].map(shellQuote).join(' ')
 }
 

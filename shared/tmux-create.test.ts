@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sanitizeBranchName, sessionAgentArgv } from './tmux-create.js'
+import { chatPermissionModes, sanitizeBranchName, sessionAgentArgv } from './tmux-create.js'
 
 describe('interactive agent arguments', () => {
   it.each([['claude', 'claude'], ['codex', 'codex'], ['opencode', 'opencode'], ['cursor', 'agent']] as const)('maps %s to its actual CLI', (provider, command) => {
@@ -94,5 +94,13 @@ describe('Codex chat launch', () => {
       .toEqual(['commando-agent', 'codex', '--permission-mode', 'plan', '--prompt', '--model malicious\nhello'])
     expect(sessionAgentArgv({ provider: 'codex-chat', configDir: '/unused/.claude', readableDir: '/unused' }))
       .toEqual(['commando-agent', 'codex', '--permission-mode', 'default'])
+  })
+})
+
+describe('Muse chat launch', () => {
+  it('launches the host with Muse, its resume target and literal prompt text', () => {
+    expect(sessionAgentArgv({ provider: 'muse-chat', permissionMode: 'bypassPermissions', resume: '01a14dc2-082e-7781-9892-8b5bc1fea332', prompt: 'hi' }))
+      .toEqual(['commando-agent', 'muse', '--permission-mode', 'bypassPermissions', '--resume', '01a14dc2-082e-7781-9892-8b5bc1fea332', '--prompt', 'hi'])
+    expect(chatPermissionModes('muse-chat').map((mode) => mode.value)).toEqual(['default', 'bypassPermissions'])
   })
 })

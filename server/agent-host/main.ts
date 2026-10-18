@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
-import { AGENT_HOST_WS_PATH, isChatEffort, isChatPermissionMode, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatProvider, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatProvider, providerName, isChatEffort, isChatPermissionMode, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatProvider, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { ChatImageStore } from '../chat-images.js'
 import { isChatPlanDir } from '../chat-plans-dir.js'
@@ -16,10 +16,10 @@ import { claudeCodeSwitchCommand as providerSwitchCommand } from './session.js'
 
 export { claudeCodeFlags } from './session.js'
 
-const USAGE = `Usage: commando-agent <claude|codex> [options]
+const USAGE = `Usage: commando-agent <claude|codex|muse> [options]
 
 Runs a provider session in this tmux pane and shows it as a chat in Commando.
-Codex uses the local codex app-server and its existing login.
+Codex uses the local codex app-server and Muse uses muse serve, each with its existing login.
 
 Options:
   --config-dir DIR                 Claude config dir (default: $CLAUDE_CONFIG_DIR)
@@ -66,7 +66,7 @@ export interface HostArgs {
 
 export function parseHostArgs(argv: string[], env: Record<string, string | undefined>): HostArgs | string {
   const [provider, ...rest] = argv
-  if (provider !== 'claude' && provider !== 'codex') return USAGE
+  if (!isChatProvider(provider)) return USAGE
   const args: HostArgs = { provider, permissionMode: 'default' }
   if (provider === 'claude' && env.CLAUDE_CONFIG_DIR) args.configDir = expandHome(env.CLAUDE_CONFIG_DIR)
   for (let index = 0; index < rest.length; index += 1) {
@@ -139,7 +139,7 @@ const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COM
 
 /** Preserve pane-local daemon settings and the Codex account/config on restart. */
 export function restartEnv(provider: ChatProvider, env: Record<string, string | undefined>): string[] {
-  const keys = provider === 'codex' ? [...DAEMON_ENV_KEYS, 'CODEX_HOME'] : DAEMON_ENV_KEYS
+  const keys = provider === 'codex' ? [...DAEMON_ENV_KEYS, 'CODEX_HOME'] : provider === 'muse' ? [...DAEMON_ENV_KEYS, 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'] : DAEMON_ENV_KEYS
   return keys.flatMap((key) => env[key] ? ['-e', `${key}=${env[key]}`] : [])
 }
 
@@ -309,7 +309,7 @@ async function main(): Promise<void> {
     write(color(31, `Session ended${info.error ? `: ${info.error}` : ''}. Press Ctrl-C twice to quit.`))
   })
   host.add(session)
-  write(dim(`Commando chat · ${parsed.provider === 'claude' ? 'Claude' : 'Codex'}${parsed.configDir ? ` (${parsed.configDir.replace(homedir(), '~')})` : ''} · ${process.cwd().replace(homedir(), '~')}`))
+  write(dim(`Commando chat · ${providerName(parsed.provider)}${parsed.configDir ? ` (${parsed.configDir.replace(homedir(), '~')})` : ''} · ${process.cwd().replace(homedir(), '~')}`))
   write(dim('Type here or in the Commando chat. Ctrl-C interrupts a turn; press it twice to quit.'))
   void session.start()
   host.start()
@@ -353,7 +353,7 @@ async function main(): Promise<void> {
     tui.handOver()
     // The provider process exits before the TUI starts on the same transcript.
     if (!await Promise.race([ended, new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000))])) {
-      write(color(31, `${parsed.provider === 'claude' ? 'Claude' : 'Codex'} didn't stop within 10 s; starting ${tui.label} anyway.`))
+      write(color(31, `${providerName(parsed.provider)} didn't stop within 10 s; starting ${tui.label} anyway.`))
     }
     const env = [
       ...DAEMON_ENV_KEYS.flatMap((key) => process.env[key] ? ['-e', `${key}=${process.env[key]}`] : []),
@@ -392,7 +392,7 @@ async function main(): Promise<void> {
   const quit = () => {
     if (quitting) return
     quitting = true
-    const ended = parsed.provider === 'codex' ? new Promise<void>((resolve) => session.on('closed', resolve)) : undefined
+    const ended = parsed.provider !== 'claude' ? new Promise<void>((resolve) => session.on('closed', resolve)) : undefined
     session.close()
     host.remove(paneId)
     const exit = () => { host.stop(); process.exit(0) }

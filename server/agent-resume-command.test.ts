@@ -140,6 +140,9 @@ describe('chat hosts', () => {
     // Flags after the prompt are lost because ps cannot tell prompt words from arguments.
     expect(command).toBe('/c/scripts/commando-agent claude --config-dir /Users/me/.claudep --permission-mode default --resume abcdef12-3456')
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: ['node', 'other.js'], env: {} })).toBeNull()
+    const muse = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts muse --permission-mode default'
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: muse.split(' '), env: { XDG_DATA_HOME: '/Users/me/.data' } }))
+      .toBe('env XDG_DATA_HOME=/Users/me/.data /c/launcher muse --permission-mode default --resume abcdef12-3456')
     expect(buildChatResumeCommand('$(bad)', '/c/launcher', { args: host.split(' '), env: {} })).toBeNull()
   })
 
