@@ -124,7 +124,10 @@ export class MuseItemMapper {
       })]
     })
   }
-  /** Applies an MSP item; an older revision than one already applied is ignored. */
+  /**
+   * Applies an MSP item. Only a higher revision replaces one already applied: deltas do not bump
+   * the revision, so a redelivered equal revision would drop the text streamed since.
+   */
   item(raw: unknown): ChatItem[] {
     const item = record(raw)
     const itemId = string(item.itemId)
@@ -132,7 +135,7 @@ export class MuseItemMapper {
     if (!itemId || !kind) return []
     if (HIDDEN_KINDS.has(kind)) { this.hidden.add(itemId); return [] }
     const revision = number(item.revision)
-    if (revision && revision < (this.revisions.get(itemId) ?? 0)) return []
+    if (revision && revision <= (this.revisions.get(itemId) ?? 0)) return []
     if (revision) this.revisions.set(itemId, revision)
     const turnId = string(item.turnId) ?? this.turnId
     const id = `muse:${itemId}`
