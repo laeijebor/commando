@@ -294,6 +294,8 @@ export class CursorChatSession implements ChatProviderSession {
     const model = agentOptions.model!
     const sandboxed = agentOptions.local!.sandboxOptions!.enabled
     if (sandboxed && this.ranUnsandboxed) throw new Error("Cursor's sandbox can't turn on in this process; restart the chat (it restarts automatically when idle).")
+    // Creating or resuming the agent takes a few seconds; show the turn as started meanwhile.
+    this.update({ status: 'running' })
     if (this.stale || !this.agent) {
       const id = this.info.sessionId
       this.agent?.close()

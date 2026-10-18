@@ -159,6 +159,17 @@ describe('CursorChatSession', () => {
     expect(sdk.create).not.toHaveBeenCalled()
     session.close()
   })
+  it('shows the turn as running while the agent is created, and idle again if creation fails', async () => {
+    const { session, sdk } = harness()
+    await session.start()
+    const created = deferred<CursorAgent>()
+    sdk.create.mockReturnValueOnce(created.promise)
+    session.send('First'); await tick()
+    expect(session.snapshot().session.status).toBe('running')
+    created.reject(new Error('create failed')); await tick()
+    expect(session.snapshot().session.status).toBe('idle')
+    session.close()
+  })
   it('can retry failed lazy creation without losing readiness', async () => {
     const { session, sdk } = harness()
     await session.start()
