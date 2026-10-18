@@ -64,6 +64,14 @@ describe('buildResumeCommand', () => {
     })).toBe('/Users/me/.local/bin/agent --force --resume=chat-1234567')
   })
 
+  it('resumes Muse through its launcher rather than the versioned binary it execs', () => {
+    expect(buildResumeCommand('muse', '01a14d9e-e25f-7530-a907-d8b1d5347eda', {
+      args: ['/Users/me/.local/bin/muse-bin-1.4.10-R6427.1', '--yolo', '--model', 'big', '--image', '/tmp/a.png', 'fix', 'it'],
+      env: { XDG_CONFIG_HOME: '/Users/me/.xdg' },
+    })).toBe('env XDG_CONFIG_HOME=/Users/me/.xdg /Users/me/.local/bin/muse --yolo --model big resume 01a14d9e-e25f-7530-a907-d8b1d5347eda')
+    expect(findAgentProcess(parseProcessTable('  10  1 -zsh\n  11 10 /Users/me/.local/bin/muse-bin-1.4.10-R6427.1\n'), 10, 'muse')?.pid).toBe(11)
+  })
+
   it('accepts npm installs run under node', () => {
     expect(buildResumeCommand('claude', SESSION, {
       args: ['/usr/local/bin/node', '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js'],

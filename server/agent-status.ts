@@ -29,11 +29,15 @@ const PROVIDERS: Exclude<AgentProvider, 'unknown'>[] = [
   'claude',
   'codex',
   'opencode',
+  'muse',
 ]
 
-function providerIn(value: string): Exclude<AgentProvider, 'unknown'> | null {
+// "muse" is an ordinary word, so pane output alone never identifies Muse.
+const CONTENT_PROVIDERS = PROVIDERS.filter((provider) => provider !== 'muse')
+
+function providerIn(value: string, providers = PROVIDERS): Exclude<AgentProvider, 'unknown'> | null {
   const normalized = value.toLowerCase()
-  for (const provider of PROVIDERS) {
+  for (const provider of providers) {
     const pattern = new RegExp(`(?:^|[/\\s._-])${provider}(?:$|[\\s._-])`, 'i')
     if (pattern.test(normalized)) return provider
   }
@@ -77,7 +81,7 @@ export function inferAgentProvider(
   }
 
   const tail = content.slice(-12_000)
-  const contentProvider = providerIn(tail)
+  const contentProvider = providerIn(tail, CONTENT_PROVIDERS)
   if (contentProvider) {
     return {
       provider: contentProvider,

@@ -13,6 +13,8 @@ export const SANDBOXED_AGENT_PROFILE_ENV = [
   'COMMANDO_AGENT_HOOK_TOKEN_PATH',
   // Chat hosts and the daemon share this image folder.
   'COMMANDO_CHAT_IMAGES_DIR',
+  // Set inside a Commando chat; it would replace every resume command a bridge reports.
+  'COMMANDO_CHAT_RESUME',
 ] as const
 
 for (const name of SANDBOXED_AGENT_PROFILE_ENV) delete process.env[name]

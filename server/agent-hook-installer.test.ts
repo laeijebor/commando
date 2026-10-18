@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AgentHookInstaller,
   CLAUDE_HOOK_EVENTS,
+  MUSE_HOOK_EVENTS,
   OPENCODE_HOOK_EVENTS,
   mergeCodexNotify,
   generatedSimCli,
@@ -470,7 +471,8 @@ describe('agent hook installer', () => {
     const prMarkerCli = await readFile(paths.prMarkerCliPath, 'utf8')
     const simCli = await readFile(paths.simCliPath, 'utf8')
 
-    expect(claudeBridge).toContain('/api/agent-status/hooks/claude')
+    expect(claudeBridge).toContain('const PROVIDER = "claude"')
+    expect(claudeBridge).toContain('/api/agent-status/hooks/${PROVIDER}')
     expect(claudeBridge).toContain('X-Commando-Pane')
     expect(claudeBridge).toContain('for await (const chunk of process.stdin)')
     expect(claudeBridge).toContain('prompt_id: boundedText(input.prompt_id, 200)')
@@ -1401,6 +1403,133 @@ describe('agent hook installer', () => {
       'eyJheader123.payload123.signature123',
       'raw-private-key',
     ]) expect(serialized).not.toContain(secret)
+  })
+})
+
+describe('Muse hooks', () => {
+  async function museHome(settings?: Record<string, unknown>): Promise<string> {
+    const home = await temporaryHome()
+    await mkdir(join(home, '.config', 'muse'), { recursive: true })
+    if (settings) await writeFile(join(home, '.config', 'muse', 'settings.json'), JSON.stringify(settings))
+    return home
+  }
+
+  async function runMuseHook(command: string, input: Record<string, unknown>, env: NodeJS.ProcessEnv) {
+    // Muse runs hook commands through the shell.
+    const child = spawn('/bin/sh', ['-c', command], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'inherit'] })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stdin.end(JSON.stringify(input))
+    const code = await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject) })
+    return { code, stdout }
+  }
+
+  it('skips Muse until it has created its config folder', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    expect(paths.museHooksInstalled).toBe(false)
+    await expect(stat(paths.museSettingsPath)).rejects.toThrow()
+    await expect(stat(paths.museBridgePath)).rejects.toThrow()
+  })
+
+  it('adds shell-command hooks for every supported event and keeps the user\'s own settings', async () => {
+    const home = await museHome({
+      schema_version: 1,
+      contributor_mode_enabled: true,
+      hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'say done' }] }] },
+    })
+    const paths = await new AgentHookInstaller({ home }).install()
+    expect(paths.museHooksInstalled).toBe(true)
+    expect(paths.museSettingsPath).toBe(join(home, '.config', 'muse', 'settings.json'))
+    await new AgentHookInstaller({ home }).install()
+    const settings = JSON.parse(await readFile(paths.museSettingsPath, 'utf8'))
+    expect(settings.schema_version).toBe(1)
+    expect(settings.contributor_mode_enabled).toBe(true)
+    expect(Object.keys(settings.hooks).sort()).toEqual([...MUSE_HOOK_EVENTS].sort())
+    const ours = { matcher: '', hooks: [{ type: 'command', command: `node '${paths.museBridgePath}' --commando-agent-status-hook` }] }
+    expect(settings.hooks.Stop).toEqual([{ matcher: '', hooks: [{ type: 'command', command: 'say done' }] }, ours])
+    for (const event of MUSE_HOOK_EVENTS) expect(settings.hooks[event].at(-1)).toEqual(ours)
+    expect((await stat(paths.museBridgePath)).mode & 0o777).toBe(0o600)
+  })
+
+  it('creates a versioned settings file and honors XDG_CONFIG_HOME inside the home', async () => {
+    const home = await temporaryHome()
+    const config = join(home, 'xdg')
+    await mkdir(join(config, 'muse'), { recursive: true })
+    vi.stubEnv('XDG_CONFIG_HOME', config)
+    const paths = await new AgentHookInstaller().install()
+    expect(paths.museSettingsPath).toBe(join(config, 'muse', 'settings.json'))
+    expect(JSON.parse(await readFile(paths.museSettingsPath, 'utf8')).schema_version).toBe(1)
+  })
+
+  it('reports the main Muse conversation as muse and ignores its background threads', async () => {
+    const home = await museHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const command = JSON.parse(await readFile(paths.museSettingsPath, 'utf8')).hooks.SessionStart[0].hooks[0].command
+    const received: Array<{ url: string | undefined; body: Record<string, unknown> }> = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        received.push({ url: request.url, body: JSON.parse(body) })
+        response.writeHead(200)
+        response.end('{}')
+      })()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    const session = '01a14d9e-e25f-7530-a907-d8b1d5347eda'
+    const env = { COMMANDO_PORT: String(address.port), TMUX_PANE: '%42', MUSE_SESSION_ID: session }
+
+    const start = await runMuseHook(command, { hook_event_name: 'SessionStart', session_id: session }, { ...env, MUSE_THREAD_ID: session })
+    expect(start.code).toBe(0)
+    const context = JSON.parse(start.stdout).hookSpecificOutput.additionalContext
+    expect(context).toContain(paths.prMarkerCliPath)
+    expect(context).toContain(`Resume command for this conversation: muse resume ${session}`)
+
+    const reminder = await runMuseHook(command, { hook_event_name: 'SubagentStart', session_id: 'child', subagent_id: 'skill-reminder' }, { ...env, MUSE_THREAD_ID: 'child' })
+    expect(reminder).toEqual({ code: 0, stdout: '' })
+    await runMuseHook(command, { hook_event_name: 'PermissionRequest', session_id: session, tool_name: 'shell', tool_input: { command: 'ls' } }, { ...env, MUSE_THREAD_ID: session })
+
+    // Muse strips TMUX_PANE and COMMANDO_PORT from a hook's environment; the bridge
+    // reads them from the Muse process instead, played here by a node parent.
+    const parent = spawn(process.execPath, ['-e', `
+      const { spawn } = require('node:child_process')
+      const env = { ...process.env }
+      delete env.TMUX_PANE
+      delete env.COMMANDO_PORT
+      const child = spawn('/bin/sh', ['-c', process.argv[1]], { env, stdio: ['pipe', 'inherit', 'inherit'] })
+      process.stdin.pipe(child.stdin)
+      child.on('exit', (code) => process.exit(code))
+    `, command], { env: { ...process.env, ...env, MUSE_THREAD_ID: session }, stdio: ['pipe', 'ignore', 'inherit'] })
+    parent.stdin.end(JSON.stringify({ hook_event_name: 'Stop', session_id: session, last_assistant_message: 'Done' }))
+    expect(await new Promise((resolve, reject) => { parent.on('exit', resolve); parent.on('error', reject) })).toBe(0)
+
+    expect(received.map((entry) => [entry.url, entry.body.hook_event_name, entry.body.session_id])).toEqual([
+      ['/api/agent-status/hooks/muse', 'SessionStart', session],
+      ['/api/agent-status/hooks/muse', 'PermissionRequest', session],
+      ['/api/agent-status/hooks/muse', 'Stop', session],
+    ])
+    // Muse prompts are answered in Muse; the bridge never holds one open.
+    expect(received[1]!.body.request).toBeUndefined()
+  })
+
+  it('repairs Muse hooks left pointing at a departed bridge', async () => {
+    const home = await museHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const departed = join(home, "it's gone", 'commando-muse-agent-status.mjs')
+    const settings = JSON.parse(await readFile(paths.museSettingsPath, 'utf8'))
+    for (const event of MUSE_HOOK_EVENTS) settings.hooks[event].at(-1).hooks[0].command = `node '${departed.replaceAll("'", `'"'"'`)}' --commando-agent-status-hook`
+    await writeFile(paths.museSettingsPath, JSON.stringify(settings))
+
+    expect(await repairAgentStatusHooks({ home })).toEqual({ repaired: true, staleBridgePaths: [departed] })
+    const repaired = JSON.parse(await readFile(paths.museSettingsPath, 'utf8'))
+    for (const event of MUSE_HOOK_EVENTS) {
+      expect(repaired.hooks[event]).toEqual([{ matcher: '', hooks: [{ type: 'command', command: `node '${paths.museBridgePath}' --commando-agent-status-hook` }] }])
+    }
+    expect(await repairAgentStatusHooks({ home })).toEqual({ repaired: false, staleBridgePaths: [] })
   })
 })
 

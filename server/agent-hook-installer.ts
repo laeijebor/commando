@@ -24,6 +24,20 @@ export const CLAUDE_HOOK_EVENTS = [
   'SessionEnd',
 ] as const
 
+/** Muse rejects Claude's task, denial and elicitation events. */
+export const MUSE_HOOK_EVENTS = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
+  'Notification',
+  'Stop',
+  'StopFailure',
+  'SessionEnd',
+] as const
+
 export const OPENCODE_HOOK_EVENTS = [
   'session.status',
   'session.idle',
@@ -43,6 +57,7 @@ const CLAUDE_HOOK_MARKER = '--commando-agent-status-hook'
 const CURSOR_BRIDGE_FILENAME = 'commando-cursor-agent-status.mjs'
 const CURSOR_HOOK_MARKER = '--commando-cursor-status-hook'
 const CLAUDE_BRIDGE_FILENAME = 'commando-claude-agent-status.mjs'
+const MUSE_BRIDGE_FILENAME = 'commando-muse-agent-status.mjs'
 const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
 const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
@@ -60,6 +75,8 @@ export type AgentHookInstallerOptions = {
   codexBridgePath?: string
   codexConfigPath?: string
   home?: string
+  museBridgePath?: string
+  museSettingsPath?: string
   openCodePluginPath?: string
   prMarkerCliPath?: string
   simCliPath?: string
@@ -83,6 +100,10 @@ export type AgentHookInstallResult = {
   codexBridgePath: string
   codexConfigPath: string
   codexNotifyWarning?: string
+  museBridgePath: string
+  museSettingsPath: string
+  /** False when Muse has no config folder yet, so its hooks were not installed. */
+  museHooksInstalled?: boolean
   openCodePluginPath: string
   prMarkerCliPath: string
   simCliPath: string
@@ -153,9 +174,42 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
   ].join('\n')
 }
 
-function generatedClaudeBridge(tokenPath: string, instructions: string): string {
+/** Muse runs Claude Code-style hooks, so it shares the Claude bridge with a few differences. */
+type ClaudeBridgeProvider = 'claude' | 'muse'
+
+function generatedClaudeBridge(tokenPath: string, instructions: string, provider: ClaudeBridgeProvider = 'claude'): string {
   return `import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+
+const PROVIDER = ${JSON.stringify(provider)}
+
+// Muse runs hooks with a minimal environment, so TMUX_PANE and COMMANDO_PORT are
+// read from the nearest ancestor that has them: the Muse process itself.
+async function inheritedPaneEnv() {
+  const { execFile } = await import('node:child_process')
+  const run = (args) => new Promise((resolve) => {
+    execFile('ps', args, { timeout: 1000 }, (error, stdout) => resolve(error ? '' : String(stdout)))
+  })
+  const environment = async (pid) => {
+    try {
+      return (await readFile('/proc/' + pid + '/environ', 'utf8')).split('\\0')
+    } catch {
+      // macOS: ps -E appends the environment to the command line.
+      return (await run(['-E', '-ww', '-o', 'command=', '-p', String(pid)])).trim().split(/\\s+/)
+    }
+  }
+  let pid = process.ppid
+  for (let depth = 0; depth < 4 && pid > 1; depth += 1) {
+    const words = await environment(pid)
+    const pane = words.find((word) => /^TMUX_PANE=%\\d+$/.test(word))
+    if (pane) {
+      const port = words.find((word) => /^COMMANDO_PORT=\\d{1,5}$/.test(word))
+      return { pane: pane.slice('TMUX_PANE='.length), port: port?.slice('COMMANDO_PORT='.length) }
+    }
+    pid = Number((await run(['-o', 'ppid=', '-p', String(pid)])).trim())
+  }
+  return {}
+}
 
 const __name = (target, name) => Object.defineProperty(target, 'name', { value: name, configurable: true })
 ${isCursorInvocation.toString()}
@@ -460,6 +514,7 @@ function resumeContext(sessionId) {
   if (typeof chat === 'string' && chat.length > 0 && chat.length < 2000 && !/[\\x00-\\x1f]/.test(chat)) {
     return '\\nResume command for this conversation: ' + chat + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
   }
+  if (PROVIDER === 'muse') return '\\nResume command for this conversation: muse resume ' + sessionId + ' (pin it once with the --session flag)'
   const profile = /^\\.(claude[wp])$/.exec((process.env.CLAUDE_CONFIG_DIR ?? '').split('/').filter(Boolean).pop() ?? '')?.[1] ?? 'claude'
   return '\\nResume command for this conversation: ' + profile + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
 }
@@ -472,6 +527,9 @@ async function main() {
       if (raw.length > 2_000_000) return
     }
     const input = JSON.parse(raw)
+    // Muse also runs hooks for its own background threads (reminders, subagents),
+    // each under its own session id. Only the main conversation is reported.
+    if (PROVIDER === 'muse' && process.env.MUSE_THREAD_ID && process.env.MUSE_THREAD_ID !== process.env.MUSE_SESSION_ID) return
     // Cursor imports Claude hooks by default. Native hooks own context, resume,
     // status, and interactions; this guard uses invocation payload evidence.
     if (isCursorInvocation(input)) {
@@ -481,11 +539,12 @@ async function main() {
       process.stdout.write(JSON.stringify(output) + '\\n')
       return
     }
-    const pane = process.env.TMUX_PANE
+    const inherited = PROVIDER === 'muse' && !process.env.TMUX_PANE ? await inheritedPaneEnv() : {}
+    const pane = process.env.TMUX_PANE ?? inherited.pane
     if (!pane || !/^%\\d+$/.test(pane)) return
     const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
     if (token.length < 32) return
-    const port = process.env.COMMANDO_PORT || '4310'
+    const port = process.env.COMMANDO_PORT || inherited.port || '4310'
     if (!/^\\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return
     const event = input.hook_event_name
     if (event === 'UserPromptSubmit' && isTaskNotification(input.prompt)) return
@@ -514,7 +573,8 @@ async function main() {
     const error = event === 'PostToolUseFailure' || event === 'StopFailure'
       ? boundedText(input.error_details ?? input.error, 200)
       : undefined
-    const request = interactionFor(input)
+    // Muse's permission hook output is not Claude's, so its prompts stay in the TUI.
+    const request = PROVIDER === 'muse' ? undefined : interactionFor(input)
     const planUpdate = planUpdateFor(input)
     const body = JSON.stringify({
       hook_event_name: boundedText(event, 80),
@@ -538,7 +598,7 @@ async function main() {
       backgroundTasks: Array.isArray(input.background_tasks) ? input.background_tasks.length : undefined,
       error,
     })
-    const response = await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/claude\`, {
+    const response = await fetch(\`http://127.0.0.1:\${port}/api/agent-status/hooks/\${PROVIDER}\`, {
       method: 'POST',
       headers: {
         'Authorization': \`Bearer \${token}\`,
@@ -553,7 +613,7 @@ async function main() {
     const output = hookOutput(input, request, asObject(result).answer)
     if (output) process.stdout.write(JSON.stringify(output))
   } catch {
-    // Agent hooks must never interrupt Claude Code when Commando is unavailable.
+    // Agent hooks must never interrupt the agent when Commando is unavailable.
   }
 }
 
@@ -2075,6 +2135,70 @@ function installedCodexBridgePaths(content: string): Set<string> {
   )
 }
 
+// Muse runs a hook's command through the shell; it does not support Claude's argv form.
+function museHookCommand(bridgePath: string): string {
+  return `node '${bridgePath.replaceAll("'", `'"'"'`)}' ${CLAUDE_HOOK_MARKER}`
+}
+
+function museHookBridgePath(command: unknown): string | null {
+  if (typeof command !== 'string') return null
+  const match = /^node '((?:[^']|'"'"')*)' --commando-agent-status-hook$/.exec(command)
+  return match ? match[1]!.replaceAll(`'"'"'`, "'") : null
+}
+
+function isInstalledMuseHook(value: unknown): boolean {
+  return isObject(value) && value.type === 'command' && museHookBridgePath(value.command) !== null
+}
+
+function installedMuseBridgePaths(settings: JsonObject): Set<string> {
+  const paths = new Set<string>()
+  if (!isObject(settings.hooks)) return paths
+  for (const configured of Object.values(settings.hooks)) {
+    if (!Array.isArray(configured)) continue
+    for (const entry of configured) {
+      if (!isObject(entry) || !Array.isArray(entry.hooks)) continue
+      for (const hook of entry.hooks) {
+        const path = isObject(hook) && hook.type === 'command' ? museHookBridgePath(hook.command) : null
+        if (path) paths.add(resolve(path))
+      }
+    }
+  }
+  return paths
+}
+
+function mergeMuseHooks(settings: JsonObject, bridgePath: string): JsonObject {
+  if (settings.hooks !== undefined && !isObject(settings.hooks)) {
+    throw new Error('Muse settings "hooks" must be an object')
+  }
+  const hooks: JsonObject = settings.hooks ?? {}
+  for (const event of MUSE_HOOK_EVENTS) {
+    const configured = hooks[event]
+    if (configured !== undefined && !Array.isArray(configured)) {
+      throw new Error(`Muse settings hook "${event}" must be an array`)
+    }
+    const entries = (configured ?? []).map((entry: unknown) => {
+      if (!isObject(entry) || !Array.isArray(entry.hooks)) return entry
+      const kept = entry.hooks.filter((hook) => !isInstalledMuseHook(hook))
+      if (kept.length === entry.hooks.length) return entry
+      if (kept.length === 0 && Object.keys(entry).every((key) => key === 'hooks' || key === 'matcher')) return null
+      return { ...entry, hooks: kept }
+    }).filter((entry: unknown) => entry !== null)
+    entries.push({ matcher: '', hooks: [{ type: 'command', command: museHookCommand(bridgePath) }] })
+    hooks[event] = entries
+  }
+  // Muse refuses a settings file without its schema version.
+  return { schema_version: 1, ...settings, hooks }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isDirectory()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
 async function isReadableFile(path: string): Promise<boolean> {
   try {
     await access(path)
@@ -2199,7 +2323,7 @@ async function assertBoundedPath(home: string, path: string): Promise<void> {
 }
 
 export class AgentHookInstaller {
-  readonly paths: AgentHookInstallResult
+  readonly paths: Omit<AgentHookInstallResult, 'codexNotifyWarning' | 'museHooksInstalled'>
   private readonly home: string
 
   constructor(options: AgentHookInstallerOptions = {}) {
@@ -2218,6 +2342,7 @@ export class AgentHookInstaller {
       throw new Error('CLAUDE_CONFIG_DIR must not be empty')
     }
     this.home = resolvedHome
+    const configuredXdgConfig = inherited(process.env.XDG_CONFIG_HOME)?.trim() || undefined
     const configuredCodexHome = inherited(process.env.CODEX_HOME)
     if (configuredCodexHome !== undefined && configuredCodexHome.trim().length === 0) {
       throw new Error('CODEX_HOME must not be empty')
@@ -2251,6 +2376,9 @@ export class AgentHookInstaller {
             ? resolve(configuredCodexHome, 'config.toml')
             : resolve(resolvedHome, '.codex', 'config.toml')),
       ),
+      museBridgePath: resolve(options.museBridgePath ?? resolve(resolvedHome, '.commando', 'hooks', MUSE_BRIDGE_FILENAME)),
+      // Muse keeps settings in $XDG_CONFIG_HOME/muse, else ~/.config/muse.
+      museSettingsPath: resolve(options.museSettingsPath ?? resolve(configuredXdgConfig ?? resolve(resolvedHome, '.config'), 'muse', 'settings.json')),
       openCodePluginPath: resolve(
         options.openCodePluginPath
           ?? resolve(resolvedHome, '.config', 'opencode', 'plugins', OPENCODE_PLUGIN_FILENAME),
@@ -2305,16 +2433,32 @@ export class AgentHookInstaller {
     return stale.sort()
   }
 
+  /** Bridge paths in the Muse settings that no longer resolve to the usable bridge. */
+  async staleMuseBridgePaths(): Promise<string[]> {
+    if (!isWithin(this.home, this.paths.museSettingsPath)) return []
+    const { settings } = await readClaudeSettings(this.paths.museSettingsPath)
+    const stale: string[] = []
+    for (const path of installedMuseBridgePaths(settings)) {
+      if (path !== this.paths.museBridgePath || !(await isReadableFile(path))) stale.push(path)
+    }
+    return stale.sort()
+  }
+
   async install(): Promise<AgentHookInstallResult> {
     // Validate before changing any profile. Malformed Cursor configuration is left intact.
     await this.validateCursorInstall()
     for (const path of Object.values(this.paths)) await assertBoundedPath(this.home, path)
-    await this.installGeneratedScripts()
+    const museInstalled = await isDirectory(dirname(this.paths.museSettingsPath))
+    // Validate Muse settings too before anything is written.
+    if (museInstalled) mergeMuseHooks((await readClaudeSettings(this.paths.museSettingsPath)).settings, this.paths.museBridgePath)
+    await this.installGeneratedScripts({ claude: true, openCode: true, muse: museInstalled })
     await this.installCursorHooks()
     const codexNotifyWarning = await this.installCodexNotify()
     await this.installClaudeHooks()
+    if (museInstalled) await this.installMuseHooks()
     return {
       ...this.paths,
+      museHooksInstalled: museInstalled,
       ...(codexNotifyWarning ? { codexNotifyWarning } : {}),
     }
   }
@@ -2338,18 +2482,20 @@ export class AgentHookInstaller {
     }
     const staleClaude = await discover('Claude', () => this.staleClaudeBridgePaths(), [this.paths.claudeBridgePath, this.paths.claudeSettingsPath])
     const staleCodex = await discover('Codex', () => this.staleCodexBridgePaths(), [this.paths.codexBridgePath, this.paths.codexConfigPath])
+    const staleMuse = await discover('Muse', () => this.staleMuseBridgePaths(), [this.paths.museBridgePath, this.paths.museSettingsPath])
     const staleCursor = await discover('Cursor', async () => {
       const stale = await this.staleCursorBridgePaths()
       if (stale.length > 0) await this.validateCursorInstall()
       return stale
     }, [this.paths.cursorBridgePath, this.paths.cursorHooksPath])
-    const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex, ...staleCursor])].sort()
+    const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex, ...staleCursor, ...staleMuse])].sort()
     if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
     for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
-    await this.installGeneratedScripts({ claude: staleClaude.length > 0, openCode: false })
+    await this.installGeneratedScripts({ claude: staleClaude.length > 0, openCode: false, muse: staleMuse.length > 0 })
     if (staleCursor.length > 0) await this.installCursorHooks(true)
     if (staleCodex.length > 0) await this.installCodexNotify()
     if (staleClaude.length > 0) await this.installClaudeHooks()
+    if (staleMuse.length > 0) await this.installMuseHooks()
     return { repaired: true, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
   }
 
@@ -2380,7 +2526,7 @@ export class AgentHookInstaller {
   }
 
   private async installGeneratedScripts(
-    providers = { claude: true, openCode: true },
+    providers = { claude: true, openCode: true, muse: true },
   ): Promise<void> {
     const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
@@ -2392,6 +2538,11 @@ export class AgentHookInstaller {
         generatedClaudeBridge(this.paths.tokenPath, instructions),
         0o600,
       )
+    }
+    if (providers.muse) {
+      await mkdir(dirname(this.paths.museBridgePath), { recursive: true, mode: 0o700 })
+      await chmod(dirname(this.paths.museBridgePath), 0o700)
+      await writeAtomically(this.paths.museBridgePath, generatedClaudeBridge(this.paths.tokenPath, instructions, 'muse'), 0o600)
     }
     if (providers.openCode) {
       await writeAtomically(
@@ -2422,6 +2573,12 @@ export class AgentHookInstaller {
       `${JSON.stringify(merged, null, 2)}\n`,
       mode,
     )
+  }
+
+  private async installMuseHooks(): Promise<void> {
+    const { mode, settings } = await readClaudeSettings(this.paths.museSettingsPath)
+    const merged = mergeMuseHooks(settings, this.paths.museBridgePath)
+    await writeAtomically(this.paths.museSettingsPath, `${JSON.stringify(merged, null, 2)}\n`, mode)
   }
 
   // Codex only learns about the bridge through `notify`, so the script is

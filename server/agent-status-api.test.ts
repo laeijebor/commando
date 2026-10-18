@@ -77,6 +77,33 @@ describe('AgentStatusHookApi', () => {
     expect(changes).toHaveLength(1)
   })
 
+  it('records Muse hooks, which use the Claude hook format, under Muse', async () => {
+    const response = await post('/api/agent-status/hooks/muse', {
+      hook_event_name: 'UserPromptSubmit',
+      session_id: '01a14d9e-e25f-7530-a907-d8b1d5347eda',
+      intent: 'Ship it',
+    })
+    expect(response.status).toBe(200)
+    expect(registry.get('%1')).toMatchObject({ provider: 'muse', status: 'working', agentSessionId: '01a14d9e-e25f-7530-a907-d8b1d5347eda' })
+
+    await post('/api/agent-status/hooks/muse', {
+      hook_event_name: 'PermissionRequest',
+      session_id: '01a14d9e-e25f-7530-a907-d8b1d5347eda',
+      request: { id: 'held', kind: 'permission', prompt: 'Run ls?' },
+    })
+    // Muse answers its own prompts; Commando never holds one open for it.
+    expect(registry.get('%1')).toMatchObject({ provider: 'muse', status: 'needs_input' })
+    expect(registry.get('%1')?.details?.requests ?? []).toEqual([])
+
+    await post('/api/agent-status/hooks/muse', { hook_event_name: 'PostToolUse', session_id: '01a14d9e-e25f-7530-a907-d8b1d5347eda' })
+    await post('/api/agent-status/hooks/muse', {
+      hook_event_name: 'Stop',
+      session_id: '01a14d9e-e25f-7530-a907-d8b1d5347eda',
+      finalMessage: 'Done',
+    })
+    expect(registry.get('%1')).toMatchObject({ provider: 'muse', status: 'done' })
+  })
+
   it('accepts authenticated OpenCode events', async () => {
     const response = await post('/api/agent-status/hooks/opencode', {
       directory: '/workspace',

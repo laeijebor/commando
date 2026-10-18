@@ -1,4 +1,4 @@
-import { basename } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { ChatProvider } from '../shared/agent-chat.js'
 import type { AgentProvider } from '../shared/protocol.js'
 
@@ -25,6 +25,8 @@ type FlagSpec = {
 
 type ProviderSpec = {
   executables: readonly string[]
+  /** Other executable names, such as a versioned binary a launcher script execs. */
+  executablePattern?: RegExp
   /** Arguments a launcher script inserts before the user's own. */
   launcherArgs?: (rest: readonly string[]) => number
   env: readonly string[]
@@ -34,6 +36,8 @@ type ProviderSpec = {
 
 // Only flags that shape the session are carried over. Everything else is dropped: prompts,
 // old resume/continue targets, print mode, and flags whose values may contain spaces.
+const MUSE_BINARY = /^muse-bin-\d[\w.-]*$/
+
 const PROVIDERS: Record<ResumableProvider, ProviderSpec> = {
   claude: {
     executables: ['claude'],
@@ -119,6 +123,25 @@ const PROVIDERS: Record<ResumableProvider, ProviderSpec> = {
     },
     resume: (executable, flags, id) => [...executable, ...flags, `--resume=${id}`],
   },
+  muse: {
+    executables: ['muse'],
+    // The `muse` launcher script execs a versioned `muse-bin-<version>` beside itself.
+    executablePattern: MUSE_BINARY,
+    env: ['XDG_CONFIG_HOME', 'XDG_DATA_HOME'],
+    flags: {
+      bare: ['--yolo', '--trust-workspace', '--disable-approval', '--disable-sandbox', '--disable-write', '--disable-shell', '--disable-request-user-input', '--parallel-tool-calls', '--no-parallel-tool-calls', '--no-session-log'],
+      single: ['--provider', '--preset', '--model', '--reasoning-effort', '--effort', '--approval-mode', '--permission-profile', '--approval-judge', '--sandbox-network', '--workspace', '--contributor-mode', '--base-url'],
+      dropped: ['--image', '-w', '--worktree', '--worktree-base', '--worktree-existing', '--agents'],
+    },
+    // Resume through the launcher so an updated binary is picked up.
+    resume: (executable, flags, id) => [museLauncher(executable), ...flags, 'resume', id],
+  },
+}
+
+function museLauncher(executable: readonly string[]): string {
+  const first = executable[0]!
+  if (!MUSE_BINARY.test(basename(first))) return first
+  return first.includes('/') ? join(dirname(first), 'muse') : 'muse'
 }
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/
@@ -147,7 +170,7 @@ export function shellQuote(word: string): string {
 function executableOf(spec: ProviderSpec, args: readonly string[]): { executable: string[]; rest: readonly string[] } | null {
   const [first, second] = args
   if (!first) return null
-  if (spec.executables.includes(basename(first))) return { executable: [first], rest: args.slice(1) }
+  if (spec.executables.includes(basename(first)) || spec.executablePattern?.test(basename(first))) return { executable: [first], rest: args.slice(1) }
   // npm installs run the CLI script under a JavaScript runtime, from a path naming the package.
   if (SCRIPT_RUNTIMES.has(basename(first)) && second && spec.executables.some((name) => second.includes(name))) {
     return { executable: [first, second], rest: args.slice(2) }
