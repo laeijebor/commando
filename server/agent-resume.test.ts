@@ -127,6 +127,23 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --resume ${SESSION}`)
   })
 
+  it('restores a Cursor chat host instead of its CLI child and refreshes picker settings without API keys', async () => {
+    const id = 'agent-11111111-2222-3333-4444-555555555555'
+    const host = 'node /c/server/agent-host/main.ts cursor --permission-mode bypassPermissions'
+    let permissionMode = 'bypassPermissions'
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      chatSettings: () => ({ permissionMode, bypassAllowed: true }),
+      readProcessTable: vi.fn(async () => `  500 1 ${host}\n  700 500 /bin/agent\n`),
+      readProcessEnvironment: vi.fn(async () => `${host} CURSOR_API_KEY=secret`),
+    })
+    await resume.observeHookStatus(hookStatus({ provider: 'cursor', agentSessionId: id }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)).toMatchObject({ provider: 'cursor', command: `/c/scripts/commando-agent cursor --permission-mode bypassPermissions --resume ${id}` })
+    permissionMode = 'auto'
+    await resume.observeHookStatus(hookStatus({ provider: 'cursor', agentSessionId: id }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent cursor --permission-mode auto --resume ${id}`)
+  })
+
   it('restores a Codex chat host instead of its app-server child, keeping permission flags and picker changes', async () => {
     const host = 'node /c/server/agent-host/main.ts codex --permission-mode bypassPermissions'
     let permissionMode = 'bypassPermissions'

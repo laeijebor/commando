@@ -58,3 +58,22 @@ describe('provider-aware composer permissions', () => {
       .toEqual(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions'])
   })
 })
+
+
+describe('Cursor composer permissions', () => {
+  const cursor = { ...session, provider: 'cursor' as const }
+  it('names Cursor and offers exactly its four modes, independent of Claude model capabilities', () => {
+    expect(providerLabel(cursor)).toBe('Cursor')
+    expect(permissionModeOptions({ ...cursor, models: [], permissionMode: 'dontAsk' }))
+      .toEqual(['bypassPermissions', 'default', 'auto', 'plan'])
+  })
+  it.each([
+    ['bypassPermissions', 'Full access', 'No sandbox and no review; Cursor never asks.'],
+    ['default', 'Sandboxed', "Commands run in Cursor's sandbox; anything outside it is refused, since Cursor can't ask."],
+    ['auto', 'Auto-review', "Cursor's reviewer approves or blocks risky actions; nothing asks you."],
+    ['plan', 'Plan', 'Cursor plans without changing anything.'],
+  ] as const)('labels and describes %s', (mode, label, description) => {
+    expect(permissionLabel(mode, cursor)).toBe(label)
+    expect(permissionDescription(mode, cursor)).toBe(description)
+  })
+})

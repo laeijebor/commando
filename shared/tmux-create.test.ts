@@ -104,3 +104,14 @@ describe('Muse chat launch', () => {
     expect(chatPermissionModes('muse-chat').map((mode) => mode.value)).toEqual(['default', 'bypassPermissions'])
   })
 })
+
+describe('Cursor chat launch arguments', () => {
+  it('defaults to full access without carrying Claude directories', () => {
+    expect(sessionAgentArgv({ provider: 'cursor-chat', configDir: '/unused', readableDir: '/unused' }))
+      .toEqual(['commando-agent', 'cursor', '--permission-mode', 'bypassPermissions'])
+  })
+  it('places resume before arbitrary prompt data', () => {
+    expect(sessionAgentArgv({ provider: 'cursor-chat', permissionMode: 'auto', resume: 'agent-12345678-0000', prompt: '--model injected\nhello' }))
+      .toEqual(['commando-agent', 'cursor', '--permission-mode', 'auto', '--resume', 'agent-12345678-0000', '--prompt', '--model injected\nhello'])
+  })
+})

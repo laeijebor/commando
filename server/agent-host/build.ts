@@ -24,6 +24,14 @@ export async function agentSdkVersion(): Promise<string> {
   return manifest.version
 }
 
+/** Cursor's entry point lives in dist/cjs; its manifest is at the package root. */
+export async function cursorSdkVersion(): Promise<string> {
+  const entry = createRequire(import.meta.url).resolve('@cursor/sdk')
+  const manifest = JSON.parse(await readFile(join(dirname(entry), '../../package.json'), 'utf8')) as { version?: unknown }
+  if (typeof manifest.version !== 'string') throw new Error('@cursor/sdk has no version')
+  return manifest.version
+}
+
 /**
  * A fingerprint of the agent host's source and its SDK version. A host
  * computes it once at start; the daemon recomputes it from the checkout, so a
@@ -33,10 +41,12 @@ export async function agentSdkVersion(): Promise<string> {
 export async function agentHostBuild(): Promise<string> {
   const names = (await readdir(HOST_DIR)).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort()
   const codexFiles = (await readdir(join(HOST_DIR, 'codex'))).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort().map((name) => join(HOST_DIR, 'codex', name))
+  const cursorFiles = (await readdir(join(HOST_DIR, 'cursor'))).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts')).sort().map((name) => join(HOST_DIR, 'cursor', name))
   const hash = createHash('sha256')
-  for (const file of [...names.map((name) => join(HOST_DIR, name)), ...codexFiles, ...SHARED_FILES]) {
+  for (const file of [...names.map((name) => join(HOST_DIR, name)), ...codexFiles, ...cursorFiles, ...SHARED_FILES]) {
     hash.update(file.slice(file.lastIndexOf('/') + 1)).update('\0').update(await readFile(file)).update('\0')
   }
   hash.update(SDK_PACKAGE).update('\0').update(await agentSdkVersion())
+  hash.update('@cursor/sdk').update('\0').update(await cursorSdkVersion())
   return hash.digest('hex').slice(0, 12)
 }

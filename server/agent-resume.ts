@@ -210,7 +210,7 @@ export class AgentResumeService {
     const chatProvider = isChatProvider(status.provider)
     const chatSettings = chatProvider ? this.deps.chatSettings?.(pane.id) : undefined
     // A chat's settings, or the way back for Claude Code running a chat's conversation.
-    const chatReturn = chatProvider && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
+    const chatReturn = chatProvider && status.provider !== 'cursor' && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
     const chatKey = chatSettings ? JSON.stringify(chatSettings) : chatReturn ? `return:${chatReturn}` : undefined
     if (existing?.sessionId === status.agentSessionId && existing.provider === status.provider
       && existing.serverId === serverId && existing.path === pane.path

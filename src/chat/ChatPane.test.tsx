@@ -355,3 +355,33 @@ describe('opened chat task card', () => {
     } finally { vi.restoreAllMocks() }
   })
 })
+
+
+describe('Cursor login banner', () => {
+  it.each([undefined, 'Your Cursor login expired.'])('sends login while an error disables the composer (reason: %s)', (reason) => {
+    const state = chat({ session: { ...chat().session, provider: 'cursor', status: 'error', login: { state: 'required', ...(reason ? { reason } : {}) } }, items: [] })
+    const handlers = renderPane(state)
+    expect(screen.getByRole('textbox', { name: 'Message Cursor' })).toBeDisabled()
+    expect(screen.getByText(reason ?? 'Cursor needs you to log in.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Log in to Cursor' }))
+    expect(handlers.onSend).toHaveBeenCalledWith('/login')
+  })
+  it.each([undefined, 'https://cursor.com/login/device'])('cancels a pending login with optional browser link %s', (url) => {
+    const handlers = renderPane(chat({ session: { ...chat().session, provider: 'cursor', status: 'starting', login: { state: 'pending', ...(url ? { url } : {}) } } }))
+    expect(screen.getByText('Finish logging in to Cursor in your browser.')).toBeInTheDocument()
+    const link = screen.queryByRole('link', { name: 'Open the login page' })
+    if (url) {
+      expect(link).toHaveAttribute('href', url)
+      expect(link).toHaveAttribute('target', '_blank')
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+    } else expect(link).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(handlers.onSend).toHaveBeenCalledWith('/login cancel')
+  })
+  it('uses Cursor labels without a TUI switch banner', () => {
+    renderPane(chat({ session: { ...chat().session, provider: 'cursor', claudeCodeSwitch: 'after_turn' }, items: [] }))
+    expect(screen.getByText('Ask Cursor anything about this folder.')).toBeInTheDocument()
+    expect(screen.queryByTestId('claude-code-switch')).toBeNull()
+    expect(screen.getByRole('textbox', { name: 'Message Cursor' })).toBeEnabled()
+  })
+})

@@ -176,6 +176,10 @@ export class AgentStatusHookApi {
 
       const body = await readJson(request)
       const updatedAt = this.dependencies.now?.() ?? Date.now()
+      if (provider === 'cursor' && this.dependencies.chatOwnsPane?.(targetPaneId)) {
+        writeJson(response, 200, { ok: true, changed: false })
+        return true
+      }
       let change: AgentStatusChange
       let cursorAssociation: CursorHookAssociation | null = null
       let openCodeInteraction: OpenCodeInteractionLifecycle | null = null

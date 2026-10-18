@@ -224,8 +224,8 @@ describe('commando-agent arguments', () => {
   })
 
   it('lists every provider in help and rejects unsupported subcommands', () => {
-    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse>/)
-    expect(parseHostArgs(['cursor'], {})).toMatch(/^Usage/)
+    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse\|cursor>/)
+    expect(parseHostArgs(['cursor'], {})).toEqual({ provider: 'cursor', permissionMode: 'bypassPermissions', bypassAllowed: true })
     expect(parseHostArgs([], {})).toMatch(/^Usage/)
     expect(parseHostArgs(['codex', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
   })

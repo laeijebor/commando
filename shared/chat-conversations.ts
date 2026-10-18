@@ -111,8 +111,7 @@ export function groupChatConversations(
 
 export function chatConversationProviderLabel(conversation: ChatConversation): string {
   return conversation.provider === 'claude' && conversation.profile ? conversation.profile
-    : isChatProvider(conversation.provider) ? providerName(conversation.provider)
-    : conversation.provider === 'cursor' ? 'Cursor' : 'OpenCode'
+    : isChatProvider(conversation.provider) ? providerName(conversation.provider) : 'OpenCode'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

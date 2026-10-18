@@ -124,7 +124,7 @@ export class CodexChatSession implements ChatProviderSession {
   private readonly client: CodexTransport
   private readonly mapper: CodexItemMapper
   private readonly files: WorkspaceFileIndex
-  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
+  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private readonly readyListeners: (() => void)[] = []
   private readonly pending = new Map<string, RpcRequest>()
   /** Each fast-capable model's fast service tier. */

@@ -363,11 +363,14 @@ export function buildChatResumeCommand(
   // Commando puts --prompt last; everything after it is prompt text, never flags.
   const rest = launch.args.slice(entry + 2)
   const promptAt = rest.indexOf('--prompt')
-  const launched = carriedFlags(CHAT_FLAGS, promptAt < 0 ? rest : rest.slice(0, promptAt))
-  const flags = settings ? withChatSettings(launched, settings) : launched
+  const chatFlags = provider === 'cursor' ? { bare: ['--fast'], single: ['--model', '--effort', '--permission-mode', '--pre-plan-permission-mode'], dropped: ['--resume'] } : CHAT_FLAGS
+  const launched = carriedFlags(chatFlags, promptAt < 0 ? rest : rest.slice(0, promptAt))
+  const flags = settings ? withChatSettings(launched, provider === 'cursor' ? { ...settings, bypassAllowed: false } : settings) : launched
   if (provider === 'claude' && !flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
   // A shell restored by tmux may not know which daemon to report to.
-  const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
+  const env = Object.entries(daemonEnv)
+    .filter(([name]) => provider !== 'cursor' || ['COMMANDO_PORT', 'COMMANDO_TOKEN', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR'].includes(name))
+    .map(([name, value]) => `${name}=${value}`)
   if (provider === 'codex' && launch.env.CODEX_HOME) env.push(`CODEX_HOME=${launch.env.CODEX_HOME}`)
   if (provider === 'muse') for (const name of ['XDG_CONFIG_HOME', 'XDG_DATA_HOME']) if (launch.env[name]) env.push(`${name}=${launch.env[name]}`)
   return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId].map(shellQuote).join(' ')
@@ -386,6 +389,7 @@ export function buildChatReturnCommand(
   provider: ChatProvider = 'claude',
 ): string | null {
   if (!isValidAgentSessionId(sessionId)) return null
+  if (provider === 'cursor') return null
   const flags = carriedFlags(CHAT_FLAGS, returnFlags)
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
   return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId, '--from-claude-code'].map(shellQuote).join(' ')
@@ -429,5 +433,6 @@ export function isChatResumeCommand(command: string): boolean {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[index] ?? '')) index += 1
   }
   return basename(words[index] ?? '') === 'commando-agent'
-    && isChatProvider(words[index + 1])
+    // Cursor chats are told apart by their `agent-…` session id, not their saved command.
+    && isChatProvider(words[index + 1]) && words[index + 1] !== 'cursor'
 }

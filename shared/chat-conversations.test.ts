@@ -89,3 +89,9 @@ describe('groupChatConversations', () => {
     expect(groupChatConversations([entry], current, '#540').flatMap((group) => group.conversations)).toEqual([entry])
   })
 })
+
+
+it('decodes Cursor SDK agent ids alongside Claude and Codex conversations', () => {
+  const cursor = conversation('/repo', { provider: 'cursor', sessionId: 'agent-11111111-2222-3333-4444-555555555555' })
+  expect(parseChatConversations({ conversations: [cursor, { ...cursor, provider: 'unknown' }, { ...cursor, sessionId: 'bad id!' }] })).toEqual([cursor])
+})
