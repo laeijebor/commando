@@ -1,6 +1,6 @@
 import type { AgentMessage, AgentOptions, ConversationTurn, GetAgentMessagesOptions, ListResult, ListRunsOptions, ModelListItem, Run, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_ITEMS } from '../../../shared/agent-chat.js'
-import { CursorItemMapper, record, string } from './items.js'
+import { CursorItemMapper, list, record, string } from './items.js'
 
 export interface CursorRun {
   wait(): Promise<RunResult>
@@ -52,52 +52,60 @@ export async function cursorHistory(
     if (cursor && seen.has(cursor)) throw new Error('Cursor repeated a history cursor')
     if (cursor) seen.add(cursor)
   } while (cursor)
-  // Local run conversations omit the prompt that opened each run; the agent's messages
-  // keep it, numbered by the turn's position across every run (`<agentId>:<index>`).
-  const users = new Map<number, string>()
-  let lastIndex = -1
+  // Local run conversations omit the prompt that opened each run. The agent's messages keep
+  // every prompt in order, each with the steps that answered it, so align them newest first
+  // by step count: a steer can fold the opening prompt's steps into the steered turn, which
+  // leaves that prompt step-less and unmatched. Any other mismatch stops the backfill.
+  let prompts: { text?: string; steps: number }[] | undefined
   if (listMessages) {
     try {
+      const indexed: { index: number; text?: string; steps: number }[] = []
       for (let offset = 0; ; offset += 100) {
         const messages = await listMessages(agentId, { runtime: 'local', cwd, limit: 100, offset })
         for (const entry of messages) {
           const index = entry.uuid.startsWith(`${agentId}:`) ? entry.uuid.slice(agentId.length + 1) : ''
           if (!/^\d+$/.test(index) || !Number.isSafeInteger(Number(index))) continue
-          lastIndex = Math.max(lastIndex, Number(index))
-          const text = string(record(messageTurn(entry.message).userMessage).text)
-          if (entry.type === 'user' && text !== undefined) users.set(Number(index), text)
+          const turn = messageTurn(entry.message)
+          indexed.push({ index: Number(index), text: string(record(turn.userMessage).text), steps: list(turn.steps).length })
         }
         if (messages.length < 100) break
       }
+      prompts = indexed.sort((a, b) => a.index - b.index)
     } catch (error) {
-      users.clear()
       log?.(`Couldn't load Cursor user messages: ${string(record(error).message) ?? String(error)}`)
     }
   }
-  // Walk turns newest first, counting down from the newest message. A run that can't be
-  // read has an unknown length, so turns older than it are left without a backfilled prompt.
-  let next: number | undefined = users.size ? lastIndex : undefined
+  const full = () => counter.list().length >= MAX_CHAT_ITEMS
+  const add = (turn: ConversationTurn) => { turns.push(turn); counter.replay(turn) }
   const ordered = runs.map((run, index) => ({ run, index })).sort((a, b) => (b.run.createdAt ?? 0) - (a.run.createdAt ?? 0) || b.index - a.index)
   for (const { run } of ordered) {
     let conversation: ConversationTurn[]
     try { conversation = await run.conversation() }
     catch (error) {
       skipped++
-      next = undefined
+      // An unreadable run has an unknown number of turns, so older prompts can't be placed.
+      prompts = undefined
       log?.(`Couldn't load a Cursor run: ${string(record(error).message) ?? String(error)}`)
       continue
     }
-    for (let position = conversation.length - 1; position >= 0; position--) {
+    for (let position = conversation.length - 1; position >= 0 && !full(); position--) {
       const entry = conversation[position]
-      const text = next === undefined ? undefined : users.get(next)
-      if (next !== undefined) next--
-      const turn = entry.type === 'agentConversationTurn' && !entry.turn.userMessage && text !== undefined
-        ? { ...entry, turn: { ...entry.turn, userMessage: { text } } } : entry
-      turns.push(turn)
-      counter.replay(turn)
-      if (counter.list().length >= MAX_CHAT_ITEMS) break
+      // A shell turn's place among the messages is unknown, so it also ends the backfill.
+      if (entry.type !== 'agentConversationTurn') prompts = undefined
+      if (entry.type !== 'agentConversationTurn' || !prompts) { add(entry); continue }
+      const steps = entry.turn.steps.length
+      let prompt = prompts.pop()
+      const folded: string[] = []
+      while (prompt && prompt.steps !== steps && prompt.steps === 0) {
+        if (prompt.text !== undefined) folded.push(prompt.text)
+        prompt = prompts.pop()
+      }
+      if (!prompt || prompt.steps !== steps) { prompts = undefined; add(entry); continue }
+      // Folded prompts sit between this turn and the newer one already added (the walk runs backwards).
+      for (const text of folded) if (!full()) add({ type: 'agentConversationTurn', turn: { userMessage: { text }, steps: [] } })
+      if (!full()) add(!entry.turn.userMessage && prompt.text !== undefined ? { ...entry, turn: { ...entry.turn, userMessage: { text: prompt.text } } } : entry)
     }
-    if (counter.list().length >= MAX_CHAT_ITEMS) break
+    if (full()) break
   }
   return { turns: turns.reverse(), skipped }
 }
