@@ -4894,3 +4894,22 @@ body.is-resizing-hud-pinned-note {
 .session-identity-name { overflow: hidden; text-overflow: ellipsis; }
 .conversation-picker .conversation-picker-session { display: inline-flex; min-width: 0; align-items: center; gap: 6px; }
 .conversation-picker .conversation-picker-codename { color: var(--muted-dim); font-size: 9px; font-weight: 400; letter-spacing: normal; text-transform: none; }
+
+.pair-phone-dialog { width: min(440px, calc(100vw - 32px)); max-height: 90vh; padding: 0; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow); }
+.pair-phone-dialog::backdrop { background: #000a; }
+.pair-phone-content { padding: 20px; font-size: 13px; }
+.pair-phone-content header, .pair-phone-actions, .pair-phone-devices li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pair-phone-content h2 { font-size: 20px; margin: 4px 0 0; }
+.pair-phone-content h3 { margin-top: 24px; font-size: 14px; }
+.pair-phone-content p { color: var(--muted); line-height: 1.5; }
+.pair-phone-qr { display: grid; place-items: center; min-height: 280px; margin: 16px 0; padding: 10px; border-radius: 12px; background: var(--surface-deep); }
+.pair-phone-qr canvas { max-width: 100%; height: auto !important; border-radius: 4px; }
+.pair-phone-actions { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pair-phone-content button:not(.icon-button) { cursor: pointer; flex-shrink: 0; border: 1px solid var(--border-mid); border-radius: 7px; background: var(--surface-soft); color: var(--accent); padding: 7px 10px; }
+.pair-phone-content button:disabled { opacity: .5; cursor: default; }
+.pair-phone-content .pair-phone-hint { padding: 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--amber); }
+.pair-phone-content .pair-phone-error { color: var(--red); }
+.pair-phone-devices { list-style: none; margin: 0; padding: 0; }
+.pair-phone-devices li { padding: 12px 0; border-top: 1px solid var(--border); }
+.pair-phone-devices li > div { min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.pair-phone-devices span { color: var(--muted); font-size: 11px; }
