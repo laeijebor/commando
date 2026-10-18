@@ -216,9 +216,13 @@ export class ChatConversationsApi {
       return { paneId }
     }
     const launch = agent ? { agent } : {}
+    const sessions = placement === 'session' && session ? this.dependencies.snapshot().sessions : []
+    // tmux can renumber sessions after a restart; prefer their recorded name.
+    const liveSession = session ? sessions.find((entry) => entry.name === session.name)
+      ?? sessions.find((entry) => entry.id === session.id) : undefined
     let created: { paneId: string }
-    if (placement === 'session' && session && this.dependencies.snapshot().sessions.some((entry) => entry.id === session.id)) {
-      const input = { sessionId: session.id, cwd, ...launch }
+    if (liveSession) {
+      const input = { sessionId: liveSession.id, cwd, ...launch }
       created = command === undefined ? await creator.createWindow(input) : await creator.createWindow(input, command)
     } else if (placement === 'session' && session?.name) {
       const input = { name: session.name, cwd, ...launch }

@@ -8,6 +8,7 @@ import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import type { AgentResumeRecord } from './agent-resume.js'
+import { buildChatResumeCommand, buildChatReturnCommand } from './agent-resume-command.js'
 import type { ConversationBriefRecord } from './session-briefs.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
@@ -301,6 +302,31 @@ describe('resume placement and launch selection', () => {
     expect(creator.respawnChatPane).not.toHaveBeenCalled()
   })
 
+  it.each([false, true])('opens a window in the session with the recorded name after tmux renumbers it (old id reused: %s)', async (reused) => {
+    for (const paneId of ['%1', undefined]) {
+      const { resume, creator } = setup({
+        records: [{ provider: 'codex', id: ID, sessionId: '$7', sessionName: 'original', paneOpen: false, references: [], updatedAt: 1 }],
+        sessions: [{ id: '$8', name: 'original-copy' }, { id: '$9', name: 'original' }, ...reused ? [{ id: '$7', name: 'unrelated' }] : []],
+        chats: [],
+      })
+      expect(await resume({ paneId, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%10' } })
+      expect(creator.createWindow).toHaveBeenCalledWith({ sessionId: '$9', cwd: folder }, `env codex resume ${ID}`)
+      expect(creator.createSession).not.toHaveBeenCalled()
+      expect(creator.createPane).not.toHaveBeenCalled()
+      expect(creator.respawnChatPane).not.toHaveBeenCalled()
+    }
+  })
+
+  it('creates a session only when no exact live name or recorded id matches', async () => {
+    const { resume, creator } = setup({
+      conversation: { session: { id: '$7', name: 'original' } },
+      sessions: [{ id: '$8', name: 'original-copy' }, { id: '$9', name: 'Original' }],
+    })
+    expect(await resume({ paneId: undefined, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%11' } })
+    expect(creator.createSession).toHaveBeenCalledWith({ name: 'original', cwd: folder }, `env codex resume ${ID}`)
+    expect(creator.createWindow).not.toHaveBeenCalled()
+  })
+
   it('falls back to a split when the conversation has no session, including without a requester', async () => {
     for (const paneId of ['%1', undefined]) {
       const { resume, creator } = setup()
@@ -327,6 +353,27 @@ describe('resume placement and launch selection', () => {
     const { resume, creator } = setup({ conversation: { provider: 'claude', configDir: join(homedir(), '.claudep') }, resumeRecord: { command }, chats: [chat({ permissionMode: 'plan' })] })
     expect(await resume({ provider: 'claude', command: 'echo untrusted' })).toMatchObject({ status: 200 })
     expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'claude-chat', resume: ID, configDir: join(homedir(), '.claudep'), permissionMode: 'plan' })
+  })
+
+  it.each(['claude', 'codex'] as const)('resumes builder-generated %s chats with server-owned settings in a renumbered session', async (provider) => {
+    const launcher = "/checkout with spaces/O'Brien/scripts/commando-agent"
+    const flags = ['--permission-mode', 'bypassPermissions']
+    const daemonEnv = { COMMANDO_PORT: '4410' }
+    const commands = [
+      buildChatResumeCommand(ID, launcher, { args: ['node', '/c/server/agent-host/main.ts', provider, ...flags], env: {} }, daemonEnv),
+      buildChatReturnCommand(ID, launcher, flags, daemonEnv, provider),
+    ]
+    for (const command of commands) {
+      expect(command).not.toBeNull()
+      const { resume, creator } = setup({
+        conversation: { provider, session: { id: '$7', name: 'original' } },
+        sessions: [{ id: '$9', name: 'original' }],
+        resumeRecord: { command: command! }, chats: [],
+      })
+      expect(await resume({ provider, paneId: undefined, placement: 'session' })).toMatchObject({ status: 200, body: { paneId: '%10' } })
+      expect(creator.createWindow).toHaveBeenCalledWith({ sessionId: '$9', cwd: folder, agent: { provider: `${provider}-chat`, resume: ID, permissionMode: 'default' } })
+      expect(creator.createSession).not.toHaveBeenCalled()
+    }
   })
 
   it('resumes a saved chat from outside a chat with default permissions', async () => {
