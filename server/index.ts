@@ -1466,10 +1466,20 @@ async function main(): Promise<void> {
         const previousCommands = new Map(
           snapshot.panes.map((pane) => [pane.id, pane.command]),
         )
+        const previousPanes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
         snapshotReady = true
+        // Invalidate pending tab ownership before any brief/status publication
+        // can stamp it with evidence from a replacement foreground agent.
+        for (const pane of snapshot.panes) {
+          const previous = previousPanes.get(pane.id)
+          if (pane.dead || (previous && (
+            previous.targetId !== pane.targetId || previous.processId !== pane.processId ||
+            (previous.command !== pane.command && !isShellCommand(previous.command))
+          ))) webPanes.clearAwaitingAgentSession(pane.id)
+        }
         releaseClosedSimLeases()
         lastTmuxError = ''
         await sessionIdes.retain(new Set(snapshot.sessions.map((session) => session.id)))

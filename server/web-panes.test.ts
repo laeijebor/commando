@@ -115,6 +115,33 @@ describe('conversation-owned web panes', () => {
     expect(JSON.parse(await readFile(path, 'utf8')).panes.every((pane: Record<string, unknown>) => !('awaitingAgentSession' in pane))).toBe(true)
   })
 
+  it.each(['exit', 'replacement'] as const)('does not give a startup tab to the next agent after %s', async (transition) => {
+    const { path, service, sessions, runningAgents, resolve, isAgentRunning } = await setup()
+    runningAgents.add(anchor.anchorPaneId)
+    runningAgents.add('%13')
+    const abandoned = service.open({ ...anchor, url: 'http://localhost/agent-a' })
+    const stillRunning = service.open({ ...anchor, anchorPaneId: '%13', url: 'http://localhost/other-agent' })
+    if (transition === 'exit') {
+      runningAgents.delete(anchor.anchorPaneId)
+      service.reconcileAgentSession(anchor)
+    } else {
+      // index.ts clears pending ownership before publishing a changed process.
+      expect(service.clearAwaitingAgentSession(anchor.anchorPaneId)).toBe(true)
+    }
+    expect(service.clearAwaitingAgentSession(anchor.anchorPaneId)).toBe(false)
+    await service.flush()
+    const loaded = track(new WebPaneService(path, Date.now, undefined, 'owner', resolve, isAgentRunning))
+    await loaded.load()
+    runningAgents.add(anchor.anchorPaneId)
+    sessions.set(anchor.anchorPaneId, { provider: 'codex', id: 'agent-b-session' })
+    expect(loaded.reconcileAgentSession(anchor)).toBe(false)
+    expect(loaded.get(abandoned.id)?.agentSession).toBeUndefined()
+    runningAgents.add('%13')
+    sessions.set('%13', conversation)
+    expect(loaded.reconcileAgentSession({ ...anchor, anchorPaneId: '%13' })).toBe(true)
+    expect(loaded.get(stillRunning.id)?.agentSession).toEqual(conversation)
+  })
+
   it.each(['anchor', 'window', 'session'] as const)('never stamps or parks simulator tabs on %s death', async (death) => {
     const { path, service, sessions, runningAgents } = await setup()
     runningAgents.add(anchor.anchorPaneId)
@@ -239,6 +266,56 @@ describe('conversation-owned web panes', () => {
     await again.load()
     expect(again.get(split.id)?.agentSession).toEqual(conversation)
     expect(JSON.parse(await readFile(path, 'utf8')).parkedPanes).toEqual([])
+  })
+
+  const duplicateInputs = [
+    { url: 'http://localhost/review', engine: 'webkit' as const },
+    { url: 'http://localhost/review', engine: 'chromium' as const },
+    { url: 'http://localhost/canvas', content: { kind: 'canvas' as const, artifactId: '0123456789abcdef', manifest: 'canvas.json' } },
+    { url: 'http://localhost/guide', content: { kind: 'guide' as const, artifactId: '0123456789abcdef', file: 'guide.md' } },
+  ]
+  describe.each(['unstamped', 'awaiting'] as const)('restoring over %s live duplicates', (ownership) => {
+    it.each(duplicateInputs)('keeps the parked ID for $url ($engine)', async (input) => {
+      const { path, service, sessions, runningAgents } = await setup()
+      sessions.set(anchor.anchorPaneId, conversation)
+      const parked = service.open({ ...anchor, ...input })
+      service.prune(survivingWindow)
+      if (ownership === 'awaiting') runningAgents.add(destination.anchorPaneId)
+      // Artifact URLs can change across daemon restarts without changing content identity.
+      const live = service.open({ ...destination, ...input, openedBy: 'agent', ...(input.content ? { url: 'http://localhost/restarted' } : {}) })
+      const otherEngine = input.content ? undefined : service.open({ ...destination, ...input, openedBy: 'user', engine: input.engine === 'webkit' ? 'chromium' : 'webkit' })
+      const otherContent = input.content ? service.open({ ...destination, ...input, openedBy: 'user', content: input.content.kind === 'canvas'
+        ? { ...input.content, manifest: 'other.json' } : { ...input.content, file: 'other.md' } }) : undefined
+      service.setActiveTab(live.id)
+      sessions.set(destination.anchorPaneId, conversation)
+      expect(service.reconcileAgentSession(destination)).toBe(true)
+      expect(service.get(parked.id)).toMatchObject({ ...destination, agentSession: conversation })
+      expect(service.get(live.id)).toBeUndefined()
+      if (otherEngine) expect(service.get(otherEngine.id)).toBeDefined()
+      if (otherContent) expect(service.get(otherContent.id)).toBeDefined()
+      expect(service.panelActiveTabs()[destination.anchorPaneId]).toBe(parked.id)
+      expect(service.parkedIds()).toEqual([])
+      expect(service.reconcileAgentSession(destination)).toBe(false)
+      await service.flush()
+      const state = JSON.parse(await readFile(path, 'utf8'))
+      expect(state.panes.some((pane: WebPane) => pane.id === live.id)).toBe(false)
+      expect(state.parkedPanes).toEqual([])
+    })
+  })
+
+  it('replaces a live duplicate even at the live tab limit', async () => {
+    const { service, sessions } = await setup()
+    sessions.set(anchor.anchorPaneId, conversation)
+    const parked = service.open({ ...anchor, url: 'http://localhost/duplicate' })
+    service.prune(survivingWindow)
+    const live = service.open({ ...destination, openedBy: 'user', url: parked.url })
+    for (let i = 1; i < MAX_WEB_PANES; i++) service.open({ ...destination, openedBy: 'user', url: `http://localhost/${i}` })
+    sessions.set(destination.anchorPaneId, conversation)
+    expect(service.reconcileAgentSession(destination)).toBe(true)
+    expect(service.list()).toHaveLength(MAX_WEB_PANES)
+    expect(service.get(live.id)).toBeUndefined()
+    expect(service.get(parked.id)?.agentSession).toEqual(conversation)
+    expect(service.parkedIds()).toEqual([])
   })
 
   it('never stamps, parks, or restores another socket\'s tabs', async () => {

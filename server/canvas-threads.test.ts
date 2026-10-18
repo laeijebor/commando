@@ -97,6 +97,25 @@ describe('canvas threads for conversation-owned tabs', () => {
     expect(restoredStore.list(keptId)).toHaveLength(1)
     expect(restoredStore.list(newest.id)).toHaveLength(1)
   })
+
+  it('keeps the parked discussion and releases the fresh duplicate discussion on restore', async () => {
+    const service = serviceAt(Date.now)
+    const path = join(dir, 'threads.json'), store = new CanvasThreadsStore(path)
+    const parked = service.open({ ...anchor, url: 'http://localhost/canvas', content })
+    store.record(parked.id, [note])
+    store.reply(parked.id, store.list(parked.id)[0].id, 'Original discussion', true)
+    const discussion = store.list(parked.id)
+    service.prune(survivingWindow)
+    const fresh = service.open({ ...destination, openedBy: 'agent', url: 'http://localhost/restarted', content })
+    store.record(fresh.id, [note])
+    expect(service.reconcileAgentSession(destination)).toBe(true)
+    retain(store, service)
+    expect(service.get(parked.id)?.anchorPaneId).toBe(destination.anchorPaneId)
+    expect(service.get(fresh.id)).toBeUndefined()
+    const loaded = new CanvasThreadsStore(path)
+    expect(loaded.list(parked.id)).toEqual(discussion)
+    expect(loaded.list(fresh.id)).toEqual([])
+  })
 })
 
 describe('CanvasThreadsStore', () => {

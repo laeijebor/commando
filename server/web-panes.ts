@@ -114,6 +114,17 @@ function agentSessionKey(session: AgentSessionRef): string {
   return `${session.provider}:${session.id}`
 }
 
+/** Mirrors open()'s content identity; artifact URLs may change after restart. */
+function sameTabContent(a: WebPane, b: WebPane): boolean {
+  if (a.content?.kind === 'canvas' && b.content?.kind === 'canvas') {
+    return a.content.artifactId === b.content.artifactId && a.content.manifest === b.content.manifest
+  }
+  if (a.content?.kind === 'guide' && b.content?.kind === 'guide') {
+    return a.content.artifactId === b.content.artifactId && a.content.file === b.content.file
+  }
+  return !a.content && !b.content && a.url === b.url && a.engine === b.engine
+}
+
 function parseAnchorSize(value: unknown): { cols: number; rows: number } | undefined | null {
   if (value === undefined) return undefined
   if (!isRecord(value)) return null
@@ -851,6 +862,18 @@ export class WebPaneService {
     return changed
   }
 
+  /** Pending ownership belongs to the foreground run, not the lifetime of its pane. */
+  clearAwaitingAgentSession(anchorPaneId: string): boolean {
+    let changed = false
+    for (const id of this.awaitingAgentSession) {
+      if (this.panes.get(id)?.anchorPaneId !== anchorPaneId || this.paneSocketHashes.get(id) !== this.socketHash) continue
+      this.awaitingAgentSession.delete(id)
+      changed = true
+    }
+    if (changed) this.persist()
+    return changed
+  }
+
   private stampAgentSession(
     anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>,
     agentSession: AgentSessionRef,
@@ -869,6 +892,7 @@ export class WebPaneService {
 
   /** Adopts late conversation evidence once, and brings that conversation's tabs back. */
   reconcileAgentSession(anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>): boolean {
+    if (!this.isAgentRunning(anchor.anchorPaneId)) this.clearAwaitingAgentSession(anchor.anchorPaneId)
     const agentSession = parseAgentSession(this.resolveAgentSession(anchor.anchorPaneId))
     let changed = this.trimParkedPanes()
     if (agentSession) {
@@ -877,10 +901,21 @@ export class WebPaneService {
       const entries = this.parkedPanes.get(key) ?? []
       const remaining: ParkedWebPane[] = []
       for (const entry of entries) {
-        if (entry.pane.tmuxSocketHash !== this.socketHash || this.panes.size >= MAX_WEB_PANES) {
+        if (entry.pane.tmuxSocketHash !== this.socketHash) {
           remaining.push(entry)
           continue
         }
+        const duplicates = [...this.panes.values()].filter((live) =>
+          live.anchorPaneId === anchor.anchorPaneId && live.sessionId === anchor.sessionId && live.windowId === anchor.windowId &&
+          (this.paneSocketHashes.get(live.id) ?? this.socketHash) === this.socketHash && sameTabContent(live, entry.pane))
+        if (this.panes.size - duplicates.length >= MAX_WEB_PANES) {
+          remaining.push(entry)
+          continue
+        }
+        // Keep the parked ID: canvas discussions are keyed by it. Publishing
+        // releases resources for the discarded live IDs through retain().
+        const wasActive = duplicates.some((live) => this.activeTabs[anchor.anchorPaneId] === live.id)
+        for (const live of duplicates) this.close(live.id)
         const { tmuxSocketHash: _socketHash, ...pane } = entry.pane
         const restored: WebPane = {
           ...pane, ...anchor,
@@ -891,6 +926,7 @@ export class WebPaneService {
         if (restored.dock === 'panel') restored.layoutState = 'settled'
         this.panes.set(restored.id, restored)
         this.paneSocketHashes.set(restored.id, this.socketHash)
+        if (wasActive && restored.dock === 'panel') this.activeTabs[anchor.anchorPaneId] = restored.id
         changed = true
       }
       if (remaining.length) this.parkedPanes.set(key, remaining)
