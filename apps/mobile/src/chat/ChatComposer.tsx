@@ -83,7 +83,8 @@ function menuFor(
     const query = trigger.query.toLowerCase()
     const natives: MenuItem[] = [
       ...(modelMenuAvailable(session) ? [{ key: 'native:model', type: 'native' as const, name: 'model' as const, description: 'Choose the model' }] : []),
-      ...(hostTakesSettings(session) && session.permissionMode
+      // Muse has no plan mode.
+      ...(hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
         ? [{ key: 'native:plan', type: 'native' as const, name: 'plan' as const, description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
         : []),
     ].filter((item) => item.type === 'native' && item.name.includes(query))

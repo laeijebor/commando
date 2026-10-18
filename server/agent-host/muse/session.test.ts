@@ -239,6 +239,19 @@ describe('MuseChatSession', () => {
       .toEqual(['session/start', 'session/resume', 'turn/start'])
   })
 
+  it('keeps picks made while Muse has the session unloaded and applies them on resume', async () => {
+    const { session, client } = harness()
+    await session.start()
+    client.emit('session/closed', { reason: 'idle' })
+    await session.configure({ model: 'muse-spark-1.3' })
+    expect(client.sent('session/setModel')).toEqual([])
+    expect(session.snapshot().session.selectedModel).toBe('muse-spark-1.3')
+    session.send('Hi')
+    await tick()
+    expect(client.requests.map((request) => request.method).filter((method) => method !== 'model/list' && method !== 'skill/list'))
+      .toEqual(['session/start', 'session/resume', 'session/setModel', 'turn/start'])
+  })
+
   it('changes model, effort and approval mode on the live session', async () => {
     const { session, client } = harness({ bypassAllowed: true })
     await session.start()

@@ -490,7 +490,8 @@ export class MuseChatSession implements ChatProviderSession {
       if (mode === 'bypassPermissions' && !this.info.bypassAllowed) throw new Error('Approve everything must be allowed at launch')
     }
     const sessionId = this.info.sessionId
-    if (sessionId && this.info.status !== 'starting') {
+    // Until Muse has the session loaded, the picks wait for openSession, which applies them.
+    if (sessionId && this.info.status !== 'starting' && !this.unloaded) {
       if (change.model) await this.call('session/setModel', { sessionId, commandId: uuidv7(), model: { modelId: change.model } })
       if (change.effort) await this.call('session/setReasoningEffort', { sessionId, commandId: uuidv7(), reasoningEffort: change.effort })
       if (mode) await this.call('session/setApprovalMode', { sessionId, commandId: uuidv7(), mode: museApprovalMode(mode) })

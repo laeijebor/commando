@@ -258,9 +258,23 @@ describe('AgentChatsApi', () => {
     expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })
     s.launches.set(100, { args: ['/Users/me/.local/bin/muse-bin-1.4.10-R6427.1', 'fix', '--yolo'], env: {} })
     expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
-    expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'never'])).toBe(terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions']))
+    expect(terminalLaunchRank('muse', ['muse', '--yolo'])).toBe(terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions']))
     expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'untrusted'])).toBe(terminalLaunchRank('claude', ['claude']))
     expect(terminalLaunchRank('muse', ['muse', '--disable-write'])).toBe(terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan']))
+  })
+
+  it('lets a sandboxed approve-everything Muse caller grant no more than acceptEdits', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'muse', permissionMode: 'bypassPermissions', bypassAllowed: true } as ChatSessionInfo)
+    expect(await s.call('POST', '', { ...s.input, agent: 'claude-chat', permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403, result: { error: 'Cannot raise permission mode from acceptEdits to bypassPermissions' } })
+    expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'acceptEdits' })
+    // Opening a Muse approve-everything chat still takes a bypass caller.
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
+    expect(await s.call('POST', '', { ...s.input, permissionMode: 'bypassPermissions' })).toMatchObject({ status: 403 })
+    const bypass = terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions'])
+    const acceptEdits = terminalLaunchRank('claude', ['claude', '--permission-mode', 'acceptEdits'])
+    expect(terminalLaunchRank('muse', ['muse', '--disable-approval'])).toBe(acceptEdits)
+    expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'never', '--disable-sandbox'])).toBe(bypass)
   })
 
   it('refuses a muse-chat for a caller that asks before edits, since Muse has no mode that careful', async () => {
