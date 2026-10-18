@@ -9,6 +9,7 @@ import type { ChatConversation } from '../shared/chat-conversations.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import type { ConversationBriefRecord } from './session-briefs.js'
 import { AgentStatusRegistry } from './agent-status-registry.js'
+import { inferAgentProcessStatus } from './agent-status.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
@@ -37,6 +38,12 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
+function openAgentSessions(registry: AgentStatusRegistry, panes: Pick<TmuxPane, 'id' | 'command'>[]): AgentStatus[] {
+  return panes.flatMap((pane) => registry.openConversationStatus(pane.id, pane.command, inferAgentProcessStatus({
+    paneId: pane.id, command: pane.command, title: '✳ Claude', dead: false, capturedAt: 1,
+  }).provider) ?? [])
+}
+
 function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: (Pick<TmuxPane, 'id'> & Partial<Pick<TmuxPane, 'sessionId' | 'windowId' | 'index' | 'repo' | 'command'>>)[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'loadReadOnly'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; agentSessions?: AgentStatus[] | (() => AgentStatus[]); creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
@@ -61,16 +68,23 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     await api.handle(request('POST', '/api/chat-conversations/resume', { paneId: '%1', provider: 'codex', sessionId: ID, placement: 'replace', ...input }), fake, new URL('http://x/api/chat-conversations/resume'))
     return result
   }
-  return { api, creator, resume, conversation }
+  const list = async () => {
+    const { fake, result } = response()
+    await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
+    return result
+  }
+  return { api, creator, resume, conversation, list }
 }
 
 describe('ChatConversationsApi', () => {
   it.each([
     ['live TUI after a completed turn', '2.1.295', false, 409],
     ['pane back at zsh before registry reconciliation', 'zsh', false, 200],
+    ['pane running vim before registry reconciliation', 'vim', false, 200],
     ['exited TUI with a retained recap', 'zsh', true, 200],
+    ['exited TUI now running vim', 'vim', true, 200],
     ['retained recap even if the command matches again', '2.1.295', true, 200],
-  ] as const)('%s uses open hook conversations for the resume guard', async (_scenario, command, exited, expectedStatus) => {
+  ] as const)('%s uses the same open hook conversations for listing and resume', async (_scenario, command, exited, expectedStatus) => {
     const registry = new AgentStatusRegistry()
     registry.applyClaudeHook('%2', { hook_event_name: 'UserPromptSubmit', session_id: ID, intent: 'Ship it' }, 1, '2.1.295')
     registry.applyClaudeHook('%2', { hook_event_name: 'Stop', session_id: ID, finalMessage: 'Shipped the fix.' }, 2, '2.1.295')
@@ -78,16 +92,35 @@ describe('ChatConversationsApi', () => {
     // The recap remains in values() even after the TUI exits.
     expect(registry.values()).toMatchObject([{ paneId: '%2', source: 'hook', agentSessionId: ID, status: 'done' }])
     const panes = [{ id: '%1', command: 'node' }, { id: '%2', command }]
-    const { creator, resume } = setup({
+    const { creator, resume, list, conversation } = setup({
       conversation: { provider: 'claude' },
       panes,
-      agentSessions: () => panes.flatMap((pane) => registry.openConversationStatus(pane.id, pane.command) ?? []),
+      agentSessions: () => openAgentSessions(registry, panes),
     })
+    expect((await list()).body).toEqual({ conversations: [{ ...conversation, ...(expectedStatus === 409 ? { openPaneId: '%2' } : {}) }] })
     expect(await resume({ provider: 'claude' })).toMatchObject({
       status: expectedStatus,
       body: expectedStatus === 409 ? { error: 'That conversation is already open in pane %2' } : { paneId: '%1' },
     })
     expect(creator.respawnChatPane).toHaveBeenCalledTimes(expectedStatus === 200 ? 1 : 0)
+  })
+
+  it.each([
+    ['2.1.295', true],
+    ['node', true],
+    ['zsh', false],
+    ['vim', false],
+    ['codex', false],
+  ] as const)('SessionStart-only with foreground %s is open: %s', async (command, isOpen) => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook('%2', { hook_event_name: 'SessionStart', session_id: ID }, 1, '2.1.295')
+    const panes = [{ id: '%1', command: 'node' }, { id: '%2', command }]
+    const { list, resume, conversation } = setup({
+      conversation: { provider: 'claude' }, panes,
+      agentSessions: () => openAgentSessions(registry, panes),
+    })
+    expect((await list()).body).toEqual({ conversations: [{ ...conversation, ...(isOpen ? { openPaneId: '%2' } : {}) }] })
+    expect((await resume({ provider: 'claude' })).status).toBe(isOpen ? 409 : 200)
   })
 
   it('blocks a duplicate resume after the reservation expires when Claude has only reported SessionStart', async () => {
@@ -99,7 +132,7 @@ describe('ChatConversationsApi', () => {
         conversation: { provider: 'claude' },
         chats: [chat(), chat({ paneId: '%2' })],
         panes,
-        agentSessions: () => panes.flatMap((pane) => registry.openConversationStatus(pane.id, pane.command) ?? []),
+        agentSessions: () => openAgentSessions(registry, panes),
       })
       expect(await resume({ paneId: '%2', provider: 'claude' })).toMatchObject({ status: 200 })
       registry.applyClaudeHook('%2', { hook_event_name: 'SessionStart', session_id: ID }, 1, '2.1.295')
@@ -248,6 +281,14 @@ describe('ChatConversationsApi', () => {
     expect(result.body).toEqual({ conversations: [{ ...conversation, session: { id: '$9', name: 'closed session' }, paneOpen: false, refs: [] }] })
   })
 
+  it('lists hosted chats as open even when their pane command is not an agent', async () => {
+    const { list, conversation } = setup({
+      chats: [chat(), chat({ paneId: '%2', provider: 'codex', sessionId: ID })],
+      panes: [{ id: '%1', command: 'node' }, { id: '%2', command: 'zsh' }],
+    })
+    expect((await list()).body).toEqual({ conversations: [{ ...conversation, openPaneId: '%2' }] })
+  })
+
   it('switches the chat pane to the conversation in its own folder, never above the chat\'s permissions', async () => {
     const { creator, resume } = setup()
     expect(await resume({})).toMatchObject({ status: 200, body: { paneId: '%1' } })
@@ -312,7 +353,8 @@ describe('ChatConversationsApi', () => {
     { agentSessionId: 'bbbbbbbb-0000' },
   ] as const)('does not block resume for an unverified, closed or different agent session: %j', async (overrides) => {
     const status: AgentStatus = { paneId: '%2', provider: 'codex', agentSessionId: ID, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now(), ...overrides }
-    const { resume } = setup({ agentSessions: [status] })
+    const { resume, list, conversation } = setup({ agentSessions: [status] })
+    expect((await list()).body).toEqual({ conversations: [conversation] })
     expect(await resume({})).toMatchObject({ status: 200 })
   })
 })
