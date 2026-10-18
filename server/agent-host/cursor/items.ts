@@ -147,9 +147,11 @@ export class CursorItemMapper {
       case 'createPlan': return [this.put({ ...base, kind: 'plan', toolUseId: callId, text: text(args.plan) })]
       // The local SDK refuses questions without showing them; say so rather than leave a dead tool row.
       case 'askQuestion': return [this.put({ ...base, status: 'completed', kind: 'notice', level: 'info', text: QUESTION_REFUSED })]
-      case 'task': return [this.put({ ...base, kind: 'subagent', toolUseId: callId, description: text(args.description).slice(0, 500), runtime: 'cursor',
+      // No runtime (that marks a run the daemon observes) and no agentId: the SDK offers no
+      // subagent stop or transcript, so the row shows only its prompt and report.
+      case 'task': return [this.put({ ...base, kind: 'subagent', toolUseId: callId, description: text(args.description).slice(0, 500),
         state: failed ? 'failed' : complete ? 'completed' : 'running', prompt: text(args.prompt), model: string(args.model),
-        subagentType: string(record(args.subagentType).name) ?? string(record(args.subagentType).kind), agentId: string(value.agentId) ?? string(args.agentId) ?? string(args.resume),
+        subagentType: string(record(args.subagentType).name) ?? string(record(args.subagentType).kind),
         ...(call.result !== undefined ? { output: detail(call.result) } : {}) })]
       default: return [this.put({ ...base, kind: 'tool', toolUseId: callId, toolName: type, title: `${TITLES[type] ?? type.replace(/([a-z])([A-Z])/g, '$1 $2')}${string(args.path) ? `: ${text(args.path)}` : ''}`,
         detail: detail(call.args), ...(call.result !== undefined ? { output: detail(call.result) } : {}), ...error })]

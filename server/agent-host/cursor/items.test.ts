@@ -84,8 +84,11 @@ describe('CursorItemMapper', () => {
     ] } })
     mapper.replay({ type: 'shellConversationTurn', turn: { shellCommand: { command: 'ls' }, shellOutput: { stdout: 'a', stderr: '', exitCode: 0 } } })
     expect(mapper.list()).toMatchObject([{ kind: 'user_message', text: 'Old' }, { kind: 'reasoning', text: 'Thinking' }, { kind: 'assistant_message', text: 'Hello' },
-      { kind: 'subagent', runtime: 'cursor', agentId: 'child', state: 'completed' }, { kind: 'command', command: 'ls', output: 'a' }])
+      { kind: 'subagent', prompt: 'Inspect', state: 'completed' }, { kind: 'command', command: 'ls', output: 'a' }])
     expect(mapper.list().every((item) => parseChatItem(item))).toBe(true)
+    // The SDK has no subagent controls, so the row must not look like a stoppable external run.
+    expect(mapper.list().find((item) => item.kind === 'subagent')).not.toHaveProperty('runtime')
+    expect(mapper.list().find((item) => item.kind === 'subagent')).not.toHaveProperty('agentId')
   })
   it('caps history at the newest item window and ignores malformed updates', () => {
     const mapper = new CursorItemMapper()
