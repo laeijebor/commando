@@ -1,3 +1,5 @@
+import { ACCESS_REVOKED, reportTokenRejected } from './access'
+import { networkErrorMessage } from './networkErrors'
 import { isDemoHost } from '../demo/flags'
 import type { AuthBootstrap, Host, HostReachability } from './types'
 
@@ -44,13 +46,16 @@ export async function daemonFetch(
   const headers: Record<string, string> = { Accept: 'application/json', ...authHeaders(host) }
   if (init.body !== undefined) headers['Content-Type'] = 'application/json'
   try {
-    return await fetch(`${host.baseUrl}${path}`, {
+    const response = await fetch(`${host.baseUrl}${path}`, {
       method: init.method ?? 'GET',
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      credentials: 'include',
+      credentials: host.auth.kind === 'token' ? 'omit' : 'include',
+      redirect: host.auth.kind === 'token' ? 'error' : 'follow',
       signal: controller.signal,
     })
+    if (response.status === 401) reportTokenRejected(host)
+    return response
   } finally {
     clearTimeout(timeout)
   }
@@ -123,7 +128,7 @@ export async function probeHost(host: Host): Promise<HostReachability> {
   try {
     const response = await daemonFetch(host, '/api/health', { timeoutMs: 5_000 })
     if (response.status === 401 || response.status === 403) {
-      return { state: 'unauthorized', checkedAt: Date.now(), message: 'Sign in required' }
+      return { state: 'unauthorized', checkedAt: Date.now(), message: response.status === 401 && host.auth.kind === 'token' ? ACCESS_REVOKED : 'Sign in required' }
     }
     if (!response.ok) {
       return {
@@ -143,7 +148,7 @@ export async function probeHost(host: Host): Promise<HostReachability> {
     return {
       state: 'offline',
       checkedAt: Date.now(),
-      message: error instanceof Error ? error.message : 'Unreachable',
+      message: networkErrorMessage(error),
     }
   }
 }

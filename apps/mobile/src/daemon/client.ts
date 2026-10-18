@@ -1,3 +1,5 @@
+import { ACCESS_REVOKED, reportTokenRejected, socketAuthHeaders } from '../hosts/access'
+import { probeHost } from '../hosts/api'
 import type { ClientMessage, ServerMessage, SpecialKey } from '@commando/protocol'
 
 import { isDemoHost } from '../demo/flags'
@@ -111,9 +113,7 @@ export class DaemonClient {
 
   get url(): string {
     const base = `${webSocketBase(this.host.baseUrl)}/ws`
-    if (this.host.auth.kind === 'token') {
-      return `${base}?token=${encodeURIComponent(this.host.auth.token)}`
-    }
+
     return base
   }
 
@@ -276,8 +276,7 @@ export class DaemonClient {
       isReconnect ? `Reconnecting (attempt ${this.attempt})` : `Connecting to ${this.host.name}`,
     )
 
-    const headers: Record<string, string> = {}
-    if (this.host.auth.kind === 'session' && this.cookie) headers.Cookie = this.cookie
+    const headers = socketAuthHeaders(this.host, this.cookie)
 
     let socket: WebSocket
     try {
@@ -336,11 +335,25 @@ export class DaemonClient {
       this.resizeLeases.clear()
       if (this.stopped) return
       if (event.code === 4401 || event.code === 4403) {
-        this.setPhase('unauthorized', 'The daemon rejected these credentials')
+        reportTokenRejected(this.host)
+        this.setPhase('unauthorized', this.host.auth.kind === 'token' ? ACCESS_REVOKED : 'The daemon rejected these credentials')
         return
       }
-      this.scheduleReconnect(event.reason || 'The daemon closed the connection')
+      void this.afterSocketClose(event.reason || 'The daemon closed the connection')
     }
+  }
+
+  private async afterSocketClose(detail: string): Promise<void> {
+    if (this.host.auth.kind === 'token') {
+      const host = this.host
+      const result = await probeHost(host)
+      if (this.stopped || host !== this.host) return
+      if (result.state === 'unauthorized' && result.message === ACCESS_REVOKED) {
+        this.setPhase('unauthorized', ACCESS_REVOKED)
+        return
+      }
+    }
+    this.scheduleReconnect(detail)
   }
 
   private scheduleReconnect(detail: string): void {

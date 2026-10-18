@@ -1,3 +1,4 @@
+import { ACCESS_REVOKED, onTokenRejected } from './access'
 import { create } from 'zustand'
 import { readPreference, writePreference } from '../prefs'
 
@@ -117,3 +118,12 @@ export const useHostsStore = create<HostsState>((set, get) => ({
 export function selectHost(hosts: readonly Host[], hostId: string | undefined): Host | undefined {
   return hostId ? hosts.find((host) => host.id === hostId) : undefined
 }
+
+// Ignore late responses from credentials that have already been replaced.
+onTokenRejected((host) => {
+  const current = useHostsStore.getState().hosts.find((candidate) => candidate.id === host.id)
+  if (!current || current.auth.kind !== 'token' || host.auth.kind !== 'token' || current.auth.token !== host.auth.token) return
+  disconnectHost(host.id)
+  useDaemonStore.getState().setPhase(host.id, 'unauthorized', ACCESS_REVOKED)
+  useHostsStore.setState((state) => ({ reachability: { ...state.reachability, [host.id]: { state: 'unauthorized', message: ACCESS_REVOKED, checkedAt: Date.now() } } }))
+})

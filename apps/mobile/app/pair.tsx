@@ -32,18 +32,23 @@ export default function PairScreen(): React.JSX.Element {
   const [permission, requestPermission] = useCameraPermissions()
   const scanLocked = useRef(false)
   const claimLocked = useRef(false)
+  const attempt = useRef<AbortController | null>(null)
   const mounted = useRef(true)
   const incomingRef = useRef(incoming)
   const [active, setActive] = useState(true)
 
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; attempt.current?.abort() } }, [])
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state: string) => setActive(state === 'active'))
     return () => subscription.remove()
   }, [])
   useEffect(() => {
     incomingRef.current = incoming
-    if (claimLocked.current) return
+    attempt.current?.abort()
+    attempt.current = null
+    claimLocked.current = false
+    setBusy(false)
+    setTrying(null)
     setLink(incoming?.link ?? null)
     setError(incoming?.error ?? null)
     scanLocked.current = false
@@ -52,44 +57,51 @@ export default function PairScreen(): React.JSX.Element {
     if (!incoming && !link && permission && !permission.granted && permission.canAskAgain && permission.status === 'undetermined') void requestPermission()
   }, [incoming, link, permission, requestPermission])
 
-  const close = () => { if (!busy) { if (router.canGoBack()) router.back(); else router.replace('/') } }
+  const close = () => { attempt.current?.abort(); attempt.current = null; if (router.canGoBack()) router.back(); else router.replace('/') }
   const scan = (data: string) => {
     if (scanLocked.current || link) return
     try {
       const parsed = parsePairingLink(data)
       scanLocked.current = true
       setError(null)
+      setTrying(null)
       setLink(parsed)
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined)
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Invalid QR code') }
   }
   const confirm = async () => {
     if (!link || claimLocked.current) return
+    const controller = new AbortController()
+    attempt.current = controller
     claimLocked.current = true
     setBusy(true)
     setError(null)
     try {
-      const result = await claimPairing(link, (Device.deviceName || 'iPhone').slice(0, 80), Platform.OS === 'android' ? 'android' : 'ios', (url) => { if (mounted.current) setTrying(url) })
+      const result = await claimPairing(link, (Device.deviceName || 'iPhone').slice(0, 80), Platform.OS === 'android' ? 'android' : 'ios', (url) => { if (mounted.current && attempt.current === controller) setTrying(url) }, controller.signal)
+      if (controller.signal.aborted) return
       const store = useHostsStore.getState()
       await store.hydrate()
+      if (controller.signal.aborted) return
       const host = await useHostsStore.getState().addHost({ name: result.name, baseUrl: result.baseUrl, auth: { kind: 'token', token: result.token }, requirePersistence: true })
       useHostsStore.getState().rememberHost(host.id)
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined)
-      if (mounted.current) router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
+      if (mounted.current && !controller.signal.aborted) router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
     } catch (cause) {
-      if (mounted.current) setError(cause instanceof Error ? cause.message : 'Pairing failed. Ask your Mac for a new code.')
+      if (mounted.current && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Pairing failed. Ask your Mac for a new code.')
     } finally {
+      if (attempt.current !== controller) return
+      attempt.current = null
       claimLocked.current = false
       if (mounted.current) {
         setBusy(false)
-        if (incomingRef.current !== incoming) { setLink(incomingRef.current?.link ?? null); setError(incomingRef.current?.error ?? null) }
+        if (incomingRef.current !== incoming) { setTrying(null); setLink(incomingRef.current?.link ?? null); setError(incomingRef.current?.error ?? null) }
       }
     }
   }
 
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: theme.bg }]}>
-      <View style={styles.header}><Text style={[styles.title, { color: theme.text }]}>Scan QR code</Text><Pressable accessibilityLabel="Close scanner" disabled={busy} onPress={close} hitSlop={12}><Feather name="x" size={24} color={theme.text} /></Pressable></View>
+      <View style={styles.header}><Text style={[styles.title, { color: theme.text }]}>Scan QR code</Text><Pressable accessibilityLabel="Close scanner" onPress={close} hitSlop={12}><Feather name="x" size={24} color={theme.text} /></Pressable></View>
       <Text style={[styles.instruction, { color: theme.muted }]}>On your Mac, open Machine → Pair a phone. Point your camera at the code.</Text>
       <View style={[styles.viewfinder, { width: viewfinderSize, borderColor: theme.accent, backgroundColor: theme.surface }]}>
         {!incoming && !link && active && permission?.granted ? <CameraView style={StyleSheet.absoluteFill} facing="back" barcodeScannerSettings={{ barcodeTypes: ['qr'] }} onBarcodeScanned={({ data }) => scan(data)} /> : <Feather name="camera" size={48} color={theme.muted} />}
@@ -106,7 +118,7 @@ export default function PairScreen(): React.JSX.Element {
           <Text style={{ color: theme.muted }}>This phone will have its own access token. Revoke it any time from Pair a phone on your Mac.</Text>
           {error ? <Text accessibilityRole="alert" style={[styles.error, { color: theme.red }]}>{error}</Text> : null}
           <Button label={busy ? 'Pairing…' : 'Pair'} busy={busy} onPress={() => void confirm()} variant="primary" />
-          <Button label="Cancel" disabled={busy} onPress={close} />
+          <Button label="Cancel" onPress={close} />
         </View>
       </Modal>
     </SafeAreaView>

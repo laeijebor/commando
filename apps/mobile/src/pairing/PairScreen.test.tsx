@@ -76,3 +76,27 @@ it('reports secure-storage failures instead of treating an ephemeral token as pa
   expect(useHostsStore.getState().hosts).toHaveLength(0)
   expect(mockRouter.replace).not.toHaveBeenCalled()
 })
+
+it('clears the previous attempted destination when another deep link arrives', async () => {
+  mockParams = params
+  ;(claimPairing as jest.Mock).mockImplementation(async (_link, _name, _platform, trying) => { trying('http://old-mac:4310'); throw new Error('unreachable') })
+  const view = open()
+  await act(async () => fireEvent.press(screen.getByText('Pair')))
+  expect(screen.getByText('Connect using http://old-mac:4310')).toBeTruthy()
+  mockParams = { ...params, c: 'b'.repeat(32), u: ['http://new-mac:4310'], n: 'New Mac' }
+  view.rerender(<ThemeProvider><PairScreen /></ThemeProvider>)
+  expect(screen.getByText('Pair with New Mac?')).toBeTruthy()
+  expect(screen.getByText('Connect using http://new-mac:4310')).toBeTruthy()
+  expect(screen.queryByText(/old-mac/)).toBeNull()
+})
+it('lets Cancel abort pairing while a response body is stalled', async () => {
+  mockParams = params
+  let signal: AbortSignal | undefined
+  ;(claimPairing as jest.Mock).mockImplementation((_link, _name, _platform, _trying, requestSignal) => { signal = requestSignal; return new Promise(() => undefined) })
+  open()
+  await act(async () => fireEvent.press(screen.getByText('Pair')))
+  expect(signal?.aborted).toBe(false)
+  fireEvent.press(screen.getByText('Cancel'))
+  expect(signal?.aborted).toBe(true)
+  expect(mockRouter.back).toHaveBeenCalled()
+})

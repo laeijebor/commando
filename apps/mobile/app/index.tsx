@@ -1,3 +1,4 @@
+import { ACCESS_REVOKED } from '../src/hosts/access'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useRouter, type Href } from 'expo-router'
 import {
@@ -131,7 +132,8 @@ function HostCard({
   const connected = state.phase === 'live'
 
   const openHost = useCallback(() => {
-    if (status === 'unauthorized') onSignIn()
+    if (status === 'unauthorized' && host.auth.kind === 'token') router.push('/pair' as Href)
+    else if (status === 'unauthorized') onSignIn()
     else {
       useHostsStore.getState().rememberHost(host.id)
       router.push({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
@@ -163,6 +165,7 @@ function HostCard({
             </Text>
           )}
         </View>
+        {status === 'unauthorized' && host.auth.kind === 'token' ? <Pressable accessibilityRole="button" onPress={() => router.push('/pair' as Href)}><Text style={{ color: theme.accent }}>Re-pair</Text></Pressable> : null}
         {editing ? (
           <Pressable accessibilityLabel={`Remove ${host.name}`} onPress={onRemove}>
             <Feather color={theme.red} name="trash-2" size={18} />
@@ -177,7 +180,7 @@ function HostCard({
 
 function hostSubtitle(state: HostReachability['state'], reachability: HostReachability | undefined): string {
   if (state === 'checking') return 'Checking…'
-  if (state === 'unauthorized') return 'Sign in required'
+  if (state === 'unauthorized') return reachability?.message === ACCESS_REVOKED ? ACCESS_REVOKED : 'Sign in required'
   if (state === 'online') return 'Reachable · connecting'
   if (state === 'offline') {
     const seen = reachability?.checkedAt ? relativeTime(reachability.checkedAt) : null

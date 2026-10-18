@@ -61,3 +61,28 @@ it('aborts a slow health probe, then falls back to the next URL', async () => {
     expect((await pending).baseUrl).toBe(urls[1])
   } finally { jest.useRealTimers() }
 })
+
+it('names ATS errors instead of suggesting that Tailscale is off', async () => {
+  fetchMock.mockRejectedValue(Object.assign(new Error('App Transport Security requires a secure connection'), { code: -1022 }))
+  await expect(claimPairing(link, 'iPhone', 'ios')).rejects.toThrow('App Transport Security')
+})
+it('bounds a stalled claim body after successful headers', async () => {
+  jest.useFakeTimers()
+  try {
+    fetchMock.mockResolvedValueOnce(response(401)).mockResolvedValueOnce({ status: 200, ok: true, text: () => new Promise(() => undefined) })
+    const pending = claimPairing(link, 'iPhone', 'ios')
+    const rejected = expect(pending).rejects.toThrow('new code')
+    await jest.advanceTimersByTimeAsync(3001)
+    await rejected
+  } finally { jest.useRealTimers() }
+})
+it('cancels a stalled body without probing or claiming another address', async () => {
+  const controller = new AbortController()
+  fetchMock.mockResolvedValueOnce(response(401)).mockResolvedValueOnce({ status: 200, ok: true, text: () => new Promise(() => undefined) })
+  const pending = claimPairing(link, 'iPhone', 'ios', undefined, controller.signal)
+  const rejected = expect(pending).rejects.toThrow('Pairing cancelled')
+  await Promise.resolve(); await Promise.resolve()
+  controller.abort()
+  await rejected
+  expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(2)
+})

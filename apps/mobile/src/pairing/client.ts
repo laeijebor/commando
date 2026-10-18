@@ -1,3 +1,4 @@
+import { ATS_BLOCKED, isAtsError } from '../hosts/networkErrors'
 import type { PairingClaimRequest, PairingClaimResponse } from '@commando/pairing'
 
 export type PairingLink = { code: string; urls: string[]; name: string }
@@ -34,34 +35,55 @@ export function pairingLinkFromParams(params: Record<string, string | string[] |
   return parsePairingLink(url.toString())
 }
 
-async function pairingFetch(baseUrl: string, path: string, init: RequestInit = {}): Promise<Response> {
+function cancelled(): Error { const error = new Error('Pairing cancelled'); error.name = 'AbortError'; return error }
+
+/** The deadline covers headers AND body; the race also bounds native stalled reads. */
+async function pairingFetch(baseUrl: string, path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<{ status: number; ok: boolean; text: string }> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 3000)
+  let rejectAbort: (error: Error) => void = () => undefined
+  const aborted = new Promise<never>((_, reject) => { rejectAbort = reject })
+  const abort = () => { controller.abort(); rejectAbort(cancelled()) }
+  const timer = setTimeout(abort, 3000)
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) abort()
   try {
-    return await fetch(`${baseUrl}${path}`, { ...init, signal: controller.signal, credentials: 'omit', redirect: 'error' })
-  } finally { clearTimeout(timer) }
+    return await Promise.race([aborted, (async () => {
+      const response = await fetch(`${baseUrl}${path}`, { ...init, signal: controller.signal, credentials: 'omit', redirect: 'error' })
+      return { status: response.status, ok: response.ok, text: await response.text() }
+    })()])
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
 }
 
-export async function claimPairing(link: PairingLink, deviceName: string, platform: PairingClaimRequest['platform'], onTrying?: (url: string) => void): Promise<PairingClaimResponse & { baseUrl: string }> {
+export async function claimPairing(link: PairingLink, deviceName: string, platform: PairingClaimRequest['platform'], onTrying?: (url: string) => void, signal?: AbortSignal): Promise<PairingClaimResponse & { baseUrl: string }> {
   let baseUrl: string | undefined
+  let atsBlocked = false
   for (const url of link.urls) {
+    if (signal?.aborted) throw cancelled()
     onTrying?.(url)
     try {
-      const health = await pairingFetch(url, '/api/health')
+      const health = await pairingFetch(url, '/api/health', {}, signal)
       // Health stays private; 401 proves the daemon is reachable without widening auth.
       if (health.ok || health.status === 401) { baseUrl = url; break }
-    } catch { /* try the next advertised address */ }
+    } catch (error) {
+      if (signal?.aborted) throw cancelled()
+      atsBlocked ||= isAtsError(error)
+    }
   }
-  if (!baseUrl) throw new Error(UNREACHABLE)
-  let response: Response
+  if (!baseUrl) throw new Error(atsBlocked ? ATS_BLOCKED : UNREACHABLE)
+  let response: Awaited<ReturnType<typeof pairingFetch>>
   try {
     const body: PairingClaimRequest = { code: link.code, deviceName, platform }
-    response = await pairingFetch(baseUrl, '/api/pairing/claim', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) })
-  } catch { throw new Error(`${UNREACHABLE} If pairing already completed, ask your Mac for a new code.`) }
+    response = await pairingFetch(baseUrl, '/api/pairing/claim', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) }, signal)
+  } catch (error) {
+    if (signal?.aborted) throw cancelled()
+    throw new Error(isAtsError(error) ? ATS_BLOCKED : `${UNREACHABLE} If pairing already completed, ask your Mac for a new code.`)
+  }
+  if (signal?.aborted) throw cancelled()
   if (response.status === 401) throw new Error(EXPIRED_CODE)
   if (response.status === 429) throw new Error('Too many attempts. Wait a minute, then ask your Mac for a new code.')
   if (!response.ok) throw new Error('Pairing failed. Ask your Mac for a new code and try again.')
-  const result = await response.json() as Partial<PairingClaimResponse>
-  if (typeof result.deviceId !== 'string' || typeof result.name !== 'string' || typeof result.token !== 'string' || !/^[A-Za-z0-9_-]{43,128}$/.test(result.token)) throw new Error('The daemon returned an invalid pairing response.')
+  let result: Partial<PairingClaimResponse>
+  try { result = JSON.parse(response.text) as Partial<PairingClaimResponse> } catch { throw new Error('The daemon returned an invalid pairing response.') }
+  if (!result || typeof result.deviceId !== 'string' || typeof result.name !== 'string' || typeof result.token !== 'string' || !/^[A-Za-z0-9_-]{43,128}$/.test(result.token)) throw new Error('The daemon returned an invalid pairing response.')
   return { deviceId: result.deviceId, token: result.token, name: result.name, baseUrl }
 }

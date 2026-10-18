@@ -169,6 +169,23 @@ check on its own; the trusted-origins list only matters for browser clients on
 the same name. Token-only daemons work too — switch the sign-in sheet to "Use
 automation token" and paste `COMMANDO_TOKEN`.
 
+### iOS HTTP transport and token isolation
+
+Tailscale's `100.64.0.0/10` addresses need `NSAllowsArbitraryLoads: true` in
+`NSAppTransportSecurity`. `NSAllowsLocalNetworking` must be absent: on iOS 10+
+its presence overrides the arbitrary-load setting. A `ts.net` exception also
+allows insecure HTTP for MagicDNS subdomains. Tailscale encrypts this traffic
+with WireGuard. Rebuild the iOS app after changing these settings; an ATS -1022
+probe error names this requirement rather than suggesting Tailscale is off.
+
+Token-host fetches (including images and tiles) omit credentials. Native sockets
+send bearer headers without putting tokens in URLs or explicitly forwarding
+cookies. **Remaining native limitation:** RN 0.86's iOS `RCTWebSocketModule`
+always merges `sharedHTTPCookieStorage` into handshakes before adding supplied
+headers. Its JavaScript API cannot suppress those cookies. Full socket cookie
+isolation needs a native implementation change; avoid pairing an untrusted
+service on a hostname where you have an owner session until that is available.
+
 ## Agent setup on the host
 
 Install and authenticate each CLI on the daemon/tmux host, under the account

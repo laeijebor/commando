@@ -32,7 +32,7 @@ describe('chat images', () => {
     await expect(uploadChatImage(HOST, { uri: 'file:///a.png', name: 'a.png', type: 'image/png' }, fetcher)).resolves.toEqual({ id, name: 'a.png' })
     const [url, init] = fetcher.mock.calls[1]!
     expect(url).toBe('http://studio:4310/api/chat/images')
-    expect(init).toMatchObject({ method: 'POST', headers: { 'Content-Type': 'image/png', Authorization: 'Bearer secret' } })
+    expect(init).toMatchObject({ method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'image/png', Authorization: 'Bearer secret' } })
   })
 
   it("says the daemon's reason when it refuses an upload", async () => {
