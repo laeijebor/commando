@@ -55,12 +55,27 @@ describe('ConversationPicker', () => {
     const status: AgentStatus = { paneId: '%7', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
     const { input, onJump, onPick } = renderPicker({
       load: async () => [conversation(sessionId, 'Open terminal work', pane.path, 1, { provider })],
-      open: openConversationPanes({}, { '%7': status }, () => 'Review'),
+      open: openConversationPanes({}, { '%7': status }, new Map([['%7', { command: provider === 'cursor' ? 'node' : 'opencode' }]]), () => 'Review'),
     })
     expect(await screen.findByRole('option')).toHaveTextContent('Open in Review')
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onJump).toHaveBeenCalledWith('%7')
     expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('resumes an exited %s TUI instead of jumping to its shell pane', async (provider) => {
+    const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
+    const status: AgentStatus = { paneId: '%7', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
+    const past = conversation(sessionId, 'Exited terminal work', pane.path, 1, { provider })
+    const { input, onJump, onPick } = renderPicker({
+      load: async () => [past],
+      open: openConversationPanes({}, { '%7': status }, new Map([['%7', { command: 'zsh' }]]), () => 'Review'),
+    })
+    expect(await screen.findByRole('option')).not.toHaveTextContent('Open in Review')
+    expect(screen.getByRole('contentinfo')).toHaveTextContent('Switch this pane')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(onPick).toHaveBeenCalledWith(past, 'replace'))
+    expect(onJump).not.toHaveBeenCalled()
   })
 
   it('groups this session, then other sessions, then Outside Commando, newest first', async () => {
@@ -232,11 +247,26 @@ describe('openConversationPanes', () => {
       '%7': { provider: 'opencode', source: 'heuristic', agentSessionId: 'ses_session456' },
       '%8': { provider: 'unknown', source: 'hook', agentSessionId: 'aaaaaaaa-0005' },
     } as unknown as Record<string, AgentStatus>
-    expect([...openConversationPanes(chats, statuses, (paneId) => `pane ${paneId}`)]).toEqual([
+    const panes = new Map(Object.keys(statuses).map((paneId) => [paneId, { command: 'node' }]))
+    expect([...openConversationPanes(chats, statuses, panes, (paneId) => `pane ${paneId}`)]).toEqual([
       ['claude:aaaaaaaa-0001', { paneId: '%2', label: 'pane %2' }],
       ['cursor:aaaaaaaa-0003', { paneId: '%4', label: 'pane %4' }],
       ['opencode:ses_session123', { paneId: '%5', label: 'pane %5' }],
       ['codex:cccccccc-0001', { paneId: '%1', label: 'pane %1' }],
     ])
+  })
+
+  it.each(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'tcsh', 'csh', 'nu', 'login', '-zsh', '/bin/zsh', ' /bin/bash ', undefined])('ignores retained hook statuses in a shell or missing pane: %s', (command) => {
+    const status: AgentStatus = { paneId: '%7', provider: 'claude', agentSessionId: 'aaaaaaaa-0005', source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
+    const panes = new Map(command === undefined ? [] : [['%7', { command }]])
+    expect(openConversationPanes({}, { '%7': status }, panes, () => 'Review').size).toBe(0)
+    // A chat host still owns its conversation even when its pane reports a shell.
+    const chats = { '%7': { session: { provider: 'claude', sessionId: status.agentSessionId } } } as unknown as Record<string, ChatState>
+    expect(openConversationPanes(chats, { '%7': status }, panes, () => 'Review').get('claude:aaaaaaaa-0005')).toEqual({ paneId: '%7', label: 'Review' })
+  })
+
+  it.each(['2.1.295', 'claude', 'codex', 'node', 'agent', 'opencode'])('keeps a completed turn open while its TUI runs: %s', (command) => {
+    const status: AgentStatus = { paneId: '%7', provider: 'claude', agentSessionId: 'aaaaaaaa-0005', source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
+    expect(openConversationPanes({}, { '%7': status }, new Map([['%7', { command }]]), () => 'Review').get('claude:aaaaaaaa-0005')).toEqual({ paneId: '%7', label: 'Review' })
   })
 })

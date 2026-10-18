@@ -16,12 +16,16 @@ export type OpenConversationPanes = ReadonlyMap<string, { paneId: string; label:
 export function openConversationPanes(
   chats: Readonly<Record<string, ChatState>>,
   statuses: Readonly<Record<string, AgentStatus>>,
+  panes: ReadonlyMap<string, Pick<TmuxPane, 'command'>>,
   label: (paneId: string) => string,
 ): Map<string, { paneId: string; label: string }> {
   const open = new Map<string, { paneId: string; label: string }>()
   for (const [paneId, status] of Object.entries(statuses)) {
     // Only a hook knows the session for sure; a guessed one could jump to the wrong pane.
     if (status.source !== 'hook' || !status.agentSessionId || status.provider === 'unknown') continue
+    // Recaps outlive the TUI, but AgentStatus doesn't expose the registry's retainedCompletion flag.
+    const command = panes.get(paneId)?.command.trim().replace(/^-/, '').split('/').at(-1)
+    if (!command || /^(?:sh|bash|zsh|fish|dash|ksh|tcsh|csh|nu|login)$/.test(command)) continue
     open.set(chatConversationKey(status.provider, status.agentSessionId), { paneId, label: label(paneId) })
   }
   for (const [paneId, chat] of Object.entries(chats)) {
