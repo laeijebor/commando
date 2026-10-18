@@ -104,6 +104,8 @@ export type AgentHookInstallResult = {
   museSettingsPath: string
   /** False when Muse has no config folder yet, so its hooks were not installed. */
   museHooksInstalled?: boolean
+  /** Why Muse's hooks were skipped although Muse is installed. */
+  museHooksWarning?: string
   openCodePluginPath: string
   prMarkerCliPath: string
   simCliPath: string
@@ -204,7 +206,13 @@ async function inheritedPaneEnv() {
     const pane = words.find((word) => /^TMUX_PANE=%\\d+$/.test(word))
     if (pane) {
       const port = words.find((word) => /^COMMANDO_PORT=\\d{1,5}$/.test(word))
-      return { pane: pane.slice('TMUX_PANE='.length), port: port?.slice('COMMANDO_PORT='.length) }
+      // A Muse chat's resume command; base64 because ps splits values on spaces.
+      const chat = words.find((word) => /^COMMANDO_CHAT_RESUME_B64=[A-Za-z0-9+/]+={0,2}$/.test(word))
+      return {
+        pane: pane.slice('TMUX_PANE='.length),
+        port: port?.slice('COMMANDO_PORT='.length),
+        chatResume: chat ? Buffer.from(chat.slice('COMMANDO_CHAT_RESUME_B64='.length), 'base64').toString('utf8') : undefined,
+      }
     }
     pid = Number((await run(['-o', 'ppid=', '-p', String(pid)])).trim())
   }
@@ -508,9 +516,9 @@ function planUpdateFor(input) {
 
 // The profile launcher matches the config dir in use: ~/.claudew -> claudew, ~/.claudep -> claudep.
 // A Commando chat pane passes its own resume command, so following it reopens the chat.
-function resumeContext(sessionId) {
+function resumeContext(sessionId, inheritedChat) {
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9-]{8,80}$/.test(sessionId)) return ''
-  const chat = process.env.COMMANDO_CHAT_RESUME
+  const chat = process.env.COMMANDO_CHAT_RESUME ?? inheritedChat
   if (typeof chat === 'string' && chat.length > 0 && chat.length < 2000 && !/[\\x00-\\x1f]/.test(chat)) {
     return '\\nResume command for this conversation: ' + chat + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
   }
@@ -551,7 +559,7 @@ async function main() {
     if (event === 'SessionStart' || event === 'UserPromptSubmit') {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: {
         hookEventName: event,
-        additionalContext: ${JSON.stringify(instructions)} + (event === 'SessionStart' ? resumeContext(input.session_id) : ''),
+        additionalContext: ${JSON.stringify(instructions)} + (event === 'SessionStart' ? resumeContext(input.session_id, inherited.chatResume) : ''),
       } }) + '\\n')
     }
     const toolState = event === 'PreToolUse'
@@ -2323,7 +2331,7 @@ async function assertBoundedPath(home: string, path: string): Promise<void> {
 }
 
 export class AgentHookInstaller {
-  readonly paths: Omit<AgentHookInstallResult, 'codexNotifyWarning' | 'museHooksInstalled'>
+  readonly paths: Omit<AgentHookInstallResult, 'codexNotifyWarning' | 'museHooksInstalled' | 'museHooksWarning'>
   private readonly home: string
 
   constructor(options: AgentHookInstallerOptions = {}) {
@@ -2447,10 +2455,20 @@ export class AgentHookInstaller {
   async install(): Promise<AgentHookInstallResult> {
     // Validate before changing any profile. Malformed Cursor configuration is left intact.
     await this.validateCursorInstall()
-    for (const path of Object.values(this.paths)) await assertBoundedPath(this.home, path)
-    const museInstalled = await isDirectory(dirname(this.paths.museSettingsPath))
-    // Validate Muse settings too before anything is written.
-    if (museInstalled) mergeMuseHooks((await readClaudeSettings(this.paths.museSettingsPath)).settings, this.paths.museBridgePath)
+    const { museSettingsPath, ...required } = this.paths
+    for (const path of Object.values(required)) await assertBoundedPath(this.home, path)
+    // A Muse config Commando can't safely update (a symlink, invalid JSON) skips Muse, not every agent.
+    let museInstalled = false
+    let museHooksWarning: string | undefined
+    try {
+      if (await isDirectory(dirname(museSettingsPath))) {
+        await assertBoundedPath(this.home, museSettingsPath)
+        mergeMuseHooks((await readClaudeSettings(museSettingsPath)).settings, this.paths.museBridgePath)
+        museInstalled = true
+      }
+    } catch (error) {
+      museHooksWarning = `${museSettingsPath}: ${error instanceof Error ? error.message : String(error)}`
+    }
     await this.installGeneratedScripts({ claude: true, openCode: true, muse: museInstalled })
     await this.installCursorHooks()
     const codexNotifyWarning = await this.installCodexNotify()
@@ -2459,6 +2477,7 @@ export class AgentHookInstaller {
     return {
       ...this.paths,
       museHooksInstalled: museInstalled,
+      ...(museHooksWarning ? { museHooksWarning } : {}),
       ...(codexNotifyWarning ? { codexNotifyWarning } : {}),
     }
   }

@@ -9,12 +9,14 @@ console.log(`Commando agent hooks installed:
   Claude bridge: ${installed.claudeBridgePath}
   Codex config: ${installed.codexConfigPath}
   Codex notify bridge: ${installed.codexBridgePath}
-  Muse settings: ${installed.museHooksInstalled ? installed.museSettingsPath : 'skipped (Muse has not been run yet)'}
+  Muse settings: ${installed.museHooksInstalled ? installed.museSettingsPath : installed.museHooksWarning ? 'skipped (see below)' : 'skipped (Muse has not been run yet)'}
   Muse bridge: ${installed.museBridgePath}
   OpenCode plugin: ${installed.openCodePluginPath}
   Session update CLI: ${installed.sessionBriefCliPath}
   PR marker CLI: ${installed.prMarkerCliPath}
   Hook token: ${installed.tokenPath}`)
+
+if (installed.museHooksWarning) console.warn(`\nMuse hooks were not installed: ${installed.museHooksWarning}`)
 
 if (installed.codexNotifyWarning) {
   console.warn(`

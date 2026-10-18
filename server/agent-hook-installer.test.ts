@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1514,6 +1514,40 @@ describe('Muse hooks', () => {
     ])
     // Muse prompts are answered in Muse; the bridge never holds one open.
     expect(received[1]!.body.request).toBeUndefined()
+  })
+
+  it('skips a Muse config it cannot safely update and still installs every other agent', async () => {
+    const home = await temporaryHome()
+    const real = join(home, 'dotfiles-muse.json')
+    await writeFile(real, '{"schema_version":1}')
+    await mkdir(join(home, '.config', 'muse'), { recursive: true })
+    await symlink(real, join(home, '.config', 'muse', 'settings.json'))
+    const paths = await new AgentHookInstaller({ home }).install()
+    expect(paths).toMatchObject({ museHooksInstalled: false, museHooksWarning: expect.stringContaining('symbolic link') })
+    expect(JSON.parse(await readFile(paths.claudeSettingsPath, 'utf8')).hooks.Stop).toHaveLength(1)
+    expect(await readFile(real, 'utf8')).toBe('{"schema_version":1}')
+  })
+
+  it('tells a Muse chat its chat resume command, read from the Muse process', async () => {
+    const home = await museHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const command = JSON.parse(await readFile(paths.museSettingsPath, 'utf8')).hooks.SessionStart[0].hooks[0].command
+    const chat = '/c/scripts/commando-agent muse --permission-mode default'
+    const session = '01a14d9e-e25f-7530-a907-d8b1d5347eda'
+    // The node parent plays the Muse process: it has the variables, the hook does not.
+    const parent = spawn(process.execPath, ['-e', `
+      const { spawn } = require('node:child_process')
+      const env = { ...process.env }
+      for (const name of ['TMUX_PANE', 'COMMANDO_PORT', 'COMMANDO_CHAT_RESUME', 'COMMANDO_CHAT_RESUME_B64']) delete env[name]
+      const child = spawn('/bin/sh', ['-c', process.argv[1]], { env, stdio: ['pipe', 'inherit', 'inherit'] })
+      process.stdin.pipe(child.stdin)
+      child.on('exit', (code) => process.exit(code))
+    `, command], { env: { ...process.env, TMUX_PANE: '%42', COMMANDO_PORT: '1', MUSE_SESSION_ID: session, MUSE_THREAD_ID: session, COMMANDO_CHAT_RESUME_B64: Buffer.from(chat).toString('base64') }, stdio: ['pipe', 'pipe', 'inherit'] })
+    let stdout = ''
+    parent.stdout.on('data', (chunk) => { stdout += chunk })
+    parent.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: session }))
+    await new Promise((resolve, reject) => { parent.on('exit', resolve); parent.on('error', reject) })
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(`Resume command for this conversation: ${chat} --resume ${session}`)
   })
 
   it('repairs Muse hooks left pointing at a departed bridge', async () => {
