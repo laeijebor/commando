@@ -1091,7 +1091,7 @@ export class PrService {
       '-f', `reviewRequestedQuery=${scopedSearchQuery(repo, 'review-requested', filter)}`,
     ]
     let output: string
-    const sizeKey = `${repo.toLowerCase()}::${scope}`
+    const sizeKey = `${repo.toLowerCase()}::${filter}::${scope}`
     // Lists that last needed more than one batch skip the single query instead
     // of waiting for it to time out.
     if ((this.listSizes.get(sizeKey) ?? 0) > PULL_REQUEST_DETAIL_BATCH_SIZE) {

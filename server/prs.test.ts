@@ -712,6 +712,22 @@ describe('pull request listing', () => {
     expect(runner).toHaveBeenCalledTimes(9)
   })
 
+  it.each([
+    { errors: [{ message: 'detail query failed' }], data: { nodes: [] } },
+    { data: { nodes: [] } },
+    { data: { nodes: [null] } },
+  ])('does not return or cache incomplete batched details: %j', async (details) => {
+    const runner = vi.fn()
+      .mockRejectedValueOnce(new PrServiceError(502, 'github_failed', 'gh: HTTP 502'))
+      .mockResolvedValueOnce(graphqlPayload([{ id: 'PR_12' }]))
+      .mockResolvedValueOnce(JSON.stringify(details))
+      .mockResolvedValueOnce(graphqlPayload([pullRequestNode()]))
+    const service = new PrService({ runner })
+    await expect(service.listPullRequests('acme/widgets', 'open')).rejects.toMatchObject({ status: 502 })
+    expect((await service.listPullRequests('acme/widgets', 'open')).pullRequests).toHaveLength(1)
+    expect(runner).toHaveBeenCalledTimes(4)
+  })
+
   it('reads a short list in one query and a long one in batches, switching as it changes size', async () => {
     let records = Array.from({ length: 20 }, (_, index) => pullRequestNode({ id: `PR_${index}`, number: index + 1 }))
     const runner = vi.fn(async (args: string[]) => {
