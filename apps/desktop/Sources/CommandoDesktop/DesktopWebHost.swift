@@ -103,7 +103,7 @@ final class DesktopWebHost: NSObject, WKNavigationDelegate {
     private var detachedWebPaneIds: [String] = []
 
     func sendPaneShortcut(_ key: String) {
-        guard !cleanedUp, role.webPaneId == nil, key == "w" || key == "t" else { return }
+        guard !cleanedUp, role.webPaneId == nil, key == "w" || key == "t" || key == "T" else { return }
         bridge.sendHostShortcut(key)
     }
 
