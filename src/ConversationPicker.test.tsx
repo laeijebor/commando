@@ -5,7 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ChatState } from '../shared/agent-chat'
 import type { ChatConversation } from '../shared/chat-conversations'
-import type { AgentStatus, TmuxPane } from '../shared/protocol'
+import type { TmuxPane } from '../shared/protocol'
 import { ConversationPicker, openConversationPanes } from './ConversationPicker'
 
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn() })
@@ -27,7 +27,8 @@ function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0
   const props = {
     pane,
     sessionName: 'current',
-    open: new Map([['claude:aaaaaaaa-0004', { paneId: '%7', label: 'Review' }]]),
+    chats: { '%7': { session: { provider: 'claude', sessionId: 'aaaaaaaa-0004' } } } as unknown as Record<string, ChatState>,
+    paneLabel: () => 'Review',
     busy: false,
     load: vi.fn(async () => conversations),
     onPick: vi.fn(async () => {}),
@@ -50,12 +51,11 @@ describe('ConversationPicker', () => {
     expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode'])
   })
 
-  it.each(['cursor', 'opencode'] as const)('jumps to a hook-reported %s conversation instead of resuming it', async (provider) => {
+  it.each(['cursor', 'opencode'] as const)('jumps to a server-verified live %s TUI instead of resuming it', async (provider) => {
     const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
-    const status: AgentStatus = { paneId: '%7', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
     const { input, onJump, onPick } = renderPicker({
-      load: async () => [conversation(sessionId, 'Open terminal work', pane.path, 1, { provider })],
-      open: openConversationPanes({}, { '%7': status }, new Map([['%7', { command: provider === 'cursor' ? 'node' : 'opencode' }]]), () => 'Review'),
+      load: async () => [conversation(sessionId, 'Open terminal work', pane.path, 1, { provider, openPaneId: '%7' })],
+      chats: {},
     })
     expect(await screen.findByRole('option')).toHaveTextContent('Open in Review')
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -63,13 +63,13 @@ describe('ConversationPicker', () => {
     expect(onPick).not.toHaveBeenCalled()
   })
 
-  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('resumes an exited %s TUI instead of jumping to its shell pane', async (provider) => {
+  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('resumes an exited %s TUI now running vim when the server reports no open pane', async (provider) => {
     const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
-    const status: AgentStatus = { paneId: '%7', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
     const past = conversation(sessionId, 'Exited terminal work', pane.path, 1, { provider })
     const { input, onJump, onPick } = renderPicker({
       load: async () => [past],
-      open: openConversationPanes({}, { '%7': status }, new Map([['%7', { command: 'zsh' }]]), () => 'Review'),
+      chats: {},
+      pane: { ...pane, command: 'vim' },
     })
     expect(await screen.findByRole('option')).not.toHaveTextContent('Open in Review')
     expect(screen.getByRole('contentinfo')).toHaveTextContent('Switch this pane')
@@ -190,7 +190,7 @@ describe('ConversationPicker', () => {
   })
 
   it('closes from the Esc button, including while a switch is pending', async () => {
-    const { input, onClose } = renderPicker({ open: new Map(), onPick: () => new Promise<void>(() => {}) })
+    const { input, onClose } = renderPicker({ chats: {}, onPick: () => new Promise<void>(() => {}) })
     await screen.findAllByRole('group')
     fireEvent.change(input, { target: { value: 'Feature' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -217,7 +217,7 @@ describe('ConversationPicker', () => {
   })
 
   it('says when the switch would stop a running turn', async () => {
-    renderPicker({ busy: true, open: new Map() })
+    renderPicker({ busy: true, chats: {} })
     await screen.findAllByRole('group')
     expect(screen.getByRole('contentinfo')).toHaveTextContent('Enter Switch (stops this turn)')
   })
@@ -236,19 +236,15 @@ describe('openConversationPanes', () => {
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 
-  it('maps chat conversations and hook-reported terminal sessions to their panes', () => {
+  it('maps server-verified terminal conversations and hosted chats to their panes', () => {
     const chats = { '%1': { session: { provider: 'codex', sessionId: 'cccccccc-0001' } } } as unknown as Record<string, ChatState>
-    const statuses = {
-      '%2': { provider: 'claude', source: 'hook', agentSessionId: 'aaaaaaaa-0001' },
-      '%3': { provider: 'claude', source: 'heuristic', agentSessionId: 'aaaaaaaa-0002' },
-      '%4': { provider: 'cursor', source: 'hook', agentSessionId: 'aaaaaaaa-0003' },
-      '%5': { provider: 'opencode', source: 'hook', agentSessionId: 'ses_session123' },
-      '%6': { provider: 'cursor', source: 'process', agentSessionId: 'aaaaaaaa-0004' },
-      '%7': { provider: 'opencode', source: 'heuristic', agentSessionId: 'ses_session456' },
-      '%8': { provider: 'unknown', source: 'hook', agentSessionId: 'aaaaaaaa-0005' },
-    } as unknown as Record<string, AgentStatus>
-    const panes = new Map(Object.keys(statuses).map((paneId) => [paneId, { command: 'node' }]))
-    expect([...openConversationPanes(chats, statuses, panes, (paneId) => `pane ${paneId}`)]).toEqual([
+    const listed = [
+      conversation('aaaaaaaa-0001', 'Claude', pane.path, 1, { openPaneId: '%2' }),
+      conversation('aaaaaaaa-0002', 'Exited', pane.path, 1),
+      conversation('aaaaaaaa-0003', 'Cursor', pane.path, 1, { provider: 'cursor', openPaneId: '%4' }),
+      conversation('ses_session123', 'OpenCode', pane.path, 1, { provider: 'opencode', openPaneId: '%5' }),
+    ]
+    expect([...openConversationPanes(chats, listed, (paneId) => `pane ${paneId}`)]).toEqual([
       ['claude:aaaaaaaa-0001', { paneId: '%2', label: 'pane %2' }],
       ['cursor:aaaaaaaa-0003', { paneId: '%4', label: 'pane %4' }],
       ['opencode:ses_session123', { paneId: '%5', label: 'pane %5' }],
@@ -256,18 +252,11 @@ describe('openConversationPanes', () => {
     ])
   })
 
-  it.each(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'tcsh', 'csh', 'nu', 'login', '-zsh', '/bin/zsh', ' /bin/bash ', undefined])('ignores retained hook statuses in a shell or missing pane: %s', (command) => {
-    const status: AgentStatus = { paneId: '%7', provider: 'claude', agentSessionId: 'aaaaaaaa-0005', source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
-    const panes = new Map(command === undefined ? [] : [['%7', { command }]])
-    expect(openConversationPanes({}, { '%7': status }, panes, () => 'Review').size).toBe(0)
-    // A chat host still owns its conversation even when its pane reports a shell.
-    const chats = { '%7': { session: { provider: 'claude', sessionId: status.agentSessionId } } } as unknown as Record<string, ChatState>
-    expect(openConversationPanes(chats, { '%7': status }, panes, () => 'Review').get('claude:aaaaaaaa-0005')).toEqual({ paneId: '%7', label: 'Review' })
-  })
-
-  it.each(['2.1.295', 'claude', 'codex', 'node', 'agent', 'opencode'])('keeps a completed turn open while its TUI runs: %s', (command) => {
-    const status: AgentStatus = { paneId: '%7', provider: 'claude', agentSessionId: 'aaaaaaaa-0005', source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: NOW }
-    expect(openConversationPanes({}, { '%7': status }, new Map([['%7', { command }]]), () => 'Review').get('claude:aaaaaaaa-0005')).toEqual({ paneId: '%7', label: 'Review' })
+  it('keeps hosted chats authoritative when list data is missing or older', () => {
+    const chats = { '%7': { session: { provider: 'claude', sessionId: 'aaaaaaaa-0005' } } } as unknown as Record<string, ChatState>
+    for (const listed of [[], [conversation('aaaaaaaa-0005', 'Old host', pane.path, 1, { openPaneId: '%2' })]]) {
+      expect(openConversationPanes(chats, listed, () => 'Review').get('claude:aaaaaaaa-0005')).toEqual({ paneId: '%7', label: 'Review' })
+    }
   })
 })
 
@@ -278,7 +267,7 @@ describe('resume entry points', () => {
     ['split', false, 'Open beside'],
     ['session', false, 'In its session'],
   ] as const)('shows Enter placement %s and resumes accordingly', async (defaultPlacement, busy, label) => {
-    const { input, onPick } = renderPicker({ defaultPlacement, busy, open: new Map() })
+    const { input, onPick } = renderPicker({ defaultPlacement, busy, chats: {} })
     await screen.findAllByRole('option')
     expect(screen.getByRole('contentinfo')).toHaveTextContent(`Enter ${label}`)
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
@@ -286,7 +275,7 @@ describe('resume entry points', () => {
   })
 
   it('resumes in its session with option-Enter and only shows the hint for a session row', async () => {
-    const { input, onPick } = renderPicker({ open: new Map() })
+    const { input, onPick } = renderPicker({ chats: {} })
     await screen.findAllByRole('option')
     expect(screen.getByRole('contentinfo')).toHaveTextContent('⌥Enter In its session')
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter', altKey: true }) })
