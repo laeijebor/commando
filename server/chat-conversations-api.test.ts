@@ -70,7 +70,7 @@ describe('ChatConversationsApi', () => {
     ['pane back at zsh before registry reconciliation', 'zsh', false, 200],
     ['exited TUI with a retained recap', 'zsh', true, 200],
     ['retained recap even if the command matches again', '2.1.295', true, 200],
-  ] as const)('%s uses only live hook sessions for the resume guard', async (_scenario, command, exited, expectedStatus) => {
+  ] as const)('%s uses open hook conversations for the resume guard', async (_scenario, command, exited, expectedStatus) => {
     const registry = new AgentStatusRegistry()
     registry.applyClaudeHook('%2', { hook_event_name: 'UserPromptSubmit', session_id: ID, intent: 'Ship it' }, 1, '2.1.295')
     registry.applyClaudeHook('%2', { hook_event_name: 'Stop', session_id: ID, finalMessage: 'Shipped the fix.' }, 2, '2.1.295')
@@ -81,13 +81,38 @@ describe('ChatConversationsApi', () => {
     const { creator, resume } = setup({
       conversation: { provider: 'claude' },
       panes,
-      agentSessions: () => panes.flatMap((pane) => registry.liveHookStatus(pane.id, pane.command) ?? []),
+      agentSessions: () => panes.flatMap((pane) => registry.openConversationStatus(pane.id, pane.command) ?? []),
     })
     expect(await resume({ provider: 'claude' })).toMatchObject({
       status: expectedStatus,
       body: expectedStatus === 409 ? { error: 'That conversation is already open in pane %2' } : { paneId: '%1' },
     })
     expect(creator.respawnChatPane).toHaveBeenCalledTimes(expectedStatus === 200 ? 1 : 0)
+  })
+
+  it('blocks a duplicate resume after the reservation expires when Claude has only reported SessionStart', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const registry = new AgentStatusRegistry()
+      const panes = [{ id: '%1', command: 'node' }, { id: '%2', command: '2.1.295' }]
+      const { creator, resume } = setup({
+        conversation: { provider: 'claude' },
+        chats: [chat(), chat({ paneId: '%2' })],
+        panes,
+        agentSessions: () => panes.flatMap((pane) => registry.openConversationStatus(pane.id, pane.command) ?? []),
+      })
+      expect(await resume({ paneId: '%2', provider: 'claude' })).toMatchObject({ status: 200 })
+      registry.applyClaudeHook('%2', { hook_event_name: 'SessionStart', session_id: ID }, 1, '2.1.295')
+      vi.advanceTimersByTime(15_000)
+
+      expect(await resume({ provider: 'claude' })).toMatchObject({
+        status: 409, body: { error: 'That conversation is already open in pane %2' },
+      })
+      expect(creator.respawnChatPane).toHaveBeenCalledTimes(1)
+      expect(creator.createPane).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each([
