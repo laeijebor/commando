@@ -116,8 +116,8 @@ export function fetchRepoInfo(host: Host, directory: string): Promise<GitRepoInf
 }
 
 /** `GET /api/prs/pane?paneId=…` — pull requests linked to the pane's target. */
-export async function fetchPanePrs(host: Host, paneId: string): Promise<PanePrList> {
-  const body = await json<{ list: PanePrList }>(host, `/api/prs/pane${query({ paneId })}`, 'PR lookup failed', 20_000)
+export async function fetchPanePrs(host: Host, paneId: string, options: { background?: boolean } = {}): Promise<PanePrList> {
+  const body = await json<{ list: PanePrList }>(host, `/api/prs/pane${query({ paneId, background: options.background ? '1' : undefined })}`, 'PR lookup failed', 20_000)
   return body.list
 }
 

@@ -54,3 +54,10 @@ it('derives native chat states even before agent hooks have supplied a status', 
   expect(row.subtitle).toBe('Native chat progress')
   expect(row.openPaneId).toBe('%14')
 })
+
+it('opens the active pane of the active window for shell-only sessions', () => {
+  const snapshot = { ...SNAPSHOT, sessions: SNAPSHOT.sessions.map((session) => session.id === '$1' ? { ...session, activeWindowId: '@2' } : session), panes: SNAPSHOT.panes.map((pane) => ({ ...pane, command: 'zsh', title: 'shell' })) }
+  const row = buildChatGroups({ ...EMPTY_HOST_STATE, snapshot }).flatMap((group) => group.sessions).find((entry) => entry.session.id === '$1')!
+  expect(row.agents).toHaveLength(0)
+  expect(row.openPaneId).toBe('%15')
+})

@@ -23,14 +23,14 @@ import type {
 import {
   fetchGitSummary,
   fetchFileDiff,
-  fetchPanePrs,
   fetchRepoPrs,
   fetchScreenshotFolder,
   screenshotImageSource,
-  type GitDiffSummary,
-  type PanePrList,
   type PaneScreenshotListing,
 } from '../daemon/paneApi'
+import { useAppActive } from '../daemon/useAppActive'
+import { usePollingQuery } from '../daemon/usePollingQuery'
+import { usePanePrs } from '../pane/usePanePrs'
 import type { Host } from '../hosts/types'
 import { providerPresentation } from './providerPresentation'
 import { changesHeadline, gitSummaryView, parseDiffLines } from '../pane/gitSummary'
@@ -76,6 +76,7 @@ export type PaneInfoSectionId = SectionId
 export const PANE_INFO_SECTION_IDS = SECTION_IDS
 
 export type PaneInfoSectionsProps = {
+  active?: boolean
   host: Host
   paneId: string
   brief?: SessionBrief
@@ -105,14 +106,17 @@ export function PaneInfoSections({
   pane,
   ports,
   sections = SECTION_IDS,
+  active = true,
   prFilter,
   onLayoutSection,
 }: PaneInfoSectionsProps): React.JSX.Element {
   const theme = useTheme()
-  const [summary, setSummary] = useState<GitDiffSummary | null>(null)
-  const [summaryError, setSummaryError] = useState<string | null>(null)
-  const [prs, setPrs] = useState<PanePrList | null>(null)
-  const [prError, setPrError] = useState<string | null>(null)
+  const foreground = useAppActive(active)
+  const query = usePollingQuery(`git:${host.id}:${host.baseUrl}:${paneId}`, () => fetchGitSummary(host, paneId), foreground && (sections.includes('changes') || sections.includes('pr')), GIT_POLL_INTERVAL_MS)
+  const summary = query.data ?? null
+  const summaryError = query.error instanceof Error ? query.error.message : null
+  const prs = usePanePrs(host, [paneId], foreground && sections.includes('pr'))[0] ?? null
+  const prError = null
   const [prDetails, setPrDetails] = useState<Record<number, PrDetail>>({})
   const [diff, setDiff] = useState<{ file: string; diff: string } | null>(null)
   const [diffError, setDiffError] = useState<string | null>(null)
@@ -129,51 +133,15 @@ export function PaneInfoSections({
   )
   const state = worklog?.state ?? status?.status ?? 'unknown'
 
-  // The diff is the one part of this sheet the daemon does not push, so it is
-  // polled while the sheet is open, exactly like the desktop's git stats.
   useEffect(() => {
+    if (!foreground || !sections.includes('pr')) return
     let cancelled = false
-    const load = async (): Promise<void> => {
-      try {
-        const next = await fetchGitSummary(host, paneId)
-        if (cancelled) return
-        setSummary(next)
-        setSummaryError(null)
-      } catch (error) {
-        if (cancelled) return
-        setSummaryError(error instanceof Error ? error.message : 'Git summary failed')
-      }
-    }
-    void load()
-    const timer = setInterval(() => void load(), GIT_POLL_INTERVAL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [host, paneId])
-
-  useEffect(() => {
-    let cancelled = false
-    fetchPanePrs(host, paneId)
-      .then(async (list) => {
-        if (cancelled) return
-        setPrs(list)
-        setPrError(null)
-        // The checks and review state only exist on the repository list, so it
-        // is asked for once a pane is known to have an open PR.
-        const repo = list.pullRequests.find((pullRequest) => pullRequest.state === 'open')?.repo
-        if (!repo) return
-        const full = await fetchRepoPrs(host, repo).catch(() => null)
-        if (cancelled || !full) return
-        setPrDetails(Object.fromEntries(full.pullRequests.map((entry) => [entry.number, entry])))
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setPrError(error instanceof Error ? error.message : 'PR lookup failed')
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [host, paneId])
+    const repo = prs?.pullRequests.find((pr) => pr.state === 'open')?.repo
+    if (repo) void fetchRepoPrs(host, repo).then((full) => {
+      if (!cancelled && full?.pullRequests) setPrDetails(Object.fromEntries(full.pullRequests.map((entry) => [entry.number, entry])))
+    }, () => undefined)
+    return () => { cancelled = true }
+  }, [host, foreground, prs, sections.includes('pr')])
 
   const openDiff = useCallback(async (file: string) => {
     setDiffError(null)
@@ -231,7 +199,7 @@ export function PaneInfoSections({
                   <View style={styles.headlineText}>
                     <Text style={[styles.headline, { color: theme.text }]}>{worklog.headline}</Text>
                     <Text style={[styles.headlineMeta, { color: theme.muted }]}>
-                      Worklog · from {worklog.headlineSource}
+                      Worklog{worklog.headlineSource ? ` · from ${worklog.headlineSource}` : ''}
                     </Text>
                   </View>
                 </View>
@@ -264,7 +232,7 @@ export function PaneInfoSections({
                                 : theme.text,
                             },
                             task.status === 'completed' || task.status === 'cancelled'
-                              ? styles.taskDone
+                              ? [styles.taskDone, { textDecorationColor: theme.textDim }]
                               : null,
                           ]}
                         >
@@ -580,6 +548,7 @@ export function PaneInfoSections({
 }
 
 export type PaneInfoProps = {
+  focused?: boolean
   host: Host
   paneId: string
   brief?: SessionBrief
@@ -603,6 +572,7 @@ export function PaneInfo({
   sessionName,
   ports,
   onClose,
+  focused = true,
 }: PaneInfoProps): React.JSX.Element {
   const theme = useTheme()
   const scrollRef = useRef<ScrollView>(null)
@@ -669,7 +639,7 @@ export function PaneInfo({
       </ScrollView>
 
       <ScrollView contentContainerStyle={styles.body} ref={scrollRef}>
-        <PaneInfoSections
+        <PaneInfoSections active={focused}
           brief={brief}
           host={host}
           onLayoutSection={(section, y) => {
