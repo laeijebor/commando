@@ -1,3 +1,5 @@
+import type { SessionIdentities } from '../shared/session-identity'
+
 export type SessionPreferenceGroup = {
   id: string
   name: string
@@ -11,6 +13,7 @@ export type SessionTreePreferences = {
   groups: SessionPreferenceGroup[]
   ungroupedSessionIds: string[]
   sessionNamesById?: Record<string, string>
+  sessionIdentities?: SessionIdentities
   /** How the sidebar groups sessions; defaults to `repository` when absent. */
   groupingMode?: SessionGroupingMode
   /** Saved order within repository groups, independent of manual grouping. */
@@ -20,6 +23,8 @@ export type SessionTreePreferences = {
 export interface SessionManagementApiClient {
   loadPreferences(): Promise<SessionTreePreferences>
   savePreferences(preferences: SessionTreePreferences): Promise<SessionTreePreferences>
+  ensureIdentities(names: string[]): Promise<SessionTreePreferences>
+  changeIdentity(sessionId: string, glyph: string | null): Promise<SessionTreePreferences>
   renameSession(sessionId: string, name: string): Promise<void>
   previewWorktreeDeletion(sessionId: string): Promise<{ auxiliarySessions: { id: string; name: string }[] }>
   deleteSession(sessionId: string, deleteWorktree?: boolean, confirmAuxiliarySessionIds?: string[]): Promise<void>
@@ -74,6 +79,16 @@ export function createSessionManagementApi(
       const result = await request<{ preferences: SessionTreePreferences }>('/preferences', {
         method: 'PUT',
         body: JSON.stringify({ preferences }),
+      })
+      return result.preferences
+    },
+    async ensureIdentities(names) {
+      const result = await request<{ preferences: SessionTreePreferences }>('/identities', { method: 'POST', body: JSON.stringify({ names }) })
+      return result.preferences
+    },
+    async changeIdentity(sessionId, glyph) {
+      const result = await request<{ preferences: SessionTreePreferences }>(`/sessions/${encodeURIComponent(sessionId)}/identity`, {
+        method: 'POST', body: JSON.stringify(glyph === null ? { reset: true } : { glyph }),
       })
       return result.preferences
     },
