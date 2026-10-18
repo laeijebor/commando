@@ -1,6 +1,26 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { requestMatchesBearer, type PairingRegistry } from './pairing.js'
 
+/** Presence is separate from validity: malformed/empty credentials must not unlock cookie fallback. */
+export function requestSuppliesBearer(request: IncomingMessage, url: URL): boolean {
+  if (request.headers.authorization !== undefined || url.searchParams.has('token')) return true
+  const protocols = request.headers['sec-websocket-protocol']
+  return typeof protocols === 'string' && protocols.split(',').some((entry) => {
+    const protocol = entry.trim()
+    return protocol === 'commando-auth' || protocol.startsWith('commando-auth.')
+  })
+}
+
+/** HTTP and upgrade gates share the same rule: explicit credentials take precedence. */
+export async function authorizeBearerOrSession(
+  request: IncomingMessage,
+  url: URL,
+  bearerAuthorized: () => boolean,
+  hasSession: () => Promise<boolean>,
+): Promise<boolean> {
+  return requestSuppliesBearer(request, url) ? bearerAuthorized() : hasSession()
+}
+
 /** Binds device principals to every active HTTP request and upgraded transport. */
 export class PairingRequestAuth {
   private readonly principals = new WeakMap<IncomingMessage, string>()

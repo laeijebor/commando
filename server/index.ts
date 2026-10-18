@@ -134,7 +134,7 @@ import { handleUsageApi } from './usage-api.js'
 import { ExpoPushSender } from './expo-push.js'
 import { PushApi } from './push-api.js'
 import { PairingApi } from './pairing-api.js'
-import { PairingRequestAuth } from './pairing-auth.js'
+import { authorizeBearerOrSession, PairingRequestAuth, requestSuppliesBearer } from './pairing-auth.js'
 import { PairingRegistry, defaultPairingDevicesPath, pairingAddresses, requestMatchesBearer } from './pairing.js'
 import { PushDeviceRegistry } from './push-devices.js'
 import { PushNotifier } from './push-notifier.js'
@@ -741,14 +741,16 @@ async function main(): Promise<void> {
   const pairingAuth = new PairingRequestAuth(pairing)
   await pairing.load()
   // Management remains owner-only. Devices inherit exactly the existing bearer scope.
-  const requestIsOwnerAuthorized = async (request: IncomingMessage, url: URL): Promise<boolean> => (
-    requestHasValidToken(request, url, digest) || (await auth?.hasSession(request)) === true
+  const requestIsOwnerAuthorized = (request: IncomingMessage, url: URL): Promise<boolean> => authorizeBearerOrSession(
+    request, url,
+    () => requestHasValidToken(request, url, digest),
+    async () => (await auth?.hasSession(request)) === true,
   )
-  const requestIsAuthorized = async (request: IncomingMessage, url: URL): Promise<boolean> => {
-    if (requestHasValidToken(request, url, digest)) return true
-    if (pairingAuth.authorize(request, url)) return true
-    return (await auth?.hasSession(request)) === true
-  }
+  const requestIsAuthorized = (request: IncomingMessage, url: URL): Promise<boolean> => authorizeBearerOrSession(
+    request, url,
+    () => requestHasValidToken(request, url, digest) || pairingAuth.authorize(request, url),
+    async () => (await auth?.hasSession(request)) === true,
+  )
   const pairingApi = new PairingApi(pairing, requestIsOwnerAuthorized, () => pairingAddresses(port, networkAccess.listeners), (request, url) => (
     requestHasValidToken(request, url, digest) || (typeof request.headers.origin === 'string' && networkAccess.trustedOrigins.includes(request.headers.origin))
   ))
@@ -2648,6 +2650,10 @@ async function main(): Promise<void> {
 
       const ideId = idePathId(url.pathname)
       if (ideId) {
+        if (requestSuppliesBearer(request, url) && !(await requestIsAuthorized(request, url))) {
+          writeJson(response, 401, { error: 'Unauthorized' })
+          return
+        }
         if (!sessionIdes.authorized(ideId, request.headers.cookie)) {
           writeJson(response, 401, { error: 'Open the IDE from the session menu to authorize this browser' })
           return
@@ -2789,6 +2795,10 @@ async function main(): Promise<void> {
         const url = requestUrl(request)
         const ideId = url ? idePathId(url.pathname) : null
         if (url && ideId) {
+          if (requestSuppliesBearer(request, url) && !(await requestIsAuthorized(request, url))) {
+            rejectUpgrade(socket, 401, 'Unauthorized')
+            return
+          }
           if (!sessionIdes.authorized(ideId, request.headers.cookie)) {
             rejectUpgrade(socket, 401, 'Unauthorized')
             return
