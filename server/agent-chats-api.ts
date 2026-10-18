@@ -252,7 +252,7 @@ export class AgentChatsApi {
     if (!provider || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) throw new HttpError(400, 'Unknown caller agent provider; specify --agent')
     const hosted = isChatLaunchProvider(provider)
     const callerRank = chat ? chatRank(chat) : terminal?.rank ?? PERMISSION_RANK.default
-    // A Muse chat names what it may grant, so a sandboxed bypass reads as acceptEdits.
+    // A Muse chat names what it may grant: its sandboxed approve-everything grants acceptEdits.
     const callerMode = chat && chat.provider !== 'muse' ? launchMode(chat) : modeOfRank(callerRank)
     if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open hosted chats (claude-chat, codex-chat, muse-chat or cursor-chat)')
     if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat, codex-chat, muse-chat and cursor-chat accept a permission mode')
