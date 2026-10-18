@@ -1,6 +1,6 @@
 import type { AgentMessage, AgentOptions, ConversationTurn, GetAgentMessagesOptions, ListResult, ListRunsOptions, ModelListItem, Run, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_ITEMS } from '../../../shared/agent-chat.js'
-import { CursorItemMapper, record, string } from './items.js'
+import { CursorItemMapper, list, record, string } from './items.js'
 
 export interface CursorRun {
   wait(): Promise<RunResult>
@@ -16,7 +16,7 @@ export interface CursorHistory {
   turns: ConversationTurn[]
   skipped: number
 }
-type HistoryRun = Pick<Run, 'createdAt' | 'conversation'>
+type HistoryRun = Pick<Run, 'createdAt' | 'conversation'> & Partial<Pick<Run, 'status'>>
 /** Only the SDK operations the chat uses; tests never load the real SDK. */
 export interface CursorSdk {
   authStatus(): Promise<{ status: 'logged-in' | 'logged-out'; email?: string }>
@@ -55,26 +55,25 @@ export async function cursorHistory(
   // Local run conversations omit the prompt that opened each run, but the agent's messages
   // keep every prompt in order: one per run, plus one per steer. Steered turns keep their own
   // text, so each run takes its steers plus one prompt from the newest end, checked against
-  // those texts. A steer can fold the opening turn into the steered one, leaving the opening
-  // prompt to stand on its own. Anything that doesn't line up stops the backfill.
-  let prompts: (string | undefined)[] | undefined
+  // those texts and the opening turn's step count (a cancelled run may have saved fewer steps
+  // than its message). A steer can fold the opening turn into the steered one, leaving the
+  // opening prompt step-less and on its own. Anything that doesn't line up stops the backfill.
+  let prompts: { text?: string; steps: number }[] | undefined
   if (listMessages) {
     try {
-      const indexed: { index: number; text?: string }[] = []
-      for (let offset = 0; ; offset += 100) {
-        const messages = await listMessages(agentId, { runtime: 'local', cwd, limit: 100, offset })
-        for (const entry of messages) {
-          const index = entry.uuid.startsWith(`${agentId}:`) ? entry.uuid.slice(agentId.length + 1) : ''
-          if (entry.type !== 'user' || !/^\d+$/.test(index) || !Number.isSafeInteger(Number(index))) continue
-          indexed.push({ index: Number(index), text: string(record(messageTurn(entry.message).userMessage).text) })
-        }
-        if (messages.length < 100) break
-      }
-      prompts = indexed.sort((a, b) => a.index - b.index).map((entry) => entry.text)
+      // One call: the local store rebuilds the whole conversation for every page it serves.
+      const indexed = (await listMessages(agentId, { runtime: 'local', cwd })).flatMap((entry) => {
+        const index = entry.uuid.startsWith(`${agentId}:`) ? entry.uuid.slice(agentId.length + 1) : ''
+        if (entry.type !== 'user' || !/^\d+$/.test(index) || !Number.isSafeInteger(Number(index))) return []
+        const turn = messageTurn(entry.message)
+        return [{ index: Number(index), text: string(record(turn.userMessage).text), steps: list(turn.steps).length }]
+      })
+      prompts = indexed.sort((a, b) => a.index - b.index).map(({ text, steps }) => ({ text, steps }))
     } catch (error) {
       log?.(`Couldn't load Cursor user messages: ${string(record(error).message) ?? String(error)}`)
     }
   }
+  const stopBackfill = (reason: string) => { if (prompts) log?.(`Cursor history prompts stop here: ${reason}`); prompts = undefined }
   const ordered = runs.map((run, index) => ({ run, index })).sort((a, b) => (b.run.createdAt ?? 0) - (a.run.createdAt ?? 0) || b.index - a.index)
   for (const { run } of ordered) {
     let conversation: ConversationTurn[]
@@ -82,21 +81,24 @@ export async function cursorHistory(
     catch (error) {
       skipped++
       // An unreadable run has an unknown number of steers, so older prompts can't be placed.
-      prompts = undefined
+      stopBackfill('a run could not be read')
       log?.(`Couldn't load a Cursor run: ${string(record(error).message) ?? String(error)}`)
       continue
     }
     const runTurns = [...conversation]
     // A shell turn's place among the messages is unknown, so it also ends the backfill.
-    if (runTurns.some((turn) => turn.type !== 'agentConversationTurn')) prompts = undefined
+    if (runTurns.some((turn) => turn.type !== 'agentConversationTurn')) stopBackfill('a shell turn')
     if (prompts) {
       const steers = runTurns.flatMap((turn) => turn.type === 'agentConversationTurn' && turn.turn.userMessage ? [turn.turn.userMessage.text] : [])
       const taken = prompts.length > steers.length ? prompts.splice(-(steers.length + 1)) : []
-      if (!taken.length || taken.slice(1).some((text, index) => text !== steers[index])) prompts = undefined
-      else if (taken[0] !== undefined) {
-        const first = runTurns[0]
-        if (first?.type === 'agentConversationTurn' && !first.turn.userMessage) runTurns[0] = { ...first, turn: { ...first.turn, userMessage: { text: taken[0] } } }
-        else runTurns.unshift({ type: 'agentConversationTurn', turn: { userMessage: { text: taken[0] }, steps: [] } })
+      const first = runTurns[0]
+      const opening = first?.type === 'agentConversationTurn' && !first.turn.userMessage ? first : undefined
+      const steps = opening?.turn.steps.length ?? 0
+      if (!taken.length || taken.slice(1).some(({ text }, index) => text !== steers[index])) stopBackfill('steers do not match their messages')
+      else if (run.status === 'finished' ? taken[0].steps !== steps : taken[0].steps < steps) stopBackfill('a run does not match its prompt')
+      else if (taken[0].text !== undefined) {
+        if (opening) runTurns[0] = { ...opening, turn: { ...opening.turn, userMessage: { text: taken[0].text } } }
+        else runTurns.unshift({ type: 'agentConversationTurn', turn: { userMessage: { text: taken[0].text }, steps: [] } })
       }
     }
     for (let position = runTurns.length - 1; position >= 0 && counter.list().length < MAX_CHAT_ITEMS; position--) {

@@ -53,10 +53,13 @@ describe('cursorHistory', () => {
   })
   // Shapes as the SDK returns them: run conversations drop the opening prompt but keep a
   // steer's, while messages are protobuf turns ({ turn: { case, value } }), one per prompt.
-  const reply = (text: string): ConversationTurn => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text } }] } })
+  const reply = (text: string, extra = 0): ConversationTurn => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text } }, ...Array.from({ length: extra }, () => ({ type: 'thinkingMessage' as const, message: { text: '' } }))] } })
   const steered = (prompt: string, text: string): ConversationTurn => ({ type: 'agentConversationTurn', turn: { userMessage: { text: prompt }, steps: [{ type: 'assistantMessage', message: { text } }] } })
-  const prompt = (index: number, text: string) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { turn: { case: 'agentConversationTurn', value: { userMessage: { text }, steps: [] } } } })
-  const runs = (...conversations: ConversationTurn[][]) => async () => ({ items: conversations.map((conversation, index) => ({ createdAt: index, conversation: async () => conversation })) })
+  const prompt = (index: number, text: string, steps = 1) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { turn: { case: 'agentConversationTurn', value: { userMessage: { text }, steps: Array.from({ length: steps }, () => ({})) } } } })
+  const runs = (...conversations: (ConversationTurn[] | { status: 'finished' | 'cancelled'; turns: ConversationTurn[] })[]) => async () => ({ items: conversations.map((entry, index) => {
+    const { status, turns } = Array.isArray(entry) ? { status: 'finished' as const, turns: entry } : entry
+    return { createdAt: index, status, conversation: async () => turns }
+  }) })
   const users = (turns: ConversationTurn[]) => {
     const mapper = new CursorItemMapper()
     turns.forEach((entry) => mapper.replay(entry))
@@ -69,43 +72,42 @@ describe('cursorHistory', () => {
   })
   it('restores the opening prompt when a steer folds the opening turn into the steered one', async () => {
     const result = await cursorHistory(runs([reply('before')], [steered('Steer', 'both')], [reply('after')]), 'agent', '/w', undefined,
-      async () => [prompt(0, 'Before'), prompt(1, 'Opening'), prompt(2, 'Steer'), prompt(3, 'After')])
+      async () => [prompt(0, 'Before'), prompt(1, 'Opening', 0), prompt(2, 'Steer'), prompt(3, 'After')])
     expect(users(result.turns)).toEqual(['Before', '> before', 'Opening', 'Steer', '> both', 'After', '> after'])
   })
-  it('keeps the prompt of a run cancelled before it produced a turn', async () => {
-    const result = await cursorHistory(runs([reply('first')], []), 'agent', '/w', undefined, async () => [prompt(0, 'First'), prompt(1, 'Cancelled')])
-    expect(users(result.turns)).toEqual(['First', '> first', 'Cancelled'])
+  it('accepts a cancelled run that saved fewer steps than its message, and one that saved no turn', async () => {
+    const result = await cursorHistory(runs([reply('first')], { status: 'cancelled', turns: [reply('partial', 12)] }, { status: 'cancelled', turns: [] }), 'agent', '/w', undefined,
+      async () => [prompt(0, 'First'), prompt(1, 'Partial', 15), prompt(2, 'Cancelled', 0)])
+    expect(users(result.turns)).toEqual(['First', '> first', 'Partial', '> partial', 'Cancelled'])
   })
-  it('stops backfilling when a steer does not match its message instead of mislabelling older turns', async () => {
-    const result = await cursorHistory(runs([reply('old')], [steered('Steer', 'new')]), 'agent', '/w', undefined, async () => [prompt(0, 'Old'), prompt(1, 'Opening'), prompt(2, 'Other')])
-    expect(users(result.turns)).toEqual(['> old', 'Steer', '> new'])
+  it.each([
+    { name: 'a steer does not match its message', read: runs([reply('old')], [steered('Steer', 'new')]), messages: [prompt(0, 'Old'), prompt(1, 'Opening', 0), prompt(2, 'Other')], expected: ['> old', 'Steer', '> new'] },
+    { name: 'a finished run does not match its prompt', read: runs([reply('a')], [], [reply('c')]), messages: [prompt(0, 'A'), prompt(1, 'C')], expected: ['> a', 'C', '> c'] },
+  ])('stops backfilling when $name instead of mislabelling older turns', async ({ read, messages, expected }) => {
+    const log = vi.fn()
+    expect(users((await cursorHistory(read, 'agent', '/w', log, async () => messages)).turns)).toEqual(expected)
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Cursor history prompts stop here'))
   })
-  it('pages through messages, ignores other entries and accepts the JSON form', async () => {
-    const json = (index: number, text: string) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { agentConversationTurn: { userMessage: { text }, steps: [] } } })
-    const messages = vi.fn(async (_id: string, options: { offset?: number }) => options.offset
-      ? [json(100, 'Last prompt'), { type: 'assistant' as const, uuid: 'agent:101', message: {} }, { ...json(0, 'Another agent'), uuid: 'other:7' }]
-      : Array.from({ length: 100 }, (_, index) => json(index, `Prompt ${index}`)))
-    const result = await cursorHistory(runs(...Array.from({ length: 101 }, (_, index) => [reply(String(index))])), 'agent', '/w', undefined, messages)
-    expect(messages.mock.calls).toEqual([['agent', { runtime: 'local', cwd: '/w', limit: 100, offset: 0 }], ['agent', { runtime: 'local', cwd: '/w', limit: 100, offset: 100 }]])
-    expect(users(result.turns).slice(-4)).toEqual(['Prompt 99', '> 99', 'Last prompt', '> 100'])
+  it('reads messages in one call, ignoring other entries, and accepts their JSON form', async () => {
+    const json = (index: number, text: string) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { agentConversationTurn: { userMessage: { text }, steps: [{}] } } })
+    const messages = vi.fn(async () => [json(0, 'First'), { type: 'assistant' as const, uuid: 'agent:1', message: {} }, { ...json(0, 'Another agent'), uuid: 'other:7' }, json(1, 'Second')])
+    const result = await cursorHistory(runs([reply('1')], [reply('2')]), 'agent', '/w', undefined, messages)
+    expect(messages.mock.calls).toEqual([['agent', { runtime: 'local', cwd: '/w' }]])
+    expect(users(result.turns)).toEqual(['First', '> 1', 'Second', '> 2'])
   })
   it('stops backfilling past a run it could not read', async () => {
     const read = async () => ({ items: [
-      { createdAt: 1, conversation: async () => [reply('old')] },
-      { createdAt: 2, conversation: async (): Promise<ConversationTurn[]> => { throw new Error('unreadable') } },
-      { createdAt: 3, conversation: async () => [reply('new')] },
+      { createdAt: 1, status: 'finished' as const, conversation: async () => [reply('old')] },
+      { createdAt: 2, status: 'finished' as const, conversation: async (): Promise<ConversationTurn[]> => { throw new Error('unreadable') } },
+      { createdAt: 3, status: 'finished' as const, conversation: async () => [reply('new')] },
     ] })
     const result = await cursorHistory(read, 'agent', '/w', undefined, async () => [prompt(0, 'Old'), prompt(1, 'Lost'), prompt(2, 'New')])
     expect(result.skipped).toBe(1)
     expect(users(result.turns)).toEqual(['> old', 'New', '> new'])
   })
-  it('logs a messages failure and replays without partially loaded prompts', async () => {
+  it('logs a messages failure and replays without prompts', async () => {
     const log = vi.fn()
-    const messages = vi.fn(async (_id: string, options: { offset?: number }) => {
-      if (options.offset) throw new Error('messages unavailable')
-      return Array.from({ length: 100 }, (_, index) => prompt(index, 'Partial'))
-    })
-    expect(await cursorHistory(runs([reply('Reply')]), 'agent', '/w', log, messages)).toEqual({ turns: [reply('Reply')], skipped: 0 })
+    expect(await cursorHistory(runs([reply('Reply')]), 'agent', '/w', log, async () => { throw new Error('messages unavailable') })).toEqual({ turns: [reply('Reply')], skipped: 0 })
     expect(log).toHaveBeenCalledWith("Couldn't load Cursor user messages: messages unavailable")
   })
 })
