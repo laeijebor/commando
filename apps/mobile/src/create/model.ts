@@ -1,6 +1,6 @@
 import type { CommandoSnapshot } from '@commando/protocol'
-import type { CreateTmuxSessionRequest, GitRepoInfo, SessionAgentProvider } from '@commando/tmux-create'
-import { defaultWorktreePath, sanitizeBranchName } from '@commando/tmux-create'
+import type { CreateTmuxSessionRequest, GitRepoInfo, SessionAgentProvider, ChatPermissionMode } from '@commando/tmux-create'
+import { defaultWorktreePath, sanitizeBranchName, SESSION_AGENT_CHOICES, isChatLaunchProvider, chatPermissionModes } from '@commando/tmux-create'
 
 /**
  * Everything screen 07 computes, kept away from the view so the branch name,
@@ -10,15 +10,9 @@ import { defaultWorktreePath, sanitizeBranchName } from '@commando/tmux-create'
  */
 
 export type AgentChoice = SessionAgentProvider | 'shell'
-export const DEFAULT_AGENT_CHOICE: AgentChoice = 'claude'
+export const DEFAULT_AGENT_CHOICE: AgentChoice = 'claude-chat'
 
-export const AGENT_CHOICES: readonly { value: AgentChoice; label: string }[] = [
-  { value: 'claude', label: 'Claude' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'opencode', label: 'OpenCode' },
-  { value: 'cursor', label: 'Cursor' },
-  { value: 'shell', label: 'Shell' },
-]
+export const AGENT_CHOICES: readonly { value: AgentChoice; label: string }[] = SESSION_AGENT_CHOICES
 
 export type RepoOption = {
   /** Main checkout root; also the key the preparation command is stored under. */
@@ -97,6 +91,7 @@ export type SessionFormState = {
   prepareEnabled: boolean
   agent?: AgentChoice
   prompt?: string
+  permissionMode?: ChatPermissionMode
 }
 
 /**
@@ -112,9 +107,11 @@ export function buildSessionRequest(
   if (form.agent && form.agent !== 'shell') {
     request.agent = {
       provider: form.agent,
+      ...(isChatLaunchProvider(form.agent) ? { permissionMode: form.permissionMode ?? 'default' } : {}),
       ...(form.agent !== 'opencode' && form.prompt?.trim() ? { prompt: form.prompt } : {}),
     }
   }
+  if (form.agent && isChatLaunchProvider(form.agent) && !chatPermissionModes(form.agent).some((mode) => mode.value === (form.permissionMode ?? 'default'))) throw new Error('Choose a supported permission mode for this chat provider')
   const cwd = form.directory.trim()
   if (cwd) request.cwd = cwd
   const wantsWorktree = form.worktreeEnabled && Boolean(repo?.isRepo && repo.mainRoot)
