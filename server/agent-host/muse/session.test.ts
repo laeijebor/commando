@@ -39,9 +39,11 @@ class FakeMuse implements MuseTransport {
   })
   active = false
   respond(id: RpcId, result: unknown) { this.replies.push({ id, result }) }
+  notified: { method: string; params: unknown }[] = []
+  notify(method: string, params: unknown) { this.notified.push({ method, params }) }
   reject() {}
   close() { this.closes.forEach((listener) => listener()) }
-  notify(method: string, params: Record<string, unknown>) { this.notifications.forEach((listener) => listener({ method, params: { sessionId: SESSION, ...params } })) }
+  emit(method: string, params: Record<string, unknown>) { this.notifications.forEach((listener) => listener({ method, params: { sessionId: SESSION, ...params } })) }
   server(method: string, params: Record<string, unknown>, id: RpcId = 'req-1') { return this.handlers.some((listener) => listener({ id, method, params: { sessionId: SESSION, ...params } })) }
   sent(method: keyof MuseMethods) { return this.requests.filter((request) => request.method === method).map((request) => request.params) }
 }
@@ -60,7 +62,7 @@ async function running() {
   await tick()
   const turnId = result.client.sent('turn/start')[0]!.commandId as string
   result.client.active = true
-  result.client.notify('turn/started', { turnId })
+  result.client.emit('turn/started', { turnId })
   return { ...result, turnId }
 }
 
@@ -83,14 +85,14 @@ describe('MuseChatSession', () => {
     const { session, client, turnId } = await running()
     expect(client.sent('turn/start')[0]).toMatchObject({ sessionId: SESSION, input: [{ type: 'text', text: 'Hello' }], ifBusy: 'steer' })
     expect(session.snapshot().session.status).toBe('running')
-    client.notify('item/completed', { item: { itemId: 'u1', kind: 'userMessage', turnId, revision: 1, status: 'completed', text: 'Hello' } })
-    client.notify('item/started', { item: { itemId: 'a1', kind: 'agentMessage', turnId, revision: 1, status: 'inProgress', text: '' } })
-    client.notify('item/delta', { itemId: 'a1', field: 'text', delta: 'Hi ' })
-    client.notify('item/delta', { itemId: 'a1', field: 'text', delta: 'there' })
-    client.notify('item/started', { item: { itemId: 'r1', kind: 'reminderChild', turnId, revision: 1, status: 'inProgress' } })
+    client.emit('item/completed', { item: { itemId: 'u1', kind: 'userMessage', turnId, revision: 1, status: 'completed', text: 'Hello' } })
+    client.emit('item/started', { item: { itemId: 'a1', kind: 'agentMessage', turnId, revision: 1, status: 'inProgress', text: '' } })
+    client.emit('item/delta', { itemId: 'a1', field: 'text', delta: 'Hi ' })
+    client.emit('item/delta', { itemId: 'a1', field: 'text', delta: 'there' })
+    client.emit('item/started', { item: { itemId: 'r1', kind: 'reminderChild', turnId, revision: 1, status: 'inProgress' } })
     expect(session.snapshot().items.map((item) => [item.kind, 'text' in item ? item.text : ''])).toEqual([['user_message', 'Hello'], ['assistant_message', 'Hi there']])
     expect(session.busy).toBe(true)
-    client.notify('turn/completed', { turnId, terminal: 'completed' })
+    client.emit('turn/completed', { turnId, terminal: 'completed' })
     expect(session.snapshot().session.status).toBe('idle')
     expect(session.snapshot().items.every((item) => item.status === 'completed')).toBe(true)
   })
@@ -103,7 +105,7 @@ describe('MuseChatSession', () => {
     session.send('Later', [], { delivery: 'queue' })
     expect(session.queued.map((entry) => entry.text)).toEqual(['Later'])
     client.active = false
-    client.notify('turn/completed', { turnId, terminal: 'completed' })
+    client.emit('turn/completed', { turnId, terminal: 'completed' })
     await tick()
     expect(client.sent('turn/start').map((params) => (params.input as { text: string }[])[0]!.text)).toEqual(['Hello', 'Also this', 'Later'])
   })
@@ -146,7 +148,7 @@ describe('MuseChatSession', () => {
       availableChoices: [{ choiceId: 'c-once', decision: 'approved' }, { choiceId: 'c-session', decision: 'approvedForSession' }, { choiceId: 'c-deny', decision: 'denied' }] }
     expect(client.server('approval/request', approval)).toBe(true)
     // The same prompt also arrives as a notification.
-    client.notify('approval/requested', approval)
+    client.emit('approval/requested', approval)
     expect(client.replies).toEqual([{ id: 'req-1', result: {} }])
     const requests = session.snapshot().items.filter((item) => item.kind === 'request')
     expect(requests).toMatchObject([{ requestId: 'approval:ap-1', requestKind: 'approval', title: 'Allow bash?', detail: 'rm -rf build' }])
@@ -155,6 +157,35 @@ describe('MuseChatSession', () => {
     await tick()
     expect(client.sent('approval/decide')).toEqual([{ sessionId: SESSION, commandId: expect.stringMatching(V7), approvalId: 'ap-1', choiceId: 'c-session', requirementId: { approvalId: 'ap-1', sourceIndex: 0 } }])
     expect(session.snapshot().session.status).toBe('running')
+  })
+
+  it('decides with the choices an update brought, and asks again when Muse refuses the answer', async () => {
+    const { session, client, turnId } = await running()
+    client.server('approval/request', { turnId, approvalId: 'ap-2', toolName: 'bash', currentRequirementId: { approvalId: 'ap-2', sourceIndex: 0 }, subject: { kind: 'shell', command: 'ls' },
+      availableChoices: [{ choiceId: 'old', decision: 'approved' }] })
+    client.emit('approval/updated', { approvalId: 'ap-2', currentRequirementId: { approvalId: 'ap-2', sourceIndex: 1 }, availableChoices: [{ choiceId: 'new', decision: 'approved' }] })
+    client.request.mockRejectedValueOnce(new RpcError('stale requirement', -32053, { kind: 'staleRequirement' }))
+    expect(session.answer('approval:ap-2', { kind: 'approval', decision: 'allow' })).toBe(true)
+    await tick()
+    expect(client.request.mock.calls.find(([method]) => method === 'approval/decide')?.[1]).toMatchObject({ choiceId: 'new', requirementId: { approvalId: 'ap-2', sourceIndex: 1 } })
+    // The prompt is back, so the turn is not left waiting on nothing.
+    expect(session.snapshot().items.find((item) => item.kind === 'request')).toMatchObject({ requestId: 'approval:ap-2', status: 'running' })
+    expect(session.snapshot().session.status).toBe('waiting')
+    expect(session.answer('approval:ap-2', { kind: 'approval', decision: 'allow' })).toBe(true)
+  })
+
+  it('stops Muse\'s countdown on a question shown here and says when Muse gave up waiting', async () => {
+    const { session, client, turnId } = await running()
+    client.server('userInput/request', { turnId, userInputId: 'in-9', autoResolutionMs: 60_000, questions: [{ id: 'q', question: 'Go?', selection: { mode: 'single' }, options: [{ label: 'Yes' }] }] })
+    expect(client.notified).toEqual([{ method: 'userInput/engaged', params: { sessionId: SESSION, userInputId: 'in-9' } }])
+    client.emit('userInput/settled', { userInputId: 'in-9', outcome: 'timedOut' })
+    expect(session.snapshot().items.find((item) => item.kind === 'request')).toMatchObject({ answer: { kind: 'cancelled', reason: 'Muse stopped waiting for an answer' } })
+  })
+
+  it('shows why a turn failed', async () => {
+    const { session, client, turnId } = await running()
+    client.emit('turn/completed', { turnId, terminal: 'failed', error: { message: 'Quota exceeded' } })
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: 'Muse stopped: Quota exceeded' })
   })
 
   it('answers a question by option label, and cancels it when dismissed', async () => {
@@ -201,7 +232,7 @@ describe('MuseChatSession', () => {
   it('resumes a session Muse unloaded while idle before the next message', async () => {
     const { session, client } = harness()
     await session.start()
-    client.notify('session/closed', { reason: 'idle' })
+    client.emit('session/closed', { reason: 'idle' })
     session.send('Still there?')
     await tick()
     expect(client.requests.map((request) => request.method).filter((method) => method.startsWith('session/') || method === 'turn/start'))

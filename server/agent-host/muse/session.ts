@@ -89,6 +89,14 @@ export function imageMediaType(bytes: Buffer): string | undefined {
   return IMAGE_TYPES.find(([, matches]) => matches(bytes))?.[0]
 }
 
+/**
+ * Muse runs hooks with almost no environment, so Commando's hook reads the chat's resume
+ * command from the Muse process instead; `ps` splits values on spaces, hence the base64 copy.
+ */
+function resumeEnv(command: string): Record<string, string> {
+  return { COMMANDO_CHAT_RESUME: command, COMMANDO_CHAT_RESUME_B64: Buffer.from(command).toString('base64') }
+}
+
 type PendingRequest =
   | { kind: 'approval'; params: Record<string, unknown> }
   | { kind: 'question'; params: Record<string, unknown> }
@@ -103,6 +111,8 @@ export class MuseChatSession implements ChatProviderSession {
   private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
   private readonly readyListeners: (() => void)[] = []
   private readonly pending = new Map<string, PendingRequest>()
+  /** Answered here, waiting for Muse to take the answer; a refusal shows the prompt again. */
+  private readonly deciding = new Map<string, PendingRequest>()
   private info: ChatSessionInfo
   private startPromise?: Promise<void>
   private activeTurn?: string
@@ -121,7 +131,7 @@ export class MuseChatSession implements ChatProviderSession {
     museApprovalMode(spec.permissionMode)
     this.client = client ?? new MuseRpcClient({
       cwd: spec.cwd,
-      env: { ...spec.env, ...(spec.resumeCommand ? { COMMANDO_CHAT_RESUME: spec.resumeCommand } : {}) },
+      env: { ...spec.env, ...(spec.resumeCommand ? resumeEnv(spec.resumeCommand) : {}) },
       executable,
       log: spec.log,
     })
@@ -149,7 +159,7 @@ export class MuseChatSession implements ChatProviderSession {
       env: {
         ...(spec.env.XDG_CONFIG_HOME ? { XDG_CONFIG_HOME: spec.env.XDG_CONFIG_HOME } : {}),
         ...(spec.env.XDG_DATA_HOME ? { XDG_DATA_HOME: spec.env.XDG_DATA_HOME } : {}),
-        ...(spec.resumeCommand ? { COMMANDO_CHAT_RESUME: spec.resumeCommand } : {}),
+        ...(spec.resumeCommand ? resumeEnv(spec.resumeCommand) : {}),
       },
       onReady: (listener) => this.readyListeners.push(listener),
       requestSwitch: (action) => this.requestSwitch(action),
@@ -170,7 +180,7 @@ export class MuseChatSession implements ChatProviderSession {
   private emitItems(items: ChatItem[]): void { if (items.length) this.listeners.items.forEach((listener) => listener(items)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
-  setResumeCommand(command: string): void { this.tui.env.COMMANDO_CHAT_RESUME = command; if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
+  setResumeCommand(command: string): void { Object.assign(this.tui.env, resumeEnv(command)); if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
   private call<M extends keyof MuseMethods & string>(method: M, params: MuseMethods[M]): Promise<Record<string, unknown>> {
     return this.client.request(method, params).then(record)
   }
@@ -358,9 +368,17 @@ export class MuseChatSession implements ChatProviderSession {
       decide = this.call('userInput/answer', { sessionId, commandId: uuidv7(), userInputId: params.userInputId as string, answers })
     }
     this.pending.delete(key)
+    this.deciding.set(key, request)
     this.emitItems(this.mapper.resolveRequest(key, request.kind === 'question' && answer.kind === 'approval' ? { kind: 'cancelled', reason: 'Dismissed' } : answer))
     this.update({ status: this.pending.size ? 'waiting' : this.activeTurn ? 'running' : 'idle' })
-    decide.catch((error: unknown) => { if (!this.closing) this.emitItems(this.mapper.notice('error', `Muse didn't take that answer: ${errorText(error)}`)) })
+    decide.then(() => { this.deciding.delete(key) }, (error: unknown) => {
+      // Muse still waits for a decision unless the request settled meanwhile, so ask again.
+      const current = this.deciding.get(key)
+      this.deciding.delete(key)
+      if (this.closing) return
+      this.emitItems(this.mapper.notice('error', `Muse didn't take that answer: ${errorText(error)}`))
+      if (current) this.show(key, current)
+    })
     this.switchReady()
     return true
   }
@@ -378,12 +396,30 @@ export class MuseChatSession implements ChatProviderSession {
     const key = `${kind}:${id}`
     // The same prompt also arrives as a view notification.
     if (this.pending.has(key)) return
+    if (this.pending.has(key) || this.deciding.has(key)) return
     if (kind === 'question' && !museQuestions(params.questions).length) return
-    this.pending.set(key, { kind, params })
-    this.emitItems(kind === 'approval' ? this.mapper.approval(key, params) : this.mapper.question(key, params))
+    // A question shown here waits for the person; this stops Muse's own answer countdown.
+    if (kind === 'question') this.client.notify?.('userInput/engaged', { sessionId: this.info.sessionId, userInputId: id })
+    this.show(key, { kind, params })
+  }
+  private show(key: string, request: PendingRequest): void {
+    this.pending.set(key, request)
+    this.emitItems(request.kind === 'approval' ? this.mapper.approval(key, request.params) : this.mapper.question(key, request.params))
     this.update({ status: 'waiting' })
   }
+  /** An open approval changed its choices or the requirement being decided. */
+  private approvalUpdated(params: Record<string, unknown>): void {
+    const key = `approval:${string(params.approvalId)}`
+    for (const requests of [this.pending, this.deciding]) {
+      const request = requests.get(key)
+      if (!request) continue
+      const merged = { ...request.params, ...Object.fromEntries(['availableChoices', 'currentRequirementId', 'subject'].filter((name) => params[name] !== undefined).map((name) => [name, params[name]])) }
+      requests.set(key, { kind: 'approval', params: merged })
+      if (requests === this.pending) this.emitItems(this.mapper.approval(key, merged))
+    }
+  }
   private settled(key: string, reason: string): void {
+    this.deciding.delete(key)
     if (!this.pending.delete(key)) return
     this.emitItems(this.mapper.resolveRequest(key, { kind: 'cancelled', reason }))
     this.update({ status: this.pending.size ? 'waiting' : this.activeTurn ? 'running' : 'idle' })
@@ -413,8 +449,9 @@ export class MuseChatSession implements ChatProviderSession {
       case 'skill/changed': void this.loadCommands(); return
       case 'approval/requested': this.ask('approval', params); return
       case 'userInput/requested': this.ask('question', params); return
+      case 'approval/updated': this.approvalUpdated(params); return
       case 'approval/resolved': this.settled(`approval:${string(params.approvalId)}`, 'Resolved in Muse'); return
-      case 'userInput/settled': this.settled(`question:${string(params.userInputId)}`, 'Resolved in Muse'); return
+      case 'userInput/settled': this.settled(`question:${string(params.userInputId)}`, params.outcome === 'timedOut' ? 'Muse stopped waiting for an answer' : 'Resolved in Muse'); return
       case 'turn/completed': this.turnCompleted(params); return
     }
   }
@@ -427,11 +464,12 @@ export class MuseChatSession implements ChatProviderSession {
     const terminal = params.terminal
     this.emitItems([
       ...this.mapper.settle(turnId, terminal === 'completed' ? 'completed' : terminal === 'cancelled' ? 'interrupted' : 'failed'),
-      ...(terminal !== 'completed' && terminal !== 'cancelled' ? this.mapper.notice('error', `Muse stopped: ${string(params.reason) ?? terminal ?? 'unknown reason'}`, turnId) : []),
+      ...(terminal !== 'completed' && terminal !== 'cancelled' ? this.mapper.notice('error', `Muse stopped: ${string(record(params.error).message) ?? string(params.reason) ?? terminal ?? 'unknown reason'}`, turnId) : []),
     ])
     if (this.activeTurn && this.activeTurn !== turnId) return
     this.activeTurn = undefined
-    for (const key of this.pending.keys()) this.settled(key, 'The turn ended')
+    for (const key of [...this.pending.keys()]) this.settled(key, 'The turn ended')
+    this.deciding.clear()
     this.update({ status: 'idle' })
     this.switchReady()
     this.flushQueue()
@@ -484,6 +522,7 @@ export class MuseChatSession implements ChatProviderSession {
     this.closing = true
     for (const key of [...this.pending.keys()]) this.emitItems(this.mapper.resolveRequest(key, { kind: 'cancelled', reason: 'Chat closed' }))
     this.pending.clear()
+    this.deciding.clear()
     this.emitItems(this.mapper.settle(undefined, 'interrupted'))
     if (this.queue.length) this.emitItems(this.mapper.notice('error', `Chat closed with ${this.queue.length} unsent queued message(s).`))
     this.client.close()
@@ -495,6 +534,7 @@ export class MuseChatSession implements ChatProviderSession {
     this.closing = true
     for (const key of [...this.pending.keys()]) this.emitItems(this.mapper.resolveRequest(key, { kind: 'cancelled', reason: failed ? 'Muse exited' : 'Chat closed' }))
     this.pending.clear()
+    this.deciding.clear()
     if (failed) this.emitItems(this.mapper.notice('error', `Muse stopped: ${errorText(error)}${this.queue.length ? ` (${this.queue.length} queued messages were not sent)` : ''}`))
     this.emitItems(this.mapper.settle(undefined, failed ? 'failed' : 'interrupted'))
     this.update({ status: failed || this.info.status === 'error' ? 'error' : 'closed', ...(failed ? { error: errorText(error) } : {}) })

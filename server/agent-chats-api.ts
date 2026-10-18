@@ -59,16 +59,16 @@ function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): n
   return effectiveRank(chatLaunchProvider(chat.provider), launchMode(chat))
 }
 
-/** The most permissive mode `provider` supports that does not exceed what `rank` allows. */
-function inheritedMode(provider: ChatLaunchProvider, rank: number): ChatPermissionMode {
+/** The most permissive mode `provider` supports that does not exceed what `rank` allows, if any does. */
+function inheritedMode(provider: ChatLaunchProvider, rank: number): ChatPermissionMode | undefined {
   return [...chatPermissionModes(provider)].map((mode) => mode.value)
     .filter((mode) => effectiveRank(provider, mode) <= rank)
-    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0] ?? 'plan'
+    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0]
 }
 
 /** The mode a chat started from `chat` gets: as permissive as it, never more. */
 export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>, provider: ChatLaunchProvider): ChatPermissionMode {
-  return inheritedMode(provider, chatRank(chat))
+  return inheritedMode(provider, chatRank(chat)) ?? 'plan'
 }
 
 type TerminalCaller = { provider: ChatLaunchProvider; rank: number; configDir?: string; warning?: string }
@@ -97,7 +97,9 @@ export function terminalLaunchRank(provider: 'claude' | 'codex' | 'muse', args: 
   if (provider === 'muse') {
     const approval = flagValue(flags, '--approval-mode')
     if (flags.includes('--yolo') || flags.includes('--disable-approval') || approval === 'never') return PERMISSION_RANK.bypassPermissions
-    return effectiveRank('muse-chat', 'default')
+    if (flags.includes('--disable-write')) return PERMISSION_RANK.plan
+    // `untrusted` asks before anything runs; Muse's default (on-request) runs sandboxed tools unasked.
+    return approval === 'untrusted' ? PERMISSION_RANK.default : effectiveRank('muse-chat', 'default')
   }
   if (provider === 'claude') {
     if (flags.includes('--dangerously-skip-permissions')) return PERMISSION_RANK.bypassPermissions
@@ -226,11 +228,12 @@ export class AgentChatsApi {
     const hosted = isChatLaunchProvider(provider)
     const callerMode = chat ? launchMode(chat) : modeOfRank(terminal?.rank ?? PERMISSION_RANK.default)
     const callerRank = chat ? chatRank(chat) : terminal?.rank ?? PERMISSION_RANK.default
-    if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open claude-chat, codex-chat or muse-chat chats')
+    if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open claude-chat or codex-chat chats')
     if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat, codex-chat and muse-chat accept a permission mode')
     if (input.permissionMode !== undefined && (!hosted || !chatPermissionModes(provider).some((mode) => mode.value === input.permissionMode))) throw new HttpError(400, `${provider} does not support permission mode ${input.permissionMode}`)
     // Inherit the most permissive mode the child supports that does not exceed the caller.
     const permissionMode = input.permissionMode ?? (hosted ? inheritedMode(provider, callerRank) : 'plan')
+    if (!permissionMode) throw new HttpError(403, `${provider} has no permission mode as restricted as ${callerMode}; its most careful mode runs sandboxed tools without asking`)
     if (effectiveRank(provider, permissionMode) > callerRank) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
     if (!hosted) return { launch: { provider: provider as SessionAgentProvider } }
     const configDir = provider !== 'claude-chat' ? undefined : chat ? (chatLaunchProvider(chat.provider) === 'claude-chat' ? chat.configDir : undefined) : terminal?.configDir

@@ -46,6 +46,8 @@ export interface StdioRpcTransport<Methods> {
   request<M extends keyof Methods & string>(method: M, params: Methods[M]): Promise<unknown>
   respond(id: RpcId, result: unknown): void
   reject(id: RpcId, code: number, message: string): void
+  /** A notification to the server, which sends no reply. */
+  notify?(method: string, params: unknown): void
   close(): void
 }
 
@@ -117,6 +119,7 @@ export class StdioRpcClient<Methods> implements StdioRpcTransport<Methods> {
   }
   respond(id: RpcId, result: unknown): void { this.write({ id, result }) }
   reject(id: RpcId, code: number, message: string): void { this.write({ id, error: { code, message } }) }
+  notify(method: string, params: unknown): void { this.write({ method, params }) }
   private write(message: Record<string, unknown>): void {
     if (!this.child || this.closed) throw new Error(`${this.server.label} is closed`)
     this.child.stdin.write(`${JSON.stringify(this.server.jsonrpc ? { jsonrpc: '2.0', ...message } : message)}\n`)

@@ -166,7 +166,7 @@ describe('AgentChatsApi', () => {
     const s = await setup()
     s.chats.set('%1', { permissionMode: 'plan' } as ChatSessionInfo)
     for (const extra of [{ agent }, { agent, permissionMode: 'plan' }]) {
-      expect(await s.call('POST', '', { ...s.input, ...extra })).toMatchObject({ status: 403, result: { ok: false, error: 'A plan-mode chat can only open claude-chat, codex-chat or muse-chat chats' } })
+      expect(await s.call('POST', '', { ...s.input, ...extra })).toMatchObject({ status: 403, result: { ok: false, error: 'A plan-mode chat can only open claude-chat or codex-chat chats' } })
     }
     expect(s.createSession).not.toHaveBeenCalled()
     for (let index = 0; index < 3; index++) {
@@ -259,6 +259,15 @@ describe('AgentChatsApi', () => {
     s.launches.set(100, { args: ['/Users/me/.local/bin/muse-bin-1.4.10-R6427.1', 'fix', '--yolo'], env: {} })
     expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
     expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'never'])).toBe(terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions']))
+    expect(terminalLaunchRank('muse', ['muse', '--approval-mode', 'untrusted'])).toBe(terminalLaunchRank('claude', ['claude']))
+    expect(terminalLaunchRank('muse', ['muse', '--disable-write'])).toBe(terminalLaunchRank('claude', ['claude', '--permission-mode', 'plan']))
+  })
+
+  it('refuses a muse-chat for a caller that asks before edits, since Muse has no mode that careful', async () => {
+    const s = await setup()
+    s.chats.set('%1', { provider: 'claude', permissionMode: 'default' } as ChatSessionInfo)
+    expect(await s.call('POST', '', { ...s.input, agent: 'muse-chat' })).toMatchObject({ status: 403, result: { error: expect.stringContaining('muse-chat has no permission mode as restricted as default') } })
+    expect(s.createSession).not.toHaveBeenCalled()
   })
 
   it('applies chat permission rules to an explicit codex-chat child', async () => {
