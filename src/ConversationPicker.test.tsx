@@ -314,6 +314,25 @@ describe('resume entry points', () => {
     expect(onPick).toHaveBeenCalledWith(conversations[2], 'split')
     expect(onJump).not.toHaveBeenCalled()
   })
+
+  it('shows closed chats with renamed ownership while excluding history from a reused session id', async () => {
+    const closed = conversation('aaaaaaaa-0010', 'Closed before rename', '/repo', 1, {
+      session: { id: '$2', name: 'renamed' }, paneOpen: false,
+    })
+    const previousServer = conversation('aaaaaaaa-0011', 'Unrelated old session', '/repo', 2, {
+      session: { id: '$2', name: 'previous-server' }, paneOpen: false,
+    })
+    const { input, onPick } = renderPicker({
+      initialSessionFilter: { id: '$2', name: 'renamed' }, defaultPlacement: 'session',
+      load: async () => [closed, previousServer], chats: {},
+    })
+    expect(await screen.findAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('option')).toHaveTextContent('Closed before rename')
+    expect(screen.getByRole('option')).toHaveTextContent('closed pane')
+    expect(screen.queryByText('Unrelated old session')).not.toBeInTheDocument()
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    expect(onPick).toHaveBeenCalledWith(closed, 'session')
+  })
 })
 
 

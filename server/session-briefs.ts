@@ -743,6 +743,23 @@ export class SessionBriefStore {
     return changed
   }
 
+  /** Only an observed live rename may rewrite history; tmux session ids can be reused. */
+  async renameSession(sessionId: string, previousName: string, name: string): Promise<boolean> {
+    if (!SESSION_ID.test(sessionId)) throw new Error('Invalid tmux session id')
+    if (!cleanText(previousName, 128) || !cleanText(name, 128)) throw new Error('Invalid tmux session name')
+    if (previousName === name) return false
+    let changed = false
+    for (const records of [this.briefs, this.detached]) {
+      for (const [key, brief] of records) {
+        if (brief.sessionId !== sessionId || brief.sessionName !== previousName) continue
+        records.set(key, { ...brief, sessionName: name })
+        changed = true
+      }
+    }
+    if (changed) await this.persist()
+    return changed
+  }
+
   /** Rebind by durable identity; absence during resurrection must not erase disk history. */
   async reconcilePanes(panes: readonly BriefPaneIdentity[]): Promise<boolean> {
     this.livePanes = new Map(panes.map((pane) => [pane.paneId, pane]))
