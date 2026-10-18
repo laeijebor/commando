@@ -523,7 +523,8 @@ function resumeContext(sessionId, inheritedChat) {
   if (typeof chat === 'string' && chat.length > 0 && chat.length < 2000 && !/[\\x00-\\x1f]/.test(chat)) {
     return '\\nResume command for this conversation: ' + chat + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
   }
-  if (PROVIDER === 'muse') return '\\nResume command for this conversation: muse resume ' + sessionId + ' (pin it once with the --session flag)'
+  // Like OpenCode's 'opencode --yolo -s', the pinned command reopens Muse without prompts or sandbox.
+  if (PROVIDER === 'muse') return '\\nResume command for this conversation: muse --yolo resume ' + sessionId + ' (pin it once with the --session flag)'
   const profile = /^\\.(claude[wp])$/.exec((process.env.CLAUDE_CONFIG_DIR ?? '').split('/').filter(Boolean).pop() ?? '')?.[1] ?? 'claude'
   return '\\nResume command for this conversation: ' + profile + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
 }

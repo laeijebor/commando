@@ -67,7 +67,8 @@ export const CURSOR_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode;
 /** Muse has no plan mode; "Ask when needed" is its own default. */
 export const MUSE_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
   { value: 'default', label: 'Ask when needed' },
-  { value: 'bypassPermissions', label: 'Approve everything' },
+  { value: 'acceptEdits', label: 'Approve everything (sandboxed)' },
+  { value: 'bypassPermissions', label: 'Full access (--yolo)' },
 ]
 
 export function chatPermissionModes(provider: ChatLaunchProvider): readonly { value: ChatPermissionMode; label: string }[] {

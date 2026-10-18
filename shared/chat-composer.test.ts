@@ -42,6 +42,14 @@ describe('provider-aware composer permissions', () => {
     expect(permissionModeOptions(codex)).toEqual(['default', 'plan'])
   })
 
+  it('keeps Muse full access to chats started with it, and offers sandboxed approve-everything otherwise', () => {
+    const muse = { ...codex, provider: 'muse' as const }
+    expect(permissionModeOptions({ ...muse, bypassAllowed: true })).toEqual(['default', 'acceptEdits'])
+    expect(permissionModeOptions({ ...muse, permissionMode: 'bypassPermissions', bypassAllowed: true })).toEqual(['bypassPermissions'])
+    expect(permissionLabel('bypassPermissions', muse)).toBe('Full access')
+    expect(permissionDescription('acceptEdits', muse)).toContain('inside its sandbox')
+  })
+
   it('offers full access only when enabled or already current', () => {
     expect(permissionModeOptions({ ...codex, bypassAllowed: true })).toEqual(['default', 'plan', 'bypassPermissions'])
     expect(permissionModeOptions({ ...codex, permissionMode: 'bypassPermissions' })).toEqual(['default', 'plan', 'bypassPermissions'])
