@@ -114,6 +114,11 @@ function agentSessionKey(session: AgentSessionRef): string {
   return `${session.provider}:${session.id}`
 }
 
+/** Unowned tabs keep content-based reuse; owned tabs must share a conversation. */
+function compatibleAgentSessions(a: AgentSessionRef | undefined, b: AgentSessionRef | undefined): boolean {
+  return !a || !b || (a.provider === b.provider && a.id === b.id)
+}
+
 /** Mirrors open()'s content identity; artifact URLs may change after restart. */
 function sameTabContent(a: WebPane, b: WebPane): boolean {
   if (a.content?.kind === 'canvas' && b.content?.kind === 'canvas') {
@@ -388,6 +393,7 @@ export class WebPaneService {
   private readonly awaitingAgentSession = new Set<string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
+  private writeScheduled = false
   private titleWriteTimer: ReturnType<typeof setTimeout> | null = null
   private readonly now: () => number
   private readonly migrationStatePath: string | undefined
@@ -501,11 +507,17 @@ export class WebPaneService {
       if (existing) return existing
     }
     if (canvas) {
-      const existing = [...this.panes.values()].find((pane) => pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'canvas' && pane.content.artifactId === canvas.artifactId && pane.content.manifest === canvas.manifest)
+      const existing = [...this.panes.values()].find((pane) =>
+        pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'canvas' &&
+        pane.content.artifactId === canvas.artifactId && pane.content.manifest === canvas.manifest &&
+        compatibleAgentSessions(pane.agentSession, agentSession))
       if (existing) { this.setActiveTab(existing.id); return existing }
     }
     if (content?.kind === 'guide') {
-      const existing = [...this.panes.values()].find((pane) => pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'guide' && pane.content.artifactId === content.artifactId && pane.content.file === content.file)
+      const existing = [...this.panes.values()].find((pane) =>
+        pane.anchorPaneId === input.anchorPaneId && pane.content?.kind === 'guide' &&
+        pane.content.artifactId === content.artifactId && pane.content.file === content.file &&
+        compatibleAgentSessions(pane.agentSession, agentSession))
       if (existing) { this.setActiveTab(existing.id); return existing }
     }
     const decision = simulator ? { kind: 'open' as const, url: '' } : classifyWebPaneUrl(input.url, this.allowedOrigins)
@@ -530,7 +542,7 @@ export class WebPaneService {
         pane.anchorPaneId === input.anchorPaneId && pane.engine === engine &&
         (this.paneSocketHashes.get(pane.id) ?? this.socketHash) === this.socketHash &&
         pane.windowId === input.windowId && pane.sessionId === input.sessionId &&
-        !pane.content && pane.url === decision.url)
+        !pane.content && pane.url === decision.url && compatibleAgentSessions(pane.agentSession, agentSession))
       if (existing) {
         if (existing.status === 'pending') return existing
         const reopened: WebPane = {
@@ -557,7 +569,7 @@ export class WebPaneService {
       ...(agentSession ? { agentSession } : {}),
       placement,
       dock: panelOnly ? 'panel' : input.dock ?? 'panel',
-      order: nextWebPaneOrder(this.list(), input.anchorPaneId),
+      order: nextWebPaneOrder([...this.panes.values()], input.anchorPaneId),
       unseen: input.openedBy === 'agent',
       ...(panelOnly || input.dock !== 'split' ? { layoutState: 'settled' as const } : {}),
       ...(!panelOnly && input.dock === 'split' && input.anchorSize
@@ -879,8 +891,9 @@ export class WebPaneService {
     agentSession: AgentSessionRef,
   ): boolean {
     let changed = false
-    for (const [id, pane] of this.panes) {
-      if (pane.agentSession || pane.content?.kind === 'simulator' || !this.awaitingAgentSession.has(id) || pane.anchorPaneId !== anchor.anchorPaneId ||
+    for (const id of this.awaitingAgentSession) {
+      const pane = this.panes.get(id)
+      if (!pane || pane.agentSession || pane.content?.kind === 'simulator' || pane.anchorPaneId !== anchor.anchorPaneId ||
         pane.sessionId !== anchor.sessionId || pane.windowId !== anchor.windowId ||
         this.paneSocketHashes.get(id) !== this.socketHash) continue
       this.panes.set(id, { ...pane, agentSession: { ...agentSession } })
@@ -900,6 +913,7 @@ export class WebPaneService {
       const key = agentSessionKey(agentSession)
       const entries = this.parkedPanes.get(key) ?? []
       const remaining: ParkedWebPane[] = []
+      let nextOrder = nextWebPaneOrder([...this.panes.values()], anchor.anchorPaneId)
       for (const entry of entries) {
         if (entry.pane.tmuxSocketHash !== this.socketHash) {
           remaining.push(entry)
@@ -907,7 +921,8 @@ export class WebPaneService {
         }
         const duplicates = [...this.panes.values()].filter((live) =>
           live.anchorPaneId === anchor.anchorPaneId && live.sessionId === anchor.sessionId && live.windowId === anchor.windowId &&
-          (this.paneSocketHashes.get(live.id) ?? this.socketHash) === this.socketHash && sameTabContent(live, entry.pane))
+          (this.paneSocketHashes.get(live.id) ?? this.socketHash) === this.socketHash && sameTabContent(live, entry.pane) &&
+          compatibleAgentSessions(live.agentSession, agentSession))
         if (this.panes.size - duplicates.length >= MAX_WEB_PANES) {
           remaining.push(entry)
           continue
@@ -915,11 +930,16 @@ export class WebPaneService {
         // Keep the parked ID: canvas discussions are keyed by it. Publishing
         // releases resources for the discarded live IDs through retain().
         const wasActive = duplicates.some((live) => this.activeTabs[anchor.anchorPaneId] === live.id)
-        for (const live of duplicates) this.close(live.id)
+        // Reconcile selection and persist once after the entire restore batch.
+        for (const live of duplicates) {
+          this.panes.delete(live.id)
+          this.paneSocketHashes.delete(live.id)
+          this.awaitingAgentSession.delete(live.id)
+        }
         const { tmuxSocketHash: _socketHash, ...pane } = entry.pane
         const restored: WebPane = {
           ...pane, ...anchor,
-          order: nextWebPaneOrder(this.list(), anchor.anchorPaneId),
+          order: nextOrder++,
         }
         delete restored.layoutState
         delete restored.anchorSize
@@ -1072,20 +1092,27 @@ export class WebPaneService {
       clearTimeout(this.titleWriteTimer)
       this.titleWriteTimer = null
     }
-    const state: StateFile = {
-      version: 2,
-      allowedOrigins: [...this.allowedOrigins],
-      activeTabs: { ...this.activeTabs },
-      dismissedPrTabs: this.panelDismissedPrTabs(),
-      parkedPanes: [...this.parkedPanes.values()].flat(),
-      panes: [...this.panes.values()].map((pane) => {
-        const socketHash = this.paneSocketHashes.get(pane.id)
-        return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}),
-          ...(this.awaitingAgentSession.has(pane.id) ? { awaitingAgentSession: true as const } : {}) }
-      }),
-    }
+    // A queued write snapshots the latest state when it starts. Mutations during
+    // an in-flight write queue one follow-up instead of fsyncing every change.
+    if (this.writeScheduled) return
+    this.writeScheduled = true
     this.writes = this.writes
-      .then(() => this.writeState(state))
+      .then(() => {
+        this.writeScheduled = false
+        const state: StateFile = {
+          version: 2,
+          allowedOrigins: [...this.allowedOrigins],
+          activeTabs: { ...this.activeTabs },
+          dismissedPrTabs: this.panelDismissedPrTabs(),
+          parkedPanes: [...this.parkedPanes.values()].flat(),
+          panes: [...this.panes.values()].map((pane) => {
+            const socketHash = this.paneSocketHashes.get(pane.id)
+            return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}),
+              ...(this.awaitingAgentSession.has(pane.id) ? { awaitingAgentSession: true as const } : {}) }
+          }),
+        }
+        return this.writeState(state)
+      })
       .catch((error: unknown) => {
         console.error('[commando] failed to persist web panes', error)
       })

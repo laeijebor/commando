@@ -116,6 +116,33 @@ describe('canvas threads for conversation-owned tabs', () => {
     expect(loaded.list(parked.id)).toEqual(discussion)
     expect(loaded.list(fresh.id)).toEqual([])
   })
+
+  it('preserves both discussions when restoring alongside another conversation\'s canvas', () => {
+    let conversation = resolve()
+    const service = new WebPaneService(join(dir, 'panes.json'), Date.now, undefined, 'owner', () => conversation)
+    paneServices.push(service)
+    const path = join(dir, 'threads.json'), store = new CanvasThreadsStore(path)
+    const parked = service.open({ ...anchor, url: 'http://localhost/canvas', content })
+    store.record(parked.id, [note])
+    store.reply(parked.id, store.list(parked.id)[0].id, 'Original discussion', true)
+    const parkedDiscussion = store.list(parked.id)
+    service.prune(survivingWindow)
+
+    conversation = { ...conversation, id: 'another-session' }
+    const live = service.open({ ...destination, openedBy: 'agent', url: 'http://localhost/restarted', content })
+    store.record(live.id, [note])
+    store.reply(live.id, store.list(live.id)[0].id, 'Other conversation discussion', true)
+    const liveDiscussion = store.list(live.id)
+
+    conversation = resolve()
+    expect(service.reconcileAgentSession(destination)).toBe(true)
+    retain(store, service)
+    expect(service.get(parked.id)?.anchorPaneId).toBe(destination.anchorPaneId)
+    expect(service.get(live.id)).toEqual(live)
+    const loaded = new CanvasThreadsStore(path)
+    expect(loaded.list(parked.id)).toEqual(parkedDiscussion)
+    expect(loaded.list(live.id)).toEqual(liveDiscussion)
+  })
 })
 
 describe('CanvasThreadsStore', () => {
