@@ -20,6 +20,7 @@ import { useDaemonStore } from '../src/daemon/store'
 import { EMPTY_HOST_STATE } from '../src/daemon/state'
 import { useHostsStore } from '../src/hosts/store'
 import { hostLabel, type Host, type HostReachability } from '../src/hosts/types'
+import { autoDemoEnabled, isDemoHost } from '../src/demo/flags'
 import { relativeTime } from '../src/time'
 import { useTheme } from '../src/theme'
 import { Button, Card, Dot, EmptyState, ScreenTitle } from '../src/ui/primitives'
@@ -27,6 +28,7 @@ import { SignInSheet } from '../src/ui/SignInSheet'
 
 export default function HostsScreen(): React.JSX.Element {
   const theme = useTheme()
+  const router = useRouter()
   const hosts = useHostsStore((state) => state.hosts)
   const hydrated = useHostsStore((state) => state.hydrated)
   const reachability = useHostsStore((state) => state.reachability)
@@ -35,6 +37,11 @@ export default function HostsScreen(): React.JSX.Element {
   const [signInHost, setSignInHost] = useState<Host | null>(null)
   const [addVisible, setAddVisible] = useState(false)
   const [editing, setEditing] = useState(false)
+
+  useEffect(() => {
+    const demo = hosts.find(isDemoHost)
+    if (hydrated && autoDemoEnabled() && demo) router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: demo.id } })
+  }, [hosts, hydrated, router])
 
   // Badge counts come from the live snapshot, so reachable hosts get a socket
   // as soon as the list appears.

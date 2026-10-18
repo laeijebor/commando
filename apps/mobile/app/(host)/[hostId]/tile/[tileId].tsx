@@ -17,6 +17,7 @@ import * as Haptics from 'expo-haptics'
 import type { WebPanePendingNote } from '@commando/protocol'
 
 import { useDaemonConnection } from '../../../../src/daemon/useDaemonConnection'
+import { isDemoHost } from '../../../../src/demo/flags'
 import { useHostsStore } from '../../../../src/hosts/store'
 import { useTheme } from '../../../../src/theme'
 import {
@@ -56,6 +57,16 @@ import { Button, EmptyState, Pill, withAlpha } from '../../../../src/ui/primitiv
 const PIN_SETTLE_MS = 350
 
 export default function TileScreen(): React.JSX.Element {
+  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
+  if (__DEV__ && host && isDemoHost(host)) {
+    const { DemoTileScreen } = require('../../../../src/demo/DemoTileScreen') as typeof import('../../../../src/demo/DemoTileScreen')
+    return <DemoTileScreen />
+  }
+  return <LiveTileScreen />
+}
+
+function LiveTileScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
   const { hostId, tileId } = useLocalSearchParams<{ hostId: string; tileId: string }>()

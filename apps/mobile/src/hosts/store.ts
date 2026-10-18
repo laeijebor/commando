@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 
+import { DEMO_ORIGIN, autoDemoEnabled, demoHost, isDemoHost } from '../demo/flags'
 import { disconnectHost } from '../daemon/client'
 import { useDaemonStore } from '../daemon/store'
 import { usePushStore } from '../notifications/store'
@@ -29,7 +30,9 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   cookies: {},
 
   hydrate: async () => {
-    const hosts = await loadHosts()
+    const saved = await loadHosts()
+    const hosts = saved.filter((host) => __DEV__ || host.baseUrl !== DEMO_ORIGIN)
+    if (autoDemoEnabled() && !hosts.some(isDemoHost)) hosts.unshift(demoHost())
     set({ hosts, hydrated: true })
     await get().refreshAll()
   },
