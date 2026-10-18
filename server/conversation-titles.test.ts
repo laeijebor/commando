@@ -43,8 +43,18 @@ async function setup(count = 1) {
 }
 
 describe('ConversationTitles', () => {
-  it('gives up on a record whose transcript is not indexed, so later ticks skip the index', async () => {
+  it('keeps retrying a new open chat whose transcript has no indexable prompt yet', async () => {
     const fixture = await setup()
+    fixture.conversations.splice(0)
+    const generator = new ConversationTitles(fixture.options)
+    await generator.tick()
+    await generator.tick()
+    expect(fixture.options.index.list).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives up on a closed record whose transcript is not indexed, so later ticks skip the index', async () => {
+    const fixture = await setup()
+    fixture.records[0]!.paneOpen = false
     fixture.conversations.splice(0)
     const generator = new ConversationTitles(fixture.options)
     await generator.tick()
