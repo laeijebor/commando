@@ -5,6 +5,7 @@ enum AgentProvider: String, Codable, Sendable {
     case codex
     case opencode
     case cursor
+    case muse
     case unknown
 
     init(from decoder: Decoder) throws {
@@ -18,6 +19,7 @@ enum AgentProvider: String, Codable, Sendable {
         case .codex: "CX"
         case .opencode: "OC"
         case .cursor: "CU"
+        case .muse: "MU"
         case .unknown: "AG"
         }
     }
@@ -28,6 +30,7 @@ enum AgentProvider: String, Codable, Sendable {
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .opencode: "terminal.fill"
         case .cursor: "cursorarrow"
+        case .muse: "wand.and.stars"
         case .unknown: "circle.dotted"
         }
     }
@@ -38,6 +41,7 @@ enum AgentProvider: String, Codable, Sendable {
         case .codex: "Codex"
         case .opencode: "OpenCode"
         case .cursor: "Cursor"
+        case .muse: "Muse"
         case .unknown: "Agent"
         }
     }
