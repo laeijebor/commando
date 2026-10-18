@@ -1797,13 +1797,24 @@ describe('observed Cursor stop/response ordering', () => {
   })
   it('counts a SessionStart-only hook as an open conversation without changing process liveness', () => {
     const registry = new AgentStatusRegistry()
-    expect(registry.openConversationStatus(paneId, '2.1.295')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, '2.1.295', 'claude')).toBeUndefined()
     registry.applyClaudeHook(paneId, claudePayload('SessionStart'), 1, '2.1.295')
 
     expect(registry.liveHookStatus(paneId, '2.1.295')).toBeUndefined()
-    expect(registry.openConversationStatus(paneId, '2.1.295')).toMatchObject({
+    expect(registry.openConversationStatus(paneId, '2.1.295', 'claude')).toMatchObject({
       source: 'hook', provider: 'claude', agentSessionId: claudeSessionId, status: 'unknown',
     })
+  })
+
+  it('does not keep a SessionStart-only conversation open after its agent exits', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('SessionStart'), 1, '2.1.295')
+
+    expect(registry.openConversationStatus(paneId, 'zsh', 'unknown')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'vim', 'unknown')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'codex', 'codex')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'node', 'unknown')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'node', 'claude')?.agentSessionId).toBe(claudeSessionId)
   })
 
   it('reports a hook status as live only for the agent process that produced it', () => {
@@ -1812,14 +1823,16 @@ describe('observed Cursor stop/response ordering', () => {
     registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Shipped the fix.' }), 2, '2.1.295')
     expect(registry.liveHookStatus(paneId, '2.1.295')?.agentSessionId).toBe(claudeSessionId)
     expect(registry.liveHookStatus(paneId, 'zsh')).toBeUndefined()
-    expect(registry.openConversationStatus(paneId, '2.1.295')?.agentSessionId).toBe(claudeSessionId)
-    expect(registry.openConversationStatus(paneId, 'zsh')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, '2.1.295', 'claude')?.agentSessionId).toBe(claudeSessionId)
+    expect(registry.openConversationStatus(paneId, 'zsh', 'unknown')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'vim', 'unknown')).toBeUndefined()
 
     // The agent exited; its recap stays visible but is no longer the pane's live session.
     registry.removeIfProcessChanged(paneId, 'zsh')
     expect(registry.get(paneId)).toBeDefined()
     expect(registry.liveHookStatus(paneId, '2.1.295')).toBeUndefined()
-    expect(registry.openConversationStatus(paneId, '2.1.295')).toBeUndefined()
-    expect(registry.openConversationStatus(paneId, 'zsh')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, '2.1.295', 'claude')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'zsh', 'unknown')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'vim', 'unknown')).toBeUndefined()
   })
 })

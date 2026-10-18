@@ -110,7 +110,7 @@ import { SessionIdeView } from './SessionIdeView'
 import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { createChatConversationsApi } from './chatConversationsApi'
-import { ConversationPicker, openConversationPanes } from './ConversationPicker'
+import { ConversationPicker } from './ConversationPicker'
 import { chatConversationKey } from '../shared/chat-conversations'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
@@ -3038,10 +3038,11 @@ export function App() {
     <ConversationPicker
       pane={conversationPane}
       {...(conversationChat.session.sessionId ? { current: chatConversationKey(conversationChat.session.provider, conversationChat.session.sessionId) } : {})}
-      open={openConversationPanes(chats, agentStatuses, paneMap, (paneId) => {
+      chats={chats}
+      paneLabel={(paneId) => {
         const pane = paneMap.get(paneId)
         return (pane && sessionMap.get(pane.sessionId)?.name) ?? paneId
-      })}
+      }}
       busy={conversationChat.session.status === 'running' || conversationChat.session.status === 'waiting'}
       load={loadConversations}
       onPick={async (conversation, placement) => {

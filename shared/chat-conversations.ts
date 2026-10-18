@@ -20,6 +20,8 @@ export interface ChatConversation {
   title: string
   /** When its transcript last changed, ms. */
   updatedAt: number
+  /** The pane currently hosting this conversation, verified by the server. */
+  openPaneId?: string
   branch?: string
   /** Claude only: the config dir (`~/.claudep`) whose login it belongs to. */
   configDir?: string
@@ -123,12 +125,14 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
     const configDir = optionalString(entry.configDir)
     const repoRoot = optionalString(entry.repoRoot)
     const checkoutRoot = optionalString(entry.checkoutRoot)
+    const openPaneId = optionalString(entry.openPaneId, 100)
     return [{
       provider: entry.provider,
       sessionId: entry.sessionId,
       cwd,
       title,
       updatedAt: entry.updatedAt,
+      ...(openPaneId && /^%\d+$/.test(openPaneId) ? { openPaneId } : {}),
       ...(branch ? { branch } : {}),
       ...(configDir ? { configDir } : {}),
       ...(repoRoot ? { repoRoot } : {}),
