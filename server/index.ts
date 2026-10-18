@@ -1882,7 +1882,7 @@ async function main(): Promise<void> {
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
-    agentSessions: () => agentStatuses.values(),
+    agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.liveHookStatus(pane.id, pane.command) ?? []),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {
       const windowId = paneForId(paneId)?.windowId

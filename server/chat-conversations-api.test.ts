@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
-import type { AgentStatus, CommandoSnapshot } from '../shared/protocol.js'
+import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
+import { AgentStatusRegistry } from './agent-status-registry.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
@@ -34,7 +35,7 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; agentSessions?: AgentStatus[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
+function setup(options: { conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; agentSessions?: AgentStatus[] | (() => AgentStatus[]); panes?: Pick<TmuxPane, 'id' | 'command'>[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -43,10 +44,10 @@ function setup(options: { conversation?: Partial<ChatConversation>; chats?: Chat
   }
   const api = new ChatConversationsApi({
     index: { list: vi.fn(async () => [conversation]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
-    snapshot: () => ({ panes: [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
+    snapshot: () => ({ panes: options.panes ?? [{ id: '%1' }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
-    agentSessions: () => options.agentSessions ?? [],
+    agentSessions: () => typeof options.agentSessions === 'function' ? options.agentSessions() : options.agentSessions ?? [],
     creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
     refreshSnapshot: vi.fn(async () => {}),
@@ -60,6 +61,31 @@ function setup(options: { conversation?: Partial<ChatConversation>; chats?: Chat
 }
 
 describe('ChatConversationsApi', () => {
+  it.each([
+    ['live TUI after a completed turn', '2.1.295', false, 409],
+    ['pane back at zsh before registry reconciliation', 'zsh', false, 200],
+    ['exited TUI with a retained recap', 'zsh', true, 200],
+    ['retained recap even if the command matches again', '2.1.295', true, 200],
+  ] as const)('%s uses only live hook sessions for the resume guard', async (_scenario, command, exited, expectedStatus) => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook('%2', { hook_event_name: 'UserPromptSubmit', session_id: ID, intent: 'Ship it' }, 1, '2.1.295')
+    registry.applyClaudeHook('%2', { hook_event_name: 'Stop', session_id: ID, finalMessage: 'Shipped the fix.' }, 2, '2.1.295')
+    if (exited) registry.removeIfProcessChanged('%2', 'zsh')
+    // The recap remains in values() even after the TUI exits.
+    expect(registry.values()).toMatchObject([{ paneId: '%2', source: 'hook', agentSessionId: ID, status: 'done' }])
+    const panes = [{ id: '%1', command: 'node' }, { id: '%2', command }]
+    const { creator, resume } = setup({
+      conversation: { provider: 'claude' },
+      panes,
+      agentSessions: () => panes.flatMap((pane) => registry.liveHookStatus(pane.id, pane.command) ?? []),
+    })
+    expect(await resume({ provider: 'claude' })).toMatchObject({
+      status: expectedStatus,
+      body: expectedStatus === 409 ? { error: 'That conversation is already open in pane %2' } : { paneId: '%1' },
+    })
+    expect(creator.respawnChatPane).toHaveBeenCalledTimes(expectedStatus === 200 ? 1 : 0)
+  })
+
   it.each([
     ['cursor', ID, ['agent', `--resume=${ID}`]],
     ['opencode', 'ses_ed3f6d576ffeGGkSAFgSk4Snvz', ['opencode', '-s', 'ses_ed3f6d576ffeGGkSAFgSk4Snvz']],

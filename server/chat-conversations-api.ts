@@ -24,7 +24,7 @@ type Dependencies = {
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
-  /** Agent sessions reported by the daemon's status registry. */
+  /** Live hook sessions matching their pane's current process; excludes retained completions. */
   agentSessions: () => AgentStatus[]
   creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane'>
   beforePaneCreated: (paneId: string) => Promise<void>
