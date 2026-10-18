@@ -837,12 +837,13 @@ export class AgentStatusRegistry {
     return cloneStatus(record.status)
   }
 
-  /** SessionStart hooks reserve an open conversation before a prompt binds the process command. */
-  openConversationStatus(paneId: string, processCommand: string): AgentStatus | undefined {
+  /** SessionStart hooks reserve a conversation only while the same provider's agent runs. */
+  openConversationStatus(paneId: string, processCommand: string, processProvider: AgentProvider): AgentStatus | undefined {
     const live = this.liveHookStatus(paneId, processCommand)
     if (live) return live
     const record = this.records.get(paneId)
     if (record?.status.source !== 'hook' || record.retainedCompletion || record.processCommand !== null) return undefined
+    if (processProvider === 'unknown' || record.status.provider !== processProvider) return undefined
     return cloneStatus(record.status)
   }
 

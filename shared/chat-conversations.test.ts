@@ -6,6 +6,14 @@ const conversation = (cwd: string, extra: Partial<ChatConversation> = {}): ChatC
 const current = { id: '$1', name: 'current' }
 
 describe('conversation response validation', () => {
+  it('preserves server open pane ids and drops malformed optional ids', () => {
+    const open = conversation('/repo', { openPaneId: '%7' })
+    expect(parseChatConversations({ conversations: [open] })).toEqual([open])
+    for (const openPaneId of [undefined, null, 7, '', '7', '%7extra']) {
+      expect(parseChatConversations({ conversations: [{ ...open, openPaneId }] })).toEqual([conversation('/repo')])
+    }
+  })
+
   it('accepts Cursor and OpenCode while keeping session ids shell-safe and bounded', () => {
     const cursor = conversation('/repo', { provider: 'cursor' })
     const opencode = conversation('/repo', { provider: 'opencode', sessionId: 'ses_ed3f6d576ffeGGkSAFgSk4Snvz' })
