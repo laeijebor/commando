@@ -1849,3 +1849,17 @@ it.each([false, true])('keeps Cursor chat status separate from TUI associations 
   expect(registry.invalidateCursorAssociation(paneId, association)).toBeNull()
   expect(registry.get(paneId)?.status).toBe('working')
 })
+
+it('vouches for a chat host conversation without hooks, once it has a session and while it is connected', () => {
+  const registry = new AgentStatusRegistry()
+  // A Cursor chat creates its agent with the first message, so it reports a session id only then.
+  registry.applyChatHost(paneId, { provider: 'cursor', status: 'unknown' }, 1)
+  expect(registry.chatHostStatus(paneId)).toBeUndefined()
+  registry.applyChatHost(paneId, { provider: 'cursor', sessionId: 'agent-12345678-0000', status: 'working' }, 2)
+  expect(registry.chatHostStatus(paneId)).toMatchObject({ provider: 'cursor', agentSessionId: 'agent-12345678-0000', source: 'hook' })
+  registry.applyChatHost(paneId, null, 3)
+  expect(registry.chatHostStatus(paneId)).toBeUndefined()
+  // Hooked chats keep relying on their hooks.
+  registry.applyChatHost(paneId, { provider: 'claude', sessionId: 'aaaaaaaa-0001', status: 'working' }, 4)
+  expect(registry.chatHostStatus(paneId)).toBeUndefined()
+})

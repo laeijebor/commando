@@ -848,6 +848,17 @@ export class AgentStatusRegistry {
     return cloneStatus(record.status)
   }
 
+  /**
+   * A connected Cursor chat host vouches for its conversation: Cursor's SDK runs no provider
+   * hooks, which the other chats rely on. The host drops out when it disconnects.
+   */
+  chatHostStatus(paneId: string): AgentStatus | undefined {
+    const chat = this.chatHosts.get(paneId)
+    const record = this.records.get(paneId)
+    if (chat?.provider !== 'cursor' || !chat.sessionId || record?.status.provider !== chat.provider || record.status.agentSessionId !== chat.sessionId) return undefined
+    return cloneStatus(record.status)
+  }
+
   /** Hook evidence is scoped to the observed foreground process, never just the pane. */
   hasCursorHookProcess(paneId: string, command?: string): boolean {
     const record = this.records.get(paneId)
