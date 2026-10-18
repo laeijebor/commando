@@ -255,7 +255,7 @@ describe('AgentChatsApi', () => {
     const s = await setup()
     s.statuses.set('%1', { provider: 'muse', status: 'working' } as AgentStatus)
     s.launches.set(100, { args: ['/Users/me/.local/bin/muse-bin-1.4.10-R6427.1', '--yolo'], env: {} })
-    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions', fullAccess: true })
     s.launches.set(100, { args: ['/Users/me/.local/bin/muse-bin-1.4.10-R6427.1', 'fix', '--yolo'], env: {} })
     expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'default' })
     expect(terminalLaunchRank('muse', ['muse', '--yolo'])).toBe(terminalLaunchRank('claude', ['claude', '--dangerously-skip-permissions']))
@@ -280,10 +280,10 @@ describe('AgentChatsApi', () => {
   it('passes full access (--yolo) on between Muse and bypass callers', async () => {
     const s = await setup()
     s.chats.set('%1', { provider: 'muse', permissionMode: 'bypassPermissions', bypassAllowed: true, sandboxed: false } as ChatSessionInfo)
-    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })
+    expect((await s.call('POST', '', s.input)).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions', fullAccess: true })
     expect((await s.call('POST', '', { ...s.input, agent: 'claude-chat' })).result.agent).toEqual({ provider: 'claude-chat', permissionMode: 'bypassPermissions' })
     s.chats.set('%1', { provider: 'claude', permissionMode: 'bypassPermissions' } as ChatSessionInfo)
-    expect((await s.call('POST', '', { ...s.input, agent: 'muse-chat' })).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })
+    expect((await s.call('POST', '', { ...s.input, agent: 'muse-chat' })).result.agent).toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions', fullAccess: true })
   })
 
   it('treats a Muse bypass host that does not say its sandbox is off as sandboxed', async () => {

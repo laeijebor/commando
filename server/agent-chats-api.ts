@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { ChatSessionInfo } from '../shared/agent-chat.js'
 import type { AgentChatFailure, AgentChatInput, AgentChatLaunch, AgentChatResult } from '../shared/agent-chats.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
-import { CHAT_PERMISSION_MODES, CURSOR_CHAT_PERMISSION_MODES, chatLaunchProvider, chatPermissionModes, isChatLaunchProvider, type ChatLaunchProvider, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
+import { CHAT_PERMISSION_MODES, CURSOR_CHAT_PERMISSION_MODES, chatLaunchPermission, chatLaunchProvider, chatPermissionModes, isChatLaunchProvider, type ChatLaunchProvider, requireSessionAgentLaunch, sanitizeBranchName, SESSION_AGENT_EXECUTABLES, TmuxAgentLaunchCompatibilityError, type ChatPermissionMode, type SessionAgentLaunch, type SessionAgentProvider, type TmuxCreateResponse } from '../shared/tmux-create.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { launchFlags, type AgentLaunch } from './agent-resume-command.js'
 import type { ChatPlanStore } from './chat-plans.js'
@@ -267,7 +267,8 @@ export class AgentChatsApi {
     if (effectiveRank(provider, permissionMode) > callerRank) throw new HttpError(403, `Cannot raise permission mode from ${callerMode} to ${permissionMode}`)
     if (!hosted) return { launch: { provider: provider as SessionAgentProvider } }
     const configDir = provider !== 'claude-chat' ? undefined : chat ? (chatLaunchProvider(chat.provider) === 'claude-chat' ? chat.configDir : undefined) : terminal?.configDir
-    return { launch: { provider, permissionMode, ...(configDir ? { configDir } : {}) }, ...(terminal?.warning && provider === terminal.provider ? { warning: terminal.warning } : {}) }
+    // The caller's rank already allows a Muse bypass, so the child gets full access as asked.
+    return { launch: { provider, ...chatLaunchPermission(provider, permissionMode), ...(configDir ? { configDir } : {}) }, ...(terminal?.warning && provider === terminal.provider ? { warning: terminal.warning } : {}) }
   }
 
   private take(buckets: Map<string, TokenBucketRateLimiter>, caller: TmuxPane, capacity: number, seconds: number): boolean {

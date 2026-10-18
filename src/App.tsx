@@ -144,7 +144,7 @@ import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type Chat
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   hostTakesSwitch,
@@ -2916,7 +2916,7 @@ export function App() {
   /** A Codex, Muse or Cursor chat launch with the permission mode remembered for the path's repository. */
   const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat' | 'cursor-chat'): Promise<SessionAgentLaunch> => {
     const repoRoot = await gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined)
-    return { provider, permissionMode: loadChatLaunch(repoRoot ?? path, provider).permissionMode }
+    return { provider, ...chatLaunchPermission(provider, loadChatLaunch(repoRoot ?? path, provider).permissionMode) }
   }
 
   /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */

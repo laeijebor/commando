@@ -42,6 +42,16 @@ export type SessionAgentLaunch = {
   readableDir?: string
   /** Chat providers, Cursor and OpenCode: the conversation to carry on. */
   resume?: string
+  /**
+   * muse-chat with bypassPermissions only: run without Muse's sandbox (`--yolo`). Named on its own
+   * because clients from before full access sent a bare bypassPermissions to mean the sandboxed mode.
+   */
+  fullAccess?: true
+}
+
+/** A chat launch's permission fields; Muse's bypassPermissions is marked as full access. */
+export function chatLaunchPermission(provider: ChatLaunchProvider, permissionMode: ChatPermissionMode): Pick<SessionAgentLaunch, 'permissionMode' | 'fullAccess'> {
+  return { permissionMode, ...(provider === 'muse-chat' && permissionMode === 'bypassPermissions' ? { fullAccess: true as const } : {}) }
 }
 
 export const CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
@@ -117,7 +127,7 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       '--permission-mode', launch.permissionMode ?? (launch.provider === 'cursor-chat' ? 'bypassPermissions' : 'default'),
       ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
       // Muse full access must be named: a bare bypassPermissions from before it existed stays sandboxed.
-      ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' ? ['--yolo'] : []),
+      ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' && launch.fullAccess === true ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
