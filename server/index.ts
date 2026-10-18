@@ -133,6 +133,8 @@ import { ProviderUsageService } from './provider-usage.js'
 import { handleUsageApi } from './usage-api.js'
 import { ExpoPushSender } from './expo-push.js'
 import { PushApi } from './push-api.js'
+import { PairingApi } from './pairing-api.js'
+import { PairingRegistry, pairingAddresses, requestMatchesBearer } from './pairing.js'
 import { PushDeviceRegistry } from './push-devices.js'
 import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
@@ -243,20 +245,7 @@ function requestHasValidToken(
   url: URL,
   digest: Buffer,
 ): boolean {
-  if (matchesToken(url.searchParams.get('token'), digest)) return true
-  // Browser WebSockets cannot set Authorization; simulator tiles carry the same
-  // bearer token in a subprotocol so it never becomes a persisted URL.
-  const protocols = request.headers['sec-websocket-protocol']
-  if (typeof protocols === 'string') {
-    for (const protocol of protocols.split(',').map((entry) => entry.trim())) {
-      if (!protocol.startsWith('commando-auth.')) continue
-      try { if (matchesToken(decodeURIComponent(protocol.slice(14)), digest)) return true } catch { /* malformed token */ }
-    }
-  }
-  const authorization = request.headers.authorization
-  if (!authorization) return false
-  const match = /^Bearer\s+([^\s]+)$/i.exec(authorization)
-  return matchesToken(match?.[1] ?? null, digest)
+  return requestMatchesBearer(request, url, (candidate) => matchesToken(candidate, digest))
 }
 
 function requestUrl(request: IncomingMessage): URL | null {
@@ -746,12 +735,30 @@ async function main(): Promise<void> {
   let lastTmuxError = ''
   let structuralRefreshTimer: NodeJS.Timeout | undefined
 
-  const requestIsAuthorized = async (
-    request: IncomingMessage,
-    url: URL,
-  ): Promise<boolean> => (
+  const pairing = new PairingRegistry()
+  await pairing.load()
+  // Management remains owner-only. Devices inherit exactly the existing bearer scope.
+  const requestIsOwnerAuthorized = async (request: IncomingMessage, url: URL): Promise<boolean> => (
     requestHasValidToken(request, url, digest) || (await auth?.hasSession(request)) === true
   )
+  const requestIsAuthorized = async (request: IncomingMessage, url: URL): Promise<boolean> => {
+    if (requestHasValidToken(request, url, digest)) return true
+    let deviceId: string | null = null
+    if (requestMatchesBearer(request, url, (candidate) => {
+      deviceId = pairing.authenticate(candidate)
+      return deviceId !== null
+    }) && deviceId) {
+      if (request.headers.upgrade?.toLowerCase() === 'websocket') {
+        // Track the transport before yielding: covers main, simulator and tile sockets,
+        // including upgrades in flight when the owner revokes the device.
+        const release = pairing.trackConnection(deviceId, () => request.socket.destroy())
+        request.socket.once('close', release)
+      }
+      return true
+    }
+    return (await auth?.hasSession(request)) === true
+  }
+  const pairingApi = new PairingApi(pairing, requestIsOwnerAuthorized, () => pairingAddresses(port, networkAccess.listeners))
 
   const broadcast = (message: ServerMessage): void => {
     for (const client of clients) send(client, message)
@@ -2649,6 +2656,8 @@ async function main(): Promise<void> {
         sessionIdeApi.proxy(request, response, url, ideId)
         return
       }
+
+      if (await pairingApi.handle(request, response, url)) return
 
       if (url.pathname === '/api/auth/bootstrap') {
         if (request.method !== 'GET') {
