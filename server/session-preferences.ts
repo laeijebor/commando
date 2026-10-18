@@ -1,3 +1,4 @@
+import { assignSessionIdentities, deriveSessionIdentity, isSessionGlyph, normalizeSessionIdentities, type SessionIdentities } from '../shared/session-identity.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -16,13 +17,14 @@ export type SessionTreePreferences = {
   groups: SessionPreferenceGroup[]
   ungroupedSessionIds: string[]
   sessionNamesById?: Record<string, string>
+  sessionIdentities?: SessionIdentities
   /** How the sidebar groups sessions; defaults to `repository` when absent. */
   groupingMode?: SessionGroupingMode
   /** Saved order within repository groups, independent of manual grouping. */
   repositorySessionIds?: string[]
 }
 
-export type SessionIdentity = {
+export type TmuxSessionReference = {
   id: string
   name: string
 }
@@ -136,6 +138,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
     groups,
     ungroupedSessionIds,
     ...(sessionNamesById ? { sessionNamesById } : {}),
+    ...(value.sessionIdentities !== undefined ? { sessionIdentities: normalizeSessionIdentities(value.sessionIdentities) } : {}),
     ...(groupingMode ? { groupingMode } : {}),
     ...(repositorySessionIds ? { repositorySessionIds } : {}),
   }
@@ -147,13 +150,13 @@ export function emptySessionTreePreferences(): SessionTreePreferences {
 
 export function reconcileSessionTreePreferences(
   preferences: SessionTreePreferences,
-  currentSessions: readonly SessionIdentity[],
+  currentSessions: readonly TmuxSessionReference[],
 ): SessionTreePreferences {
   const parsed = parseSessionTreePreferences(preferences)
   if (!parsed) throw new Error('Invalid session tree preferences')
 
-  const currentById = new Map<string, SessionIdentity>()
-  const currentByName = new Map<string, SessionIdentity>()
+  const currentById = new Map<string, TmuxSessionReference>()
+  const currentByName = new Map<string, TmuxSessionReference>()
   for (const session of currentSessions) {
     if (!SESSION_ID.test(session.id)) throw new Error('Invalid tmux session id')
     if (
@@ -206,6 +209,7 @@ export function reconcileSessionTreePreferences(
     groups,
     ungroupedSessionIds,
     ...(Object.keys(sessionNamesById).length > 0 ? { sessionNamesById } : {}),
+    ...(parsed.sessionIdentities ? { sessionIdentities: parsed.sessionIdentities } : {}),
     ...(parsed.groupingMode ? { groupingMode: parsed.groupingMode } : {}),
     ...(repositorySessionIds ? { repositorySessionIds } : {}),
   }
@@ -213,7 +217,7 @@ export function reconcileSessionTreePreferences(
 
 function hasUnresolvedSessionIdReuse(
   preferences: SessionTreePreferences,
-  currentSessions: readonly SessionIdentity[],
+  currentSessions: readonly TmuxSessionReference[],
 ): boolean {
   if (!preferences.sessionNamesById) return false
   const currentById = new Map(currentSessions.map((session) => [session.id, session]))
@@ -226,7 +230,7 @@ function hasUnresolvedSessionIdReuse(
 
 export function visibleSessionTreePreferences(
   preferences: SessionTreePreferences,
-  currentSessions: readonly SessionIdentity[],
+  currentSessions: readonly TmuxSessionReference[],
 ): SessionTreePreferences {
   const current = new Set(currentSessions.map((session) => session.id))
   return {
@@ -238,6 +242,7 @@ export function visibleSessionTreePreferences(
     ungroupedSessionIds: preferences.ungroupedSessionIds.filter((sessionId) =>
       current.has(sessionId),
     ),
+    ...(preferences.sessionIdentities ? { sessionIdentities: preferences.sessionIdentities } : {}),
     ...(preferences.groupingMode ? { groupingMode: preferences.groupingMode } : {}),
     ...(preferences.repositorySessionIds ? {
       repositorySessionIds: preferences.repositorySessionIds.filter((sessionId) => current.has(sessionId)),
@@ -261,27 +266,73 @@ export class SessionPreferenceStore {
   }
 
   /** Reconcile for display without persisting changes from this reader's snapshot. */
-  async loadReadOnly(currentSessions: readonly SessionIdentity[] = []): Promise<SessionTreePreferences> {
+  async loadReadOnly(currentSessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
     await this.writes
     return reconcileSessionTreePreferences(await this.readState(), currentSessions)
   }
 
-  async load(currentSessions: readonly SessionIdentity[] = []): Promise<SessionTreePreferences> {
-    await this.writes
-    const stored = await this.readState()
-    const reconciled = reconcileSessionTreePreferences(stored, currentSessions)
-    if (
-      JSON.stringify(reconciled) !== JSON.stringify(stored) &&
-      !hasUnresolvedSessionIdReuse(stored, currentSessions)
-    ) {
-      await this.replace(reconciled, currentSessions)
-    }
-    return reconciled
+  async load(currentSessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
+    return this.update((stored) => {
+      const reconciled = reconcileSessionTreePreferences(stored, currentSessions)
+      return {
+        result: reconciled,
+        state: hasUnresolvedSessionIdReuse(stored, currentSessions)
+          ? { ...stored, sessionIdentities: reconciled.sessionIdentities } : reconciled,
+      }
+    })
+  }
+
+  private withIdentities(preferences: SessionTreePreferences, sessions: readonly TmuxSessionReference[], names: readonly string[] = []): SessionTreePreferences {
+    return { ...preferences, sessionIdentities: assignSessionIdentities(preferences.sessionIdentities ?? {}, [...sessions.map((session) => session.name), ...names]) }
+  }
+
+  /** All identity mutations share the preference write queue, so stale grouping saves cannot undo them. */
+  private update(transform: (stored: SessionTreePreferences) => { result: SessionTreePreferences; state: SessionTreePreferences }): Promise<SessionTreePreferences> {
+    let result: SessionTreePreferences
+    const operation = this.writes.then(async () => {
+      const stored = await this.readState()
+      const next = transform(stored)
+      result = next.result
+      if (JSON.stringify(stored) !== JSON.stringify(next.state)) await this.writeState(next.state)
+    })
+    this.writes = operation.catch(() => undefined)
+    return operation.then(() => result!)
+  }
+
+  ensureIdentities(names: readonly string[], sessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
+    return this.update((stored) => {
+      const state = this.withIdentities(stored, sessions, names)
+      return { state, result: reconcileSessionTreePreferences(state, sessions) }
+    })
+  }
+
+  changeIdentity(name: string, glyph: string | null, sessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
+    if (glyph !== null && !isSessionGlyph(glyph)) return Promise.reject(new Error('Glyph must be a single emoji'))
+    return this.update((stored) => {
+      const state = this.withIdentities(stored, sessions, [name])
+      const identities = new Map(Object.entries(state.sessionIdentities ?? {}))
+      const otherCodenames = [...identities].filter(([key]) => key !== name).map(([, identity]) => identity.codename)
+      const identity = identities.get(name) ?? deriveSessionIdentity(name, otherCodenames)
+      identities.set(name, glyph === null ? deriveSessionIdentity(name, otherCodenames) : { ...identity, glyph, glyphSource: 'user' })
+      state.sessionIdentities = normalizeSessionIdentities(Object.fromEntries(identities))
+      return { state, result: reconcileSessionTreePreferences(state, sessions) }
+    })
+  }
+
+  renameIdentity(oldName: string, newName: string, sessionId: string): Promise<SessionTreePreferences> {
+    return this.update((stored) => {
+      const identities = new Map(Object.entries(stored.sessionIdentities ?? {}))
+      const identity = identities.get(oldName) ?? deriveSessionIdentity(oldName, [...identities.values()].map((entry) => entry.codename))
+      identities.delete(oldName)
+      identities.set(newName, identity)
+      const state = { ...stored, sessionIdentities: normalizeSessionIdentities(Object.fromEntries(identities)), sessionNamesById: { ...stored.sessionNamesById, [sessionId]: newName } }
+      return { state, result: state }
+    })
   }
 
   replace(
     preferences: SessionTreePreferences,
-    currentSessions: readonly SessionIdentity[] = [],
+    currentSessions: readonly TmuxSessionReference[] = [],
   ): Promise<SessionTreePreferences> {
     let parsed: SessionTreePreferences
     try {
@@ -297,6 +348,8 @@ export class SessionPreferenceStore {
       const stored = await this.readState()
       validated = reconcileSessionTreePreferences({
         ...parsed,
+        // Identity changes use dedicated queued mutations; grouping snapshots may be stale.
+        ...(parsed.sessionIdentities || stored.sessionIdentities ? { sessionIdentities: stored.sessionIdentities ?? parsed.sessionIdentities } : {}),
         sessionNamesById: {
           ...stored.sessionNamesById,
           ...parsed.sessionNamesById,

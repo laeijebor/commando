@@ -1,3 +1,4 @@
+import { isSessionName } from '../shared/session-identity'
 import {
   Activity,
   AlertTriangle,
@@ -2513,7 +2514,18 @@ export function App() {
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
   const chatConversationsApi = useMemo(() => createChatConversationsApi(token), [token])
-  const loadConversations = useCallback(() => chatConversationsApi.list(), [chatConversationsApi])
+  const loadConversations = useCallback(async () => {
+    const conversations = await chatConversationsApi.list()
+    const names = [...new Set(conversations.flatMap((conversation) => conversation.session ? [conversation.session.name] : []).filter(isSessionName))].slice(0, 500)
+    try {
+      const preferences = await createSessionManagementApi(token).ensureIdentities(names)
+      setSessionTreePreferences(preferences)
+    } catch {
+      // History stays usable if preference storage is temporarily unavailable;
+      // the picker can derive the same marks until the next successful load.
+    }
+    return conversations
+  }, [chatConversationsApi, token])
   const paneManagementApi = createPaneManagementApi(token)
   const paneScreenshotsApi = createPaneScreenshotsApi(token)
   const sessionManagementApi = createSessionManagementApi(token)
@@ -3089,6 +3101,7 @@ export function App() {
     <ConversationPicker
       key={`${conversationPane.id}:${conversationSessionFilter?.id ?? ''}`}
       pane={conversationPane}
+      sessionIdentities={sessionTreePreferences.sessionIdentities}
       {...(conversationSessionFilter ? { initialSessionFilter: conversationSessionFilter } : {})}
       defaultPlacement={conversationSessionFilter ? 'session' : conversationChat || conversationPane.empty ? 'replace' : 'split'}
       sessionName={sessionMap.get(conversationPane.sessionId)?.name ?? conversationPane.sessionId}

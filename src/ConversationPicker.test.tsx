@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ChatState } from '../shared/agent-chat'
 import type { ChatConversation } from '../shared/chat-conversations'
 import type { AgentStatus, TmuxPane } from '../shared/protocol'
+import { deriveSessionIdentity } from '../shared/session-identity'
 import { ConversationPicker, openConversationPanes } from './ConversationPicker'
 
 beforeAll(() => { Element.prototype.scrollIntoView = vi.fn() })
@@ -85,8 +86,8 @@ describe('ConversationPicker', () => {
     expect(within(groups[0]!).getAllByRole('option').map((option) => option.querySelector('strong')?.textContent)).toEqual(['Open elsewhere', 'Feature work'])
     expect(within(groups[0]!).getAllByRole('option')[1]!.querySelector('small')).toHaveTextContent(/^2h ago · feature$/)
     expect(within(groups[0]!).getAllByRole('option')[0]).toHaveTextContent('Open in Review')
-    expect(groups[0]!.querySelector('.conversation-picker-group')).toHaveTextContent('This session · current2 chats')
-    expect(groups[1]!.querySelector('.conversation-picker-group')).toHaveTextContent('vivi · Subscriptions1 chat')
+    expect(groups[0]!.querySelector('.conversation-picker-group')).toHaveTextContent(`This session · current${deriveSessionIdentity('current').codename}2 chats`)
+    expect(groups[1]!.querySelector('.conversation-picker-group')).toHaveTextContent(`vivi · Subscriptions${deriveSessionIdentity('vivi').codename}1 chat`)
     expect(groups[1]!.querySelector('.conversation-picker-group')).not.toHaveTextContent('1 chats')
   })
 
@@ -339,4 +340,24 @@ it('shows the agent title on the secondary line and searches it, falling back to
   fireEvent.change(input, { target: { value: 'stable topic' } })
   expect(screen.getAllByRole('option')).toHaveLength(1)
   expect(screen.getByRole('option')).toHaveTextContent('Stable topic name')
+})
+
+
+it('shows session avatars and muted codenames, glyph tiles, and History outside Commando', async () => {
+  const identity = { ...deriveSessionIdentity('current'), glyph: '🐢', glyphSource: 'user' as const }
+  renderPicker({ sessionIdentities: { current: identity } })
+  await screen.findAllByRole('option')
+  const currentGroup = screen.getByRole('group', { name: 'This session · current' })
+  expect(currentGroup.querySelector('.conversation-picker-group .session-avatar svg')).toBeInTheDocument()
+  expect(currentGroup.querySelector('.conversation-picker-codename')).toHaveTextContent(identity.codename)
+  for (const row of within(currentGroup).getAllByRole('option')) {
+    expect(row.querySelector('.session-glyph-tile')).toHaveTextContent('🐢')
+    expect(row.querySelector('.lucide-history')).not.toBeInTheDocument()
+  }
+  const historical = screen.getByRole('group', { name: 'vivi · Subscriptions' })
+  expect(historical.querySelector('.session-avatar svg')).toBeInTheDocument()
+  expect(historical.querySelector('.conversation-picker-codename')).toHaveTextContent(deriveSessionIdentity('vivi').codename)
+  const outside = screen.getByRole('group', { name: 'Outside Commando' })
+  expect(outside.querySelector('.lucide-history')).toBeInTheDocument()
+  expect(outside.querySelector('.session-avatar')).not.toBeInTheDocument()
 })

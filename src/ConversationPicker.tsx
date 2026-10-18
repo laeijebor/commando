@@ -1,3 +1,5 @@
+import { assignSessionIdentities, sessionIdentityForName, type SessionIdentities } from '../shared/session-identity'
+import { SessionAvatar } from './SessionAvatar'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { History, LoaderCircle, Search } from 'lucide-react'
 import type { ChatState } from '../shared/agent-chat'
@@ -50,9 +52,10 @@ function folder(path: string): string {
 }
 
 /** Session-first conversation history; open conversations jump to their existing pane. */
-export function ConversationPicker({ pane, sessionName, current, open, busy, load, onPick, onJump, onClose, defaultPlacement = 'replace', initialSessionFilter, now = Date.now() }: {
+export function ConversationPicker({ pane, sessionName, current, open, busy, load, onPick, onJump, onClose, defaultPlacement = 'replace', initialSessionFilter, sessionIdentities = {}, now = Date.now() }: {
   pane: TmuxPane
   sessionName: string
+  sessionIdentities?: SessionIdentities
   defaultPlacement?: ChatConversationPlacement
   initialSessionFilter?: { id: string; name: string }
   /** The conversation this chat runs, if Claude has reported it. */
@@ -104,6 +107,7 @@ export function ConversationPicker({ pane, sessionName, current, open, busy, loa
     return () => { live = false }
   }, [load])
 
+  const identities = useMemo(() => assignSessionIdentities(sessionIdentities, [sessionName, ...(conversations ?? []).flatMap((conversation) => conversation.session ? [conversation.session.name] : [])]), [sessionIdentities, sessionName, conversations])
   const providers = useMemo(() => [...new Set((conversations ?? []).map(chatConversationProviderLabel))].sort(), [conversations])
   const groups = useMemo(() => groupChatConversations((conversations ?? []).filter((conversation) =>
     (!sessionFilter || conversation.session?.name === sessionFilter.name
@@ -188,9 +192,12 @@ export function ConversationPicker({ pane, sessionName, current, open, busy, loa
         <div className="command-results" id="conversation-results" role="listbox" ref={list}>
           {conversations === null && !error ? <div className="palette-empty">Loading conversations…</div> : null}
           {conversations && !rows.length ? <div className="palette-empty">{query ? `No conversation matches "${query}".` : 'No past conversations found.'}</div> : null}
-          {groups.map((group) => (
+          {groups.map((group) => {
+            const name = group.id.startsWith('session:') ? group.id.slice('session:'.length) : null
+            const identity = name === null ? null : sessionIdentityForName(identities, name)
+            return (
             <div role="group" aria-label={group.label} key={group.id}>
-              <div className="conversation-picker-group"><span>{group.label}</span><span>{group.conversations.length} {group.conversations.length === 1 ? 'chat' : 'chats'}</span></div>
+              <div className="conversation-picker-group"><span className="conversation-picker-session">{identity ? <SessionAvatar identity={identity} /> : null}<span>{group.label}</span>{identity ? <span className="conversation-picker-codename">{identity.codename}</span> : null}</span><span>{group.conversations.length} {group.conversations.length === 1 ? 'chat' : 'chats'}</span></div>
               {group.conversations.map((conversation) => {
                 row += 1
                 const position = row
@@ -210,7 +217,7 @@ export function ConversationPicker({ pane, sessionName, current, open, busy, loa
                     onMouseMove={() => { if (index !== position) setIndex(position) }}
                     onClick={(event) => void pick(conversation, event.altKey ? 'session' : event.metaKey || event.ctrlKey ? 'split' : defaultPlacement)}
                   >
-                    <span className="command-icon"><History aria-hidden="true" /></span>
+                    <span className="command-icon">{identity ? <SessionAvatar identity={identity} glyph size={22} /> : <History aria-hidden="true" />}</span>
                     <span>
                       <strong>{conversation.headline ?? conversation.agentTitle ?? conversation.title}</strong>
                       {conversation.headline ? <span className="conversation-picker-title">{conversation.agentTitle ?? conversation.title}</span> : null}
@@ -227,7 +234,7 @@ export function ConversationPicker({ pane, sessionName, current, open, busy, loa
                 )
               })}
             </div>
-          ))}
+          )})}
         </div>
         <footer className="palette-footer">
           <span><kbd>Enter</kbd> {selected && open.has(chatConversationKey(selected.provider, selected.sessionId)) ? 'Jump to it' : defaultPlacement === 'session' ? 'In its session' : defaultPlacement === 'split' ? 'Open beside' : busy ? 'Switch (stops this turn)' : 'Switch this pane'}</span>

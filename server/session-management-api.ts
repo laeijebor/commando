@@ -1,3 +1,4 @@
+import { isSessionName, isSessionGlyph, MAX_SESSION_IDENTITIES } from '../shared/session-identity.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   parseSessionTreePreferences,
@@ -81,13 +82,13 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function sessionRoute(pathname: string): { sessionId: string; action: 'rename' | 'delete' | 'delete-preview' | 'archive' } | null {
-  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete|delete-preview|archive)$/.exec(pathname)
+function sessionRoute(pathname: string): { sessionId: string; action: 'rename' | 'delete' | 'delete-preview' | 'archive' | 'identity' } | null {
+  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete|delete-preview|archive|identity)$/.exec(pathname)
   if (!match) return null
   try {
     return {
       sessionId: validateTmuxSessionId(decodeURIComponent(match[1])),
-      action: match[2] as 'rename' | 'delete' | 'delete-preview' | 'archive',
+      action: match[2] as 'rename' | 'delete' | 'delete-preview' | 'archive' | 'identity',
     }
   } catch {
     throw new HttpError(400, 'Invalid tmux session id')
@@ -153,10 +154,31 @@ export class SessionManagementApi {
         return true
       }
 
+      if (url.pathname === `${API_ROOT}/identities`) {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const body = record(await readJson(request))
+        if (!Array.isArray(body.names) || body.names.length > MAX_SESSION_IDENTITIES || !body.names.every(isSessionName)) {
+          throw new HttpError(400, 'Expected up to 500 session names')
+        }
+        const preferences = await this.preferences.ensureIdentities(body.names, this.dependencies.currentSessions())
+        writeJson(response, 200, { preferences })
+        return true
+      }
+
       const route = sessionRoute(url.pathname)
       if (route) {
         if (!this.dependencies.currentSessions().some((session) => session.id === route.sessionId)) {
           throw new HttpError(404, 'Tmux session does not exist')
+        }
+
+        if (route.action === 'identity') {
+          if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const body = record(await readJson(request))
+          if (body.reset !== true && !isSessionGlyph(body.glyph)) throw new HttpError(400, 'Glyph must be a single emoji')
+          const session = this.dependencies.currentSessions().find((entry) => entry.id === route.sessionId)!
+          const preferences = await this.preferences.changeIdentity(session.name, body.reset === true ? null : body.glyph as string, this.dependencies.currentSessions())
+          writeJson(response, 200, { preferences })
+          return true
         }
 
         if (route.action === 'rename') {
@@ -168,7 +190,9 @@ export class SessionManagementApi {
           } catch (error) {
             throw new HttpError(400, error instanceof Error ? error.message : 'Invalid session name')
           }
+          const oldName = this.dependencies.currentSessions().find((session) => session.id === route.sessionId)!.name
           await this.actions.rename(route.sessionId, name)
+          await this.preferences.renameIdentity(oldName, name, route.sessionId)
           await this.dependencies.onSessionsChanged?.()
           writeJson(response, 200, { ok: true, sessionId: route.sessionId, name })
           return true
@@ -291,6 +315,7 @@ export class SessionManagementApi {
   ): Promise<void> {
     const currentSessions = this.dependencies.currentSessions()
     if (request.method === 'GET') {
+      await this.preferences.ensureIdentities([], currentSessions)
       const preferences = await this.preferences.load(currentSessions)
       writeJson(response, 200, { preferences })
       return
@@ -300,6 +325,7 @@ export class SessionManagementApi {
     const body = record(await readJson(request))
     const parsed = parseSessionTreePreferences(body.preferences)
     if (!parsed) throw new HttpError(400, 'Invalid session tree preferences')
+    await this.preferences.ensureIdentities([], currentSessions)
     const preferences = await this.preferences.replace(parsed, currentSessions)
     writeJson(response, 200, { preferences })
   }
@@ -309,7 +335,7 @@ export class SessionManagementApi {
     if (pathname === `${API_ROOT}/archives`) return 'GET'
     if (pathname.endsWith('/archive') || pathname.endsWith('/restore')) return 'POST'
     if (pathname.endsWith('/delete-preview')) return 'GET'
-    if (pathname.endsWith('/rename')) return 'POST'
+    if (pathname.endsWith('/rename') || pathname.endsWith('/identity') || pathname.endsWith('/identities')) return 'POST'
     if (pathname.endsWith('/delete')) return 'DELETE'
     return 'GET'
   }

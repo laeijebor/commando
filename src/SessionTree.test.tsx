@@ -5,6 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
+import { deriveSessionIdentity } from '../shared/session-identity'
 import { SessionTree } from './SessionTree'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import type { PrsApiClient, PanePrSummary } from './prsApi'
@@ -13,6 +14,7 @@ const sessionApi = vi.hoisted(() => ({
   loadPreferences: vi.fn(),
   savePreferences: vi.fn(),
   renameSession: vi.fn(),
+  changeIdentity: vi.fn(),
   deleteSession: vi.fn(),
   previewWorktreeDeletion: vi.fn(),
   listArchives: vi.fn(),
@@ -648,7 +650,7 @@ describe('SessionTree', () => {
       expect(screen.queryByRole('button', { name: 'Collapse GIZMO' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Move Save-All down' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /Group$/ })).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Coins everywhere' })).toHaveAttribute('title', 'Coins everywhere · referral-coins-reward · 1 window / 1 pane')
+      expect(screen.getByRole('button', { name: 'Coins everywhere' })).toHaveAttribute('title', `Coins everywhere — ${deriveSessionIdentity('Coins everywhere').codename} · referral-coins-reward · 1 window / 1 pane`)
       expect(screen.getByRole('button', { name: 'Group sessions by repository' })).toHaveAttribute('aria-pressed', 'true')
     })
 
@@ -919,4 +921,34 @@ it('offers Resume a chat between Rename and Archive and passes the session id', 
   expect(onResumeChat).toHaveBeenCalledWith('$1')
   expect(onResumeChat).toHaveBeenCalledTimes(1)
   expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+})
+
+
+it('renders the saved avatar and codename, validates glyph changes, and resets identity', async () => {
+  const identity = { ...deriveSessionIdentity('Subscriptions'), glyph: '🐢', glyphSource: 'user' as const }
+  const preferences = { version: 1, groups: [], ungroupedSessionIds: ['$1'], sessionIdentities: { Subscriptions: identity } }
+  sessionApi.loadPreferences.mockResolvedValue(preferences)
+  sessionApi.changeIdentity.mockImplementation(async (_id, glyph) => ({ ...preferences, sessionIdentities: { Subscriptions: glyph === null ? deriveSessionIdentity('Subscriptions') : { ...identity, glyph } } }))
+  const onPreferencesChanged = vi.fn()
+  render(<SessionTree token="token" sessions={[{ id: '$1', name: 'Subscriptions', attached: true, activeWindowId: null, windowIds: [] }]}
+    panes={[]} displayedPaneIds={[]} statuses={{}} selectedSessionId={null} onSelectSession={vi.fn()} onSelectPane={vi.fn()}
+    onSessionsChanged={vi.fn()} onPreferencesChanged={onPreferencesChanged} />)
+  const row = await screen.findByRole('button', { name: 'Subscriptions' })
+  await waitFor(() => expect(row).toHaveAttribute('title', expect.stringContaining(`Subscriptions — ${identity.codename}`)))
+  expect(row.querySelector('.session-avatar svg')).toHaveAttribute('width', '18')
+  expect(row.querySelector('.session-avatar')?.innerHTML).toContain(identity.color)
+  const prompt = vi.spyOn(window, 'prompt').mockReturnValue('two emojis 💬🐛')
+  const actions = () => fireEvent.click(screen.getByRole('button', { name: 'Actions for Subscriptions' }))
+  actions()
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Change glyph…' }))
+  expect(await screen.findByText('Glyph must be a single emoji')).toBeInTheDocument()
+  expect(sessionApi.changeIdentity).not.toHaveBeenCalled()
+  prompt.mockReturnValue('👩🏽‍💻')
+  actions()
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Change glyph…' }))
+  await waitFor(() => expect(sessionApi.changeIdentity).toHaveBeenCalledWith('$1', '👩🏽‍💻'))
+  await waitFor(() => expect(onPreferencesChanged).toHaveBeenLastCalledWith(expect.objectContaining({ sessionIdentities: { Subscriptions: expect.objectContaining({ glyph: '👩🏽‍💻' }) } })))
+  actions()
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Reset identity' }))
+  await waitFor(() => expect(sessionApi.changeIdentity).toHaveBeenLastCalledWith('$1', null))
 })

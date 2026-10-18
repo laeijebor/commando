@@ -1,3 +1,5 @@
+import { isSessionGlyph, sessionIdentityForName } from '../shared/session-identity'
+import { SessionAvatar } from './SessionAvatar'
 import { Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
@@ -115,13 +117,17 @@ export function SessionTree(props: Props) {
     if (panes.length === 1) props.onSelectPane(panes[0].id)
   }
 
+  const sessionNamesKey = JSON.stringify(props.sessions.map((session) => session.name))
   useEffect(() => {
+    let active = true
     api.loadPreferences().then((next) => {
+      if (!active) return
       preferencesRef.current = next
       setPreferences(next)
       props.onPreferencesChanged(next)
     }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load session order'))
-  }, [api, props.onPreferencesChanged, props.sessions.length])
+    return () => { active = false }
+  }, [api, props.onPreferencesChanged, sessionNamesKey])
   useEffect(() => {
     let active = true
     api.listArchives().then((items) => { if (active) setArchives(items) })
@@ -273,6 +279,21 @@ export function SessionTree(props: Props) {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to rename session') }
   }
 
+  const changeIdentity = async (sessionId: string, reset = false) => {
+    const session = sessionMap.get(sessionId)
+    if (!session) return
+    const glyph = reset ? null : window.prompt('Choose one emoji for this session', sessionIdentityForName(preferencesRef.current.sessionIdentities ?? {}, session.name).glyph)
+    if (!reset && glyph === null) return
+    if (!reset && !isSessionGlyph(glyph)) { setError('Glyph must be a single emoji'); return }
+    try {
+      const next = await api.changeIdentity(sessionId, glyph)
+      preferenceSaveVersion.current += 1
+      preferencesRef.current = next
+      setPreferences(next)
+      props.onPreferencesChanged(next)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to update session identity') }
+  }
+
   const deleteSession = async (sessionId: string, deleteWorktree = false) => {
     const session = sessionMap.get(sessionId)
     const label = session?.name ?? sessionId
@@ -379,6 +400,7 @@ export function SessionTree(props: Props) {
               if (!session) return []
               const selected = session.id === props.selectedSessionId
               const ide = props.ides?.find((item) => item.sessionIds.includes(session.id))
+              const identity = sessionIdentityForName(preferences.sessionIdentities ?? {}, session.name)
               const branch = container.sessionBranches?.[session.id]
               const sessionPanes = props.panes
                 .filter((pane) => pane.sessionId === session.id)
@@ -417,7 +439,7 @@ export function SessionTree(props: Props) {
                     aria-label={indicatorLabel}
                     title={indicatorLabel}
                   /> : <span className="session-indicator" aria-hidden="true" />}
-                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={[session.name, branch, `${plural(session.windowIds.length, 'window')} / ${plural(sessionPanes.length, 'pane')}`].filter(Boolean).join(' · ')}>{session.name}</button>
+                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={[`${session.name} — ${identity.codename}`, branch, `${plural(session.windowIds.length, 'window')} / ${plural(sessionPanes.length, 'pane')}`].filter(Boolean).join(' · ')}><SessionAvatar identity={identity} /><span className="session-identity-name">{session.name}</span></button>
                   <span className="session-row-meta">
                     {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} previewApi={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
                     {ide ? <button type="button" className={`session-ide-glyph state-${ide.state}`} aria-pressed={props.ideSessionId === session.id} aria-label={`Open attached IDE for ${session.name}`} title={`${ide.state === 'ready' ? 'IDE attached' : ide.state === 'starting' ? 'IDE starting' : 'IDE failed'} · ${ide.workspacePath}`} onClick={() => props.onOpenIde?.(session.id)}><Code2 /></button> : null}
@@ -461,7 +483,7 @@ export function SessionTree(props: Props) {
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}
-      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>{props.onOpenIde ? <button type="button" role="menuitem" onClick={() => { props.onOpenIde?.(menu.sessionId); setMenu(null) }}><Code2 /> Open IDE</button> : null}<button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>{props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
+      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>{props.onOpenIde ? <button type="button" role="menuitem" onClick={() => { props.onOpenIde?.(menu.sessionId); setMenu(null) }}><Code2 /> Open IDE</button> : null}<button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId); setMenu(null) }}><Pencil /> Change glyph…</button><button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId, true); setMenu(null) }}><RotateCcw /> Reset identity</button><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>{props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
     </div>
   )
 }
