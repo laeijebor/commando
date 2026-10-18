@@ -114,7 +114,7 @@ export class ChatConversationsApi {
       if (!open.has(key)) open.set(key, session.paneId)
     }
     for (const status of this.dependencies.agentSessions()) {
-      if (status.source !== 'hook' || status.provider === 'unknown' || !status.agentSessionId || !snapshot.panes.some((pane) => pane.id === status.paneId)) continue
+      if (status.source !== 'hook' || status.provider === 'unknown' || !status.agentSessionId || !snapshot.panes.some((pane) => pane.id === status.paneId && !pane.dead)) continue
       const key = chatConversationKey(status.provider, status.agentSessionId)
       if (!open.has(key)) open.set(key, status.paneId)
     }
