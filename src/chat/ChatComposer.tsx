@@ -28,6 +28,7 @@ import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
 import { ContextMeter, ModelPicker, PermissionPicker, PlanUsageMeter } from './ComposerControls'
 import { usePlanUsage } from './planUsage'
+import { implementPermissionMode } from './turnFlow'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
 import {
   detectTrigger,
@@ -493,7 +494,8 @@ export function ChatComposer({
         applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, ''))
         if (item.name === 'model') setModelMenuOpen(true)
         else if (item.name === 'fast') onConfigure({ fast: !fastModeOn(session) })
-        else onConfigure({ permissionMode: session.permissionMode === 'plan' ? 'default' : 'plan' })
+        // Cursor's 'default' is Sandboxed, so leaving plan returns to the mode the chat planned from.
+        else onConfigure({ permissionMode: session.permissionMode !== 'plan' ? 'plan' : session.provider === 'cursor' ? implementPermissionMode(session) : 'default' })
         return
       case 'command':
         applyText(item.runsHere

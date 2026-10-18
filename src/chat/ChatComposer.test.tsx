@@ -285,6 +285,15 @@ describe('the / menu', () => {
     expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'plan' })
   })
 
+  it('leaves plan mode for the pre-plan mode in a Cursor chat, whose default is Sandboxed', () => {
+    const { input, type, onConfigure, view } = renderComposer()
+    const cursor = { ...session, provider: 'cursor' as const, permissionMode: 'plan' as const, prePlanPermissionMode: 'bypassPermissions' as const }
+    view.rerender(<ChatComposer session={cursor} hostConnected requests={[]} commands={commands} services={services()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={onConfigure} />)
+    type('/plan')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'bypassPermissions' })
+  })
+
   it('toggles fast mode with /fast only on a model that offers it', () => {
     const { input, type, onConfigure, view } = renderComposer()
     type('/fas')
