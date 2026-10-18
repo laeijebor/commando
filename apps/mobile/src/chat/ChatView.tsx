@@ -1,4 +1,4 @@
-import { Component, useMemo, type ReactNode } from 'react'
+import { Component, useMemo, useState, type ReactNode } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
@@ -39,6 +39,7 @@ export function ChatView({ host, chat, client, phase }: {
   phase: ConnectionPhase
 }): React.JSX.Element {
   const theme = useTheme()
+  const [sendVersion, setSendVersion] = useState(0)
   const { channel, sendError, dismissSendError, actionError, dismissActionError } = useChatChannel(client, chat.paneId)
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const connected = phase === 'live'
@@ -55,7 +56,7 @@ export function ChatView({ host, chat, client, phase }: {
     <View style={styles.root} testID="chat-view">
       {banner ? <Banner icon="wifi-off" text={banner} tone="amber" /> : null}
       {chat.session.status === 'error' && chat.session.error ? <Banner icon="alert-circle" text={chat.session.error} tone="red" /> : null}
-      <ChatTimeline baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} provider={chat.session.provider} />
+      <ChatTimeline sendVersion={sendVersion} baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} provider={chat.session.provider} />
       {chat.session.claudeCodeSwitch ? (
         <Banner
           icon="terminal"
@@ -82,6 +83,7 @@ export function ChatView({ host, chat, client, phase }: {
           commands={chat.commands}
           host={host}
           hostConnected={hostConnected}
+          onSend={() => setSendVersion((version) => version + 1)}
           onDismissActionError={dismissActionError}
           onDismissSendError={dismissSendError}
           sendError={sendError}

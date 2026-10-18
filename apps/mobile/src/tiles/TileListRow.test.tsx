@@ -52,10 +52,10 @@ async function renderRow(pane: WebPane, queued = 0): Promise<Handlers> {
 }
 
 describe('a tile row', () => {
-  it('shows the URL split into host and path, with the engine chip', async () => {
+  it('shows the host and a full address with the engine chip', async () => {
     await renderRow(tile({ id: 'w-00000001' }))
     expect(screen.getByText('127.0.0.1:4310')).toBeTruthy()
-    expect(screen.getByText('/redline/artifacts/3f9c/companion.html')).toBeTruthy()
+    expect(screen.getByText('127.0.0.1:4310/redline/artifacts/3f9c/companion.html')).toBeTruthy()
     expect(screen.getByText('chromium')).toBeTruthy()
   })
 
@@ -106,4 +106,11 @@ describe('a tile row', () => {
     ))
     expect(handlers.onClose).toHaveBeenCalled()
   })
+})
+
+it('shows a named chromium tile’s host at the root address instead of a bare slash', async () => {
+  await renderRow(tile({ id: 'root', title: 'Companion preview', url: 'http://localhost:5173/' }))
+  expect(screen.getByText('Companion preview')).toBeTruthy()
+  expect(screen.getByText('localhost:5173/')).toBeTruthy()
+  expect(screen.queryByText('/')).toBeNull()
 })

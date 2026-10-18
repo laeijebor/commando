@@ -113,7 +113,8 @@ function menuFor(
  * queue while Claude works), Steer and Stop, the queue, images, the `/` and
  * `@` menus and the settings pills. Open requests sit above it.
  */
-export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError }: {
+export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend }: {
+  onSend?: () => void
   host: Host
   session: ChatSessionInfo
   /** The phone is connected to the daemon, and the daemon to the chat's host. */
@@ -289,6 +290,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     const options: ChatSendOptions = running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
     const sent = text.trim()
     const requestId = channel.send(sent, images, options)
+    onSend?.()
     const now = Date.now()
     for (const [id, draft] of sentDrafts.current) if (now - draft.at > CHAT_SEND_REFUSAL_MS) sentDrafts.current.delete(id)
     sentDrafts.current.set(requestId, { text: sent, images, at: now })

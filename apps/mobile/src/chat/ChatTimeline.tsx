@@ -1,5 +1,5 @@
-import { createContext, memo, use, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { createContext, memo, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
@@ -27,6 +27,7 @@ import { WorkingPulse } from '../ui/ChatIndicator'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { Markdown } from './Markdown'
+import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
 
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
@@ -38,10 +39,11 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
 /**
  * The chat's turns, drawn from the same rows as the web's ChatTimeline:
  * messages, collapsed work groups, thoughts, notices and plan cards. The list
- * is inverted, so it opens on the newest turn and stays pinned to it while
- * Claude streams, unless the reader has scrolled up.
+ * follows the newest turn on open/send and while already near the bottom.
+ * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider }: {
+export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0 }: {
+  sendVersion?: number
   provider?: string
   items: readonly ChatItem[]
   cwd: string
@@ -54,13 +56,52 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider }: {
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
   const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   const data = useMemo<Entry[]>(() => {
-    const entries: Entry[] = rows.slice().reverse()
-    return working && !streaming && !liveWork ? [{ kind: 'working', id: 'working' }, ...entries] : entries
+    const entries: Entry[] = rows.slice()
+    return working && !streaming && !liveWork ? [...entries, { kind: 'working', id: 'working' }] : entries
   }, [rows, working, streaming, liveWork])
   const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name }), [baseUrl, cwd, provider])
   const list = useRef<FlatList<Entry>>(null)
-  // Inverted: offset 0 is the newest turn.
   const [scrolledBack, setScrolledBack] = useState(false)
+  const following = useRef(true)
+  const userScrolling = useRef(false)
+  const frame = useRef<number | null>(null)
+  const previousSend = useRef(sendVersion)
+  const follow = useCallback((reason: TimelineScrollReason) => {
+    if (!shouldFollowTimeline(reason, following.current, userScrolling.current)) return
+    following.current = true
+    userScrolling.current = false
+    setScrolledBack(false)
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    // Content/viewport measurements must land before scrolling, including keyboard resize.
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null
+      list.current?.scrollToEnd({ animated: false })
+    })
+  }, [])
+  useEffect(() => {
+    follow('open')
+    return () => { if (frame.current !== null) cancelAnimationFrame(frame.current) }
+  }, [follow])
+  useLayoutEffect(() => {
+    if (sendVersion === previousSend.current) return
+    previousSend.current = sendVersion
+    follow('send')
+  }, [sendVersion, follow])
+  const trackPosition = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    following.current = isNearTimelineEnd(event.nativeEvent)
+    setScrolledBack(!following.current)
+  }
+
+  const beginUserScroll = () => {
+    userScrolling.current = true
+    following.current = false
+    if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null }
+  }
+  const endUserScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    trackPosition(event)
+    userScrolling.current = false
+    follow('content')
+  }
 
   return (
     <TimelineContext value={context}>
@@ -68,7 +109,6 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider }: {
         <FlatList
           contentContainerStyle={styles.content}
           data={data}
-          inverted
           // SafeAreaView and our own header already account for iOS chrome.
           contentInsetAdjustmentBehavior="never"
           automaticallyAdjustContentInsets={false}
@@ -77,12 +117,17 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider }: {
           keyboardShouldPersistTaps="handled"
           keyExtractor={(entry) => entry.id}
           ListEmptyComponent={(
-            // An inverted list draws its empty view upside down too.
             <View style={styles.empty}>
               <Text style={[styles.emptyText, { color: theme.muted }]}>Ask {context.provider} anything about this folder.</Text>
             </View>
           )}
-          onScroll={(event) => setScrolledBack(event.nativeEvent.contentOffset.y > 240)}
+          onLayout={() => follow('resize')}
+          onContentSizeChange={() => follow('content')}
+          onScrollBeginDrag={beginUserScroll}
+          onScroll={(event) => { if (userScrolling.current) trackPosition(event) }}
+          onScrollEndDrag={endUserScroll}
+          onMomentumScrollBegin={beginUserScroll}
+          onMomentumScrollEnd={endUserScroll}
           ref={list}
           renderItem={({ item }) => <Row entry={item} />}
           scrollEventThrottle={100}
@@ -93,7 +138,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider }: {
           <Pressable
             accessibilityLabel="Jump to the newest turn"
             accessibilityRole="button"
-            onPress={() => list.current?.scrollToOffset({ offset: 0, animated: true })}
+            onPress={() => follow('jump')}
             style={[styles.jump, { backgroundColor: withAlpha(theme.accent, 0.9) }]}
           >
             <Text style={[styles.jumpLabel, { color: theme.accentInk }]}>Jump to latest</Text>
@@ -448,9 +493,8 @@ const styles = StyleSheet.create({
   list: { flex: 1, minHeight: 0, overflow: 'hidden' },
   jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   jumpLabel: { fontSize: 12.5, fontWeight: '700' },
-  content: { paddingHorizontal: 20, paddingVertical: 24, flexGrow: 1, justifyContent: 'flex-end', width: '100%', maxWidth: 776, alignSelf: 'center' },
-  // Inverted: this sits at the bottom, under the newest turn.
-  empty: { flex: 1, justifyContent: 'center', alignItems: 'center', transform: [{ scaleY: -1 }] },
+  content: { paddingHorizontal: 20, paddingVertical: 24, flexGrow: 1, width: '100%', maxWidth: 776, alignSelf: 'center' },
+  empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText: { fontSize: 14 },
   working: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
   pulse: { width: 6, height: 6, borderRadius: 3 },
