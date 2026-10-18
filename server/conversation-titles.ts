@@ -101,9 +101,12 @@ export class ConversationTitles {
         const conversation = indexed.get(key)
         const now = (this.options.now ?? Date.now)()
         if (!conversation) {
-          // Deleted, never indexed (e.g. a delegate run) or past the index cap: give up, or every tick rescans.
-          this.state!.attempts[key] = 2
-          unindexed = true
+          // A new chat has no indexable prompt yet, so only give up once it has closed or gone quiet; a deleted,
+          // never-indexed (e.g. delegate run) or past-the-cap transcript would otherwise make every tick rescan.
+          if (!record.paneOpen || now - record.updatedAt >= 10 * 60_000) {
+            this.state!.attempts[key] = 2
+            unindexed = true
+          }
           continue
         }
         if (record.title || (this.state!.attempts[key] ?? 0) >= 2) continue

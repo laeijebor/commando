@@ -234,6 +234,8 @@ export type SessionBrief = {
   earlierSessions?: EarlierAgentSession[]
   /** The agent process exited while tmux lived; the next agent's work starts a new conversation. */
   agentSessionEnded?: true
+  /** When the pane closed and this brief was detached; absent while attached. */
+  detachedAt?: number
   updatedAt: number
 }
 

@@ -41,6 +41,8 @@ export type ConversationBriefRecord = AgentSessionRef & {
   latestHeadline?: string
   references: SessionReference[]
   updatedAt: number
+  /** When it stopped running in a pane: detach time, or when a newer chat replaced it there. */
+  closedAt?: number
 }
 
 export type SessionBriefPatch = {
@@ -302,7 +304,7 @@ function parseEarlierSession(value: unknown): EarlierAgentSession | null {
 }
 
 /** Session history is supplementary: a malformed entry is dropped, never a reason to reject the worklog. */
-function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief, 'agentSession' | 'earlierSessions' | 'agentSessionEnded'> {
+function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief, 'agentSession' | 'earlierSessions' | 'agentSessionEnded' | 'detachedAt'> {
   const agentSession = parseAgentSessionRef(value.agentSession)
   const earlierSessions = Array.isArray(value.earlierSessions)
     ? value.earlierSessions.slice(0, MAX_EARLIER_SESSIONS).map(parseEarlierSession).filter((entry) => entry !== null)
@@ -311,6 +313,7 @@ function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief,
     ...(agentSession ? { agentSession } : {}),
     ...(earlierSessions.length ? { earlierSessions } : {}),
     ...(value.agentSessionEnded === true ? { agentSessionEnded: true as const } : {}),
+    ...(Number.isSafeInteger(value.detachedAt) && (value.detachedAt as number) > 0 ? { detachedAt: value.detachedAt as number } : {}),
   }
 }
 
@@ -686,7 +689,7 @@ export class SessionBriefStore {
   /** Conversation ownership survives pane closure and subsequent agents in the same pane. */
   conversationRecords(): ConversationBriefRecord[] {
     const records = new Map<string, ConversationBriefRecord>()
-    const add = (brief: SessionBrief, session: AgentSessionRef, content: Pick<SessionBrief, 'title' | 'headline' | 'references'> & { headlineSource?: SessionBrief['headlineSource'] }, updatedAt: number, paneOpen: boolean) => {
+    const add = (brief: SessionBrief, session: AgentSessionRef, content: Pick<SessionBrief, 'title' | 'headline' | 'references'> & { headlineSource?: SessionBrief['headlineSource'] }, updatedAt: number, paneOpen: boolean, closedAt?: number) => {
       const key = `${session.provider}:${session.id}`
       const previous = records.get(key)
       if (previous && (previous.paneOpen !== paneOpen ? previous.paneOpen : previous.updatedAt >= updatedAt)) return
@@ -701,12 +704,13 @@ export class SessionBriefStore {
         ...(content.headlineSource === 'agent' ? { headline: content.headline } : {}),
         references: (content.references ?? []).map((reference) => ({ ...reference })),
         updatedAt,
+        ...(!paneOpen && closedAt !== undefined ? { closedAt } : {}),
       })
     }
     for (const [briefs, live] of [[this.detached, false], [this.briefs, true]] as const) {
       for (const brief of briefs.values()) {
-        if (brief.agentSession) add(brief, brief.agentSession, brief, brief.updatedAt, live)
-        for (const earlier of brief.earlierSessions ?? []) add(brief, earlier.agentSession, earlier, earlier.endedAt, false)
+        if (brief.agentSession) add(brief, brief.agentSession, brief, brief.updatedAt, live, brief.detachedAt ?? brief.updatedAt)
+        for (const earlier of brief.earlierSessions ?? []) add(brief, earlier.agentSession, earlier, earlier.endedAt, false, earlier.endedAt)
       }
     }
     return [...records.values()]
@@ -787,7 +791,7 @@ export class SessionBriefStore {
     if (!changed) return false
     const attachedTargets = new Set([...retained.values()].map((brief) => brief.targetId))
     for (const brief of this.briefs.values()) {
-      if (brief.targetId && !attachedTargets.has(brief.targetId)) this.detached.set(brief.targetId, brief)
+      if (brief.targetId && !attachedTargets.has(brief.targetId)) this.detached.set(brief.targetId, { ...brief, detachedAt: Date.now() })
     }
     for (const targetId of attachedTargets) if (targetId) this.detached.delete(targetId)
     this.briefs.clear()
@@ -1026,7 +1030,7 @@ export class SessionBriefStore {
     let changed = false
     for (const [paneId, brief] of this.briefs) {
       if (retained.has(brief.sessionId)) continue
-      if (brief.targetId) this.detached.set(brief.targetId, brief)
+      if (brief.targetId) this.detached.set(brief.targetId, { ...brief, detachedAt: Date.now() })
       this.briefs.delete(paneId)
       changed = true
     }

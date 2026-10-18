@@ -154,7 +154,7 @@ export class ChatConversationsApi {
           refs: brief.references.filter((reference) => reference.kind === 'url' || reference.kind === 'issue' || reference.kind === 'deployment')
             .map((reference) => ({ label: reference.label ?? reference.value, url: reference.url ?? reference.value })),
           paneOpen: brief.paneOpen,
-          ...(brief.paneOpen ? {} : { closedAt: brief.updatedAt }),
+          ...(brief.paneOpen ? {} : { closedAt: brief.closedAt ?? brief.updatedAt }),
         } : {}),
       }
     })
