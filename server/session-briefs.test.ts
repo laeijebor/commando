@@ -176,6 +176,55 @@ describe('SessionBriefStore', () => {
   const targetId = '550e8400-e29b-41d4-a716-446655440000'
   const identity = { paneId: '%1', targetId, sessionId: '$1', sessionName: 'original' }
 
+  it('persists session renames for live, detached and earlier conversations after a pane closes', async () => {
+    const briefs = await store()
+    const closed = { ...identity, paneId: '%2', targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8' }
+    await briefs.reconcilePanes([identity, closed])
+    for (const [index, pane] of [identity, closed].entries()) {
+      await briefs.syncFromStatuses('$1', 'original', [{ ...status(pane.paneId, 'working', 100, 'Working'), agentSessionId: `earlier-${index}` }], 100)
+      await briefs.applyAgentPatch('$1', 'original', pane.paneId, { recapMarkdown: 'Keep this conversation' }, 101)
+      await briefs.syncFromStatuses('$1', 'original', [{ ...status(pane.paneId, 'working', 102, 'Next conversation'), agentSessionId: `current-${index}` }], 102)
+    }
+    await briefs.reconcilePanes([identity])
+    expect(briefs.get(closed.paneId)).toBeNull()
+    const before = briefs.conversationRecords()
+    expect(before).toHaveLength(4)
+    expect(before.filter((record) => record.paneOpen)).toHaveLength(1)
+
+    expect(await briefs.renameSession('$1', 'original', 'renamed')).toBe(true)
+    expect(briefs.get('%1')?.sessionName).toBe('renamed')
+    expect(briefs.conversationRecords()).toEqual(before.map((record) => ({ ...record, sessionName: 'renamed' })))
+
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    expect(replay.conversationRecords()).toEqual(briefs.conversationRecords())
+    expect(await replay.renameSession('$1', 'original', 'renamed')).toBe(false)
+    expect(await replay.renameSession('$1', 'renamed', 'renamed')).toBe(false)
+  })
+
+  it.each([
+    { sessionId: '$1', sessionName: 'from-a-previous-server' },
+    { sessionId: '$2', sessionName: 'original' },
+  ])('keeps live and detached history for $sessionId / $sessionName untouched after reload', async (session) => {
+    const briefs = await store()
+    const live = { ...identity, ...session }
+    const closed = { ...live, paneId: '%2', targetId: '6ba7b810-9dad-41d1-80b4-00c04fd430c8' }
+    await briefs.reconcilePanes([live, closed])
+    await briefs.syncFromStatuses(session.sessionId, session.sessionName, [
+      { ...status('%1', 'done', 100, 'Live history'), agentSessionId: 'live-conversation' },
+      { ...status('%2', 'done', 100, 'Closed history'), agentSessionId: 'closed-conversation' },
+    ], 100)
+    await briefs.reconcilePanes([live])
+    const replay = new SessionBriefStore(briefs.statePath)
+    await replay.load()
+    const before = replay.conversationRecords()
+    const disk = await readFile(briefs.statePath, 'utf8')
+
+    expect(await replay.renameSession('$1', 'original', 'renamed')).toBe(false)
+    expect(replay.conversationRecords()).toEqual(before)
+    expect(await readFile(briefs.statePath, 'utf8')).toBe(disk)
+  })
+
   it('keeps a single session term per pane, replaced when the conversation changes', async () => {
     const briefs = await store()
     await briefs.reconcilePanes([identity])
