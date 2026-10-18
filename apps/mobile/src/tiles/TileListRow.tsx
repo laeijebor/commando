@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
   Animated,
   PanResponder,
@@ -11,7 +11,7 @@ import Feather from '@expo/vector-icons/Feather'
 
 import { useTheme } from '../theme'
 import { Button, Card, Pill, withAlpha } from '../ui/primitives'
-import { canStream, unstreamableReason, type TileRow } from './list'
+import { canStream, tileSubtitle, tileTitle, unstreamableReason, type TileRow } from './list'
 
 const CLOSE_TRAVEL = 96
 
@@ -37,6 +37,8 @@ export function TileListRow({
 }): React.JSX.Element {
   const theme = useTheme()
   const offset = useRef(new Animated.Value(0)).current
+
+  useEffect(() => () => offset.stopAnimation(), [offset])
 
   const settle = (to: number): void => {
     Animated.spring(offset, { toValue: to, useNativeDriver: true, bounciness: 0 }).start()
@@ -89,11 +91,11 @@ export function TileListRow({
           onLongPress={() => settle(-CLOSE_TRAVEL)}
           onPress={onOpen}
         >
-          <Card>
+          <Card style={styles.card}>
             <View style={styles.header}>
               <View style={styles.identity}>
-                <Text numberOfLines={1} style={[styles.host, { color: theme.text }]}>{row.host}</Text>
-                <Text numberOfLines={1} style={[styles.path, { color: theme.muted }]}>{row.path}</Text>
+                <Text numberOfLines={1} style={[styles.host, { color: theme.text }]}>{tileTitle(row.tile)}</Text>
+                {row.tile.url ? <Text numberOfLines={1} style={[styles.path, { color: theme.muted }]}>{tileSubtitle(row.tile.url)}</Text> : null}
               </View>
               <Pill label={row.engine} tone={row.engine === 'chromium' ? 'claude' : 'mute'} />
             </View>
@@ -132,6 +134,8 @@ export function TileListRow({
                   />
                 </View>
               </View>
+            ) : row.tile.content ? (
+              <Text style={[styles.confirmBody, { color: theme.muted }]}>{reason}. Follow its agent here; this native view remains on the Mac.</Text>
             ) : row.engine === 'webkit' ? (
               <View style={[styles.confirm, { borderColor: theme.borderMid }]}>
                 <Text style={[styles.confirmBody, { color: theme.muted }]}>
@@ -155,6 +159,7 @@ export function TileListRow({
 
 const styles = StyleSheet.create({
   row: { position: 'relative' },
+  card: { gap: 6 },
   closeTrack: {
     position: 'absolute',
     right: 0,
@@ -170,7 +175,7 @@ const styles = StyleSheet.create({
   identity: { flex: 1, minWidth: 0, gap: 1 },
   host: { fontSize: 14.5, fontWeight: '600' },
   path: { fontSize: 12.5 },
-  meta: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  meta: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   metaText: { fontSize: 12, flex: 1, minWidth: 0 },
   confirm: { marginTop: 10, borderWidth: 1, borderRadius: 12, padding: 10, gap: 8 },
   confirmTitle: { fontSize: 13.5, fontWeight: '600' },

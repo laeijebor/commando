@@ -28,6 +28,9 @@
       ],
       "@commando/chat-composer": [
         "../../shared/chat-composer.ts"
+      ],
+      "@commando/session-identity": [
+        "../../shared/session-identity.ts"
       ]
     }
   },

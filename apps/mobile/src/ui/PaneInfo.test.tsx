@@ -20,6 +20,7 @@ const HOST: Host = {
 }
 
 const requested: string[] = []
+let hostGeneration = 0
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -29,6 +30,8 @@ function jsonResponse(value: unknown): Response {
 }
 
 beforeEach(() => {
+  // Each case gets a fresh host cache; separate cache tests cover reuse.
+  HOST.id = `pane-info-test-${++hostGeneration}`
   requested.length = 0
   globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
     const url = String(input)

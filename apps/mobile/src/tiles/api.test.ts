@@ -2,6 +2,7 @@ import type { Host } from '../hosts/types'
 import {
   addPendingNote,
   closeTile,
+  markTileSeen,
   confirmTile,
   dismissDroppedAnswers,
   fetchPendingNotes,
@@ -197,4 +198,9 @@ describe('snapshot normalisation', () => {
   it('survives a body that is not a snapshot at all', () => {
     expect(toPendingSnapshot(null)).toEqual({ notes: [], knownUpTo: Number.POSITIVE_INFINITY, dropped: 0 })
   })
+})
+
+it('acknowledges a viewed tile through its authenticated seen route', async () => {
+  await markTileSeen(HOST, 'w-0badcafe')
+  expect(calls[0]).toMatchObject({ url: `${HOST.baseUrl}/api/web-panes/w-0badcafe/seen`, method: 'POST', headers: { Authorization: 'Bearer secret-token' } })
 })

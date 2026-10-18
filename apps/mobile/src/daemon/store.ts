@@ -1,3 +1,4 @@
+import { useSessionPreferences } from '../ui/sessionPreferences'
 import { create } from 'zustand'
 
 import type { ServerMessage } from '@commando/protocol'
@@ -20,6 +21,7 @@ export const useDaemonStore = create<DaemonStoreState>((set, get) => ({
   byHost: {},
 
   ingest: (hostId, message) => {
+    useSessionPreferences.getState().ingest(hostId, message)
     const current = get().byHost[hostId] ?? EMPTY_HOST_STATE
     const next = applyServerMessage(current, message)
     if (next === current) return

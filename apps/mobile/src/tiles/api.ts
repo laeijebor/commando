@@ -81,6 +81,10 @@ export async function confirmTile(host: Host, webPaneId: string, allowOrigin: bo
   await call(host, tilePath(webPaneId, '/confirm'), { method: 'POST', body: { allowOrigin } })
 }
 
+export async function markTileSeen(host: Host, webPaneId: string): Promise<void> {
+  await call(host, tilePath(webPaneId, '/seen'), { method: 'POST' })
+}
+
 export async function closeTile(host: Host, webPaneId: string): Promise<void> {
   await call(host, tilePath(webPaneId), { method: 'DELETE' })
 }

@@ -1,3 +1,4 @@
+import { isDemoHost } from '../demo/flags'
 import type { AuthBootstrap, Host, HostReachability } from './types'
 
 /**
@@ -34,6 +35,7 @@ export async function daemonFetch(
   path: string,
   init: DaemonFetchInit = {},
 ): Promise<Response> {
+  if (__DEV__ && isDemoHost(host)) return (require('../demo/http') as typeof import('../demo/http')).demoResponse(path, init)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), init.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   if (init.signal) {

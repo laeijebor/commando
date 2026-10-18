@@ -32,6 +32,7 @@
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4",
     "react-native-webview": "^13.16.1",
     "zustand": "^5.0.15"
   },
@@ -59,7 +60,8 @@
       "^@commando/chat-composer$": "<rootDir>/../../shared/chat-composer.ts",
       "^\\./agent-chat\\.js$": "<rootDir>/../../shared/agent-chat.ts",
       "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",
-      "^@/(.*)$": "<rootDir>/src/$1"
+      "^@/(.*)$": "<rootDir>/src/$1",
+      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts"
     },
     "testPathIgnorePatterns": [
       "/node_modules/",

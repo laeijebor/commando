@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
 import * as Haptics from 'expo-haptics'
 
 import {
@@ -18,25 +18,27 @@ import { useTheme } from '../theme'
 import { AttentionList } from './AttentionList'
 import { EmptyState, Segmented } from './primitives'
 import { SessionTree } from './SessionTree'
+import { ChatList } from './ChatList'
 
-export type SessionsView = 'attention' | 'tree'
+export type SessionsView = 'chats' | 'attention' | 'tree'
 
 const VIEW_OPTIONS = [
+  { value: 'chats' as const, label: 'Chats' },
   { value: 'attention' as const, label: 'Attention' },
   { value: 'tree' as const, label: 'Tree' },
 ]
 
 /**
- * The Attention / Tree choice, remembered per device as the spec agreed. The
+ * The Chats / Attention / Tree choice, remembered per device as the spec agreed. The
  * phone screen and the iPad cockpit share one preference, so the list looks the
  * same however it is being held.
  */
 export function useSessionsView(): [SessionsView, (next: SessionsView) => void] {
-  const [view, setView] = useState<SessionsView>('attention')
+  const [view, setView] = useState<SessionsView>('chats')
 
   useEffect(() => {
     void readPreference(SESSIONS_VIEW_PREFERENCE_KEY).then((stored) => {
-      if (stored === 'attention' || stored === 'tree') setView(stored)
+      if (stored === 'chats' || stored === 'attention' || stored === 'tree') setView(stored)
     })
   }, [])
 
@@ -48,6 +50,10 @@ export function useSessionsView(): [SessionsView, (next: SessionsView) => void] 
 }
 
 export type SessionsPanelProps = {
+  active?: boolean
+  refreshing?: boolean
+  onRefresh?: () => void
+  hostId?: string
   state: HostDaemonState
   view: SessionsView
   onChangeView: (next: SessionsView) => void
@@ -59,13 +65,17 @@ export type SessionsPanelProps = {
 }
 
 /**
- * Screen 02's content: the usage tiles and the attention inbox, or the repo →
+ * Screen 02's content: the chat list, attention inbox or repo →
  * session → window → pane tree, under the segmented toggle. It draws no
- * scroller and no chrome, so it can be the phone's screen or the cockpit's
- * 300pt left column unchanged.
+ * navigation chrome. Each view owns its scroller so Chats can virtualize rows
+ * on the phone and in the cockpit's 300pt left column.
  */
 export function SessionsPanel({
   state,
+  active = true,
+  refreshing,
+  onRefresh,
+  hostId,
   view,
   onChangeView,
   onSelectRow,
@@ -90,13 +100,16 @@ export function SessionsPanel({
 
   return (
     <View style={styles.panel}>
-      <Segmented options={VIEW_OPTIONS} onChange={onChangeView} value={view} />
-
-      {state.phase !== 'live' ? (
+      <View style={[styles.header, { backgroundColor: theme.bg }]}>
+        <Segmented options={VIEW_OPTIONS} onChange={onChangeView} value={view} />
+        {state.phase !== 'live' ? (
         <Text style={[styles.connection, { color: theme.muted }]}>{state.detail}</Text>
       ) : null}
 
-      {view === 'attention' ? (
+      </View>
+      {view === 'chats' ? (
+        <ChatList active={active} refreshing={refreshing} onRefresh={onRefresh} onSelectRow={onSelectRow} hostId={hostId} state={state} onSelectPane={onSelectPane} selectedPaneId={selectedPaneId} />
+      ) : <ScrollView keyboardShouldPersistTaps="handled" refreshControl={onRefresh ? <RefreshControl refreshing={Boolean(refreshing)} onRefresh={onRefresh} tintColor={theme.muted} /> : undefined} contentContainerStyle={styles.scroll}>{view === 'attention' ? (
         <AttentionList
           groups={groups}
           onSelectRow={onSelectRow}
@@ -114,12 +127,14 @@ export function SessionsPanel({
             <EmptyState body="Waiting for the daemon's first snapshot." title="No tmux sessions" />
           ) : null}
         </>
-      )}
+      )}</ScrollView>}
     </View>
   )
 }
 
 const styles = StyleSheet.create({
-  panel: { gap: 12 },
+  panel: { flex: 1, minHeight: 0, gap: 12 },
+  header: { paddingHorizontal: 16, gap: 12, zIndex: 1 },
+  scroll: { paddingHorizontal: 16, paddingBottom: 112, gap: 12 },
   connection: { fontSize: 12.5 },
 })
