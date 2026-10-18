@@ -55,8 +55,16 @@ function launchMode(chat: Pick<ChatSessionInfo, 'permissionMode'> | undefined): 
   return chat?.permissionMode && Object.hasOwn(PERMISSION_RANK, chat.permissionMode) ? chat.permissionMode as ChatPermissionMode : 'default'
 }
 
+/**
+ * What a caller in `mode` may hand on. Muse's approve-everything mode keeps its sandbox, so
+ * it grants no more than acceptEdits; opening one still needs a bypass caller.
+ */
+function grantRank(provider: string, mode: ChatPermissionMode): number {
+  return provider === 'muse-chat' && mode === 'bypassPermissions' ? PERMISSION_RANK.acceptEdits : effectiveRank(provider, mode)
+}
+
 function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): number {
-  return effectiveRank(chatLaunchProvider(chat.provider), launchMode(chat))
+  return grantRank(chatLaunchProvider(chat.provider), launchMode(chat))
 }
 
 /** The most permissive mode `provider` supports that does not exceed what `rank` allows, if any does. */
@@ -96,7 +104,10 @@ export function terminalLaunchRank(provider: 'claude' | 'codex' | 'muse', args: 
   if (!flags) return PERMISSION_RANK.default
   if (provider === 'muse') {
     const approval = flagValue(flags, '--approval-mode')
-    if (flags.includes('--yolo') || flags.includes('--disable-approval') || approval === 'never') return PERMISSION_RANK.bypassPermissions
+    const unasked = flags.includes('--disable-approval') || approval === 'never'
+    if (flags.includes('--yolo') || (unasked && flags.includes('--disable-sandbox'))) return PERMISSION_RANK.bypassPermissions
+    // Without approvals Muse still runs inside its sandbox.
+    if (unasked) return grantRank('muse-chat', 'bypassPermissions')
     if (flags.includes('--disable-write')) return PERMISSION_RANK.plan
     // `untrusted` asks before anything runs; Muse's default (on-request) runs sandboxed tools unasked.
     return approval === 'untrusted' ? PERMISSION_RANK.default : effectiveRank('muse-chat', 'default')
@@ -226,8 +237,9 @@ export class AgentChatsApi {
     const provider = input.agent ?? (chat ? chatLaunchProvider(chat.provider) : terminal?.provider ?? this.dependencies.status(caller.id)?.provider)
     if (!provider || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) throw new HttpError(400, 'Unknown caller agent provider; specify --agent')
     const hosted = isChatLaunchProvider(provider)
-    const callerMode = chat ? launchMode(chat) : modeOfRank(terminal?.rank ?? PERMISSION_RANK.default)
     const callerRank = chat ? chatRank(chat) : terminal?.rank ?? PERMISSION_RANK.default
+    // A Muse chat names what it may grant, so a sandboxed bypass reads as acceptEdits.
+    const callerMode = chat && chat.provider !== 'muse' ? launchMode(chat) : modeOfRank(callerRank)
     if (callerRank < PERMISSION_RANK.default && !hosted) throw new HttpError(403, 'A plan-mode chat can only open claude-chat or codex-chat chats')
     if (!hosted && input.permissionMode !== undefined) throw new HttpError(400, 'Only claude-chat, codex-chat and muse-chat accept a permission mode')
     if (input.permissionMode !== undefined && (!hosted || !chatPermissionModes(provider).some((mode) => mode.value === input.permissionMode))) throw new HttpError(400, `${provider} does not support permission mode ${input.permissionMode}`)

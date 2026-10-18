@@ -262,7 +262,8 @@ function menuGroups(
     const natives = [
       ...(modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
       ...(fastModeAvailable(session) ? [{ name: 'fast', description: fastModeOn(session) ? 'Turn fast mode off' : 'Turn fast mode on' }] : []),
-      ...(hostTakesSettings(session) && session.permissionMode
+      // Muse has no plan mode.
+      ...(hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
         ? [{ name: 'plan', description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
         : []),
     ].filter((native) => native.name.includes(query))
