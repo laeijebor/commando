@@ -108,7 +108,7 @@ export class MuseChatSession implements ChatProviderSession {
   private readonly client: MuseTransport
   private readonly mapper = new MuseItemMapper()
   private readonly files: WorkspaceFileIndex
-  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
+  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private readonly readyListeners: (() => void)[] = []
   private readonly pending = new Map<string, PendingRequest>()
   /** Answered here, waiting for Muse to take the answer; a refusal shows the prompt again. */

@@ -20,7 +20,8 @@ export interface ChatProviderSessionEvents {
   session: (info: ChatSessionInfo) => void
   commands: (commands: ChatCommand[]) => void
   closed: () => void
-  restart?: () => void
+  /** The provider needs its host respawned (same conversation) before the next turn can run. */
+  restart: () => void
 }
 
 /** Optional handoff to the provider's terminal UI on the same conversation. */

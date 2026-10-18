@@ -97,7 +97,7 @@ export class CursorChatSession implements ChatProviderSession {
   get paneId(): string { return this.spec.paneId }
   get busy(): boolean { return Boolean(this.active || this.sending || this.queue.length || this.loginController || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
-  on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event]?.push(listener) }
+  on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
   private emitItems(items: ChatItem[]): void { if (!this.closing && items.length) this.listeners.items.forEach((listener) => listener(items)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
@@ -395,7 +395,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, fast, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
     if (permissionChanged && this.ranUnsandboxed && cursorPermissions(mode, prePlan).sandboxOptions.enabled) {
       this.emitItems(this.mapper.notice('info', "Restarting this chat so Cursor's sandbox can turn on."))
-      this.listeners.restart?.forEach((listener) => listener?.())
+      this.listeners.restart.forEach((listener) => listener())
     }
   }
   searchFiles(query: string): Promise<ChatFileSearchResult> { return this.files.search(query) }
