@@ -16,7 +16,7 @@ export interface CursorHistory {
   turns: ConversationTurn[]
   skipped: number
 }
-type HistoryRun = Pick<Run, 'createdAt' | 'conversation'> & { turn_number?: number }
+type HistoryRun = Pick<Run, 'createdAt' | 'conversation'>
 /** Only the SDK operations the chat uses; tests never load the real SDK. */
 export interface CursorSdk {
   authStatus(): Promise<{ status: 'logged-in' | 'logged-out'; email?: string }>
@@ -25,6 +25,12 @@ export interface CursorSdk {
   create(options: AgentOptions): Promise<CursorAgent>
   resume(agentId: string, options: AgentOptions): Promise<CursorAgent>
   history(agentId: string, cwd: string): Promise<CursorHistory>
+}
+
+/** A message's turn is a protobuf oneof (`{ turn: { case, value } }`); its JSON form is `{ agentConversationTurn }`. */
+function messageTurn(message: unknown): Record<string, unknown> {
+  const turn = record(record(message).turn)
+  return turn.case === 'agentConversationTurn' ? record(turn.value) : record(record(message).agentConversationTurn)
 }
 
 export async function cursorHistory(
@@ -46,16 +52,20 @@ export async function cursorHistory(
     if (cursor && seen.has(cursor)) throw new Error('Cursor repeated a history cursor')
     if (cursor) seen.add(cursor)
   } while (cursor)
+  // Local run conversations omit the prompt that opened each run; the agent's messages
+  // keep it, numbered by the turn's position across every run (`<agentId>:<index>`).
   const users = new Map<number, string>()
+  let lastIndex = -1
   if (listMessages) {
     try {
       for (let offset = 0; ; offset += 100) {
         const messages = await listMessages(agentId, { runtime: 'local', cwd, limit: 100, offset })
         for (const entry of messages) {
-          if (entry.type !== 'user' || !entry.uuid.startsWith(`${agentId}:`)) continue
-          const index = entry.uuid.slice(agentId.length + 1)
-          const text = string(record(record(record(entry.message).agentConversationTurn).userMessage).text)
-          if (/^\d+$/.test(index) && Number.isSafeInteger(Number(index)) && text !== undefined) users.set(Number(index), text)
+          const index = entry.uuid.startsWith(`${agentId}:`) ? entry.uuid.slice(agentId.length + 1) : ''
+          if (!/^\d+$/.test(index) || !Number.isSafeInteger(Number(index))) continue
+          lastIndex = Math.max(lastIndex, Number(index))
+          const text = string(record(messageTurn(entry.message).userMessage).text)
+          if (entry.type === 'user' && text !== undefined) users.set(Number(index), text)
         }
         if (messages.length < 100) break
       }
@@ -64,18 +74,23 @@ export async function cursorHistory(
       log?.(`Couldn't load Cursor user messages: ${string(record(error).message) ?? String(error)}`)
     }
   }
-  const indexed = runs.map((run, index) => ({ run, index: Number.isSafeInteger(run.turn_number) && run.turn_number! > 0 ? run.turn_number! - 1 : index }))
-  for (const { run, index } of indexed.sort((a, b) => (b.run.createdAt ?? 0) - (a.run.createdAt ?? 0) || b.index - a.index)) {
+  // Walk turns newest first, counting down from the newest message. A run that can't be
+  // read has an unknown length, so turns older than it are left without a backfilled prompt.
+  let next: number | undefined = users.size ? lastIndex : undefined
+  const ordered = runs.map((run, index) => ({ run, index })).sort((a, b) => (b.run.createdAt ?? 0) - (a.run.createdAt ?? 0) || b.index - a.index)
+  for (const { run } of ordered) {
     let conversation: ConversationTurn[]
     try { conversation = await run.conversation() }
     catch (error) {
       skipped++
+      next = undefined
       log?.(`Couldn't load a Cursor run: ${string(record(error).message) ?? String(error)}`)
       continue
     }
     for (let position = conversation.length - 1; position >= 0; position--) {
       const entry = conversation[position]
-      const text = users.get(index + position)
+      const text = next === undefined ? undefined : users.get(next)
+      if (next !== undefined) next--
       const turn = entry.type === 'agentConversationTurn' && !entry.turn.userMessage && text !== undefined
         ? { ...entry, turn: { ...entry.turn, userMessage: { text } } } : entry
       turns.push(turn)

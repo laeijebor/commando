@@ -51,48 +51,52 @@ describe('cursorHistory', () => {
   it('rejects repeated cursors rather than looping forever', async () => {
     await expect(cursorHistory(async () => ({ items: [], nextCursor: 'same' }), 'agent', '/w')).rejects.toThrow('repeated')
   })
-  it('fills missing user messages using paginated local messages and global turn indices', async () => {
-    const conversation = (text: string): ConversationTurn => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text } }] } })
-    const message = (index: number, text: string) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { agentConversationTurn: { userMessage: { text }, steps: [] } } })
-    const read = vi.fn(async (_id: string, options: { cursor?: string }) => options.cursor ? {
-      items: [{ turn_number: 3, createdAt: 3, conversation: async () => [conversation('third'), conversation('fourth')] }],
-    } : {
-      items: [{ turn_number: 1, createdAt: 1, conversation: async () => [conversation('first')] },
-        { turn_number: 2, createdAt: 2, conversation: async () => { throw new Error('skipped') } }], nextCursor: 'next',
-    })
+  // Shapes as the SDK returns them: run conversations drop the opening prompt, while
+  // messages are protobuf turns ({ turn: { case, value } }) numbered across every run.
+  const reply = (text: string): ConversationTurn => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text } }] } })
+  const prompt = (index: number, text: string) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { turn: { case: 'agentConversationTurn', value: { userMessage: { text }, steps: [] } } } })
+  const users = (turns: ConversationTurn[]) => {
+    const mapper = new CursorItemMapper()
+    turns.forEach((entry) => mapper.replay(entry))
+    return mapper.list().flatMap((entry) => entry.kind === 'user_message' ? [entry.text] : [])
+  }
+  it('backfills prompts by their position across runs, including a run with a steered turn', async () => {
+    const steered: ConversationTurn = { type: 'agentConversationTurn', turn: { userMessage: { text: 'Steer' }, steps: [] } }
+    const read = async () => ({ items: [
+      { createdAt: 1, conversation: async () => [reply('first'), steered] },
+      { createdAt: 2, conversation: async () => [reply('second')] },
+    ] })
+    const result = await cursorHistory(read, 'agent', '/w', undefined, async () => [prompt(0, 'First prompt'), prompt(1, 'Steer'), prompt(2, 'Second prompt')])
+    expect(users(result.turns)).toEqual(['First prompt', 'Steer', 'Second prompt'])
+  })
+  it('pages through messages and accepts their JSON form', async () => {
+    const json = (index: number, text: string) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { agentConversationTurn: { userMessage: { text }, steps: [] } } })
     const messages = vi.fn(async (_id: string, options: { offset?: number }) => options.offset
-      ? [message(2, 'Third prompt'), message(3, 'Fourth prompt')]
-      : [message(0, 'First prompt'), message(1, 'Skipped prompt'), ...Array.from({ length: 98 }, () => ({ type: 'assistant' as const, uuid: 'agent:0', message: { agentConversationTurn: { steps: [] } } }))])
+      ? [json(100, 'Last prompt')]
+      : Array.from({ length: 100 }, (_, index) => json(index, `Prompt ${index}`)))
+    const read = async () => ({ items: Array.from({ length: 101 }, (_, index) => ({ createdAt: index, conversation: async () => [reply(String(index))] })) })
     const result = await cursorHistory(read, 'agent', '/w', undefined, messages)
     expect(messages.mock.calls).toEqual([['agent', { runtime: 'local', cwd: '/w', limit: 100, offset: 0 }], ['agent', { runtime: 'local', cwd: '/w', limit: 100, offset: 100 }]])
+    expect(users(result.turns).slice(-2)).toEqual(['Prompt 99', 'Last prompt'])
+  })
+  it('stops backfilling past a run it could not read, and keeps prompts the run already has', async () => {
+    const read = async () => ({ items: [
+      { createdAt: 1, conversation: async () => [reply('old')] },
+      { createdAt: 2, conversation: async (): Promise<ConversationTurn[]> => { throw new Error('unreadable') } },
+      { createdAt: 3, conversation: async () => [turn('Existing'), reply('new')] },
+    ] })
+    const result = await cursorHistory(read, 'agent', '/w', undefined, async () => [prompt(0, 'Old'), prompt(1, 'Lost'), prompt(2, 'Do not replace'), prompt(3, 'New')])
     expect(result.skipped).toBe(1)
-    expect(result.turns).toMatchObject([
-      { turn: { userMessage: { text: 'First prompt' } } },
-      { turn: { userMessage: { text: 'Third prompt' } } },
-      { turn: { userMessage: { text: 'Fourth prompt' } } },
-    ])
-    const mapper = new CursorItemMapper()
-    result.turns.forEach((entry) => mapper.replay(entry))
-    expect(mapper.list().filter((entry) => entry.kind === 'user_message')).toMatchObject([{ text: 'First prompt' }, { text: 'Third prompt' }, { text: 'Fourth prompt' }])
+    expect(users(result.turns)).toEqual(['Existing', 'New'])
   })
-  it('uses oldest-first run positions when run handles omit turn_number and preserves existing user text', async () => {
-    const read = async () => ({ items: [{ conversation: async (): Promise<ConversationTurn[]> => [turn('Existing')] },
-      { conversation: async (): Promise<ConversationTurn[]> => [{ type: 'agentConversationTurn', turn: { steps: [] } }] }] })
-    const result = await cursorHistory(read, 'agent', '/w', undefined, async () => [
-      { type: 'user', uuid: 'agent:0', message: { agentConversationTurn: { userMessage: { text: 'Do not replace' }, steps: [] } } },
-      { type: 'user', uuid: 'agent:1', message: { agentConversationTurn: { userMessage: { text: 'Restored' }, steps: [] } } },
-    ])
-    expect(result.turns).toMatchObject([{ turn: { userMessage: { text: 'Existing' } } }, { turn: { userMessage: { text: 'Restored' } } }])
-  })
-  it('logs a messages failure and replays without partially loaded user texts', async () => {
+  it('logs a messages failure and replays without partially loaded prompts', async () => {
     const log = vi.fn()
-    const entry: ConversationTurn = { type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text: 'Reply' } }] } }
     const messages = vi.fn(async (_id: string, options: { offset?: number }) => {
       if (options.offset) throw new Error('messages unavailable')
-      return Array.from({ length: 100 }, (_, index) => ({ type: 'user' as const, uuid: `agent:${index}`, message: { agentConversationTurn: { userMessage: { text: 'Partial' }, steps: [] } } }))
+      return Array.from({ length: 100 }, (_, index) => prompt(index, 'Partial'))
     })
-    expect(await cursorHistory(async () => ({ items: [{ conversation: async () => [entry] }] }), 'agent', '/w', log, messages))
-      .toEqual({ turns: [entry], skipped: 0 })
+    expect(await cursorHistory(async () => ({ items: [{ conversation: async () => [reply('Reply')] }] }), 'agent', '/w', log, messages))
+      .toEqual({ turns: [reply('Reply')], skipped: 0 })
     expect(log).toHaveBeenCalledWith("Couldn't load Cursor user messages: messages unavailable")
   })
 })
