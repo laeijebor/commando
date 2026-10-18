@@ -1,11 +1,12 @@
 import { fetchPanePrs, type PanePrList } from '../daemon/paneApi'
 import type { Host } from '../hosts/types'
 
-type Listener = (list: PanePrList) => void
+export type PanePrResult = { data?: PanePrList; error?: string }
+type Listener = (result: PanePrResult) => void
 const PERIOD = 60_000
 /** One bounded cache and timer for every visible consumer; requests are deduplicated. */
 export class PanePrCache {
-  private cache = new Map<string, { list: PanePrList; at: number }>()
+  private cache = new Map<string, { result: PanePrResult; at: number }>()
   private watchers = new Map<string, { host: Host; paneId: string; listeners: Set<Listener> }>()
   private loading = new Map<string, Promise<void>>()
   private timer: ReturnType<typeof setInterval> | undefined
@@ -16,7 +17,7 @@ export class PanePrCache {
     watcher.listeners.add(listener)
     this.watchers.set(key, watcher)
     const cached = this.cache.get(key)
-    if (cached) listener(cached.list)
+    if (cached) listener(cached.result)
     void this.load(key)
     if (!this.timer) this.timer = setInterval(() => { for (const id of this.watchers.keys()) void this.load(id) }, PERIOD)
     return () => {
@@ -34,16 +35,22 @@ export class PanePrCache {
     const load = Promise.resolve().then(async () => {
       try {
         const list = await fetchPanePrs(watcher.host, watcher.paneId, { background: true })
-        if (!list) return
-        this.cache.delete(key)
-        this.cache.set(key, { list, at: Date.now() })
-        while (this.cache.size > this.maxEntries) this.cache.delete(this.cache.keys().next().value!)
-        this.watchers.get(key)?.listeners.forEach((notify) => notify(list))
-      } catch { /* The cached badge remains useful while offline. */ }
+        if (!list) throw new Error('PR lookup failed')
+        this.publish(key, { data: list })
+      } catch (reason) {
+        const error = (reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '') || 'PR lookup failed'
+        this.publish(key, { data: this.cache.get(key)?.result.data, error })
+      }
       finally { this.loading.delete(key) }
     })
     this.loading.set(key, load)
     await load
+  }
+  private publish(key: string, result: PanePrResult): void {
+    this.cache.delete(key)
+    this.cache.set(key, { result, at: Date.now() })
+    while (this.cache.size > this.maxEntries) this.cache.delete(this.cache.keys().next().value!)
+    this.watchers.get(key)?.listeners.forEach((notify) => notify(result))
   }
   get size(): number { return this.cache.size }
 }

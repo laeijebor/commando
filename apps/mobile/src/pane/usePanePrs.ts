@@ -1,15 +1,14 @@
 import { useEffect, useState } from 'react'
-import type { PanePrList } from '../daemon/paneApi'
 import type { Host } from '../hosts/types'
-import { panePrCache } from './prCache'
+import { panePrCache, type PanePrResult } from './prCache'
 
-export function usePanePrs(host: Host | undefined, paneIds: readonly string[], active: boolean): PanePrList[] {
-  const [lists, setLists] = useState<Record<string, PanePrList>>({})
+export function usePanePrs(host: Host | undefined, paneIds: readonly string[], active: boolean): PanePrResult[] {
+  const [lists, setLists] = useState<Record<string, PanePrResult>>({})
   const key = paneIds.join(',')
   useEffect(() => {
     setLists({})
     if (!host || !active) return
-    const subscriptions = key.split(',').filter(Boolean).map((paneId) => panePrCache.subscribe(host, paneId, (list) => setLists((current) => ({ ...current, [paneId]: list }))))
+    const subscriptions = key.split(',').filter(Boolean).map((paneId) => panePrCache.subscribe(host, paneId, (result) => setLists((current) => ({ ...current, [paneId]: result }))))
     return () => subscriptions.forEach((unsubscribe) => unsubscribe())
   }, [host, key, active])
   return Object.values(lists)

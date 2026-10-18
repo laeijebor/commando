@@ -6,7 +6,7 @@ import Feather from '@expo/vector-icons/Feather'
 import { markTileSeen } from '../tiles/api'
 import { useAppActive } from '../daemon/useAppActive'
 import { useHostsStore } from '../hosts/store'
-import { tileReturnTarget } from '../tiles/returnToPane'
+import { returnFromTile } from '../tiles/returnToPane'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 
@@ -21,7 +21,7 @@ export function DemoTileScreen(): React.JSX.Element {
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: theme.bg }]}>
       <View style={[styles.nav, { borderBottomColor: theme.border }]}>
-        <Pressable accessibilityLabel="Back to chat" onPress={() => router.replace(tileReturnTarget(hostId, fromPaneId))} style={styles.back}>
+        <Pressable accessibilityLabel="Back to chat" onPress={() => returnFromTile(router, hostId, fromPaneId)} style={styles.back}>
           <Feather name="chevron-left" size={25} color={theme.accent} />
         </Pressable>
         <View style={styles.navText}>

@@ -46,7 +46,7 @@ import {
   type TilePoint,
 } from '../../../../src/tiles/input'
 import { useAppActive } from '../../../../src/daemon/useAppActive'
-import { tileReturnTarget } from '../../../../src/tiles/returnToPane'
+import { returnFromTile } from '../../../../src/tiles/returnToPane'
 import { tileWasViewed } from '../../../../src/tiles/seen'
 import { describeTileUrl, tileTitle } from '../../../../src/tiles/list'
 import {
@@ -333,7 +333,7 @@ function LiveTileScreen(): React.JSX.Element {
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
       <View style={styles.nav}>
-        <Pressable accessibilityRole="button" onPress={() => router.replace(tileReturnTarget(hostId, fromPaneId))} style={styles.back}>
+        <Pressable accessibilityRole="button" onPress={() => returnFromTile(router, hostId, fromPaneId)} style={styles.back}>
           <Feather color={theme.accent} name="chevron-left" size={20} />
           <Text style={[styles.backLabel, { color: theme.accent }]}>{fromPaneId ? 'Chat' : 'Tiles'}</Text>
         </Pressable>
