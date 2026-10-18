@@ -139,7 +139,8 @@ const CODEX_PERMISSION_MODES: Partial<typeof PERMISSION_MODES> = {
 
 const MUSE_PERMISSION_MODES: Partial<typeof PERMISSION_MODES> = {
   default: { label: 'Ask when needed', description: 'Tools run in the sandbox; Muse asks before going beyond it.' },
-  bypassPermissions: { label: 'Approve everything', description: 'Muse runs every tool without asking. The sandbox stays on.' },
+  acceptEdits: { label: 'Approve everything', description: 'Muse runs every tool without asking, inside its sandbox.' },
+  bypassPermissions: { label: 'Full access', description: 'No prompts and no sandbox (--yolo). Only for chats started with it.' },
 }
 
 function providerPermissionModes(session?: Pick<ChatSessionInfo, 'provider'>): Partial<typeof PERMISSION_MODES> | undefined {
@@ -191,6 +192,8 @@ export function modelLabel(session: ChatSessionInfo): string | undefined {
 /** The modes the permission menu offers: the current one, the launch modes, and those this chat and model allow. */
 export function permissionModeOptions(session: ChatSessionInfo): ChatSessionPermissionMode[] {
   const current = session.permissionMode
+  // Muse's sandbox is set when its host starts: a full-access chat stays one, and others never become one.
+  if (session.provider === 'muse') return current === 'bypassPermissions' ? ['bypassPermissions'] : ['default', 'acceptEdits']
   const supportsAuto = selectedModelOption(session)?.supportsAutoMode ?? false
   return (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
     mode === current

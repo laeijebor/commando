@@ -43,10 +43,12 @@ type Dependencies = {
 }
 
 /**
- * Codex's default (workspace access) edits and runs commands without asking, like Claude's
- * acceptEdits; so does Muse's, inside its sandbox.
+ * What a chat in `mode` needs its caller to allow. Codex's default (workspace access) edits and
+ * runs commands without asking, like Claude's acceptEdits; so does Muse's, inside its sandbox.
+ * Muse's approve-everything skips every prompt, so only a bypass caller may open one.
  */
 function effectiveRank(provider: string, mode: ChatPermissionMode): number {
+  if (provider === 'muse-chat' && mode === 'acceptEdits') return PERMISSION_RANK.bypassPermissions
   return (provider === 'codex-chat' || provider === 'muse-chat') && mode === 'default' ? PERMISSION_RANK.acceptEdits : PERMISSION_RANK[mode]
 }
 
@@ -56,11 +58,11 @@ function launchMode(chat: Pick<ChatSessionInfo, 'permissionMode'> | undefined): 
 }
 
 /**
- * What a caller in `mode` may hand on. Muse's approve-everything mode keeps its sandbox, so
- * it grants no more than acceptEdits; opening one still needs a bypass caller.
+ * What a caller in `mode` may hand on. Muse's approve-everything keeps its sandbox, so it
+ * grants no more than acceptEdits; Muse's full access (--yolo) is a real bypass.
  */
 function grantRank(provider: string, mode: ChatPermissionMode): number {
-  return provider === 'muse-chat' && mode === 'bypassPermissions' ? PERMISSION_RANK.acceptEdits : effectiveRank(provider, mode)
+  return provider === 'muse-chat' && mode === 'acceptEdits' ? PERMISSION_RANK.acceptEdits : effectiveRank(provider, mode)
 }
 
 function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): number {
@@ -71,7 +73,8 @@ function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): n
 function inheritedMode(provider: ChatLaunchProvider, rank: number): ChatPermissionMode | undefined {
   return [...chatPermissionModes(provider)].map((mode) => mode.value)
     .filter((mode) => effectiveRank(provider, mode) <= rank)
-    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left))[0]
+    // On a tie, the more permissive mode: a bypass caller gets Muse's full access, not its sandboxed one.
+    .sort((left, right) => effectiveRank(provider, right) - effectiveRank(provider, left) || PERMISSION_RANK[right] - PERMISSION_RANK[left])[0]
 }
 
 /** The mode a chat started from `chat` gets: as permissive as it, never more. */
@@ -107,7 +110,7 @@ export function terminalLaunchRank(provider: 'claude' | 'codex' | 'muse', args: 
     const unasked = flags.includes('--disable-approval') || approval === 'never'
     if (flags.includes('--yolo') || (unasked && flags.includes('--disable-sandbox'))) return PERMISSION_RANK.bypassPermissions
     // Without approvals Muse still runs inside its sandbox.
-    if (unasked) return grantRank('muse-chat', 'bypassPermissions')
+    if (unasked) return grantRank('muse-chat', 'acceptEdits')
     if (flags.includes('--disable-write')) return PERMISSION_RANK.plan
     // `untrusted` asks before anything runs; Muse's default (on-request) runs sandboxed tools unasked.
     return approval === 'untrusted' ? PERMISSION_RANK.default : effectiveRank('muse-chat', 'default')

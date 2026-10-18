@@ -1,7 +1,10 @@
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { RpcError, type RpcId, type RpcNotification, type RpcRequest } from '../rpc-client.js'
 import type { AgentSessionSpec } from '../session.js'
-import { uuidv7, type MuseMethods, type MuseTransport } from './client.js'
+import { museServeArgs, uuidv7, type MuseMethods, type MuseTransport } from './client.js'
 import { MuseItemMapper } from './items.js'
 import { MuseChatSession, imageMediaType, museAnswers, museApprovalMode, museChoice, museModels, museTuiSwitchCommand } from './session.js'
 
@@ -252,18 +255,49 @@ describe('MuseChatSession', () => {
       .toEqual(['session/start', 'session/resume', 'session/setModel', 'turn/start'])
   })
 
-  it('changes model, effort and approval mode on the live session', async () => {
+  it('changes model, effort and approval mode on the live session, but never into full access', async () => {
     const { session, client } = harness({ bypassAllowed: true })
     await session.start()
     await session.configure({ model: 'muse-spark-1.3' })
     await session.configure({ effort: 'low' })
+    await session.configure({ permissionMode: 'acceptEdits' })
     await session.configure({ permissionMode: 'bypassPermissions' })
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('chosen when the chat starts') })
     await session.configure({ permissionMode: 'plan' })
     expect(client.sent('session/setModel')).toMatchObject([{ model: { modelId: 'muse-spark-1.3' } }])
     expect(client.sent('session/setReasoningEffort')).toMatchObject([{ reasoningEffort: 'low' }])
     expect(client.sent('session/setApprovalMode')).toMatchObject([{ mode: 'allowAll' }])
-    expect(session.snapshot().session).toMatchObject({ selectedModel: 'muse-spark-1.3', effort: 'low', permissionMode: 'bypassPermissions' })
+    expect(session.snapshot().session).toMatchObject({ selectedModel: 'muse-spark-1.3', effort: 'low', permissionMode: 'acceptEdits', bypassAllowed: false })
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('permission mode plan') })
+  })
+
+  it.each([
+    ['bypassPermissions', 'serve --trust-workspace --disable-sandbox'],
+    ['acceptEdits', 'serve --trust-workspace'],
+    ['default', 'serve --trust-workspace'],
+  ] as const)('starts muse serve without the sandbox only for full access (%s)', async (permissionMode, argv) => {
+    const dir = await mkdtemp(join(tmpdir(), 'commando-muse-args-'))
+    try {
+      // A stand-in muse that records its arguments and exits, so the start fails harmlessly.
+      const executable = join(dir, 'muse')
+      await writeFile(executable, `#!/bin/sh\necho "$@" > '${join(dir, 'argv')}'\n`)
+      await chmod(executable, 0o755)
+      const session = new MuseChatSession({ paneId: '%3', cwd: dir, permissionMode, env: {} }, undefined, executable)
+      await session.start()
+      expect((await readFile(join(dir, 'argv'), 'utf8')).trim()).toBe(argv)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a full-access chat in full access, since its host runs without the sandbox', async () => {
+    const { session, client } = harness({ permissionMode: 'bypassPermissions' })
+    await session.start()
+    expect(client.sent('session/start')).toMatchObject([{ approvalMode: 'allowAll' }])
+    expect(session.snapshot().session).toMatchObject({ permissionMode: 'bypassPermissions', bypassAllowed: true })
+    await session.configure({ permissionMode: 'default' })
+    expect(client.sent('session/setApprovalMode')).toEqual([])
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('stays in full access') })
   })
 
   it('reports a host that exits underneath it', async () => {
@@ -277,9 +311,14 @@ describe('MuseChatSession', () => {
 })
 
 describe('Muse helpers', () => {
+  it('turns the sandbox off on the host only when asked', () => {
+    expect(museServeArgs(true)).toEqual(['serve', '--trust-workspace'])
+    expect(museServeArgs(false)).toEqual(['serve', '--trust-workspace', '--disable-sandbox'])
+  })
+
   it('maps permission modes and has no plan mode', () => {
     expect(museApprovalMode('default')).toBe('onRequest')
-    expect(museApprovalMode('acceptEdits')).toBe('onRequest')
+    expect(museApprovalMode('acceptEdits')).toBe('allowAll')
     expect(museApprovalMode('bypassPermissions')).toBe('allowAll')
     expect(() => museApprovalMode('plan')).toThrow(/plan/)
   })
@@ -311,7 +350,8 @@ describe('Muse helpers', () => {
 
   it('switches to the Muse TUI on the same session and comes back to the chat', () => {
     const command = museTuiSwitchCommand({ model: 'muse-spark-1.3', effort: 'high', permissionMode: 'bypassPermissions' }, '/bin/muse', '/c/commando-agent', SESSION, ['--permission-mode', 'bypassPermissions'])
-    expect(command).toBe(`exec /bin/bash -c 'set -m; /bin/muse --model muse-spark-1.3 --reasoning-effort high --approval-mode never --trust-workspace resume ${SESSION}; exec /c/commando-agent muse --permission-mode bypassPermissions --resume ${SESSION} --from-claude-code'`)
+    expect(command).toBe(`exec /bin/bash -c 'set -m; /bin/muse --model muse-spark-1.3 --reasoning-effort high --yolo --trust-workspace resume ${SESSION}; exec /c/commando-agent muse --permission-mode bypassPermissions --resume ${SESSION} --from-claude-code'`)
+    expect(museTuiSwitchCommand({ permissionMode: 'acceptEdits' }, 'muse', '/c/a', SESSION, [])).toContain('muse --approval-mode never --trust-workspace resume')
   })
 
   it('recognises image types and mints UUIDv7 command ids', () => {
