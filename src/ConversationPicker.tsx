@@ -169,7 +169,7 @@ export function ConversationPicker({ pane, sessionName, current, chats, paneLabe
         <div className="conversation-picker-filters" aria-label="Filter conversations">
           {[{ value: null, label: 'All' }, ...providers.map((label) => ({ value: label, label })), { value: 'closed', label: 'Closed panes' }].map((chip) => (
             <button key={chip.label} type="button" aria-pressed={filter === chip.value}
-              onClick={() => { setFilter(filter === chip.value ? null : chip.value); setIndex(null) }}>{chip.label}</button>
+              onClick={() => { setFilter(filter === chip.value ? null : chip.value); setIndex(null); input.current?.focus() }}>{chip.label}</button>
           ))}
           {error ? <div className="conversation-picker-error" role="alert">{error}</div> : null}
         </div>

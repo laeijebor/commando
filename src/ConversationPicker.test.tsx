@@ -141,6 +141,8 @@ describe('ConversationPicker', () => {
     const personal = screen.getByRole('button', { name: 'claudep' })
     fireEvent.click(personal)
     expect(personal).toHaveAttribute('aria-pressed', 'true')
+    // Arrow/Enter shortcuts live on the input, so a chip must hand focus back.
+    expect(input).toHaveFocus()
     expect(screen.getAllByRole('option')).toHaveLength(1)
     expect(screen.getByRole('option')).toHaveTextContent('Personal')
     fireEvent.click(personal)
