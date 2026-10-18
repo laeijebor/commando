@@ -154,6 +154,7 @@ describe('PR store', () => {
       .mockImplementationOnce(() => new Promise<PanePrList>((resolve) => { finishBackground = resolve }))
       .mockResolvedValue(emptyList) }
     render(<Subscriber api={api} background />)
+    await act(async () => { await Promise.resolve() })
     render(<Subscriber api={api} />)
     await act(async () => { finishBackground(emptyList); await Promise.resolve() })
     await act(async () => { await Promise.resolve() })

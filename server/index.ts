@@ -1,4 +1,5 @@
 import { AgentChatsApi } from './agent-chats-api.js'
+import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
@@ -25,6 +26,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
+  AgentSessionRef,
   AgentStatus,
   ClientMessage,
   CommandoSnapshot,
@@ -87,6 +89,7 @@ import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { SessionPreferenceStore } from './session-preferences.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
 import {
   configuredAuthDatabasePath,
@@ -133,6 +136,7 @@ import { PushApi } from './push-api.js'
 import { PushDeviceRegistry } from './push-devices.js'
 import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
+import { detectSessionRenames } from './session-renames.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
 import {
@@ -536,7 +540,8 @@ async function main(): Promise<void> {
   await paneMarks.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted pane marks', error)
   })
-  const webPanes = new WebPaneService()
+  const webPanes = new WebPaneService(undefined, Date.now, undefined, undefined,
+    (paneId) => resolveWebPaneAgentSession(paneId), (paneId) => isWebPaneAgentRunning(paneId))
   await webPanes.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted web panes', error)
   })
@@ -632,7 +637,7 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
-    canvasThreads.retain(liveIds)
+    canvasThreads.retain(new Set([...liveIds, ...webPanes.parkedIds()]))
     webPaneAgentRequests.retain(liveIds)
     canvasSpotlight.retain(liveIds)
     canvasPush?.retain(liveIds)
@@ -652,6 +657,27 @@ async function main(): Promise<void> {
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
   const agentStatuses = new AgentStatusRegistry()
+  const isWebPaneAgentRunning = (paneId: string): boolean => {
+    const pane = paneForId(paneId)
+    if (!pane || pane.dead) return false
+    const hook = agentStatuses.liveHookStatus(paneId, pane.command)
+    return processStatusForPane(pane).provider !== 'unknown' || (hook !== undefined && hook.provider !== 'unknown')
+  }
+  const resolveWebPaneAgentSession = (paneId: string): AgentSessionRef | undefined => {
+    const pane = paneForId(paneId)
+    if (!pane || pane.dead) return undefined
+    const foreground = processStatusForPane(pane).provider
+    const hook = agentStatuses.liveHookStatus(paneId, pane.command)
+    // Ignore delegated child agents and process/title inference. Hooks can arrive
+    // before the brief sync, so prefer fresh foreground evidence when available.
+    if (hook?.agentSessionId && /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/.test(hook.agentSessionId) &&
+      hook.provider !== 'unknown' && (foreground === 'unknown' || hook.provider === foreground)) {
+      return { provider: hook.provider, id: hook.agentSessionId }
+    }
+    const brief = sessionBriefs.get(paneId)
+    if (brief?.agentSessionEnded || brief?.targetId !== pane.targetId || brief.sessionId !== pane.sessionId) return undefined
+    return brief.agentSession
+  }
   const paneSeen = new PaneSeen()
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
@@ -706,6 +732,8 @@ async function main(): Promise<void> {
     panes: [],
     ports: [],
   }
+  // Keep this paired with snapshot: discovery can change tmux.serverId before failing.
+  let snapshotServerId: string | null = null
   let snapshotRefresh: Promise<CommandoSnapshot> | null = null
   // Until tmux has been read once, an empty snapshot must not look like every pane closed.
   let snapshotReady = false
@@ -758,7 +786,15 @@ async function main(): Promise<void> {
     assembleClientSessionBriefs(sessionBriefs.values(), clientBriefDependencies())
   )
 
+  const reconcileWebPaneAgentSession = (paneId: string): boolean => {
+    const pane = snapshot.panes.find((candidate) => candidate.id === paneId)
+    return pane ? webPanes.reconcileAgentSession({
+      anchorPaneId: pane.id, sessionId: pane.sessionId, windowId: pane.windowId,
+    }) : false
+  }
+
   const publishSessionBrief = (brief: SessionBrief): Promise<void> => {
+    if (reconcileWebPaneAgentSession(brief.paneId)) publishWebPanes()
     const pane = snapshot.panes.find((candidate) => candidate.id === brief.paneId)
     const previousTargetId = briefTargetIds.get(brief.paneId)
     const previous = previousTargetId === undefined || previousTargetId === pane?.targetId
@@ -801,6 +837,7 @@ async function main(): Promise<void> {
 
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
     if (change?.type === 'upsert') {
+      if (reconcileWebPaneAgentSession(change.status.paneId)) publishWebPanes()
       void canvasPush?.statusChanged(change.status.paneId)
       void guides?.statusChanged(change.status.paneId)
     }
@@ -1422,6 +1459,7 @@ async function main(): Promise<void> {
     snapshotRefresh = tmux
       .discover(snapshotRevision + 1)
       .then(async (nextSnapshot) => {
+        const nextServerId = tmux.serverId
         const repos = await paneRepos.resolve(nextSnapshot.panes.map((pane) => pane.path))
         for (const pane of nextSnapshot.panes) {
           const repo = repos.get(pane.path)
@@ -1434,10 +1472,25 @@ async function main(): Promise<void> {
         const previousCommands = new Map(
           snapshot.panes.map((pane) => [pane.id, pane.command]),
         )
+        const previousPanes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
+        const sessionRenames = detectSessionRenames(
+          { serverId: snapshotServerId, sessions: snapshot.sessions },
+          { serverId: nextServerId, sessions: nextSnapshot.sessions },
+        )
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
+        snapshotServerId = nextServerId
         snapshotReady = true
+        // Invalidate pending tab ownership before any brief/status publication
+        // can stamp it with evidence from a replacement foreground agent.
+        for (const pane of snapshot.panes) {
+          const previous = previousPanes.get(pane.id)
+          if (pane.dead || (previous && (
+            previous.targetId !== pane.targetId || previous.processId !== pane.processId ||
+            (previous.command !== pane.command && !isShellCommand(previous.command))
+          ))) webPanes.clearAwaitingAgentSession(pane.id)
+        }
         releaseClosedSimLeases()
         lastTmuxError = ''
         await sessionIdes.retain(new Set(snapshot.sessions.map((session) => session.id)))
@@ -1449,12 +1502,16 @@ async function main(): Promise<void> {
           broadcast({ type: 'pane_mark_removed', targetId })
         }
 
-        const briefsChanged = await sessionBriefs.reconcilePanes(
+        let briefsChanged = false
+        for (const { sessionId, previousName, name } of sessionRenames) {
+          briefsChanged = await sessionBriefs.renameSession(sessionId, previousName, name) || briefsChanged
+        }
+        briefsChanged = await sessionBriefs.reconcilePanes(
           snapshot.panes.map((pane) => ({
             paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId,
             sessionName: snapshot.sessions.find((session) => session.id === pane.sessionId)?.name ?? pane.sessionId,
           })),
-        )
+        ) || briefsChanged
         if (briefsChanged) {
           await queueBriefPublication(async () => {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
@@ -1537,13 +1594,18 @@ async function main(): Promise<void> {
           companion?.publish()
         }
         const webPanesPruned = webPanes.prune(snapshot.windows)
+        let webPaneConversationsChanged = false
+        // Hooks can precede pane discovery, and loaded briefs need no new hook.
+        for (const paneId of paneIds) {
+          webPaneConversationsChanged = reconcileWebPaneAgentSession(paneId) || webPaneConversationsChanged
+        }
         // Legacy tiles and pending first-render splits resolve from the first
         // healthy snapshot that shows their anchor geometry.
         const webPaneLayoutMetadataResolved = webPanes.resolveLayoutMetadata((paneId) => {
           const pane = paneForId(paneId)
           return pane ? { cols: pane.width, rows: pane.height } : undefined
         })
-        if (webPanesPruned || webPaneLayoutMetadataResolved) {
+        if (webPanesPruned || webPaneConversationsChanged || webPaneLayoutMetadataResolved) {
           publishWebPanes()
         }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
@@ -1603,6 +1665,13 @@ async function main(): Promise<void> {
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
+    afterSessionRenamed: async (sessionId, previousName, name) => {
+      if (await sessionBriefs.renameSession(sessionId, previousName, name)) {
+        await queueBriefPublication(async () => {
+          broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
+        })
+      }
+    },
     prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, {
       currentPanes: async () => (await refreshSnapshotFresh()).panes,
       currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
@@ -1877,11 +1946,17 @@ async function main(): Promise<void> {
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
   const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
+  conversationTitles.start()
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
+    resumes: agentResume,
+    briefs: sessionBriefs,
+    sessionPreferences: new SessionPreferenceStore(),
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
+    agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {
       const windowId = paneForId(paneId)?.windowId
@@ -1964,7 +2039,7 @@ async function main(): Promise<void> {
   canvasSnapshots.prune()
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
   canvasWatch.sync(webPanes.list())
-  canvasThreads.retain(new Set(webPanes.list().map((pane) => pane.id)))
+  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.parkedIds()]))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
@@ -2824,6 +2899,7 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()
     simLogs.close()
