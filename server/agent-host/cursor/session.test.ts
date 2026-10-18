@@ -12,6 +12,14 @@ const models: ModelListItem[] = [
     { id: 'fast', values: [{ value: 'true' }, { value: 'false' }] },
   ] },
 ]
+const liveModels: ModelListItem[] = [
+  { id: 'auto-smart', displayName: 'Auto', parameters: [{ id: 'optimize_for', values: [{ value: 'intelligence' }, { value: 'balanced' }, { value: 'cost' }] }] },
+  { id: 'default', displayName: 'Auto' },
+  { id: 'gpt-5.5', displayName: 'GPT-5.5', parameters: [
+    { id: 'reasoning', values: ['none', 'low', 'medium', 'high', 'extra-high'].map((value) => ({ value })) },
+    { id: 'fast', values: [{ value: 'false' }, { value: 'true' }] },
+  ] },
+]
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -73,8 +81,8 @@ describe('Cursor helpers', () => {
     expect(cursorPermissions('auto')).toEqual({ sandboxOptions: { enabled: false }, autoReview: true })
     expect(cursorPermissions('plan')).toEqual(cursorPermissions('default'))
     expect(cursorPermissions('plan', 'default')).toEqual(cursorPermissions('default'))
-    expect(cursorPermissions('plan', 'auto')).toEqual(cursorPermissions('default'))
-    expect(cursorPermissions('plan', 'bypassPermissions')).toEqual(cursorPermissions('default'))
+    expect(cursorPermissions('plan', 'auto')).toEqual(cursorPermissions('auto'))
+    expect(cursorPermissions('plan', 'bypassPermissions')).toEqual(cursorPermissions('bypassPermissions'))
     for (const mode of ['acceptEdits', 'dontAsk'] as const) expect(() => cursorPermissions(mode)).toThrow('does not support')
     expect(cursorPermissions('plan', 'plan')).toEqual(cursorPermissions('default'))
   })
@@ -87,6 +95,21 @@ describe('Cursor helpers', () => {
     expect(cursorModelSelection(models[1], 'medium', false)).toEqual({ id: 'test-model', params: [{ id: 'fast', value: 'false' }] })
     expect(cursorModelSelection(models[0], 'high', true)).toEqual({ id: 'auto' })
     for (const id of ['effort', 'reasoning']) expect(cursorModels([{ id: 'm', displayName: 'M', parameters: [{ id, values: [{ value: 'max' }] }] }])[0].efforts).toEqual(['max'])
+  })
+  it('maps live model names and extra-high effort without forwarding unrelated parameters', () => {
+    expect(cursorModels(liveModels)).toMatchObject([
+      { value: 'auto-smart', displayName: 'Auto (auto-smart)', efforts: [] },
+      { value: 'default', displayName: 'Auto', efforts: [] },
+      { value: 'gpt-5.5', efforts: ['low', 'medium', 'high', 'xhigh'], supportsFast: true },
+    ])
+    expect(cursorModelSelection(liveModels[0], 'high', true)).toEqual({ id: 'auto-smart' })
+    expect(cursorModelSelection(liveModels[2], 'xhigh', true)).toEqual({ id: 'gpt-5.5', params: [{ id: 'reasoning', value: 'extra-high' }, { id: 'fast', value: 'true' }] })
+    for (const id of ['effort', 'reasoning_effort', 'reasoning']) {
+      const option = { id: 'm', displayName: 'M', parameters: [{ id, values: ['minimal', 'none', 'extra-high', 'xhigh'].map((value) => ({ value })) },
+        ...['context', 'thinking', 'optimize_for'].map((id) => ({ id, values: [{ value: 'high' }] }))] }
+      expect(cursorModels([option])[0].efforts).toEqual(['xhigh'])
+      expect(cursorModelSelection(option, 'xhigh')).toEqual({ id: 'm', params: [{ id, value: 'xhigh' }] })
+    }
   })
   it.each([{ name: 'AuthenticationError' }, { code: 'unauthenticated' }, new Error('[unknown] Invalid User API Key'), new Error('Invalid API key'), new Error('API key is required'), { status: 'error', error: { code: 'unauthenticated' } }])('recognizes auth rejection %j', (error) => {
     expect(isCursorAuthError(error)).toBe(true)
@@ -107,6 +130,48 @@ describe('Cursor helpers', () => {
 })
 
 describe('CursorChatSession', () => {
+  it('creates lazily with the first prompt and the model selected after readiness', async () => {
+    const { session, sdk } = harness()
+    sdk.listModels.mockResolvedValue(liveModels)
+    await session.start()
+    expect(session.snapshot().session).toMatchObject({ status: 'idle', selectedModel: 'default' })
+    expect(session.snapshot().session.sessionId).toBeUndefined()
+    expect(sdk.create).not.toHaveBeenCalled()
+    await session.configure({ model: 'gpt-5.5', effort: 'xhigh', fast: true })
+    const prompt = `  ${'A'.repeat(100)}  `
+    session.send(prompt); await tick()
+    const model = { id: 'gpt-5.5', params: [{ id: 'reasoning', value: 'extra-high' }, { id: 'fast', value: 'true' }] }
+    expect(sdk.create).toHaveBeenCalledWith({ name: 'A'.repeat(80), model, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
+    expect(sdk.sends[0]).toMatchObject({ message: { text: 'A'.repeat(100) }, options: { model } })
+    expect(session.snapshot().session.sessionId).toBe('agent-123')
+    session.close()
+  })
+  it.each([
+    { requested: 'auto-smart', list: liveModels, selected: 'auto-smart' },
+    { requested: 'missing', list: liveModels, selected: 'default' },
+    { requested: undefined, list: models, selected: 'auto' },
+    { requested: undefined, list: [liveModels[2]], selected: 'gpt-5.5' },
+  ])('selects $selected from the available models', async ({ requested, list, selected }) => {
+    const { session, sdk } = harness({ model: requested })
+    sdk.listModels.mockResolvedValue(list)
+    await session.start()
+    expect(session.snapshot().session.selectedModel).toBe(selected)
+    expect(sdk.create).not.toHaveBeenCalled()
+    session.close()
+  })
+  it('can retry failed lazy creation without losing readiness', async () => {
+    const { session, sdk } = harness()
+    await session.start()
+    sdk.create.mockRejectedValueOnce(new Error('create failed'))
+    session.send('First'); await tick()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().session.sessionId).toBeUndefined()
+    session.send('Retry'); await tick()
+    expect(sdk.create).toHaveBeenCalledTimes(2)
+    expect(sdk.create.mock.calls[1][0].name).toBe('Retry')
+    expect(sdk.sends[0].message.text).toBe('Retry')
+    session.close()
+  })
   it('starts logged out, exposes browser login, then becomes ready without retaining credentials', async () => {
     const { session, sdk } = harness({ initialPrompt: 'Start' })
     sdk.authStatus.mockResolvedValue({ status: 'logged-out' })
@@ -137,12 +202,15 @@ describe('CursorChatSession', () => {
     const { session, sdk } = harness({ env: { CURSOR_API_KEY: 'secret' }, model: 'test-model', effort: 'high', fast: true })
     await session.start()
     expect(sdk.authStatus).not.toHaveBeenCalled()
-    expect(sdk.create).toHaveBeenCalledWith({ model: { id: 'test-model', params: [{ id: 'reasoning_effort', value: 'high' }, { id: 'fast', value: 'true' }] }, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
+    expect(sdk.create).not.toHaveBeenCalled()
+    expect(session.snapshot().session.sessionId).toBeUndefined()
+    session.send('Hello'); await tick()
+    expect(sdk.create).toHaveBeenCalledWith({ name: 'Hello', model: { id: 'test-model', params: [{ id: 'reasoning_effort', value: 'high' }, { id: 'fast', value: 'true' }] }, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
     expect(parseChatSessionInfo(session.snapshot().session)).not.toBeNull()
     session.close()
   })
   it.each([false, true])('serializes a send immediately after browser login behind readiness (existing agent: %s)', async (existing) => {
-    const { session, sdk } = harness({ model: 'test-model' })
+    const { session, sdk } = harness({ model: 'test-model', ...(existing ? { resume: 'old-agent' } : {}) })
     if (!existing) sdk.authStatus.mockResolvedValue({ status: 'logged-out' })
     await session.start()
     const readModels = deferred<ModelListItem[]>()
@@ -221,18 +289,18 @@ describe('CursorChatSession', () => {
     session.close()
   })
   it('re-resumes stale permission options on the next send and keeps model switches sticky', async () => {
-    const { session, sdk } = await running()
-    await session.configure({ model: 'test-model', effort: 'high', fast: true, permissionMode: 'default' })
+    const { session, sdk } = await running({ permissionMode: 'default' })
+    await session.configure({ model: 'test-model', effort: 'high', fast: true, permissionMode: 'auto' })
     expect(sdk.resume).not.toHaveBeenCalled()
     sdk.runs[0].finish(); await tick()
     session.send('Next'); await tick()
     expect(sdk.agent.close).toHaveBeenCalledTimes(1)
-    expect(sdk.resume).toHaveBeenCalledWith('agent-123', { model: cursorModelSelection(models[1], 'high', true), disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: true } } })
+    expect(sdk.resume).toHaveBeenCalledWith('agent-123', { model: cursorModelSelection(models[1], 'high', true), disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false }, autoReview: true } })
     expect(sdk.sends[1].options.model).toEqual(cursorModelSelection(models[1], 'high', true))
     await session.configure({ effort: 'medium' })
     await session.configure({ model: 'unknown' })
     await session.configure({ permissionMode: 'acceptEdits' })
-    expect(session.snapshot().session).toMatchObject({ effort: 'high', permissionMode: 'default', selectedModel: 'test-model' })
+    expect(session.snapshot().session).toMatchObject({ effort: 'high', permissionMode: 'auto', selectedModel: 'test-model' })
     sdk.runs[1].finish(); await tick()
     session.send('Again'); await tick()
     expect(sdk.sends[2].options.model).toEqual(sdk.sends[1].options.model)
@@ -244,7 +312,7 @@ describe('CursorChatSession', () => {
     await session.start()
     session.send('Plan'); await tick()
     expect(sdk.sends[0].options.mode).toBe('plan')
-    expect(sdk.create.mock.calls[0][0].local).toEqual({ cwd: '/tmp', sandboxOptions: { enabled: true } })
+    expect(sdk.create.mock.calls[0][0].local).toEqual({ cwd: '/tmp', sandboxOptions: { enabled: false } })
     expect(session.snapshot().session.prePlanPermissionMode).toBe('bypassPermissions')
     sdk.delta({ type: 'tool-call-completed', callId: 'p', toolCall: { type: 'createPlan', args: { plan: '# Plan\nDo this' } } })
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'plan', text: '# Plan\nDo this' })
@@ -253,6 +321,73 @@ describe('CursorChatSession', () => {
     expect(sdk.sends[1].options.mode).toBe('agent')
     expect(session.snapshot().session.prePlanPermissionMode).toBeUndefined()
     expect(sdk.resume).toHaveBeenCalledWith('agent-123', expect.objectContaining({ local: { cwd: '/tmp', sandboxOptions: { enabled: false } } }))
+    session.close()
+  })
+  it('requests a restart with current settings when an unsandboxed chat switches to sandboxing', async () => {
+    const { session, sdk } = await running()
+    const restart = vi.fn(() => expect(session.snapshot().session.permissionMode).toBe('default'))
+    session.on('restart', restart)
+    await session.configure({ permissionMode: 'default' })
+    expect(restart).toHaveBeenCalledTimes(1)
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'info', text: "Restarting this chat so Cursor's sandbox can turn on." })
+    expect(sdk.resume).not.toHaveBeenCalled()
+    await session.configure({ permissionMode: 'default' })
+    expect(restart).toHaveBeenCalledTimes(1)
+    sdk.runs[0].finish(); await tick()
+    session.send('Blocked if restart failed'); await tick()
+    expect(sdk.sends).toHaveLength(1)
+    expect(sdk.resume).not.toHaveBeenCalled()
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: "Message not sent: Cursor's sandbox can't turn on in this process; restart the chat (it restarts automatically when idle)." })
+    session.close()
+  })
+  it('allows sandboxing before any unsandboxed run and requests restart after one runs', async () => {
+    const { session, sdk } = harness()
+    const restart = vi.fn()
+    session.on('restart', restart)
+    await session.start()
+    await session.configure({ permissionMode: 'default' })
+    expect(restart).not.toHaveBeenCalled()
+    session.send('Sandboxed'); await tick()
+    expect(sdk.create.mock.calls[0][0].local?.sandboxOptions?.enabled).toBe(true)
+    sdk.runs[0].finish(); await tick()
+    await session.configure({ permissionMode: 'bypassPermissions' })
+    session.send('Full access'); await tick()
+    expect(sdk.sends).toHaveLength(2)
+    await session.configure({ permissionMode: 'default' })
+    expect(restart).toHaveBeenCalledTimes(1)
+    session.close()
+  })
+  it('keeps plan mode on its pre-plan policy and does not restart for unsandboxed modes', async () => {
+    const { session, sdk } = await running()
+    const restart = vi.fn()
+    session.on('restart', restart)
+    await session.configure({ permissionMode: 'plan' })
+    expect(session.snapshot().session.prePlanPermissionMode).toBe('bypassPermissions')
+    expect(restart).not.toHaveBeenCalled()
+    sdk.runs[0].finish(); await tick()
+    session.send('Plan'); await tick()
+    expect(sdk.sends[1].options.mode).toBe('plan')
+    expect(sdk.resume.mock.calls[0][1].local?.sandboxOptions?.enabled).toBe(false)
+    expect(restart).not.toHaveBeenCalled()
+    session.close()
+  })
+  it('starts a plan without pre-plan mode sandboxed', async () => {
+    const { session, sdk } = await running({ permissionMode: 'plan' })
+    expect(sdk.create.mock.calls[0][0].local?.sandboxOptions?.enabled).toBe(true)
+    expect(sdk.sends[0].options.mode).toBe('plan')
+    session.close()
+  })
+  it('becomes idle after a per-send sandbox switch is blocked so the host can restart', async () => {
+    const { session, sdk } = await running()
+    sdk.runs[0].finish(); await tick()
+    const idle = vi.fn()
+    session.on('session', (info) => { if (info.status === 'idle' && !session.busy) idle() })
+    const restart = vi.fn()
+    session.on('restart', restart)
+    session.send('Switch', [], { permissionMode: 'default' }); await tick()
+    expect(restart).toHaveBeenCalledTimes(1)
+    expect(idle).toHaveBeenCalled()
+    expect(sdk.sends).toHaveLength(1)
     session.close()
   })
   it('replays resumed history and retains only the newest items', async () => {
@@ -327,13 +462,13 @@ describe('CursorChatSession', () => {
   })
   it.each(['send', 'login'])('retries a startup failure without an agent on the next %s', async (retry) => {
     const { session, sdk } = harness()
-    sdk.create.mockRejectedValueOnce(new Error('disk unavailable'))
+    sdk.listModels.mockRejectedValueOnce(new Error('disk unavailable'))
     await session.start()
     expect(session.snapshot().session.status).toBe('idle')
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: "Couldn't start Cursor: disk unavailable. Sending a message retries." })
     session.send(retry === 'send' ? 'Retry' : '/login'); await tick()
     if (retry === 'login') { sdk.loginResult.resolve({}); await tick(); session.send('Retry'); await tick() }
-    expect(sdk.create).toHaveBeenCalledTimes(2)
+    expect(sdk.create).toHaveBeenCalledTimes(1)
     expect(sdk.sends[0].message.text).toBe('Retry')
     expect(session.snapshot().session.status).toBe('running')
     session.close()
@@ -342,19 +477,19 @@ describe('CursorChatSession', () => {
     const { session, sdk } = harness()
     sdk.authStatus.mockResolvedValue({ status: 'logged-out' })
     await session.start()
-    sdk.create.mockRejectedValueOnce(new Error('disk unavailable'))
+    sdk.listModels.mockRejectedValueOnce(new Error('disk unavailable'))
     session.send('/login'); await tick()
     sdk.authStatus.mockResolvedValue({ status: 'logged-in' })
     sdk.loginResult.resolve({}); await tick()
     expect(session.snapshot().session.status).toBe('idle')
     expect(session.snapshot().session.login).toBeUndefined()
     session.send('Retry ready'); await tick()
-    expect(sdk.create).toHaveBeenCalledTimes(2)
+    expect(sdk.create).toHaveBeenCalledTimes(1)
     expect(sdk.sends[0].message.text).toBe('Retry ready')
     session.close()
   })
   it('keeps the existing agent usable when reloading models after login fails', async () => {
-    const { session, sdk } = harness()
+    const { session, sdk } = harness({ resume: 'old-agent' })
     await session.start()
     sdk.listModels.mockRejectedValueOnce(new Error('models unavailable'))
     session.send('/login'); await tick()
@@ -364,7 +499,8 @@ describe('CursorChatSession', () => {
     expect(session.snapshot().items.some((item) => item.kind === 'notice' && item.level === 'error' && item.text.includes('models unavailable'))).toBe(true)
     session.send('Continue'); await tick()
     expect(sdk.sends[0].message.text).toBe('Continue')
-    expect(sdk.create).toHaveBeenCalledTimes(1)
+    expect(sdk.resume).toHaveBeenCalledTimes(1)
+    expect(sdk.create).not.toHaveBeenCalled()
     expect(sdk.listModels).toHaveBeenCalledTimes(2)
     session.close()
   })
@@ -388,7 +524,7 @@ describe('CursorChatSession', () => {
     expect(session.snapshot().items.filter((item) => item.kind === 'notice' && item.level === 'error')).toHaveLength(0)
     session.close()
     const other = harness()
-    other.sdk.create.mockRejectedValue(new Error('disk failed'))
+    other.sdk.listModels.mockRejectedValue(new Error('disk failed'))
     await other.session.start()
     expect(other.session.snapshot().session).toMatchObject({ status: 'idle', error: 'disk failed' })
     other.session.close()

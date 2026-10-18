@@ -20,6 +20,7 @@ export interface ChatProviderSessionEvents {
   session: (info: ChatSessionInfo) => void
   commands: (commands: ChatCommand[]) => void
   closed: () => void
+  restart?: () => void
 }
 
 /** Optional handoff to the provider's terminal UI on the same conversation. */

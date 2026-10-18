@@ -14,8 +14,8 @@ import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from 
 const errorText = (error: unknown) => string(record(error).message) ?? String(error)
 const EFFORT_PARAMETERS = ['effort', 'reasoning_effort', 'reasoning']
 const AUTH_CODES = new Set(['UNAUTHENTICATED', 'NOT_LOGGED_IN', 'INVALID_AUTH_ID', 'AGENT_REQUIRES_LOGIN', 'AUTH_TOKEN_NOT_FOUND', 'AUTH_TOKEN_EXPIRED', 'UNAUTHORIZED', 'BAD_API_KEY', 'BAD_USER_API_KEY'])
-export function cursorPermissions(mode: ChatSessionPermissionMode, _prePlan?: ChatSessionPermissionMode): { sandboxOptions: { enabled: boolean }; autoReview?: boolean } {
-  if (mode === 'plan') return { sandboxOptions: { enabled: true } }
+export function cursorPermissions(mode: ChatSessionPermissionMode, prePlan?: ChatSessionPermissionMode): { sandboxOptions: { enabled: boolean }; autoReview?: boolean } {
+  if (mode === 'plan') return prePlan && prePlan !== 'plan' ? cursorPermissions(prePlan) : { sandboxOptions: { enabled: true } }
   if (mode === 'bypassPermissions') return { sandboxOptions: { enabled: false } }
   if (mode === 'default') return { sandboxOptions: { enabled: true } }
   if (mode === 'auto') return { sandboxOptions: { enabled: false }, autoReview: true }
@@ -25,14 +25,16 @@ export function cursorModels(items: ModelListItem[]): ChatModelOption[] {
   return items.flatMap((item) => {
     if (!isModelValue(item.id)) return []
     const efforts = item.parameters?.filter((parameter) => EFFORT_PARAMETERS.includes(parameter.id))
-      .flatMap((parameter) => parameter.values.map(({ value }) => value).filter(isChatEffort)) ?? []
-    return [{ value: item.id, resolvedModel: item.id, displayName: item.displayName, description: item.description, efforts: [...new Set(efforts)],
+      .flatMap((parameter) => parameter.values.map(({ value }) => value === 'extra-high' ? 'xhigh' : value).filter(isChatEffort)) ?? []
+    const duplicate = items.some((other) => other.id !== item.id && isModelValue(other.id) && other.displayName === item.displayName)
+    return [{ value: item.id, resolvedModel: item.id, displayName: duplicate && item.id !== 'default' ? `${item.displayName} (${item.id})` : item.displayName, description: item.description, efforts: [...new Set(efforts)],
       ...(item.parameters?.some((parameter) => parameter.id === 'fast' && parameter.values.some(({ value }) => value === 'true')) ? { supportsFast: true } : {}) }]
   })
 }
 export function cursorModelSelection(option: ModelListItem, effort?: ChatEffort, fast?: boolean): ModelSelection {
   const params = option.parameters?.flatMap((parameter) => {
-    const value = EFFORT_PARAMETERS.includes(parameter.id) ? effort : parameter.id === 'fast' ? String(Boolean(fast)) : undefined
+    const rawEffort = effort === 'xhigh' && !parameter.values.some(({ value }) => value === 'xhigh') ? 'extra-high' : effort
+    const value = EFFORT_PARAMETERS.includes(parameter.id) ? rawEffort : parameter.id === 'fast' ? String(Boolean(fast)) : undefined
     return value !== undefined && parameter.values.some((entry) => entry.value === value) ? [{ id: parameter.id, value }] : []
   }) ?? []
   return { id: option.id, ...(params.length ? { params } : {}) }
@@ -58,7 +60,7 @@ export class CursorChatSession implements ChatProviderSession {
   private agent?: CursorAgent
   private readonly mapper = new CursorItemMapper()
   private readonly files: WorkspaceFileIndex
-  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
+  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private info: ChatSessionInfo
   private modelItems: ModelListItem[] = []
   private startPromise?: Promise<void>
@@ -66,6 +68,8 @@ export class CursorChatSession implements ChatProviderSession {
   private loginFinishing = false
   private readonly apiKey?: string
   private historyLoaded = false
+  private readyToSend = false
+  private ranUnsandboxed = false
   private active?: ActiveRun
   private stale = false
   private sending = 0
@@ -93,7 +97,7 @@ export class CursorChatSession implements ChatProviderSession {
   get paneId(): string { return this.spec.paneId }
   get busy(): boolean { return Boolean(this.active || this.sending || this.queue.length || this.loginController || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
-  on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
+  on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event]?.push(listener) }
   private emitItems(items: ChatItem[]): void { if (!this.closing && items.length) this.listeners.items.forEach((listener) => listener(items)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
@@ -124,7 +128,7 @@ export class CursorChatSession implements ChatProviderSession {
     if (this.closing) return
     if (isCursorAuthError(error)) { this.authRequired(); return }
     const message = this.safeError(error)
-    if (!this.agent) this.startPromise = undefined
+    if (!this.agent) { this.readyToSend = false; this.startPromise = undefined }
     this.emitItems(this.mapper.notice('error', `Couldn't start Cursor: ${message}${!this.agent ? '. Sending a message retries.' : ''}`))
     this.update({ status: 'idle', error: message })
   }
@@ -134,7 +138,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.modelItems = items
     const models = cursorModels(items)
     const selectedModel = models.some((model) => model.value === this.info.selectedModel) ? this.info.selectedModel
-      : models.find((model) => model.value === 'auto')?.value ?? models[0]?.value
+      : models.find((model) => model.value === 'default')?.value ?? models.find((model) => model.value === 'auto')?.value ?? models[0]?.value
     this.update({ models, selectedModel })
     this.applySettings({})
   }
@@ -151,15 +155,17 @@ export class CursorChatSession implements ChatProviderSession {
     await this.reloadModels()
     if (this.closing) return
     const id = this.info.sessionId
-    const agent = id ? await this.sdk!.resume(id, this.agentOptions()) : await this.sdk!.create(this.agentOptions())
-    if (this.closing) { agent.close(); return }
-    this.agent = agent
+    if (id) {
+      const agent = await this.sdk!.resume(id, this.agentOptions())
+      if (this.closing) { agent.close(); return }
+      this.agent = agent
+      this.update({ sessionId: agent.agentId })
+    }
     this.stale = false
-    this.update({ sessionId: agent.agentId })
     if (this.spec.resume && !this.historyLoaded) {
       this.historyLoaded = true
       try {
-        const history = await this.sdk!.history(agent.agentId, this.spec.cwd)
+        const history = await this.sdk!.history(this.agent!.agentId, this.spec.cwd)
         if (this.closing) return
         history.turns.forEach((turn) => this.mapper.replay(turn))
         this.emitItems(this.mapper.list())
@@ -169,11 +175,12 @@ export class CursorChatSession implements ChatProviderSession {
         this.emitItems(this.mapper.notice('info', `Couldn't load this chat's earlier messages: ${this.safeError(error)}`))
       }
     }
+    this.readyToSend = true
     this.update({ status: 'idle', error: undefined })
     this.listeners.commands.forEach((listener) => listener(this.commands))
   }
   private sendInitialPrompt(): void {
-    if (!this.closing && this.agent && this.spec.initialPrompt && !this.initialSent) { this.initialSent = true; this.send(this.spec.initialPrompt) }
+    if (!this.closing && this.readyToSend && this.spec.initialPrompt && !this.initialSent) { this.initialSent = true; this.send(this.spec.initialPrompt) }
   }
   private authRequired(): void {
     const reason = this.spec.env.CURSOR_API_KEY
@@ -252,7 +259,7 @@ export class CursorChatSession implements ChatProviderSession {
       await this.start()
       if (this.closing) return
       if (this.info.login || this.loginController) throw new Error('Log in to Cursor first (use the Log in button)')
-      if (!this.agent) return
+      if (!this.readyToSend) return
       if (options.permissionMode && this.active) throw new Error('Permission changes apply to the next turn; wait for this turn to finish')
       if (options.permissionMode) this.applySettings({ permissionMode: options.permissionMode })
       if (images.length > MAX_CHAT_IMAGES) throw new Error('Too many images')
@@ -271,7 +278,7 @@ export class CursorChatSession implements ChatProviderSession {
       if (this.closing) return
       if (isCursorAuthError(error)) { this.authRequired(); this.enqueue(trimmed, images, true) }
       else this.emitItems(this.mapper.notice('error', `Message not sent: ${this.safeError(error)}`))
-    }).finally(() => { this.sending--; this.flushQueue() })
+    }).finally(() => { this.sending--; if (!this.closing && !this.active) this.update({ status: 'idle' }); this.flushQueue() })
   }
   private async startRun(text: string, images: ChatImageRef[]): Promise<void> {
     const input: SDKImage[] = []
@@ -283,20 +290,24 @@ export class CursorChatSession implements ChatProviderSession {
       input.push({ data: data.toString('base64'), mimeType })
     }
     if (this.closing) return
+    const agentOptions = this.agentOptions()
+    const model = agentOptions.model!
+    const sandboxed = agentOptions.local!.sandboxOptions!.enabled
+    if (sandboxed && this.ranUnsandboxed) throw new Error("Cursor's sandbox can't turn on in this process; restart the chat (it restarts automatically when idle).")
     if (this.stale || !this.agent) {
       const id = this.info.sessionId
-      if (!id) throw new Error('Cursor has no agent id')
       this.agent?.close()
       this.agent = undefined
-      const agent = await this.sdk!.resume(id, this.agentOptions())
+      const agent = id ? await this.sdk!.resume(id, agentOptions) : await this.sdk!.create({ ...agentOptions, name: text.trim().slice(0, 80) })
       if (this.closing) { agent.close(); return }
       this.agent = agent
       this.stale = false
+      this.update({ sessionId: agent.agentId })
     }
     const turnId = `turn-${++this.turnCounter}`
     this.mapper.begin(turnId)
-    const model = this.model()
     this.emitItems(this.mapper.expectUser(text, images))
+    if (!sandboxed) this.ranUnsandboxed = true
     const run = await this.agent.send({ text, ...(input.length ? { images: input } : {}) }, {
       model, mode: this.info.permissionMode === 'plan' ? 'plan' : 'agent',
       onDelta: ({ update }) => { if (!this.closing) this.emitItems(this.mapper.delta(update)) },
@@ -332,7 +343,7 @@ export class CursorChatSession implements ChatProviderSession {
   }
   private setQueue(queue: ChatQueuedMessage[]): void { this.queue = queue; this.update({ queue: queue.length ? [...queue] : undefined }) }
   private flushQueue(): void {
-    if (!this.queue.length || this.active || this.sending || this.interrupting || this.closing || this.info.login || this.loginController || !this.agent) return
+    if (!this.queue.length || this.active || this.sending || this.interrupting || this.closing || this.info.login || this.loginController || !this.readyToSend) return
     const batch: ChatQueuedMessage[] = []
     let images = 0
     for (const entry of this.queue) {
@@ -377,10 +388,15 @@ export class CursorChatSession implements ChatProviderSession {
     const prePlan = mode === 'plan' ? this.info.permissionMode === 'plan' ? this.info.prePlanPermissionMode : this.info.permissionMode as ChatSessionPermissionMode
       : mode ? undefined : this.info.prePlanPermissionMode
     if (mode) cursorPermissions(mode, prePlan)
-    if (mode && (mode !== this.info.permissionMode || prePlan !== this.info.prePlanPermissionMode)) this.stale = true
+    const permissionChanged = mode && (mode !== this.info.permissionMode || prePlan !== this.info.prePlanPermissionMode)
+    if (permissionChanged) this.stale = true
     const effort = change.effort ?? (this.info.effort && model?.efforts?.includes(this.info.effort) ? this.info.effort : undefined)
     const fast = (change.fast ?? this.info.fast) && model?.supportsFast ? true : undefined
     this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, fast, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
+    if (permissionChanged && this.ranUnsandboxed && cursorPermissions(mode, prePlan).sandboxOptions.enabled) {
+      this.emitItems(this.mapper.notice('info', "Restarting this chat so Cursor's sandbox can turn on."))
+      this.listeners.restart?.forEach((listener) => listener?.())
+    }
   }
   searchFiles(query: string): Promise<ChatFileSearchResult> { return this.files.search(query) }
   async controlTask(_action: ChatTaskAction, _agentId: string, _toolUseId: string): Promise<void> { throw new Error('Cursor subagent controls are not available in this chat') }

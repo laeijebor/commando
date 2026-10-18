@@ -386,6 +386,7 @@ async function main(): Promise<void> {
       if (restarting && info.status === 'idle' && !session.busy) void restartNow()
     })
   }
+  session.on('restart', () => requestRestart())
 
   const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY })
   let lastInterrupt = 0
