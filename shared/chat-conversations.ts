@@ -8,7 +8,7 @@ export const CHAT_CONVERSATION_ROUTES = {
   resume: '/api/chat-conversations/resume',
 } as const
 
-export type ChatConversationProvider = 'claude' | 'codex' | 'cursor' | 'opencode'
+export type ChatConversationProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'muse'
 
 export interface ChatConversation {
   provider: ChatConversationProvider
@@ -105,7 +105,7 @@ export function groupChatConversations(
 
 export function chatConversationProviderLabel(conversation: ChatConversation): string {
   return conversation.provider === 'claude' && conversation.profile ? conversation.profile
-    : { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode' }[conversation.provider]
+    : { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode', muse: 'Muse' }[conversation.provider]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
