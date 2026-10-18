@@ -1795,16 +1795,31 @@ describe('observed Cursor stop/response ordering', () => {
     expect(registry.get('%1')?.details?.currentActivity).toBeUndefined()
     expect(JSON.stringify(registry.get('%1'))).not.toContain('opaque/')
   })
+  it('counts a SessionStart-only hook as an open conversation without changing process liveness', () => {
+    const registry = new AgentStatusRegistry()
+    expect(registry.openConversationStatus(paneId, '2.1.295')).toBeUndefined()
+    registry.applyClaudeHook(paneId, claudePayload('SessionStart'), 1, '2.1.295')
+
+    expect(registry.liveHookStatus(paneId, '2.1.295')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, '2.1.295')).toMatchObject({
+      source: 'hook', provider: 'claude', agentSessionId: claudeSessionId, status: 'unknown',
+    })
+  })
+
   it('reports a hook status as live only for the agent process that produced it', () => {
     const registry = new AgentStatusRegistry()
     registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { intent: 'Ship it' }), 1, '2.1.295')
     registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Shipped the fix.' }), 2, '2.1.295')
     expect(registry.liveHookStatus(paneId, '2.1.295')?.agentSessionId).toBe(claudeSessionId)
     expect(registry.liveHookStatus(paneId, 'zsh')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, '2.1.295')?.agentSessionId).toBe(claudeSessionId)
+    expect(registry.openConversationStatus(paneId, 'zsh')).toBeUndefined()
 
     // The agent exited; its recap stays visible but is no longer the pane's live session.
     registry.removeIfProcessChanged(paneId, 'zsh')
     expect(registry.get(paneId)).toBeDefined()
     expect(registry.liveHookStatus(paneId, '2.1.295')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, '2.1.295')).toBeUndefined()
+    expect(registry.openConversationStatus(paneId, 'zsh')).toBeUndefined()
   })
 })
