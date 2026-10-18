@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   info: { paneId: '%77', provider: 'cursor', cwd: '/workspace', status: 'idle', hostPid: 1, hostVersion: 1, sessionId: 'agent-123', permissionMode: 'default' } as ChatSessionInfo,
   listeners: new Map<string, ((info: ChatSessionInfo) => void)[]>(),
   execFile: vi.fn(),
+  hostNotice: vi.fn(),
 }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), execFile: state.execFile }))
 vi.mock('node:readline', () => ({ createInterface: () => ({ on: vi.fn() }) }))
@@ -18,6 +19,7 @@ vi.mock('./factory.js', () => ({ createChatProviderSession: async () => ({
   on: (event: string, listener: (info: ChatSessionInfo) => void) => state.listeners.set(event, [...state.listeners.get(event) ?? [], listener]),
   snapshot: () => ({ session: state.info, items: [] }),
   setResumeCommand: vi.fn(),
+  hostNotice: state.hostNotice,
   start: async () => {},
 }) }))
 
@@ -27,6 +29,7 @@ beforeEach(() => {
   vi.resetModules()
   state.listeners.clear()
   state.execFile.mockReset()
+  state.hostNotice.mockReset()
   state.busy = false
   state.info = { ...state.info, status: 'idle', permissionMode: 'default' }
   originalSignals = new Map((['SIGTERM', 'SIGHUP'] as const).map((signal) => [signal, process.listeners(signal)]))
@@ -74,5 +77,17 @@ describe('provider restart requests', () => {
     state.busy = false
     emit('session')
     expect(state.execFile).toHaveBeenCalledTimes(1)
+  })
+  it('respawns once while a respawn is under way, and shows a failed one in the chat', async () => {
+    await import('./main.js')
+    await vi.waitFor(() => expect(state.listeners.has('restart')).toBe(true))
+    emit('restart')
+    emit('session')
+    expect(state.execFile).toHaveBeenCalledTimes(1)
+    const callback = state.execFile.mock.calls[0].at(-1) as (error: Error | null) => void
+    callback(new Error('no such pane'))
+    expect(state.hostNotice).toHaveBeenCalledWith('error', expect.stringContaining('Restart failed: no such pane'))
+    emit('restart')
+    expect(state.execFile).toHaveBeenCalledTimes(2)
   })
 })

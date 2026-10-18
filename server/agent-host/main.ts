@@ -317,13 +317,19 @@ async function main(): Promise<void> {
 
   // Restart on the same conversation (to pick up new host code) once Claude is idle.
   let restarting = false
+  // Set from the respawn until it fails: a later idle update must not respawn the new host too.
+  let respawning = false
+  const restartFailed = (message: string) => {
+    write(color(31, message))
+    session.hostNotice?.('error', message)
+    restarting = false
+    respawning = false
+  }
   const restartNow = async () => {
+    if (respawning) return
     const sessionId = session.snapshot().session.sessionId
-    if (!launcher) {
-      write(color(31, 'Restart needs the commando-agent launcher; quit and start it again instead.'))
-      restarting = false
-      return
-    }
+    if (!launcher) return restartFailed('Restart needs the commando-agent launcher; quit and start it again instead.')
+    respawning = true
     // tmux replaces this process with a fresh host in the same pane (same pane id
     // and Commando target), continuing the same conversation. Nothing is closed
     // first: on success -k ends this process, on failure this host keeps going.
@@ -334,9 +340,7 @@ async function main(): Promise<void> {
     const env = restartEnv(settings.provider, process.env)
     write(dim('Restarting to update…'))
     execFile('tmux', ['respawn-pane', '-k', ...env, '-t', paneId, '-c', process.cwd(), command], (error) => {
-      if (!error) return
-      write(color(31, `Restart failed: ${error.message}. The chat keeps running; quit and start commando-agent again to update.`))
-      restarting = false
+      if (error) restartFailed(`Restart failed: ${error.message}. The chat keeps running; quit and start commando-agent again to restart it.`)
     })
   }
   /** The daemon keeps the queue before the provider hands its conversation to its TUI. */

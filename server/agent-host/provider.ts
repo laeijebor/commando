@@ -54,6 +54,8 @@ export interface ChatProviderSession {
   controlTask(action: ChatTaskAction, agentId: string, toolUseId: string): Promise<void>
   subagentTranscript(agentId: string): Promise<ChatSubagentTranscript>
   setResumeCommand(command: string): void
+  /** Shows a host-level problem (a failed restart, say) in the chat as well as the pane. */
+  hostNotice?(level: 'info' | 'error', text: string): void
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] }
   close(): void
 }

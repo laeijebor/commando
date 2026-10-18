@@ -230,7 +230,7 @@ export class CursorChatSession implements ChatProviderSession {
       }
     } finally {
       this.loginFinishing = false
-      if (this.loginController === controller) this.loginController = undefined
+      if (this.loginController === controller) { this.loginController = undefined; this.update({}) }
       if (controller.signal.aborted && !this.closing && this.info.login?.state === 'pending') {
         this.update({ login: { state: 'required' } })
         this.emitItems(this.mapper.notice('info', 'Cursor login cancelled.'))
@@ -259,7 +259,7 @@ export class CursorChatSession implements ChatProviderSession {
       await this.start()
       if (this.closing) return
       if (this.info.login || this.loginController) throw new Error('Log in to Cursor first (use the Log in button)')
-      if (!this.readyToSend) return
+      if (!this.readyToSend) throw new Error("Cursor couldn't start")
       if (options.permissionMode && this.active) throw new Error('Permission changes apply to the next turn; wait for this turn to finish')
       if (options.permissionMode) this.applySettings({ permissionMode: options.permissionMode })
       if (images.length > MAX_CHAT_IMAGES) throw new Error('Too many images')
@@ -293,7 +293,10 @@ export class CursorChatSession implements ChatProviderSession {
     const agentOptions = this.agentOptions()
     const model = agentOptions.model!
     const sandboxed = agentOptions.local!.sandboxOptions!.enabled
-    if (sandboxed && this.ranUnsandboxed) throw new Error("Cursor's sandbox can't turn on in this process; restart the chat (it restarts automatically when idle).")
+    if (sandboxed && this.ranUnsandboxed) {
+      this.listeners.restart.forEach((listener) => listener())
+      throw new Error("Cursor's sandbox can't turn on until this chat restarts; it restarts when idle, then send this again (or switch to Full access)")
+    }
     // Creating or resuming the agent takes a few seconds; show the turn as started meanwhile.
     this.update({ status: 'running' })
     if (this.stale || !this.agent) {
@@ -391,15 +394,19 @@ export class CursorChatSession implements ChatProviderSession {
       : mode ? undefined : this.info.prePlanPermissionMode
     if (mode) cursorPermissions(mode, prePlan)
     const permissionChanged = mode && (mode !== this.info.permissionMode || prePlan !== this.info.prePlanPermissionMode)
+    const needsRestart = permissionChanged && this.ranUnsandboxed && cursorPermissions(mode, prePlan).sandboxOptions.enabled
+    // The restart would drop the running turn's queue, so it waits for a quiet chat.
+    if (needsRestart && (this.active || this.queue.length)) throw new Error("Cursor restarts the chat to turn its sandbox on; switch once this turn has finished and nothing is queued")
     if (permissionChanged) this.stale = true
     const effort = change.effort ?? (this.info.effort && model?.efforts?.includes(this.info.effort) ? this.info.effort : undefined)
     const fast = (change.fast ?? this.info.fast) && model?.supportsFast ? true : undefined
     this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, fast, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
-    if (permissionChanged && this.ranUnsandboxed && cursorPermissions(mode, prePlan).sandboxOptions.enabled) {
+    if (needsRestart) {
       this.emitItems(this.mapper.notice('info', "Restarting this chat so Cursor's sandbox can turn on."))
       this.listeners.restart.forEach((listener) => listener())
     }
   }
+  hostNotice(level: 'info' | 'error', text: string): void { this.emitItems(this.mapper.notice(level, text)) }
   searchFiles(query: string): Promise<ChatFileSearchResult> { return this.files.search(query) }
   async controlTask(_action: ChatTaskAction, _agentId: string, _toolUseId: string): Promise<void> { throw new Error('Cursor subagent controls are not available in this chat') }
   async subagentTranscript(_agentId: string): Promise<ChatSubagentTranscript> { return { items: [], error: 'Cursor subagent transcripts are not available in this chat' } }
