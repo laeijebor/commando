@@ -365,5 +365,6 @@ export function providerLabel(provider: AgentProvider): string {
   if (provider === 'codex') return 'Codex'
   if (provider === 'opencode') return 'OpenCode'
   if (provider === 'cursor') return 'Cursor'
+  if (provider === 'muse') return 'Muse'
   return 'Agent'
 }
