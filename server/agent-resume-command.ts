@@ -288,7 +288,7 @@ export function launchFromProcess(
 
 const CHAT_HOST_ENTRY = '/server/agent-host/main.ts'
 const CHAT_FLAGS: FlagSpec = {
-  bare: ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--fast'],
+  bare: ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--fast', '--yolo'],
   single: ['--config-dir', '--model', '--effort', '--permission-mode', '--pre-plan-permission-mode', '--claude-path', '--readable-dir'],
   dropped: ['--resume'],
 }

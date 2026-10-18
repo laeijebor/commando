@@ -76,8 +76,12 @@ function grantRank(provider: string, mode: ChatPermissionMode): number {
   return provider === 'muse-chat' && mode === 'acceptEdits' ? PERMISSION_RANK.acceptEdits : effectiveRank(provider, mode)
 }
 
-function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>): number {
-  return grantRank(chatLaunchProvider(chat.provider), launchMode(chat))
+function chatRank(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode' | 'sandboxed'>): number {
+  const mode = launchMode(chat)
+  // Earlier Muse hosts ran bypassPermissions inside the sandbox. Only a host that says its
+  // sandbox is off grants full access; any other Muse bypass grants what its sandbox allows.
+  if (chat.provider === 'muse' && mode === 'bypassPermissions' && chat.sandboxed !== false) return grantRank('muse-chat', 'acceptEdits')
+  return grantRank(chatLaunchProvider(chat.provider), mode)
 }
 
 /** The most permissive mode `provider` supports that does not exceed what `rank` allows, if any does. */
@@ -89,7 +93,7 @@ function inheritedMode(provider: ChatLaunchProvider, rank: number): ChatPermissi
 }
 
 /** The mode a chat started from `chat` gets: as permissive as it, never more. */
-export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode'>, provider: ChatLaunchProvider): ChatPermissionMode {
+export function inheritedChatPermissionMode(chat: Pick<ChatSessionInfo, 'provider' | 'permissionMode' | 'sandboxed'>, provider: ChatLaunchProvider): ChatPermissionMode {
   return inheritedMode(provider, chatRank(chat)) ?? 'plan'
 }
 

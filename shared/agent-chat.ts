@@ -387,6 +387,8 @@ export interface ChatSessionInfo {
   permissionMode?: string
   /** Bypass needs a flag at launch, so only a chat started with it can switch to it. */
   bypassAllowed?: boolean
+  /** Muse only: false when the host runs without Muse's sandbox (full access). Absent means sandboxed. */
+  sandboxed?: boolean
   models?: ChatModelOption[]
   contextUsage?: ChatContextUsage
   /** Plan rate limits; absent before the first reading and for API-key logins. */
@@ -951,6 +953,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(isChatEffort(value.effort) ? { effort: value.effort } : {}),
     ...(value.fast === true ? { fast: true } : {}),
     ...(value.bypassAllowed === true ? { bypassAllowed: true } : {}),
+    ...(typeof value.sandboxed === 'boolean' ? { sandboxed: value.sandboxed } : {}),
     ...(login ? { login } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),

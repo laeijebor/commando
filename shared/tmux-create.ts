@@ -116,6 +116,8 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       ...(launch.provider === 'claude-chat' && launch.configDir ? ['--config-dir', launch.configDir] : []),
       '--permission-mode', launch.permissionMode ?? (launch.provider === 'cursor-chat' ? 'bypassPermissions' : 'default'),
       ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
+      // Muse full access must be named: a bare bypassPermissions from before it existed stays sandboxed.
+      ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),

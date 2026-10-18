@@ -961,7 +961,7 @@ describe('Codex chat creation', () => {
     const run = runner()
     const response = await new TmuxCreator(run, [], undefined, vi.fn(), {}).createSession({ name: 'muse-chat', cwd: '/tmp', agent: { provider: 'muse-chat', permissionMode: 'bypassPermissions', prompt: 'Hello' } })
     expect(response.agentLaunch).toMatchObject({ provider: 'muse-chat', paneId: '%12' })
-    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'muse', '--permission-mode', 'bypassPermissions', '--prompt', 'Hello'], undefined, {}))
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'muse', '--permission-mode', 'bypassPermissions', '--yolo', '--prompt', 'Hello'], undefined, {}))
     for (const settings of [{ permissionMode: 'plan' }, { configDir: '/Users/dev/.claude' }]) {
       await expect(new TmuxCreator(runner(), []).createSession({ name: 'test', agent: { provider: 'muse-chat', ...settings } } as never)).rejects.toThrow(/Muse/)
     }

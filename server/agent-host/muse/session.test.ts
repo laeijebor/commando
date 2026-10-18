@@ -71,7 +71,7 @@ async function running() {
 
 describe('MuseChatSession', () => {
   it('starts a session in the pane folder with the chat\'s approval mode, then lists models and skills', async () => {
-    const { session, client } = harness({ permissionMode: 'bypassPermissions' })
+    const { session, client } = harness({ permissionMode: 'bypassPermissions', fullAccess: true })
     await session.start()
     await tick()
     expect(client.sent('session/start')).toEqual([{ commandId: expect.stringMatching(V7), workspaceRoot: '/repo', approvalMode: 'allowAll' }])
@@ -267,22 +267,23 @@ describe('MuseChatSession', () => {
     expect(client.sent('session/setModel')).toMatchObject([{ model: { modelId: 'muse-spark-1.3' } }])
     expect(client.sent('session/setReasoningEffort')).toMatchObject([{ reasoningEffort: 'low' }])
     expect(client.sent('session/setApprovalMode')).toMatchObject([{ mode: 'allowAll' }])
-    expect(session.snapshot().session).toMatchObject({ selectedModel: 'muse-spark-1.3', effort: 'low', permissionMode: 'acceptEdits', bypassAllowed: false })
+    expect(session.snapshot().session).toMatchObject({ selectedModel: 'muse-spark-1.3', effort: 'low', permissionMode: 'acceptEdits', bypassAllowed: false, sandboxed: true })
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('permission mode plan') })
   })
 
   it.each([
-    ['bypassPermissions', 'serve --trust-workspace --disable-sandbox'],
-    ['acceptEdits', 'serve --trust-workspace'],
-    ['default', 'serve --trust-workspace'],
-  ] as const)('starts muse serve without the sandbox only for full access (%s)', async (permissionMode, argv) => {
+    ['bypassPermissions', true, 'serve --trust-workspace --disable-sandbox'],
+    ['bypassPermissions', false, 'serve --trust-workspace'],
+    ['acceptEdits', true, 'serve --trust-workspace'],
+    ['default', true, 'serve --trust-workspace'],
+  ] as const)('starts muse serve without the sandbox only for full access (%s, --yolo: %s)', async (permissionMode, fullAccess, argv) => {
     const dir = await mkdtemp(join(tmpdir(), 'commando-muse-args-'))
     try {
       // A stand-in muse that records its arguments and exits, so the start fails harmlessly.
       const executable = join(dir, 'muse')
       await writeFile(executable, `#!/bin/sh\necho "$@" > '${join(dir, 'argv')}'\n`)
       await chmod(executable, 0o755)
-      const session = new MuseChatSession({ paneId: '%3', cwd: dir, permissionMode, env: {} }, undefined, executable)
+      const session = new MuseChatSession({ paneId: '%3', cwd: dir, permissionMode, fullAccess, env: {} }, undefined, executable)
       await session.start()
       expect((await readFile(join(dir, 'argv'), 'utf8')).trim()).toBe(argv)
     } finally {
@@ -290,11 +291,18 @@ describe('MuseChatSession', () => {
     }
   })
 
-  it('keeps a full-access chat in full access, since its host runs without the sandbox', async () => {
+  it('runs a bypassPermissions launch without --yolo, from before full access existed, inside the sandbox', async () => {
     const { session, client } = harness({ permissionMode: 'bypassPermissions' })
     await session.start()
     expect(client.sent('session/start')).toMatchObject([{ approvalMode: 'allowAll' }])
-    expect(session.snapshot().session).toMatchObject({ permissionMode: 'bypassPermissions', bypassAllowed: true })
+    expect(session.snapshot().session).toMatchObject({ permissionMode: 'acceptEdits', bypassAllowed: false, sandboxed: true })
+  })
+
+  it('keeps a full-access chat in full access, since its host runs without the sandbox', async () => {
+    const { session, client } = harness({ permissionMode: 'bypassPermissions', fullAccess: true })
+    await session.start()
+    expect(client.sent('session/start')).toMatchObject([{ approvalMode: 'allowAll' }])
+    expect(session.snapshot().session).toMatchObject({ permissionMode: 'bypassPermissions', bypassAllowed: true, sandboxed: false })
     await session.configure({ permissionMode: 'default' })
     expect(client.sent('session/setApprovalMode')).toEqual([])
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('stays in full access') })
