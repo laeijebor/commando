@@ -24,7 +24,7 @@ export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, act
   const selectionKey = `${host?.id}:${paneId}`
   const [selected, setSelected] = useState(() => selectedPaneTab(selectionKey))
   const summary = usePollingQuery(`git:${host?.id}:${host?.baseUrl}:${paneId}`, () => fetchGitSummary(host!, paneId!), foreground && Boolean(host && paneId)).data
-  const prs = usePanePrs(host, paneId ? [paneId] : [], foreground).flatMap((list) => list.pullRequests)
+  const prs = usePanePrs(host, paneId ? [paneId] : [], foreground).flatMap((result) => result.data?.pullRequests ?? [])
   const tabs = paneTabs({ paneId: paneId ?? '', chat, webPanes: state.webPanes, summary, prs, dismissed: state.dismissedPrTabs?.[paneId ?? ''] })
   const strip = useRef<ScrollView>(null)
   const scrollX = useRef(0)
