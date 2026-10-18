@@ -20,7 +20,6 @@ import { useDaemonStore } from '../src/daemon/store'
 import { EMPTY_HOST_STATE } from '../src/daemon/state'
 import { useHostsStore } from '../src/hosts/store'
 import { hostLabel, type Host, type HostReachability } from '../src/hosts/types'
-import { autoDemoEnabled, isDemoHost } from '../src/demo/flags'
 import { relativeTime } from '../src/time'
 import { useTheme } from '../src/theme'
 import { Button, Card, Dot, EmptyState, ScreenTitle } from '../src/ui/primitives'
@@ -31,6 +30,8 @@ export default function HostsScreen(): React.JSX.Element {
   const router = useRouter()
   const hosts = useHostsStore((state) => state.hosts)
   const hydrated = useHostsStore((state) => state.hydrated)
+  const initialHostId = useHostsStore((state) => state.initialHostId)
+  const rememberHost = useHostsStore((state) => state.rememberHost)
   const reachability = useHostsStore((state) => state.reachability)
   const cookies = useHostsStore((state) => state.cookies)
   const removeHost = useHostsStore((state) => state.removeHost)
@@ -39,9 +40,10 @@ export default function HostsScreen(): React.JSX.Element {
   const [editing, setEditing] = useState(false)
 
   useEffect(() => {
-    const demo = hosts.find(isDemoHost)
-    if (hydrated && autoDemoEnabled() && demo) router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: demo.id } })
-  }, [hosts, hydrated, router])
+    if (!hydrated || !initialHostId) return
+    rememberHost(initialHostId)
+    router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: initialHostId } })
+  }, [hydrated, initialHostId, rememberHost, router])
 
   // Badge counts come from the live snapshot, so reachable hosts get a socket
   // as soon as the list appears.
@@ -129,7 +131,10 @@ function HostCard({
 
   const openHost = useCallback(() => {
     if (status === 'unauthorized') onSignIn()
-    else router.push({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
+    else {
+      useHostsStore.getState().rememberHost(host.id)
+      router.push({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
+    }
   }, [host.id, onSignIn, router, status])
 
   return (

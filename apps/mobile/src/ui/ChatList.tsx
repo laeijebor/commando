@@ -148,7 +148,7 @@ const SessionListRow = memo(function SessionListRow({ row, host, active, select 
   </View>
 }, (a, b) => a.host === b.host && a.active === b.active && a.select === b.select && JSON.stringify(a.row) === JSON.stringify(b.row))
 const styles = StyleSheet.create({
-  list: { flex: 1, minHeight: 0 }, content: { paddingHorizontal: 16, paddingBottom: 112 },
+  list: { flex: 1, minHeight: 0, overflow: 'hidden' }, content: { paddingHorizontal: 16, paddingBottom: 112 },
   groupHead: { minHeight: 48, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 4 },
   groupName: { fontSize: 14, fontWeight: '600', flexShrink: 1 }, count: { fontSize: 12, fontVariant: ['tabular-nums'] }, rule: { height: StyleSheet.hairlineWidth, flex: 1, marginLeft: 3 },
   row: { minHeight: 70, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 6, paddingVertical: 10, borderRadius: 9 }, indicator: { width: 12, alignItems: 'center' },

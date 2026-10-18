@@ -231,9 +231,6 @@ export function PaneInfoSections({
                                 ? theme.muted
                                 : theme.text,
                             },
-                            task.status === 'completed' || task.status === 'cancelled'
-                              ? [styles.taskDone, { textDecorationColor: theme.textDim }]
-                              : null,
                           ]}
                         >
                           {task.content}
@@ -829,7 +826,6 @@ const styles = StyleSheet.create({
   },
   taskTick: { fontSize: 10, color: '#0a1c14', fontWeight: '800' },
   taskLabel: { fontSize: 14, lineHeight: 19, flex: 1 },
-  taskDone: { textDecorationLine: 'line-through' },
   timeline: { gap: 8 },
   timelineRow: { flexDirection: 'row', gap: 8, alignItems: 'flex-start' },
   kindBadge: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, marginTop: 1 },

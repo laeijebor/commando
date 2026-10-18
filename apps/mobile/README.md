@@ -27,10 +27,11 @@ only. Bundle id `com.commando.companion`.
   opens the existing full-screen tile route with its interaction/review controls;
   native content explains its host-only view, and WebKit offers reopening.
 - **Demo studio (development only)** — add address `demo`, or launch Metro with
-  `EXPO_PUBLIC_COMMANDO_DEMO=1` to add/select it automatically. The in-memory
+  `EXPO_PUBLIC_COMMANDO_DEMO=1` to add it and select it on a fresh install.
+  Tap the Chats header’s host name to return to Hosts and add a real daemon. The in-memory
   host seeds four repos, eight sessions, four providers, questions, rich turns,
   worklogs, changes, PRs and browser/simulator/canvas/guide tabs. Sending produces
-  a short two-step reply. Unsupported actions fail locally. Production builds
+  a short streamed reply. Unsupported actions fail locally. Production builds
   exclude the fake transport; saved demo hosts are filtered out.
 - **Theme** — the five desktop themes, ported token for token from
   `src/styles.css`, with the choice persisted.

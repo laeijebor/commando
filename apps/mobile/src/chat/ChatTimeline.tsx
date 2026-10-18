@@ -69,6 +69,10 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider }: {
           contentContainerStyle={styles.content}
           data={data}
           inverted
+          // SafeAreaView and our own header already account for iOS chrome.
+          contentInsetAdjustmentBehavior="never"
+          automaticallyAdjustContentInsets={false}
+          automaticallyAdjustKeyboardInsets={false}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           keyExtractor={(entry) => entry.id}
@@ -444,7 +448,7 @@ const styles = StyleSheet.create({
   list: { flex: 1, minHeight: 0, overflow: 'hidden' },
   jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   jumpLabel: { fontSize: 12.5, fontWeight: '700' },
-  content: { paddingHorizontal: 20, paddingVertical: 24, flexGrow: 1, width: '100%', maxWidth: 776, alignSelf: 'center' },
+  content: { paddingHorizontal: 20, paddingVertical: 24, flexGrow: 1, justifyContent: 'flex-end', width: '100%', maxWidth: 776, alignSelf: 'center' },
   // Inverted: this sits at the bottom, under the newest turn.
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center', transform: [{ scaleY: -1 }] },
   emptyText: { fontSize: 14 },

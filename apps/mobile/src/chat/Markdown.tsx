@@ -30,14 +30,14 @@ function lex(text: string): Token[] {
   }
 }
 
-function blocks(tokens: readonly Token[], theme: Theme, base: TextStyle, key: string): ReactNode[] {
+function blocks(tokens: readonly Token[], theme: Theme, base: TextStyle, key: string, completed = false): ReactNode[] {
   return tokens.flatMap((token, index) => {
-    const node = block(token, theme, base, `${key}.${index}`)
+    const node = block(token, theme, base, `${key}.${index}`, completed)
     return node === null ? [] : [node]
   })
 }
 
-function block(token: Token, theme: Theme, base: TextStyle, key: string): ReactNode {
+function block(token: Token, theme: Theme, base: TextStyle, key: string, completed: boolean): ReactNode {
   switch (token.type) {
     case 'space':
     case 'def':
@@ -45,13 +45,13 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string): ReactN
     case 'paragraph':
     case 'text': {
       const item = token as Tokens.Paragraph | Tokens.Text
-      return <Text key={key} selectable style={base}>{item.tokens ? inline(item.tokens, theme, key) : item.text}</Text>
+      return <Text key={key} selectable style={base}>{item.tokens ? inline(item.tokens, theme, key, completed) : item.text}</Text>
     }
     case 'heading': {
       const heading = token as Tokens.Heading
       return (
-        <Text key={key} selectable style={[base, styles.heading, { color: theme.text, fontSize: heading.depth <= 2 ? 17 : 15.5 }]}>
-          {inline(heading.tokens, theme, key)}
+        <Text key={key} selectable style={[base, styles.heading, { color: completed ? theme.muted : theme.text, fontSize: heading.depth <= 2 ? 17 : 15.5 }]}>
+          {inline(heading.tokens, theme, key, completed)}
         </Text>
       )
     }
@@ -60,7 +60,7 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string): ReactN
     case 'blockquote':
       return (
         <View key={key} style={[styles.quote, { borderLeftColor: theme.borderStrong }]}>
-          {blocks((token as Tokens.Blockquote).tokens, theme, { ...base, color: theme.muted }, key)}
+          {blocks((token as Tokens.Blockquote).tokens, theme, { ...base, color: theme.muted }, key, completed)}
         </View>
       )
     case 'list': {
@@ -70,10 +70,10 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string): ReactN
         <View key={key} style={styles.list}>
           {list.items.map((item, index) => (
             <View key={`${key}.${index}`} style={styles.listItem}>
-              <Text style={[base, styles.marker, { color: theme.muted }]}>
-                {item.task ? (item.checked ? '☑' : '☐') : list.ordered ? `${start + index}.` : '•'}
+              <Text style={[base, styles.marker, { color: item.task && item.checked ? theme.green : theme.muted }]}>
+                {item.task ? (item.checked ? '✓' : '☐') : list.ordered ? `${start + index}.` : '•'}
               </Text>
-              <View style={styles.listBody}>{blocks(item.tokens, theme, base, `${key}.${index}`)}</View>
+              <View style={styles.listBody}>{blocks(item.tokens, theme, item.task && item.checked ? { ...base, color: theme.muted } : base, `${key}.${index}`, completed || Boolean(item.task && item.checked))}</View>
             </View>
           ))}
         </View>
@@ -90,23 +90,23 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string): ReactN
   }
 }
 
-function inline(tokens: readonly Token[], theme: Theme, key: string): ReactNode[] {
+function inline(tokens: readonly Token[], theme: Theme, key: string, completed = false): ReactNode[] {
   return tokens.map((token, index) => {
     const id = `${key}.${index}`
     switch (token.type) {
       case 'strong':
-        return <Text key={id} style={[styles.strong, { color: theme.text }]}>{inline((token as Tokens.Strong).tokens, theme, id)}</Text>
+        return <Text key={id} style={[styles.strong, { color: completed ? theme.muted : theme.text }]}>{inline((token as Tokens.Strong).tokens, theme, id, completed)}</Text>
       case 'em':
-        return <Text key={id} style={styles.em}>{inline((token as Tokens.Em).tokens, theme, id)}</Text>
+        return <Text key={id} style={styles.em}>{inline((token as Tokens.Em).tokens, theme, id, completed)}</Text>
       case 'del':
-        return <Text key={id} style={styles.del}>{inline((token as Tokens.Del).tokens, theme, id)}</Text>
+        return <Text key={id} style={completed ? undefined : styles.del}>{inline((token as Tokens.Del).tokens, theme, id, completed)}</Text>
       case 'codespan':
-        return <Text key={id} style={[styles.codespan, { color: theme.text, backgroundColor: theme.surfaceSoft }]}>{decode((token as Tokens.Codespan).text)}</Text>
+        return <Text key={id} style={[styles.codespan, { color: completed ? theme.muted : theme.text, backgroundColor: theme.surfaceSoft }]}>{decode((token as Tokens.Codespan).text)}</Text>
       case 'link': {
         const link = token as Tokens.Link
         return (
-          <Text key={id} style={{ color: theme.accent }} onPress={() => { void Linking.openURL(link.href).catch(() => undefined) }}>
-            {inline(link.tokens, theme, id)}
+          <Text key={id} style={{ color: completed ? theme.muted : theme.accent }} onPress={() => { void Linking.openURL(link.href).catch(() => undefined) }}>
+            {inline(link.tokens, theme, id, completed)}
           </Text>
         )
       }
@@ -117,7 +117,7 @@ function inline(tokens: readonly Token[], theme: Theme, key: string): ReactNode[
         return '\n'
       case 'text': {
         const text = token as Tokens.Text
-        return text.tokens ? <Text key={id}>{inline(text.tokens, theme, id)}</Text> : decode(text.text)
+        return text.tokens ? <Text key={id}>{inline(text.tokens, theme, id, completed)}</Text> : decode(text.text)
       }
       case 'escape':
         return decode((token as Tokens.Escape).text)

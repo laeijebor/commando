@@ -19,7 +19,9 @@ import { EmptyState, ScreenTitle, SectionHeader } from '../../../src/ui/primitiv
 export default function TilesScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
-  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  const { hostId: routeHostId } = useLocalSearchParams<{ hostId?: string }>()
+  const selectedHostId = useHostsStore((store) => store.selectedHostId)
+  const hostId = routeHostId ?? selectedHostId
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const state = useDaemonConnection(host)
 

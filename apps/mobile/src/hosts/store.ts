@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { readPreference, writePreference } from '../prefs'
 
 import { DEMO_ORIGIN, autoDemoEnabled, demoHost, isDemoHost } from '../demo/flags'
 import { disconnectHost } from '../daemon/client'
@@ -8,9 +9,15 @@ import { probeHost } from './api'
 import { createHostId, loadHosts, saveHosts } from './storage'
 import { normaliseBaseUrl, type Host, type HostAuth, type HostReachability } from './types'
 
+export const SELECTED_HOST_KEY = 'commando.hosts.selection'
+
 type HostsState = {
   hosts: Host[]
   hydrated: boolean
+  selectedHostId: string | null
+  /** Consumed once by the root screen; returning to Hosts must never redirect. */
+  initialHostId: string | null
+  rememberHost: (id: string | null) => void
   reachability: Record<string, HostReachability>
   /** Session cookie captured at sign-in, for sockets that skip the cookie jar. */
   cookies: Record<string, string>
@@ -26,15 +33,27 @@ type HostsState = {
 export const useHostsStore = create<HostsState>((set, get) => ({
   hosts: [],
   hydrated: false,
+  selectedHostId: null,
+  initialHostId: null,
   reachability: {},
   cookies: {},
 
   hydrate: async () => {
-    const saved = await loadHosts()
+    if (get().hydrated) return
+    const [saved, remembered] = await Promise.all([loadHosts(), readPreference(SELECTED_HOST_KEY)])
+    if (get().hydrated) return
     const hosts = saved.filter((host) => __DEV__ || host.baseUrl !== DEMO_ORIGIN)
     if (autoDemoEnabled() && !hosts.some(isDemoHost)) hosts.unshift(demoHost())
-    set({ hosts, hydrated: true })
+    const initialHostId = autoDemoEnabled() && saved.length === 0 && !remembered ? hosts.find(isDemoHost)?.id ?? null : null
+    set({ hosts, hydrated: true, initialHostId, selectedHostId: hosts.some((host) => host.id === remembered) ? remembered : null })
+    if (hosts.length !== saved.length) await saveHosts(hosts)
     await get().refreshAll()
+  },
+
+  rememberHost: (id) => {
+    if (id === get().selectedHostId && !get().initialHostId) return
+    set({ selectedHostId: id, initialHostId: null })
+    void writePreference(SELECTED_HOST_KEY, id ?? 'hosts')
   },
 
   addHost: async ({ name, baseUrl, auth }) => {
@@ -60,6 +79,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   removeHost: async (id) => {
     // The socket outlives the screen that opened it, so a removed host would
     // otherwise keep reconnecting to an address the owner has deleted.
+    if (get().selectedHostId === id) get().rememberHost(null)
     disconnectHost(id)
     useDaemonStore.getState().reset(id)
     await usePushStore.getState().forgetHost(id)

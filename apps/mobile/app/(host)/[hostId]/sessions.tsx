@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
-import { Pressable, StyleSheet } from 'react-native'
+import { Pressable, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
@@ -69,10 +69,10 @@ export default function SessionsScreen(): React.JSX.Element {
 
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
-      <ScreenTitle
+      <View style={[styles.header, { backgroundColor: theme.bg }]}><ScreenTitle
         title="Chats"
-        trailing={<Pill label={host?.name ?? 'host'} tone="mute" />}
-      />
+        trailing={<Pressable accessibilityRole="button" accessibilityLabel="Show hosts" hitSlop={8} style={styles.hostButton} onPress={() => { useHostsStore.getState().rememberHost(null); router.replace('/') }}><Pill label={host?.name ?? 'host'} tone="mute" /></Pressable>}
+      /></View>
         <SessionsPanel active={focused} refreshing={refreshing} onRefresh={() => {
           if (!hostId) return
           setRefreshing(true)
@@ -102,6 +102,8 @@ export default function SessionsScreen(): React.JSX.Element {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  header: { zIndex: 2 },
+  hostButton: { minHeight: 44, justifyContent: 'center' },
   fab: {
     position: 'absolute',
     right: 20,

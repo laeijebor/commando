@@ -88,7 +88,6 @@ function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: Pa
       <PaneNav
         {...(onBack ? { onBack } : {})}
         {...(onInfo ? { onInfo } : {})}
-        provider={chat.session.provider}
         identity={sessionIdentityForName(identities ?? {}, context.title)}
         subtitle={`${sessionIdentityForName(identities ?? {}, context.title).codename} · ${providerPresentation(chat.session.provider).name} · ${chatStatusWord(chat.session.status)}`}
         title={context.title}

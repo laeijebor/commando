@@ -210,6 +210,7 @@ function CockpitStatusRow({
   onOpenSessions?: (() => void) | undefined
 }): React.JSX.Element {
   const theme = useTheme()
+  const router = useRouter()
   const live = state.phase === 'live'
   return (
     <View style={[styles.statusRow, { borderBottomColor: theme.border }]}>
@@ -224,7 +225,7 @@ function CockpitStatusRow({
           <Text style={[styles.statusButtonLabel, { color: theme.accent }]}>Sessions</Text>
         </Pressable>
       ) : null}
-      <Text style={[styles.statusHost, { color: theme.text }]}>{host?.name ?? 'host'}</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel="Show hosts" hitSlop={10} onPress={() => { useHostsStore.getState().rememberHost(null); router.replace('/') }}><Text style={[styles.statusHost, { color: theme.text }]}>{host?.name ?? 'host'}</Text></Pressable>
       <Dot size={7} tone={live ? 'green' : state.phase === 'unauthorized' ? 'amber' : 'muted'} />
       <Text style={[styles.statusDetail, { color: theme.muted }]} numberOfLines={1}>
         {live ? 'live' : state.detail}

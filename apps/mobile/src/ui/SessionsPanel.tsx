@@ -100,7 +100,7 @@ export function SessionsPanel({
 
   return (
     <View style={styles.panel}>
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: theme.bg }]}>
         <Segmented options={VIEW_OPTIONS} onChange={onChangeView} value={view} />
         {state.phase !== 'live' ? (
         <Text style={[styles.connection, { color: theme.muted }]}>{state.detail}</Text>
@@ -134,7 +134,7 @@ export function SessionsPanel({
 
 const styles = StyleSheet.create({
   panel: { flex: 1, minHeight: 0, gap: 12 },
-  header: { paddingHorizontal: 16, gap: 12 },
+  header: { paddingHorizontal: 16, gap: 12, zIndex: 1 },
   scroll: { paddingHorizontal: 16, paddingBottom: 112, gap: 12 },
   connection: { fontSize: 12.5 },
 })
