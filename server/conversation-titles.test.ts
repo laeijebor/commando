@@ -43,6 +43,19 @@ async function setup(count = 1) {
 }
 
 describe('ConversationTitles', () => {
+  it('gives up on a record whose transcript is not indexed, so later ticks skip the index', async () => {
+    const fixture = await setup()
+    fixture.conversations.splice(0)
+    const generator = new ConversationTitles(fixture.options)
+    await generator.tick()
+    await generator.tick()
+    expect(fixture.options.index.list).toHaveBeenCalledTimes(1)
+    expect(fixture.spawn).not.toHaveBeenCalled()
+    const reloaded = new ConversationTitles(fixture.options)
+    await reloaded.tick()
+    expect(fixture.options.index.list).toHaveBeenCalledTimes(1)
+  })
+
   it('uses resolved Haiku print mode, transcript context and the conversation profile', async () => {
     const fixture = await setup()
     await new ConversationTitles(fixture.options).tick()

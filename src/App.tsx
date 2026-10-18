@@ -3030,8 +3030,9 @@ export function App() {
     if (!connected || area !== 'workspace' || paletteOpen || reopeningConversation.current) return
     reopeningConversation.current = true
     try {
-      const conversation = (await loadConversations()).filter((entry) => entry.session && entry.paneOpen === false)
-        .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+      // Most recently closed, not most recently written; skip any that is open somewhere after all.
+      const conversation = (await loadConversations()).filter((entry) => entry.session && entry.paneOpen === false && !entry.openPaneId)
+        .sort((a, b) => (b.closedAt ?? b.updatedAt) - (a.closedAt ?? a.updatedAt))[0]
       if (!conversation) {
         const message = 'No closed agent conversation to reopen'
         setPaneActionError(message)
