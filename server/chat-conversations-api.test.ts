@@ -93,7 +93,7 @@ describe('ChatConversationsApi', () => {
 
   it('enriches only indexed conversations with their live session, group, headline, links and Claude profile', async () => {
     const record: ConversationBriefRecord = { provider: 'claude', id: ID, sessionId: '$1', sessionName: 'vivi', paneOpen: false,
-      headline: 'Session picker ready', updatedAt: 10, references: [
+      title: 'Stable picker title', headline: 'Session picker ready', updatedAt: 10, references: [
         { kind: 'url', value: 'https://example.com/preview' },
         { kind: 'issue', value: 'https://example.com/540', label: 'PR #540' },
         { kind: 'deployment', value: 'https://example.com/deploy', label: 'Preview', url: 'https://example.com/custom' },
@@ -106,7 +106,7 @@ describe('ChatConversationsApi', () => {
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
     expect(result).toMatchObject({ status: 200, body: { conversations: [{ ...conversation,
-      session: { id: '$1', name: 'vivi', group: 'Subscriptions' }, headline: 'Session picker ready', paneOpen: false, profile: 'claudep', refs: [
+      session: { id: '$1', name: 'vivi', group: 'Subscriptions' }, agentTitle: 'Stable picker title', headline: 'Session picker ready', paneOpen: false, profile: 'claudep', refs: [
         { label: 'https://example.com/preview', url: 'https://example.com/preview' },
         { label: 'PR #540', url: 'https://example.com/540' }, { label: 'Preview', url: 'https://example.com/custom' },
       ],

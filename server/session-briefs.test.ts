@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, SessionBrief } from '../shared/protocol.js'
 import { AgentStatusRegistry } from './agent-status-registry.js'
 import { association } from './cursor-hook-test-fixtures.js'
-import { defaultSessionBriefStatePath, parseSessionBrief, SessionBriefStore } from './session-briefs.js'
+import { defaultSessionBriefStatePath, parseSessionBrief, SessionBriefStore, validSessionCommand } from './session-briefs.js'
 
 const directories: string[] = []
 
@@ -725,6 +725,7 @@ describe('agent sessions in one pane', () => {
     const briefs = await store()
     await briefs.syncFromStatuses('$1', 'work', [claude(first, 10, 'Fix login')], 10)
     await briefs.applyAgentPatch('$1', 'work', '%1', {
+      title: 'Fix login refresh',
       headline: 'Login fix',
       recapMarkdown: 'Fixed the token refresh.',
       reference: { action: 'upsert', kind: 'session', value: `claudep --resume ${first}` },
@@ -735,6 +736,7 @@ describe('agent sessions in one pane', () => {
     const brief = briefs.get('%1')!
     expect(brief.agentSession).toEqual({ provider: 'claude', id: second })
     expect(brief.headline).not.toBe('Login fix')
+    expect(brief).not.toHaveProperty('title')
     expect(brief).not.toHaveProperty('recapMarkdown')
     expect(brief).not.toHaveProperty('references')
     expect(brief.tasks?.map((task) => task.content)).toEqual(['Write docs task'])
@@ -742,6 +744,7 @@ describe('agent sessions in one pane', () => {
     expect(brief.earlierSessions).toHaveLength(1)
     expect(brief.earlierSessions![0]).toMatchObject({
       agentSession: { provider: 'claude', id: first },
+      title: 'Fix login refresh', titleSource: 'agent',
       headline: 'Login fix',
       recapMarkdown: 'Fixed the token refresh.',
       references: [{ kind: 'session', value: `claudep --resume ${first}` }],
@@ -874,7 +877,7 @@ describe('conversationRecords', () => {
     const briefs = await store()
     const target = '550e8400-e29b-41d4-a716-446655440000'
     const base: SessionBrief = { paneId: '%1', targetId: target, sessionId: '$1', sessionName: 'vivi', state: 'done',
-      headline: 'Agent headline', headlineSource: 'agent', updates: [], updatedAt: 10,
+      title: 'Stable agent title', titleSource: 'agent', headline: 'Agent headline', headlineSource: 'agent', updates: [], updatedAt: 10,
       agentSession: { provider: 'claude', id: 'conversation-1' }, references: [{ kind: 'issue', value: 'https://example.com/540', label: 'PR #540' }] }
     const detached: SessionBrief = { ...base, paneId: '%9', sessionId: '$9', sessionName: 'closed', updatedAt: 100,
       headline: 'Newer but detached', earlierSessions: [
@@ -896,7 +899,7 @@ describe('conversationRecords', () => {
     const records = briefs.conversationRecords()
     expect(records).toHaveLength(5)
     expect(records.find((record) => record.id === 'conversation-1')).toEqual({ provider: 'claude', id: 'conversation-1',
-      sessionId: '$1', sessionName: 'vivi', targetId: target, paneOpen: true, headline: 'Agent headline', references: base.references, updatedAt: 10 })
+      sessionId: '$1', sessionName: 'vivi', targetId: target, paneOpen: true, title: 'Stable agent title', latestHeadline: 'Agent headline', headline: 'Agent headline', references: base.references, updatedAt: 10 })
     expect(records.find((record) => record.id === 'conversation-2')).toMatchObject({ sessionId: '$9', paneOpen: false, headline: 'Earlier work', updatedAt: 80 })
     for (const id of ['conversation-3', 'conversation-4', 'conversation-5']) {
       expect(records.find((record) => record.id === id)).not.toHaveProperty('headline')
@@ -906,5 +909,64 @@ describe('conversationRecords', () => {
     expect(briefs.conversationRecords().find((record) => record.id === 'conversation-1')?.references[0]?.label).toBe('PR #540')
     expect(await readFile(briefs.statePath, 'utf8')).toBe(before)
     expect(briefs.values()).toHaveLength(2)
+  })
+})
+
+
+describe('session command validation', () => {
+  it.each(['claudep --resume abcdefgh', '/Users/me/dev/commando/scripts/commando-agent claude --config-dir /Users/me/.claudep --permission-mode bypassPermissions --resume 340d7bfc-94bf-41e2-83f3-5771d220960b'])('accepts %s', (command) => {
+    expect(validSessionCommand(command)).toBe(true)
+  })
+  it.each(['~/bin/claude --resume abcdefgh', '/bin/claude;echo bad', 'claude && pwd', '/bin/claude | cat', 'claude "id"', "claude 'id'", '/bin/claude $ID', 'claude `pwd`', '/bin/claude\nwhoami', '/bin/claude\n', '/bin/claude\r', '/bin/claude > out', '/bin/claude < in', './claude --resume abcdefgh', '/ --resume abcdefgh'])('rejects %s', (command) => {
+    expect(validSessionCommand(command)).toBe(false)
+  })
+})
+
+describe('conversation titles', () => {
+  it('persists generated titles in live, earlier and detached records and preserves agent overrides', async () => {
+    const briefs = await store()
+    const targetId = '550e8400-e29b-41d4-a716-446655440000'
+    const detachedTarget = '550e8400-e29b-41d4-a716-446655440001'
+    const base: SessionBrief = { paneId: '%1', targetId, sessionId: '$1', sessionName: 'work', state: 'working',
+      headline: 'Latest turn', headlineSource: 'hook', updates: [], updatedAt: 10,
+      agentSession: { provider: 'claude', id: 'conversation-live' },
+      earlierSessions: [{ agentSession: { provider: 'codex', id: 'conversation-earlier' }, headline: 'Earlier topic', updates: [], endedAt: 5 }] }
+    await mkdir(dirname(briefs.statePath), { recursive: true })
+    await writeFile(briefs.statePath, JSON.stringify({ version: 4, briefs: { '%1': base }, detached: {
+      [detachedTarget]: { ...base, targetId: detachedTarget, paneId: '%2', agentSession: { provider: 'cursor', id: 'conversation-detached' }, earlierSessions: [] },
+    } }))
+    await briefs.load()
+    await briefs.applyGeneratedTitle({ provider: 'claude', id: 'conversation-live' }, 'Generated live topic')
+    await briefs.applyGeneratedTitle({ provider: 'codex', id: 'conversation-earlier' }, 'Generated earlier topic')
+    await briefs.applyGeneratedTitle({ provider: 'cursor', id: 'conversation-detached' }, 'Generated detached topic')
+    expect(briefs.get('%1')).toMatchObject({ title: 'Generated live topic', titleSource: 'generated', earlierSessions: [
+      { title: 'Generated earlier topic', titleSource: 'generated' },
+    ] })
+    await briefs.applyAgentPatch('$1', 'work', '%1', { title: '  Agent  chosen topic  ' }, 11)
+    await briefs.applyGeneratedTitle({ provider: 'claude', id: 'conversation-live' }, 'Late generated topic')
+    expect(briefs.get('%1')).toMatchObject({ title: 'Agent chosen topic', titleSource: 'agent' })
+    await briefs.reconcilePanes([{ paneId: '%3', targetId: detachedTarget, sessionId: '$2', sessionName: 'other' }])
+    const saved = new SessionBriefStore(briefs.statePath)
+    await saved.load()
+    expect(saved.get('%3')).toMatchObject({ title: 'Generated detached topic', titleSource: 'generated' })
+    expect(saved.conversationRecords().map((record) => record.title).sort()).toEqual([
+      'Agent chosen topic', 'Generated detached topic', 'Generated earlier topic',
+    ])
+    await saved.reconcilePanes([{ paneId: '%4', targetId, sessionId: '$1', sessionName: 'work' }])
+    expect(saved.get('%4')).toMatchObject({ title: 'Agent chosen topic', titleSource: 'agent' })
+    await saved.syncFromStatuses('$1', 'work', [{ ...status('%4', 'working', 20, 'Resumed'), provider: 'codex', agentSessionId: 'conversation-earlier' }], 20)
+    expect(saved.get('%4')).toMatchObject({ title: 'Generated earlier topic', titleSource: 'generated' })
+  })
+
+  it('starts untitled after an agent exits and preserves a title through hook turns', async () => {
+    const briefs = await store()
+    await briefs.syncFromStatuses('$1', 'work', [{ ...status('%1', 'working', 10, 'Work', 'Task'), provider: 'claude', agentSessionId: 'conversation-first' }], 10)
+    await briefs.applyAgentPatch('$1', 'work', '%1', { title: 'Stable agent topic' }, 11)
+    await briefs.syncFromStatuses('$1', 'work', [{ ...status('%1', 'working', 12, 'Next turn'), provider: 'claude', agentSessionId: 'conversation-first' }], 12)
+    expect(briefs.get('%1')?.title).toBe('Stable agent topic')
+    await briefs.markAgentExited('%1')
+    const next = await briefs.applyAgentPatch('$1', 'work', '%1', { headline: 'New conversation' }, 14)
+    expect(next).not.toHaveProperty('title')
+    expect(next.earlierSessions?.[0]).toMatchObject({ title: 'Stable agent topic', titleSource: 'agent' })
   })
 })

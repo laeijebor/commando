@@ -193,6 +193,8 @@ export type AgentSessionRef = { provider: AgentProvider; id: string }
 /** An agent conversation that ran earlier in the pane, kept read-only below its worklog. */
 export type EarlierAgentSession = {
   agentSession: AgentSessionRef
+  title?: string
+  titleSource?: 'agent' | 'generated'
   headline: string
   headlineSource?: 'hook' | 'agent'
   recapMarkdown?: string
@@ -207,6 +209,8 @@ export type EarlierAgentSession = {
 
 export type SessionBrief = {
   paneId: string
+  title?: string
+  titleSource?: 'agent' | 'generated'
   /** Stable ownership; absent only in legacy briefs. Session names are display metadata. */
   targetId?: string
   sessionId: string

@@ -125,6 +125,7 @@ export class ChatConversationsApi {
         ...(profile ? { profile } : {}),
         ...(brief ? {
           session: { id: brief.sessionId, name: brief.sessionName, ...(group ? { group } : {}) },
+          ...(brief.title ? { agentTitle: brief.title } : {}),
           ...(brief.headline ? { headline: brief.headline } : {}),
           refs: brief.references.filter((reference) => reference.kind === 'url' || reference.kind === 'issue' || reference.kind === 'deployment')
             .map((reference) => ({ label: reference.label ?? reference.value, url: reference.url ?? reference.value })),

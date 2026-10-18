@@ -26,6 +26,7 @@ export interface ChatConversation {
   /** The checkout (main or worktree) `cwd` is in. */
   checkoutRoot?: string
   session?: { id: string; name: string; group?: string }
+  agentTitle?: string
   headline?: string
   refs?: { label: string; url?: string }[]
   paneOpen?: boolean
@@ -62,7 +63,7 @@ export function chatConversationKey(provider: ChatConversationProvider, sessionI
 export function matchesChatConversation(conversation: ChatConversation, query: string): boolean {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
   const haystack = [conversation.session?.name, conversation.session?.group, conversation.headline,
-    conversation.title, ...(conversation.refs ?? []).map((ref) => ref.label), conversation.branch,
+    conversation.agentTitle, conversation.title, ...(conversation.refs ?? []).map((ref) => ref.label), conversation.branch,
     conversation.cwd, conversation.provider, conversation.profile].filter(Boolean).join(' ').toLowerCase()
   return words.every((word) => haystack.includes(word))
 }
@@ -124,6 +125,7 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
     const configDir = optionalString(entry.configDir)
     const repoRoot = optionalString(entry.repoRoot)
     const checkoutRoot = optionalString(entry.checkoutRoot)
+    const agentTitle = optionalString(entry.agentTitle, 80)
     const headline = optionalString(entry.headline, 500)
     const profile = optionalString(entry.profile, 500)
     const session = isRecord(entry.session) && optionalString(entry.session.id, 128) && optionalString(entry.session.name, 128)
@@ -142,6 +144,7 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
       updatedAt: entry.updatedAt,
       ...(branch ? { branch } : {}),
       ...(session ? { session } : {}),
+      ...(agentTitle ? { agentTitle } : {}),
       ...(headline ? { headline } : {}),
       ...(profile ? { profile } : {}),
       ...(refs ? { refs } : {}),

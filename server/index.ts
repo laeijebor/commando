@@ -1,4 +1,5 @@
 import { AgentChatsApi } from './agent-chats-api.js'
+import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
@@ -1878,6 +1879,8 @@ async function main(): Promise<void> {
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
   const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
+  conversationTitles.start()
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
     resumes: agentResume,
@@ -2828,6 +2831,7 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()
     simLogs.close()

@@ -11,6 +11,7 @@ import {
   mergeCodexNotify,
   generatedSimCli,
   generatedChatCli,
+  generatedSessionBriefCli,
   repairAgentStatusHooks,
 } from './agent-hook-installer.js'
 import { formatSimLabel } from './sim-leases.js'
@@ -243,6 +244,7 @@ describe('agent hook installer', () => {
     expect(output.system[1]).toContain(paths.prMarkerCliPath)
     expect(output.system[1]).toContain('Append its exact HTML comment')
     expect(output.system[1]).toContain(paths.sessionBriefCliPath)
+    expect(output.system[1]).toContain('After the first substantive exchange, set a 3–6 word title')
     expect(output.system[1]).toContain(paths.simCliPath)
     expect(output.system[1]).toContain(paths.chatCliPath)
     expect(output.system[1]).toContain('Never open chats the user did not ask for')
@@ -2482,5 +2484,28 @@ describe('generated chat CLI', () => {
     expect(await cli.runChatCli(['list'], failed, { out, err })).toBe(1)
     expect(out).toHaveBeenLastCalledWith(result)
     expect(err).toHaveBeenLastCalledWith('Created; do not retry')
+  })
+})
+
+
+describe('generated session title CLI', () => {
+  it('sends --title in the patch using a fake transport', async () => {
+    const home = await temporaryHome()
+    const tokenPath = join(home, 'token')
+    await writeFile(tokenPath, 'fake-token')
+    vi.stubEnv('TMUX_PANE', '%42')
+    vi.stubEnv('COMMANDO_PORT', '4410')
+    const request = vi.fn(async () => ({ ok: true, json: async () => ({ brief: {} }) }))
+    vi.stubGlobal('fetch', request)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const source = generatedSessionBriefCli(tokenPath)
+        .replace('const args = process.argv.slice(2)', 'const args = ["--title", "Stable conversation titles"]')
+      expect(source).toContain('[--title text]')
+      await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
+      expect(request).toHaveBeenCalledWith('http://127.0.0.1:4410/api/session-brief', expect.objectContaining({
+        body: JSON.stringify({ title: 'Stable conversation titles' }),
+      }))
+    } finally { log.mockRestore() }
   })
 })

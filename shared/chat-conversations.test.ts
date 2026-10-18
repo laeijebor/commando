@@ -18,7 +18,7 @@ describe('conversation response validation', () => {
 
   it('preserves enrichment including false paneOpen and drops malformed optional metadata', () => {
     const enriched = conversation('/repo', { session: { id: '$1', name: 'vivi', group: 'Subscriptions' },
-      headline: 'Picker ready', refs: [{ label: 'PR #540', url: 'https://example.com/540' }, { label: 'Preview' }], paneOpen: false, profile: 'claudep' })
+      agentTitle: 'Stable picker title', headline: 'Picker ready', refs: [{ label: 'PR #540', url: 'https://example.com/540' }, { label: 'Preview' }], paneOpen: false, profile: 'claudep' })
     expect(parseChatConversations({ conversations: [enriched] })).toEqual([enriched])
     expect(parseChatConversations({ conversations: [{ ...conversation('/repo'), session: { id: 1, name: [] }, headline: 2,
       refs: [null, { label: 3 }, { label: 'PR #540', url: 1 }], profile: [], paneOpen: 'yes' }] }))
@@ -63,9 +63,9 @@ describe('groupChatConversations', () => {
   })
 
   it('matches every word across session, group, headline, title, refs, branch, folder, provider and profile', () => {
-    const entry = conversation('/repo/picker', { title: 'Conversation finder', headline: 'Ready for review', branch: 'feature/session',
+    const entry = conversation('/repo/picker', { title: 'Conversation finder', agentTitle: 'Durable topic name', headline: 'Ready for review', branch: 'feature/session',
       session: { id: '$2', name: 'vivi', group: 'Subscriptions' }, refs: [{ label: 'PR #540' }], profile: 'claudep' })
-    for (const query of ['540', '#540', 'PR 540', 'VIVI subscriptions', 'ready finder', 'feature picker claude claudep', '  ']) {
+    for (const query of ['durable TOPIC', '540', '#540', 'PR 540', 'VIVI subscriptions', 'ready finder', 'feature picker claude claudep', '  ']) {
       expect(matchesChatConversation(entry, query), query).toBe(true)
     }
     expect(matchesChatConversation(entry, '540 missing')).toBe(false)

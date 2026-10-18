@@ -208,8 +208,8 @@ export function ConversationPicker({ pane, sessionName, current, open, busy, loa
                   >
                     <span className="command-icon"><History aria-hidden="true" /></span>
                     <span>
-                      <strong>{conversation.headline ?? conversation.title}</strong>
-                      {conversation.headline ? <span className="conversation-picker-title">{conversation.title}</span> : null}
+                      <strong>{conversation.headline ?? conversation.agentTitle ?? conversation.title}</strong>
+                      {conversation.headline ? <span className="conversation-picker-title">{conversation.agentTitle ?? conversation.title}</span> : null}
                       <small>{detail}</small>
                       {conversation.refs?.length ? <span className="conversation-picker-refs">{conversation.refs.slice(0, 3).map((ref, index) => (
                         <span key={index} title={ref.url}>{ref.label}</span>

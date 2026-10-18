@@ -275,3 +275,18 @@ describe('resume entry points', () => {
     expect(onJump).not.toHaveBeenCalled()
   })
 })
+
+
+it('shows the agent title on the secondary line and searches it, falling back to the transcript title', async () => {
+  const { input } = renderPicker({ load: async () => [
+    conversation('aaaaaaaa-0100', 'Transcript first prompt', pane.path, 1, { headline: 'Latest turn update', agentTitle: 'Stable topic name' }),
+    conversation('aaaaaaaa-0101', 'Fallback transcript title', pane.path, 2, { headline: 'Another update' }),
+  ] })
+  const rows = await screen.findAllByRole('option')
+  expect(rows[0]!.querySelector('strong')).toHaveTextContent('Latest turn update')
+  expect(rows[0]!.querySelector('.conversation-picker-title')).toHaveTextContent('Stable topic name')
+  expect(rows[1]!.querySelector('.conversation-picker-title')).toHaveTextContent('Fallback transcript title')
+  fireEvent.change(input, { target: { value: 'stable topic' } })
+  expect(screen.getAllByRole('option')).toHaveLength(1)
+  expect(screen.getByRole('option')).toHaveTextContent('Stable topic name')
+})
