@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { PassThrough } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
@@ -10,6 +10,7 @@ import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol
 import type { AgentResumeRecord } from './agent-resume.js'
 import { buildChatResumeCommand, buildChatReturnCommand } from './agent-resume-command.js'
 import type { ConversationBriefRecord } from './session-briefs.js'
+import { AgentStatusRegistry } from './agent-status-registry.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
@@ -38,7 +39,7 @@ function response() {
 
 const chat = (overrides: Partial<ChatSessionInfo> = {}): ChatSessionInfo => ({ paneId: '%1', provider: 'claude', cwd: '/x', status: 'idle', hostPid: 1, hostVersion: 5, permissionMode: 'acceptEdits', sessionId: 'aaaaaaaa-0000', ...overrides })
 
-function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: Pick<TmuxPane, 'id' | 'sessionId' | 'windowId' | 'index' | 'repo'>[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'load'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; agentSessions?: AgentStatus[]; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: (Pick<TmuxPane, 'id'> & Partial<Pick<TmuxPane, 'sessionId' | 'windowId' | 'index' | 'repo' | 'command'>>)[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'loadReadOnly'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; agentSessions?: AgentStatus[] | (() => AgentStatus[]); creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -51,11 +52,11 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     index: { list: vi.fn(async () => [conversation]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
     resumes: { findConversation: (provider, sessionId) => options.resumeRecord ? { targetId: 'target', provider, sessionId, path: folder, command: 'env codex resume ' + ID, serverId: 'test', updatedAt: 1, ...options.resumeRecord } : undefined },
     briefs: { conversationRecords: () => options.records ?? [] },
-    sessionPreferences: options.sessionPreferences ?? { load: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [], groupingMode: options.groupingMode }) },
+    sessionPreferences: options.sessionPreferences ?? { loadReadOnly: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [], groupingMode: options.groupingMode }) },
     snapshot: () => ({ sessions: options.sessions?.map((session) => ({ windowIds: ['@1'], ...session })) ?? [], panes: options.panes ?? [{ id: '%1', empty: options.empty }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
-    agentSessions: () => options.agentSessions ?? [],
+    agentSessions: () => typeof options.agentSessions === 'function' ? options.agentSessions() : options.agentSessions ?? [],
     creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
     refreshSnapshot: vi.fn(async () => {}),
@@ -69,6 +70,31 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
 }
 
 describe('ChatConversationsApi', () => {
+  it.each([
+    ['live TUI after a completed turn', '2.1.295', false, 409],
+    ['pane back at zsh before registry reconciliation', 'zsh', false, 200],
+    ['exited TUI with a retained recap', 'zsh', true, 200],
+    ['retained recap even if the command matches again', '2.1.295', true, 200],
+  ] as const)('%s uses only live hook sessions for the resume guard', async (_scenario, command, exited, expectedStatus) => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook('%2', { hook_event_name: 'UserPromptSubmit', session_id: ID, intent: 'Ship it' }, 1, '2.1.295')
+    registry.applyClaudeHook('%2', { hook_event_name: 'Stop', session_id: ID, finalMessage: 'Shipped the fix.' }, 2, '2.1.295')
+    if (exited) registry.removeIfProcessChanged('%2', 'zsh')
+    // The recap remains in values() even after the TUI exits.
+    expect(registry.values()).toMatchObject([{ paneId: '%2', source: 'hook', agentSessionId: ID, status: 'done' }])
+    const panes = [{ id: '%1', command: 'node' }, { id: '%2', command }]
+    const { creator, resume } = setup({
+      conversation: { provider: 'claude' },
+      panes,
+      agentSessions: () => panes.flatMap((pane) => registry.liveHookStatus(pane.id, pane.command) ?? []),
+    })
+    expect(await resume({ provider: 'claude' })).toMatchObject({
+      status: expectedStatus,
+      body: expectedStatus === 409 ? { error: 'That conversation is already open in pane %2' } : { paneId: '%1' },
+    })
+    expect(creator.respawnChatPane).toHaveBeenCalledTimes(expectedStatus === 200 ? 1 : 0)
+  })
+
   it.each([
     ['cursor', ID, ['agent', `--resume=${ID}`]],
     ['opencode', 'ses_ed3f6d576ffeGGkSAFgSk4Snvz', ['opencode', '-s', 'ses_ed3f6d576ffeGGkSAFgSk4Snvz']],
@@ -155,24 +181,32 @@ describe('ChatConversationsApi', () => {
     expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$1', name: 'work', group: hasRepo ? 'commando' : 'No repository' } }] } })
   })
 
-  it('loads manual membership by name after tmux renumbers session ids', async () => {
+  it.each([undefined, 'manual', 'repository'] as const)('resolves labels after tmux renumbers session ids without writing preferences (mode: %s)', async (groupingMode) => {
     const path = join(folder, 'session-tree.json')
     await new SessionPreferenceStore(path).replace({
-      version: 1, groupingMode: 'manual',
+      version: 1, groupingMode,
       groups: [{ id: 'g1', name: 'Subscriptions', sessionIds: ['$1'] }], ungroupedSessionIds: [],
     }, [{ id: '$1', name: 'vivi' }])
     const preferences = new SessionPreferenceStore(path)
-    const load = vi.spyOn(preferences, 'load')
+    const stored = await readFile(path, 'utf8')
+    const before = await stat(path)
+    const replace = vi.spyOn(preferences, 'replace')
+    const load = vi.spyOn(preferences, 'loadReadOnly')
     const { api } = setup({
       records: [{ provider: 'codex', id: ID, sessionId: '$8', sessionName: 'vivi', paneOpen: false, references: [], updatedAt: 10 }],
       sessions: [{ id: '$8', name: 'vivi' }, { id: '$1', name: 'scratch' }], sessionPreferences: preferences,
+      panes: [{ id: '%1', sessionId: '$8', windowId: '@1', index: 0,
+        repo: { root: '/repos/commando', name: 'commando', branch: 'main', isWorktree: false } }],
     })
     const { fake, result } = response()
     await api.handle(request('GET', '/api/chat-conversations'), fake, new URL('http://x/api/chat-conversations'))
-    expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$8', name: 'vivi', group: 'Subscriptions' } }] } })
+    expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$8', name: 'vivi', group: groupingMode === 'manual' ? 'Subscriptions' : 'commando' } }] } })
     expect(load).toHaveBeenCalledWith([
       { id: '$8', name: 'vivi', windowIds: ['@1'] }, { id: '$1', name: 'scratch', windowIds: ['@1'] },
     ])
+    expect(replace).not.toHaveBeenCalled()
+    expect(await readFile(path, 'utf8')).toBe(stored)
+    expect(await stat(path)).toMatchObject({ mtimeMs: before.mtimeMs, ino: before.ino })
   })
 
   it.each(['manual', 'repository'] as const)('preserves the brief name and omits a group when a live session reused its id in %s mode', async (groupingMode) => {

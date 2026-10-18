@@ -30,12 +30,12 @@ type Dependencies = {
   index: Pick<ChatConversationIndex, 'list' | 'find'>
   snapshot: () => CommandoSnapshot
   briefs: Pick<SessionBriefStore, 'conversationRecords'>
-  sessionPreferences: Pick<SessionPreferenceStore, 'load'>
+  sessionPreferences: Pick<SessionPreferenceStore, 'loadReadOnly'>
   /** The chat a pane runs, if it is a chat pane. */
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
-  /** Agent sessions reported by the daemon's status registry. */
+  /** Live hook sessions matching their pane's current process; excludes retained completions. */
   agentSessions: () => AgentStatus[]
   creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>
   resumes: Pick<AgentResumeService, 'findConversation'>
@@ -113,7 +113,7 @@ export class ChatConversationsApi {
     const snapshot = this.dependencies.snapshot()
     const [conversations, preferences] = await Promise.all([
       this.dependencies.index.list(),
-      this.dependencies.sessionPreferences.load(snapshot.sessions),
+      this.dependencies.sessionPreferences.loadReadOnly(snapshot.sessions),
     ])
     const records = new Map(this.dependencies.briefs.conversationRecords().map((record) => [`${record.provider}:${record.id}`, record]))
     const sessions = new Map(snapshot.sessions.map((session) => [session.id, session]))
