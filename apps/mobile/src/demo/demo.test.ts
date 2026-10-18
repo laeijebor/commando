@@ -102,3 +102,13 @@ it('broadcasts authoritative seen state and clears a viewed web tab through the 
   expect(useDaemonStore.getState().byHost[client.hostId]!.webPanes.find((entry) => entry.id === tile.id)?.unseen).toBe(false)
   client.stop()
 })
+
+it('gives native-preview a long transcript for viewport and scroll-follow checks', () => {
+  const snapshot = demoMessages().find((message) => message.type === 'chat_snapshot')!
+  if (snapshot.type !== 'chat_snapshot') throw new Error('Missing demo chats')
+  const chat = snapshot.chats.find((entry) => entry.paneId === '%demo5')!
+  expect(chat.items.filter((entry) => entry.kind === 'user_message')).toHaveLength(5)
+  expect(chat.items.filter((entry) => entry.kind === 'assistant_message')).toHaveLength(5)
+  const text = chat.items.flatMap((entry) => 'text' in entry ? [entry.text] : []).join(' ')
+  expect(text.length).toBeGreaterThan(1500)
+})

@@ -31,6 +31,20 @@ export function demoMessages(now = Date.now()): ServerMessage[] {
       item('plan', { toolUseId: 'plan', text: '# Remote chat\n\n1. Match the desktop session hierarchy\n2. Keep messages and activity readable\n3. Bring pane tabs into the conversation' }),
       item('todo_list', { todos: [{ content: 'Session identities', status: 'completed' }, { content: 'Pane tabs', status: 'in_progress' }, { content: 'Phone screenshots', status: 'pending' }] }),
     ]
+    if (i === 5) {
+      const progress = [
+        ['Check the phone layout while the keyboard is open.', 'The conversation now has a bounded viewport between the pane tabs and the composer. Opening the keyboard reduces that viewport instead of covering the transcript. The first message keeps its normal top margin when the conversation is short, and longer conversations can scroll through every turn without moving the composer.'],
+        ['How does the conversation follow a new reply?', 'When you send a message, the conversation reveals the newest turn. While you are already near the bottom, incoming reply chunks keep the same view pinned as the text grows. You can keep typing while the agent works; keyboard and composer size changes leave the latest part of the conversation above the input field.'],
+        ['Let me read the earlier progress before continuing.', 'Scroll up to inspect the earlier notes, tool activity, and code example. New messages should leave your reading position alone. The jump button brings you back to the latest turn when you are ready. Try this while a reply is streaming so that there is enough new content to make a lost reading position obvious.'],
+        ['Summarise what I should verify on the simulator.', 'Open this chat with the keyboard down, then focus the composer and send a short message. The latest user bubble and the assistant reply should stay visible above it. Next, scroll toward the beginning and send another message after returning to the bottom. Worklog and Changes stay available in the pane tabs throughout the conversation.'],
+      ]
+      progress.forEach(([prompt, reply], index) => {
+        const at = now - 120_000 + index * 20_000
+        const turnId = `demo-layout-${index}`
+        items.push(item('user_message', { text: prompt!, turnId, createdAt: at, updatedAt: at }))
+        items.push(item('assistant_message', { text: reply!, turnId, createdAt: at + 1_000, updatedAt: at + 5_000 }))
+      })
+    }
     if (i === 0) items.push(item('request', { status: 'running', requestId: 'demo-question', requestKind: 'question', toolName: 'AskUserQuestion', title: 'Choose the reply layout', questions: [{ header: 'Layout', question: 'How should the reply read?', options: [{ label: 'Quiet and spacious', description: 'Flat replies, room for code' }, { label: 'Compact' }], multiSelect: false }] }))
     return chatState({ paneId: pane.id, session: session({ paneId: pane.id, provider, cwd: pane.path, status: i === 0 ? 'waiting' : kinds[i] === 'working' ? 'running' : kinds[i] === 'failed' ? 'error' : 'idle', title: headlines[i] ?? pane.title, error: kinds[i] === 'failed' ? 'The token expired while the refresh test was running.' : undefined, permissionMode: providers[i] === 'cursor' ? undefined : 'default', effort: undefined, models: undefined, model: undefined }), items })
   })

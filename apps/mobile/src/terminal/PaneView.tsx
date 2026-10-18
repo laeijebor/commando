@@ -92,7 +92,7 @@ function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: Pa
         subtitle={`${sessionIdentityForName(identities ?? {}, context.title).codename} · ${providerPresentation(chat.session.provider).name} · ${chatStatusWord(chat.session.status)}`}
         title={context.title}
       /> } onOpenTile={onOpenTile}>
-      <View onLayout={keyboard.onLayout} ref={keyboard.ref} style={[styles.body, { paddingBottom: keyboard.overlap ?? 0 }]}>
+      <View onLayout={keyboard.onLayout} ref={keyboard.ref} style={[styles.chatBody, { paddingBottom: keyboard.overlap ?? 0 }]}>
         <ChatErrorBoundary
           fallback={(error) => (
             <Text style={[styles.chatFailed, { color: theme.red }]}>The chat view failed to render: {error.message}</Text>
@@ -310,6 +310,7 @@ export function sizeSummary(
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
   body: { flex: 1, minHeight: 0 },
+  chatBody: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
   terminalWrap: { flex: 1, minHeight: 0, paddingHorizontal: 12, paddingTop: 10 },
   jump: {
     position: 'absolute',

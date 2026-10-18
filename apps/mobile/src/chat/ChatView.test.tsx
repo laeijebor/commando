@@ -1,4 +1,4 @@
-import { ActionSheetIOS } from 'react-native'
+import { ActionSheetIOS, StyleSheet } from 'react-native'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import type { ChatState } from '@commando/agent-chat'
@@ -6,6 +6,7 @@ import type { ChatState } from '@commando/agent-chat'
 import type { Host } from '../hosts/types'
 import { ThemeProvider } from '../theme'
 import { ChatView } from './ChatView'
+import { ChatTimeline } from './ChatTimeline'
 import { chatState, fakeClient, item, session } from './testing'
 
 const HOST: Host = { id: 'host-1', name: 'studio', baseUrl: 'http://studio:4310', auth: { kind: 'token', token: 'secret' } }
@@ -180,4 +181,30 @@ describe('the phone chat view', () => {
     expect(client.last('chat_configure')).toMatchObject({ settings: { permissionMode: 'plan' } })
     sheet.mockRestore()
   })
+})
+
+it('bounds the list viewport and keeps the composer dock below it in the same flex column', async () => {
+  renderChat(chatState({ items: [item('user_message', { text: 'Keep the latest reply visible' }), item('assistant_message', { text: 'A reply inside the viewport.' })] }))
+  await settle()
+  const root = screen.getByTestId('chat-view')
+  const viewport = screen.getByTestId('chat-timeline-viewport')
+  const list = screen.getByTestId('chat-timeline')
+  const dock = screen.getByTestId('chat-composer-dock')
+  expect(root).toHaveStyle({ flex: 1, height: 0, minHeight: 0 })
+  expect(viewport).toHaveStyle({ flex: 1, height: 0, minHeight: 0 })
+  expect(list).toHaveStyle({ flex: 1, height: 0, minHeight: 0 })
+  expect(dock).toHaveStyle({ flexShrink: 0 })
+  expect(StyleSheet.flatten(list.props.contentContainerStyle).flexGrow).toBeUndefined()
+  const hostParent = (node: ReturnType<typeof screen.getByTestId>) => {
+    let parent = node.parent
+    while (parent && typeof parent.type !== 'string') parent = parent.parent
+    return parent
+  }
+  expect(hostParent(viewport)).toBe(root)
+  expect(hostParent(dock)).toBe(root)
+  const children = root.props.children as { type?: unknown; props?: { testID?: string } }[]
+  const timelineIndex = children.findIndex((child) => child?.type === ChatTimeline)
+  const dockIndex = children.findIndex((child) => child?.props?.testID === 'chat-composer-dock')
+  expect(timelineIndex).toBeGreaterThanOrEqual(0)
+  expect(dockIndex).toBeGreaterThan(timelineIndex)
 })

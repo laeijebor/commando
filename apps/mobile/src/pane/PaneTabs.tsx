@@ -59,7 +59,7 @@ export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, act
         {entry.kind === 'web' && entry.tile.unseen ? <View accessibilityLabel="Unseen" style={[styles.dot, { backgroundColor: theme.accent }]} /> : null}
       </Pressable>)}
     </ScrollView>
-    <View style={[styles.root, tab.kind !== 'body' && styles.hidden]} accessibilityElementsHidden={tab.kind !== 'body'} importantForAccessibility={tab.kind !== 'body' ? 'no-hide-descendants' : 'auto'}>{children}</View>
+    <View style={[styles.body, tab.kind !== 'body' && styles.hidden]} accessibilityElementsHidden={tab.kind !== 'body'} importantForAccessibility={tab.kind !== 'body' ? 'no-hide-descendants' : 'auto'}>{children}</View>
     {host && paneId && tab.kind !== 'body' ? tab.kind === 'web' ? <WebTabCard key={tab.id} host={host} tab={tab} onOpenTile={onOpenTile} /> : <ScrollView key={tab.id} contentContainerStyle={styles.sections}>
       <PaneInfoSections active={foreground} host={host} paneId={paneId} brief={state.briefs[paneId]} status={state.agentStatuses[paneId]} pane={state.snapshot?.panes.find((pane) => pane.id === paneId)} ports={state.snapshot?.ports ?? []} sections={[tab.kind]} prFilter={tab.kind === 'pr' ? { repo: tab.pr.repo, number: tab.pr.number } : undefined} />
     </ScrollView> : null}
@@ -92,6 +92,8 @@ function WebTabCard({ host, tab, onOpenTile }: { host: Host; tab: Extract<PaneTa
 }
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
+  // A zero base height prevents chat/terminal contents from sizing this viewport.
+  body: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
   hidden: { display: 'none' },
   strip: { height: 48, flexGrow: 0, flexShrink: 0, borderBottomWidth: StyleSheet.hairlineWidth },
   tabs: { paddingLeft: 10, paddingRight: 28, gap: 3, alignItems: 'stretch' },

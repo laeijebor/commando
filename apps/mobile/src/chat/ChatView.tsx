@@ -76,7 +76,7 @@ export function ChatView({ host, chat, client, phase }: {
         />
       ) : null}
       {channel ? (
-        <ChatComposer
+        <View testID="chat-composer-dock" style={styles.composerDock}><ChatComposer
           actionError={actionError}
           carried={chat.carried}
           channel={channel}
@@ -88,7 +88,7 @@ export function ChatView({ host, chat, client, phase }: {
           onDismissSendError={dismissSendError}
           sendError={sendError}
           session={chat.session}
-        />
+        /></View>
       ) : (
         <Text style={[styles.waiting, { color: theme.muted }]}>Connecting…</Text>
       )}
@@ -121,7 +121,8 @@ export class ChatErrorBoundary extends Component<{ children: ReactNode; fallback
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, minHeight: 0 },
+  root: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
+  composerDock: { flexShrink: 0 },
   banner: { flexShrink: 0, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
   bannerText: { flex: 1, fontSize: 12.5, lineHeight: 17 },
   waiting: { fontSize: 13, textAlign: 'center', padding: 12 },

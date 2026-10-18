@@ -105,9 +105,9 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
 
   return (
     <TimelineContext value={context}>
-      <View style={styles.list}>
+      <View testID="chat-timeline-viewport" style={styles.viewport}>
         <FlatList
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, data.length === 0 && styles.emptyContent]}
           data={data}
           // SafeAreaView and our own header already account for iOS chrome.
           contentInsetAdjustmentBehavior="never"
@@ -490,10 +490,13 @@ function SubagentRows({ items }: { items: SubagentItem[] }): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  list: { flex: 1, minHeight: 0, overflow: 'hidden' },
+  // Height belongs to the flex viewport, never to the transcript's intrinsic size.
+  viewport: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
+  list: { flex: 1, height: 0, minHeight: 0 },
   jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   jumpLabel: { fontSize: 12.5, fontWeight: '700' },
-  content: { paddingHorizontal: 20, paddingVertical: 24, flexGrow: 1, width: '100%', maxWidth: 776, alignSelf: 'center' },
+  content: { paddingHorizontal: 20, paddingVertical: 24, width: '100%', maxWidth: 776, alignSelf: 'center' },
+  emptyContent: { flexGrow: 1 },
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText: { fontSize: 14 },
   working: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
