@@ -10,6 +10,7 @@ export function paneChatHandoff(
 ): ChatHandoffInfo | undefined {
   const paneHandoff = handoffs.find((entry) => entry.paneId === paneId && entry.provider !== undefined && entry.provider !== 'claude')
   if (paneHandoff) return paneHandoff
+  if (status?.provider === 'cursor') return undefined
   if (!status?.agentSessionId) return undefined
   const entry = handoffs.find((entry) => entry.sessionId === status.agentSessionId)
   if (entry && (entry.provider ?? 'claude') === status.provider) return entry
@@ -54,7 +55,7 @@ export function PaneAgentSwitch({
       >
         Chat
       </button>
-      <button
+      {provider !== 'cursor' ? <button
         type="button"
         aria-pressed={mode === 'claude-code'}
         disabled={mode === 'chat' && claudeCodeDisabled}
@@ -62,7 +63,7 @@ export function PaneAgentSwitch({
         onClick={() => { if (mode === 'chat') onClaudeCode() }}
       >
         {label}
-      </button>
+      </button> : null}
     </span>
   )
 }

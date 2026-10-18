@@ -317,7 +317,7 @@ export class AgentSession implements ChatProviderSession {
   private readonly mapper: ClaudeItemMapper
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
-  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], switchReady: [] }
+  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], switchReady: [], restart: [] }
   private queryHandle: Query | null = null
   private info: ChatSessionInfo
   /** Set once Claude reports session_state_changed; it then decides idle and running. */

@@ -187,8 +187,10 @@ export class ChatConversationsApi {
       if (!conversation) throw new HttpError(404, 'That conversation was not found')
       if (!(await stat(conversation.cwd).then((info) => info.isDirectory(), () => false))) throw new HttpError(409, `Its folder no longer exists: ${conversation.cwd}`)
       const record = this.dependencies.resumes.findConversation(provider, sessionId)
-      const isTui = provider === 'cursor' || provider === 'opencode'
-        || (record ? !isChatResumeCommand(record.command) : !chat)
+      // Cursor SDK chats (`agent-…`) have their own store: they resume as a Cursor chat, never in the CLI.
+      const cursorChat = provider === 'cursor' && sessionId.startsWith('agent-')
+      const isTui = !cursorChat && (provider === 'cursor' || provider === 'opencode'
+        || (record ? !isChatResumeCommand(record.command) : !chat))
       let agent: SessionAgentLaunch | undefined
       let command: string | undefined
       if (isTui && record) command = record.command
@@ -198,12 +200,13 @@ export class ChatConversationsApi {
         if (!command) throw new HttpError(409, 'Could not build a resume command')
       } else if (isTui && (provider === 'cursor' || provider === 'opencode')) agent = { provider, resume: sessionId }
       else {
-        const agentProvider = provider === 'codex' ? 'codex-chat' : 'claude-chat'
+        const agentProvider = cursorChat ? 'cursor-chat' : provider === 'codex' ? 'codex-chat' : 'claude-chat'
         agent = {
           provider: agentProvider,
-          permissionMode: chat ? inheritedChatPermissionMode(chat, agentProvider) : 'default',
+          // Without a calling chat, a resumed chat starts as a new one would.
+          permissionMode: chat ? inheritedChatPermissionMode(chat, agentProvider) : cursorChat ? 'bypassPermissions' : 'default',
           resume: sessionId,
-          ...(conversation.configDir ? { configDir: conversation.configDir } : {}),
+          ...(conversation.configDir && agentProvider === 'claude-chat' ? { configDir: conversation.configDir } : {}),
         }
       }
       // Session ownership is daemon metadata, never supplied by the requester.

@@ -371,3 +371,19 @@ it('shows session avatars and muted codenames, glyph tiles, and History outside 
   expect(outside.querySelector('.lucide-history')).toBeInTheDocument()
   expect(outside.querySelector('.session-avatar')).not.toBeInTheDocument()
 })
+
+
+it('shows a Cursor conversation and reopens it beside the pane', async () => {
+  const entry = conversation('agent-11111111-2222-3333-4444-555555555555', 'Cursor work', '/elsewhere', 1, { provider: 'cursor' })
+  const { input, onPick } = renderPicker({ load: async () => [entry] })
+  await screen.findByText('Cursor work')
+  expect(screen.getAllByText('Cursor').length).toBeGreaterThan(0)
+  fireEvent.keyDown(input, { key: 'Enter', metaKey: true })
+  expect(onPick).toHaveBeenCalledWith(entry, 'split')
+})
+
+it('associates live Cursor chats with their pane in the picker', () => {
+  const chat = { session: { provider: 'cursor', sessionId: 'agent-11111111-2222-3333-4444-555555555555' } } as ChatState
+  expect(openConversationPanes({ '%8': chat }, [], () => 'Cursor pane').get('cursor:agent-11111111-2222-3333-4444-555555555555'))
+    .toEqual({ paneId: '%8', label: 'Cursor pane' })
+})

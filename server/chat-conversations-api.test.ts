@@ -534,3 +534,19 @@ describe('resume placement and launch selection', () => {
     expect(creator.createWindow).toHaveBeenCalledOnce()
   })
 })
+
+
+it.each(['replace', 'split'] as const)('reopens a Cursor agent via %s with inherited sandbox access and no Claude profile', async (placement) => {
+  const sessionId = 'agent-11111111-2222-3333-4444-555555555555'
+  const { creator, resume } = setup({ conversation: { provider: 'cursor', sessionId, configDir: '/ignored' } })
+  expect(await resume({ provider: 'cursor', sessionId, placement })).toMatchObject({ status: 200 })
+  const agent = { provider: 'cursor-chat', permissionMode: 'default', resume: sessionId }
+  if (placement === 'replace') expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, agent)
+  else expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ agent }))
+})
+
+it('rejects a Cursor conversation already open in another pane', async () => {
+  const sessionId = 'agent-11111111-2222-3333-4444-555555555555'
+  const { resume } = setup({ conversation: { provider: 'cursor', sessionId }, chats: [chat(), chat({ paneId: '%2', provider: 'cursor', sessionId })] })
+  expect(await resume({ provider: 'cursor', sessionId })).toMatchObject({ status: 409, body: { error: 'That conversation is already open in pane %2' } })
+})

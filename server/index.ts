@@ -1524,7 +1524,7 @@ async function main(): Promise<void> {
           // A switch hands the same conversation from the chat host to Claude Code, so the
           // registry still scopes its status to the host's process; the resume checks that
           // Claude Code in the pane really resumes that conversation.
-          const live = agentStatuses.liveHookStatus(paneId, pane.command)
+          const live = agentStatuses.liveHookStatus(paneId, pane.command) ?? agentStatuses.chatHostStatus(paneId)
           if (live) return live
           const status = agentStatuses.get(paneId)
           const switched = status?.source === 'hook' && isChatProvider(status.provider) && status.agentSessionId !== undefined

@@ -38,6 +38,7 @@
     "@blocknote/ariakit": "^0.51.4",
     "@blocknote/core": "^0.51.4",
     "@blocknote/react": "^0.51.4",
+    "@cursor/sdk": "1.0.37",
     "@fontsource/jetbrains-mono": "5.2.8",
     "@tailwindcss/browser": "^4.3.3",
     "@xterm/addon-search": "^0.16.0",

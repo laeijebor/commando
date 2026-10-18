@@ -41,14 +41,14 @@ export function hostTakesSwitch(session: { hostVersion: number }): boolean {
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
-export type ChatProvider = 'claude' | 'codex' | 'muse'
-export const CHAT_PROVIDERS: readonly ChatProvider[] = ['claude', 'codex', 'muse']
+export type ChatProvider = 'claude' | 'codex' | 'muse' | 'cursor'
+export const CHAT_PROVIDERS: readonly ChatProvider[] = ['claude', 'codex', 'muse', 'cursor']
 /** The provider's own terminal UI, which a chat can hand its conversation to. */
 export function providerTuiLabel(provider: ChatProvider | undefined): string {
-  return provider === 'codex' ? 'Codex TUI' : provider === 'muse' ? 'Muse TUI' : 'Claude Code'
+  return provider === 'codex' ? 'Codex TUI' : provider === 'muse' ? 'Muse TUI' : provider === 'cursor' ? 'Cursor' : 'Claude Code'
 }
 export function providerName(provider: ChatProvider | undefined): string {
-  return provider === 'codex' ? 'Codex' : provider === 'muse' ? 'Muse' : 'Claude'
+  return provider === 'codex' ? 'Codex' : provider === 'muse' ? 'Muse' : provider === 'cursor' ? 'Cursor' : 'Claude'
 }
 export function isChatProvider(value: unknown): value is ChatProvider {
   return typeof value === 'string' && (CHAT_PROVIDERS as readonly string[]).includes(value)
@@ -362,7 +362,14 @@ export interface ChatSettingsChange {
   permissionMode?: ChatSessionPermissionMode
 }
 
+export interface ChatLogin {
+  state: 'required' | 'pending'
+  reason?: string
+  url?: string
+}
+
 export interface ChatSessionInfo {
+  login?: ChatLogin
   /** tmux pane id (`%N`) the session belongs to. */
   paneId: string
   provider: ChatProvider
@@ -901,6 +908,15 @@ export function parseChatItem(value: unknown): ChatItem | null {
   }
 }
 
+function parseChatLogin(value: unknown): ChatLogin | undefined {
+  if (!isRecord(value) || (value.state !== 'required' && value.state !== 'pending')) return undefined
+  let url: string | undefined
+  if (typeof value.url === 'string' && value.url.length <= 2048) {
+    try { if (new URL(value.url).protocol === 'https:') url = value.url } catch { /* Drop invalid URLs. */ }
+  }
+  return { state: value.state, ...(typeof value.reason === 'string' ? { reason: value.reason.slice(0, 500) } : {}), ...(url ? { url } : {}) }
+}
+
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isRecord(value)) return null
   if (!isPaneId(value.paneId) || !isChatProvider(value.provider) || typeof value.cwd !== 'string') return null
@@ -911,6 +927,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   }
   if (value.selectedModel !== undefined && !isModelValue(value.selectedModel)) return null
   if (value.effort !== undefined && !isChatEffort(value.effort)) return null
+  const login = parseChatLogin(value.login)
   const models = parseModels(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
   const planUsage = parsePlanUsage(value.planUsage)
@@ -934,6 +951,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(isChatEffort(value.effort) ? { effort: value.effort } : {}),
     ...(value.fast === true ? { fast: true } : {}),
     ...(value.bypassAllowed === true ? { bypassAllowed: true } : {}),
+    ...(login ? { login } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(planUsage ? { planUsage } : {}),

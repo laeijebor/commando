@@ -189,3 +189,7 @@
 .commando-chat .chat-pr-ci { display: flex; align-items: center; gap: 5px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap; }
 .commando-chat .chat-pr-more { display: block; text-align: left; color: var(--muted); cursor: pointer; padding: 2px 8px 5px; }
 .chat-floating .chat-pr-autofix-toggle { appearance: auto; width: 14px; height: 14px; accent-color: var(--accent); flex-shrink: 0; }
+
+.commando-chat .chat-login-banner {
+  @apply mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-secondary-label;
+}
