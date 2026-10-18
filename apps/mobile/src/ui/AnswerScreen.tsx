@@ -341,6 +341,7 @@ function providerName(provider: string | undefined): string {
   if (provider === 'codex') return 'Codex'
   if (provider === 'opencode') return 'OpenCode'
   if (provider === 'cursor') return 'Cursor'
+  if (provider === 'muse') return 'Muse'
   return 'The agent'
 }
 
