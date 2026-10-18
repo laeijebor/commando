@@ -7,9 +7,9 @@ import {
   CHAT_CONVERSATION_ROUTES,
   chatConversationKey,
   isChatConversationSessionId,
+  type ChatConversation,
   type ChatConversationPlacement,
   type ChatConversationProvider,
-  type ChatConversation,
 } from '../shared/chat-conversations.js'
 import type { AgentStatus, CommandoSnapshot } from '../shared/protocol.js'
 import { repositoryContainers } from '../shared/session-repositories.js'
@@ -35,7 +35,7 @@ type Dependencies = {
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
-  /** Live hook sessions matching their pane's current process; excludes retained completions. */
+  /** Open hook conversations matching their pane's current process; excludes retained completions. */
   agentSessions: () => AgentStatus[]
   creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>
   resumes: Pick<AgentResumeService, 'findConversation'>
@@ -109,6 +109,21 @@ export class ChatConversationsApi {
     return true
   }
 
+  private openConversationPanes(snapshot: CommandoSnapshot): Map<string, string> {
+    const open = new Map<string, string>()
+    for (const session of this.dependencies.chatSessions()) {
+      if (!session.sessionId) continue
+      const key = chatConversationKey(session.provider, session.sessionId)
+      if (!open.has(key)) open.set(key, session.paneId)
+    }
+    for (const status of this.dependencies.agentSessions()) {
+      if (status.source !== 'hook' || status.provider === 'unknown' || !status.agentSessionId || !snapshot.panes.some((pane) => pane.id === status.paneId)) continue
+      const key = chatConversationKey(status.provider, status.agentSessionId)
+      if (!open.has(key)) open.set(key, status.paneId)
+    }
+    return open
+  }
+
   private async list(): Promise<ChatConversation[]> {
     const snapshot = this.dependencies.snapshot()
     const [conversations, preferences] = await Promise.all([
@@ -119,7 +134,9 @@ export class ChatConversationsApi {
     const sessions = new Map(snapshot.sessions.map((session) => [session.id, session]))
     const groups = preferences.groupingMode === 'manual'
       ? preferences.groups : repositoryContainers(preferences, snapshot.sessions, snapshot.panes)
+    const open = this.openConversationPanes(snapshot)
     return conversations.map((conversation) => {
+      const openPaneId = open.get(chatConversationKey(conversation.provider, conversation.sessionId))
       const brief = records.get(chatConversationKey(conversation.provider, conversation.sessionId))
       const session = brief ? sessions.get(brief.sessionId) : undefined
       const group = session && session.name === brief?.sessionName
@@ -128,6 +145,7 @@ export class ChatConversationsApi {
         ? basename(conversation.configDir).replace(/^\./, '') : undefined
       return {
         ...conversation,
+        ...(openPaneId ? { openPaneId } : {}),
         ...(profile ? { profile } : {}),
         ...(brief ? {
           session: { id: brief.sessionId, name: brief.sessionName, ...(group ? { group } : {}) },
@@ -153,9 +171,8 @@ export class ChatConversationsApi {
     const pane = paneId ? snapshot.panes.find((entry) => entry.id === paneId) : undefined
     if (paneId && !pane) throw new HttpError(404, 'That pane no longer exists')
     const chat = paneId ? this.dependencies.chatSession(paneId) : undefined
-    const open = this.dependencies.chatSessions().find((session) => session.provider === provider && session.sessionId === sessionId)
-      ?? this.dependencies.agentSessions().find((status) => status.source === 'hook' && status.provider === provider && status.agentSessionId === sessionId && snapshot.panes.some((pane) => pane.id === status.paneId))
-    if (open) throw new HttpError(409, open.paneId === paneId ? 'This chat is already on that conversation' : `That conversation is already open in pane ${open.paneId}`)
+    const openPaneId = this.openConversationPanes(snapshot).get(chatConversationKey(provider, sessionId))
+    if (openPaneId) throw new HttpError(409, openPaneId === paneId ? 'This chat is already on that conversation' : `That conversation is already open in pane ${openPaneId}`)
     // Claimed before anything awaits, so two panes can't both resume one conversation.
     const key = `${provider}:${sessionId}`
     if (this.reserved.has(key)) throw new HttpError(409, 'That conversation is already being opened')

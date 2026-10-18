@@ -10,25 +10,18 @@ import {
   type ChatConversation,
   type ChatConversationPlacement,
 } from '../shared/chat-conversations'
-import type { AgentStatus, TmuxPane } from '../shared/protocol'
+import type { TmuxPane } from '../shared/protocol'
 
-/** Where an open conversation runs: a chat pane, or a terminal agent that reported its session. */
-export type OpenConversationPanes = ReadonlyMap<string, { paneId: string; label: string }>
-
+/** Server-verified open panes, plus chat hosts that may have reported since the list loaded. */
 export function openConversationPanes(
   chats: Readonly<Record<string, ChatState>>,
-  statuses: Readonly<Record<string, AgentStatus>>,
-  panes: ReadonlyMap<string, Pick<TmuxPane, 'command'>>,
+  conversations: readonly ChatConversation[],
   label: (paneId: string) => string,
 ): Map<string, { paneId: string; label: string }> {
   const open = new Map<string, { paneId: string; label: string }>()
-  for (const [paneId, status] of Object.entries(statuses)) {
-    // Only a hook knows the session for sure; a guessed one could jump to the wrong pane.
-    if (status.source !== 'hook' || !status.agentSessionId || status.provider === 'unknown') continue
-    // Recaps outlive the TUI, but AgentStatus doesn't expose the registry's retainedCompletion flag.
-    const command = panes.get(paneId)?.command.trim().replace(/^-/, '').split('/').at(-1)
-    if (!command || /^(?:sh|bash|zsh|fish|dash|ksh|tcsh|csh|nu|login)$/.test(command)) continue
-    open.set(chatConversationKey(status.provider, status.agentSessionId), { paneId, label: label(paneId) })
+  for (const conversation of conversations) {
+    const paneId = conversation.openPaneId
+    if (paneId) open.set(chatConversationKey(conversation.provider, conversation.sessionId), { paneId, label: label(paneId) })
   }
   for (const [paneId, chat] of Object.entries(chats)) {
     if (chat.session.sessionId) open.set(chatConversationKey(chat.session.provider, chat.session.sessionId), { paneId, label: label(paneId) })
@@ -52,7 +45,7 @@ function folder(path: string): string {
 }
 
 /** Session-first conversation history; open conversations jump to their existing pane. */
-export function ConversationPicker({ pane, sessionName, current, open, busy, load, onPick, onJump, onClose, defaultPlacement = 'replace', initialSessionFilter, sessionIdentities = {}, now = Date.now() }: {
+export function ConversationPicker({ pane, sessionName, current, chats, paneLabel, busy, load, onPick, onJump, onClose, defaultPlacement = 'replace', initialSessionFilter, sessionIdentities = {}, now = Date.now() }: {
   pane: TmuxPane
   sessionName: string
   sessionIdentities?: SessionIdentities
@@ -60,7 +53,8 @@ export function ConversationPicker({ pane, sessionName, current, open, busy, loa
   initialSessionFilter?: { id: string; name: string }
   /** The conversation this chat runs, if Claude has reported it. */
   current?: string
-  open: OpenConversationPanes
+  chats: Readonly<Record<string, ChatState>>
+  paneLabel: (paneId: string) => string
   /** The chat is mid-turn: switching away stops it. */
   busy: boolean
   load: () => Promise<ChatConversation[]>
@@ -108,6 +102,7 @@ export function ConversationPicker({ pane, sessionName, current, open, busy, loa
   }, [load])
 
   const identities = useMemo(() => assignSessionIdentities(sessionIdentities, [sessionName, ...(conversations ?? []).flatMap((conversation) => conversation.session ? [conversation.session.name] : [])]), [sessionIdentities, sessionName, conversations])
+  const open = useMemo(() => openConversationPanes(chats, conversations ?? [], paneLabel), [chats, conversations, paneLabel])
   const providers = useMemo(() => [...new Set((conversations ?? []).map(chatConversationProviderLabel))].sort(), [conversations])
   const groups = useMemo(() => groupChatConversations((conversations ?? []).filter((conversation) =>
     (!sessionFilter || conversation.session?.name === sessionFilter.name
