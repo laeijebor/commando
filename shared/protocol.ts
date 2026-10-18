@@ -193,6 +193,8 @@ export type AgentSessionRef = { provider: AgentProvider; id: string }
 /** An agent conversation that ran earlier in the pane, kept read-only below its worklog. */
 export type EarlierAgentSession = {
   agentSession: AgentSessionRef
+  title?: string
+  titleSource?: 'agent' | 'generated'
   headline: string
   headlineSource?: 'hook' | 'agent'
   recapMarkdown?: string
@@ -207,6 +209,8 @@ export type EarlierAgentSession = {
 
 export type SessionBrief = {
   paneId: string
+  title?: string
+  titleSource?: 'agent' | 'generated'
   /** Stable ownership; absent only in legacy briefs. Session names are display metadata. */
   targetId?: string
   sessionId: string
@@ -230,6 +234,8 @@ export type SessionBrief = {
   earlierSessions?: EarlierAgentSession[]
   /** The agent process exited while tmux lived; the next agent's work starts a new conversation. */
   agentSessionEnded?: true
+  /** When the pane closed and this brief was detached; absent while attached. */
+  detachedAt?: number
   updatedAt: number
 }
 
@@ -484,6 +490,8 @@ export type WebPane = {
   sessionId: string
   windowId: string
   anchorPaneId: string
+  /** The conversation this tab was opened for; retained when its pane changes. */
+  agentSession?: AgentSessionRef
   placement: WebPanePlacement
   /** Older daemon snapshots may omit panel metadata. */
   dock?: 'panel' | 'split'

@@ -3959,9 +3959,12 @@ body.is-resizing-hud-pinned-note {
   }
 }
 
-.conversation-picker-group {
+.conversation-picker .conversation-picker-group {
   padding: 9px 12px 4px;
-  color: var(--muted-dim);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-dim);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -3972,10 +3975,89 @@ body.is-resizing-hud-pinned-note {
   min-width: 0;
 }
 
-.conversation-picker .command-results strong,
-.conversation-picker .command-results small {
-  display: block;
+.conversation-picker .command-results strong {
+  display: -webkit-box;
   overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.conversation-picker .conversation-picker-title {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-picker .command-kind {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-transform: none;
+}
+
+.conversation-picker .command-kind > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-picker .conversation-picker-open {
+  color: var(--green);
+}
+
+.conversation-picker .conversation-picker-closed {
+  color: var(--amber);
+}
+
+.conversation-picker .conversation-picker-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.conversation-picker .conversation-picker-filters button {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 7px;
+  cursor: pointer;
+}
+
+.conversation-picker .conversation-picker-filters button[aria-pressed="true"],
+.conversation-picker .conversation-picker-filters button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.conversation-picker .conversation-picker-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.conversation-picker .conversation-picker-refs > span {
+  max-width: 100%;
+  padding: 2px 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--cyan) 50%, transparent);
+  border-radius: 4px;
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4797,3 +4879,18 @@ body.is-resizing-hud-pinned-note {
 .side-panel-pr-state.merged, .side-panel-pr-indicator.merged { color: var(--purple); }
 .side-panel-pr-state.closed, .side-panel-pr-indicator.closed { color: var(--red); }
 .side-panel-pr-indicator { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+
+.conversation-picker-anchor {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+}
+
+/* Session identity marks share the compact sidebar and conversation picker scale. */
+.session-avatar, .session-glyph-tile { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; vertical-align: middle; overflow: hidden; border-radius: 5px; }
+.session-avatar > svg { display: block; width: 100%; height: 100%; }
+.session-glyph-tile { font-size: 14px; line-height: 1; }
+.managed-session-main { display: flex; align-items: center; gap: 6px; padding: 4px; }
+.session-identity-name { overflow: hidden; text-overflow: ellipsis; }
+.conversation-picker .conversation-picker-session { display: inline-flex; min-width: 0; align-items: center; gap: 6px; }
+.conversation-picker .conversation-picker-codename { color: var(--muted-dim); font-size: 9px; font-weight: 400; letter-spacing: normal; text-transform: none; }

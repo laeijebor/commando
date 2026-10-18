@@ -389,3 +389,44 @@ export function buildChatReturnCommand(
   const env = Object.entries(daemonEnv).map(([name, value]) => `${name}=${value}`)
   return [...(env.length ? ['env', ...env] : []), launcher, provider, ...flags, '--resume', sessionId, '--from-claude-code'].map(shellQuote).join(' ')
 }
+
+/** Reads literal words written by shellQuote, including adjacent quotes around apostrophes. */
+function shellQuotedWords(command: string): string[] | null {
+  const words: string[] = []
+  let word = ''
+  let quote: string | undefined
+  let started = false
+  for (const char of command) {
+    if (quote) {
+      if (char === quote) quote = undefined
+      else word += char
+    } else if (char === "'" || char === '"') {
+      quote = char
+      started = true
+    } else if (/\s/u.test(char)) {
+      if (started) words.push(word)
+      word = ''
+      started = false
+    } else {
+      word += char
+      started = true
+    }
+  }
+  if (quote) return null
+  if (started) words.push(word)
+  return words
+}
+
+/** Saved chat launchers must return through the host rather than start a second CLI. */
+export function isChatResumeCommand(command: string): boolean {
+  if (/\$\{?COMMANDO_CHAT_RESUME\}?/u.test(command)) return true
+  const words = shellQuotedWords(command)
+  if (!words) return false
+  let index = 0
+  if (words[index] === 'env') {
+    index += 1
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[index] ?? '')) index += 1
+  }
+  return basename(words[index] ?? '') === 'commando-agent'
+    && (words[index + 1] === 'claude' || words[index + 1] === 'codex')
+}

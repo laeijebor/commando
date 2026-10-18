@@ -169,6 +169,7 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
     `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Pin the command that resumes this conversation with --session \"COMMAND\" using the resume command given below (it replaces the previous one). Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
+    'After the first substantive exchange, set a 3–6 word title naming the conversation topic with --title, and change it only if the topic genuinely changes.',
     'When everything the user asked for in this conversation is finished (work committed, and PRs opened or merged where requested) so the conversation may be ready to close, make the last line of your final message start with 🟢 followed by a short summary. Commando shows the session as finished. Do not use 🟢 while anything is left to do or verify.',
     `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. If the user asks to use an already-running simulator, use node ${JSON.stringify(simCliPath)} adopt <udid> instead; it does not reboot or slim the device, and release leaves it running. Otherwise always lease. Run node ${JSON.stringify(simCliPath)} update when purpose, ports, or branch change. Release them with node ${JSON.stringify(simCliPath)} release when done. Commando shows a leased simulator in this pane's tabs, so keep it headless: never open Simulator.app, and pass headless: true if you call Argent boot-device. expo run:ios always opens Simulator.app; install builds with xcrun simctl install instead.`,
     `When the user asks you to open or start another chat or agent (for example to fix something you found), run node ${JSON.stringify(chatCliPath)} open --title "<short title>" --prompt-file <brief.md> [--location pane] — default location is a new session on its own worktree; use --location pane only when the user asks for it beside you. Write a self-contained brief (goal, context, files, repo rules). Never open chats the user did not ask for. Use list to check chats you opened.`,
@@ -754,7 +755,7 @@ await main()
 `
 }
 
-function generatedSessionBriefCli(tokenPath: string): string {
+export function generatedSessionBriefCli(tokenPath: string): string {
   return `#!/usr/bin/env node
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -763,7 +764,7 @@ const tokenPath = ${JSON.stringify(tokenPath)}
 const args = process.argv.slice(2)
 
 function usage() {
-  console.error('Usage: commando-session-update [--headline text] [--update kind text] [--state complete] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--session COMMAND|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--stdin]')
+  console.error('Usage: commando-session-update [--title text] [--headline text] [--update kind text] [--state complete] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--session COMMAND|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--stdin]')
 }
 
 async function stdinJson() {
@@ -790,7 +791,8 @@ async function bodyFromArgs() {
   const body = {}
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index]
-    if (flag === '--headline') body.headline = valueAfter(index++, flag)
+    if (flag === '--title') body.title = valueAfter(index++, flag)
+    else if (flag === '--headline') body.headline = valueAfter(index++, flag)
     else if (flag === '--recap-markdown') body.recapMarkdown = valueAfter(index++, flag)
     else if (flag === '--next') body.next = valueAfter(index++, flag)
     else if (flag === '--clear-next') body.next = null

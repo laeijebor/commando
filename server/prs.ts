@@ -25,10 +25,10 @@ const LIST_CACHE_TTL_MS = 20_000
 const REPOS_CACHE_TTL_MS = 5 * 60_000
 const REPO_CONTEXT_CACHE_TTL_MS = 5_000
 const PULL_REQUEST_PAGE_SIZE = 30
-const PULL_REQUEST_DETAIL_BATCH_SIZE = 5
-// Batched hydration costs several times the points of the single query, so a
-// repo that once timed out retries the single query after this long.
-const BATCHED_LIST_RETRY_MS = 30 * 60_000
+// GitHub gives up on a query after ~10s, and full status for 30 PRs takes
+// about that long on a busy repo. A list longer than one batch is discovered
+// by id (cheap) and hydrated in parallel batches of 15 (~4s, 1 point each).
+const PULL_REQUEST_DETAIL_BATCH_SIZE = 15
 const BODY_EXCERPT_CHARS = 280
 const THREAD_PAGE_SIZE = 50
 const THREAD_EXCERPT_CHARS = 140
@@ -707,7 +707,8 @@ export class PrService {
   private readonly repoContextTtlMs: number
   private readonly now: () => number
   private readonly listCache = new Map<string, SwrCacheEntry<PrList>>()
-  private readonly batchedRepos = new Map<string, number>()
+  /** PR count of each repo list's last fetch, to pick single or batched reads. */
+  private readonly listSizes = new Map<string, number>()
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
   private readonly metadataCache: PrReadCache<JsonRecord>
   private readonly commentPagesCache: PrReadCache<JsonRecord[]>
@@ -1090,8 +1091,10 @@ export class PrService {
       '-f', `reviewRequestedQuery=${scopedSearchQuery(repo, 'review-requested', filter)}`,
     ]
     let output: string
-    const batchKey = `${repo.toLowerCase()}::${scope}`
-    if ((this.batchedRepos.get(batchKey) ?? 0) > this.now()) {
+    const sizeKey = `${repo.toLowerCase()}::${filter}::${scope}`
+    // Lists that last needed more than one batch skip the single query instead
+    // of waiting for it to time out.
+    if ((this.listSizes.get(sizeKey) ?? 0) > PULL_REQUEST_DETAIL_BATCH_SIZE) {
       output = await this.fetchBatchedPullRequests(args)
     } else {
       try {
@@ -1099,12 +1102,7 @@ export class PrService {
       } catch (error) {
         if (!(error instanceof PrServiceError)
           || !(/HTTP 50[24]/.test(error.message) || error.code === 'github_timeout')) throw error
-        // GitHub can time out resolving details for busy repositories. Discover
-        // the same full pages cheaply, then hydrate unique PRs in small batches.
         output = await this.fetchBatchedPullRequests(args)
-        this.batchedRepos.delete(batchKey)
-        this.batchedRepos.set(batchKey, this.now() + BATCHED_LIST_RETRY_MS)
-        if (this.batchedRepos.size > MAX_LIST_CACHE_ENTRIES) this.batchedRepos.delete(this.batchedRepos.keys().next().value!)
       }
     }
     let payload: unknown
@@ -1137,6 +1135,9 @@ export class PrService {
       if (!byNumber.has(pullRequest.number)) byNumber.set(pullRequest.number, pullRequest)
     }
     const pullRequests = [...byNumber.values()].sort((a, b) => b.number - a.number)
+    this.listSizes.delete(sizeKey)
+    this.listSizes.set(sizeKey, pullRequests.length)
+    if (this.listSizes.size > MAX_LIST_CACHE_ENTRIES) this.listSizes.delete(this.listSizes.keys().next().value!)
     const list: PrList = {
       repo,
       filter,

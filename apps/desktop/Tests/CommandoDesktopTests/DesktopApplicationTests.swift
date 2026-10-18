@@ -785,8 +785,9 @@ final class DesktopApplicationTests: XCTestCase {
         first.window.sendEvent(try XCTUnwrap(keyEvent(key: "w", modifiers: .command, keyCode: 13)))
         first.window.sendEvent(try XCTUnwrap(keyEvent(key: "t", modifiers: [.command, .shift], keyCode: 17)))
         first.window.sendEvent(try XCTUnwrap(keyEvent(key: "t", modifiers: .command, keyCode: 17, isARepeat: true)))
+        first.window.sendEvent(try XCTUnwrap(keyEvent(key: "t", modifiers: [.command, .shift], keyCode: 17, isARepeat: true)))
 
-        XCTAssertEqual(firstHost.paneShortcuts, ["t", "w"])
+        XCTAssertEqual(firstHost.paneShortcuts, ["t", "w", "T"])
         XCTAssertTrue(secondHost.paneShortcuts.isEmpty)
         XCTAssertTrue(terminalInput.isEmpty)
         (second.window as? DesktopWindow)?.newPane(nil)
