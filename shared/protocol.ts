@@ -490,6 +490,8 @@ export type WebPane = {
   sessionId: string
   windowId: string
   anchorPaneId: string
+  /** The conversation this tab was opened for; retained when its pane changes. */
+  agentSession?: AgentSessionRef
   placement: WebPanePlacement
   /** Older daemon snapshots may omit panel metadata. */
   dock?: 'panel' | 'split'
