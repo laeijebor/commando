@@ -40,10 +40,11 @@ export async function loadHosts(): Promise<Host[]> {
   }
 }
 
-export async function saveHosts(hosts: readonly Host[]): Promise<void> {
+export async function saveHosts(hosts: readonly Host[], requirePersistence = false): Promise<void> {
   try {
     await SecureStore.setItemAsync(HOSTS_STORAGE_KEY, JSON.stringify(hosts))
   } catch {
+    if (requirePersistence) throw new Error('Could not save this phone’s token securely. Ask your Mac for a new code and try again.')
     // Losing the write is better than losing the running session; the list
     // still applies until the app is killed.
   }

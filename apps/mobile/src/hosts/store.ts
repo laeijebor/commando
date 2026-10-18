@@ -22,7 +22,7 @@ type HostsState = {
   /** Session cookie captured at sign-in, for sockets that skip the cookie jar. */
   cookies: Record<string, string>
   hydrate: () => Promise<void>
-  addHost: (input: { name: string; baseUrl: string; auth?: HostAuth }) => Promise<Host>
+  addHost: (input: { name: string; baseUrl: string; auth?: HostAuth; requirePersistence?: boolean }) => Promise<Host>
   updateHost: (id: string, patch: Partial<Omit<Host, 'id'>>) => Promise<void>
   removeHost: (id: string) => Promise<void>
   setCookie: (id: string, cookie: string | null) => void
@@ -56,7 +56,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
     void writePreference(SELECTED_HOST_KEY, id ?? 'hosts')
   },
 
-  addHost: async ({ name, baseUrl, auth }) => {
+  addHost: async ({ name, baseUrl, auth, requirePersistence }) => {
     const host: Host = {
       id: createHostId(),
       name: name.trim() || new URL(normaliseBaseUrl(baseUrl)).hostname,
@@ -64,8 +64,9 @@ export const useHostsStore = create<HostsState>((set, get) => ({
       auth: auth ?? { kind: 'session' },
     }
     const hosts = [...get().hosts, host]
+    if (requirePersistence) await saveHosts(hosts, true)
     set({ hosts })
-    await saveHosts(hosts)
+    if (!requirePersistence) await saveHosts(hosts)
     void get().refreshReachability(host.id)
     return host
   },

@@ -25,10 +25,18 @@
       "expo-secure-store",
       "expo-notifications",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Commando attaches the photos you pick to a chat message.",
-          "cameraPermission": false,
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac.",
           "microphonePermission": false
         }
       ],

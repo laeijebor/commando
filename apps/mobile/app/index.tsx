@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useRouter } from 'expo-router'
+import { Link, useRouter, type Href } from 'expo-router'
 import {
   KeyboardAvoidingView,
   Modal,
@@ -82,6 +82,7 @@ export default function HostsScreen(): React.JSX.Element {
           />
         ) : null}
 
+        <Button label="Scan QR code" variant="primary" onPress={() => router.push('/pair' as Href)} />
         <Button label="Add host" onPress={() => setAddVisible(true)} />
 
         <Text style={[styles.footnote, { color: theme.textDim }]}>
@@ -98,7 +99,7 @@ export default function HostsScreen(): React.JSX.Element {
         </Link>
       </ScrollView>
 
-      <AddHostSheet onClose={() => setAddVisible(false)} visible={addVisible} />
+      <AddHostSheet onClose={() => setAddVisible(false)} onScan={() => { setAddVisible(false); router.push('/pair' as Href) }} visible={addVisible} />
       <SignInSheet host={signInHost} onClose={() => setSignInHost(null)} visible={signInHost !== null} />
     </SafeAreaView>
   )
@@ -185,7 +186,7 @@ function hostSubtitle(state: HostReachability['state'], reachability: HostReacha
   return 'Not checked yet'
 }
 
-function AddHostSheet({ visible, onClose }: { visible: boolean; onClose: () => void }): React.JSX.Element {
+function AddHostSheet({ visible, onClose, onScan }: { visible: boolean; onClose: () => void; onScan: () => void }): React.JSX.Element {
   const theme = useTheme()
   const addHost = useHostsStore((state) => state.addHost)
   const [name, setName] = useState('')
@@ -211,6 +212,7 @@ function AddHostSheet({ visible, onClose }: { visible: boolean; onClose: () => v
         <View style={[styles.sheet, { backgroundColor: theme.surface, borderColor: theme.borderMid }]}>
           <View style={[styles.grab, { backgroundColor: theme.borderStrong }]} />
           <Text style={[styles.sheetTitle, { color: theme.text }]}>Add host</Text>
+          <Button label="Scan QR code" onPress={onScan} variant="primary" />
           <View style={[styles.field, { backgroundColor: theme.surfaceRaised, borderColor: theme.border }]}>
             <Text style={[styles.fieldLabel, { color: theme.muted }]}>Name</Text>
             <TextInput

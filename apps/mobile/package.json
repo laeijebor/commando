@@ -62,7 +62,8 @@
       "^\\./agent-chat\\.js$": "<rootDir>/../../shared/agent-chat.ts",
       "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",
       "^@/(.*)$": "<rootDir>/src/$1",
-      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts"
+      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts",
+      "^@commando/pairing$": "<rootDir>/../../shared/pairing.ts"
     },
     "testPathIgnorePatterns": [
       "/node_modules/",
