@@ -24,8 +24,8 @@ export default function HostTabsLayout(): React.JSX.Element {
       <Tabs.Screen
         name="sessions"
         options={{
-          title: 'Sessions',
-          tabBarIcon: ({ color, size }) => <Feather color={color} name="terminal" size={size} />,
+          title: 'Chats',
+          tabBarIcon: ({ color, size }) => <Feather color={color} name="message-circle" size={size} />,
         }}
       />
       <Tabs.Screen

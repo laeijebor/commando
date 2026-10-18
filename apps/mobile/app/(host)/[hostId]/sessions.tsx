@@ -69,7 +69,7 @@ export default function SessionsScreen(): React.JSX.Element {
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
       <ScreenTitle
-        title="Sessions"
+        title="Chats"
         trailing={<Pill label={host?.name ?? 'host'} tone="mute" />}
       />
       <ScrollView
@@ -86,7 +86,7 @@ export default function SessionsScreen(): React.JSX.Element {
           />
         }
       >
-        <SessionsPanel
+        <SessionsPanel hostId={hostId}
           onChangeView={changeView}
           onSelectPane={openPane}
           onSelectRow={openRow}

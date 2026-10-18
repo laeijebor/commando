@@ -89,7 +89,7 @@ export function WideCockpit({
   }
 
   const sessions = (
-    <SessionsPanel
+    <SessionsPanel hostId={hostId}
       onChangeView={changeView}
       onSelectPane={focusPane}
       onSelectRow={(row) => focusPane(row.paneId)}

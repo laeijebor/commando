@@ -12,6 +12,7 @@ import {
 
 import type { AgentProvider, AgentStatusKind } from '@commando/protocol'
 import { statusColor, useTheme, type Theme } from '../theme'
+import { providerPresentation } from './providerPresentation'
 import { providerLabel } from '../agents/selectors'
 
 export function ScreenTitle({ title, trailing }: { title: string; trailing?: ReactNode }): React.JSX.Element {
@@ -163,8 +164,10 @@ function pillColors(theme: Theme, tone: string): [string, string] {
 }
 
 export function ProviderPill({ provider }: { provider: AgentProvider }): React.JSX.Element {
-  const tone = provider === 'claude' || provider === 'codex' || provider === 'opencode' || provider === 'cursor' ? provider : 'mute'
-  return <Pill label={providerLabel(provider)} tone={tone} />
+  const theme = useTheme()
+  const presentation = providerPresentation(provider)
+  const color = theme[presentation.accent]
+  return <View style={[styles.pill, { backgroundColor: withAlpha(color, 0.14) }]}><Text style={[styles.pillText, { color }]}>{providerLabel(provider)}</Text></View>
 }
 
 /** `#rrggbb` + alpha → `rgba(...)`, so tokens stay single-sourced as hex. */

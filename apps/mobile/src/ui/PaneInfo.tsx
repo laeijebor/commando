@@ -32,6 +32,7 @@ import {
   type PaneScreenshotListing,
 } from '../daemon/paneApi'
 import type { Host } from '../hosts/types'
+import { providerPresentation } from './providerPresentation'
 import { changesHeadline, gitSummaryView, parseDiffLines } from '../pane/gitSummary'
 import { prChips, type PrDetail } from '../pane/prs'
 import type { MarkdownBlock } from '../pane/markdown'
@@ -83,6 +84,7 @@ export type PaneInfoSectionsProps = {
   ports: readonly OpenPort[]
   /** Which sections to draw. Defaults to all five, in the sheet's order. */
   sections?: readonly SectionId[]
+  prFilter?: { repo: string; number: number }
   /** Where each section starts, for a chip row that scrolls to it. */
   onLayoutSection?: (section: SectionId, y: number) => void
 }
@@ -103,6 +105,7 @@ export function PaneInfoSections({
   pane,
   ports,
   sections = SECTION_IDS,
+  prFilter,
   onLayoutSection,
 }: PaneInfoSectionsProps): React.JSX.Element {
   const theme = useTheme()
@@ -389,7 +392,7 @@ export function PaneInfoSections({
         <View onLayout={onSectionLayout('pr')} style={styles.section}>
           <SectionHeader label="Pull request" note={prs?.totalCount ? String(prs.totalCount) : undefined} />
           {prs?.pullRequests.length ? (
-            prs.pullRequests.map((pullRequest) => (
+            prs.pullRequests.filter((pr) => !prFilter || (pr.repo === prFilter.repo && pr.number === prFilter.number)).map((pullRequest) => (
               <Pressable
                 accessibilityRole="link"
                 accessibilityLabel={`Open pull request ${pullRequest.repo} #${pullRequest.number}`}
@@ -683,12 +686,7 @@ export function PaneInfo({
 }
 
 function providerName(status: AgentStatus): string {
-  if (status.provider === 'claude') return 'Claude'
-  if (status.provider === 'codex') return 'Codex'
-  if (status.provider === 'opencode') return 'OpenCode'
-  if (status.provider === 'cursor') return 'Cursor'
-  if (status.provider === 'muse') return 'Muse'
-  return 'Shell'
+  return providerPresentation(status.provider).name
 }
 
 function statusTone(state: AgentStatus['status']): 'ok' | 'warn' | 'bad' | 'mute' | 'claude' {

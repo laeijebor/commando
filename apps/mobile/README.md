@@ -13,13 +13,25 @@ only. Bundle id `com.commando.companion`.
 - **Hosts** — add a daemon, probe it with `GET /api/health`, sign in with the
   owner's Better Auth email and password or an automation token. The list, the
   tokens included, lives in the iOS keychain via `expo-secure-store`.
-- **Sessions** — the attention inbox (usage tiles plus Needs you / Working /
-  Done / Idle) and the repo → session → window → pane tree, switched by a
-  segmented toggle that is remembered per device.
-- **Pane** — the live terminal: xterm.js inside a WebView, fed by `pane_reset`
-  and `pane_data` from `/ws`, with window and tile chips, the agent HUD strip, a
-  key bar, and a composer that sends a bracketed paste followed by Enter (or, in
-  raw mode, each keystroke as `input`).
+- **Chats** — the default Sessions-tab segment mirrors the desktop repo menu:
+  collapsible repo groups, persistent animal identities, status shapes, pending
+  answers, PR counts and agent children. Attention and Tree remain available;
+  the selected view and collapsed groups are remembered on the device.
+- **Pane** — native remote chats for Claude, Codex, Cursor, Muse and other
+  providers, with session identity headers, right-aligned user bubbles, flat
+  Markdown replies, foldable tool/thinking activity and scrollable code/diffs.
+  Sending, queueing, steering, stopping, attachments and command/file menus use
+  the existing chat channel. Terminal-only panes retain xterm, fit, keys and paste.
+- **Pane tabs** — Chat/Terminal, Worklog, Changes, linked PRs and attached web
+  tabs in desktop order. Switching keeps the conversation mounted. Chromium
+  opens the existing full-screen tile route with its interaction/review controls;
+  native content explains its host-only view, and WebKit offers reopening.
+- **Demo studio (development only)** — add address `demo`, or launch Metro with
+  `EXPO_PUBLIC_COMMANDO_DEMO=1` to add/select it automatically. The in-memory
+  host seeds four repos, eight sessions, four providers, questions, rich turns,
+  worklogs, changes, PRs and browser/simulator/canvas/guide tabs. Sending produces
+  a short two-step reply. Unsupported actions fail locally. Production builds
+  exclude the fake transport; saved demo hosts are filtered out.
 - **Theme** — the five desktop themes, ported token for token from
   `src/styles.css`, with the choice persisted.
 - **Info sheet** — pushed over a pane: the worklog (headline, recap, Next, plan

@@ -5,6 +5,7 @@ import * as Haptics from 'expo-haptics'
 import type { ChatAnswer, ChatItem } from '@commando/agent-chat'
 import { shortPath } from '@commando/chat-timeline'
 
+import { providerPresentation } from '../ui/providerPresentation'
 import { useTheme } from '../theme'
 import { Button, withAlpha } from '../ui/primitives'
 
@@ -17,7 +18,8 @@ const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
  * (the web composer's ApprovalPanel and QuestionPanel, drawn like the
  * phone's Answer screen). The first answer from any device wins.
  */
-export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer }: {
+export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer, provider }: {
+  provider?: string
   request: RequestItem
   pendingCount: number
   cwd: string
@@ -42,7 +44,7 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer }: 
     >
       <View style={styles.head}>
         <Text style={[styles.kicker, { color: theme.amber }]}>
-          {request.requestKind === 'question' ? 'CLAUDE IS ASKING' : 'PERMISSION REQUEST'}
+          {request.requestKind === 'question' ? `${providerPresentation(provider).name.toUpperCase()} IS ASKING` : 'PERMISSION REQUEST'}
         </Text>
         {pendingCount > 1 ? <Text style={[styles.count, { color: theme.muted }]}>1/{pendingCount}</Text> : null}
       </View>

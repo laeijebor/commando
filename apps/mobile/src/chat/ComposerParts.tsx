@@ -16,6 +16,7 @@ import {
 } from '@commando/agent-chat'
 import { EFFORT_LABELS, PERMISSION_MODES, formatTokens, modelLabel, modelMenuAvailable, permissionLabel, permissionModeOptions } from '@commando/chat-composer'
 
+import { providerPresentation } from '../ui/providerPresentation'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 
@@ -23,7 +24,8 @@ import { withAlpha } from '../ui/primitives'
  * Messages the host holds until Claude's turn ends (the web's QueuedMessages):
  * edit, remove, or steer one in now.
  */
-export function QueueList({ queue, disabled, onChange, onEditOrphaned }: {
+export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider }: {
+  provider?: string
   queue: ChatQueuedMessage[]
   disabled: boolean
   onChange: (change: ChatQueueAction) => void
@@ -47,7 +49,7 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned }: {
   }, [])
   return (
     <View style={[styles.queue, { borderBottomColor: theme.border }]} testID="chat-queue">
-      <Text style={[styles.queueNote, { color: theme.muted }]}>Queued · sent together when Claude's turn ends</Text>
+      <Text style={[styles.queueNote, { color: theme.muted }]}>Queued · sent together when {providerPresentation(provider).name}'s turn ends</Text>
       <ScrollView contentContainerStyle={styles.queueRows} keyboardShouldPersistTaps="handled" nestedScrollEnabled style={styles.queueScroll}>
         {queue.map((queued) => (
           <View key={queued.id} style={[styles.queued, { backgroundColor: theme.surfaceSoft }]}>

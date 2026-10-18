@@ -55,7 +55,7 @@ export function ChatView({ host, chat, client, phase }: {
     <View style={styles.root} testID="chat-view">
       {banner ? <Banner icon="wifi-off" text={banner} tone="amber" /> : null}
       {chat.session.status === 'error' && chat.session.error ? <Banner icon="alert-circle" text={chat.session.error} tone="red" /> : null}
-      <ChatTimeline baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} />
+      <ChatTimeline baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} provider={chat.session.provider} />
       {chat.session.claudeCodeSwitch ? (
         <Banner
           icon="terminal"
@@ -65,6 +65,7 @@ export function ChatView({ host, chat, client, phase }: {
       ) : null}
       {request && channel ? (
         <RequestCard
+          provider={chat.session.provider}
           cwd={chat.session.cwd}
           disabled={!hostConnected}
           key={request.requestId}

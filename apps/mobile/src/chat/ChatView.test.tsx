@@ -24,6 +24,15 @@ async function settle(): Promise<void> {
 }
 
 describe('the phone chat view', () => {
+  it.each(['codex', 'cursor', 'muse', 'future'])('uses %s presentation throughout a chat', async (provider) => {
+    const name = provider === 'future' ? 'Agent' : provider.charAt(0).toUpperCase() + provider.slice(1)
+    renderChat(chatState({ session: session({ provider: provider as ChatState['session']['provider'] }) }))
+    await settle()
+    expect(screen.getByLabelText(`Message ${name}`)).toBeTruthy()
+    expect(screen.getByPlaceholderText(`Ask ${name}… / for commands, @ for files`)).toBeTruthy()
+    expect(screen.getByText(`Ask ${name} anything about this folder.`)).toBeTruthy()
+  })
+
   it('draws the conversation: messages, a collapsed work group, a thought and a plan', async () => {
     renderChat(chatState({
       items: [
@@ -38,7 +47,6 @@ describe('the phone chat view', () => {
     }))
     await settle()
     expect(screen.getByText('Where does the HUD card get its attention line?')).toBeTruthy()
-    expect(screen.getByText('Thought for 14s')).toBeTruthy()
     expect(screen.getByText('Edited 1 file, read 1 file, searched 1 time')).toBeTruthy()
     expect(screen.getByText('details.attention')).toBeTruthy()
     // Code keeps its lines and scrolls sideways.
@@ -47,7 +55,9 @@ describe('the phone chat view', () => {
     expect(screen.getByText(/const attention = details\.attention/)).toBeTruthy()
     expect(screen.getByText('Add approvals')).toBeTruthy()
 
+    // Thinking now shares the desktop's collapsed activity summary.
     fireEvent.press(screen.getByText('Edited 1 file, read 1 file, searched 1 time'))
+    expect(screen.getByText('Thought for 14s')).toBeTruthy()
     expect(screen.getByText('Edited src/AgentHudCard.tsx')).toBeTruthy()
   })
 

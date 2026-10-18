@@ -18,25 +18,27 @@ import { useTheme } from '../theme'
 import { AttentionList } from './AttentionList'
 import { EmptyState, Segmented } from './primitives'
 import { SessionTree } from './SessionTree'
+import { ChatList } from './ChatList'
 
-export type SessionsView = 'attention' | 'tree'
+export type SessionsView = 'chats' | 'attention' | 'tree'
 
 const VIEW_OPTIONS = [
+  { value: 'chats' as const, label: 'Chats' },
   { value: 'attention' as const, label: 'Attention' },
   { value: 'tree' as const, label: 'Tree' },
 ]
 
 /**
- * The Attention / Tree choice, remembered per device as the spec agreed. The
+ * The Chats / Attention / Tree choice, remembered per device as the spec agreed. The
  * phone screen and the iPad cockpit share one preference, so the list looks the
  * same however it is being held.
  */
 export function useSessionsView(): [SessionsView, (next: SessionsView) => void] {
-  const [view, setView] = useState<SessionsView>('attention')
+  const [view, setView] = useState<SessionsView>('chats')
 
   useEffect(() => {
     void readPreference(SESSIONS_VIEW_PREFERENCE_KEY).then((stored) => {
-      if (stored === 'attention' || stored === 'tree') setView(stored)
+      if (stored === 'chats' || stored === 'attention' || stored === 'tree') setView(stored)
     })
   }, [])
 
@@ -48,6 +50,7 @@ export function useSessionsView(): [SessionsView, (next: SessionsView) => void] 
 }
 
 export type SessionsPanelProps = {
+  hostId?: string
   state: HostDaemonState
   view: SessionsView
   onChangeView: (next: SessionsView) => void
@@ -59,13 +62,14 @@ export type SessionsPanelProps = {
 }
 
 /**
- * Screen 02's content: the usage tiles and the attention inbox, or the repo →
+ * Screen 02's content: the chat list, attention inbox or repo →
  * session → window → pane tree, under the segmented toggle. It draws no
  * scroller and no chrome, so it can be the phone's screen or the cockpit's
  * 300pt left column unchanged.
  */
 export function SessionsPanel({
   state,
+  hostId,
   view,
   onChangeView,
   onSelectRow,
@@ -96,7 +100,9 @@ export function SessionsPanel({
         <Text style={[styles.connection, { color: theme.muted }]}>{state.detail}</Text>
       ) : null}
 
-      {view === 'attention' ? (
+      {view === 'chats' ? (
+        <ChatList hostId={hostId} state={state} onSelectPane={onSelectPane} selectedPaneId={selectedPaneId} />
+      ) : view === 'attention' ? (
         <AttentionList
           groups={groups}
           onSelectRow={onSelectRow}

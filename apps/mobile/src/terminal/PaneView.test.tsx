@@ -59,13 +59,23 @@ describe('the pane view', () => {
     expect(screen.getByTestId('terminal-surface')).toBeTruthy()
   })
 
+  it('keeps a draft when switching away to Worklog and back', async () => {
+    render(pane('%14'))
+    await act(async () => undefined)
+    fireEvent.changeText(screen.getByTestId('chat-input'), 'keep this draft')
+    fireEvent.press(screen.getByRole('tab', { name: 'Worklog' }))
+    expect(screen.queryByTestId('chat-input')).toBeNull()
+    fireEvent.press(screen.getByRole('tab', { name: 'Chat' }))
+    expect(screen.getByTestId('chat-input').props.value).toBe('keep this draft')
+  })
+
   it("keeps each chat's draft to itself when the cockpit switches panes", async () => {
     const view = render(pane('%14'))
     await act(async () => undefined)
     fireEvent.changeText(screen.getByTestId('chat-input'), 'meant for chat A')
     view.rerender(pane('%20'))
     await act(async () => undefined)
-    expect(screen.getByText('Chat B')).toBeTruthy()
+    expect(screen.getByText('lavish')).toBeTruthy()
     expect(screen.getByTestId('chat-input').props.value).toBe('')
     view.rerender(pane('%14'))
     await act(async () => undefined)

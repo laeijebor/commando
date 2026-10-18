@@ -60,7 +60,8 @@
       "^@commando/chat-composer$": "<rootDir>/../../shared/chat-composer.ts",
       "^\\./agent-chat\\.js$": "<rootDir>/../../shared/agent-chat.ts",
       "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",
-      "^@/(.*)$": "<rootDir>/src/$1"
+      "^@/(.*)$": "<rootDir>/src/$1",
+      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts"
     },
     "testPathIgnorePatterns": [
       "/node_modules/",
