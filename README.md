@@ -567,6 +567,6 @@ IPv4 addresses. MagicDNS still needs the existing `COMMANDO_TRUSTED_ORIGINS`
 configuration; otherwise pairing falls back to the IPv4 address. Without
 Tailscale binding, the QR uses loopback for a simulator. Pairing does not change
 network access rules. Device-token hashes and metadata live in
-`~/.commando/paired-devices.json` (0600); codes live only in memory. Device tokens
+`~/.commando/paired-devices-<port>.json` (0600); codes live only in memory. Device tokens
 have the existing automation bearer’s access, except pairing management, which
 requires the owner session or `COMMANDO_TOKEN`.

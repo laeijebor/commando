@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { lookup } from 'node:dns/promises'
+import { Resolver } from 'node:dns/promises'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import type { IncomingMessage } from 'node:http'
 import { homedir, hostname } from 'node:os'
@@ -37,15 +37,20 @@ export class PairingError extends Error {
   constructor(readonly status: number, message: string) { super(message) }
 }
 
+export function defaultPairingDevicesPath(port: number): string {
+  return join(homedir(), '.commando', `paired-devices-${port}.json`)
+}
+
 export class PairingRegistry {
   private code: { digest: Buffer; expiresAt: number } | null = null
   private devices = new Map<string, StoredDevice>()
   private attempts = new Map<string, { count: number; resetAt: number }>()
   private connections = new Map<string, Set<() => void>>()
   private writes: Promise<unknown> = Promise.resolve()
+  private readonly revocationListeners = new Set<(id: string) => Promise<unknown>>()
 
   constructor(
-    readonly statePath = join(homedir(), '.commando', 'paired-devices.json'),
+    readonly statePath = defaultPairingDevicesPath(4310),
     private readonly now: () => number = Date.now,
   ) {}
 
@@ -131,6 +136,10 @@ export class PairingRegistry {
     return id
   }
 
+  isActive(id: string): boolean { return this.devices.has(id) }
+
+  onRevoke(listener: (id: string) => Promise<unknown>): void { this.revocationListeners.add(listener) }
+
   trackConnection(id: string, close: () => void): () => void {
     if (!this.devices.has(id)) { close(); return () => undefined }
     const connections = this.connections.get(id) ?? new Set()
@@ -148,6 +157,7 @@ export class PairingRegistry {
       this.devices = next
       for (const close of this.connections.get(id) ?? []) close()
       this.connections.delete(id)
+      await Promise.all([...this.revocationListeners].map((listener) => listener(id)))
       return true
     })
   }
@@ -176,24 +186,57 @@ export class PairingRegistry {
   }
 }
 
-/** Discovery never changes listener or Host/Origin policy. IP remains the fallback when DNS is untrusted. */
-export async function pairingAddresses(port: number, listeners: string[]): Promise<{ urls: string[]; name: string; tailscaleEnabled: boolean }> {
-  const ipv4 = listeners.filter((address) => address.startsWith('100.') && !address.includes(':'))
-  const urls: string[] = []
-  if (ipv4.length) {
-    try {
-      const stdout = await new Promise<string>((resolve, reject) => {
-        execFile('tailscale', ['status', '--json'], { timeout: 1500, maxBuffer: 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout))
-      })
-      const status = JSON.parse(stdout) as { Self?: { DNSName?: string } }
-      const dns = status.Self?.DNSName?.replace(/\.$/, '')
-      if (dns && /^[a-z0-9.-]+$/i.test(dns)) {
-        const resolved = await Promise.race([lookup(dns, { all: true }), new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('DNS timeout')), 1500); timer.unref() })])
-        if (resolved.some(({ address }) => ipv4.includes(address))) urls.push(`http://${dns}:${port}`)
+const MAGIC_DNS = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+ts\.net$/i
+
+/** Cached discovery is bounded as a whole, including a hung optional CLI. */
+export function createPairingAddressDiscovery(dependencies: {
+  cli?: (path: string) => Promise<string>
+  reverse?: (ip: string) => Promise<string[]>
+  now?: () => number
+  timeoutMs?: number
+} = {}) {
+  const cli = dependencies.cli ?? ((path: string) => new Promise<string>((resolve, reject) => {
+    execFile(path, ['status', '--json'], { timeout: 300, maxBuffer: 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout))
+  }))
+  const reverse = dependencies.reverse ?? (async (ip: string) => {
+    const resolver = new Resolver({ timeout: 300, tries: 1 })
+    resolver.setServers(['100.100.100.100'])
+    return resolver.reverse(ip)
+  })
+  const now = dependencies.now ?? Date.now
+  const cache = new Map<string, { expiresAt: number; value: Promise<string[]> }>()
+  const names = (ips: string[]): Promise<string[]> => {
+    const key = ips.join(',')
+    const cached = cache.get(key)
+    if (cached && cached.expiresAt > now()) return cached.value
+    const discover = async (): Promise<string[]> => {
+      for (const path of ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale']) {
+        try {
+          const status = JSON.parse(await cli(path)) as { Self?: { DNSName?: string; TailscaleIPs?: string[] } }
+          const name = status.Self?.DNSName?.replace(/\.$/, '')
+          if (name && MAGIC_DNS.test(name) && (!status.Self?.TailscaleIPs || status.Self.TailscaleIPs.some((ip) => ips.includes(ip)))) return [name]
+        } catch { /* Try the app-bundled CLI, then the Tailscale resolver. */ }
       }
-    } catch { /* CLI/DNS optional; advertise interface addresses instead. */ }
+      const found = await Promise.all(ips.map(async (ip) => {
+        try { return (await reverse(ip)).map((name) => name.replace(/\.$/, '')).filter((name) => MAGIC_DNS.test(name)) } catch { return [] }
+      }))
+      return [...new Set(found.flat())]
+    }
+    const value = new Promise<string[]>((resolve) => {
+      const timer = setTimeout(() => resolve([]), dependencies.timeoutMs ?? 1000)
+      void discover().then((names) => { clearTimeout(timer); resolve(names) }, () => { clearTimeout(timer); resolve([]) })
+    })
+    cache.set(key, { value, expiresAt: now() + 60_000 })
+    return value
   }
-  urls.push(...ipv4.map((address) => `http://${address}:${port}`))
-  if (!urls.length) urls.push(`http://127.0.0.1:${port}`)
-  return { urls, name: hostname(), tailscaleEnabled: listeners.some((address) => address !== '127.0.0.1') }
+  return async (port: number, listeners: string[]) => {
+    const ipv4 = listeners.filter((address) => address.startsWith('100.') && !address.includes(':'))
+    const dns = ipv4.length ? await names(ipv4) : []
+    const urls = [...dns.map((name) => `http://${name}:${port}`), ...ipv4.map((ip) => `http://${ip}:${port}`)]
+    if (!urls.length) urls.push(`http://127.0.0.1:${port}`)
+    return { urls, name: hostname(), tailscaleEnabled: listeners.some((address) => address !== '127.0.0.1') }
+  }
 }
+
+/** Discovery never changes listener or Host/Origin policy. */
+export const pairingAddresses = createPairingAddressDiscovery()

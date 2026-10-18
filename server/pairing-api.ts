@@ -28,7 +28,7 @@ async function body(request: IncomingMessage): Promise<PairingClaimRequest> {
 
 /** Must be called after the daemon's unchanged network gate, before general bearer auth. */
 export class PairingApi {
-  constructor(private readonly registry: PairingRegistry, private readonly ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>, private readonly details: () => Promise<PairingDetails>) {}
+  constructor(private readonly registry: PairingRegistry, private readonly ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>, private readonly details: () => Promise<PairingDetails>, private readonly mutationAuthorized: (request: IncomingMessage, url: URL) => boolean = () => false) {}
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
     if (!url.pathname.startsWith('/api/pairing/')) return false
@@ -45,6 +45,7 @@ export class PairingApi {
         return true
       }
       if (!(await this.ownerAuthorized(request, url))) throw new PairingError(401, 'Unauthorized')
+      if ((request.method === 'POST' || request.method === 'DELETE') && !this.mutationAuthorized(request, url)) throw new PairingError(403, 'Trusted Origin required')
       if (url.pathname === '/api/pairing/codes' && request.method === 'POST') {
         // Discover first so the full lifetime starts when the QR can be rendered.
         const details = await this.details()

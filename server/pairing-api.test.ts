@@ -13,11 +13,11 @@ async function setup() {
   const dir = await mkdtemp(join(tmpdir(), 'commando-pairing-api-'))
   directories.push(dir)
   const registry = new PairingRegistry(join(dir, 'devices.json'))
-  const api = new PairingApi(registry, async (req, url) => req.headers.cookie === 'owner=session' || requestMatchesBearer(req, url, (token) => token === 'owner'), async () => ({ urls: ['http://127.0.0.1:4310'], name: 'Mac', tailscaleEnabled: false }))
+  const api = new PairingApi(registry, async (req, url) => req.headers.cookie === 'owner=session' || requestMatchesBearer(req, url, (token) => token === 'owner'), async () => ({ urls: ['http://127.0.0.1:4310'], name: 'Mac', tailscaleEnabled: false }), (req, url) => requestMatchesBearer(req, url, (token) => token === 'owner') || req.headers.origin === 'http://localhost:4310')
   // Exercise HTTP dispatch and streamed JSON without binding a sandbox-forbidden port.
-  const call = async (path: string, method = 'GET', token?: string, body?: unknown, cookie?: string) => {
+  const call = async (path: string, method = 'GET', token?: string, body?: unknown, cookie?: string, origin?: string) => {
     const request = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []) as IncomingMessage
-    Object.assign(request, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}) }, socket: { remoteAddress: '127.0.0.1' } })
+    Object.assign(request, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) }, socket: { remoteAddress: '127.0.0.1' } })
     let status = 200
     const headers = new Headers()
     let result = ''
@@ -64,4 +64,19 @@ it('claim errors are generic, rate limited before parsing, and bodies bounded', 
   const other = await setup()
   expect((await other.call('claim', 'POST', undefined, { ...invalid, code: 'x'.repeat(5000) })).status).toBe(413)
   expect((await other.call('claim', 'GET')).status).toBe(405)
+})
+
+it('requires a trusted Origin for cookie mutations, but bearer mutations remain unaffected', async () => {
+  const { call, registry } = await setup()
+  for (const origin of [undefined, 'http://localhost:9999', 'http://evil.test', 'null']) {
+    expect((await call('codes', 'POST', undefined, undefined, 'owner=session', origin)).status).toBe(403)
+  }
+  const cookieCode = await call('codes', 'POST', undefined, undefined, 'owner=session', 'http://localhost:4310')
+  expect(cookieCode.status).toBe(200)
+  const { code } = await cookieCode.json()
+  const device = await registry.claim({ code, deviceName: 'iPhone', platform: 'ios' }, 'Mac')
+  expect((await call(`devices/${device.deviceId}`, 'DELETE', undefined, undefined, 'owner=session', 'http://localhost:9999')).status).toBe(403)
+  expect(registry.authenticate(device.token)).toBe(device.deviceId)
+  expect((await call(`devices/${device.deviceId}`, 'DELETE', undefined, undefined, 'owner=session', 'http://localhost:4310')).status).toBe(200)
+  expect((await call('codes', 'POST', 'owner')).status).toBe(200)
 })

@@ -134,7 +134,8 @@ import { handleUsageApi } from './usage-api.js'
 import { ExpoPushSender } from './expo-push.js'
 import { PushApi } from './push-api.js'
 import { PairingApi } from './pairing-api.js'
-import { PairingRegistry, pairingAddresses, requestMatchesBearer } from './pairing.js'
+import { PairingRequestAuth } from './pairing-auth.js'
+import { PairingRegistry, defaultPairingDevicesPath, pairingAddresses, requestMatchesBearer } from './pairing.js'
 import { PushDeviceRegistry } from './push-devices.js'
 import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
@@ -494,6 +495,7 @@ async function main(): Promise<void> {
   process.env.ARGENT_SIMULATOR_NO_WINDOW ??= '1'
   const port = configuredPort()
   const networkAccess = createNetworkAccess(port)
+  void pairingAddresses(port, networkAccess.listeners) // Warm optional DNS discovery without blocking startup.
   const token = authToken()
   const digest = tokenDigest(token)
   const agentHookToken = await loadOrCreateAgentHookToken()
@@ -735,7 +737,8 @@ async function main(): Promise<void> {
   let lastTmuxError = ''
   let structuralRefreshTimer: NodeJS.Timeout | undefined
 
-  const pairing = new PairingRegistry()
+  const pairing = new PairingRegistry(defaultPairingDevicesPath(port))
+  const pairingAuth = new PairingRequestAuth(pairing)
   await pairing.load()
   // Management remains owner-only. Devices inherit exactly the existing bearer scope.
   const requestIsOwnerAuthorized = async (request: IncomingMessage, url: URL): Promise<boolean> => (
@@ -743,22 +746,12 @@ async function main(): Promise<void> {
   )
   const requestIsAuthorized = async (request: IncomingMessage, url: URL): Promise<boolean> => {
     if (requestHasValidToken(request, url, digest)) return true
-    let deviceId: string | null = null
-    if (requestMatchesBearer(request, url, (candidate) => {
-      deviceId = pairing.authenticate(candidate)
-      return deviceId !== null
-    }) && deviceId) {
-      if (request.headers.upgrade?.toLowerCase() === 'websocket') {
-        // Track the transport before yielding: covers main, simulator and tile sockets,
-        // including upgrades in flight when the owner revokes the device.
-        const release = pairing.trackConnection(deviceId, () => request.socket.destroy())
-        request.socket.once('close', release)
-      }
-      return true
-    }
+    if (pairingAuth.authorize(request, url)) return true
     return (await auth?.hasSession(request)) === true
   }
-  const pairingApi = new PairingApi(pairing, requestIsOwnerAuthorized, () => pairingAddresses(port, networkAccess.listeners))
+  const pairingApi = new PairingApi(pairing, requestIsOwnerAuthorized, () => pairingAddresses(port, networkAccess.listeners), (request, url) => (
+    requestHasValidToken(request, url, digest) || (typeof request.headers.origin === 'string' && networkAccess.trustedOrigins.includes(request.headers.origin))
+  ))
 
   const broadcast = (message: ServerMessage): void => {
     for (const client of clients) send(client, message)
@@ -1638,6 +1631,7 @@ async function main(): Promise<void> {
     },
   })
   const sessionIdeApi = new SessionIdeApi({
+    isDeviceRequest: (request) => pairingAuth.deviceId(request) !== undefined,
     service: sessionIdes,
     currentSessionIds: () => snapshot.sessions.map((session) => session.id),
     currentPanes: () => snapshot.panes,
@@ -1761,6 +1755,7 @@ async function main(): Promise<void> {
   })
   const notifier = new PushNotifier({
     registry: pushDevices,
+    principalActive: (id) => pairing.isActive(id),
     sender: expoPush,
     paneContext: (paneId) => {
       const pane = paneForId(paneId)
@@ -1769,7 +1764,10 @@ async function main(): Promise<void> {
     },
   })
   pushNotifier = notifier
+  pairing.onRevoke((id) => pushDevices.removeByPrincipal(id))
   const pushApi = new PushApi({
+    devicePrincipal: (request) => pairingAuth.deviceId(request),
+    principalActive: (id) => pairing.isActive(id),
     registry: pushDevices,
     sendTest: (device) => notifier.sendTest(device),
   })
@@ -2635,6 +2633,7 @@ async function main(): Promise<void> {
   })
 
   const requestListener = (request: IncomingMessage, response: ServerResponse): void => {
+    pairingAuth.trackResponse(request, response)
     void (async () => {
       if (!networkAccess.validRequest(request)) {
         writeJson(response, 403, { error: 'Invalid host or origin' })

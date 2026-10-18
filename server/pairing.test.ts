@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PAIRING_TTL_MS, PairingRegistry, pairingSecretMatches, requestMatchesBearer } from './pairing.js'
+import { PAIRING_TTL_MS, PairingRegistry, createPairingAddressDiscovery, defaultPairingDevicesPath, pairingSecretMatches, requestMatchesBearer } from './pairing.js'
 
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>()
@@ -117,5 +117,39 @@ describe('pairing', () => {
     expect(accepted()).toBe(true)
     await registry.revoke(device.deviceId)
     expect(accepted()).toBe(false)
+  })
+})
+
+describe('pairing address discovery and instance isolation', () => {
+  it('scopes default token state to the daemon port', () => {
+    expect(defaultPairingDevicesPath(4310)).toMatch(/paired-devices-4310.json$/)
+    expect(defaultPairingDevicesPath(4411)).not.toBe(defaultPairingDevicesPath(4310))
+  })
+  it('tries the app-bundled CLI and caches MagicDNS before IP', async () => {
+    const cli = vi.fn().mockRejectedValueOnce(new Error('ENOENT')).mockResolvedValue(JSON.stringify({ Self: { DNSName: 'studio.tail.ts.net.', TailscaleIPs: ['100.72.39.66'] } }))
+    const reverse = vi.fn()
+    const discover = createPairingAddressDiscovery({ cli, reverse })
+    expect((await discover(4411, ['127.0.0.1', '100.72.39.66'])).urls).toEqual(['http://studio.tail.ts.net:4411', 'http://100.72.39.66:4411'])
+    await discover(4411, ['127.0.0.1', '100.72.39.66'])
+    expect(cli.mock.calls.map(([path]) => path)).toEqual(['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale'])
+    expect(reverse).not.toHaveBeenCalled()
+  })
+  it('uses reverse DNS when no CLI works, filtering names to ts.net', async () => {
+    const reverse = vi.fn().mockResolvedValue(['studio.tail.ts.net.', 'evil.example'])
+    const discover = createPairingAddressDiscovery({ cli: vi.fn().mockRejectedValue(new Error('no CLI')), reverse })
+    expect((await discover(4411, ['100.72.39.66'])).urls).toEqual(['http://studio.tail.ts.net:4411', 'http://100.72.39.66:4411'])
+    expect(reverse).toHaveBeenCalledWith('100.72.39.66')
+  })
+  it('bounds even a hung discovery and caches the fallback', async () => {
+    vi.useFakeTimers()
+    try {
+      const cli = vi.fn(() => new Promise<string>(() => undefined))
+      const discover = createPairingAddressDiscovery({ cli, timeoutMs: 1000 })
+      const pending = discover(4411, ['100.72.39.66'])
+      await vi.advanceTimersByTimeAsync(1000)
+      expect((await pending).urls).toEqual(['http://100.72.39.66:4411'])
+      await discover(4411, ['100.72.39.66'])
+      expect(cli).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
   })
 })
