@@ -144,8 +144,14 @@ export class CommanderRelays {
 
   /** Finalize the entire sent batch before touching the journal; never retry an input already handed off. */
   private async finish(relays: CommanderRelay[]): Promise<void> {
+    for (const relay of relays) this.settle(relay)
     try { await this.persist() } catch (error) { console.error(`[commando] Could not save Commander relays to ${this.options.statePath}`, error) }
     for (const relay of relays) this.options.changed({ ...relay })
+  }
+
+  /** Receipts age from when a relay left the queue, not from when it was queued. */
+  private settle(relay: CommanderRelay): void {
+    if (relay.status !== 'queued' && relay.settledAt === undefined) relay.settledAt = (this.options.now ?? Date.now)()
   }
 
   private prune(): void {
@@ -153,6 +159,7 @@ export class CommanderRelays {
     this.relays = this.relays.filter((r) => r.status === 'queued' || recent.has(r))
   }
   private async change(relay: CommanderRelay): Promise<void> {
+    this.settle(relay)
     await this.persist()
     this.options.changed({ ...relay })
   }

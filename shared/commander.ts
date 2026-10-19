@@ -51,6 +51,8 @@ export type CommanderRelay = {
   error?: string
   createdAt: number
   deliveredAt?: number
+  /** When the relay left the queue (delivered, failed or cancelled). */
+  settledAt?: number
 }
 
 export const RELAY_TAG = '[relayed by Commander]'

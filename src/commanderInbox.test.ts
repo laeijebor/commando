@@ -82,6 +82,15 @@ it('matches chat briefs by settledAt even when a Stop recap arrives later, retai
   expect(terminal.needs_you).toEqual([])
   expect(terminal.finished[0].brief).toBe('Late recap')
 })
+it('ages a finished receipt from when it left the queue, not when it was queued', () => {
+  const now = 1_000_000
+  const relay = { id: 'long', toTargetId: 'target-%1', createdAt: now - 60 * 60_000, status: 'delivered', deliveredAt: now - 60_000, settledAt: now - 60_000 } as CommanderRelay
+  expect(commanderInbox(input({ relays: { long: relay } })).finished[0].latestRelay).toBe(relay)
+  const failed = { ...relay, status: 'failed', deliveredAt: undefined, settledAt: now - 60_000 } as CommanderRelay
+  expect(commanderInbox(input({ relays: { long: failed } })).finished[0].latestRelay).toBe(failed)
+  const stale = { ...relay, settledAt: now - 16 * 60_000 } as CommanderRelay
+  expect(commanderInbox(input({ relays: { long: stale } })).finished[0].latestRelay).toBeUndefined()
+})
 it('keeps old queued receipts and only expires final receipts', () => {
   const relay = { id: 'old', toTargetId: 'target-%1', createdAt: 1, status: 'queued' } as CommanderRelay
   expect(commanderInbox(input({ relays: { old: relay } })).finished[0].latestRelay).toBe(relay)

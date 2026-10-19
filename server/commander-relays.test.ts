@@ -197,6 +197,16 @@ it('expires queued messages after six hours and preserves final text rejection',
   s.terminal(); s.status('done'); s.sendTerminal.mockRejectedValue(new Error('Text rejected'))
   expect(await s.enqueue('bad')).toMatchObject({ status: 'failed', error: 'Text rejected' })
 })
+it('stamps settledAt when a relay leaves the queue, for delivery, cancellation and failure', async () => {
+  const s = await setup(), held = await s.enqueue('held')
+  expect(held.settledAt).toBeUndefined()
+  s.clock(500); expect((await s.queue.cancel(held.id))?.settledAt).toBe(500)
+  s.clock(600); s.status('done')
+  const sent = await s.enqueue('sent')
+  expect(sent).toMatchObject({ status: 'delivered', settledAt: sent.deliveredAt })
+  s.terminal(); s.status('working')
+  expect(await s.enqueue('busy', 'steer')).toMatchObject({ status: 'failed', settledAt: expect.any(Number) })
+})
 it('delivers to a fresh idle chat with unknown registry status', async () => {
   const s = await setup(); s.status('unknown'); s.hostStatus('idle')
   expect((await s.enqueue('first turn')).status).toBe('delivered')

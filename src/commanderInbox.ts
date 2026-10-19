@@ -41,7 +41,7 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
   const sessionNames = new Map(input.snapshot?.sessions.map((session) => [session.id, session.name]))
   const relays = new Map<string, CommanderRelay>()
   for (const relay of Object.values(input.relays)) {
-    if (relay.status !== 'queued' && relay.createdAt < now - 15 * 60_000) continue
+    if (!relayReceiptVisible(relay, now)) continue
     if (!relays.has(relay.toTargetId) || relays.get(relay.toTargetId)!.createdAt < relay.createdAt) relays.set(relay.toTargetId, relay)
   }
   for (const pane of input.snapshot?.panes ?? []) {
@@ -92,4 +92,9 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
   }
   for (const rows of Object.values(groups)) rows.sort((a, b) => b.time - a.time || a.paneId.localeCompare(b.paneId))
   return groups
+}
+
+/** A queued relay always shows; a finished one shows for 15 minutes after it left the queue. */
+export function relayReceiptVisible(relay: CommanderRelay, now: number): boolean {
+  return relay.status === 'queued' || (relay.settledAt ?? relay.deliveredAt ?? relay.createdAt) >= now - 15 * 60_000
 }

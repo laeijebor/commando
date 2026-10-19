@@ -59,7 +59,7 @@ describe('AgentsInbox', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Reply to Agent %1' }), { target: { value: '  Use option A  ' } })
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
     await waitFor(() => expect(onRelay).toHaveBeenCalledWith(relay))
-    expect(fetcher).toHaveBeenCalledWith('/api/commander/relays', expect.objectContaining({ body: JSON.stringify({ paneId: '%1', text: 'Use option A', delivery: 'queue' }), credentials: 'same-origin', headers: expect.objectContaining({ Authorization: 'Bearer token' }) }))
+    expect(fetcher).toHaveBeenCalledWith('/api/commander/relays', expect.objectContaining({ body: JSON.stringify({ paneId: '%1', text: '  Use option A  ', delivery: 'queue' }), credentials: 'same-origin', headers: expect.objectContaining({ Authorization: 'Bearer token' }) }))
     expect(onOpenPane).not.toHaveBeenCalled()
     await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
     const next = groups()

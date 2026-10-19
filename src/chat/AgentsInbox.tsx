@@ -1,7 +1,7 @@
 import { useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowUpRight, Bot, ChevronDown, CircleAlert, CircleCheck, CircleSlash, LoaderCircle, Reply, Send, X } from 'lucide-react'
 import { RELAY_MAX_CHARS, type CommanderRelay } from '../../shared/commander'
-import type { CommanderInbox, CommanderInboxRow, InboxGroup } from '../commanderInbox'
+import { relayReceiptVisible, type CommanderInbox, type CommanderInboxRow, type InboxGroup } from '../commanderInbox'
 import { createCommanderApi } from '../commanderApi'
 import { relativeTime } from '../relativeTime'
 import { cn } from './cn'
@@ -49,7 +49,7 @@ function InboxReply({ row, token, disabled, onRelay, onClose }: {
     setSending(true)
     setError('')
     try {
-      onRelay(await createCommanderApi(token).relay(row.paneId, text.trim()))
+      onRelay(await createCommanderApi(token).relay(row.paneId, text))
       onClose()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to relay message')
@@ -134,7 +134,7 @@ export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled }: Ag
           : <div className="px-1.5 pb-0.5 pt-1.5 text-2xs text-muted-foreground">{GROUP_LABELS[group]}</div>}
         {group !== 'idle' || idleOpen ? groups[group].map((row) => {
           const active = selected?.targetId === row.targetId
-          const relay = row.latestRelay && (row.latestRelay.status === 'queued' || row.latestRelay.createdAt >= now - 15 * 60_000) ? row.latestRelay : undefined
+          const relay = row.latestRelay && relayReceiptVisible(row.latestRelay, now) ? row.latestRelay : undefined
           const time = relativeTime(row.time, now).replace(' ago', '').replace('Just now', 'now')
           return <div role="option" aria-selected={active} aria-label={row.title} key={row.targetId} tabIndex={active ? 0 : -1}
             onFocus={() => setFocusedTarget(row.targetId)}
