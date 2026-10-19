@@ -17,3 +17,28 @@ export function unionCanvasBounds(boxes: readonly CanvasBounds[]): CanvasBounds 
   const x = Math.min(...boxes.map((b) => b.x)), y = Math.min(...boxes.map((b) => b.y))
   return { x, y, w: Math.max(...boxes.map((b) => b.x + b.w)) - x, h: Math.max(...boxes.map((b) => b.y + b.h)) - y }
 }
+
+export const canvasTransform = (camera: CanvasCamera) => `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`
+
+/** The camera lives outside React state: a pan or zoom must not re-render the
+ * whole canvas tree. Subscribers (the world transform, screen-space overlays)
+ * update themselves; everything else reads `get()` when it needs the camera. */
+export type CanvasCameraStore = {
+  get: () => CanvasCamera
+  set: (next: CanvasCamera | ((current: CanvasCamera) => CanvasCamera)) => void
+  subscribe: (listener: () => void) => () => void
+}
+export function createCanvasCameraStore(initial: CanvasCamera): CanvasCameraStore {
+  let camera = initial
+  const listeners = new Set<() => void>()
+  return {
+    get: () => camera,
+    set: (next) => {
+      const value = typeof next === 'function' ? next(camera) : next
+      if (value.x === camera.x && value.y === camera.y && value.scale === camera.scale) return
+      camera = value
+      for (const listener of [...listeners]) listener()
+    },
+    subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+  }
+}
