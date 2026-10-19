@@ -46,6 +46,10 @@ const MAX_RECORDS = 512
 const RECORD_TTL_MS = 30 * 24 * 60 * 60 * 1_000
 /** A restored shell needs a moment before it reads typed input. */
 const SHELL_READY_MS = 4_000
+/** How often to read a restored pane's prompt while waiting for it to settle. */
+const PROMPT_POLL_MS = 500
+/** Shells that never show a steady prompt are resumed anyway after this long. */
+const PROMPT_SETTLE_MAX_MS = 30_000
 const STAGGER_MS = 2_500
 const VERIFY_MS = 20_000
 const RESUMED_RETENTION_MS = 5 * 60 * 1_000
@@ -140,7 +144,17 @@ export type AgentResumeDeps = {
   onError?: (error: unknown) => void
 }
 
-type Job = { targetId: string; serverId: string; queuedAt: number; notBefore: number; active: boolean; baseline?: string }
+type Job = {
+  targetId: string
+  serverId: string
+  queuedAt: number
+  notBefore: number
+  active: boolean
+  /** The prompt line once the shell drew it; anything that changes it later is the user's. */
+  baseline?: string
+  /** The shell has drawn a steady prompt, or stopped being waited for. */
+  settled?: boolean
+}
 
 /**
  * Remembers which conversation each pane target runs and resumes it when tmux restores the
@@ -351,11 +365,7 @@ export class AgentResumeService {
         continue
       }
       this.queue.push(job)
-      // What the prompt looks like once the shell is ready; anything typed after that is the user's.
-      this.setTimer(() => {
-        if (!this.queue.includes(job)) return
-        void this.promptLine(job.targetId).then((line) => { if (job.baseline === undefined) job.baseline = line })
-      }, Math.max(job.notBefore - this.now(), 0))
+      this.setTimer(() => this.settle(job), Math.max(job.notBefore - this.now(), 0))
       this.setResume({
         targetId: job.targetId,
         paneId: pane.id,
@@ -370,30 +380,44 @@ export class AgentResumeService {
     this.drain()
   }
 
+  /**
+   * Waits for the shell to draw its prompt before recording it. Shells restored together can take
+   * several seconds to start, and a prompt that appears late must not look like the user's typing.
+   */
+  private settle(job: Job, previous?: string): void {
+    if (!this.queue.includes(job)) return
+    void this.promptLine(job.targetId).then((line) => {
+      if (!this.queue.includes(job)) return
+      const steady = Boolean(line) && line === previous
+      const waiting = this.deps.readPromptLine && this.deps.currentPane(job.targetId)
+        && this.now() - job.notBefore < PROMPT_SETTLE_MAX_MS
+      if (!steady && waiting) {
+        this.setTimer(() => this.settle(job, line), PROMPT_POLL_MS)
+        return
+      }
+      // A shell that never steadied gets no baseline; only input through Commando then counts.
+      job.baseline = steady ? line : undefined
+      job.settled = true
+      this.drain()
+    })
+  }
+
   private drain(): void {
-    if (this.draining) return
-    const head = this.queue[0]
-    if (!head) return
-    const wait = Math.max(head.notBefore - this.now(), this.lastSentAt + STAGGER_MS - this.now(), 0)
+    if (this.draining || !this.queue.some((job) => job.settled)) return
     this.draining = true
     this.setTimer(() => {
-      // An active pane may have been queued ahead while this timer waited; run whatever is first now.
-      const job = this.queue.shift()
-      if (!job) {
+      // An active pane may have settled ahead while this timer waited; run whatever is first now.
+      const index = this.queue.findIndex((job) => job.settled)
+      if (index < 0) {
         this.draining = false
         return
       }
-      if (job.notBefore > this.now()) {
-        this.queue.unshift(job)
-        this.draining = false
-        this.drain()
-        return
-      }
+      const [job] = this.queue.splice(index, 1)
       void this.run(job).catch(this.onError).finally(() => {
         this.draining = false
         this.drain()
       })
-    }, wait)
+    }, Math.max(this.lastSentAt + STAGGER_MS - this.now(), 0))
   }
 
   private async promptLine(targetId: string): Promise<string | undefined> {
