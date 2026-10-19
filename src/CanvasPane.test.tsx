@@ -282,6 +282,7 @@ describe('CanvasPane', () => {
     expect(layer).toHaveClass('is-moving')
     await waitFor(() => expect(layer).not.toHaveClass('is-moving'))
     expect(canvasPaneCss).toMatch(/\.canvas-world\.is-moving \{ will-change: transform; \}/)
+    expect(canvasPaneCss).toMatch(/\.canvas-viewport\.is-panning \.canvas-world \{ pointer-events: none; \}/)
   })
   it('fits all content without focus, including measured tall annotations', async () => {
     fetcher.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify({ ...example, frames: example.frames.map((frame) => ({ ...frame, focus: undefined })) }) }))

@@ -140,7 +140,7 @@ for (let run = 0; run < runs; run++) for (const name of browsers) for (const var
   await page.goto(`http://127.0.0.1:${variant.port}/?width=${process.env.WIDTH ?? 960}`)
   console.error('run', run, name, variant.name)
   await page.locator('.canvas-frame iframe').first().waitFor()
-  await page.waitForLoadState('networkidle')
+  await page.waitForLoadState('networkidle', { timeout: 60_000 }).catch(() => {})
   if (variant.css) await page.addStyleTag({ content: variant.css })
   await sleep(1500)
   const frames = await page.locator('.canvas-frame').count()

@@ -131,3 +131,5 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 
 .canvas-toolbar .canvas-history > summary { padding: 3px 5px; }
 .canvas-world.is-moving { will-change: transform; }
+/* The viewport holds pointer capture while drag-panning; skip hover hit-testing the world. */
+.canvas-viewport.is-panning .canvas-world { pointer-events: none; }
