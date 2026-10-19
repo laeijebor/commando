@@ -444,6 +444,21 @@ describe('AgentResumeService', () => {
     expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
   })
 
+  it('waits out a prompt that draws its git segment after the rest', async () => {
+    // oh-my-zsh draws the git part of the prompt asynchronously, a moment after the prompt itself.
+    let line = '➜  repo'
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => line }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(4_200)
+    // A single read is not yet a prompt; typing now would follow a half-drawn line.
+    expect(sent).toHaveLength(0)
+    line = '➜  repo git:(main) ✗'
+    await advance(3_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
+  })
+
   it('resumes a pane whose shell never draws a steady prompt', async () => {
     let tick = 0
     const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => `${tick++} ` }))
