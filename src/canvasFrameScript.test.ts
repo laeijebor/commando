@@ -98,16 +98,16 @@ describe('canvas frame script', () => {
     const rect = { x: 10, y: 20, w: 30, h: 40 }
     expect(latest().hotspots).toEqual([{ rect, goto: 'accounts' }, { rect, tip: 'Toggles dark mode' }, { rect }])
   })
-  it('skips hotspots that are invisible, transparent, clipped away or covered', () => {
+  it('skips hotspots that are disabled, invisible, transparent, clipped away or covered', () => {
     document.body.innerHTML = '<button data-canvas-hotspot="a" style="visibility:hidden">A</button><button data-canvas-hotspot="b" style="opacity:0">B</button>' +
       '<div style="opacity:0"><button data-canvas-hotspot="c">C</button></div><div style="overflow:hidden" id="clip"><button data-canvas-hotspot="d">D</button></div>' +
-      '<button data-canvas-hotspot="e">E</button><button data-canvas-hotspot="f">F</button>'
+      '<button data-canvas-goto="accounts" disabled>Off</button><button data-canvas-hotspot="e">E</button><button data-canvas-hotspot="f">F</button>'
     document.querySelectorAll('button').forEach(box)
     vi.spyOn(document.getElementById('clip')!, 'getBoundingClientRect').mockReturnValue({ left: 100, top: 100, width: 50, height: 50, right: 150, bottom: 150, x: 100, y: 100, toJSON() {} })
     const rect = { x: 10, y: 20, w: 30, h: 40 }
     boot(); window.dispatchEvent(new Event('load'))
     expect(latest().hotspots).toEqual([{ rect, tip: 'e' }, { rect, tip: 'f' }])
-    elementAtPoint.mockImplementation(() => document.querySelectorAll('button')[5]) // F covers E's centre
+    elementAtPoint.mockImplementation(() => document.querySelectorAll('button')[6]) // F covers E's centre
     window.dispatchEvent(new Event('load'))
     expect(latest().hotspots).toEqual([{ rect, tip: 'f' }])
   })
