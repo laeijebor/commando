@@ -895,7 +895,7 @@ export async function runAgentsCli(args, request, { out = (value) => console.log
   if (response.status >= 400 || response.result?.ok === false) { err(response.result?.error ?? ('Commando returned ' + response.status)); return 1 }
   if (input.human && Array.isArray(response.result)) {
     out([...response.result].sort((a, b) => Number(!!b.needsYou) - Number(!!a.needsYou)).map((a) =>
-      a.paneId + ' ' + (a.needsYou ? 'NEEDS YOU' : a.stalled ? 'STALLED' : a.status) + ' · ' + a.title.replace(/[\r\n]/g, ' ') + ' · ' + (a.brief?.text ?? a.headline).replace(/[\r\n]/g, ' ')).join('\n'))
+      a.paneId + ' ' + (a.needsYou ? 'NEEDS YOU' : a.stalled ? 'STALLED' : a.status) + ' · ' + a.title.replace(/[\r\n]/g, ' ') + (a.sessionName && a.sessionName !== a.title ? ' (session: ' + a.sessionName.replace(/[\r\n]/g, ' ') + ')' : '') + ' · ' + (a.brief?.text ?? a.headline).replace(/[\r\n]/g, ' ')).join('\n'))
   } else out(response.result)
   return 0
 }

@@ -26,10 +26,10 @@ describe('generated Commander CLI', () => {
   })
   it('prints needs-you first by default, JSON on request, and nonzero for API errors', async () => {
     const cli = await load(), out = vi.fn(), err = vi.fn()
-    const agents = [{ paneId: '%1', title: 'Done', status: 'done', headline: 'Fixed' }, { paneId: '%2', title: 'Question', needsYou: true, brief: { text: 'Needs an answer' } }]
+    const agents = [{ paneId: '%1', title: 'Done', sessionName: 'Fixes', status: 'done', headline: 'Fixed' }, { paneId: '%2', title: 'Question', needsYou: true, brief: { text: 'Needs an answer' } }]
     const request = vi.fn(async () => ({ status: 200, result: agents }))
     expect(await cli.runAgentsCli(['list'], request, { out, err })).toBe(0)
-    expect(out.mock.calls[0][0]).toBe('%2 NEEDS YOU · Question · Needs an answer\n%1 done · Done · Fixed')
+    expect(out.mock.calls[0][0]).toBe('%2 NEEDS YOU · Question · Needs an answer\n%1 done · Done (session: Fixes) · Fixed')
     await cli.runAgentsCli(['list', '--json'], request, { out }); expect(out).toHaveBeenLastCalledWith(agents)
     expect(await cli.runAgentsCli(['relays'], async () => ({ status: 403, result: { error: 'Only Commander' } }), { out, err })).toBe(1)
     expect(err).toHaveBeenLastCalledWith('Only Commander')
