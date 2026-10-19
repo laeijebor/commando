@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus } from '../shared/protocol.js'
 import { parseTurnBrief, TurnBriefs } from './turn-briefs.js'
 const dirs: string[] = []
-afterEach(async () => { vi.useRealTimers(); await Promise.all(dirs.splice(0).map((d) => rm(d, { force: true, recursive: true }))) })
+afterEach(async () => { vi.restoreAllMocks(); vi.useRealTimers(); await Promise.all(dirs.splice(0).map((d) => rm(d, { force: true, recursive: true }))) })
 async function setup(port = 4400, spawn = vi.fn(async () => '{"brief":"Finished the fix","kind":"done"}')) {
   const dir = await mkdtemp(join(tmpdir(), 'turn-briefs-')); dirs.push(dir)
   const changed = vi.fn(), resolveExecutable = vi.fn(async () => '/claude')
@@ -15,6 +15,7 @@ async function setup(port = 4400, spawn = vi.fn(async () => '{"brief":"Finished 
   const turn = (time = 1, status = 'done', targetId = 'target') => ({ targetId, title: 'Fix bug', chat: false,
     finalMessage: 'The final private response', status: { paneId: '%1', status, source: 'hook', provider: 'claude', updatedAt: time,
       details: { intent: 'Fix it', recap: { summary: 'Agent recap', outcome: 'done', completedAt: time } } } as AgentStatus })
+  store.observe(turn(0, 'working'))
   const drain = async (current = store) => { await vi.waitFor(() => expect((current as unknown as { running: boolean }).running).toBe(false), { interval: 1 }); await current.saved() }
   return { store, options, changed, spawn, resolveExecutable, turn, drain }
 }
@@ -49,6 +50,7 @@ describe('TurnBriefs', () => {
     expect(s.store.get('target')?.kind).toBe('stalled')
     s.store.observe(s.turn(2, 'needs_input'))
     expect(s.store.get('target')?.kind).toBe('needs_you')
+    s.store.observe(s.turn(2.5, 'working'))
     const chat = s.turn(3)
     chat.status.details = undefined; chat.status.settledAt = 3; chat.chat = true; chat.finalMessage = 'First line\nPrivate second line'
     s.store.observe(chat)
@@ -81,11 +83,11 @@ describe('TurnBriefs', () => {
     const s = await setup(4310)
     await writeFile(s.options.statePath, JSON.stringify({ briefs: [], launches: Array(119).fill(s.options.now()) }))
     const seeded = new TurnBriefs(s.options); await seeded.load()
-    seeded.observe(s.turn(1)); await s.drain(seeded)
+    seeded.observe(s.turn(0, 'working')); seeded.observe(s.turn(1)); await s.drain(seeded)
     expect(s.spawn).toHaveBeenCalledTimes(1)
     expect(JSON.parse(await readFile(s.options.statePath, 'utf8')).launches).toHaveLength(120)
     const restarted = new TurnBriefs(s.options); await restarted.load()
-    restarted.observe(s.turn(2)); await s.drain(restarted)
+    restarted.observe(s.turn(1.5, 'working')); restarted.observe(s.turn(2)); await s.drain(restarted)
     expect(s.spawn).toHaveBeenCalledTimes(1)
     expect(restarted.get('target')).toMatchObject({ turnKey: '2', source: 'fallback' })
   })
@@ -99,7 +101,76 @@ describe('TurnBriefs', () => {
     expect(s.store.get('target')?.source).toBe('fallback')
     s.store.stop()
   })
-  it.each(['{}', '[]', '```json\n{"brief":"ok","kind":"done"}\n```', '{"brief":"a\\nb","kind":"done"}', '{"brief":"ok","kind":"bad"}', '{"brief":"ok","kind":"done","extra":1}', JSON.stringify({ brief: 'a'.repeat(161), kind: 'done' })])('rejects invalid model output %s', (raw) => {
+  it.each(['{}', '[]', '{"brief":"a\\nb","kind":"done"}', '{"brief":"ok","kind":"bad"}', '{"brief":"ok","kind":"done","extra":1}', JSON.stringify({ brief: 'a'.repeat(161), kind: 'done' })])('rejects invalid model output %s', (raw) => {
     expect(parseTurnBrief(raw)).toBeNull()
   })
+})
+
+it.each(['null', '', '{}', '[]', '{"briefs":null,"launches":{}}'])('starts with empty state and logs a corrupt brief file: %s', async (raw) => {
+  const s = await setup(), log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  await writeFile(s.options.statePath, raw)
+  const restarted = new TurnBriefs(s.options)
+  await expect(restarted.load()).resolves.toBeUndefined()
+  expect(restarted.values()).toEqual([])
+  expect(log).toHaveBeenCalledWith(expect.stringContaining(s.options.statePath), expect.any(Error))
+})
+it('treats first and restored observations as baselines and preserves saved briefs across idle chat reconnects', async () => {
+  const s = await setup(4310)
+  s.store.observe(s.turn(10)); await s.drain()
+  const saved = s.store.get('target')
+  const restarted = new TurnBriefs(s.options); await restarted.load()
+  const idle = { ...s.turn(100), chat: true, status: { ...s.turn(100).status, details: undefined, settledAt: 100 } }
+  restarted.observe(idle)
+  restarted.observe({ ...idle, status: { ...idle.status, settledAt: 101 } })
+  restarted.observe({ ...s.turn(110), restored: true })
+  expect(restarted.get('target')).toEqual(saved)
+  expect(s.spawn).toHaveBeenCalledTimes(1)
+  restarted.observe({ ...idle, status: { ...idle.status, status: 'working', updatedAt: 120 } })
+  restarted.observe({ ...idle, status: { ...idle.status, updatedAt: 130, settledAt: 130 } })
+  await s.drain(restarted)
+  expect(restarted.get('target')?.turnKey).toBe('130')
+  expect(s.spawn).toHaveBeenCalledTimes(2)
+  // A late Stop hook in the same done run is not another chat turn.
+  restarted.observe({ ...s.turn(140), chat: true, status: { ...s.turn(140).status, settledAt: 130 } })
+  await s.drain(restarted)
+  expect(s.spawn).toHaveBeenCalledTimes(2)
+  expect(restarted.get('target')?.turnKey).toBe('130')
+})
+it('never replaces a saved brief with an equal or older turn, or a chat run that began before it', async () => {
+  const s = await setup()
+  s.store.observe(s.turn(10)); await s.drain()
+  s.store.observe(s.turn(5)); s.store.observe(s.turn(10))
+  s.store.observe(s.turn(9, 'working'))
+  s.store.observe({ ...s.turn(20), chat: true, status: { ...s.turn(20).status, settledAt: 20 } })
+  expect(s.changed).toHaveBeenCalledTimes(1)
+  s.store.observe(s.turn(21)); expect(s.store.get('target')?.turnKey).toBe('21')
+  await s.drain()
+})
+it('accepts a JSON fence', () => expect(parseTurnBrief('```json\n{"brief":"ok","kind":"done"}\n```')).toEqual({ text: 'ok', kind: 'done' }))
+it.each(['off', 'OFF', '0', 'FaLsE', 'on', 'ON', '1', 'TrUe', 'default'])('honors COMMANDO_TURN_BRIEFS=%s on both ports', async (flag) => {
+  const enabled = ['on', '1', 'true'].includes(flag.toLowerCase())
+  const disabled = ['off', '0', 'false'].includes(flag.toLowerCase())
+  for (const port of [4310, 4400]) {
+    const s = await setup(port); s.options.env = { COMMANDO_TURN_BRIEFS: flag } as never
+    s.store.observe(s.turn()); await s.drain()
+    expect(s.spawn).toHaveBeenCalledTimes(enabled || (!disabled && port === 4310) ? 1 : 0)
+  }
+})
+it.each(['spawn ENOENT', 'Model generation failed (exit 2)', 'Brief timed out', 'parse'])('logs %s with context, limits repeated logs and pauses after 5 failures', async (reason) => {
+  const log = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  const spawn = reason === 'parse' ? vi.fn(async () => 'invalid output ' + 'x'.repeat(200)) : vi.fn(async (): Promise<string> => { throw new Error(reason) })
+  const s = await setup(4310, spawn)
+  let now = 5000; s.options.now = () => now
+  for (let i = 1; i <= 6; i++) { s.store.observe(s.turn(i)); await s.drain() }
+  expect(spawn).toHaveBeenCalledTimes(5)
+  expect(s.store.get('target')).toMatchObject({ turnKey: '6', source: 'fallback' })
+  expect(log).toHaveBeenCalledTimes(2)
+  expect(log.mock.calls[0][0]).toContain('paneId=%1 targetId=target')
+  if (reason === 'parse') expect(log.mock.calls[0][0]).toContain('Parse failure: ' + ('invalid output ' + 'x'.repeat(200)).slice(0, 120))
+  expect(log.mock.calls[1][0]).toContain('paused for 30 minutes')
+  now += 30 * 60_000
+  spawn.mockResolvedValue('{"brief":"Recovered","kind":"done"}')
+  await s.store.tick(); await s.drain()
+  expect(spawn).toHaveBeenCalledTimes(6)
+  expect(s.store.get('target')?.source).toBe('model')
 })

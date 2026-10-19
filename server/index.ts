@@ -10,6 +10,7 @@ import { parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
 import { Commander } from './commander.js'
+import { createCommanderStatusObserver } from './commander-observer.js'
 import { CommanderApi } from './commander-api.js'
 import { CommanderRelays } from './commander-relays.js'
 import { CommanderStalls } from './commander-stalls.js'
@@ -841,11 +842,11 @@ async function main(): Promise<void> {
     }
   }
 
-  let observeCommanderStatus: ((change: AgentStatusChange) => void) | undefined
+  let observeCommanderStatus: ((change: AgentStatusChange, restored?: boolean) => void) | undefined
   let reconcileCommander: (() => void) | undefined
 
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
-    observeCommanderStatus?.(change)
+    observeCommanderStatus?.(change, restored)
     if (change?.type === 'upsert') {
       if (reconcileWebPaneAgentSession(change.status.paneId)) publishWebPanes()
       void canvasPush?.statusChanged(change.status.paneId)
@@ -2011,24 +2012,12 @@ async function main(): Promise<void> {
     configDir: commanderConfigDir,
     screen: async (pane) => (await captureRenderedCompanionOutput(tmux, pane.sessionId, pane.id)).output,
   })
-  observeCommanderStatus = (change) => {
-    if (!change) return
-    if (change.type === 'upsert') {
-      const status = change.status, pane = paneForId(status.paneId)
-      if (pane) {
-        commanderStalls.observe(pane.targetId, status)
-        const chat = agentHosts.owns(pane.id)
-        const final = chat ? [...agentHosts.items(pane.id)].reverse().find((item) => item.kind === 'assistant_message' && !item.parentToolUseId) : undefined
-        const finalMessage = final?.kind === 'assistant_message' ? final.text : agentStatuses.finalMessage(pane.id)
-        // Fallback publication is synchronous; profile lookup only affects the model job.
-        const turn = { status, targetId: pane.targetId, title: sessionBriefs.get(pane.id)?.title ?? agentHosts.states().find((s) => s.paneId === pane.id)?.session.title ?? pane.chatTitle ?? pane.title,
-          chat, finalMessage, configDir: agentHosts.states().find((s) => s.paneId === pane.id)?.session.configDir }
-        turnBriefs.observe(turn)
-      }
-    } else turnBriefs.remove(change.paneId)
-    void commanderRelays.flush().catch(commanderError)
-    void commanderStalls.check().catch(commanderError)
-  }
+  observeCommanderStatus = createCommanderStatusObserver({
+    pane: paneForId, owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id),
+    finalMessage: (id) => agentStatuses.finalMessage(id), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
+    chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
+    briefs: turnBriefs, stalls: commanderStalls, relays: commanderRelays, error: commanderError,
+  })
   reconcileCommander = () => {
     commander.reconcile()
     void commanderRelays.flush().catch(commanderError)

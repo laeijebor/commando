@@ -5,7 +5,7 @@ import { TURN_BRIEF_MAX_CHARS, type TurnBrief, type TurnBriefKind } from '../sha
 import type { AgentStatus } from '../shared/protocol.js'
 import { modelPrintEnv, resolveModelExecutable, spawnPrint, type ModelPrintSpawn } from './model-print.js'
 
-type Turn = { status: AgentStatus; targetId: string; title: string; chat: boolean; finalMessage?: string; configDir?: string }
+type Turn = { status: AgentStatus; targetId: string; title: string; chat: boolean; restored?: boolean; finalMessage?: string; configDir?: string }
 type Options = {
   statePath: string; port: number; commanderTarget: () => string | null
   changed: (brief: TurnBrief) => void; env?: NodeJS.ProcessEnv; now?: () => number
@@ -15,7 +15,7 @@ type Options = {
 const kinds = new Set(['done', 'needs_you', 'stalled'])
 export function parseTurnBrief(output: string): { text: string; kind: TurnBriefKind } | null {
   try {
-    const value = JSON.parse(output)
+    const value = JSON.parse(output.trim().replace(/^```json\s*\n?([\s\S]*?)\n?```$/i, '$1'))
     if (!value || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'brief,kind' || !kinds.has(value.kind) || typeof value.brief !== 'string') return null
     const text = value.brief.trim()
     if (!text || text.length > TURN_BRIEF_MAX_CHARS || /[\u0000-\u001f\u007f-\u009f]/u.test(text)) return null
@@ -26,6 +26,7 @@ export function parseTurnBrief(output: string): { text: string; kind: TurnBriefK
 export class TurnBriefs {
   private readonly briefs = new Map<string, TurnBrief>()
   private readonly previous = new Map<string, AgentStatus>()
+  private readonly workingAt = new Map<string, number>()
   private readonly jobs = new Map<string, { turn: Turn; brief: TurnBrief }>()
   private launches: number[] = []
   private running = false
@@ -33,19 +34,26 @@ export class TurnBriefs {
   private controller?: AbortController
   private timer?: ReturnType<typeof setInterval>
   private writes: Promise<void> = Promise.resolve()
+  private failures = 0
+  private pausedUntil = 0
+  private readonly loggedAt = new Map<string, number>()
   constructor(private readonly options: Options) {}
   values(): TurnBrief[] { return [...this.briefs.values()] }
   get(targetId: string): TurnBrief | undefined { return this.briefs.get(targetId) }
   async load(): Promise<void> {
     try {
       const value = JSON.parse(await readFile(this.options.statePath, 'utf8'))
+      if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray(value.briefs) || !Array.isArray(value.launches)) throw new Error('Invalid turn brief state')
       for (const brief of (Array.isArray(value.briefs) ? value.briefs : []).slice(-512)) {
-        if (typeof brief.targetId === 'string' && typeof brief.turnKey === 'string' && typeof brief.paneId === 'string'
+        if (brief && typeof brief.targetId === 'string' && typeof brief.turnKey === 'string' && typeof brief.paneId === 'string'
           && ['fallback', 'model'].includes(brief.source) && Number.isFinite(brief.endedAt) && Number.isFinite(brief.createdAt)
           && parseTurnBrief(JSON.stringify({ brief: brief.text, kind: brief.kind }))) this.briefs.set(brief.targetId, brief)
       }
       this.launches = (Array.isArray(value.launches) ? value.launches : []).filter((n: unknown) => typeof n === 'number' && Number.isFinite(n))
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    } catch (error) {
+      this.briefs.clear(); this.launches = []
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`[commando] Could not load turn briefs from ${this.options.statePath}`, error)
+    }
   }
   start(): void {
     if (this.timer) return
@@ -54,20 +62,26 @@ export class TurnBriefs {
   }
   stop(): void { this.stopped = true; clearInterval(this.timer); this.controller?.abort() }
   remove(paneId: string): void {
-    for (const [target, status] of this.previous) if (status.paneId === paneId) { this.previous.delete(target); this.jobs.delete(target) }
+    for (const [target, status] of this.previous) if (status.paneId === paneId) { this.previous.delete(target); this.jobs.delete(target); this.workingAt.delete(target) }
   }
   observe(turn: Turn): void {
     const { status, targetId } = turn
     const previous = this.previous.get(targetId)
     this.previous.set(targetId, status)
+    if (turn.restored) { this.workingAt.delete(targetId); this.jobs.delete(targetId); return }
+    if (status.status === 'working') this.workingAt.set(targetId, status.updatedAt)
+    if (!previous) return
     if (targetId === this.options.commanderTarget()) return
     const recap = status.details?.recap
-    const recapEnded = ['done', 'failed', 'needs_input'].includes(status.status) && recap && recap.completedAt !== previous?.details?.recap?.completedAt
-    const chatEnded = turn.chat && status.status === 'done' && status.settledAt !== undefined && status.settledAt !== previous?.settledAt
+    const recapEnded = !turn.chat && ['done', 'failed', 'needs_input'].includes(status.status) && recap && recap.completedAt > (previous.details?.recap?.completedAt ?? -Infinity)
+    const workingAt = this.workingAt.get(targetId)
+    const chatEnded = turn.chat && status.status === 'done' && status.settledAt !== undefined && status.settledAt !== previous.settledAt
+      && workingAt !== undefined && status.settledAt >= workingAt
     if (!recapEnded && !chatEnded) return
     const endedAt = recapEnded ? recap!.completedAt : status.settledAt!
     const turnKey = String(endedAt), existing = this.briefs.get(targetId)
-    if (existing && (existing.turnKey === turnKey || existing.endedAt > endedAt)) return
+    if (existing && (existing.endedAt >= endedAt || (turn.chat && workingAt! <= existing.endedAt))) return
+    if (chatEnded) this.workingAt.delete(targetId)
     const text = (recap?.summary || turn.finalMessage?.trim().split(/[\r\n]/)[0] || status.summary || 'Turn finished')
       .replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ').trim().slice(0, TURN_BRIEF_MAX_CHARS)
     const kind = status.status === 'needs_input' || recap?.outcome === 'follow_up' || recap?.outcome === 'blocked'
@@ -79,8 +93,9 @@ export class TurnBriefs {
   }
   private now(): number { return (this.options.now ?? Date.now)() }
   private enabled(): boolean {
-    const flag = (this.options.env ?? process.env).COMMANDO_TURN_BRIEFS
-    return flag !== '0' && (this.options.port === 4310 || flag === 'on')
+    const flag = (this.options.env ?? process.env).COMMANDO_TURN_BRIEFS?.toLowerCase()
+    if (['off', '0', 'false'].includes(flag ?? '')) return false
+    return ['on', '1', 'true'].includes(flag ?? '') || this.options.port === 4310
   }
   private put(brief: TurnBrief): void {
     this.briefs.delete(brief.targetId)
@@ -90,10 +105,10 @@ export class TurnBriefs {
     this.options.changed(brief)
   }
   async tick(): Promise<void> {
-    if (this.running || this.stopped || !this.enabled()) return
+    if (this.running || this.stopped || !this.enabled() || this.now() < this.pausedUntil) return
     this.running = true
     try {
-      while (this.jobs.size && !this.stopped && this.enabled()) {
+      while (this.jobs.size && !this.stopped && this.enabled() && this.now() >= this.pausedUntil) {
         this.launches = this.launches.filter((n) => n > this.now() - 3_600_000)
         if (this.launches.length >= 120) break
         const [targetId, job] = this.jobs.entries().next().value!
@@ -117,11 +132,25 @@ export class TurnBriefs {
               return (this.options.spawn ?? spawnPrint)(executable, ['-p', '--model', 'haiku', prompt], { env, signal: controller.signal })
             })(), timeout])
             const parsed = parseTurnBrief(output)
+            if (!parsed) throw new Error(`Parse failure: ${output.slice(0, 120).replace(/[\r\n]/g, ' ')}`)
+            this.failures = 0
             if (parsed && !this.stopped && targetId !== this.options.commanderTarget() && this.briefs.get(targetId)?.turnKey === job.brief.turnKey) {
               this.put({ ...job.brief, ...parsed, source: 'model' })
             }
           } finally { clearTimeout(timer); this.controller = undefined }
-        } catch { /* The instant fallback remains authoritative on any failure. */ }
+        } catch (error) {
+          if (this.stopped || this.briefs.get(targetId)?.turnKey !== job.brief.turnKey) continue
+          const reason = error instanceof Error ? error.message : String(error)
+          const key = reason.startsWith('Parse failure:') ? 'parse' : reason
+          if (this.now() - (this.loggedAt.get(key) ?? -Infinity) >= 60_000) {
+            this.loggedAt.set(key, this.now())
+            console.warn(`[commando] Turn brief failed paneId=${job.turn.status.paneId} targetId=${targetId}: ${reason}`)
+          }
+          if (++this.failures >= 5) {
+            this.failures = 0; this.pausedUntil = this.now() + 30 * 60_000
+            console.warn(`[commando] Turn brief model calls paused for 30 minutes after 5 consecutive failures paneId=${job.turn.status.paneId} targetId=${targetId}`)
+          }
+        }
       }
     } finally { this.running = false }
   }

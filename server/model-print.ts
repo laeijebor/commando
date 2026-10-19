@@ -29,5 +29,5 @@ export const spawnPrint: ModelPrintSpawn = (executable, args, options) => new Pr
     }
   })
   child.once('error', reject)
-  child.once('close', (code) => code === 0 ? resolve(output) : reject(new Error('Model generation failed')))
+  child.once('close', (code) => code === 0 ? resolve(output) : reject(new Error(`Model generation failed (exit ${code})`)))
 })
