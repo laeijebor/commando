@@ -32,8 +32,8 @@ export function canvasHotspotDots(frames: CanvasFrame[], reports: CanvasHotspotR
     reports[frame.id].forEach(({ rect, tip, goto }, index) => {
       const left = Math.max(rect.x, 0), top = Math.max(rect.y, 0)
       const right = Math.min(rect.x + rect.w, frame.w), bottom = Math.min(rect.y + rect.h, frame.h)
-      // Below ~14px the 10px dot would cover the control itself.
-      if (right <= left || bottom <= top || Math.min(right - left, bottom - top) * camera.scale < 14) return
+      // Much smaller and the 10px dot would cover the control itself.
+      if (right <= left || bottom <= top || Math.min(right - left, bottom - top) * camera.scale < 8) return
       const target = goto ? frames.find((f) => f.id === goto) : undefined
       dots.push({
         key: `${frame.id}:${index}`,
