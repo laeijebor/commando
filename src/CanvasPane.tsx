@@ -21,6 +21,13 @@ import { canvasWheelRoute, useCanvasInteraction } from './canvasInteraction'
 import { useCanvasLayout } from './useCanvasLayout'
 import { useCanvasFrameDrag } from './useCanvasFrameDrag'
 import { CanvasSectionStatus } from './CanvasSectionStatus'
+import { CanvasQuestionControls } from './CanvasQuestionControls'
+import { canvasNoteIdFromSelector, canvasQuestion, canvasQuestionsPage, openCanvasQuestions } from './canvasQuestions'
+import { pendingForQuestion, sentForQuestion, TileReviewLayer, type TileReviewSurface } from './TileReviewLayer'
+import { createWebPanesApi } from './webPanesApi'
+import type { PendingQueueApi } from './pendingQueueApi'
+import type { WebPanePendingSnapshot } from '../shared/protocol'
+import type { RedlinePageQuestionSnapshot } from '../shared/redline-response'
 
 const EMPTY = parseCanvasManifest({ title: '', frames: [] })
 const KIND_LABELS = { development: 'Development', important: 'Important', design: 'Design', question: 'Question' }
@@ -64,8 +71,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const baseUrl = resourceUrl(snapshot ? `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/` : `/redline/artifacts/${artifactId}/`)
   // Same-origin like the rest of the app's API calls; the daemon answers no CORS preflight.
   const apiUrl = `/api/redline/artifacts/${artifactId}/canvas`
+  const questionsPage = canvasQuestionsPage(resourceUrl(`/redline/artifacts/${artifactId}/`), manifestPath)
 
-  const comments = useCanvasComments(webPaneId, token, result.manifest.frames, result.manifest.sections)
+  const comments = useCanvasComments(webPaneId, token, result.manifest.frames, result.manifest.sections, webPaneId ? questionsPage : undefined)
   const layout = useCanvasLayout(artifactId, manifestPath, token, setResult, {
     baseUrl, readOnly, frames: result.manifest.frames, onTitle, setLoaded, setRevisions,
     onReset: () => {
@@ -207,6 +215,62 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       if (!spotlightTarget.label && !spotlightTarget.labelId) setSpotlightTarget(null)
     }
   }, [spotlightTarget, loaded, reports, result.manifest.frames, flyTo])
+  const answerable = !readOnly && !!webPaneId
+  const questions = useMemo(() => answerable ? openCanvasQuestions(annotations) : [], [answerable, annotations])
+  const questionState = (note: CanvasAnnotation) => {
+    const question = canvasQuestion(note)
+    if (!question) return null
+    const pending = pendingForQuestion(question, comments.snapshot.notes, questionsPage)
+    const sent = sentForQuestion(question, comments.snapshot.sent, questionsPage)
+    return { question, pending, sent, state: pending ? 'queued' as const : sent ? 'sent' as const : note.answer !== undefined ? 'answered' as const : 'open' as const }
+  }
+  const reviewListeners = useRef({ pending: new Set<(snapshot: WebPanePendingSnapshot) => void>(), questions: new Set<(page: string, snapshot: RedlinePageQuestionSnapshot) => void>() })
+  const reviewState = useRef({ questions, questionsPage })
+  useLayoutEffect(() => { reviewState.current = { questions, questionsPage } })
+  const questionSnapshot = (): RedlinePageQuestionSnapshot => ({ type: 'questions', version: 1, questions: reviewState.current.questions })
+  useEffect(() => { for (const listener of reviewListeners.current.questions) listener(questionsPage, questionSnapshot()) }, [questions, questionsPage])
+  useEffect(() => {
+    // A fresh pane's empty first snapshot would only race the drawer's own load.
+    if (!comments.snapshot.revision && !comments.snapshot.notes.length) return
+    for (const listener of reviewListeners.current.pending) listener(comments.snapshot)
+  }, [comments.snapshot])
+  const reveal = useEffectEvent((selector: string) => {
+    setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true
+    const note = annotations.find((n) => n.id === canvasNoteIdFromSelector(selector))
+    if (note) { setNotesVisible(true); flyTo(noteBounds(note)); return }
+    const pending = comments.queued.find((n) => n.selector === selector)
+    const frame = pending?.canvas && frames.find((f) => f.id === pending.canvas!.frameId)
+    if (!pending?.canvas || !frame) return
+    flyTo({ x: frame.x + pending.canvas.point.x - 40, y: frame.y + pending.canvas.point.y - 40, w: 80, h: 80 })
+    ++hitSequence.current; comments.open(`pending:${pending.id}`)
+  })
+  const reviewSurface = useMemo<TileReviewSurface>(() => ({
+    inspect: () => {},
+    resolveSelectors: (_items, receive) => receive([]),
+    subscribePending: (listener) => { reviewListeners.current.pending.add(listener); return () => { reviewListeners.current.pending.delete(listener) } },
+    subscribeQuestions: (listener) => {
+      reviewListeners.current.questions.add(listener)
+      listener(reviewState.current.questionsPage, questionSnapshot())
+      return () => { reviewListeners.current.questions.delete(listener) }
+    },
+    revealSelector: (selector) => reveal(selector),
+  }), [])
+  const pendingQueue = useMemo<PendingQueueApi | null>(() => {
+    if (!webPaneId) return null
+    const api = createWebPanesApi(token)
+    return {
+      list: () => api.setPendingPage(webPaneId, questionsPage),
+      add: (note) => api.addPendingNote(webPaneId, note),
+      addResponse: (pageUrl, response) => api.addPendingResponse(webPaneId, pageUrl, response),
+      update: (noteId, revision, change) => api.updatePendingNote(webPaneId, noteId, revision, change),
+      upload: (noteId, revision, file) => api.uploadPendingAttachment(webPaneId, noteId, revision, file),
+      removeAttachment: (noteId, revision, attachmentId) => api.removePendingAttachment(webPaneId, noteId, revision, attachmentId),
+      attachmentUrl: (attachmentId) => api.pendingAttachmentUrl(webPaneId, attachmentId),
+      remove: (noteId) => api.removePendingNote(webPaneId, noteId),
+      send: (targets, options) => api.sendPendingNotes(webPaneId, targets, options),
+      dismissDropped: () => api.dismissPendingDropped(webPaneId),
+    }
+  }, [webPaneId, token, questionsPage])
   const pins = readOnly ? [] : canvasPins(comments.draft, comments.queued, comments.threads)
   const activePin = pins.find((pin) => pin.id === comments.active)
   const activePoint = activePin ? canvasPinPoint(activePin, frames, camera) : null
@@ -250,7 +314,6 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       <span className="canvas-toolbar-separator" />
       <button type="button" aria-label="Notes" title="Notes" aria-pressed={notesVisible} onClick={() => setNotesVisible((visible) => !visible)}>▤</button>
       <button type="button" aria-label="Comment tool" title="Comment tool" aria-pressed={commentMode} disabled={readOnly || !webPaneId || feedbackBusy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}>💬</button>
-      {!readOnly && comments.queued.length > 0 && <span className="canvas-queue"><span>{comments.queued.length} ·</span><button type="button" disabled={feedbackBusy} onClick={comments.sendAll}>Send</button></span>}
       <CanvasHistory apiUrl={`${apiUrl}/snapshots`} token={token} selected={snapshot} disabled={feedbackBusy} onSelect={selectSnapshot} />
       <span className="canvas-toolbar-title" title={title}>{title || 'Canvas'}</span>
       {onClose && <button type="button" aria-label="Close canvas tab" onClick={onClose}>×</button>}
@@ -261,7 +324,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     {layout.error && <div className="canvas-errors" role="alert">{layout.error}</div>}
     <div className="canvas-body">
       {overviewVisible && <CanvasOverview key={snapshot?.id ?? 'live'} hideThreads={readOnly} frames={frames} annotations={annotations} reports={reports} selected={selected} onHover={setHovered}
-        threads={readOnly ? [] : comments.threads} queued={readOnly ? [] : comments.queued} onThread={(thread) => {
+        threads={readOnly ? [] : comments.threads} queued={readOnly ? [] : comments.queued}
+        questions={answerable ? annotations.flatMap((note) => { const ask = questionState(note); return ask ? [{ note, state: ask.state }] : [] }) : []} onThread={(thread) => {
           const frame = frames.find((f) => f.id === thread.frameId)
           if (!frame) return
           setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true
@@ -319,10 +383,15 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
             const { path, end } = canvasConnector(noteBounds(note), label ? canvasLabelBounds(frame, label.rect) : frame)
             return <g key={note.id}><path d={path} fill="none" stroke={NOTE_COLOURS[note.kind]} strokeWidth="2.5" />{label && <circle cx={end.x} cy={end.y} r="4" fill={NOTE_COLOURS[note.kind]} />}</g>
           })}</svg>
-          {annotations.map((note) => <div key={note.id} className="canvas-note" data-measure={`note:${note.id}`} style={{ left: note.x, top: note.y, width: note.w ?? 300 }}>
-            <span className="canvas-kind" style={{ background: NOTE_COLOURS[note.kind] }}>{KIND_LABELS[note.kind]}</span>
-            {note.title && <strong className="canvas-note-title">{note.title}</strong>}{note.text && <div>{note.text}</div>}{note.items && <ul>{note.items.map((item, i) => <li key={i}>{item}</li>)}</ul>}
-          </div>)}
+          {annotations.map((note) => {
+            const ask = answerable ? questionState(note) : null
+            return <div key={note.id} className="canvas-note" data-canvas-note={note.id} data-measure={`note:${note.id}`} style={{ left: note.x, top: note.y, width: note.w ?? 300 }}>
+              <span className="canvas-kind" style={{ background: NOTE_COLOURS[note.kind] }}>{KIND_LABELS[note.kind]}</span>
+              {note.title && <strong className="canvas-note-title">{note.title}</strong>}{note.text && <div>{note.text}</div>}{note.items && <ul>{note.items.map((item, i) => <li key={i}>{item}</li>)}</ul>}
+              {ask && <CanvasQuestionControls key={ask.question.queueKey} question={ask.question} recorded={note.answer} pending={ask.pending} sent={ask.sent}
+                disabled={feedbackBusy} onQueue={comments.answer} onRemove={comments.remove} />}
+            </div>
+          })}
         </div>
         <CanvasHighlights frames={frames} reports={reports} camera={camera} selected={selected} hovered={hovered} />
         <CanvasPins pins={pins} frames={frames} camera={camera} active={comments.active} onOpen={(id) => { if (!feedbackBusy) { ++hitSequence.current; comments.open(id) } }} />
@@ -337,6 +406,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         <div className="canvas-hint" role="status" aria-label="Canvas hint">{interaction.state.hint || (commentMode ? 'Click a frame to comment · Esc to exit' : loaded ? readOnly ? 'Snapshot · Drag to pan · ⌘/Ctrl/pinch to zoom' : 'Drag to pan · Double-click to enter · ⌘/Ctrl/pinch to zoom' : 'Loading canvas…')}</div>
       </div>
     </div>
+    {webPaneId && pendingQueue && !readOnly && <TileReviewLayer webPaneId={webPaneId} pageUrl={questionsPage} reviewMode={false} active={false}
+      containerRef={pane} inputRef={viewport} pendingQueue={pendingQueue} surface={reviewSurface} />}
     <div ref={exportOverlay} className="canvas-overlay canvas-export-overlay">
       {exportMenu && exportOverlay.current && <CanvasFrameExport key={`${baseUrl}/${exportMenu.frame.id}/${exportMenu.frame.src}`} frame={exportMenu.frame} anchor={exportMenu.anchor} overlay={exportOverlay.current}
         baseUrl={baseUrl} apiUrl={`${apiUrl}/frames`} manifest={manifestPath} token={token} snapshot={readOnly} onClose={() => setExportMenu(null)} />}

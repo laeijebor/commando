@@ -19,7 +19,7 @@ let snapshot: WebPanePendingSnapshot, threads: CanvasThread[], calls: Array<{ ur
 const queuedNote = (noteId = 1): WebPanePendingNote => ({ id: noteId, revision: 1, selector: '#row', tag: 'button', text: 'Row', rect: { x: 10, y: 20, width: 100, height: 40 }, comment: 'Fix row', canvas: context, pageUrl: `http://localhost/redline/artifacts/${artifactId}/Settings.html?canvas-frame=settings` })
 const thread = (): CanvasThread => ({ id: 'ct-one', webPaneId: id, frameId: 'settings', point: context.point, label: 'Row', labelId: 'row', selector: '#row', status: 'open', createdAt: 10, messages: [{ author: 'user', text: 'Fix row\nMore detail', at: 10 }] })
 beforeEach(() => {
-  publishCanvasSpotlights({})
+  publishCanvasSpotlights({}); localStorage.clear()
   snapshot = { revision: 0, notes: [], knownUpTo: 0, dropped: 0 }; threads = []; calls = []; failSend = false; failStatus = false
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.stubGlobal('matchMedia', () => ({ matches: true }))
@@ -44,8 +44,8 @@ beforeEach(() => {
       threads.find((thread) => url.includes(thread.id))!.status = body!.status as 'open' | 'resolved'
     } else if (url.endsWith('/pending/send')) {
       if (failSend) return { ok: false, status: 409, json: async () => ({ error: 'Pending queue revision is stale' }) }
-      const items = body!.items as Array<{ id: number; revision: number }>
-      const wanted = snapshot.notes.filter((note) => items.some((item) => item.id === note.id))
+      const items = body!.items as Array<{ id: number; revision: number }> | undefined
+      const wanted = items ? snapshot.notes.filter((note) => items.some((item) => item.id === note.id)) : snapshot.notes
       for (const note of wanted) if (note.canvas) threads.push({ ...thread(), id: `ct-${note.id}`, messages: [{ author: 'user', text: note.comment, at: 10 }] })
       snapshot = { ...snapshot, revision: (snapshot.revision ?? 0) + 1, notes: snapshot.notes.filter((note) => !wanted.includes(note)) }
     } else if (url.endsWith('/pending') && init?.method === 'POST') {
@@ -92,7 +92,7 @@ describe('canvas comments', () => {
     await screen.findByText(/Viewing snapshot from/)
     await waitFor(() => expect(screen.getByTitle('Settings').getAttribute('src')).toContain('/canvas-snapshots/'))
     expect(container.querySelector('.canvas-pin')).not.toBeInTheDocument(); expect(screen.queryByRole('tab', { name: 'Threads' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send all' })).not.toBeInTheDocument()
     const iframe = screen.getByTitle('Settings') as HTMLIFrameElement
     const post = vi.spyOn(iframe.contentWindow!, 'postMessage')
     message(iframe, 'labels', { labels: [{ name: 'Row', id: 'row', rect }] })
@@ -139,7 +139,7 @@ describe('canvas comments', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Pending queue revision is stale')
     expect(snapshot.notes).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Accounts section status' })).toHaveTextContent('Shipped')
-    expect(screen.getByText('1 ·')).toBeInTheDocument()
+    expect(screen.getByText('1 queued')).toBeInTheDocument()
   })
   it('comments on an entered frame through the parent hit-test overlay', async () => {
     const { container } = mount(), frame = await screen.findByTitle('Settings')
@@ -175,23 +175,26 @@ describe('canvas comments', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(container.querySelector('.canvas-pin.is-draft')).not.toBeInTheDocument()
   })
-  it('queues the hit/manifest context and sends only canvas notes with exact queue/item revisions', async () => {
+  it('queues the hit/manifest context and Send all sends the whole queue from the answer queue strip', async () => {
     snapshot = { ...snapshot, revision: 1, knownUpTo: 1, notes: [{ ...queuedNote(), canvas: undefined, comment: 'Unrelated tile note' }] }
     const { container } = mount()
     await draftPin(container)
     fireEvent.change(screen.getByRole('textbox', { name: 'Comment' }), { target: { value: '  Fix row  ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
-    await screen.findByText('1 ·')
+    await screen.findByText('2 queued')
     const queued = calls.find((call) => call.url.endsWith('/pending') && call.init?.method === 'POST')!
     expect(queued.init?.headers).toMatchObject({ Authorization: 'Bearer owner' })
     expect(queued.body!.note).toMatchObject({ selector: '#row', tag: 'button', text: 'Row', rect: { x: 10, y: 20, width: 100, height: 40 }, comment: 'Fix row', canvas: { ...context, point: { x: expect.closeTo(25), y: expect.closeTo(35) } } })
     expect((queued.body!.note as { pageUrl: string }).pageUrl).toContain('/Settings.html?canvas-frame=settings')
     message(screen.getByTitle('Settings') as HTMLIFrameElement, 'labels', { labels: [{ name: 'Row', id: 'row', rect }] })
     expect(screen.getByLabelText('1 comments')).toHaveTextContent('💬 1')
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
+    // The daemon pushes pending and thread changes after a send.
+    await waitFor(() => expect(snapshot.notes).toEqual([]))
+    act(() => { publishCanvasPendingChanged(id); publishCanvasThreadsChanged(id) })
     await waitFor(() => expect(container.querySelector('.canvas-pin.is-sent')).toBeInTheDocument())
-    expect(calls.find((call) => call.url.endsWith('/pending/send'))!.body).toEqual({ items: [{ id: 2, revision: 1 }], expectedQueueRevision: 2 })
-    expect(snapshot.notes.map((note) => note.id)).toEqual([1])
+    expect(calls.find((call) => call.url.endsWith('/pending/send'))!.body).toEqual({})
+    expect(snapshot.notes).toEqual([])
   })
   it('Send this queues a new note then targets only that note, and queued pins can send individually after reload', async () => {
     snapshot = { ...snapshot, revision: 1, knownUpTo: 1, notes: [queuedNote()] }
@@ -276,11 +279,11 @@ describe('canvas comments', () => {
     mount(); await screen.findByTitle('Settings')
     snapshot = { ...snapshot, notes: [queuedNote()], revision: 4, knownUpTo: 1 }
     act(() => publishCanvasPendingChanged(id))
-    await screen.findByText('1 ·')
+    await screen.findByText('1 queued')
     failSend = true
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send all' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Pending queue revision is stale')
-    expect(calls.filter((call) => call.url.endsWith('/pending/send'))).toHaveLength(1)
+    expect(snapshot.notes).toHaveLength(1)
     threads = [thread()]
     act(() => publishCanvasThreadsChanged(id))
     fireEvent.click(screen.getByRole('tab', { name: 'Threads' }))
@@ -295,7 +298,7 @@ describe('canvas comments', () => {
     message(iframe, 'redline-queue', { payload }, window)
     expect(calls.filter((call) => call.url.endsWith('/pending/response'))).toHaveLength(0)
     message(iframe, 'redline-queue', { payload })
-    await screen.findByText('1 ·')
+    await screen.findByText('1 queued')
     const relay = calls.find((call) => call.url.endsWith('/pending/response'))!
     expect(relay.body).toMatchObject({ pageUrl: expect.stringContaining('/Settings.html?canvas-frame=settings'), response: { question: 'Ship?', answer: 'Yes' }, canvas: { frameId: 'settings', point: { x: 10, y: 20 }, frameTitle: 'Settings' } })
     await waitFor(() => expect(post.mock.calls.some((call) => call[0].type === 'redline-pending' && call[0].snapshot.controls.length === 1)).toBe(true))
