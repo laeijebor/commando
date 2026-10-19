@@ -6,6 +6,7 @@ import type { CommanderState } from '../shared/commander.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
 import { defaultSessionBriefStatePath } from './session-briefs.js'
 import type { TmuxCreator } from './tmux-create.js'
+import { commanderToolRules } from './commander-tools.js'
 
 export function defaultCommanderStatePath(): string { return `${defaultSessionBriefStatePath()}.commander.json` }
 export function commanderInstructions(cliPath: string): string {
@@ -100,7 +101,7 @@ export class Commander {
     const existing = permissions as Record<string, unknown>
     const allow = existing.allow ?? []
     if (!Array.isArray(allow)) throw new Error('Invalid Commander Claude allow rules')
-    const rules = [`Bash(node "${cliPath}":*)`, `Bash(node ${cliPath}:*)`]
+    const rules = commanderToolRules(cliPath)
     const merged = { ...settings, permissions: { ...existing, allow: [...allow, ...rules.filter((rule) => !allow.includes(rule))] } }
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
     const tmp = `${path}.${randomUUID()}.tmp`
