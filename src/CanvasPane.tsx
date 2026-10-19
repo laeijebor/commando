@@ -12,6 +12,7 @@ import { parseCanvasManifest, type CanvasAnnotation, type CanvasManifestResult }
 import { fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera } from './canvasCamera'
 import { CanvasOverview } from './CanvasOverview'
 import { CanvasHighlights } from './CanvasHighlights'
+import { CanvasHotspots } from './CanvasHotspotDots'
 import { canvasConnector, canvasLabelBounds } from './canvasGeometry'
 import { canvasFrameUrl, useCanvasFrameBridge } from './canvasFrameBridge'
 import { useCanvasFlight } from './canvasFlight'
@@ -52,7 +53,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const [hovered, setHovered] = useState<CanvasLabelRef | null>(null)
   const [exportMenu, setExportMenu] = useState<{ frame: typeof result.manifest.frames[number]; anchor: HTMLElement } | null>(null)
   const exportOverlay = useRef<HTMLDivElement>(null)
-  useEffect(() => { setExportMenu(null) }, [camera.x, camera.y, camera.scale, panning, snapshot, result.manifest])
+  const [badgeTip, setBadgeTip] = useState<{ text: string; x: number; y: number } | null>(null)
+  useEffect(() => { setExportMenu(null); setBadgeTip(null) }, [camera.x, camera.y, camera.scale, panning, snapshot, result.manifest])
   const pane = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const world = useRef<HTMLDivElement>(null)
@@ -80,7 +82,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   })
   const live = !readOnly && !commentMode && result.manifest.frames.some((f) => f.id === interaction.state.live && f.interactive) ? interaction.state.live : null
   const frameDrag = useCanvasFrameDrag(layout.preview, layout.move, cancelFlight)
-  const { reports, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, readOnly ? undefined : comments.relay, {
+  const { reports, hotspots, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, readOnly ? undefined : comments.relay, {
     live, onInput: (frameId, input) => {
       if (input.type === 'escape') { interaction.act({ type: 'escape' }); cancelFlight() }
       else if (input.type === 'goto') interaction.act({ type: 'goto', id: input.target })
@@ -274,7 +276,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         onNote={(note) => { setSpotlightFrame(null); setSelected(null); setHovered(null); setNotesVisible(true); initialFit.current = true; flyTo(noteBounds(note)) }} />}
       <div className={`canvas-viewport${panning ? ' is-panning' : ''}${commentMode ? ' is-commenting' : ''}`} ref={viewport}
         onClick={(event) => {
-          if (!(event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head, .canvas-pin, .canvas-composer, .canvas-spotlight')) interaction.act({ type: 'background' })
+          if (!(event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head, .canvas-pin, .canvas-composer, .canvas-spotlight, .canvas-hotspot')) interaction.act({ type: 'background' })
           void dropComment(event)
         }}
         onPointerDown={(event) => {
@@ -301,7 +303,11 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           {frames.map((frame) => <div key={frame.id} className={`canvas-frame${frame.focus ? ' is-focus' : ''}${live === frame.id ? ' is-live' : ''}${spotlightFrame === frame.id ? ' is-spotlight' : ''}`} style={{ left: frame.x, top: frame.y, width: frame.w, height: frame.h }}
             onDoubleClick={() => { if (!readOnly && !commentMode) interaction.act({ type: 'enter', id: frame.id }) }}>
             <div className="canvas-frame-label" onPointerDown={(event) => { if (!readOnly && !commentMode && !interaction.state.playing && !layout.busy) frameDrag.start(event, frame, camera.scale) }} onPointerMove={frameDrag.move} onPointerUp={frameDrag.end} onPointerCancel={frameDrag.cancel} onLostPointerCapture={frameDrag.cancel}>
-              {frame.platform && <i>[{frame.platform}]</i>}<b>{frame.title}</b>{frame.focus && <span className="canvas-badge focus">★ Focus {frame.focus}</span>}<span className={`canvas-badge ${frame.interactive ? 'live' : 'static'}`}>{frame.interactive ? '▶ Interactive' : 'Static'}</span>
+              {frame.platform && <i>[{frame.platform}]</i>}<b>{frame.title}</b>{frame.focus && <span className="canvas-badge focus">★ Focus {frame.focus}</span>}<span className={`canvas-badge ${frame.interactive ? 'live' : 'static'}${frame.interactiveNote ? ' has-note' : ''}`} aria-description={frame.interactiveNote}
+                onPointerEnter={(event) => {
+                  const badge = event.currentTarget.getBoundingClientRect(), rect = viewport.current!.getBoundingClientRect()
+                  if (frame.interactiveNote) setBadgeTip({ text: frame.interactiveNote, x: badge.left + badge.width / 2 - rect.left, y: badge.top - rect.top })
+                }} onPointerLeave={() => setBadgeTip(null)}>{frame.interactive ? '▶ Interactive' : 'Static'}{frame.interactiveNote && <span className="canvas-badge-info" aria-hidden="true">i</span>}</span>
               <button type="button" className="canvas-frame-export" aria-label={`Export ${frame.title}`} title={`Export ${frame.title}`} aria-haspopup="menu" aria-expanded={exportMenu?.frame.id === frame.id}
                 onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
                 onClick={(event) => { event.stopPropagation(); setExportMenu(exportMenu?.anchor === event.currentTarget ? null : { frame, anchor: event.currentTarget }) }}>⤓</button>
@@ -325,6 +331,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           </div>)}
         </div>
         <CanvasHighlights frames={frames} reports={reports} camera={camera} selected={selected} hovered={hovered} />
+        {!readOnly && !commentMode && notesVisible && <CanvasHotspots frames={frames} reports={hotspots} camera={camera} />}
+        {badgeTip && <div className="canvas-overlay"><span className="canvas-tip is-badge" role="tooltip" style={{ left: badgeTip.x, top: badgeTip.y }}>{badgeTip.text}</span></div>}
         <CanvasPins pins={pins} frames={frames} camera={camera} active={comments.active} onOpen={(id) => { if (!feedbackBusy) { ++hitSequence.current; comments.open(id) } }} />
         {activePin && activePoint && <CanvasComposer key={activePin.id} point={activePoint} label={activePin.canvas.label || activeThread?.selector || activeNote?.selector || comments.draft?.hit.selector || 'Unlabelled'}
           text={activeNote?.comment ?? activeThread?.messages[0]?.text ?? comments.draft?.comment} sent={activePin.state === 'sent' || activePin.state === 'resolved'} queued={activePin.state === 'queued'} busy={feedbackBusy}

@@ -44,6 +44,9 @@
     }
     return path.join(' > ')
   }
+  function validRect(item) {
+    return Object.keys(item.rect).every(function (k) { return Number.isFinite(item.rect[k]) && Math.abs(item.rect[k]) <= 1000000 }) && item.rect.w >= 0 && item.rect.h >= 0
+  }
   function report() {
     var labels = Array.from(document.querySelectorAll('[data-canvas-label]')).slice(0, 1000).map(function (element) {
       var group = element.closest('[data-canvas-group]')
@@ -52,10 +55,18 @@
       if (element.hasAttribute('data-canvas-id')) label.id = element.getAttribute('data-canvas-id')
       return label
     }).filter(function (label) {
-      return [label.name, label.group, label.id].every(function (s) { return s === undefined || typeof s === 'string' && s.length <= 200 }) &&
-        Object.keys(label.rect).every(function (k) { return Number.isFinite(label.rect[k]) && Math.abs(label.rect[k]) <= 1000000 }) && label.rect.w >= 0 && label.rect.h >= 0
+      return [label.name, label.group, label.id].every(function (s) { return s === undefined || typeof s === 'string' && s.length <= 200 }) && validRect(label)
     })
-    if (new TextEncoder().encode(JSON.stringify(labels)).byteLength <= 1000000) post('labels', { labels: labels })
+    // Controls that work: click-through links, plus author-marked hotspots with an optional tooltip.
+    var hotspots = Array.from(document.querySelectorAll('[data-canvas-goto], [data-canvas-hotspot]')).slice(0, 500).map(function (element) {
+      var spot = { rect: rect(element) }
+      var tip = element.getAttribute('data-canvas-hotspot')
+      var go = element.getAttribute('data-canvas-goto')
+      if (tip) spot.tip = tip.slice(0, 500)
+      if (go && /^[A-Za-z0-9_-]{1,64}$/.test(go)) spot.goto = go
+      return spot
+    }).filter(validRect)
+    if (new TextEncoder().encode(JSON.stringify(labels)).byteLength <= 1000000) post('labels', { labels: labels, hotspots: hotspots })
   }
   var timer
   var lastPendingSnapshot
