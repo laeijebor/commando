@@ -41,7 +41,7 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
   const sessionNames = new Map(input.snapshot?.sessions.map((session) => [session.id, session.name]))
   const relays = new Map<string, CommanderRelay>()
   for (const relay of Object.values(input.relays)) {
-    if (relay.createdAt < now - 15 * 60_000) continue
+    if (relay.status !== 'queued' && relay.createdAt < now - 15 * 60_000) continue
     if (!relays.has(relay.toTargetId) || relays.get(relay.toTargetId)!.createdAt < relay.createdAt) relays.set(relay.toTargetId, relay)
   }
   for (const pane of input.snapshot?.panes ?? []) {
@@ -64,11 +64,11 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
     const suppliedBrief = input.paneBriefs[pane.id]
     const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
     const candidate = input.turnBriefs[pane.targetId]
-    const latestEnd = status.details?.recap?.completedAt ?? status.settledAt ?? endedAt
+    const latestEnd = chat ? status.settledAt : status.details?.recap?.completedAt ?? status.settledAt ?? endedAt
     // A summary of an earlier turn must never ask for attention on a later one.
     const currentBrief = candidate && status.status !== 'working' && latestEnd !== undefined &&
       candidate.targetId === pane.targetId && candidate.endedAt === latestEnd &&
-      (!endedAt || endedAt <= candidate.endedAt) ? candidate : undefined
+      (chat ? (turn[0]?.createdAt ?? 0) <= candidate.endedAt : !endedAt || endedAt <= candidate.endedAt) ? candidate : undefined
     const attention = paneAttention(status, input.paneSeen[pane.id])
     const needsYou = agentNeedsAttention(status) || currentBrief?.kind === 'needs_you'
     const stalled = currentBrief?.kind === 'stalled'

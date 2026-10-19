@@ -110,3 +110,23 @@ describe('AgentsInbox', () => {
     expect(within(screen.getByRole('listbox')).getByText('No other agents yet.')).toBeInTheDocument()
   })
 })
+
+it('sends only once when Enter is pressed twice before fetch resolves', async () => {
+  let resolve!: (response: Response) => void
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise((r) => { resolve = r }))
+  const { onRelay } = setup()
+  fireEvent.click(screen.getByRole('button', { name: 'Reply to Agent %1' }))
+  const textbox = screen.getByRole('textbox')
+  fireEvent.change(textbox, { target: { value: 'Use A' } })
+  fireEvent.keyDown(textbox, { key: 'Enter' }); fireEvent.keyDown(textbox, { key: 'Enter' })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  const relay = { id: 'one', status: 'queued' } as CommanderRelay
+  resolve(Response.json({ ok: true, relay }))
+  await waitFor(() => expect(onRelay).toHaveBeenCalledExactlyOnceWith(relay))
+})
+it('keeps queued receipts visible past fifteen minutes', () => {
+  const data = groups()
+  data.finished[0].latestRelay = { status: 'queued', createdAt: Date.now() - 60 * 60_000 } as CommanderRelay
+  setup(data)
+  expect(screen.getByText('Relayed · queued')).toBeInTheDocument()
+})

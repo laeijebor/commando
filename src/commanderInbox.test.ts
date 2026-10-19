@@ -73,3 +73,19 @@ describe('commanderInbox', () => {
   })
   it('handles an empty snapshot', () => expect(commanderInbox(input({ snapshot: null }))).toEqual({ needs_you: [], finished: [], working: [], idle: [] }))
 })
+
+it('matches chat briefs by settledAt even when a Stop recap arrives later, retaining recap keys for terminals', () => {
+  const data = input({ chats: { '%1': chat() }, turnBriefs: { 'target-%1': brief({ kind: 'needs_you' }) },
+    agentStatuses: { '%1': status('%1', { details: { recentActivities: [], checks: [], recap: { completedAt: 120, summary: 'Late recap', outcome: 'done' } } }) } })
+  expect(commanderInbox(data).needs_you[0]?.brief).toBe('Turn complete')
+  const terminal = commanderInbox({ ...data, chats: {} })
+  expect(terminal.needs_you).toEqual([])
+  expect(terminal.finished[0].brief).toBe('Late recap')
+})
+it('keeps old queued receipts and only expires final receipts', () => {
+  const relay = { id: 'old', toTargetId: 'target-%1', createdAt: 1, status: 'queued' } as CommanderRelay
+  expect(commanderInbox(input({ relays: { old: relay } })).finished[0].latestRelay).toBe(relay)
+  for (const status of ['delivered', 'failed'] as const) {
+    expect(commanderInbox(input({ relays: { old: { ...relay, status } } })).finished[0].latestRelay).toBeUndefined()
+  }
+})
