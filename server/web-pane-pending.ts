@@ -338,7 +338,8 @@ export class WebPanePendingStore {
     return [...this.state(webPaneId).notes]
   }
 
-  snapshot(webPaneId: string): WebPanePendingSnapshot {
+  /** `sentPage` reads another page's sent answers without changing the tile's page. */
+  snapshot(webPaneId: string, sentPage?: string): WebPanePendingSnapshot {
     const state = this.state(webPaneId)
     const snapshot: WebPanePendingSnapshot = {
       revision: state.revision,
@@ -346,7 +347,7 @@ export class WebPanePendingStore {
       knownUpTo: state.nextId - 1,
       dropped: state.dropped,
     }
-    const page = state.viewedPage ?? state.url
+    const page = sentPage ?? state.viewedPage ?? state.url
     if (this.sentAnswers && page !== undefined) {
       snapshot.sent = { page: redlinePageKey(page), answers: this.sentAnswers.forPage(canvasSentPageUrl(page)) }
     }

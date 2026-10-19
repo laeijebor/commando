@@ -967,6 +967,25 @@ describe('pending note routes', () => {
     expect(elsewhere.sent?.answers).toEqual([])
   })
 
+  it('reads another page\'s sent answers without moving the tile or broadcasting', async () => {
+    const service = await createService()
+    const dir = mkdtempSync(join(tmpdir(), 'commando-sent-page-'))
+    const pending = new WebPanePendingStore(new PendingNotesJournal({ dir }), undefined, new SentAnswerStore({ dir: join(dir, 'sent'), now: () => 7 }))
+    const { baseUrl, onPendingChanged } = await startApi(service, { pending })
+    const id = await openChromiumPane(service)
+    const shape = { question: 'Ship?', kind: 'text' }
+    await post(baseUrl, `/api/web-panes/${id}/pending/response`, { pageUrl: 'https://example.com/board.json', response: { question: 'Ship?', answer: 'Yes', queueKey: 'ship', shape } }, ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending/response`, { pageUrl: 'https://example.com/frame.html', response: { question: 'Ship?', answer: 'No', queueKey: 'ship', shape } }, ownerAuth)
+    await post(baseUrl, `/api/web-panes/${id}/pending/send`, {}, ownerAuth)
+    onPendingChanged.mockClear()
+    const read = async (query = '') => (await (await fetch(`${baseUrl}/api/web-panes/${id}/pending${query}`, { headers: ownerAuth })).json()) as { sent?: { page: string; answers: Array<{ response: { answer: string } }> } }
+    const board = await read(`?sentPage=${encodeURIComponent('https://example.com/board.json?v=2')}`)
+    expect(board.sent).toMatchObject({ page: 'https://example.com/board.json', answers: [{ response: { answer: 'Yes' } }] })
+    expect((await read()).sent).toMatchObject({ page: 'https://example.com/frame.html', answers: [{ response: { answer: 'No' } }] })
+    expect(onPendingChanged).not.toHaveBeenCalled()
+    expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending?sentPage=file%3A%2F%2F%2Fetc%2Fpasswd`, { headers: ownerAuth })).status).toBe(400)
+  })
+
   it('owner queues, lists, and removes pending notes; broadcasts fire', async () => {
     const service = await createService()
     const { baseUrl, onPendingChanged } = await startApi(service)

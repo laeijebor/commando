@@ -11,6 +11,8 @@ export type CanvasSection = {
 export type CanvasAnnotation = {
   id: string; kind: typeof CANVAS_ANNOTATION_KINDS[number]; text?: string; title?: string; items?: string[]
   target?: { frame: string; label?: string }; x: number; y: number; w?: number
+  /** Question notes only: answer queue identity (defaults to id), choices, and the agent-recorded answer. */
+  key?: string; options?: string[]; multiple?: boolean; answer?: string
 }
 export type CanvasManifest = { title: string; sections: CanvasSection[]; frames: CanvasFrame[]; annotations: CanvasAnnotation[] }
 export type CanvasManifestResult = { manifest: CanvasManifest; errors: string[] }
@@ -145,7 +147,34 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
         else if (frame) fail(`${path}target.frame`, `unknown frame "${frame}"`)
       }
     }
-    if (annotationId && kind && x !== undefined && y !== undefined) manifest.annotations.push({ id: annotationId, kind, x, y, w, title, text, items, target })
+    const question: Pick<CanvasAnnotation, 'key' | 'options' | 'multiple' | 'answer'> = {}
+    const questionKeys = ['key', 'options', 'multiple', 'answer'].filter((key) => value[key] !== undefined)
+    if (kind && kind !== 'question') questionKeys.forEach((key) => fail(`${path}${key}`, 'only applies to question notes'))
+    else if (kind === 'question') {
+      const key = string(value, 'key', path)
+      if (key !== undefined && (!key.trim() || key.length > 128)) fail(`${path}key`, 'must be 1–128 characters')
+      else if (key !== undefined) question.key = key
+      if (value.options !== undefined) {
+        const options = Array.isArray(value.options) ? value.options : null
+        if (!options || !options.length || options.length > 50) fail(`${path}options`, 'must be an array of 1–50 strings')
+        else {
+          const valid = options.filter((option, i): option is string => {
+            if (typeof option === 'string' && option.trim() && option.length <= 256) return true
+            fail(`${path}options[${i}]`, 'must be a non-empty string of at most 256 characters'); return false
+          })
+          if (valid.length) question.options = valid
+        }
+      }
+      if (value.multiple !== undefined) {
+        if (typeof value.multiple !== 'boolean') fail(`${path}multiple`, 'must be a boolean')
+        else if (!question.options) fail(`${path}multiple`, 'needs options')
+        else question.multiple = value.multiple
+      }
+      const answer = string(value, 'answer', path)
+      if (answer !== undefined && (!answer.trim() || answer.length > 1024)) fail(`${path}answer`, 'must be 1–1024 characters')
+      else if (answer !== undefined) question.answer = answer
+    }
+    if (annotationId && kind && x !== undefined && y !== undefined) manifest.annotations.push({ id: annotationId, kind, x, y, w, title, text, items, target, ...question })
   })
   return { manifest, errors }
 }

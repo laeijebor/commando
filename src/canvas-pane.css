@@ -54,7 +54,7 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-viewport { min-width: 0; }
 .canvas-overview { flex: 0 0 168px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--surface-hover); background: var(--surface); }
 .canvas-overview-tabs { display: flex; border-bottom: 1px solid var(--surface-hover); }
-.canvas-overview-tabs button { flex: 1; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.canvas-overview-tabs button { flex: 1 1 auto; padding: 0 4px; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
 .canvas-overview-tabs button[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -1px var(--accent); }
 .canvas-overview-filter { margin: 6px; height: 20px; min-width: 0; padding: 0 7px; border: 1px solid var(--border-mid); border-radius: 4px; background: var(--surface-raised); color: var(--text); font: inherit; font-size: 10px; }
 .canvas-overview-filter:focus { outline: 1px solid var(--accent); }
@@ -89,8 +89,6 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-composer button { border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); color: var(--text); cursor: pointer; }
 .canvas-comment-text { margin: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .canvas-reply-later { margin: 8px; font-size: 11px; color: var(--muted); }
-.canvas-queue { flex: none; display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding-left: 8px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); white-space: nowrap; }
-.canvas-queue button { color: var(--accent); }
 .canvas-o-thread { display: grid; grid-template-columns: 1fr auto; gap: 4px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; color: var(--text); padding: 8px; cursor: pointer; }
 .canvas-o-thread span { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
 .canvas-o-thread em { font-size: 10px; color: var(--muted); }
@@ -141,3 +139,26 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-tip.is-below { transform: translate(-50%, 28px); }
 .canvas-badge.has-note { display: inline-flex; align-items: center; gap: 6px; cursor: help; }
 .canvas-badge-info { display: inline-grid; place-items: center; width: 15px; height: 15px; border: 1px solid currentColor; border-radius: 50%; font-size: 11px; font-weight: 700; font-style: italic; line-height: 1; }
+.canvas-pane[data-review-summary] .canvas-hint { bottom: calc(var(--tile-review-strip-height, 30px) + 14px); }
+.canvas-o-question em { text-transform: none; }
+.canvas-o-question.is-open em { color: #22a5c4; }
+.canvas-overview-tabs .canvas-o-count { margin-left: 3px; }
+.canvas-q { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #d9d6e4; cursor: auto; }
+.canvas-q-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.canvas-q button { font: inherit; cursor: pointer; }
+.canvas-q-options button { padding: 5px 11px; border: 1.5px solid #0e7490; border-radius: 999px; background: #fff; color: #0e7490; font-size: 14px; font-weight: 600; }
+.canvas-q-options button:hover:not(:disabled) { background: #e3f4f8; }
+.canvas-q-options button.is-picked, .canvas-q-options button.is-picked:hover:not(:disabled) { background: #0e7490; color: #fff; }
+.canvas-q textarea { box-sizing: border-box; width: 100%; min-height: 44px; padding: 7px 9px; border: 1px solid #c9c5d6; border-radius: 8px; background: #fff; color: #17141f; font: inherit; font-size: 14px; resize: vertical; }
+.canvas-q textarea:focus { outline: 2px solid #0e7490; outline-offset: -1px; }
+.canvas-q-link { justify-self: start; padding: 0; border: 0; background: none; color: #0e7490; font-size: 13px; }
+.canvas-q-foot { display: flex; align-items: center; gap: 10px; min-height: 22px; }
+.canvas-q-foot > span { flex: 1; color: #1f7a4d; font-size: 13px; font-weight: 600; }
+.canvas-q-foot > span.is-stale { color: #b45309; }
+.canvas-q-queue { padding: 5px 12px; border: 0; border-radius: 7px; background: #0e7490; color: #fff; font-size: 13px; font-weight: 600; }
+.canvas-q-queue:disabled { opacity: .45; cursor: default; }
+.canvas-q-settled { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #d9d6e4; font-size: 14px; color: #3b3650; }
+.canvas-q-settled > span { flex: 1; }
+.canvas-q-settled button { padding: 3px 10px; border: 1px solid #c9c5d6; border-radius: 7px; background: #fff; color: #0e7490; font: inherit; font-size: 13px; cursor: pointer; }
+.canvas-overview.has-questions { flex-basis: 212px; }
+.canvas-pane[data-review-summary] .canvas-overview-body { padding-bottom: calc(var(--tile-review-strip-height, 30px) + 12px); }

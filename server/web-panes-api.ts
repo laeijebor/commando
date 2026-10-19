@@ -767,7 +767,14 @@ export class WebPanesApi {
         }
 
         if (request.method === 'GET') {
-          writeJson(response, 200, { ok: true, webPaneId: route.id, ...pending.snapshot(route.id) })
+          const sentPage = url.searchParams.get('sentPage')
+          let page: string | undefined
+          if (sentPage !== null) {
+            const decision = classifyWebPaneUrl(sentPage, new Set())
+            if (decision.kind === 'invalid') throw new HttpError(400, `sentPage ${decision.reason}`)
+            page = decision.url
+          }
+          writeJson(response, 200, { ok: true, webPaneId: route.id, ...pending.snapshot(route.id, page) })
           return true
         }
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
