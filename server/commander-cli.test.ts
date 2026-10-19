@@ -54,3 +54,27 @@ describe('generated Commander CLI', () => {
     expect((await load(source)).parseAgentsArgs(['list'])).toMatchObject({ method: 'GET' })
   })
 })
+
+it.each(['relay', 'nudge'])('prints %s receipts as human lines or JSON and fails on a failed relay', async (command) => {
+  const cli = await load(), out = vi.fn(), err = vi.fn()
+  for (const status of ['queued', 'delivered']) {
+    const result = { ok: true, relay: { id: 'abc', status } }, request = vi.fn(async () => ({ status: 200, result }))
+    expect(await cli.runAgentsCli([command, '%1', 'Hello'], request, { out, err })).toBe(0)
+    expect(out).toHaveBeenLastCalledWith(status + ' abc')
+    expect(await cli.runAgentsCli([command, '%1', 'Hello', '--json'], request, { out, err })).toBe(0)
+    expect(out).toHaveBeenLastCalledWith(result)
+  }
+  for (const flags of [[], ['--json']]) {
+    out.mockClear()
+    expect(await cli.runAgentsCli([command, '%1', 'Hello', ...flags], async () => ({ status: 200, result: { ok: true, relay: { status: 'failed', error: 'Text rejected' } } }), { out, err })).toBe(1)
+    expect(err).toHaveBeenLastCalledWith('Text rejected'); expect(out).not.toHaveBeenCalled()
+  }
+})
+
+it('preserves a message whose exact text is --json, including with steering and a separate JSON flag', async () => {
+  const cli = await load(), out = vi.fn(), request = vi.fn(async () => ({ status: 200, result: { ok: true, relay: { id: 'abc', status: 'queued' } } }))
+  expect(cli.parseAgentsArgs(['relay', '%1', '--json'])).toMatchObject({ body: { text: '--json' } })
+  await cli.runAgentsCli(['relay', '%1', '--json'], request, { out })
+  expect(out).toHaveBeenLastCalledWith('queued abc')
+  expect(cli.parseAgentsArgs(['relay', '%1', '--json', '--steer', '--json'])).toMatchObject({ body: { text: '--json', steer: true }, json: true })
+})

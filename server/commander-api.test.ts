@@ -11,7 +11,7 @@ import type { TurnBrief } from '../shared/commander.js'
 import { boundedTurns, chatTurns, claudeTranscriptTurns, CommanderApi } from './commander-api.js'
 const TOKEN = 'commander-agent-token-at-least-32-characters'
 const dirs: string[] = []
-afterEach(async () => { await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))) })
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))) })
 function setup() {
   const commander = { targetId: 'commander', paneId: '%9' }
   const snapshot = { panes: [
@@ -24,10 +24,11 @@ function setup() {
   const enqueue = vi.fn(async (input) => ({ id: 'abc', ...input, status: 'queued' } as never)), cancel = vi.fn(async () => ({ id: 'abc' } as never))
   const screen = vi.fn(async () => '\x1b[31mRendered output\x1b[0m'), items: ChatItem[] = []
   const ensure = vi.fn(async () => commander), forget = vi.fn(async () => {}), configDir = vi.fn(async (): Promise<string | undefined> => undefined)
+  const releaseNudge = vi.fn()
   const api = new CommanderApi({
     agentToken: TOKEN, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', snapshot: () => snapshot,
     status: (id) => statuses.get(id), commander: { state: () => commander, ensure, forget },
-    relays: { enqueue, cancel, values: () => [] }, stalls: { stalled: () => stalled, check: async () => {}, takeNudge: () => nudge },
+    relays: { enqueue, cancel, values: () => [] }, stalls: { stalled: () => stalled, check: async () => {}, takeNudge: () => nudge, releaseNudge },
     brief: () => brief, sessionBrief: () => worklog, chatSession: () => chat ? { title: 'Session title', provider: 'claude' } as ChatSessionInfo : undefined,
     owns: () => chat, items: () => items, seen: () => ({ '%1': 50 }), configDir, screen,
     now: () => 0,
@@ -42,7 +43,7 @@ function setup() {
     const handled = await api.handle(request, response, new URL(`http://localhost/api/commander${path}`))
     return { status, result, handled }
   }
-  return { api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, configDir,
+  return { releaseNudge, api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, configDir,
     chat: () => { chat = true }, stalled: (v: boolean) => { stalled = v }, nudge: (v: boolean) => { nudge = v },
     worklog: (v: SessionBrief) => { worklog = v }, brief: (v: TurnBrief) => { brief = v } }
 }
@@ -121,4 +122,27 @@ it('bounds combined turn text to 8000 characters, keeping the newest text', () =
   expect(result).toHaveLength(1)
   expect(result.reduce((sum, turn) => sum + (turn.user?.length ?? 0) + turn.assistant.length, 0)).toBe(8000)
   expect(chatTurns([{ kind: 'assistant_message', parentToolUseId: 'subagent', text: 'private subagent', turnId: 'one' } as ChatItem])).toEqual([])
+})
+
+it('rejects the agent token on both owner relay routes', async () => {
+  const s = setup()
+  expect((await s.call('POST', '/relays', { paneId: '%1', text: 'hello' })).status).toBe(401)
+  expect((await s.call('POST', '/relays/abc/cancel')).status).toBe(401)
+  expect(s.enqueue).not.toHaveBeenCalled(); expect(s.cancel).not.toHaveBeenCalled()
+})
+it.each(['relay', 'nudge'])('rejects %s to Commander itself through the agent API', async (command) => {
+  const s = setup(); s.stalled(true)
+  expect((await s.call('POST', '/agent/' + command, { pane: '%9', text: 'self' })).status).toBe(404)
+  expect(s.enqueue).not.toHaveBeenCalled()
+})
+it('logs unexpected failures before 502 and releases failed nudge reservations', async () => {
+  const s = setup(); s.stalled(true)
+  const error = new Error('Journal unavailable'), log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  s.enqueue.mockRejectedValueOnce(error)
+  expect((await s.call('POST', '/agent/nudge', { pane: '%1', text: 'Continue' }))).toMatchObject({ status: 502, result: { error: 'Journal unavailable' } })
+  expect(s.releaseNudge).toHaveBeenCalledExactlyOnceWith('agent')
+  expect(log).toHaveBeenCalledExactlyOnceWith('[commando] Commander request failed', error)
+  log.mockClear()
+  expect((await s.call('POST', '/agent/nudge', { pane: '%1', text: '' })).status).toBe(400)
+  expect(log).not.toHaveBeenCalled()
 })

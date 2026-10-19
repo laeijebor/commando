@@ -873,9 +873,11 @@ import { pathToFileURL } from 'node:url'
 const defaultTokenPath = ${JSON.stringify(tokenPath)}
 ` + String.raw`
 export function parseAgentsArgs(args) {
-  const [command, ...rest] = args
+  const [command, ...parameters] = args
+  const asJson = parameters.at(-1) === '--json' && (command === 'list' || ['relay', 'nudge'].includes(command) && parameters.length >= 3)
+  const rest = asJson ? parameters.slice(0, -1) : parameters
   const invalid = () => { throw new Error('Usage: commando-agents list [--json] | read %N [--turns 1-10] | relay %N "message" [--steer] | nudge %N "message" | relays | cancel <id>') }
-  if (command === 'list' && (!rest.length || rest.length === 1 && rest[0] === '--json')) return { method: 'GET', path: '/list', human: !rest.length }
+  if (command === 'list' && !rest.length) return { method: 'GET', path: '/list', human: !asJson }
   if (command === 'relays' && !rest.length) return { method: 'GET', path: '/relays' }
   if (command === 'cancel' && rest.length === 1 && /^[a-f0-9-]+$/.test(rest[0])) return { method: 'POST', path: '/relays/' + rest[0] + '/cancel' }
   const pane = rest[0]
@@ -885,7 +887,7 @@ export function parseAgentsArgs(args) {
   }
   if (['relay', 'nudge'].includes(command) && (rest.length === 2 || command === 'relay' && rest.length === 3 && rest[2] === '--steer')) {
     if (!rest[1].trim() || rest[1].length > 4000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(rest[1])) return invalid()
-    return { method: 'POST', path: '/' + command, body: { pane, text: rest[1], ...(rest[2] ? { steer: true } : {}) } }
+    return { method: 'POST', path: '/' + command, ...(asJson ? { json: true } : {}), body: { pane, text: rest[1], ...(rest[2] ? { steer: true } : {}) } }
   }
   return invalid()
 }
@@ -893,7 +895,9 @@ export async function runAgentsCli(args, request, { out = (value) => console.log
   const input = parseAgentsArgs(args)
   const response = await request(input.method, input.path, input.body)
   if (response.status >= 400 || response.result?.ok === false) { err(response.result?.error ?? ('Commando returned ' + response.status)); return 1 }
-  if (input.human && Array.isArray(response.result)) {
+  if (response.result?.relay?.status === 'failed') { err(response.result.relay.error ?? 'Relay failed'); return 1 }
+  if (response.result?.relay && !input.json) { out(response.result.relay.status + ' ' + response.result.relay.id) }
+  else if (input.human && Array.isArray(response.result)) {
     out([...response.result].sort((a, b) => Number(!!b.needsYou) - Number(!!a.needsYou)).map((a) =>
       a.paneId + ' ' + (a.needsYou ? 'NEEDS YOU' : a.stalled ? 'STALLED' : a.status) + ' · ' + a.title.replace(/[\r\n]/g, ' ') + (a.sessionName && a.sessionName !== a.title ? ' (session: ' + a.sessionName.replace(/[\r\n]/g, ' ') + ')' : '') + ' · ' + (a.brief?.text ?? a.headline).replace(/[\r\n]/g, ' ')).join('\n'))
   } else out(response.result)

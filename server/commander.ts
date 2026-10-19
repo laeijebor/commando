@@ -50,10 +50,13 @@ export class Commander {
   async load(): Promise<void> {
     try {
       const value = JSON.parse(await readFile(this.statePath, 'utf8'))
-      if (value.targetId !== null && (typeof value.targetId !== 'string' || !value.targetId)) throw new Error('Invalid Commander state')
+      if (!value || Array.isArray(value) || (value.targetId !== null && (typeof value.targetId !== 'string' || !value.targetId))) throw new Error('Invalid Commander state')
       this.targetId = value.targetId
       if (this.targetId) await this.writeInstructions()
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    } catch (error) {
+      this.targetId = null
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`[commando] Could not load Commander state from ${this.statePath}`, error)
+    }
     this.reconcile()
   }
   reconcile(): void {
@@ -95,12 +98,23 @@ export class Commander {
       const value: unknown = JSON.parse(await readFile(path, 'utf8'))
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Commander Claude settings')
       settings = value as Record<string, unknown>
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    const permissions = settings.permissions ?? {}
-    if (typeof permissions !== 'object' || Array.isArray(permissions)) throw new Error('Invalid Commander Claude permissions')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error(`[commando] Could not update Commander tool permissions in ${path}`, error)
+        return
+      }
+    }
+    const permissions = settings.permissions === undefined ? {} : settings.permissions
+    if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+      console.error(`[commando] Invalid Commander Claude permissions in ${path}`)
+      return
+    }
     const existing = permissions as Record<string, unknown>
-    const allow = existing.allow ?? []
-    if (!Array.isArray(allow)) throw new Error('Invalid Commander Claude allow rules')
+    const allow = existing.allow === undefined ? [] : existing.allow
+    if (!Array.isArray(allow) || !allow.every((rule) => typeof rule === 'string')) {
+      console.error(`[commando] Invalid Commander Claude allow rules in ${path}`)
+      return
+    }
     const rules = commanderToolRules(cliPath)
     const merged = { ...settings, permissions: { ...existing, allow: [...allow, ...rules.filter((rule) => !allow.includes(rule))] } }
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })

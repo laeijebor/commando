@@ -100,7 +100,7 @@ type Dependencies = {
   agentToken: string; ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>
   snapshot: () => CommandoSnapshot; status: (id: string) => AgentStatus | undefined
   commander: Pick<Commander, 'state' | 'ensure' | 'forget'>; relays: Pick<CommanderRelays, 'enqueue' | 'cancel' | 'values'>
-  stalls: Pick<CommanderStalls, 'stalled' | 'check' | 'takeNudge'>
+  stalls: Pick<CommanderStalls, 'stalled' | 'check' | 'takeNudge' | 'releaseNudge'>
   brief: (targetId: string) => TurnBrief | undefined; sessionBrief: (paneId: string) => SessionBrief | undefined
   chatSession: (paneId: string) => ChatSessionInfo | undefined; owns: (id: string) => boolean; items: (id: string) => ChatItem[]
   seen: () => Record<string, number>; configDir: (pane: TmuxPane) => Promise<string | undefined>
@@ -207,10 +207,16 @@ export class CommanderApi {
         }
         const relay = await d.relays.enqueue({ paneId: pane.id, origin: caller ? 'commander' : 'inbox', kind: nudge ? 'nudge' : 'relay',
           delivery: nudge ? 'queue' : (caller ? value.steer === true : value.delivery === 'steer') ? 'steer' : 'queue',
-          text: caller ? `${nudge ? NUDGE_TAG : RELAY_TAG} ${text}` : text })
+          text: caller ? `${nudge ? NUDGE_TAG : RELAY_TAG} ${text}` : text }).catch((error: unknown) => {
+            if (nudge) d.stalls.releaseNudge(pane.targetId)
+            throw error
+          })
         json(response, 200, { ok: true, relay })
       } else throw new HttpError(404, 'Not found')
-    } catch (error) { json(response, error instanceof HttpError ? error.status : 502, { ok: false, error: error instanceof Error ? error.message : 'Commander request failed' }) }
+    } catch (error) {
+      if (!(error instanceof HttpError)) console.error('[commando] Commander request failed', error)
+      json(response, error instanceof HttpError ? error.status : 502, { ok: false, error: error instanceof Error ? error.message : 'Commander request failed' })
+    }
     return true
   }
 }

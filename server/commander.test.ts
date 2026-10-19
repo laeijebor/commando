@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import { Commander, commanderInstructions } from './commander.js'
 const dirs: string[] = []
-afterEach(async () => { await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))) })
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))) })
 it('creates exactly one default Claude hosted chat, persists identity and reconciles live pane changes', async () => {
   const home = await mkdtemp(join(tmpdir(), 'commander-')); dirs.push(home)
   const snapshot = { panes: [], sessions: [] } as unknown as CommandoSnapshot
@@ -67,6 +67,35 @@ it('preserves malformed existing settings instead of overwriting them', async ()
   const statePath = join(home, 'state.json'); await writeFile(statePath, JSON.stringify({ targetId: 'stable' }))
   const commander = new Commander({ home, statePath, snapshot: () => ({ panes: [] } as unknown as CommandoSnapshot),
     creator: { createSession: vi.fn() }, refreshSnapshot: async () => {}, changed: vi.fn() })
-  await expect(commander.load()).rejects.toThrow()
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  await expect(commander.load()).resolves.toBeUndefined()
+  expect(log).toHaveBeenCalledWith(expect.stringContaining(path), expect.any(Error))
   expect(await readFile(path, 'utf8')).toBe('{broken')
+})
+
+it.each(['null', '', '{}', '[]', '{"targetId":5}'])('continues with empty Commander state for a corrupt file: %s', async (raw) => {
+  const home = await mkdtemp(join(tmpdir(), 'commander-state-')); dirs.push(home)
+  const statePath = join(home, 'state.json'); await writeFile(statePath, raw)
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const commander = new Commander({ home, statePath, snapshot: () => ({ panes: [] } as unknown as CommandoSnapshot),
+    creator: { createSession: vi.fn() }, refreshSnapshot: async () => {}, changed: vi.fn() })
+  await expect(commander.load()).resolves.toBeUndefined()
+  expect(commander.state()).toEqual({ targetId: null })
+  expect(log).toHaveBeenCalledWith(expect.stringContaining(statePath), expect.any(Error))
+})
+it.each(['null', '{}broken', '{"permissions":null}', '{"permissions":[]}', '{"permissions":{"allow":null}}', '{"permissions":{"allow":{}}}', '{"permissions":{"allow":[7]}}'])('skips invalid tool permissions on load and ensure: %s', async (raw) => {
+  const home = await mkdtemp(join(tmpdir(), 'commander-settings-')); dirs.push(home)
+  const path = join(home, '.commando/commander/.claude/settings.json')
+  await mkdir(join(home, '.commando/commander/.claude'), { recursive: true }); await writeFile(path, raw)
+  const statePath = join(home, 'state.json'); await writeFile(statePath, '{"targetId":"old"}')
+  const snapshot = { panes: [], sessions: [] } as unknown as CommandoSnapshot
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const commander = new Commander({ home, statePath, snapshot: () => snapshot,
+    creator: { createSession: vi.fn(async () => { snapshot.panes.push({ id: '%1', targetId: 'new' } as TmuxPane); return { created: { paneId: '%1' } } as never }) },
+    refreshSnapshot: async () => {}, changed: vi.fn() })
+  await commander.load(); expect(commander.state().targetId).toBe('old')
+  await expect(commander.ensure()).resolves.toMatchObject({ targetId: 'new' })
+  expect(await readFile(path, 'utf8')).toBe(raw)
+  expect(log).toHaveBeenCalledTimes(2)
+  expect(log.mock.calls.every(([line]) => line.includes(path))).toBe(true)
 })
