@@ -75,3 +75,26 @@ it.each(['bad/id', 'x'.repeat(65), 'space id', '雪', ''])('rejects invalid ids 
 it('encodes canvas path segments while preserving nested separators', () => {
   expect(encodeCanvasPath('folder name/雪 &.html')).toBe('folder%20name/%E9%9B%AA%20%26.html')
 })
+
+describe('answerable question notes', () => {
+  const base = { title: 'Board', frames: [{ id: 'a', title: 'A', src: 'a.html', x: 0, y: 0 }] }
+  const parse = (note: Record<string, unknown>) => parseCanvasManifest({ ...base, annotations: [{ id: 'q', kind: 'question', x: 0, y: 0, text: 'Ship it?', ...note }] })
+  it('keeps key, options, multiple and the recorded answer', () => {
+    const result = parse({ key: 'ship', options: ['Yes', 'No, wait'], multiple: true, answer: 'Yes' })
+    expect(result.errors).toEqual([])
+    expect(result.manifest.annotations[0]).toMatchObject({ key: 'ship', options: ['Yes', 'No, wait'], multiple: true, answer: 'Yes' })
+  })
+  it.each([
+    [{ options: [] }, 'annotations[0].options:'], [{ options: ['ok', ''] }, 'annotations[0].options[1]:'], [{ multiple: true }, 'annotations[0].multiple: needs options'],
+    [{ key: 'k'.repeat(129) }, 'annotations[0].key:'], [{ answer: 3 }, 'annotations[0].answer:'], [{ multiple: 'yes', options: ['a'] }, 'annotations[0].multiple:'],
+  ])('reports invalid question field %o', (note, prefix) => {
+    const result = parse(note)
+    expect(result.errors.some((error) => error.startsWith(prefix))).toBe(true)
+    expect(result.manifest.annotations).toHaveLength(1)
+  })
+  it('ignores question fields on other note kinds', () => {
+    const result = parseCanvasManifest({ ...base, annotations: [{ id: 'd', kind: 'design', x: 0, y: 0, options: ['a'] }] })
+    expect(result.errors).toEqual(['annotations[0].options: only applies to question notes'])
+    expect(result.manifest.annotations[0].options).toBeUndefined()
+  })
+})
