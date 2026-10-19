@@ -280,7 +280,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           void dropComment(event)
         }}
         onPointerDown={(event) => {
-          if (commentMode || (event.target as HTMLElement).closest('.canvas-spotlight, .canvas-composer, .canvas-pin') || event.button !== 0 || (event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head')) return
+          if (commentMode || (event.target as HTMLElement).closest('.canvas-spotlight, .canvas-composer, .canvas-pin, .canvas-hotspot') || event.button !== 0 || (event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head')) return
           cancelFlight()
           initialFit.current = true
           drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, camera }

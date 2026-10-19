@@ -23,7 +23,7 @@ export function readCanvasHotspots(value: unknown): CanvasHotspot[] {
 
 /**
  * Screen-space dots at the top-right corner of each visible hotspot in an interactive frame.
- * Hotspots scrolled out of the frame, hidden, or too small at the current zoom get no dot.
+ * The frame script reports only the visible part of each control; anything outside the frame or too small at the current zoom gets no dot.
  */
 export function canvasHotspotDots(frames: CanvasFrame[], reports: CanvasHotspotReports, camera: CanvasCamera): CanvasHotspotDot[] {
   const dots: CanvasHotspotDot[] = []
@@ -32,7 +32,8 @@ export function canvasHotspotDots(frames: CanvasFrame[], reports: CanvasHotspotR
     reports[frame.id].forEach(({ rect, tip, goto }, index) => {
       const left = Math.max(rect.x, 0), top = Math.max(rect.y, 0)
       const right = Math.min(rect.x + rect.w, frame.w), bottom = Math.min(rect.y + rect.h, frame.h)
-      if (right <= left || bottom <= top || Math.min(right - left, bottom - top) * camera.scale < 6) return
+      // Below ~14px the 10px dot would cover the control itself.
+      if (right <= left || bottom <= top || Math.min(right - left, bottom - top) * camera.scale < 14) return
       const target = goto ? frames.find((f) => f.id === goto) : undefined
       dots.push({
         key: `${frame.id}:${index}`,

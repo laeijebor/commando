@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CanvasFrame } from '../shared/canvas-manifest'
 import type { CanvasCamera } from './canvasCamera'
 import { canvasHotspotDots, type CanvasHotspotReports } from './canvasHotspots'
@@ -24,6 +24,9 @@ export function CanvasHotspots({ frames, reports, camera }: { frames: CanvasFram
   const [hovered, setHovered] = useState<string | null>(null)
   const dots = canvasHotspotDots(frames, reports, camera)
   const tip = dots.find((dot) => dot.key === hovered && dot.tip)
+  // A dot that unmounts under the pointer never sees pointerleave; drop the hover so it cannot reappear stale.
+  useEffect(() => { setHovered(null) }, [camera.x, camera.y, camera.scale])
+  useEffect(() => { if (hovered && !tip) setHovered(null) }, [hovered, tip])
   if (!dots.length) return null
   return <div className="canvas-overlay">
     {dots.map((dot) => <span key={dot.key} className={`canvas-hotspot${dot.tip ? ' has-tip' : ''}`} style={{ left: dot.x, top: dot.y }}
