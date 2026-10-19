@@ -273,6 +273,16 @@ describe('CanvasPane', () => {
     fireEvent.wheel(viewport, { deltaY: -20, ctrlKey: true, clientX: 50, clientY: 80 }); expect(layer.style.transform).not.toBe(panned)
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' })); expect(screen.getByLabelText('Zoom')).toHaveTextContent('%')
   })
+  it('promotes the world to a compositor layer only while the camera moves', async () => {
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    await screen.findByTitle('Settings')
+    const layer = container.querySelector('.canvas-world') as HTMLElement
+    await waitFor(() => expect(layer).not.toHaveClass('is-moving'))
+    fireEvent.wheel(container.querySelector('.canvas-viewport')!, { deltaX: 25, deltaY: 10 })
+    expect(layer).toHaveClass('is-moving')
+    await waitFor(() => expect(layer).not.toHaveClass('is-moving'))
+    expect(canvasPaneCss).toMatch(/\.canvas-world\.is-moving \{ will-change: transform; \}/)
+  })
   it('fits all content without focus, including measured tall annotations', async () => {
     fetcher.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify({ ...example, frames: example.frames.map((frame) => ({ ...frame, focus: undefined })) }) }))
     vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function(this: HTMLElement) { return this.classList.contains('canvas-note') ? 900 : 165 })

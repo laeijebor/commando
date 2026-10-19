@@ -130,3 +130,4 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-o-export:hover { color: var(--text); background: var(--surface-hover); }
 
 .canvas-toolbar .canvas-history > summary { padding: 3px 5px; }
+.canvas-world.is-moving { will-change: transform; }

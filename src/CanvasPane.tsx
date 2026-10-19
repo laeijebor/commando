@@ -67,10 +67,19 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const manifestRef = useRef(result.manifest)
   useLayoutEffect(() => { manifestRef.current = result.manifest })
   // Camera moves write the world transform directly instead of re-rendering.
+  // `is-moving` gives the world its own compositor layer only while it moves,
+  // so pans skip repainting and Chromium re-rasterises crisply once it settles.
   useLayoutEffect(() => {
-    const node = world.current!, apply = () => { node.style.transform = canvasTransform(cameraStore.get()) }
-    apply()
-    return cameraStore.subscribe(apply)
+    const node = world.current!
+    let settle = 0
+    node.style.transform = canvasTransform(cameraStore.get())
+    const unsubscribe = cameraStore.subscribe(() => {
+      node.style.transform = canvasTransform(cameraStore.get())
+      node.classList.add('is-moving')
+      window.clearTimeout(settle)
+      settle = window.setTimeout(() => node.classList.remove('is-moving'), 200)
+    })
+    return () => { unsubscribe(); window.clearTimeout(settle) }
   }, [cameraStore])
   const resourceUrl = (path: string) => artifactUrl ? new URL(path, artifactUrl).toString() : path
   const baseUrl = resourceUrl(snapshot ? `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/` : `/redline/artifacts/${artifactId}/`)
