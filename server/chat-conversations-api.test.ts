@@ -307,6 +307,16 @@ describe('ChatConversationsApi', () => {
     expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'muse-chat', permissionMode: expect.any(String), resume: ID })
   })
 
+  it('resumes a saved Muse chat through the chat host, never above the calling chat', async () => {
+    const { creator, resume } = setup({
+      conversation: { provider: 'muse' },
+      chats: [chat({ provider: 'codex', permissionMode: 'plan' })],
+      resumeRecord: { provider: 'muse', command: `env COMMANDO_PORT=4410 /c/scripts/commando-agent muse --permission-mode bypassPermissions --resume ${ID}` },
+    })
+    expect(await resume({ provider: 'muse' })).toMatchObject({ status: 200 })
+    expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'muse-chat', permissionMode: 'plan', resume: ID })
+  })
+
   it('resumes a Muse conversation from a terminal in the Muse TUI', async () => {
     const { creator, resume } = setup({ conversation: { provider: 'muse' }, chats: [] })
     expect(await resume({ provider: 'muse', placement: 'split' })).toMatchObject({ status: 200 })

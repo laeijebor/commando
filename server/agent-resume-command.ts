@@ -433,5 +433,5 @@ export function isChatResumeCommand(command: string): boolean {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[index] ?? '')) index += 1
   }
   return basename(words[index] ?? '') === 'commando-agent'
-    && (words[index + 1] === 'claude' || words[index + 1] === 'codex')
+    && (words[index + 1] === 'claude' || words[index + 1] === 'codex' || words[index + 1] === 'muse')
 }
