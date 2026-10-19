@@ -49,6 +49,7 @@
   }
   // The part of a control a reviewer can see: inside scroll/clip ancestors and the viewport, not covered by an overlay.
   function visibleRect(element) {
+    if (element.matches(':disabled')) return null // browsers drop its clicks
     var style = getComputedStyle(element)
     if (style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return null
     var r = element.getBoundingClientRect()
