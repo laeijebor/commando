@@ -118,11 +118,14 @@ export class CommanderApi {
     return snapshot.panes.flatMap((pane) => {
       const status = d.status(pane.id), chat = d.chatSession(pane.id), brief = d.brief(pane.targetId), worklog = d.sessionBrief(pane.id)
       if (pane.dead || pane.targetId === d.commander.state().targetId || ((!status || status.provider === 'unknown') && !d.owns(pane.id))) return []
+      // A summary of an earlier turn must never ask for attention on a later one (same rule as the inbox).
+      const latestEnd = d.owns(pane.id) ? status?.settledAt : status?.details?.recap?.completedAt ?? status?.settledAt
+      const currentBrief = brief && status?.status !== 'working' && latestEnd !== undefined && brief.endedAt === latestEnd ? brief : undefined
       return [{ paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId,
         sessionName: snapshot.sessions.find((s) => s.id === pane.sessionId)?.name ?? '',
         title: worklog?.title ?? chat?.title ?? pane.chatTitle ?? pane.title,
         provider: status?.provider !== 'unknown' ? status?.provider ?? chat?.provider ?? 'unknown' : chat?.provider ?? 'unknown',
-        status: status?.status ?? 'unknown', needsYou: status?.status === 'needs_input' || ['follow_up', 'blocked'].includes(status?.details?.recap?.outcome ?? '') || brief?.kind === 'needs_you',
+        status: status?.status ?? 'unknown', needsYou: status?.status === 'needs_input' || ['follow_up', 'blocked'].includes(status?.details?.recap?.outcome ?? '') || currentBrief?.kind === 'needs_you',
         stalled: d.stalls.stalled(pane.targetId), headline: worklog?.headline ?? status?.summary ?? '',
         ...(brief ? { brief } : {}), unread: (status?.settledAt ?? 0) > (seen[pane.id] ?? 0), cwd: pane.path, updatedAt: status?.updatedAt ?? 0 }]
     })

@@ -11,7 +11,7 @@ export const initialCommanderClientState: CommanderClientState = {
 }
 export type CommanderMessage = Extract<ServerMessage, { type: 'turn_brief' | 'turn_brief_snapshot' | 'commander_relay' | 'commander_relay_snapshot' | 'commander_state' }>
 
-/** Snapshots replace reconnect state; relay updates replace by id before bounding history. */
+/** Snapshots replace reconnect state; relay updates replace by id (never back to queued) before bounding history. */
 export function reduceCommanderMessage(state: CommanderClientState, message: CommanderMessage): CommanderClientState {
   switch (message.type) {
     case 'turn_brief': return { ...state, turnBriefs: { ...state.turnBriefs, [message.brief.targetId]: message.brief } }
@@ -19,6 +19,9 @@ export function reduceCommanderMessage(state: CommanderClientState, message: Com
     case 'commander_state': return { ...state, commanderState: message.state }
     case 'commander_relay':
     case 'commander_relay_snapshot': {
+      const previous = message.type === 'commander_relay' ? state.relays[message.relay.id] : undefined
+      // A late HTTP response still says "queued"; it must not undo a final status the socket already sent.
+      if (previous && previous.status !== 'queued' && message.type === 'commander_relay' && message.relay.status === 'queued') return state
       const byId = message.type === 'commander_relay'
         ? { ...state.relays, [message.relay.id]: message.relay }
         : Object.fromEntries(message.relays.map((relay) => [relay.id, relay]))

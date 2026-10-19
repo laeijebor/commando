@@ -21,6 +21,14 @@ describe('Commander client messages', () => {
     expect(updated.relays['204'].status).toBe('delivered')
     expect(reduce(updated, { type: 'commander_relay_snapshot', relays: [] }).relays).toEqual({})
   })
+  it('never lets a late queued response undo a final receipt', () => {
+    const delivered = reduce(initial, { type: 'commander_relay', relay: relay('r', 1, 'delivered') })
+    expect(reduce(delivered, { type: 'commander_relay', relay: relay('r', 1, 'queued') })).toBe(delivered)
+    const failed = reduce(initial, { type: 'commander_relay', relay: relay('r', 1, 'failed') })
+    expect(reduce(failed, { type: 'commander_relay', relay: relay('r', 1, 'queued') }).relays.r.status).toBe('failed')
+    const queued = reduce(initial, { type: 'commander_relay', relay: relay('r', 1, 'queued') })
+    expect(reduce(queued, { type: 'commander_relay', relay: relay('r', 1, 'delivered') }).relays.r.status).toBe('delivered')
+  })
   it('replaces Commander state including removal', () => {
     const state = reduce(initial, { type: 'commander_state', state: { targetId: 'target', paneId: '%1', sessionId: '$1' } })
     expect(state.commanderState.paneId).toBe('%1')

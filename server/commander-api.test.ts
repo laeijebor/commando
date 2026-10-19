@@ -63,10 +63,27 @@ describe('CommanderApi', () => {
     const s = setup()
     let result = (await s.call('GET', '/agent/list')).result
     expect(result).toHaveLength(1); expect(result[0]).toMatchObject({ title: 'Chat title', unread: true, needsYou: false, sessionName: 'work' })
-    s.chat(); s.worklog({ title: 'Worklog title' } as SessionBrief); s.brief({ kind: 'needs_you' } as TurnBrief); s.stalled(true)
+    s.chat(); s.worklog({ title: 'Worklog title' } as SessionBrief); s.brief({ kind: 'needs_you', endedAt: 100 } as TurnBrief); s.stalled(true)
     result = (await s.call('GET', '/agent/list')).result
     expect(result.find((a: any) => a.paneId === '%1')).toMatchObject({ title: 'Worklog title', needsYou: true, stalled: true })
     expect(result.some((a: any) => a.paneId === '%9')).toBe(false)
+  })
+  it('ignores a needs-you brief from a superseded turn', async () => {
+    const s = setup(); s.brief({ kind: 'needs_you', endedAt: 100 } as TurnBrief)
+    const agent = async () => (await s.call('GET', '/agent/list')).result.find((a: any) => a.paneId === '%1')
+    expect(await agent()).toMatchObject({ needsYou: true })
+    s.statuses.set('%1', { ...s.statuses.get('%1')!, status: 'working', updatedAt: 200 })
+    expect(await agent()).toMatchObject({ needsYou: false, status: 'working' })
+    s.statuses.set('%1', { ...s.statuses.get('%1')!, status: 'done', updatedAt: 300, settledAt: 300 })
+    expect(await agent()).toMatchObject({ needsYou: false, status: 'done' })
+  })
+  it('matches a chat pane brief to its done run by settledAt', async () => {
+    const s = setup(); s.chat(); s.brief({ kind: 'needs_you', endedAt: 100 } as TurnBrief)
+    const agent = async () => (await s.call('GET', '/agent/list')).result.find((a: any) => a.paneId === '%1')
+    s.statuses.set('%1', { ...s.statuses.get('%1')!, details: { recentActivities: [], checks: [], recap: { completedAt: 90, summary: 'x', outcome: 'done' } } } as AgentStatus)
+    expect(await agent()).toMatchObject({ needsYou: true })
+    s.statuses.set('%1', { ...s.statuses.get('%1')!, settledAt: 300, updatedAt: 300 })
+    expect(await agent()).toMatchObject({ needsYou: false })
   })
   it('keeps inbox words verbatim, tags agent relays/nudges and allows steering only via its explicit flag', async () => {
     const s = setup(), text = '  exact\nuser words\t'
