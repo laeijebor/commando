@@ -12,7 +12,7 @@ import { parseCanvasManifest, type CanvasAnnotation, type CanvasManifestResult }
 import { fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera } from './canvasCamera'
 import { CanvasOverview } from './CanvasOverview'
 import { CanvasHighlights } from './CanvasHighlights'
-import { CanvasHotspots } from './CanvasHotspotDots'
+import { CanvasHotspots, CanvasTip } from './CanvasHotspotDots'
 import { canvasConnector, canvasLabelBounds } from './canvasGeometry'
 import { canvasFrameUrl, useCanvasFrameBridge } from './canvasFrameBridge'
 import { useCanvasFlight } from './canvasFlight'
@@ -332,7 +332,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         </div>
         <CanvasHighlights frames={frames} reports={reports} camera={camera} selected={selected} hovered={hovered} />
         {!readOnly && !commentMode && notesVisible && <CanvasHotspots frames={frames} reports={hotspots} camera={camera} />}
-        {badgeTip && <div className="canvas-overlay"><span className="canvas-tip is-badge" role="tooltip" style={{ left: badgeTip.x, top: badgeTip.y }}>{badgeTip.text}</span></div>}
+        {badgeTip && <div className="canvas-overlay"><CanvasTip {...badgeTip} /></div>}
         <CanvasPins pins={pins} frames={frames} camera={camera} active={comments.active} onOpen={(id) => { if (!feedbackBusy) { ++hitSequence.current; comments.open(id) } }} />
         {activePin && activePoint && <CanvasComposer key={activePin.id} point={activePoint} label={activePin.canvas.label || activeThread?.selector || activeNote?.selector || comments.draft?.hit.selector || 'Unlabelled'}
           text={activeNote?.comment ?? activeThread?.messages[0]?.text ?? comments.draft?.comment} sent={activePin.state === 'sent' || activePin.state === 'resolved'} queued={activePin.state === 'queued'} busy={feedbackBusy}

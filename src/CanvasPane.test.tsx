@@ -7,6 +7,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebPane } from '../shared/protocol'
 import { CanvasPane } from './CanvasPane'
+import { CanvasTip } from './CanvasHotspotDots'
 import { WebPaneCard } from './WebPaneCard'
 import { publishCanvasChange } from './webPanesApi'
 import { parseCanvasManifest } from '../shared/canvas-manifest'
@@ -396,7 +397,11 @@ describe('canvas overview and frame bridge', () => {
     report(accounts, 'accounts', [], { hotspots: [{ rect: labelRect, tip: 'Static frames never work' }] })
     const dots = () => container.querySelectorAll('.canvas-hotspot')
     expect(dots()).toHaveLength(3)
-    expect(screen.getByRole('note', { name: 'Toggles dark mode' })).toHaveTextContent('Toggles dark mode')
+    const theme = screen.getByRole('note', { name: 'Toggles dark mode' })
+    fireEvent.pointerEnter(theme)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Toggles dark mode')
+    fireEvent.pointerLeave(theme)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     expect(screen.getByRole('note', { name: 'Opens “Accounts”' })).toBeInTheDocument()
     expect(dots()[2]).not.toHaveClass('has-tip')
     expect(screen.queryByText('Static frames never work')).not.toBeInTheDocument()
@@ -420,6 +425,14 @@ describe('canvas overview and frame bridge', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     expect(container.querySelectorAll('.canvas-badge.has-note')).toHaveLength(1)
+  })
+  it('keeps tooltips inside the viewport and flips them below near the top edge', () => {
+    // Mocked layout: the tip is 330×165 and its overlay 800 wide.
+    const tip = (x: number, y: number) => { cleanup(); render(<div><CanvasTip text="Tip" x={x} y={y} /></div>); return screen.getByRole('tooltip') }
+    expect(tip(790, 400)).toHaveStyle({ left: '627px' })
+    expect(tip(4, 400)).toHaveStyle({ left: '173px' })
+    expect(tip(400, 400)).not.toHaveClass('is-below')
+    expect(tip(400, 100)).toHaveClass('is-below')
   })
   it('defaults overview off below 420px and permits an explicit toggle', async () => {
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(419)
