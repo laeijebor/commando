@@ -555,6 +555,37 @@ describe('AgentResumeService', () => {
     expect(resumes.has(TARGET)).toBe(false)
   })
 
+  it('Resume all skips a pane that runs something again and keeps its live agent', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    await first.flush()
+
+    resumes.clear()
+    panes.set(TARGET, pane())
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(second.retry(undefined, NEW_SERVER)).toBe(0)
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+  })
+
+  it('keeps a record captured from a live agent while an older resume was queued', async () => {
+    const resume = await recordOn(OLD_SERVER)
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(1_000)
+    // The user starts a different conversation by hand before the queued resume runs.
+    panes.set(TARGET, pane())
+    const other = '33333333-3333-4333-8333-333333333333'
+    await resume.observeHookStatus(hookStatus({ paneId: '%1', agentSessionId: other }), panes.get(TARGET)!, NEW_SERVER)
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+    expect(resume.get(TARGET)?.sessionId).toBe(other)
+  })
+
   it('clears a failed resume once the agent runs in the pane again', async () => {
     const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
     panes.set(TARGET, pane({ command: 'zsh' }))

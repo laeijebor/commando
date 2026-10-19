@@ -159,6 +159,8 @@ type Job = {
   active: boolean
   /** The prompt line once the shell drew it; anything that changes it later is the user's. */
   baseline?: string
+  /** The record this job resumes; a newer one captured meanwhile belongs to a live agent. */
+  record?: AgentResumeRecord
   /** The shell has drawn a steady prompt, or stopped being waited for. */
   settled?: boolean
 }
@@ -385,6 +387,9 @@ export class AgentResumeService {
     const jobs: Job[] = []
     for (const [failedTarget, { record }] of this.failedRecords) {
       if (targetId !== undefined && failedTarget !== targetId) continue
+      // A pane running something again keeps its failure; its hook capture clears it if that is the agent.
+      const pane = this.deps.currentPane(failedTarget)
+      if (pane && !isShellCommand(pane.command)) continue
       this.failedRecords.delete(failedTarget)
       this.records.set(failedTarget, record)
       jobs.push({ targetId: failedTarget, serverId: serverId ?? record.attemptedServerId ?? record.serverId, queuedAt: this.now(), notBefore: this.now(), active: true })
@@ -412,6 +417,7 @@ export class AgentResumeService {
         this.dropResume(job.targetId)
         continue
       }
+      job.record = record
       this.queue.push(job)
       this.setTimer(() => this.settle(job), Math.max(job.notBefore - this.now(), 0))
       this.setResume({
@@ -484,10 +490,13 @@ export class AgentResumeService {
       this.persist()
       return this.dropResume(job.targetId)
     }
-    // Someone already started something here; it is theirs now.
+    // Someone already started something here; it is theirs now. A record captured from it since
+    // this job was queued describes that live agent, so only the record this job carried goes.
     if (!isShellCommand(pane.command)) {
-      this.records.delete(job.targetId)
-      this.persist()
+      if (record === job.record) {
+        this.records.delete(job.targetId)
+        this.persist()
+      }
       return this.dropResume(job.targetId)
     }
     if (!(await this.deps.pathExists(record.path))) return this.fail(resume, `The folder no longer exists: ${record.path}`)
