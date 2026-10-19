@@ -118,6 +118,39 @@ Frame roles:
   to the frame edge while loading. Notes hides variants, annotations
   and their connectors.
 
+## Ask the user questions
+
+Every `question` note is answerable on the canvas. Put the question itself in
+`text` (the `title` is a short label such as "Your call"). Add `options` for a
+choice; picking one queues it at once. Without options the note takes a text
+answer. Every question also takes an optional note.
+
+```json
+{ "id": "q-recipe", "kind": "question", "title": "Your call",
+  "text": "Should new copies of an archived recipe fail the save?",
+  "options": ["Fail with a clear error (recommended)", "Allow the copy"],
+  "target": { "frame": "open", "label": "Finding: recipe references" },
+  "x": 6600, "y": -420, "w": 420 }
+```
+
+- `options`: 1–50 strings, each up to 256 characters. `multiple: true` allows
+  several; the answer arrives as `"A, C"` and `response.data.choice` is the array.
+- `key`: answer identity (defaults to the note id). Keep it stable between
+  rounds. Re-answering before sending replaces the queued answer.
+- Answers queue in the canvas's answer queue (the strip at the bottom of the
+  canvas, same drawer as redline: edit, attach images, Send this, Send all,
+  Send all + Build). The Questions tab in the overview lists every question
+  note as Open, Queued, Sent or Answered.
+- An answer note carries `response: {question, answer, note?, data?}`,
+  `queueKey` (the key) and `selector: [data-canvas-note="<id>"]`, with no
+  `canvas` context. Find the note in `canvas.json` by key or id.
+- Once you have the answer, record it so the question is settled:
+  `"answer": "Fail with a clear error (recommended)"`. The note then shows the
+  answer with Reopen and leaves the open-question list. Until you do, a sent
+  answer shows as "Sent · 2h ago". To ask again, change the text or options.
+- Use a question note when the decision belongs on the board; use plain
+  annotations for open-ended review.
+
 ## Label the frame HTML
 
 The overview consumes `data-canvas-label` (display name), `data-canvas-group`
@@ -165,7 +198,9 @@ Comments can arrive as a pushed prompt in your anchor pane, or through
 and acknowledge the journal, even after a pushed prompt. The script tracks its
 acknowledgement cursor automatically. Keep the tab open for the next review.
 Use the 💬 tool to drop a pin on a frame (Esc exits), Queue to batch notes,
-and Send or Send this to deliver them through the shared feedback journal.
+and Send this (in the pin) or Send all (in the answer queue strip) to deliver
+them through the shared feedback journal. A batch sent with Send all + Build
+carries `handoff: {kind: "build", instruction}`; follow it as redline describes.
 Notes carry `canvas` context: threadId, frameId, frameTitle, frame-local CSS pixel point,
 label/labelId, section/ticket/status, focus and interactive. Prefer label +
 frame over selector when finding the source to edit. The first matching
