@@ -456,6 +456,17 @@ describe('AgentResumeService', () => {
     expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
   })
 
+  it('drops a pane that closes while its shell is starting without waiting out the settle limit', async () => {
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => '' }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    panes.delete(TARGET)
+    await advance(1_000)
+    expect(resumes.has(TARGET)).toBe(false)
+    expect(sent).toHaveLength(0)
+  })
+
   it('does not hold ready panes behind one whose shell is still starting', async () => {
     const lines = new Map([['%1', ''], ['%2', '➜  repo ']])
     const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async (target) => lines.get(target.id)! }))

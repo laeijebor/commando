@@ -389,7 +389,9 @@ export class AgentResumeService {
     void this.promptLine(job.targetId).then((line) => {
       if (!this.queue.includes(job)) return
       const steady = Boolean(line) && line === previous
-      if (!steady && this.deps.readPromptLine && this.now() - job.notBefore < PROMPT_SETTLE_MAX_MS) {
+      const waiting = this.deps.readPromptLine && this.deps.currentPane(job.targetId)
+        && this.now() - job.notBefore < PROMPT_SETTLE_MAX_MS
+      if (!steady && waiting) {
         this.setTimer(() => this.settle(job, line), PROMPT_POLL_MS)
         return
       }
