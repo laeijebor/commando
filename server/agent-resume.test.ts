@@ -560,17 +560,23 @@ describe('AgentResumeService', () => {
     expect(resumes.has(TARGET)).toBe(false)
   })
 
-  it('forgets a failed resume when its pane is archived', async () => {
-    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+  it('archives a failed resume and restores it with its Retry, never retyped', async () => {
+    const resume = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
     panes.set(TARGET, pane({ command: 'zsh' }))
-    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
     await advance(5_000)
-    first.forgetTargets([TARGET])
-    await first.flush()
+    const agents = resume.archivedAgents([TARGET])
+    expect(agents[TARGET]).toMatchObject({ provider: 'claude', sessionId: SESSION, failed: 'The folder no longer exists: /repo' })
+    resume.forgetTargets([TARGET])
+    expect(resumes.has(TARGET)).toBe(false)
+    expect(resume.retry()).toBe(0)
 
-    const second = service()
-    await second.load()
-    expect(second.retry()).toBe(0)
+    resume.restoreArchived(agents)
+    resume.reconcile([panes.get(TARGET)!], '400:4000')
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', error: 'The folder no longer exists: /repo' })
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+    expect(resume.retry(TARGET, '400:4000')).toBe(1)
   })
 
   it('clears a failed resume whose pane has gone when retried', async () => {

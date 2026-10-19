@@ -40,7 +40,10 @@ export type AgentResumeRecord = {
 type FailedResume = { record: AgentResumeRecord; error: string; failedAt: number }
 
 /** The part of a record an archived session keeps. */
-export type ArchivedAgent = Pick<AgentResumeRecord, 'provider' | 'sessionId' | 'path' | 'command'>
+export type ArchivedAgent = Pick<AgentResumeRecord, 'provider' | 'sessionId' | 'path' | 'command'> & {
+  /** Why its resume failed: a restore offers Retry instead of typing it. */
+  failed?: string
+}
 
 export type ResumePane = Pick<TmuxPane, 'id' | 'targetId' | 'sessionId' | 'command' | 'path' | 'processId' | 'active'>
 
@@ -109,7 +112,8 @@ function validRecord(value: unknown): value is AgentResumeRecord {
 }
 
 export function validArchivedAgent(value: unknown): value is ArchivedAgent {
-  return validRecord({ ...(value as object), targetId: '00000000-0000-4000-8000-000000000000', serverId: ARCHIVED_SERVER_ID, updatedAt: 0 })
+  const failed = (value as ArchivedAgent | null)?.failed
+  return (failed === undefined || typeof failed === 'string') && validRecord({ ...(value as object), targetId: '00000000-0000-4000-8000-000000000000', serverId: ARCHIVED_SERVER_ID, updatedAt: 0 })
 }
 
 /** Claude Code first; when it exits, however it exits, the chat it was switched from. */
@@ -334,9 +338,11 @@ export class AgentResumeService {
   archivedAgents(targetIds: readonly string[]): Record<string, ArchivedAgent> {
     const agents: Record<string, ArchivedAgent> = {}
     for (const targetId of targetIds) {
-      const record = this.records.get(targetId)
+      const failed = this.failedRecords.get(targetId)
+      const record = this.records.get(targetId) ?? failed?.record
       if (record && validRecord(record)) {
         agents[targetId] = { provider: record.provider, sessionId: record.sessionId, path: record.path, command: record.command }
+        if (record === failed?.record) agents[targetId].failed = failed.error
       }
     }
     return agents
@@ -348,15 +354,27 @@ export class AgentResumeService {
     for (const targetId of targetIds) {
       changed = this.records.delete(targetId) || changed
       changed = this.failedRecords.delete(targetId) || changed
+      if (this.resumes.get(targetId)?.state === 'failed') this.dropResume(targetId)
     }
     if (changed) this.persist()
   }
 
-  /** Puts archived agents back; the next discovery queues them like any restored pane. */
+  /**
+   * Puts archived agents back; the next discovery queues them like any restored pane, except one
+   * whose resume had failed, which comes back with its Retry.
+   */
   restoreArchived(agents: Readonly<Record<string, ArchivedAgent>>): void {
     for (const [targetId, agent] of Object.entries(agents)) {
       if (!isCommandoTargetId(targetId) || !validArchivedAgent(agent)) continue
-      this.records.set(targetId, { ...agent, targetId, serverId: ARCHIVED_SERVER_ID, updatedAt: this.now() })
+      const { failed, ...kept } = agent
+      const record = { ...kept, targetId, serverId: ARCHIVED_SERVER_ID, updatedAt: this.now() }
+      if (failed === undefined) {
+        this.records.set(targetId, record)
+        this.failedRecords.delete(targetId)
+      } else {
+        this.records.delete(targetId)
+        this.failedRecords.set(targetId, { record, error: failed, failedAt: this.now() })
+      }
     }
     this.persist()
   }
