@@ -7,9 +7,9 @@ import { CanvasComposer } from './CanvasComposer'
 import { CanvasPins, canvasPins, canvasPinPoint } from './CanvasPins'
 import { useCanvasComments } from './useCanvasComments'
 import { canvasNoteContext } from './canvasComments'
-import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { parseCanvasManifest, type CanvasAnnotation, type CanvasManifestResult } from '../shared/canvas-manifest'
-import { fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera } from './canvasCamera'
+import { canvasTransform, createCanvasCameraStore, fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera, type CanvasCameraStore } from './canvasCamera'
 import { CanvasOverview } from './CanvasOverview'
 import { CanvasHighlights } from './CanvasHighlights'
 import { CanvasHotspots, CanvasTip } from './CanvasHotspotDots'
@@ -34,6 +34,10 @@ const EMPTY = parseCanvasManifest({ title: '', frames: [] })
 const KIND_LABELS = { development: 'Development', important: 'Important', design: 'Design', question: 'Question' }
 const NOTE_COLOURS = { development: '#1f9d55', important: '#d97706', design: 'var(--accent)', question: '#0e7490' }
 const frameBounds = (frame: CanvasBounds): CanvasBounds => ({ ...frame, y: frame.y - 36, h: frame.h + 36 })
+/** Re-renders only its children when the camera moves. */
+function CanvasCameraView({ store, children }: { store: CanvasCameraStore; children: (camera: CanvasCamera) => ReactNode }) {
+  return children(useSyncExternalStore(store.subscribe, store.get))
+}
 
 export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose, webPaneId, token = '' }: {
   webPaneId?: string; token?: string; artifactId: string; manifest: string; artifactUrl?: string; onTitle?: (title: string) => void; onClose?: () => void
@@ -44,7 +48,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const restoringCamera = useRef(false)
   const readOnly = snapshot !== null
   const [loaded, setLoaded] = useState(false)
-  const [camera, setCamera] = useState<CanvasCamera>({ x: 0, y: 0, scale: 1 })
+  const [cameraStore] = useState(() => createCanvasCameraStore({ x: 0, y: 0, scale: 1 }))
+  const setCamera = cameraStore.set
   const [notesVisible, setNotesVisible] = useState(true)
   const [revisions, setRevisions] = useState<Record<string, number>>({})
   const [sizes, setSizes] = useState<Record<string, { w: number; h: number }>>({})
@@ -61,7 +66,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const [exportMenu, setExportMenu] = useState<{ frame: typeof result.manifest.frames[number]; anchor: HTMLElement } | null>(null)
   const exportOverlay = useRef<HTMLDivElement>(null)
   const [badgeTip, setBadgeTip] = useState<{ text: string; x: number; y: number } | null>(null)
-  useEffect(() => { setExportMenu(null); setBadgeTip(null) }, [camera.x, camera.y, camera.scale, panning, snapshot, result.manifest])
+  useEffect(() => { setExportMenu(null); setBadgeTip(null) }, [panning, snapshot, result.manifest])
+  useEffect(() => cameraStore.subscribe(() => { setExportMenu(null); setBadgeTip(null) }), [cameraStore])
   const pane = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const world = useRef<HTMLDivElement>(null)
@@ -69,6 +75,21 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const initialFit = useRef(false)
   const manifestRef = useRef(result.manifest)
   useLayoutEffect(() => { manifestRef.current = result.manifest })
+  // Camera moves write the world transform directly instead of re-rendering.
+  // `is-moving` gives the world its own compositor layer only while it moves,
+  // so pans skip repainting and Chromium re-rasterises crisply once it settles.
+  useLayoutEffect(() => {
+    const node = world.current!
+    let settle = 0
+    node.style.transform = canvasTransform(cameraStore.get())
+    const unsubscribe = cameraStore.subscribe(() => {
+      node.style.transform = canvasTransform(cameraStore.get())
+      node.classList.add('is-moving')
+      window.clearTimeout(settle)
+      settle = window.setTimeout(() => node.classList.remove('is-moving'), 200)
+    })
+    return () => { unsubscribe(); window.clearTimeout(settle) }
+  }, [cameraStore])
   const resourceUrl = (path: string) => artifactUrl ? new URL(path, artifactUrl).toString() : path
   const baseUrl = resourceUrl(snapshot ? `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/` : `/redline/artifacts/${artifactId}/`)
   // Same-origin like the rest of the app's API calls; the daemon answers no CORS preflight.
@@ -84,7 +105,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     },
   })
   const feedbackBusy = comments.busy || layout.busy
-  const { flyTo, cancel: cancelFlight } = useCanvasFlight(camera, setCamera, viewport)
+  const { flyTo, cancel: cancelFlight } = useCanvasFlight(cameraStore.get, setCamera, viewport)
   const interaction = useCanvasInteraction(result.manifest.frames, (frame) => {
     initialFit.current = true; setSelected(null); setHovered(null); flyTo(frameBounds(frame))
   })
@@ -279,12 +300,11 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   }, [webPaneId, token, questionsPage])
   const pins = readOnly ? [] : canvasPins(comments.draft, comments.queued, comments.threads)
   const activePin = pins.find((pin) => pin.id === comments.active)
-  const activePoint = activePin ? canvasPinPoint(activePin, frames, camera) : null
   const activeNote = comments.queued.find((note) => `pending:${note.id}` === comments.active)
   const activeThread = comments.threads.find((thread) => thread.id === comments.active)
   const dropComment = async (event: React.MouseEvent<HTMLDivElement>) => {
     if (readOnly || !commentMode || !webPaneId || feedbackBusy || (event.target as HTMLElement).closest('.canvas-spotlight, .canvas-composer, .canvas-pin, .canvas-note, .canvas-variant, .canvas-section-head')) return
-    const rect = viewport.current!.getBoundingClientRect()
+    const rect = viewport.current!.getBoundingClientRect(), camera = cameraStore.get()
     const worldPoint = { x: (event.clientX - rect.left - camera.x) / camera.scale, y: (event.clientY - rect.top - camera.y) / camera.scale }
     const frame = [...frames].reverse().find((f) => worldPoint.x >= f.x && worldPoint.x < f.x + f.w && worldPoint.y >= f.y && worldPoint.y < f.y + f.h)
     if (!frame) return
@@ -298,7 +318,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
 
   const selectSnapshot = (next: CanvasSnapshot | null) => {
     if (feedbackBusy || layout.hasPreview() || next?.id === snapshot?.id) return
-    if (next && !snapshot) liveView.current = { result, camera }
+    if (next && !snapshot) liveView.current = { result, camera: cameraStore.get() }
     ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight()
     drag.current = null; frameDrag.reset(); setPanning(false)
     setSelected(null); setHovered(null)
@@ -312,7 +332,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     <div className="canvas-toolbar" role="toolbar" aria-label="Canvas controls">
       <button type="button" aria-label="Toggle overview" aria-pressed={overviewVisible} onClick={() => { setExportMenu(null); setOverviewOverride(!overviewVisible); setHovered(null) }}>☰</button>
       <button type="button" aria-label="Zoom out" onClick={() => zoom(0.8)}>−</button>
-      <output className="canvas-zoom" aria-label="Zoom">{Math.round(camera.scale * 100)}%</output>
+      <output className="canvas-zoom" aria-label="Zoom"><CanvasCameraView store={cameraStore}>{(camera) => `${Math.round(camera.scale * 100)}%`}</CanvasCameraView></output>
       <button type="button" aria-label="Zoom in" onClick={() => zoom(1.25)}>+</button>
       <button type="button" onClick={() => { initialFit.current = true; fit() }}>Fit</button>
       <button type="button" aria-label="Play" title="Play" aria-pressed={interaction.state.playing} disabled={readOnly || !frames.some((f) => f.focus === 1 || f.interactive)} onClick={() => { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'play' }) }}>▶</button>
@@ -351,7 +371,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           if (commentMode || (event.target as HTMLElement).closest('.canvas-spotlight, .canvas-composer, .canvas-pin, .canvas-hotspot') || event.button !== 0 || (event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head')) return
           cancelFlight()
           initialFit.current = true
-          drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, camera }
+          drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, camera: cameraStore.get() }
           event.currentTarget.setPointerCapture(event.pointerId)
           setPanning(true)
         }}
@@ -359,7 +379,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           const start = drag.current
           if (start && event.pointerId === start.pointerId) setCamera({ ...start.camera, x: start.camera.x + event.clientX - start.x, y: start.camera.y + event.clientY - start.y })
         }} onPointerUp={endPan} onPointerCancel={endPan} onLostPointerCapture={endPan}>
-        <div ref={world} className={`canvas-world${notesVisible ? '' : ' hide-notes'}`} style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})` }}>
+        <div ref={world} className={`canvas-world${notesVisible ? '' : ' hide-notes'}`}>
           {sectionBoxes.map(({ section, bounds }) => <div key={section.id} className="canvas-section" style={{ left: bounds.x, top: bounds.y, width: bounds.w, height: bounds.h }}>
             <div className="canvas-section-head" data-measure={`section:${section.id}`}><span className="canvas-chip">{section.ticket ? `[${section.ticket}] ` : ''}{section.title}</span>
               <CanvasSectionStatus section={section} disabled={readOnly || layout.busy || comments.busy || !webPaneId} onChange={(status) => {
@@ -370,7 +390,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           </div>)}
           {frames.map((frame) => <div key={frame.id} className={`canvas-frame${frame.focus ? ' is-focus' : ''}${live === frame.id ? ' is-live' : ''}${spotlightFrame === frame.id ? ' is-spotlight' : ''}`} style={{ left: frame.x, top: frame.y, width: frame.w, height: frame.h }}
             onDoubleClick={() => { if (!readOnly && !commentMode) interaction.act({ type: 'enter', id: frame.id }) }}>
-            <div className="canvas-frame-label" onPointerDown={(event) => { if (!readOnly && !commentMode && !interaction.state.playing && !layout.busy) frameDrag.start(event, frame, camera.scale) }} onPointerMove={frameDrag.move} onPointerUp={frameDrag.end} onPointerCancel={frameDrag.cancel} onLostPointerCapture={frameDrag.cancel}>
+            <div className="canvas-frame-label" onPointerDown={(event) => { if (!readOnly && !commentMode && !interaction.state.playing && !layout.busy) frameDrag.start(event, frame, cameraStore.get().scale) }} onPointerMove={frameDrag.move} onPointerUp={frameDrag.end} onPointerCancel={frameDrag.cancel} onLostPointerCapture={frameDrag.cancel}>
               {frame.platform && <i>[{frame.platform}]</i>}<b>{frame.title}</b>{frame.focus && <span className="canvas-badge focus">★ Focus {frame.focus}</span>}<span className={`canvas-badge ${frame.interactive ? 'live' : 'static'}${frame.interactiveNote ? ' has-note' : ''}`} aria-description={frame.interactiveNote}
                 onPointerEnter={(event) => {
                   const badge = event.currentTarget.getBoundingClientRect(), rect = viewport.current!.getBoundingClientRect()
@@ -403,6 +423,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
             </div>
           })}
         </div>
+        <CanvasCameraView store={cameraStore}>{(camera) => {
+          const activePoint = activePin ? canvasPinPoint(activePin, frames, camera) : null
+          return <>
         <CanvasHighlights frames={frames} reports={reports} camera={camera} selected={selected} hovered={hovered} />
         {!readOnly && !commentMode && notesVisible && <CanvasHotspots frames={frames} reports={hotspots} camera={camera} />}
         {badgeTip && <div className="canvas-overlay"><CanvasTip {...badgeTip} /></div>}
@@ -414,6 +437,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
           onComment={comments.updateDraftComment}
           onQueue={(text) => { void comments.queueDraft(text, false) }} onSend={(text) => { if (activeNote) void comments.sendThis(activeNote); else void comments.queueDraft(text, true) }}
           onCancel={() => { ++hitSequence.current; comments.close() }} />}
+          </>
+        }}</CanvasCameraView>
         {!readOnly && <CanvasSpotlightToast webPaneId={webPaneId} token={token} onShow={setSpotlightTarget} />}
         <div className="canvas-hint" role="status" aria-label="Canvas hint">{interaction.state.hint || (commentMode ? 'Click a frame to comment · Esc to exit' : loaded ? readOnly ? 'Snapshot · Drag to pan · ⌘/Ctrl/pinch to zoom' : 'Drag to pan · Double-click to enter · ⌘/Ctrl/pinch to zoom' : 'Loading canvas…')}</div>
       </div>

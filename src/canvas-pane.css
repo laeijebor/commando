@@ -162,3 +162,6 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-q-settled button { padding: 3px 10px; border: 1px solid #c9c5d6; border-radius: 7px; background: #fff; color: #0e7490; font: inherit; font-size: 13px; cursor: pointer; }
 .canvas-overview.has-questions { flex-basis: 212px; }
 .canvas-pane[data-review-summary] .canvas-overview-body { padding-bottom: calc(var(--tile-review-strip-height, 30px) + 12px); }
+.canvas-world.is-moving { will-change: transform; }
+/* The viewport holds pointer capture while drag-panning; skip hover hit-testing the world. */
+.canvas-viewport.is-panning .canvas-world { pointer-events: none; }
