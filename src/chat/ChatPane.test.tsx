@@ -385,3 +385,19 @@ describe('Cursor login banner', () => {
     expect(screen.getByRole('textbox', { name: 'Message Cursor' })).toBeEnabled()
   })
 })
+
+
+describe('Commander chat inbox slot', () => {
+  it('renders above the composer only in the designated Commander pane', () => {
+    const commander = {
+      state: { targetId: 'commander', paneId: '%5' },
+      groups: { needs_you: [], finished: [], working: [], idle: [] }, token: 'token', onOpenPane: vi.fn(), onRelay: vi.fn(),
+    }
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
+    const { rerender } = render(<ChatPane chat={chat()} paneId="%5" commander={commander} connected focused={false} {...handlers} />)
+    const inbox = screen.getByTestId('agents-inbox')
+    expect(inbox.compareDocumentPosition(screen.getByRole('textbox', { name: 'Message Claude' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    rerender(<ChatPane chat={chat()} paneId="%6" commander={commander} connected focused={false} {...handlers} />)
+    expect(screen.queryByTestId('agents-inbox')).toBeNull()
+  })
+})
