@@ -23,12 +23,11 @@ describe('readCanvasHotspots', () => {
 
 describe('canvasHotspotDots', () => {
   const camera = { x: 5, y: 7, scale: 0.5 }
-  it('places a dot at the top-right corner of each hotspot in interactive frames only', () => {
+  it('places a dot at the top-right corner of each hotspot in interactive frames only, skipping links to missing frames', () => {
     const dots = canvasHotspotDots(frames, { home: [{ rect, tip: 'Toggle theme' }, { rect, goto: 'accounts' }, { rect, goto: 'gone' }], accounts: [{ rect }] }, camera)
     expect(dots).toEqual([
       { key: 'home:0', x: 5 + (100 + 110) * 0.5, y: 7 + (50 + 20) * 0.5, tip: 'Toggle theme' },
       { key: 'home:1', x: 110, y: 42, tip: 'Opens “Accounts”' },
-      { key: 'home:2', x: 110, y: 42, tip: undefined },
     ])
   })
   it('clips to the frame and skips hotspots that are scrolled away, hidden or too small to see', () => {

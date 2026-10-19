@@ -35,6 +35,7 @@ export function canvasHotspotDots(frames: CanvasFrame[], reports: CanvasHotspotR
       // Much smaller and the 10px dot would cover the control itself.
       if (right <= left || bottom <= top || Math.min(right - left, bottom - top) * camera.scale < 8) return
       const target = goto ? frames.find((f) => f.id === goto) : undefined
+      if (goto && !target) return // a link to a missing frame does nothing
       dots.push({
         key: `${frame.id}:${index}`,
         x: camera.x + (frame.x + right) * camera.scale,
