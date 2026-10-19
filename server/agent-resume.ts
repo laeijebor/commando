@@ -308,8 +308,9 @@ export class AgentResumeService {
       const status = statusFor(pane.id)
       if (status && !isShellCommand(pane.command)) void this.observeHookStatus(status, pane, serverId).catch(this.onError)
       const failed = this.failedRecords.get(pane.targetId)
-      if (failed && !this.resumes.has(pane.targetId)) {
-        // Saved before a daemon restart: show it again so Retry is still there.
+      if (failed && isShellCommand(pane.command) && !this.resumes.has(pane.targetId)) {
+        // Saved before a daemon restart: show it again so Retry is still there. A pane that runs
+        // something again gets none; if that is the agent, its hook capture clears the failure.
         this.setResume({
           targetId: pane.targetId,
           paneId: pane.id,

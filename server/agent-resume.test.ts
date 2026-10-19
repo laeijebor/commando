@@ -539,6 +539,22 @@ describe('AgentResumeService', () => {
     expect(resumes.get(TARGET)?.state).toBe('resuming')
   })
 
+  it('does not offer a saved Retry for a pane that already runs something again', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    await first.flush()
+
+    // The user started the agent by hand before the daemon restarted.
+    resumes.clear()
+    panes.set(TARGET, pane())
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(resumes.has(TARGET)).toBe(false)
+  })
+
   it('clears a failed resume once the agent runs in the pane again', async () => {
     const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
     panes.set(TARGET, pane({ command: 'zsh' }))
