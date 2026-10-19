@@ -32,7 +32,7 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
     {onExport && <button type="button" className="canvas-o-export" aria-label={`Export ${frame.title} from overview`} title={`Export ${frame.title}`} aria-haspopup="menu"
       onClick={(event) => onExport(frame, event.currentTarget.parentElement!)}>Export…</button>}
   </div>
-  return <aside className="canvas-overview" aria-label="Canvas overview" onPointerLeave={() => onHover(null)}>
+  return <aside className={`canvas-overview${questions.length && !hideThreads ? ' has-questions' : ''}`} aria-label="Canvas overview" onPointerLeave={() => onHover(null)}>
     <div className="canvas-overview-tabs" role="tablist" aria-label="Overview">
       {(hideThreads ? ['components'] : ['components', 'threads', ...(questions.length ? ['questions'] : [])]).map((name) => <button type="button" key={name} role="tab" id={`${id}-${name}`} aria-controls={`${id}-panel`}
         aria-selected={tab === name} onClick={() => { setTab(name); onHover(null) }}>{name === 'components' ? 'Components' : name === 'threads' ? 'Threads' : <>Questions{open > 0 && <em className="canvas-o-count" aria-label={`${open} open`}>{open}</em>}</>}</button>)}

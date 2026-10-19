@@ -141,12 +141,12 @@ answer. Every question also takes an optional note.
   canvas, same drawer as redline: edit, attach images, Send this, Send all,
   Send all + Build). The Questions tab in the overview lists every question
   note as Open, Queued, Sent or Answered.
-- An answer note carries `response: {question, answer, note?, data?}`,
-  `queueKey` (the key) and `selector: [data-canvas-note="<id>"]`, with no
-  `canvas` context. Find the note in `canvas.json` by key or id.
+- An answer note carries `response: {question, answer, note?, data?}` and
+  `selector: [data-canvas-note="<id>"]`, with no `canvas` context. Find the
+  note in `canvas.json` by that id.
 - Once you have the answer, record it so the question is settled:
-  `"answer": "Fail with a clear error (recommended)"`. The note then shows the
-  answer with Reopen and leaves the open-question list. Until you do, a sent
+  `"answer": "Fail with a clear error (recommended)"`. The note then shows
+  "Answered" with Reopen and leaves the answer queue. Until you do, a sent
   answer shows as "Sent · 2h ago". To ask again, change the text or options.
 - Use a question note when the decision belongs on the board; use plain
   annotations for open-ended review.

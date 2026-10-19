@@ -221,7 +221,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     const question = canvasQuestion(note)
     if (!question) return null
     const pending = pendingForQuestion(question, comments.snapshot.notes, questionsPage)
-    const sent = sentForQuestion(question, comments.snapshot.sent, questionsPage)
+    const delivered = sentForQuestion(question, comments.snapshot.sent, questionsPage)
+    // Once the agent records the answer it sent, the note reads as answered.
+    const sent = delivered?.response.answer === note.answer ? undefined : delivered
     return { question, pending, sent, state: pending ? 'queued' as const : sent ? 'sent' as const : note.answer !== undefined ? 'answered' as const : 'open' as const }
   }
   const reviewListeners = useRef({ pending: new Set<(snapshot: WebPanePendingSnapshot) => void>(), questions: new Set<(page: string, snapshot: RedlinePageQuestionSnapshot) => void>() })

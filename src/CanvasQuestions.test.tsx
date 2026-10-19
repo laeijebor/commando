@@ -83,7 +83,8 @@ describe('canvas question answers', () => {
   })
 
   it('shows sent and agent-recorded answers as settled, and Change reopens the controls', async () => {
-    snapshot = { ...snapshot, sent: { page, answers: [{ queueKey: 'q-recipe', selector: '[data-canvas-note="q-recipe"]', sentAt: Date.now(),
+    snapshot = { ...snapshot, sent: { page, answers: [{ queueKey: 'q-done', selector: '[data-canvas-note="q-done"]', sentAt: Date.now(),
+      shape: { question: 'Mix?', kind: 'text' }, response: { question: 'Mix?', answer: 'Off' } }, { queueKey: 'q-recipe', selector: '[data-canvas-note="q-recipe"]', sentAt: Date.now(),
       shape: { question: 'Should archived copies fail?', kind: 'choice', options: ['Fail with error', 'Allow'], multiple: false },
       response: { question: 'Should archived copies fail?', answer: 'Fail with error' } }] } }
     const { container } = await mount()
@@ -93,6 +94,7 @@ describe('canvas question answers', () => {
     fireEvent.click(card.getByRole('button', { name: 'Change' }))
     expect(card.getByRole('radio', { name: 'Fail with error' })).toHaveAttribute('aria-checked', 'true')
     expect(within(note(container, 'q-done')).getByText('Off')).toBeInTheDocument()
+    expect(within(note(container, 'q-done')).queryByText(/Sent/)).not.toBeInTheDocument()
     expect(within(note(container, 'q-done')).getByRole('button', { name: 'Reopen' })).toBeInTheDocument()
     expect(within(note(container, 'design')).queryByRole('textbox')).not.toBeInTheDocument()
   })
