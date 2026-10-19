@@ -7,6 +7,7 @@ import type { WebPanePendingSnapshot } from '../shared/protocol'
 import { readCanvasHit, type CanvasHit } from './canvasComments'
 import type { CanvasFrame } from '../shared/canvas-manifest'
 import { readCanvasLabels, type CanvasLabelReports } from './canvasLabels'
+import { readCanvasHotspots, type CanvasHotspotReports } from './canvasHotspots'
 
 export function canvasFrameUrl(baseUrl: string, frame: CanvasFrame, revision = 0): string {
   const query = new URLSearchParams({ 'canvas-frame': frame.id })
@@ -32,10 +33,13 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
   const iframes = useRef(new Map<string, HTMLIFrameElement>())
   const sources = useRef(new Map<string, string>())
   const [reports, setReports] = useState<CanvasLabelReports>({})
+  const [hotspots, setHotspots] = useState<CanvasHotspotReports>({})
   useLayoutEffect(() => {
     const next = new Map(frames.map((frame) => [frame.id, canvasFrameUrl(baseUrl, frame, revisions[frame.id])]))
     const previous = sources.current
-    setReports((current) => Object.fromEntries(Object.entries(current).filter(([id]) => next.has(id) && next.get(id) === previous.get(id))))
+    const unchanged = ([id]: [string, unknown]) => next.has(id) && next.get(id) === previous.get(id)
+    setReports((current) => Object.fromEntries(Object.entries(current).filter(unchanged)))
+    setHotspots((current) => Object.fromEntries(Object.entries(current).filter(unchanged)))
     sources.current = next
     for (const request of requests.current.values()) if (next.get(request.frameId) !== request.url) request.finish(null)
   }, [frames, baseUrl, revisions])
@@ -56,6 +60,7 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
         if (typeof data.frameId !== 'string' || data.frameId.length > 64) return
         const labels = readCanvasLabels(data.labels)
         if (labels) setReports((current) => ({ ...current, [data.frameId]: labels }))
+        setHotspots((current) => ({ ...current, [data.frameId]: readCanvasHotspots(data.hotspots) }))
         iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: canvasPendingSnapshotForPage(pending.current, new URL(url, window.location.href).href) }, '*')
       } else if (data.type === 'hit') {
         const request = requests.current.get(data.requestId)
@@ -93,7 +98,7 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
       if (url) iframe.contentWindow?.postMessage({ source: 'commando-canvas', type: 'redline-pending', snapshot: canvasPendingSnapshotForPage(snapshot, new URL(url, window.location.href).href) }, '*')
     }
   }, [])
-  return { reports, register, hitTest, forwardPending, syncInteraction }
+  return { reports, hotspots, register, hitTest, forwardPending, syncInteraction }
 }
 
 /** Filter by frame before using the shared sanitizer, whose ordinary page keys ignore queries. */
