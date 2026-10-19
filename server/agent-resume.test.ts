@@ -422,13 +422,49 @@ describe('AgentResumeService', () => {
     panes.set(TARGET, pane({ command: 'zsh' }))
     panes.set(OTHER_TARGET, pane({ id: '%2', targetId: OTHER_TARGET, command: 'zsh' }))
     resume.reconcile([...panes.values()], NEW_SERVER)
-    await advance(4_000)
+    await advance(4_500)
     expect(sent.map((entry) => entry.paneId)).toEqual(['%1'])
     // The second pane waits out the stagger while the user starts typing in it.
     lines.set('%2', '➜  repo git checkout ma')
     await advance(2_500)
     expect(sent.map((entry) => entry.paneId)).toEqual(['%1'])
     expect(resumes.get(OTHER_TARGET)).toMatchObject({ state: 'failed', error: 'The pane has unsent input, so nothing was typed. Clear it, then retry.' })
+  })
+
+  it('waits for a slow shell to draw its prompt instead of treating the prompt as input', async () => {
+    let line = ''
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => line }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(7_000)
+    expect(sent).toHaveLength(0)
+    line = '➜  repo git:(main) '
+    await advance(1_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
+  })
+
+  it('resumes a pane whose shell never draws a steady prompt', async () => {
+    let tick = 0
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => `${tick++} ` }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+    await advance(5_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
+  })
+
+  it('does not hold ready panes behind one whose shell is still starting', async () => {
+    const lines = new Map([['%1', ''], ['%2', '➜  repo ']])
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async (target) => lines.get(target.id)! }))
+    await recordOn(OLD_SERVER, resume, pane({ id: '%2', targetId: OTHER_TARGET, processId: 501 }))
+    panes.set(TARGET, pane({ command: 'zsh', active: true }))
+    panes.set(OTHER_TARGET, pane({ id: '%2', targetId: OTHER_TARGET, command: 'zsh' }))
+    resume.reconcile([...panes.values()], NEW_SERVER)
+    await advance(5_000)
+    expect(sent.map((entry) => entry.paneId)).toEqual(['%2'])
   })
 
   it('does not type into a pane the user typed in during the shell-ready wait', async () => {
