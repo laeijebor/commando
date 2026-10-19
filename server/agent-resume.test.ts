@@ -514,6 +514,65 @@ describe('AgentResumeService', () => {
     expect(resume.retry(undefined, NEW_SERVER)).toBe(1)
   })
 
+  it('keeps a failed resume and its Retry across a daemon restart', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', error: 'The folder no longer exists: /repo' })
+    await first.flush()
+
+    // The daemon restarts on the same tmux server; the UI starts from nothing.
+    resumes.clear()
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', paneId: '%1', error: 'The folder no longer exists: /repo' })
+    // Never retyped on its own, even on a later restart.
+    second.reconcile([panes.get(TARGET)!], '400:4000')
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+
+    expect(second.retry(undefined, NEW_SERVER)).toBe(1)
+    await advance(3_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)?.state).toBe('resuming')
+  })
+
+  it('clears a failed resume once the agent runs in the pane again', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    expect(resumes.get(TARGET)?.state).toBe('failed')
+
+    // The user starts the agent by hand.
+    panes.set(TARGET, pane())
+    await first.observeHookStatus(hookStatus({ paneId: '%1', agentSessionId: '33333333-3333-4333-8333-333333333333' }), panes.get(TARGET)!, NEW_SERVER)
+    expect(resumes.has(TARGET)).toBe(false)
+    expect(first.retry()).toBe(0)
+    await first.flush()
+
+    resumes.clear()
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(resumes.has(TARGET)).toBe(false)
+  })
+
+  it('forgets a failed resume when its pane is archived', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    first.forgetTargets([TARGET])
+    await first.flush()
+
+    const second = service()
+    await second.load()
+    expect(second.retry()).toBe(0)
+  })
+
   it('clears a failed resume whose pane has gone when retried', async () => {
     const resume = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
     panes.set(TARGET, pane({ command: 'zsh' }))

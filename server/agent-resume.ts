@@ -36,6 +36,9 @@ export type AgentResumeRecord = {
   updatedAt: number
 }
 
+/** A resume that failed: kept, with its reason, until Retry or the pane moves on. */
+type FailedResume = { record: AgentResumeRecord; error: string; failedAt: number }
+
 /** The part of a record an archived session keeps. */
 export type ArchivedAgent = Pick<AgentResumeRecord, 'provider' | 'sessionId' | 'path' | 'command'>
 
@@ -169,8 +172,11 @@ export class AgentResumeService {
   private readonly captureMisses = new Map<string, { key: string; at: number }>()
   /** The chat settings each chat record was built with; a change in the chat rebuilds the record. */
   private readonly chatSettingsKeys = new Map<string, string>()
-  /** Records whose resume failed; only Retry brings them back, so a later restart never retypes them. */
-  private readonly failedRecords = new Map<string, AgentResumeRecord>()
+  /**
+   * Resumes that failed; only Retry brings them back, so a later restart never retypes them.
+   * They are saved too, so a daemon restart keeps the Retry instead of forgetting the conversation.
+   */
+  private readonly failedRecords = new Map<string, FailedResume>()
   private queue: Job[] = []
   private draining = false
   private lastSentAt = 0
@@ -193,6 +199,11 @@ export class AgentResumeService {
       const cutoff = this.now() - RECORD_TTL_MS
       for (const record of state.records) {
         if (validRecord(record) && record.updatedAt >= cutoff) this.records.set(record.targetId, record)
+      }
+      for (const failed of Array.isArray(state.failed) ? state.failed : []) {
+        if (!validRecord(failed?.record) || typeof failed.error !== 'string' || !Number.isFinite(failed.failedAt)) continue
+        if (failed.failedAt < cutoff || this.records.has(failed.record.targetId)) continue
+        this.failedRecords.set(failed.record.targetId, { record: failed.record, error: failed.error, failedAt: failed.failedAt })
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.onError(error)
@@ -268,7 +279,9 @@ export class AgentResumeService {
       this.records.set(pane.targetId, record)
       if (chatKey) this.chatSettingsKeys.set(pane.targetId, chatKey)
       else this.chatSettingsKeys.delete(pane.targetId)
+      // The agent is back in this pane, so an earlier failed resume no longer applies.
       this.failedRecords.delete(pane.targetId)
+      if (this.resumes.get(pane.targetId)?.state === 'failed') this.dropResume(pane.targetId)
       this.persist()
       recorded = true
     } finally {
@@ -290,6 +303,19 @@ export class AgentResumeService {
     for (const pane of panes) {
       const status = statusFor(pane.id)
       if (status && !isShellCommand(pane.command)) void this.observeHookStatus(status, pane, serverId).catch(this.onError)
+      const failed = this.failedRecords.get(pane.targetId)
+      if (failed && !this.resumes.has(pane.targetId)) {
+        // Saved before a daemon restart: show it again so Retry is still there.
+        this.setResume({
+          targetId: pane.targetId,
+          paneId: pane.id,
+          provider: failed.record.provider,
+          command: failed.record.command,
+          state: 'failed',
+          error: failed.error,
+          updatedAt: failed.failedAt,
+        })
+      }
       const record = this.records.get(pane.targetId)
       if (!record || !isShellCommand(pane.command) || this.inFlight(pane.targetId)) continue
       if (record.serverId === serverId || record.attemptedServerId === serverId) {
@@ -319,7 +345,10 @@ export class AgentResumeService {
   /** Drops records whose panes were archived; the archive now holds them. */
   forgetTargets(targetIds: readonly string[]): void {
     let changed = false
-    for (const targetId of targetIds) changed = this.records.delete(targetId) || changed
+    for (const targetId of targetIds) {
+      changed = this.records.delete(targetId) || changed
+      changed = this.failedRecords.delete(targetId) || changed
+    }
     if (changed) this.persist()
   }
 
@@ -335,7 +364,7 @@ export class AgentResumeService {
   /** Retries one failed resume, or every failed one. */
   retry(targetId?: string, serverId?: string | null): number {
     const jobs: Job[] = []
-    for (const [failedTarget, record] of this.failedRecords) {
+    for (const [failedTarget, { record }] of this.failedRecords) {
       if (targetId !== undefined && failedTarget !== targetId) continue
       this.failedRecords.delete(failedTarget)
       this.records.set(failedTarget, record)
@@ -475,14 +504,14 @@ export class AgentResumeService {
     const record = this.records.get(resume.targetId)
     if (record) {
       this.records.delete(resume.targetId)
-      this.failedRecords.set(resume.targetId, record)
+      this.failedRecords.set(resume.targetId, { record, error, failedAt: this.now() })
       this.persist()
     }
     this.setResume({ ...resume, state: 'failed', error })
   }
 
   private dropResume(targetId: string): void {
-    this.failedRecords.delete(targetId)
+    if (this.failedRecords.delete(targetId)) this.persist()
     if (this.resumes.delete(targetId)) this.deps.onChange({ type: 'remove', targetId })
   }
 
@@ -503,7 +532,10 @@ export class AgentResumeService {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, MAX_RECORDS)
     if (records.length < this.records.size) this.records = new Map(records.map((record) => [record.targetId, record]))
-    this.writes = this.writes.then(() => this.write(records)).catch(this.onError)
+    const failed = [...this.failedRecords.values()]
+      .sort((left, right) => right.failedAt - left.failedAt)
+      .slice(0, MAX_RECORDS)
+    this.writes = this.writes.then(() => this.write(records, failed)).catch(this.onError)
   }
 
   /** Resolves once queued writes have reached disk. */
@@ -511,12 +543,12 @@ export class AgentResumeService {
     return this.writes
   }
 
-  private async write(records: AgentResumeRecord[]): Promise<void> {
+  private async write(records: AgentResumeRecord[], failed: FailedResume[]): Promise<void> {
     await mkdir(dirname(this.statePath), { recursive: true, mode: 0o700 })
     const temporary = `${this.statePath}.${randomUUID()}.tmp`
     const handle = await open(temporary, 'wx', 0o600)
     try {
-      await handle.writeFile(`${JSON.stringify({ version: 1, records }, null, 2)}\n`)
+      await handle.writeFile(`${JSON.stringify({ version: 1, records, failed }, null, 2)}\n`)
       await handle.sync()
       await handle.close()
       await rename(temporary, this.statePath)
