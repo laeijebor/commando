@@ -17,7 +17,7 @@ export type TurnBrief = {
   paneId: string
   /** Stable pane identity across tmux restarts; briefs are keyed by it. */
   targetId: string
-  /** Identifies the turn (the recap's completedAt, or the chat turn's end time). */
+  /** Identifies the turn: terminal recap.completedAt, or a chat done run's settledAt. */
   turnKey: string
   /** ≤ 160 chars, single line. */
   text: string
@@ -40,10 +40,13 @@ export type CommanderRelay = {
   kind: 'relay' | 'nudge'
   toPaneId: string
   toTargetId: string
+  /** Retain chat routing while its host reconnects after a daemon restart. */
+  toChat?: boolean
   /** The exact text delivered (already tagged, e.g. "[relayed by Commander] …"). */
   text: string
   /** `queue` waits for the target's turn to end; `steer` interrupts (only on the user's explicit request). */
   delivery: 'queue' | 'steer'
+  /** `delivered` means handed to the agent input (host or terminal), not acknowledged by the model. */
   status: 'queued' | 'delivered' | 'failed' | 'cancelled'
   error?: string
   createdAt: number
