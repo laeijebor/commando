@@ -76,7 +76,7 @@ describe('canvas frame script', () => {
       { name: 'Row', group: 'Accounts', id: 'outlook', rect: { x: 10, y: 20, w: 30, h: 40 } },
       { name: 'Title', group: 'Nested', rect: { x: 10, y: 20, w: 30, h: 40 } },
       { name: 'Footer', rect: { x: 10, y: 20, w: 30, h: 40 } },
-    ] })
+    ], hotspots: [] })
     post.mockClear()
     document.querySelector('button')!.setAttribute('data-canvas-label', 'Renamed')
     document.querySelector('footer')!.remove()
@@ -89,6 +89,14 @@ describe('canvas frame script', () => {
     expect(latest().type).toBe('labels')
     document.dispatchEvent(new Event('DOMContentLoaded'))
     expect(latest().type).toBe('labels')
+  })
+  it('reports click-through links and author hotspots with optional tooltips', () => {
+    document.body.innerHTML = '<a data-canvas-goto="accounts">Go</a><button data-canvas-hotspot="Toggles dark mode">Theme</button>' +
+      '<button data-canvas-hotspot>Bare</button><a data-canvas-goto="../bad" data-canvas-hotspot="Tip">Odd</a>'
+    document.querySelectorAll('a, button').forEach(box)
+    boot(); window.dispatchEvent(new Event('load'))
+    const rect = { x: 10, y: 20, w: 30, h: 40 }
+    expect(latest().hotspots).toEqual([{ rect, goto: 'accounts' }, { rect, tip: 'Toggles dark mode' }, { rect }, { rect, tip: 'Tip' }])
   })
   it('hit-tests viewport CSS pixels and replies with nearest label and element document rect', () => {
     document.body.innerHTML = '<div data-canvas-label="Row" data-canvas-id="row"><span id="hit">Text</span></div>'
