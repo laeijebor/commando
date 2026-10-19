@@ -25,7 +25,7 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800)
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/canvas.json')) return { ok: true, text: async () => JSON.stringify(manifest), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    if (url.endsWith('/canvas.json') && !url.includes('/pending')) return { ok: true, text: async () => JSON.stringify(manifest), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
     calls.push({ url, body })
     if (url.endsWith('/threads')) return { ok: true, json: async () => ({ threads: [] }) }
@@ -49,9 +49,12 @@ const mount = async () => {
 const note = (container: HTMLElement, noteId: string) => container.querySelector<HTMLElement>(`[data-canvas-note="${noteId}"]`)!
 
 describe('canvas question answers', () => {
-  it('asserts the manifest as the answer page so sent answers come back', async () => {
+  it('reads the manifest page\'s sent answers without moving the tile page', async () => {
     await mount()
-    await waitFor(() => expect(calls.find((call) => call.url.endsWith('/pending/page'))?.body).toEqual({ url: page }))
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith(`/pending?sentPage=${encodeURIComponent(page)}`))).toBe(true))
+    act(() => publishCanvasPendingChanged(id))
+    await waitFor(() => expect(calls.filter((call) => call.url.includes('?sentPage=')).length).toBeGreaterThan(1))
+    expect(calls.some((call) => call.url.endsWith('/pending/page'))).toBe(false)
   })
 
   it('queues a picked choice straight away with the question shape', async () => {
@@ -80,6 +83,12 @@ describe('canvas question answers', () => {
     fireEvent.change(card.getByRole('textbox', { name: 'Answer: Better name?' }), { target: { value: 'Meal planner' } })
     expect(card.getByText('Changed since queued')).toBeInTheDocument()
     expect(card.getByRole('button', { name: 'Update answer' })).toBeEnabled()
+    // Sending the older queued answer elsewhere must not hide or discard the edit.
+    snapshot = { ...snapshot, revision: 9, notes: [] }
+    act(() => publishCanvasPendingChanged(id))
+    await waitFor(() => expect(card.queryByText('Changed since queued')).not.toBeInTheDocument())
+    expect(card.getByRole('textbox', { name: 'Answer: Better name?' })).toHaveValue('Meal planner')
+    expect(card.getByRole('button', { name: 'Queue answer' })).toBeEnabled()
   })
 
   it('shows sent and agent-recorded answers as settled, and Change reopens the controls', async () => {

@@ -28,7 +28,7 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(270)
   vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(165)
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/canvas.json')) return { ok: true, text: async () => JSON.stringify(manifest), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    if (url.endsWith('/canvas.json') && !url.includes('/pending')) return { ok: true, text: async () => JSON.stringify(manifest), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
     calls.push({ url, body, init })
     if (url.endsWith('/canvas/sections')) {
@@ -347,9 +347,9 @@ it('keeps a hit request alive through a manifest refresh with the same frame sou
   clickPoint(container)
   const request = post.mock.calls.filter((call) => call[0].type === 'hit-test').at(-1)![0]
   const fetcher = vi.mocked(fetch)
-  const loads = fetcher.mock.calls.filter(([url]) => String(url).endsWith('canvas.json')).length
+  const loads = fetcher.mock.calls.filter(([url]) => (String(url).endsWith('canvas.json') && !String(url).includes('/pending'))).length
   act(() => publishCanvasChange({ artifactId, changed: ['canvas.json'] }))
-  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('canvas.json')).length).toBe(loads + 1))
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => (String(url).endsWith('canvas.json') && !String(url).includes('/pending'))).length).toBe(loads + 1))
   await act(async () => {})
   message(iframe, 'hit', { requestId: request.requestId, selector: '#row', rect, label: 'Row' })
   expect(await screen.findByRole('dialog')).toBeInTheDocument()

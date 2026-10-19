@@ -24,7 +24,7 @@ export function CanvasQuestionControls({ question, recorded, pending, sent, disa
   const withChoices = (values: QuestionDraft): QuestionDraft => question.kind !== 'choice' || values.choices.length ? values
     : { ...values, choices: (question.options ?? []).filter((o) => question.multiple ? values.answer.split(', ').includes(o) : o === values.answer) }
   const queued = pending ? draftValues(pending) : null
-  const [draft, setDraft] = useState<QuestionDraft>(() => queued ?? (sent ? withChoices(draftFromSent(sent)) : EMPTY))
+  const [draft, setDraft] = useState<QuestionDraft>(() => queued ?? EMPTY)
   const [reopened, setReopened] = useState(false)
   const [noteOpen, setNoteOpen] = useState(() => !!draft.note)
   const base = queued ?? EMPTY
@@ -35,8 +35,10 @@ export function CanvasQuestionControls({ question, recorded, pending, sent, disa
   useEffect(() => {
     const previous = lastBase.current
     lastBase.current = base
-    setDraft((current) => same(current, previous) ? base : current)
-    if (!pending) setReopened(false)
+    // An edit made here survives the queue moving underneath it (e.g. Send all sent the older answer).
+    const edited = !same(draft, previous)
+    if (!edited) setDraft(base)
+    if (!pending) setReopened(edited)
   }, [pendingIdentity])
 
   if (sent && !pending && !reopened) return <div className="canvas-q-settled">

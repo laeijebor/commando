@@ -221,21 +221,21 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     const question = canvasQuestion(note)
     if (!question) return null
     const pending = pendingForQuestion(question, comments.snapshot.notes, questionsPage)
-    const delivered = sentForQuestion(question, comments.snapshot.sent, questionsPage)
+    const delivered = sentForQuestion(question, comments.questionSent, questionsPage)
     // Once the agent records the answer it sent, the note reads as answered.
     const sent = delivered?.response.answer === note.answer ? undefined : delivered
     return { question, pending, sent, state: pending ? 'queued' as const : sent ? 'sent' as const : note.answer !== undefined ? 'answered' as const : 'open' as const }
   }
   const reviewListeners = useRef({ pending: new Set<(snapshot: WebPanePendingSnapshot) => void>(), questions: new Set<(page: string, snapshot: RedlinePageQuestionSnapshot) => void>() })
-  const reviewState = useRef({ questions, questionsPage })
-  useLayoutEffect(() => { reviewState.current = { questions, questionsPage } })
+  const reviewState = useRef({ questions, questionsPage, sent: comments.questionSent })
+  useLayoutEffect(() => { reviewState.current = { questions, questionsPage, sent: comments.questionSent } })
   const questionSnapshot = (): RedlinePageQuestionSnapshot => ({ type: 'questions', version: 1, questions: reviewState.current.questions })
   useEffect(() => { for (const listener of reviewListeners.current.questions) listener(questionsPage, questionSnapshot()) }, [questions, questionsPage])
   useEffect(() => {
     // A fresh pane's empty first snapshot would only race the drawer's own load.
     if (!comments.snapshot.revision && !comments.snapshot.notes.length) return
-    for (const listener of reviewListeners.current.pending) listener(comments.snapshot)
-  }, [comments.snapshot])
+    for (const listener of reviewListeners.current.pending) listener({ ...comments.snapshot, sent: comments.questionSent })
+  }, [comments.snapshot, comments.questionSent])
   const reveal = useEffectEvent((selector: string) => {
     setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true
     const note = annotations.find((n) => n.id === canvasNoteIdFromSelector(selector))
@@ -260,17 +260,19 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const pendingQueue = useMemo<PendingQueueApi | null>(() => {
     if (!webPaneId) return null
     const api = createWebPanesApi(token)
+    // The drawer's questions live on the manifest page, so it always sees that page's sent answers.
+    const ours = (work: Promise<WebPanePendingSnapshot>) => work.then((snapshot) => ({ ...snapshot, sent: reviewState.current.sent }))
     return {
-      list: () => api.setPendingPage(webPaneId, questionsPage),
-      add: (note) => api.addPendingNote(webPaneId, note),
-      addResponse: (pageUrl, response) => api.addPendingResponse(webPaneId, pageUrl, response),
-      update: (noteId, revision, change) => api.updatePendingNote(webPaneId, noteId, revision, change),
-      upload: (noteId, revision, file) => api.uploadPendingAttachment(webPaneId, noteId, revision, file),
-      removeAttachment: (noteId, revision, attachmentId) => api.removePendingAttachment(webPaneId, noteId, revision, attachmentId),
+      list: () => api.pendingNotes(webPaneId, questionsPage),
+      add: (note) => ours(api.addPendingNote(webPaneId, note)),
+      addResponse: (pageUrl, response) => ours(api.addPendingResponse(webPaneId, pageUrl, response)),
+      update: (noteId, revision, change) => ours(api.updatePendingNote(webPaneId, noteId, revision, change)),
+      upload: (noteId, revision, file) => ours(api.uploadPendingAttachment(webPaneId, noteId, revision, file)),
+      removeAttachment: (noteId, revision, attachmentId) => ours(api.removePendingAttachment(webPaneId, noteId, revision, attachmentId)),
       attachmentUrl: (attachmentId) => api.pendingAttachmentUrl(webPaneId, attachmentId),
-      remove: (noteId) => api.removePendingNote(webPaneId, noteId),
-      send: (targets, options) => api.sendPendingNotes(webPaneId, targets, options),
-      dismissDropped: () => api.dismissPendingDropped(webPaneId),
+      remove: (noteId) => ours(api.removePendingNote(webPaneId, noteId)),
+      send: (targets, options) => ours(api.sendPendingNotes(webPaneId, targets, options)),
+      dismissDropped: () => ours(api.dismissPendingDropped(webPaneId)),
     }
   }, [webPaneId, token, questionsPage])
   const pins = readOnly ? [] : canvasPins(comments.draft, comments.queued, comments.threads)
