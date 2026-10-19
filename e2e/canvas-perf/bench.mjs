@@ -5,7 +5,7 @@
 //   [--browsers webkit,chromium] [--runs 3] [--scenarios a,b] [--variant name=buildDir[::css]]...
 // Env: HEADED=1 shows the browser windows; WIDTH sets the canvas pane width.
 import { execFileSync, spawn } from 'node:child_process'
-import { resolve } from 'node:path'
+import { resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, webkit } from 'playwright'
 
@@ -24,7 +24,7 @@ if (!variants.length) variants.push({ name: 'current', dir: 'test-results/canvas
 if (!process.env.CANVAS_PERF_DIR) throw new Error('CANVAS_PERF_DIR is required')
 
 const servers = await Promise.all(variants.map((variant) => new Promise((resolve, reject) => {
-  const server = spawn('npx', ['vite', 'preview', '--config', 'e2e/canvas-perf/vite.config.ts', '--outDir', resolve(repo, variant.dir), '--port', String(variant.port)], { cwd: repo, env: process.env, stdio: ['ignore', 'pipe', 'inherit'] })
+  const server = spawn('npx', ['vite', 'preview', '--config', 'e2e/canvas-perf/vite.config.ts', '--outDir', resolvePath(repo, variant.dir), '--port', String(variant.port)], { cwd: repo, env: process.env, stdio: ['ignore', 'pipe', 'inherit'] })
   server.stdout.on('data', (chunk) => { if (String(chunk).includes(String(variant.port))) resolve(server) })
   server.on('exit', (code) => reject(new Error(`vite preview exited ${code}`)))
 })))
