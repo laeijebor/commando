@@ -90,8 +90,11 @@ ensure_port_free() {
     [[ -z "$listener" ]] || fail "Port $port is already in use (pid $listener). Stop npm run desktop:dev first."
 }
 
+# pgrep -f takes an extended regex, so escape the path to match it literally.
 app_pid() {
-    pgrep -f -- "^$app/Contents/MacOS/CommandoDesktop" | head -1 || true
+    local pattern
+    pattern="$(printf '%s' "$app/Contents/MacOS/CommandoDesktop" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
+    pgrep -f -- "^$pattern" | head -1 || true
 }
 
 quit_app() {
@@ -247,8 +250,11 @@ make_rebuild_icon() {
     # %q quotes the path for zsh; the AppleScript string literal then needs \ and " escaped.
     local command applescript
     # Finder launches the icon without install's environment, so carry the effective settings in the command.
-    printf -v command 'nohup env COMMANDO_RELEASE_LABEL=%q COMMANDO_RELEASE_STATE_DIR=%q COMMANDO_RELEASE_ENV_FILE=%q COMMANDO_DESKTOP_INSTALL_DIR=%q COMMANDO_RELEASE_ICON_DIR=%q %q rebuild >/dev/null 2>&1 &' \
-        "$label" "$state_dir" "$env_file" "$install_dir" "$icon_dir" "$script"
+    # An unset signing identity is left out, so one from the login shell still applies.
+    local identity=""
+    [[ -z "${COMMANDO_CODESIGN_IDENTITY:-}" ]] || printf -v identity ' COMMANDO_CODESIGN_IDENTITY=%q' "$COMMANDO_CODESIGN_IDENTITY"
+    printf -v command 'nohup env COMMANDO_RELEASE_LABEL=%q COMMANDO_RELEASE_STATE_DIR=%q COMMANDO_RELEASE_ENV_FILE=%q COMMANDO_DESKTOP_INSTALL_DIR=%q COMMANDO_RELEASE_ICON_DIR=%q%s %q rebuild >/dev/null 2>&1 &' \
+        "$label" "$state_dir" "$env_file" "$install_dir" "$icon_dir" "$identity" "$script"
     applescript="${command//\\/\\\\}"
     applescript="${applescript//\"/\\\"}"
     osacompile -o "$rebuild_icon" -e "do shell script \"/bin/zsh -lic \" & quoted form of \"$applescript\""
