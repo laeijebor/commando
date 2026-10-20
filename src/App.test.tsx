@@ -3087,6 +3087,29 @@ describe('Commander integration', () => {
     expect(screen.queryByTestId('agents-inbox')).toBeNull()
   })
 
+  it('opens a chat from the inbox and still lets the session tree navigate away', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    await renderAppWithSnapshot()
+    const now = Date.now()
+    const chat = (id: string) => ({ type: 'chat_state' as const, chat: { paneId: id, hostConnected: true, items: [], session: { paneId: id, provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 1 } } })
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() })
+      daemonMessage?.({ type: 'commander_state', state: { targetId: pane.targetId, paneId: pane.id, sessionId: pane.sessionId } })
+      daemonMessage?.(chat(pane.id))
+      daemonMessage?.(chat(remotePane.id))
+      daemonMessage?.({ type: 'agent_status', status: { paneId: remotePane.id, provider: 'claude', status: 'done', source: 'hook', confidence: 'high', reason: '', summary: 'Review finished', updatedAt: now, settledAt: now } })
+    })
+    const inbox = await screen.findByTestId('agents-inbox')
+    fireEvent.click(within(inbox).getByRole('button', { name: /^Open review-agent/ }))
+    // The chat pane registers a focus target, so the jump completes.
+    await waitFor(() => expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused', 'is-jump-highlighted'))
+    const tree = () => appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string, onSelectSession: (id: string) => void }
+    act(() => tree().onSelectSession(pane.sessionId))
+    await waitFor(() => expect(tree().selectedSessionId).toBe(pane.sessionId))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    expect(tree().selectedSessionId).toBe(pane.sessionId)
+  })
+
   it.each(['response first', 'snapshot first'] as const)('opens the created Commander with %s', async (order) => {
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
     await renderAppWithSnapshot()

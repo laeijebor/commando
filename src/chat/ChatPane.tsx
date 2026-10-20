@@ -93,6 +93,7 @@ function ChatColumn({
   statuses = {},
   commander,
   onSelectPane,
+  registerFocusable,
   prsApi,
   connected,
   focused,
@@ -118,6 +119,8 @@ function ChatColumn({
   statuses?: Record<string, AgentStatus>
   commander?: AgentsInboxProps & { state: CommanderState }
   onSelectPane?: (id: string) => void
+  /** Lets pane jumps find and focus this chat, like terminal panes do. */
+  registerFocusable?: (paneId: string, node: HTMLElement | null) => void
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
   connected: boolean
@@ -234,13 +237,19 @@ function ChatColumn({
     if (flowError) setFlowError(null)
     else onDismissActionError?.()
   }
+  const shell = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!paneId || !registerFocusable) return
+    registerFocusable(paneId, shell.current)
+    return () => registerFocusable(paneId, null)
+  }, [paneId, registerFocusable])
   const retryTranscript = (id: string) => setTranscripts((current) => {
     const next = { ...current }
     delete next[id]
     return next
   })
   return (
-    <section className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col" onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+    <section ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />
