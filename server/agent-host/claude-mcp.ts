@@ -16,9 +16,15 @@ function errorText(error: unknown): string {
 }
 
 const HIDDEN = '•••'
-const SECRET_NAME = /key|token|secret|password|passwd|auth|credential|bearer/i
+/** Flags whose value is a credential: `--api-key`, `--token`, `--header`… */
+const SECRET_NAME = /key|token|secret|password|passwd|pwd|auth|credential|bearer|header|cookie/i
+/** `-H 'Authorization: Bearer …'`, as curl-style flags pass headers. */
+const SECRET_FLAG = /^-[Hh]$/
 /** A long run of id characters with a digit in it reads as a key (`/s/k3j4h5…/mcp`). */
 const OPAQUE = /^(?=.*\d)[A-Za-z0-9_-]{20,}$/
+const URL_LIKE = /^[a-z][a-z0-9+.-]*:\/\//i
+/** What an argument may look like to be shown: a package (`@scope/name@1.2`), word, number or path. */
+const SHOWABLE = /^(@?[\w.-]+(\/[\w.-]+)*(@[\w.^~*-]+)?|(~|\.{1,2})?\/[\w.@/-]*|\.{1,2})$/
 
 /** A URL without its query, fragment, credentials or key-like path segments, which may carry tokens. */
 export function displayUrl(value: string): string | undefined {
@@ -32,7 +38,18 @@ export function displayUrl(value: string): string | undefined {
   }
 }
 
-/** A command line with what looks secret masked: values of key-like flags or variables, and URLs' credentials. */
+/** Long tokens with no path or version in them: API keys, JWTs. */
+function tokenLike(value: string): boolean {
+  return value.length >= 20 && /\d/.test(value) && !value.includes('/') && !value.includes('@')
+}
+
+/** Shown only when it plainly isn't a secret; anything else (JSON, headers, connection strings) is hidden. */
+function displayArg(value: string): string {
+  if (URL_LIKE.test(value)) return displayUrl(value) ?? HIDDEN
+  return SHOWABLE.test(value) && !tokenLike(value) ? value : HIDDEN
+}
+
+/** A command line that shows what runs but none of the secrets its arguments may carry. */
 export function displayCommand(command: string, args: readonly string[] = []): string {
   const shown: string[] = [command]
   let hideNext = false
@@ -43,12 +60,12 @@ export function displayCommand(command: string, args: readonly string[] = []): s
       continue
     }
     hideNext = false
-    const assigned = /^(-{0,2}[A-Za-z_][\w.-]*)=(.*)$/.exec(arg)
-    if (assigned) shown.push(SECRET_NAME.test(assigned[1]!) ? `${assigned[1]}=${HIDDEN}` : `${assigned[1]}=${displayUrl(assigned[2]!) ?? assigned[2]}`)
+    const assigned = /^(-{0,2}[A-Za-z_][\w.-]*)=(.*)$/s.exec(arg)
+    if (assigned) shown.push(`${assigned[1]}=${SECRET_NAME.test(assigned[1]!) ? HIDDEN : displayArg(assigned[2]!)}`)
     else if (arg.startsWith('-')) {
-      shown.push(arg)
-      hideNext = SECRET_NAME.test(arg)
-    } else shown.push(/^[a-z][a-z0-9+.-]*:\/\//i.test(arg) ? displayUrl(arg) ?? HIDDEN : OPAQUE.test(arg) ? HIDDEN : arg)
+      shown.push(/^-{1,2}[\w.-]+$/.test(arg) ? arg : HIDDEN)
+      hideNext = SECRET_NAME.test(arg) || SECRET_FLAG.test(arg)
+    } else shown.push(displayArg(arg))
   }
   return shown.join(' ')
 }

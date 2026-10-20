@@ -37,6 +37,18 @@ describe('Claude MCP servers', () => {
     expect(displayCommand('npx', ['--token=ghp_123', '--port=3000', 'API_KEY=xyz'])).toBe('npx --token=••• --port=3000 API_KEY=•••')
     expect(displayCommand('npx', ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://me:hunter2@db.local/app'])).toBe('npx -y @modelcontextprotocol/server-postgres postgresql://db.local/app')
     expect(displayCommand('mcp-server', ['sk1234567890abcdefghijklmnop'])).toBe('mcp-server •••')
+    expect(displayCommand('npx', ['mcp-remote', 'https://mcp.example.com/sse', '--header', 'Authorization: Bearer sk_live_1'])).toBe('npx mcp-remote https://mcp.example.com/sse --header •••')
+    expect(displayCommand('npx', ['mcp-remote', '-H', 'X-Api-Key: abc', '--headers=Authorization:Bearer x'])).toBe('npx mcp-remote -H ••• --headers=•••')
+    expect(displayCommand('server', ['Authorization: Bearer abc', 'Cookie: session=1'])).toBe('server ••• •••')
+    expect(displayCommand('npx', ['-y', '@modelcontextprotocol/server-filesystem', '/Users/me/dev'])).toBe('npx -y @modelcontextprotocol/server-filesystem /Users/me/dev')
+    // Shapes a heuristic would miss are hidden because they don't look like a plain argument.
+    expect(displayCommand('npx', ['-y', '@smithery/cli', 'run', 'x', '--config', '{"githubPersonalAccessToken":"ghp_abc"}'])).toBe('npx -y @smithery/cli run x --config •••')
+    expect(displayCommand('mssql-mcp', ['Server=db;User Id=sa;Password=hunter2', '--connection-string=Server=db;Password=hunter2'])).toBe('mssql-mcp Server=••• --connection-string=•••')
+    expect(displayCommand('db-mcp', ['DATABASE_URL=postgresql://me:pa#ss@db.local/app', '--pat=ghp_1234567890abcdefghijABCD'])).toBe('db-mcp DATABASE_URL=••• --pat=•••')
+    expect(displayCommand('jwt-mcp', ['eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abc123def456', 'X-API-Secret: abc'])).toBe('jwt-mcp ••• •••')
+    // What real configs run stays readable.
+    expect(displayCommand('npx', ['chrome-devtools-mcp@1.11.0'])).toBe('npx chrome-devtools-mcp@1.11.0')
+    expect(displayCommand('node', ['./dist/index.js', '--port', '3000', '--verbose'])).toBe('node ./dist/index.js --port 3000 --verbose')
     expect(displayUrl('https://actions.zapier.com/mcp/sk-ak-1a2b3c4d5e6f7g8h9i0j/sse')).toBe('https://actions.zapier.com/mcp/•••/sse')
   })
 
