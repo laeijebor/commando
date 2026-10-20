@@ -1085,7 +1085,7 @@ async function createPoolDevice(request, run, requestedType, projects = []) {
   const udid = (await run('xcrun', ['simctl', 'create', name, type.name, runtime.identifier])).trim().toUpperCase()
   if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(udid)) throw new Error('simctl create did not return a simulator UUID')
   try {
-    await run('simslim', ['on', udid, '--preserve-boot-state'])
+    await run('simslim', ['on', udid, ...slimKeepArgs, '--preserve-boot-state'])
     await request('POST', '/pool', { udid, name, created: true, projects })
   } catch (error) { throw new Error('Pool create failed for ' + udid + ': ' + String(error?.message ?? error)) }
   return { udid, name, state: 'Shutdown', isAvailable: true }
@@ -1142,7 +1142,7 @@ async function runPoolCommand(args, request, run) {
       if (!device || !(device.deviceTypeIdentifier ? /\.iPhone-/.test(device.deviceTypeIdentifier) : device.name.startsWith('iPhone'))) throw new Error('Device must exist and be an iPhone simulator')
       if (device.state !== 'Shutdown' || held.has(udid)) throw new Error('Device must be Shutdown and not leased')
       if (members.some((entry) => entry.udid.toUpperCase() === udid)) continue
-      await run('simslim', ['on', udid, '--preserve-boot-state'])
+      await run('simslim', ['on', udid, ...slimKeepArgs, '--preserve-boot-state'])
       const name = nextPoolName((await request('GET', '/pool')).members)
       await run('xcrun', ['simctl', 'rename', udid, name])
       const { member } = await request('POST', '/pool', { udid, name, created: false, projects })
@@ -1158,10 +1158,17 @@ async function runPoolCommand(args, request, run) {
 const disableDictation = (run, udid) =>
   run('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false'])
 
+// Slim boots keep liveactivitiesd: without it every ActivityKit call fails, and concurrent failures corrupt the heap in
+// SessionFoundation, crashing apps that observe Live Activities at launch. It costs about 11 MB per simulator.
+const slimKeptDaemons = ['com.apple.liveactivitiesd']
+const slimKeepArgs = ['--keep', slimKeptDaemons.join(',')]
+
 export function verifySlim(output, udid) {
   const line = output.split(/\r?\n/).find((entry) => entry.trim().split(/\s+/)[0]?.toUpperCase() === udid.toUpperCase())
   const match = line && /\bbooted\s*·\s*(\d+)\/(\d+)\s+slim\s*$/.exec(line)
-  if (!match || Number(match[1]) === 0 || Number(match[1]) !== Number(match[2])) {
+  const [disabled, managed] = match ? [Number(match[1]), Number(match[2])] : [0, 0]
+  // Devices slimmed before the keep list stay fully slim until a later lease re-slims them.
+  if (disabled === 0 || (disabled !== managed && disabled + slimKeptDaemons.length !== managed)) {
     throw new Error('Simulator ' + udid + ' is not booted and fully slim; no new lease recorded. Check simslim list --booted.')
   }
 }
@@ -1300,7 +1307,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
         const root = existing?.repo?.root ?? context.repo?.root
         await run('simfleet', ['sim', 'boot', udid], root)
         await run('simfleet', ['claim', udid, label], root)
-      } else await run('simslim', ['on', udid])
+      } else await run('simslim', ['on', udid, ...slimKeepArgs])
     }
     try {
       if (via !== 'adopted') {
