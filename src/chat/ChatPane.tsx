@@ -250,6 +250,8 @@ function ChatColumn({
   // A press in the transcript may start a text selection, so the composer only
   // takes the caret once the mouse is released without one.
   const pressing = useRef(false)
+  // The selection a press started with; clicking a button keeps it, and that is no new selection.
+  const pressedRange = useRef<Range | null>(null)
   const selectionCopied = useRef(onSelectionCopied)
   selectionCopied.current = onSelectionCopied
   useEffect(() => {
@@ -259,7 +261,13 @@ function ChatColumn({
     const settle = () => {
       const node = shell.current
       const selection = window.getSelection()
-      const text = node && selection && !selection.isCollapsed && node.contains(selection.anchorNode) ? selection.toString() : ''
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+      const before = pressedRange.current
+      pressedRange.current = null
+      const unchanged = before && range
+        && before.compareBoundaryPoints(Range.START_TO_START, range) === 0
+        && before.compareBoundaryPoints(Range.END_TO_END, range) === 0
+      const text = node && selection && !selection.isCollapsed && !unchanged && node.contains(selection.anchorNode) ? selection.toString() : ''
       if (text) {
         void navigator.clipboard?.writeText(text).then(() => selectionCopied.current?.(), () => undefined)
       } else if (node && document.activeElement === node) {
@@ -272,8 +280,10 @@ function ChatColumn({
       // A click inside an old selection clears it after mouseup's handlers run.
       setTimeout(settle)
     }
-    document.addEventListener('mouseup', release)
-    return () => document.removeEventListener('mouseup', release)
+    // Dragging a link ends without a mouseup.
+    const releases = ['mouseup', 'pointercancel', 'dragend'] as const
+    for (const type of releases) document.addEventListener(type, release)
+    return () => { for (const type of releases) document.removeEventListener(type, release) }
   }, [])
   const retryTranscript = (id: string) => setTranscripts((current) => {
     const next = { ...current }
@@ -285,7 +295,11 @@ function ChatColumn({
       // A pane jump focuses the shell; hand the caret to the composer.
       if (event.target === event.currentTarget && !pressing.current) focusComposer()
     }} onMouseDown={(event) => {
-      if (event.button === 0) pressing.current = true
+      if (event.button === 0) {
+        pressing.current = true
+        const selection = window.getSelection()
+        pressedRange.current = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null
+      }
       onFocus()
     }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
       {!connected ? (
