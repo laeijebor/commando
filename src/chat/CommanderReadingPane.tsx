@@ -52,9 +52,10 @@ export function CommanderSplit({ peek, children }: { peek?: CommanderPeek; child
 function ReadingPane({ peek, full }: { peek: CommanderPeek; full: boolean }) {
   const { row, group } = peek
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    // Esc closes the pane unless something inside it (a subagent view, a draft) used it.
+    // Esc closes the pane unless something inside it used it. In a message box it
+    // keeps its chat meaning (stopping a running turn), so it never closes from there.
     if (event.key !== 'Escape' || event.defaultPrevented) return
-    if (event.target instanceof HTMLTextAreaElement && event.target.value) return
+    if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return
     event.preventDefault()
     peek.onClose()
   }
@@ -68,7 +69,7 @@ function ReadingPane({ peek, full }: { peek: CommanderPeek; full: boolean }) {
       <Button size="icon-xs" variant="ghost-muted" onClick={() => peek.onStep(-1)} aria-label="Previous agent" title="Previous agent"><ChevronUp aria-hidden="true" /></Button>
       <Button size="icon-xs" variant="ghost-muted" onClick={() => peek.onStep(1)} aria-label="Next agent" title="Next agent"><ChevronDown aria-hidden="true" /></Button>
       <Button size="xs" variant="outline" onClick={peek.onOpen} title="Open its session"><ArrowUpRight aria-hidden="true" />Open in session</Button>
-      {full ? null : <Button size="icon-xs" variant="ghost-muted" onClick={peek.onClose} aria-label="Close" title="Close (Esc)"><X aria-hidden="true" /></Button>}
+      {full ? null : <Button size="icon-xs" variant="ghost-muted" onClick={peek.onClose} aria-label="Close" title="Close"><X aria-hidden="true" /></Button>}
     </header>
     <div className="commander-reading-body flex min-h-0 flex-1 flex-col">{peek.view}</div>
   </section>

@@ -1889,13 +1889,26 @@ export function App() {
   // The selected session's panes are in front of the user while the window is
   // active, so a turn that ended there is seen rather than left to review.
   const unseenViewedPaneKey = desktopWindowActive
-    ? [...subscribedPaneIds, ...statusOnlyPaneIds, ...(commanderPeek && commanderState.sessionId === selectedSessionId ? [commanderPeek.paneId] : [])]
+    ? [...subscribedPaneIds, ...statusOnlyPaneIds]
         .filter((paneId) => {
           const settledAt = agentStatuses[paneId]?.settledAt
           return settledAt !== undefined && settledAt > (paneSeen[paneId] ?? -Infinity)
         })
         .join('\u0000')
     : ''
+
+  // An agent read in Commander's reading pane is seen once you move on, so its
+  // row stays put (not regrouped as idle) while you read it.
+  const readingPaneId = commanderPeek?.paneId
+  const previousReadingPaneId = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const left = previousReadingPaneId.current
+    previousReadingPaneId.current = readingPaneId
+    if (!left || left === readingPaneId || !connected) return
+    const settledAt = agentStatuses[left]?.settledAt
+    if (settledAt !== undefined && settledAt > (paneSeen[left] ?? -Infinity)) send({ type: 'mark_panes_seen', paneIds: [left] })
+    // Runs only when the reading pane moves; statuses are read at that moment.
+  }, [readingPaneId])
 
   useEffect(() => {
     if (!connected || !unseenViewedPaneKey) return

@@ -90,7 +90,7 @@ export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled, peek
   useEffect(() => { if (peekTargetId) setFocusedTarget(peekTargetId) }, [peekTargetId])
   // Receipts expire even if the daemon has nothing new to broadcast.
   const visible = GROUP_ORDER.flatMap((group) => group === 'idle' && !idleOpen ? [] : groups[group])
-  const selected = visible.find((row) => row.targetId === (focusedTarget ?? peekTargetId)) ?? visible[0]
+  const selected = visible.find((row) => row.targetId === focusedTarget) ?? visible.find((row) => row.targetId === peekTargetId) ?? visible[0]
   const read = (row: CommanderInboxRow) => {
     setFocusedTarget(row.targetId)
     if (onPeek) onPeek(row.paneId, row.targetId)

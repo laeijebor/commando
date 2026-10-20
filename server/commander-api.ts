@@ -10,7 +10,7 @@ import { TokenBucketRateLimiter } from './client-messages.js'
 import type { Commander } from './commander.js'
 import type { CommanderRelays } from './commander-relays.js'
 import type { CommanderStalls } from './commander-stalls.js'
-import { claudeTranscriptItems, codexRolloutItems, tailJsonLines } from './commander-transcript.js'
+import { claudeTranscriptFileItems, codexRolloutItems, tailJsonLines } from './commander-transcript.js'
 import { record, textContent } from './external-agents/progress.js'
 
 const ROOT = '/api/commander'
@@ -162,7 +162,7 @@ export class CommanderApi {
           const config = await d.configDir(pane)
           if (config) file = join(config, 'projects', pane.path.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`)
         } else if (status?.provider === 'codex') file = await d.codexRollout?.(sessionId)
-        const items = !file ? [] : status?.provider === 'claude' ? claudeTranscriptItems(await tailJsonLines(file)) : codexRolloutItems(await tailJsonLines(file))
+        const items = !file ? [] : status?.provider === 'claude' ? await claudeTranscriptFileItems(file) : codexRolloutItems((await tailJsonLines(file)).lines)
         if (items.length) return { source: 'transcript', items }
       } catch { /* Missing/unreadable transcripts fall back to the rendered screen. */ }
     }

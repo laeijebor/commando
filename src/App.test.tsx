@@ -3110,8 +3110,14 @@ describe('Commander integration', () => {
     fireEvent.change(composer, { target: { value: 'Fix the nits too' } })
     fireEvent.keyDown(composer, { key: 'Enter' })
     await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: remotePane.id, text: 'Fix the nits too' })))
+    // Read only once you move on, so the row doesn't regroup under you.
+    const seen = () => appMocks.send.mock.calls.some(([message]) => (message as { type?: string, paneIds?: string[] }).type === 'mark_panes_seen' && (message as { paneIds: string[] }).paneIds.includes(remotePane.id))
+    expect(seen()).toBe(false)
+    // (jsdom has no width, so the pane covers Commander and its inbox is aria-hidden.)
+    expect(within(inbox).getByRole('option', { name: /^review-agent/, hidden: true })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(within(reading).getByRole('button', { name: 'Next agent' }), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('commander-reading-pane')).toBeNull())
+    expect(seen()).toBe(true)
   })
 
   it.each(['response first', 'snapshot first'] as const)('opens the created Commander with %s', async (order) => {

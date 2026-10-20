@@ -73,6 +73,10 @@ describe('AgentsInbox', () => {
     // Stepping from the reading pane moves the selection with it.
     view.rerender(<AgentsInbox groups={groups()} token="token" onOpenPane={onOpenPane} onRelay={vi.fn()} onPeek={onPeek} peekTargetId="target-%3" />)
     expect(screen.getByRole('option', { name: 'Agent %3' })).toHaveAttribute('aria-selected', 'true')
+    // A selection that left the visible list falls back to the agent being read.
+    const regrouped = groups(); regrouped.working = []
+    view.rerender(<AgentsInbox groups={regrouped} token="token" onOpenPane={onOpenPane} onRelay={vi.fn()} onPeek={onPeek} peekTargetId="target-%2" />)
+    expect(screen.getByRole('option', { name: 'Agent %2' })).toHaveAttribute('aria-selected', 'true')
   })
   it('queues an inline reply without opening the pane and shows the returned receipt', async () => {
     const relay = { id: 'r', toPaneId: '%1', toTargetId: 'target-%1', createdAt: Date.now(), status: 'queued' } as CommanderRelay

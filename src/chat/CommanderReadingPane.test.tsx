@@ -28,9 +28,9 @@ describe('CommanderSplit', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to Commander' }))
     expect(onClose).toHaveBeenCalledOnce()
   })
-  it('steps, opens the session, and closes on Esc unless a draft or inner view used it', () => {
+  it('steps, opens the session, and closes on Esc unless it came from a message box or an inner view', () => {
     width(1200)
-    const props = peek({ view: <><textarea aria-label="Draft" defaultValue="half-typed" /><button type="button" onKeyDown={(event) => event.preventDefault()}>Inner</button></> })
+    const props = peek({ view: <><textarea aria-label="Draft" defaultValue="" /><button type="button" onKeyDown={(event) => event.preventDefault()}>Inner</button></> })
     render(<CommanderSplit peek={props}><p>Commander chat</p></CommanderSplit>)
     expect(screen.getByRole('region', { name: 'Fix login chat' })).toHaveTextContent('Fix login')
     fireEvent.click(screen.getByRole('button', { name: 'Next agent' }))

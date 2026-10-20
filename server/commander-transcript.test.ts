@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { ChatItem } from '../shared/agent-chat.js'
-import { claudeTranscriptItems } from './commander-transcript.js'
+import { claudeTranscriptFileItems, claudeTranscriptItems, tailJsonLines } from './commander-transcript.js'
+
+const dirs: string[] = []
+afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))) })
 
 const entry = (uuid: string, parentUuid: string | null, type: string, content: unknown, extra: Record<string, unknown> = {}) =>
   ({ uuid, parentUuid, type, message: type === 'assistant' ? { id: `m-${uuid}`, content } : { content }, ...extra })
@@ -25,5 +31,24 @@ describe('claudeTranscriptItems', () => {
   })
   it('returns nothing for a transcript without messages', () => {
     expect(claudeTranscriptItems([{ type: 'mode' }, { type: 'permission-mode' }])).toEqual([])
+  })
+})
+
+describe('claudeTranscriptFileItems', () => {
+  it('reads further back when large entries push the prompt out of the first window', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'commander-tail-')); dirs.push(dir)
+    const file = join(dir, 'session.jsonl')
+    await writeFile(file, [
+      JSON.stringify(entry('u1', null, 'user', 'Summarise the incident')),
+      // Claude Code logs whole API requests; one can outweigh the starting window.
+      JSON.stringify({ type: 'api-request-blob', blob: 'x'.repeat(5 * 1024 * 1024) }),
+      JSON.stringify(entry('a1', 'u1', 'assistant', [{ type: 'text', text: 'The cache expired early.' }])),
+      // A background task's result is logged as a user turn but isn't the prompt.
+      JSON.stringify(entry('n1', 'a1', 'user', '<task-notification>\n<task-id>b1</task-id>\n</task-notification>')),
+    ].join('\n') + '\n')
+    const window = await tailJsonLines(file)
+    expect(window.whole).toBe(false)
+    expect(texts(claudeTranscriptItems(window.lines))).toEqual(['The cache expired early.'])
+    expect(texts(await claudeTranscriptFileItems(file))).toEqual(['Summarise the incident', 'The cache expired early.'])
   })
 })
