@@ -1,4 +1,6 @@
 import { commanderInbox } from './commanderInbox'
+import { GROUP_ORDER } from './chat/AgentsInbox'
+import { CommanderTranscriptView, type CommanderPeek } from './chat/CommanderReadingPane'
 import { createCommanderApi } from './commanderApi'
 import { initialCommanderClientState, reduceCommanderMessage } from './commanderClientState'
 import { isSessionName } from '../shared/session-identity'
@@ -1113,6 +1115,8 @@ export function App() {
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [paneSeen, setPaneSeen] = useState<Record<string, number>>({})
   const [{ turnBriefs, relays, commanderState }, dispatchCommander] = useReducer(reduceCommanderMessage, initialCommanderClientState)
+  // The agent whose chat Commander's reading pane shows.
+  const [commanderPeek, setCommanderPeek] = useState<{ paneId: string; targetId: string } | null>(null)
   const [commanderOpening, setCommanderOpening] = useState(false)
   const commanderStateVersion = useRef(0)
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
@@ -1908,6 +1912,22 @@ export function App() {
         })
         .join('\u0000')
     : ''
+
+  // Agents read in Commander's reading pane are marked seen when it closes, so
+  // their rows stay put (not regrouped as idle) while you step through them.
+  const readingPaneId = commanderPeek?.paneId
+  const readAgents = useRef(new Set<string>())
+  useEffect(() => {
+    if (readingPaneId) readAgents.current.add(readingPaneId)
+    if (readingPaneId || !connected || !readAgents.current.size) return
+    const paneIds = [...readAgents.current].filter((paneId) => {
+      const settledAt = agentStatuses[paneId]?.settledAt
+      return settledAt !== undefined && settledAt > (paneSeen[paneId] ?? -Infinity)
+    })
+    // Kept for a reconnect if the socket refuses it.
+    if (!paneIds.length || send({ type: 'mark_panes_seen', paneIds: paneIds.slice(0, 64) })) readAgents.current.clear()
+    // Runs when the pane opens, moves or closes, and on reconnect; statuses are read at that moment.
+  }, [readingPaneId, connected])
 
   useEffect(() => {
     if (!connected || !unseenViewedPaneKey) return
@@ -2774,6 +2794,45 @@ export function App() {
     snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays,
     commanderPaneId: commanderState.paneId,
   }), [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId])
+  const commanderRows = useMemo(() => GROUP_ORDER.flatMap((group) => commanderGroups[group].map((row) => ({ row, group }))), [commanderGroups])
+  const commanderPeekEntry = commanderPeek ? commanderRows.find((entry) => entry.row.targetId === commanderPeek.targetId) : undefined
+  // An agent that closed (or left the inbox) closes its reading pane.
+  useEffect(() => {
+    if (commanderPeek && snapshot && !commanderPeekEntry) setCommanderPeek(null)
+  }, [commanderPeek, commanderPeekEntry, snapshot])
+  const commanderPeekView = (): CommanderPeek | undefined => {
+    if (!commanderPeekEntry) return undefined
+    const { row, group } = commanderPeekEntry
+    const chat = chats[row.paneId], pane = paneMap.get(row.paneId), status = agentStatuses[row.paneId]
+    const view = chat
+      // Not given registerFocusable: the agent's own pane keeps that.
+      ? <ChatPane key={row.targetId} paneId={row.paneId} {...(pane ? { pane } : {})} snapshot={snapshot ?? undefined} statuses={agentStatuses}
+          onSelectPane={jumpToPane} prsApi={prsApi} chat={chat} externalRuns={externalRuns[row.paneId] ?? []} connected={connected}
+          focused={false} onFocus={() => {}}
+          onSend={(text, images, options) => sendChat(row.paneId, text, images, options)}
+          onInterrupt={(dropQueued) => interruptChat(row.paneId, dropQueued)}
+          onAnswer={(chatRequestId, answer) => answerChat(row.paneId, chatRequestId, answer)}
+          onConfigure={(settings) => configureChat(row.paneId, settings)}
+          onRestart={() => restartChat(row.paneId)}
+          onOpenPr={(repo, number, tab) => { void revealPrTab(row.paneId, repo, number, tab) }}
+          services={chatServicesFor(row.paneId)} flow={chatFlowFor(row.paneId)}
+          {...(chatSendErrors[row.paneId] ? { sendError: chatSendErrors[row.paneId] } : {})}
+          onDismissSendError={() => setChatSendErrors((current) => { const next = { ...current }; delete next[row.paneId]; return next })}
+          {...(chatActionErrors[row.paneId] ? { actionError: chatActionErrors[row.paneId] } : {})}
+          onDismissActionError={() => setChatActionErrors((current) => { const next = { ...current }; delete next[row.paneId]; return next })} />
+      : <CommanderTranscriptView key={row.targetId} token={token} row={row} provider={status?.provider === 'codex' ? 'codex' : 'claude'} cwd={pane?.path ?? ''}
+          refreshKey={`${status?.status ?? ''}:${status?.settledAt ?? ''}`} disabled={!connected}
+          onRelay={(relay) => dispatchCommander({ type: 'commander_relay', relay })} />
+    return {
+      row, group, view,
+      onClose: () => setCommanderPeek(null),
+      onOpen: () => jumpToPane(row.paneId, row.targetId, true),
+      onStep: (direction) => {
+        const next = commanderRows[(commanderRows.indexOf(commanderPeekEntry) + direction + commanderRows.length) % commanderRows.length]
+        if (next) setCommanderPeek({ paneId: next.row.paneId, targetId: next.row.targetId })
+      },
+    }
+  }
 
   const paneSimulators = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
     const brief = paneBriefs[pane.id]
@@ -4144,6 +4203,11 @@ export function App() {
                               onOpenPane: (paneId, targetId) => jumpToPane(paneId, targetId, true),
                               onRelay: (relay) => dispatchCommander({ type: 'commander_relay', relay }),
                               disabled: !connected,
+                              ...(pane.id === commanderState.paneId ? {
+                                ...(commanderPeek ? { peekTargetId: commanderPeek.targetId } : {}),
+                                onPeek: (paneId: string, targetId: string) => setCommanderPeek({ paneId, targetId }),
+                                peek: commanderPeekView(),
+                              } : {}),
                             }}
                             onSelectPane={jumpToPane}
                             attributionVisible={attributionTargets.has(pane.targetId)}
