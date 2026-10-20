@@ -250,11 +250,13 @@ make_rebuild_icon() {
     # %q quotes the path for zsh; the AppleScript string literal then needs \ and " escaped.
     local command applescript
     # Finder launches the icon without install's environment, so carry the effective settings in the command.
-    # An unset signing identity is left out, so one from the login shell still applies.
-    local identity=""
-    [[ -z "${COMMANDO_CODESIGN_IDENTITY:-}" ]] || printf -v identity ' COMMANDO_CODESIGN_IDENTITY=%q' "$COMMANDO_CODESIGN_IDENTITY"
+    # Optional settings are carried only when set, so values from the login shell still apply.
+    local optional="" name
+    for name in COMMANDO_CODESIGN_IDENTITY COMMANDO_RELEASE_ALLOW_WORKTREE; do
+        [[ -z "${!name:-}" ]] || printf -v optional '%s %s=%q' "$optional" "$name" "${!name}"
+    done
     printf -v command 'nohup env COMMANDO_RELEASE_LABEL=%q COMMANDO_RELEASE_STATE_DIR=%q COMMANDO_RELEASE_ENV_FILE=%q COMMANDO_DESKTOP_INSTALL_DIR=%q COMMANDO_RELEASE_ICON_DIR=%q%s %q rebuild >/dev/null 2>&1 &' \
-        "$label" "$state_dir" "$env_file" "$install_dir" "$icon_dir" "$identity" "$script"
+        "$label" "$state_dir" "$env_file" "$install_dir" "$icon_dir" "$optional" "$script"
     applescript="${command//\\/\\\\}"
     applescript="${applescript//\"/\\\"}"
     osacompile -o "$rebuild_icon" -e "do shell script \"/bin/zsh -lic \" & quoted form of \"$applescript\""
