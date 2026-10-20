@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowUpRight, Bot, ChevronDown, CircleAlert, CircleCheck, CircleSlash, LoaderCircle, Reply, Send, X } from 'lucide-react'
 import { RELAY_MAX_CHARS, type CommanderRelay } from '../../shared/commander'
 import { relayReceiptVisible, type CommanderInbox, type CommanderInboxRow, type InboxGroup } from '../commanderInbox'
@@ -14,11 +14,15 @@ export type AgentsInboxProps = {
   onOpenPane: (paneId: string, targetId: string) => void
   onRelay: (relay: CommanderRelay) => void
   disabled?: boolean
+  /** The agent shown in Commander's reading pane. */
+  peekTargetId?: string
+  /** Shows an agent's chat in Commander's reading pane. */
+  onPeek?: (paneId: string, targetId: string) => void
 }
 const GROUP_LABELS: Record<InboxGroup, string> = { needs_you: 'Needs you', finished: 'Finished a turn', working: 'Working', idle: 'Idle' }
-const GROUP_ORDER: InboxGroup[] = ['needs_you', 'finished', 'working', 'idle']
+export const GROUP_ORDER: InboxGroup[] = ['needs_you', 'finished', 'working', 'idle']
 
-function StateIcon({ group, row }: { group: InboxGroup; row: CommanderInboxRow }) {
+export function StateIcon({ group, row }: { group: InboxGroup; row: CommanderInboxRow }) {
   const base = 'mt-1 size-3.5 shrink-0'
   if (group === 'needs_you' || row.briefTone === 'warn') return <CircleAlert className={cn(base, 'text-warning')} aria-label={group === 'needs_you' ? 'Needs you' : 'Stalled'} />
   if (group === 'finished') return <CircleCheck className={cn(base, 'text-success')} aria-label="Finished" />
@@ -75,20 +79,29 @@ function InboxReply({ row, token, disabled, onRelay, onClose }: {
 }
 
 /** The live agent directory above Commander's composer. */
-export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled }: AgentsInboxProps) {
+export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled, peekTargetId, onPeek }: AgentsInboxProps) {
   const now = useNow(true)
   const [open, setOpen] = useState(true)
   const [idleOpen, setIdleOpen] = useState(false)
   const [focusedTarget, setFocusedTarget] = useState<string>()
   const [replyTarget, setReplyTarget] = useState<string>()
   const list = useRef<HTMLDivElement>(null)
+  // Stepping through agents from the reading pane moves the selection too.
+  useEffect(() => { if (peekTargetId) setFocusedTarget(peekTargetId) }, [peekTargetId])
   // Receipts expire even if the daemon has nothing new to broadcast.
   const visible = GROUP_ORDER.flatMap((group) => group === 'idle' && !idleOpen ? [] : groups[group])
-  const selected = visible.find((row) => row.targetId === focusedTarget) ?? visible[0]
+  const selected = visible.find((row) => row.targetId === focusedTarget) ?? visible.find((row) => row.targetId === peekTargetId) ?? visible[0]
+  const read = (row: CommanderInboxRow) => {
+    setFocusedTarget(row.targetId)
+    if (onPeek) onPeek(row.paneId, row.targetId)
+    else onOpenPane(row.paneId, row.targetId)
+  }
   const focusRow = (index: number) => {
     const row = visible[(index + visible.length) % visible.length]
     if (!row) return
     setFocusedTarget(row.targetId)
+    // An open reading pane follows the selection.
+    if (peekTargetId && onPeek) onPeek(row.paneId, row.targetId)
     const options = list.current?.querySelectorAll<HTMLElement>('[role="option"]')
     options?.[(index + visible.length) % visible.length]?.focus()
   }
@@ -122,7 +135,7 @@ export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled }: Ag
       aria-expanded={open} onClick={() => setOpen(!open)}>
       <Bot className="size-3" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate">Agents · <span className={unread ? 'text-primary' : undefined}>{unread} new</span> · {groups.working.length} working · {groups.idle.length} idle</span>
-      {open ? <span className="hidden @[640px]:inline">↑↓ to choose · Enter to open · R to reply</span> : null}
+      {open ? <span className="hidden @[640px]:inline">↑↓ to choose · {onPeek ? 'Click to read · ' : ''}Enter to open · R to reply</span> : null}
       <ChevronDown className={cn('size-3 shrink-0 transition-transform', !open && '-rotate-90')} aria-hidden="true" />
     </button>
     {open ? <div ref={list} role="listbox" aria-label="Agents inbox" className="max-h-[40vh] overflow-y-auto px-1 pb-1" onKeyDown={onKeyDown}>
@@ -138,7 +151,7 @@ export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled }: Ag
           const time = relativeTime(row.time, now).replace(' ago', '').replace('Just now', 'now')
           return <div role="option" aria-selected={active} aria-label={row.title} key={row.targetId} tabIndex={active ? 0 : -1}
             onFocus={() => setFocusedTarget(row.targetId)}
-            onClick={() => { setFocusedTarget(row.targetId); onOpenPane(row.paneId, row.targetId) }}
+            onClick={() => read(row)}
             className={cn('group flex min-w-0 cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring', active && 'bg-accent')}>
             <span className={cn('mt-2 size-1.5 shrink-0 rounded-full', row.unread ? 'bg-primary' : 'bg-transparent')} aria-label={row.unread ? 'Unread' : undefined} />
             <StateIcon group={group} row={row} />
@@ -155,7 +168,7 @@ export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled }: Ag
             <div className={cn('mt-0.5 flex shrink-0 gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100', active && 'opacity-100')}>
               <Button type="button" size="icon-xs" variant="ghost-muted" tabIndex={active ? 0 : -1} aria-label={`Reply to ${row.title}`} title="Reply (R)" disabled={disabled}
                 onClick={(event) => { event.stopPropagation(); setFocusedTarget(row.targetId); setReplyTarget(row.targetId) }}><Reply aria-hidden="true" /></Button>
-              <Button type="button" size="icon-xs" variant="ghost-muted" tabIndex={active ? 0 : -1} aria-label={`Open ${row.title}`} title="Open"
+              <Button type="button" size="icon-xs" variant="ghost-muted" tabIndex={active ? 0 : -1} aria-label={`Open ${row.title}`} title="Open its session (Enter)"
                 onClick={(event) => { event.stopPropagation(); onOpenPane(row.paneId, row.targetId) }}><ArrowUpRight aria-hidden="true" /></Button>
             </div>
           </div>
