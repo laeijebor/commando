@@ -43,7 +43,8 @@ export function CommanderSplit({ peek, children }: { peek?: CommanderPeek; child
   const width = useElementWidth(root)
   const split = width >= READING_PANE_SPLIT_WIDTH
   return <div ref={root} className="commander-split flex min-h-0 min-w-0" data-testid="commander-split" data-mode={peek ? split ? 'split' : 'full' : 'closed'}>
-    <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col', peek && (split ? 'max-w-[45%] border-r border-border' : 'hidden'))}>{children}</div>
+    {/* Over Commander, its column stays in the layout (invisible, zero width) because a lone pane takes its height from the chat. */}
+    <div className={cn('flex min-h-0 min-w-0 flex-col', !peek ? 'flex-1' : split ? 'flex-1 max-w-[45%] border-r border-border' : 'invisible w-0 flex-none overflow-hidden')} aria-hidden={peek && !split ? true : undefined}>{children}</div>
     {peek ? <ReadingPane peek={peek} full={!split} /> : null}
   </div>
 }
