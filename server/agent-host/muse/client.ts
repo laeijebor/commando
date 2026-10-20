@@ -41,14 +41,22 @@ export function uuidv7(now = Date.now()): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+/**
+ * `muse serve`'s arguments. Like Claude and Codex chats, the host loads the workspace's own rules
+ * and skills; `sandbox: false` runs every session on it without Muse's sandbox, for full access.
+ */
+export function museServeArgs(sandbox: boolean): string[] {
+  return ['serve', '--trust-workspace', ...(sandbox ? [] : ['--disable-sandbox'])]
+}
+
 /** One owned `muse serve` child, which keeps its sessions on disk so they can be resumed. */
 export class MuseRpcClient extends StdioRpcClient<MuseMethods> {
-  constructor(options: StdioRpcClientOptions) {
-    super({ killGraceMs: 3000, ...options }, {
+  constructor(options: StdioRpcClientOptions & { sandbox?: boolean }) {
+    const { sandbox = true, ...rest } = options
+    super({ killGraceMs: 3000, ...rest }, {
       label: 'Muse',
       executable: 'muse',
-      // Like Claude and Codex chats, load the workspace's own rules and skills.
-      args: ['serve', '--trust-workspace'],
+      args: museServeArgs(sandbox),
       jsonrpc: true,
       initialize: { clientInfo: { name: 'commando', title: 'Commando', version: '1' }, capabilities: {} },
     })

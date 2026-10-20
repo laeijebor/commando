@@ -83,6 +83,68 @@ describe('review thread controls', () => {
     expect(api.threadAction).toHaveBeenCalledExactlyOnceWith('acme/widgets', 12, thread.id, action, undefined)
   })
 
+  it('shows resolves immediately and lets several threads be resolved back to back with one trailing refresh', async () => {
+    const threads = ['A', 'B', 'C'].map((id, index) => ({ ...thread, id: `PRRT_${id}`, commentId: index + 1 }))
+    const value: PrDetails = { body: '', checks: [], unresolvedThreads: 3, conversation: threads.map((item, index) => (
+      { id: `2:${index + 1}`, commentId: index + 1, kind: 'inline comment', author: `Reviewer ${item.id}`, body: `Finding ${item.id}`, url: '', createdAt: '', path: 'a.ts', thread: item }
+    )) }
+    const writes: Array<() => void> = []
+    const api = { threadAction: vi.fn().mockImplementation(() => new Promise((resolve) => { writes.push(() => resolve({ ok: true })) })) }
+    const refreshes: Array<() => void> = []
+    const onChanged = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { refreshes.push(resolve) }))
+    const element = (next: PrDetails) => <PrConversationPanel details={next} unresolvedThreads={3} repo="acme/widgets" number={12}
+      api={api as unknown as PrsApiClient} onChanged={onChanged} renderComment={(entry) => <p>{entry.body}</p>} />
+    const view = render(element(value))
+    const heading = () => screen.getByRole('heading', { name: /Conversation/ })
+
+    for (const button of screen.getAllByRole('button', { name: 'Resolve' })) fireEvent.click(button)
+    expect(screen.getAllByText('✓ Resolved')).toHaveLength(3)
+    expect(screen.getAllByRole('button', { name: 'Resolving…' })).toHaveLength(3)
+    expect(heading()).toHaveTextContent('0 unresolved threads')
+    expect(api.threadAction).toHaveBeenCalledTimes(3)
+
+    await act(async () => writes.forEach((finish) => finish()))
+    expect(screen.getAllByRole('button', { name: 'Reopen' })).toHaveLength(3)
+    // One refresh is running; the other two writes share a single queued follow-up.
+    expect(onChanged).toHaveBeenCalledTimes(1)
+    await act(async () => refreshes[0]())
+    expect(onChanged).toHaveBeenCalledTimes(2)
+    view.rerender(element({ ...value, unresolvedThreads: 0, conversation: value.conversation.map((entry) => ({ ...entry, thread: { ...entry.thread!, isResolved: true } })) }))
+    await act(async () => refreshes[1]())
+    expect(onChanged).toHaveBeenCalledTimes(2)
+    expect(screen.getAllByText('✓ Resolved')).toHaveLength(3)
+    expect(heading()).toHaveTextContent('0 unresolved threads')
+  })
+
+  it('keeps the optimistic state until details newer than the write arrive, using GitHub state-bound permissions', async () => {
+    const { rerender, value } = setup({ viewerCanResolve: true, viewerCanUnresolve: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(screen.getByRole('button', { name: 'Resolving…' })).toBeDisabled()
+    await screen.findByText('Thread resolved.')
+    // The refresh finished but was superseded, so the same pre-write details object is still showing.
+    expect(screen.getByText('✓ Resolved')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reopen' })).toBeEnabled()
+    rerender({ ...value, unresolvedThreads: 0, conversation: value.conversation.map((entry) => entry.thread
+      ? { ...entry, thread: { ...entry.thread, isResolved: true, viewerCanResolve: false, viewerCanUnresolve: true } } : entry) })
+    expect(screen.getByText('✓ Resolved')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Conversation/ })).toHaveTextContent('0 unresolved threads')
+  })
+
+  it('rolls back an optimistic resolve when GitHub rejects it', async () => {
+    const { api, onChanged } = setup()
+    let fail!: (error: Error) => void
+    api.threadAction.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(screen.getByText('✓ Resolved')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Conversation/ })).toHaveTextContent('0 unresolved threads')
+    await act(async () => fail(new Error('Not allowed')))
+    expect(screen.getByText('Open thread')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Not allowed')
+    expect(screen.getByRole('heading', { name: /Conversation/ })).toHaveTextContent('1 unresolved thread')
+    expect(screen.getByRole('button', { name: 'Resolve' })).toBeEnabled()
+    expect(onChanged).not.toHaveBeenCalled()
+  })
+
   it('does not offer writes without GitHub permission or on ordinary comments', () => {
     setup({ viewerCanReply: false, viewerCanResolve: false })
     expect(screen.queryByRole('button')).not.toBeInTheDocument()

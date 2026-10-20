@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CanvasFrame, CanvasSection } from '../shared/canvas-manifest'
 import type { CanvasThread, WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
+import type { RedlinePageResponse } from '../shared/redline-response'
 import { canvasNoteContext, canvasRedlineResponse, canvasSectionStatusNote, type CanvasDraft } from './canvasComments'
 import { createWebPanesApi, subscribeCanvasThreads, subscribeCanvasPending, subscribeCanvasRefresh } from './webPanesApi'
 
 const EMPTY: WebPanePendingSnapshot = { revision: 0, notes: [], knownUpTo: 0, dropped: 0 }
-export function useCanvasComments(webPaneId: string | undefined, token: string, frames: CanvasFrame[], sections: CanvasSection[]) {
+/** `questionsPage` is the page canvas-level answers belong to; `questionSent` holds its sent answers. */
+export function useCanvasComments(webPaneId: string | undefined, token: string, frames: CanvasFrame[], sections: CanvasSection[], questionsPage?: string) {
   const api = useMemo(() => createWebPanesApi(token), [token])
   const [snapshot, setSnapshot] = useState(EMPTY)
+  // Read apart from `snapshot`, whose sent answers belong to the frame page the tile last reported.
+  const [questionSent, setQuestionSent] = useState<{ revision: number; sent?: WebPanePendingSnapshot['sent'] }>({ revision: -1 })
   const [threads, setThreads] = useState<CanvasThread[]>([])
   const [draft, setDraft] = useState<CanvasDraft | null>(null)
   const [active, setActive] = useState<string | null>(null)
@@ -23,21 +27,27 @@ export function useCanvasComments(webPaneId: string | undefined, token: string, 
   }, [api, webPaneId])
   useEffect(() => {
     const generation = ++lifetime.current
-    setSnapshot(EMPTY); setThreads([]); setDraft(null); setActive(null); setError('')
+    setSnapshot(EMPTY); setQuestionSent({ revision: -1 }); setThreads([]); setDraft(null); setActive(null); setError('')
     lock.current = false; setBusy(false)
     if (!webPaneId) return
     const accept = (next: WebPanePendingSnapshot) => { if (generation === lifetime.current) apply(next) }
     const fail = (reason: unknown) => { if (generation === lifetime.current) setError(String((reason as Error).message)) }
-    void api.pendingNotes(webPaneId).then(accept).catch(fail)
+    const load = () => {
+      void api.pendingNotes(webPaneId).then(accept).catch(fail)
+      if (questionsPage) void api.pendingNotes(webPaneId, questionsPage).then((next) => {
+        if (generation === lifetime.current) setQuestionSent((current) => (next.revision ?? 0) >= current.revision ? { revision: next.revision ?? 0, sent: next.sent } : current)
+      }).catch(fail)
+    }
+    load()
     void refreshThreads().catch(fail)
-    const unsubscribe = subscribeCanvasPending((id) => { if (id === webPaneId) void api.pendingNotes(webPaneId).then(accept).catch(fail) })
+    const unsubscribe = subscribeCanvasPending((id) => { if (id === webPaneId) load() })
     const unthreads = subscribeCanvasThreads((id) => { if (id === webPaneId) void refreshThreads().catch(fail) })
     const unrefresh = subscribeCanvasRefresh(() => {
-      void api.pendingNotes(webPaneId).then(accept).catch(fail)
+      load()
       void refreshThreads().catch(fail)
     })
     return () => { ++lifetime.current; unsubscribe(); unthreads(); unrefresh() }
-  }, [webPaneId, token, api, apply, refreshThreads])
+  }, [webPaneId, token, api, apply, refreshThreads, questionsPage])
 
   const mutate = async (work: () => Promise<void>) => {
     if (!webPaneId || lock.current) return
@@ -96,7 +106,17 @@ export function useCanvasComments(webPaneId: string | undefined, token: string, 
       .then((next) => { if (generation === lifetime.current) apply(next) })
       .catch((reason: Error) => { if (generation === lifetime.current) setError(reason.message) })
   }
-  return { snapshot, queued, threads, draft, active, busy, error, relay, sectionStatus,
+  const later = (work: () => Promise<WebPanePendingSnapshot>) => {
+    const generation = lifetime.current
+    void work().then((next) => { if (generation === lifetime.current) apply(next) })
+      .catch((reason: Error) => { if (generation === lifetime.current) setError(reason.message) })
+  }
+  /** Queues an answer to a canvas question note; a same-key answer replaces the unsent one. */
+  const answer = (response: RedlinePageResponse) => {
+    if (webPaneId && questionsPage) later(() => api.addPendingResponse(webPaneId, questionsPage, response))
+  }
+  const remove = (noteId: number) => { if (webPaneId) later(() => api.removePendingNote(webPaneId, noteId)) }
+  return { snapshot, questionSent: questionSent.sent, queued, threads, draft, active, busy, error, relay, sectionStatus, answer, remove,
     openDraft: (next: CanvasDraft) => { setDraft(next); setActive('draft'); setError('') },
     updateDraftComment: (comment: string) => setDraft((current) => current ? { ...current, comment } : current),
     open: setActive, close: () => { setActive(null); setDraft(null) }, queueDraft,
@@ -110,6 +130,5 @@ export function useCanvasComments(webPaneId: string | undefined, token: string, 
       await api.setThreadStatus(webPaneId, threadId, status)
       await refreshThreads()
     }),
-    sendAll: () => mutate(() => send(queued, snapshot)),
     sendThis: (note: WebPanePendingNote) => mutate(() => send([note], snapshot)) }
 }
