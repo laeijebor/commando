@@ -24,13 +24,13 @@ function setup() {
   const enqueue = vi.fn(async (input) => ({ id: 'abc', ...input, status: 'queued' } as never)), cancel = vi.fn(async () => ({ id: 'abc' } as never))
   const screen = vi.fn(async () => '\x1b[31mRendered output\x1b[0m'), items: ChatItem[] = []
   const ensure = vi.fn(async () => commander), forget = vi.fn(async () => {}), configDir = vi.fn(async (): Promise<string | undefined> => undefined)
-  const releaseNudge = vi.fn()
+  const releaseNudge = vi.fn(), codexRollout = vi.fn(async (_id: string): Promise<string | undefined> => undefined)
   const api = new CommanderApi({
     agentToken: TOKEN, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', snapshot: () => snapshot,
     status: (id) => statuses.get(id), commander: { state: () => commander, ensure, forget },
     relays: { enqueue, cancel, values: () => [] }, stalls: { stalled: () => stalled, check: async () => {}, takeNudge: () => nudge, releaseNudge },
     brief: () => brief, sessionBrief: () => worklog, chatSession: () => chat ? { title: 'Session title', provider: 'claude' } as ChatSessionInfo : undefined,
-    owns: () => chat, items: () => items, seen: () => ({ '%1': 50 }), configDir, screen,
+    owns: () => chat, items: () => items, seen: () => ({ '%1': 50 }), configDir, screen, codexRollout,
     now: () => 0,
   })
   async function call(method: string, path: string, value?: unknown, token = TOKEN, pane = '%9') {
@@ -43,7 +43,7 @@ function setup() {
     const handled = await api.handle(request, response, new URL(`http://localhost/api/commander${path}`))
     return { status, result, handled }
   }
-  return { releaseNudge, api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, configDir,
+  return { releaseNudge, codexRollout, api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, configDir,
     chat: () => { chat = true }, stalled: (v: boolean) => { stalled = v }, nudge: (v: boolean) => { nudge = v },
     worklog: (v: SessionBrief) => { worklog = v }, brief: (v: TurnBrief) => { brief = v } }
 }
@@ -162,4 +162,42 @@ it('logs unexpected failures before 502 and releases failed nudge reservations',
   log.mockClear()
   expect((await s.call('POST', '/agent/nudge', { pane: '%1', text: '' })).status).toBe(400)
   expect(log).not.toHaveBeenCalled()
+})
+
+describe('reading-pane transcripts', () => {
+  const line = (uuid: string, parentUuid: string | null, type: string, content: unknown, extra = {}) =>
+    JSON.stringify({ uuid, parentUuid, type, message: type === 'assistant' ? { id: `m-${uuid}`, content } : { content }, ...extra })
+  it('is owner-only and returns a Claude terminal agent\'s turns as chat items', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'commander-reading-')); dirs.push(dir)
+    const project = join(dir, 'projects', '-repo'); await mkdir(project, { recursive: true })
+    await writeFile(join(project, 'session-id.jsonl'), [
+      line('u1', null, 'user', 'Fix the login bug'),
+      line('a1', 'u1', 'assistant', [{ type: 'text', text: 'Fixed it.' }]),
+    ].join('\n') + '\n')
+    const s = setup(); s.configDir.mockResolvedValue(dir)
+    expect((await s.call('GET', '/transcript?pane=%251')).status).toBe(401)
+    const { result } = await s.call('GET', '/transcript?pane=%251', undefined, 'owner')
+    expect(result).toMatchObject({ ok: true, source: 'transcript' })
+    expect(result.items.map((item: ChatItem) => [item.kind, 'text' in item ? item.text : ''])).toEqual([['user_message', 'Fix the login bug'], ['assistant_message', 'Fixed it.']])
+    expect((await s.call('GET', '/transcript?pane=%252', undefined, 'owner')).status).toBe(404)
+  })
+  it('reads a Codex rollout by session id and falls back to the ANSI-free screen', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'commander-reading-')); dirs.push(dir)
+    const rollout = join(dir, 'rollout.jsonl')
+    const event = (item: unknown) => JSON.stringify({ type: 'event_msg', timestamp: '2026-10-20T10:00:00Z', payload: { type: 'item_completed', item } })
+    await writeFile(rollout, [
+      event({ type: 'UserMessage', content: [{ type: 'text', text: 'Add tests' }] }),
+      event({ type: 'CommandExecution', command: ['/bin/zsh', '-lc', 'npm test'] }),
+      event({ type: 'AgentMessage', content: [{ type: 'text', text: 'Tests added.' }] }),
+    ].join('\n') + '\n')
+    const s = setup()
+    s.statuses.set('%1', { ...s.statuses.get('%1')!, provider: 'codex', agentSessionId: 'thread-1' })
+    s.codexRollout.mockResolvedValue(rollout)
+    const { result } = await s.call('GET', '/transcript?pane=%251', undefined, 'owner')
+    expect(s.codexRollout).toHaveBeenCalledWith('thread-1')
+    expect(result.items.map((item: ChatItem) => item.kind)).toEqual(['user_message', 'command', 'assistant_message'])
+    expect(result.items[1]).toMatchObject({ command: 'npm test' })
+    s.codexRollout.mockResolvedValue(undefined)
+    expect((await s.call('GET', '/transcript?pane=%251', undefined, 'owner')).result).toMatchObject({ source: 'screen', items: [], screen: 'Rendered output' })
+  })
 })
