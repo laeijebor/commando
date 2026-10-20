@@ -85,5 +85,13 @@ test('selecting chat text copies it to the clipboard', async ({ page, context },
   const questionBox = (await question.boundingBox())!
   await page.mouse.dblclick(questionBox.x + questionBox.width * 0.55, questionBox.y + questionBox.height / 2)
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('daemon')
+
+  // Selecting draft text in the composer leaves the clipboard alone.
+  const composer = chatPane.locator('textarea[data-chat-composer]')
+  await composer.fill('draft words here')
+  await composer.dblclick()
+  await expect(composer).toBeFocused()
+  await page.waitForTimeout(100)
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('daemon')
   expect(errors).toEqual([])
 })
