@@ -128,17 +128,9 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-o-export:hover { color: var(--text); background: var(--surface-hover); }
 
 .canvas-toolbar .canvas-history > summary { padding: 3px 5px; }
-/* Hotspot dots mark controls that work inside interactive frames. */
-.canvas-hotspot { --hotspot: #2f7bff; position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--hotspot); box-shadow: 0 0 0 2px #fff, 0 1px 4px rgb(0 0 0 / 0.35); }
-.canvas-hotspot.has-tip { pointer-events: auto; cursor: help; }
-.canvas-hotspot::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: var(--hotspot); animation: canvas-hotspot-pulse 2.2s ease-out infinite; pointer-events: none; }
-@keyframes canvas-hotspot-pulse { from { transform: scale(1); opacity: 0.55; } to { transform: scale(3); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .canvas-hotspot::after { animation: none; opacity: 0; } }
-.canvas-tip { position: absolute; z-index: 1; width: max-content; max-width: min(260px, calc(100% - 16px)); box-sizing: border-box; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 14px rgb(0 0 0 / 0.3); font-size: 12px; line-height: 1.4; white-space: normal; pointer-events: none; }
-.canvas-tip { transform: translate(-50%, calc(-100% - 8px)); }
-.canvas-tip.is-below { transform: translate(-50%, 28px); }
-.canvas-badge.has-note { display: inline-flex; align-items: center; gap: 6px; cursor: help; }
-.canvas-badge-info { display: inline-grid; place-items: center; width: 15px; height: 15px; border: 1px solid currentColor; border-radius: 50%; font-size: 11px; font-weight: 700; font-style: italic; line-height: 1; }
+.canvas-world.is-moving { will-change: transform; }
+/* The viewport holds pointer capture while drag-panning; skip hover hit-testing the world. */
+.canvas-viewport.is-panning .canvas-world { pointer-events: none; }
 .canvas-pane[data-review-summary] .canvas-hint { bottom: calc(var(--tile-review-strip-height, 30px) + 14px); }
 .canvas-o-question em { text-transform: none; }
 .canvas-o-question.is-open em { color: #22a5c4; }
@@ -162,6 +154,14 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-q-settled button { padding: 3px 10px; border: 1px solid #c9c5d6; border-radius: 7px; background: #fff; color: #0e7490; font: inherit; font-size: 13px; cursor: pointer; }
 .canvas-overview.has-questions { flex-basis: 212px; }
 .canvas-pane[data-review-summary] .canvas-overview-body { padding-bottom: calc(var(--tile-review-strip-height, 30px) + 12px); }
-.canvas-world.is-moving { will-change: transform; }
-/* The viewport holds pointer capture while drag-panning; skip hover hit-testing the world. */
-.canvas-viewport.is-panning .canvas-world { pointer-events: none; }
+/* Hotspot dots mark controls that work inside interactive frames. */
+.canvas-hotspot { --hotspot: #2f7bff; position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--hotspot); box-shadow: 0 0 0 2px #fff, 0 1px 4px rgb(0 0 0 / 0.35); }
+.canvas-hotspot.has-tip { pointer-events: auto; cursor: help; }
+.canvas-hotspot::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: var(--hotspot); animation: canvas-hotspot-pulse 2.2s ease-out infinite; pointer-events: none; }
+@keyframes canvas-hotspot-pulse { from { transform: scale(1); opacity: 0.55; } to { transform: scale(3); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .canvas-hotspot::after { animation: none; opacity: 0; } }
+.canvas-tip { position: absolute; z-index: 1; width: max-content; max-width: min(260px, calc(100% - 16px)); box-sizing: border-box; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 14px rgb(0 0 0 / 0.3); font-size: 12px; line-height: 1.4; white-space: normal; pointer-events: none; }
+.canvas-tip { transform: translate(-50%, calc(-100% - 8px)); }
+.canvas-tip.is-below { transform: translate(-50%, 28px); }
+.canvas-badge.has-note { display: inline-flex; align-items: center; gap: 6px; cursor: help; }
+.canvas-badge-info { display: inline-grid; place-items: center; width: 15px; height: 15px; border: 1px solid currentColor; border-radius: 50%; font-size: 11px; font-weight: 700; font-style: italic; line-height: 1; }
