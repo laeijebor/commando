@@ -4,6 +4,13 @@ import type {
   WebPaneFeedbackInfo,
 } from '@commando/protocol'
 
+export function tileTitle(tile: Pick<WebPane, 'title' | 'url' | 'content'>): string {
+  if (tile.title?.trim()) return tile.title.trim()
+  try { const host = new URL(tile.url).host; if (host) return host } catch { /* Native content has no URL. */ }
+  const kind = tile.content?.kind
+  return kind === 'simulator' ? 'Simulator' : kind === 'canvas' ? 'Canvas' : kind === 'guide' ? 'Guide' : 'Web'
+}
+
 /** A tile as the list renders it: everything resolved against the snapshot. */
 export type TileRow = {
   tile: WebPane
@@ -116,11 +123,12 @@ export function groupTileRows(
  * cannot reach — hence the "Reopen as chromium" offer (Decision 3).
  */
 export function canStream(tile: WebPane): boolean {
-  return tile.engine === 'chromium' && tile.status === 'open'
+  return !tile.content && tile.engine === 'chromium' && tile.status === 'open'
 }
 
 /** Why a tile cannot be opened, in the words the row shows. */
 export function unstreamableReason(tile: WebPane): string | null {
+  if (tile.content) return `${tileTitle(tile)} is a ${tile.content.kind} view on the host`
   if (tile.status === 'pending') return 'Waiting for you to allow this origin'
   if (tile.engine === 'webkit') return 'Webkit tiles render on the host, not here'
   return null

@@ -21,6 +21,11 @@ import { chatStatusWord, ChatErrorBoundary, ChatView } from '../chat/ChatView'
 import { useChat } from '../chat/store'
 import { useDaemonClient, useDaemonConnection } from '../daemon/useDaemonConnection'
 import type { Host } from '../hosts/types'
+import { sessionIdentityForName } from '@commando/session-identity'
+import { providerPresentation } from '../ui/providerPresentation'
+import { useSessionPreferences } from '../ui/sessionPreferences'
+import { PaneTabs } from '../pane/PaneTabs'
+import { useAppActive } from '../daemon/useAppActive'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { Composer } from './Composer'
@@ -57,29 +62,37 @@ export type PaneViewProps = {
  */
 export function PaneView(props: PaneViewProps): React.JSX.Element {
   const chat = useChat(props.host?.id, props.paneId)
+  const state = useDaemonConnection(props.host)
+  const client = useDaemonClient(props.host)
+  const active = useAppActive(props.active)
+  const settledAt = props.paneId ? state.agentStatuses[props.paneId]?.settledAt : undefined
+  useEffect(() => {
+    if (active && props.host && props.paneId && state.phase === 'live') useSessionPreferences.getState().visit(props.host.id, props.paneId, client)
+  }, [props.host?.id, props.paneId, active, settledAt, client, state.phase])
   // Keyed so the iPad's centre column starts each chat afresh (its draft, scroll and error boundary).
   return chat && props.host
     ? <ChatPane key={`${props.host.id}:${chat.paneId}`} {...props} chat={chat} host={props.host} />
     : <TerminalPane {...props} />
 }
 
-/** A chat pane: the nav and window chips over the native chat. */
-function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWindow }: PaneViewProps & { host: Host; chat: ChatState }): React.JSX.Element {
+/** A chat pane: session identity and pane tabs over the native chat. */
+function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: PaneViewProps & { host: Host; chat: ChatState }): React.JSX.Element {
   const theme = useTheme()
   const state = useDaemonConnection(host)
   const client = useDaemonClient(host)
   const keyboard = useKeyboardOverlap()
+  const identities = useSessionPreferences((store) => store.identities[host.id])
   const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
   return (
-    <View style={styles.root}>
+    <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} active={active} chat header={
       <PaneNav
         {...(onBack ? { onBack } : {})}
         {...(onInfo ? { onInfo } : {})}
-        subtitle={`${context.title} · chat · ${chatStatusWord(chat.session.status)}`}
-        title={chat.session.title || context.title}
-      />
-      <PaneChips context={context} onOpenTile={onOpenTile} onSelectWindow={onSelectWindow} />
-      <View onLayout={keyboard.onLayout} ref={keyboard.ref} style={[styles.body, { paddingBottom: keyboard.overlap ?? 0 }]}>
+        identity={sessionIdentityForName(identities ?? {}, context.title)}
+        subtitle={`${sessionIdentityForName(identities ?? {}, context.title).codename} · ${providerPresentation(chat.session.provider).name} · ${chatStatusWord(chat.session.status)}`}
+        title={context.title}
+      /> } onOpenTile={onOpenTile}>
+      <View onLayout={keyboard.onLayout} ref={keyboard.ref} style={[styles.chatBody, { paddingBottom: keyboard.overlap ?? 0 }]}>
         <ChatErrorBoundary
           fallback={(error) => (
             <Text style={[styles.chatFailed, { color: theme.red }]}>The chat view failed to render: {error.message}</Text>
@@ -88,7 +101,7 @@ function ChatPane({ host, paneId, chat, onBack, onInfo, onOpenTile, onSelectWind
           <ChatView chat={chat} client={client} host={host} phase={state.phase} />
         </ChatErrorBoundary>
       </View>
-    </View>
+    </PaneTabs>
   )
 }
 
@@ -213,7 +226,7 @@ function TerminalPane({
   }, [raw, send])
 
   return (
-    <View style={styles.root}>
+    <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} active={active} chat={false} header={
       <PaneNav
         fit={fit}
         {...(onBack ? { onBack } : {})}
@@ -225,7 +238,7 @@ function TerminalPane({
         }}
         subtitle={context.subtitle}
         title={context.title}
-      />
+      /> } onOpenTile={onOpenTile}>
       <PaneChips
         context={context}
         onOpenTile={onOpenTile}
@@ -268,6 +281,7 @@ function TerminalPane({
 
         <KeyBar disabled={!live} onPress={(item) => void handleKey(item)} />
         <Composer
+          draftKey={host && paneId ? `${host.id}:${paneId}` : undefined}
           disabled={!live}
           notice={notice}
           onRawBackspace={() => send([{ kind: 'key', key: 'Backspace' }])}
@@ -277,7 +291,7 @@ function TerminalPane({
           raw={raw}
         />
       </KeyboardAvoidingView>
-    </View>
+    </PaneTabs>
   )
 }
 
@@ -296,6 +310,7 @@ export function sizeSummary(
 const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0 },
   body: { flex: 1, minHeight: 0 },
+  chatBody: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
   terminalWrap: { flex: 1, minHeight: 0, paddingHorizontal: 12, paddingTop: 10 },
   jump: {
     position: 'absolute',

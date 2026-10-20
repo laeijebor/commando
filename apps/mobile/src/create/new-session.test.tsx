@@ -29,9 +29,9 @@ async function openScreen() {
   fireEvent.changeText(screen.getByLabelText('Name'), 'cursor')
 }
 
-it('defaults to Claude and creates Cursor with one interactive request, navigating to its reported pane', async () => {
+it('defaults to Claude chat and creates Cursor with one interactive request, navigating to its reported pane', async () => {
   await openScreen()
-  expect(screen.getByRole('radio', { name: 'Claude' }).props.accessibilityState.checked).toBe(true)
+  expect(screen.getByRole('radio', { name: 'Claude chat' }).props.accessibilityState.checked).toBe(true)
   fireEvent.press(screen.getByRole('radio', { name: 'Cursor' }))
   const prompt = "Leo's spec\n$HOME `whoami`"
   fireEvent.changeText(screen.getByLabelText('Opening prompt'), prompt)
@@ -77,4 +77,27 @@ it.each(['old-host', 'wrong-provider', 'api-error'])('preserves and opens the cr
   await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Open session' })) })
   expect(createTmuxSession).toHaveBeenCalledTimes(1)
   expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '%7' } }))
+})
+
+it.each([
+  ['Claude chat', 'claude-chat', 'Accept edits', 'acceptEdits'],
+  ['Codex chat', 'codex-chat', 'Read only', 'plan'],
+  ['Muse chat', 'muse-chat', 'Approve everything', 'bypassPermissions'],
+])('creates %s with its chosen permission and opens the acknowledged pane', async (label, provider, modeLabel, permissionMode) => {
+  await openScreen()
+  fireEvent.press(screen.getByRole('radio', { name: label }))
+  fireEvent.press(screen.getByRole('radio', { name: modeLabel }))
+  fireEvent.changeText(screen.getByLabelText('Opening prompt'), 'Hello from the phone')
+  await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Create' })) })
+  expect(createTmuxSession).toHaveBeenCalledWith(expect.any(Object), { name: 'cursor', agent: { provider, permissionMode, prompt: 'Hello from the phone' } })
+  expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '%7' } }))
+})
+it('resets permissions when switching providers and hides the picker for CLI agents', async () => {
+  await openScreen()
+  fireEvent.press(screen.getByRole('radio', { name: 'Plan mode' }))
+  fireEvent.press(screen.getByRole('radio', { name: 'Muse chat' }))
+  expect(screen.queryByRole('radio', { name: 'Plan mode' })).toBeNull()
+  expect(screen.getByRole('radio', { name: 'Ask when needed' }).props.accessibilityState.checked).toBe(true)
+  fireEvent.press(screen.getByRole('radio', { name: 'Cursor' }))
+  expect(screen.queryByRole('radio', { name: 'Ask when needed' })).toBeNull()
 })

@@ -28,6 +28,7 @@ export type AuthBootstrap = {
 export function normaliseBaseUrl(input: string): string {
   const trimmed = input.trim()
   if (!trimmed) throw new Error('Enter the daemon address')
+  if (trimmed === 'demo' && !__DEV__) throw new Error('Demo hosts are only available in development')
   const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(trimmed)?.[1]?.toLowerCase()
   if (scheme && scheme !== 'http' && scheme !== 'https') {
     throw new Error('The daemon speaks http or https only')

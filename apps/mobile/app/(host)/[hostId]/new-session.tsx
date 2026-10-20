@@ -11,8 +11,8 @@ import {
   View,
 } from 'react-native'
 
-import type { GitRepoInfo, TmuxCreatedTarget } from '@commando/tmux-create'
-import { requireSessionAgentLaunch, TmuxAgentLaunchCompatibilityError } from '@commando/tmux-create'
+import type { ChatPermissionMode, GitRepoInfo, TmuxCreatedTarget } from '@commando/tmux-create'
+import { chatPermissionModes, isChatLaunchProvider, requireSessionAgentLaunch, TmuxAgentLaunchCompatibilityError } from '@commando/tmux-create'
 
 import { createTmuxSession, fetchRepoInfo } from '../../../src/daemon/paneApi'
 import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
@@ -65,6 +65,7 @@ export default function NewSessionScreen(): React.JSX.Element {
   const [prepareCommand, setPrepareCommand] = useState('')
   const [prepareEnabled, setPrepareEnabled] = useState(true)
   const [agent, setAgent] = useState<AgentChoice>(DEFAULT_AGENT_CHOICE)
+  const [permissionMode, setPermissionMode] = useState<ChatPermissionMode>('default')
   const [prompt, setPrompt] = useState('')
   const [notify, setNotify] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -138,7 +139,7 @@ export default function NewSessionScreen(): React.JSX.Element {
     setError(null)
     try {
       const request = buildSessionRequest(
-        { name, directory, worktreeEnabled, branch, worktreePath, prepareCommand, prepareEnabled, agent, prompt },
+        { name, directory, worktreeEnabled, branch, worktreePath, prepareCommand, prepareEnabled, agent, prompt, permissionMode },
         repo,
       )
       const { created } = requireSessionAgentLaunch(request, await createTmuxSession(host, request))
@@ -174,6 +175,7 @@ export default function NewSessionScreen(): React.JSX.Element {
     prepareCommand,
     prepareEnabled,
     prompt,
+    permissionMode,
     repo,
     router,
     worktreeEnabled,
@@ -268,7 +270,7 @@ export default function NewSessionScreen(): React.JSX.Element {
             accessibilityState={{ checked: agent === choice.value, disabled: busy }}
             disabled={busy}
             key={choice.value}
-            onPress={() => setAgent(choice.value)}
+            onPress={() => { setAgent(choice.value); setPermissionMode('default') }}
             style={[styles.agentChoice, {
               backgroundColor: agent === choice.value ? theme.surfaceSoft : theme.surfaceRaised,
               borderColor: agent === choice.value ? theme.accent : theme.border,
@@ -278,6 +280,20 @@ export default function NewSessionScreen(): React.JSX.Element {
           </Pressable>
         ))}
       </View>
+      {isChatLaunchProvider(agent) ? <>
+        <SectionHeader label="Permissions" />
+        <View style={styles.agentChoices}>
+          {chatPermissionModes(agent).map((mode) => <Pressable
+            key={mode.value}
+            accessibilityRole="radio"
+            accessibilityLabel={mode.label}
+            accessibilityState={{ checked: permissionMode === mode.value, disabled: busy }}
+            disabled={busy}
+            onPress={() => setPermissionMode(mode.value)}
+            style={[styles.agentChoice, { backgroundColor: permissionMode === mode.value ? theme.surfaceSoft : theme.surfaceRaised, borderColor: permissionMode === mode.value ? theme.accent : theme.border }]}
+          ><Text style={{ color: permissionMode === mode.value ? theme.text : theme.muted }}>{mode.label}</Text></Pressable>)}
+        </View>
+      </> : null}
       {agent === 'shell' ? (
         <Meta>The session opens an interactive shell and nothing is run in it.</Meta>
       ) : agent === 'opencode' ? (
@@ -361,7 +377,7 @@ export default function NewSessionScreen(): React.JSX.Element {
 
 const styles = StyleSheet.create({
   agentChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  agentChoice: { flexBasis: '30%', flexGrow: 1, alignItems: 'center', borderRadius: 10, borderWidth: 1, padding: 10 },
+  agentChoice: { minHeight: 44, flexBasis: '30%', flexGrow: 1, alignItems: 'center', borderRadius: 10, borderWidth: 1, padding: 10 },
   promptField: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
   promptInput: { fontSize: 14, lineHeight: 20, minHeight: 92, textAlignVertical: 'top' },
   footnote: { fontSize: 12, lineHeight: 18 },

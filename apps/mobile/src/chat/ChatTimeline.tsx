@@ -1,5 +1,5 @@
-import { createContext, memo, use, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { createContext, memo, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
@@ -8,6 +8,10 @@ import {
   canCollapsePlan,
   collapsedPlanPreview,
   deriveTimelineRows,
+  mergeActivityRows,
+  activitySummary,
+  type QuietTimelineRow,
+  type ActivityRow,
   patchLines,
   planBody,
   shortPath,
@@ -15,64 +19,115 @@ import {
   type PlanItem,
   type ReasoningItem,
   type SubagentItem,
-  type TimelineRow,
   type WorkItem,
 } from '@commando/chat-timeline'
 
+import { providerPresentation } from '../ui/providerPresentation'
+import { WorkingPulse } from '../ui/ChatIndicator'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { Markdown } from './Markdown'
+import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
 
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
 /** What rows need beyond their own item: where images load from and the session folder. */
-const TimelineContext = createContext<{ baseUrl: string; cwd: string }>({ baseUrl: '', cwd: '' })
+const TimelineContext = createContext<{ baseUrl: string; cwd: string; provider: string }>({ baseUrl: '', cwd: '', provider: 'Agent' })
 
-type Entry = TimelineRow | { kind: 'working'; id: 'working' }
+type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
 
 /**
  * The chat's turns, drawn from the same rows as the web's ChatTimeline:
  * messages, collapsed work groups, thoughts, notices and plan cards. The list
- * is inverted, so it opens on the newest turn and stays pinned to it while
- * Claude streams, unless the reader has scrolled up.
+ * follows the newest turn on open/send and while already near the bottom.
+ * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working }: {
+export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0 }: {
+  sendVersion?: number
+  provider?: string
   items: readonly ChatItem[]
   cwd: string
   baseUrl: string
   working: boolean
 }): React.JSX.Element {
   const theme = useTheme()
-  const rows = useMemo(() => deriveTimelineRows(items), [items])
+  const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items)), [items])
   const last = rows.at(-1)
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
-  const liveWork = ((last?.kind === 'work' || last?.kind === 'subagents') && last.live) || (last?.kind === 'thought' && last.item.status === 'running')
+  const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   const data = useMemo<Entry[]>(() => {
-    const entries: Entry[] = rows.slice().reverse()
-    return working && !streaming && !liveWork ? [{ kind: 'working', id: 'working' }, ...entries] : entries
+    const entries: Entry[] = rows.slice()
+    return working && !streaming && !liveWork ? [...entries, { kind: 'working', id: 'working' }] : entries
   }, [rows, working, streaming, liveWork])
-  const context = useMemo(() => ({ baseUrl, cwd }), [baseUrl, cwd])
+  const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name }), [baseUrl, cwd, provider])
   const list = useRef<FlatList<Entry>>(null)
-  // Inverted: offset 0 is the newest turn.
   const [scrolledBack, setScrolledBack] = useState(false)
+  const following = useRef(true)
+  const userScrolling = useRef(false)
+  const frame = useRef<number | null>(null)
+  const previousSend = useRef(sendVersion)
+  const follow = useCallback((reason: TimelineScrollReason) => {
+    if (!shouldFollowTimeline(reason, following.current, userScrolling.current)) return
+    following.current = true
+    userScrolling.current = false
+    setScrolledBack(false)
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    // Content/viewport measurements must land before scrolling, including keyboard resize.
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null
+      list.current?.scrollToEnd({ animated: false })
+    })
+  }, [])
+  useEffect(() => {
+    follow('open')
+    return () => { if (frame.current !== null) cancelAnimationFrame(frame.current) }
+  }, [follow])
+  useLayoutEffect(() => {
+    if (sendVersion === previousSend.current) return
+    previousSend.current = sendVersion
+    follow('send')
+  }, [sendVersion, follow])
+  const trackPosition = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    following.current = isNearTimelineEnd(event.nativeEvent)
+    setScrolledBack(!following.current)
+  }
+
+  const beginUserScroll = () => {
+    userScrolling.current = true
+    following.current = false
+    if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null }
+  }
+  const endUserScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    trackPosition(event)
+    userScrolling.current = false
+    follow('content')
+  }
 
   return (
     <TimelineContext value={context}>
-      <View style={styles.list}>
+      <View testID="chat-timeline-viewport" style={styles.viewport}>
         <FlatList
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[styles.content, data.length === 0 && styles.emptyContent]}
           data={data}
-          inverted
+          // SafeAreaView and our own header already account for iOS chrome.
+          contentInsetAdjustmentBehavior="never"
+          automaticallyAdjustContentInsets={false}
+          automaticallyAdjustKeyboardInsets={false}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           keyExtractor={(entry) => entry.id}
           ListEmptyComponent={(
-            // An inverted list draws its empty view upside down too.
             <View style={styles.empty}>
-              <Text style={[styles.emptyText, { color: theme.muted }]}>Ask Claude anything about this folder.</Text>
+              <Text style={[styles.emptyText, { color: theme.muted }]}>Ask {context.provider} anything about this folder.</Text>
             </View>
           )}
-          onScroll={(event) => setScrolledBack(event.nativeEvent.contentOffset.y > 240)}
+          onLayout={() => follow('resize')}
+          onContentSizeChange={() => follow('content')}
+          onScrollBeginDrag={beginUserScroll}
+          onScroll={(event) => { if (userScrolling.current) trackPosition(event) }}
+          onScrollEndDrag={endUserScroll}
+          onMomentumScrollBegin={beginUserScroll}
+          onMomentumScrollEnd={endUserScroll}
           ref={list}
           renderItem={({ item }) => <Row entry={item} />}
           scrollEventThrottle={100}
@@ -83,7 +138,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working }: {
           <Pressable
             accessibilityLabel="Jump to the newest turn"
             accessibilityRole="button"
-            onPress={() => list.current?.scrollToOffset({ offset: 0, animated: true })}
+            onPress={() => follow('jump')}
             style={[styles.jump, { backgroundColor: withAlpha(theme.accent, 0.9) }]}
           >
             <Text style={[styles.jumpLabel, { color: theme.accentInk }]}>Jump to latest</Text>
@@ -100,7 +155,7 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
     case 'working':
       return (
         <View style={styles.working}>
-          <View style={[styles.pulse, { backgroundColor: theme.accent }]} />
+          <WorkingPulse />
           <Text style={[styles.mutedLine, { color: theme.muted }]}>Working…</Text>
         </View>
       )
@@ -108,10 +163,8 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
       return <UserRow item={entry.item} />
     case 'assistant':
       return <View style={styles.assistant}><Markdown text={entry.item.text} /></View>
-    case 'work':
+    case 'activity':
       return <WorkGroup row={entry} />
-    case 'thought':
-      return <ThoughtRow item={entry.item} />
     case 'notice':
       return (
         <View style={styles.notice}>
@@ -128,13 +181,14 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
 
 function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }): React.JSX.Element {
   const theme = useTheme()
+  const { provider } = use(TimelineContext)
   return (
     <View style={styles.userRow}>
       {item.steered || item.relayTo ? (
         <View style={styles.userTag}>
           <Feather color={theme.muted} name={item.relayTo ? 'share' : 'zap'} size={11} />
           <Text numberOfLines={1} style={[styles.userTagText, { color: theme.muted }]}>
-            {item.relayTo ? `To @${item.relayTo.label}, relayed through main Claude` : 'Steered: sent while Claude worked'}
+            {item.relayTo ? `To @${item.relayTo.label}, relayed through main ${provider}` : `Steered: sent while ${provider} worked`}
           </Text>
         </View>
       ) : null}
@@ -315,16 +369,16 @@ function PatchView({ patch }: { patch: string }): React.JSX.Element {
   )
 }
 
-function WorkGroup({ row }: { row: Extract<TimelineRow, { kind: 'work' }> }): React.JSX.Element {
+function WorkGroup({ row }: { row: ActivityRow }): React.JSX.Element {
   const theme = useTheme()
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   // Live groups show their rows; finished ones fold to a summary unless opened.
   const open = userOpen ?? row.live
-  if (row.items.length === 1) {
-    return <View style={styles.workSingle}><WorkEntry item={row.items[0]!} /></View>
-  }
+  const summary = activitySummary(row.items)
+  const label = [summary.edits?.label, summary.rest].filter(Boolean).join(', ')
+  if (row.items.length === 1 && row.items[0]!.kind === 'reasoning') return <ThoughtRow item={row.items[0]!} />
   return (
-    <View style={[styles.work, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+    <View style={[styles.work, { backgroundColor: 'transparent', borderColor: theme.border }]}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
@@ -334,11 +388,11 @@ function WorkGroup({ row }: { row: Extract<TimelineRow, { kind: 'work' }> }): Re
         {row.live
           ? <ActivityIndicator color={theme.accent} size="small" style={styles.spinner} />
           : <Feather color={theme.muted} name={open ? 'chevron-down' : 'chevron-right'} size={14} />}
-        <Text numberOfLines={open ? undefined : 1} style={[styles.workSummary, { color: theme.textSoft }]}>{row.summary}</Text>
+        <Text numberOfLines={open ? undefined : 1} style={[styles.workSummary, { color: theme.textSoft }]}>{label}{summary.failed ? ` · ${summary.failed} failed` : ''}</Text>
       </Pressable>
       {open ? (
         <View style={[styles.workList, { borderLeftColor: theme.border }]}>
-          {row.items.map((item) => <WorkEntry item={item} key={item.id} />)}
+          {row.items.map((item) => item.kind === 'reasoning' ? <ThoughtRow item={item} key={item.id} /> : <WorkEntry item={item} key={item.id} />)}
         </View>
       ) : null}
     </View>
@@ -411,19 +465,19 @@ function PlanCard({ item }: { item: PlanItem }): React.JSX.Element {
   )
 }
 
-const SUBAGENT_STATES: Record<SubagentItem['state'], string> = { running: 'running', completed: 'done', failed: 'failed', stopped: 'stopped' }
+const SUBAGENT_STATES: Record<SubagentItem['state'], string> = { quiet: 'quiet', running: 'running', completed: 'done', failed: 'failed', stopped: 'stopped' }
 
 /** Subagents as a summary; their own transcripts stay on the desktop for now. */
 function SubagentRows({ items }: { items: SubagentItem[] }): React.JSX.Element {
   const theme = useTheme()
   return (
-    <View style={[styles.work, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+    <View style={[styles.work, { backgroundColor: 'transparent', borderColor: theme.border }]}>
       {items.map((agent) => (
         <View key={agent.id} style={styles.workLine}>
           <View style={styles.workIcon}>
             {agent.state === 'running'
               ? <ActivityIndicator color={theme.accent} size="small" style={styles.spinner} />
-              : <Feather color={agent.state === 'failed' ? theme.red : theme.muted} name="cpu" size={13} />}
+              : <Feather color={agent.state === 'failed' ? theme.red : agent.state === 'quiet' ? theme.amber : theme.muted} name={agent.state === 'quiet' ? 'alert-circle' : 'cpu'} size={13} />}
           </View>
           <Text numberOfLines={1} style={[styles.workLabel, { color: theme.textSoft }]}>
             {agent.description || agent.subagentType || 'Subagent'}
@@ -436,35 +490,37 @@ function SubagentRows({ items }: { items: SubagentItem[] }): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  list: { flex: 1, minHeight: 0 },
+  // Height belongs to the flex viewport, never to the transcript's intrinsic size.
+  viewport: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
+  list: { flex: 1, height: 0, minHeight: 0 },
   jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   jumpLabel: { fontSize: 12.5, fontWeight: '700' },
-  content: { paddingHorizontal: 14, paddingVertical: 10, flexGrow: 1 },
-  // Inverted: this sits at the bottom, under the newest turn.
-  empty: { flex: 1, justifyContent: 'center', alignItems: 'center', transform: [{ scaleY: -1 }] },
+  content: { paddingHorizontal: 20, paddingVertical: 24, width: '100%', maxWidth: 776, alignSelf: 'center' },
+  emptyContent: { flexGrow: 1 },
+  empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText: { fontSize: 14 },
   working: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
   pulse: { width: 6, height: 6, borderRadius: 3 },
   mutedLine: { fontSize: 13.5 },
-  userRow: { alignItems: 'flex-end', gap: 6, paddingTop: 4, paddingBottom: 10 },
+  userRow: { alignItems: 'flex-end', gap: 6, paddingTop: 4, paddingBottom: 24 },
   userTag: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '85%' },
   userTagText: { fontSize: 11.5 },
-  bubble: { maxWidth: '85%', borderWidth: 1, borderRadius: 16, borderBottomRightRadius: 5, paddingHorizontal: 12, paddingVertical: 8 },
+  bubble: { maxWidth: '88%', borderWidth: 0, borderRadius: 18, borderBottomRightRadius: 5, paddingHorizontal: 12, paddingVertical: 8 },
   userText: { fontSize: 15, lineHeight: 21 },
   planText: { fontSize: 13.5, lineHeight: 19, marginTop: 6 },
   imagesScroll: { flexGrow: 0, maxWidth: '85%' },
   images: { gap: 6 },
   image: { width: 72, height: 72, borderRadius: 10, borderWidth: 1 },
-  assistant: { paddingBottom: 12 },
+  assistant: { paddingBottom: 24 },
   notice: { flexDirection: 'row', gap: 6, paddingBottom: 10 },
   noticeIcon: { marginTop: 2 },
   noticeText: { flex: 1, fontSize: 12.5, lineHeight: 18 },
   workSingle: { paddingBottom: 8 },
-  work: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 10 },
-  workHead: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 26 },
+  work: { paddingVertical: 6, marginBottom: 16 },
+  workHead: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 36 },
   workSummary: { flex: 1, fontSize: 13.5, fontWeight: '600' },
   workList: { marginLeft: 6, paddingLeft: 6, borderLeftWidth: 1, marginTop: 2 },
-  workLine: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 26 },
+  workLine: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36 },
   workIcon: { width: 18, alignItems: 'center' },
   spinner: { transform: [{ scale: 0.7 }] },
   workLabel: { flex: 1, fontSize: 13.5 },
@@ -475,7 +531,7 @@ const styles = StyleSheet.create({
   outputContent: { paddingHorizontal: 8, paddingVertical: 6 },
   outputText: { fontFamily: MONO, fontSize: 11.5, lineHeight: 16 },
   thought: { paddingBottom: 8 },
-  thoughtHead: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 26 },
+  thoughtHead: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 36 },
   thoughtBody: { marginLeft: 5, paddingLeft: 10, borderLeftWidth: 2, marginTop: 2 },
   plan: { borderWidth: 1, borderRadius: 14, padding: 12, gap: 8, marginBottom: 12 },
   planHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
