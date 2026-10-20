@@ -108,6 +108,19 @@ describe('canvas question answers', () => {
     expect(within(note(container, 'design')).queryByRole('textbox')).not.toBeInTheDocument()
   })
 
+  it('does not count an answer queued for an earlier version of the question', async () => {
+    snapshot = { ...snapshot, revision: 3, knownUpTo: 1, notes: [{ id: 1, revision: 1, selector: '[data-canvas-note="q-recipe"]', tag: 'redline', rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Yes', pageUrl: page, queueKey: 'q-recipe', response: { question: 'Should archived copies fail?', answer: 'Yes', data: { choice: 'Yes' } },
+      questionShape: { question: 'Should archived copies fail?', kind: 'choice', options: ['Yes', 'No'], multiple: false } }] }
+    const { container } = await mount()
+    const card = within(note(container, 'q-recipe'))
+    expect(await screen.findByText(/2 unanswered · 1 queued/)).toBeInTheDocument()
+    expect(card.queryByText('Queued ✓')).not.toBeInTheDocument()
+    expect(card.getByRole('radio', { name: 'Allow' })).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(screen.getByRole('tab', { name: /Questions/ }))
+    expect(screen.getByRole('button', { name: /Your call Open/ })).toBeInTheDocument()
+  })
+
   it('lists question notes with their state in the Questions tab', async () => {
     await mount()
     fireEvent.click(screen.getByRole('tab', { name: /Questions/ }))
