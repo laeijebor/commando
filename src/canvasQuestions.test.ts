@@ -30,4 +30,9 @@ describe('canvas questions', () => {
     expect(canvasChoicesFromAnswer('A, B', ['A', 'B', 'A, B'])).toEqual(['A, B'])
     expect(canvasChoicesFromAnswer('Something else', ['A', 'B'])).toEqual([])
   })
+  it('gives up quickly on an undecodable answer with many repeated options', () => {
+    const started = performance.now()
+    expect(canvasChoicesFromAnswer(`${Array(20).fill('A').join(', ')}, X`, Array(40).fill('A'))).toEqual([])
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
 })

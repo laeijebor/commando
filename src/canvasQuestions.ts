@@ -36,14 +36,18 @@ export const openCanvasQuestions = (annotations: CanvasAnnotation[]) =>
  */
 export function canvasChoicesFromAnswer(answer: string, options: readonly string[]): string[] {
   if (options.includes(answer)) return [answer]
+  // Each (position, next option) state is tried once, so overlapping labels can't blow up the search.
+  const failed = new Set<string>()
   const walk = (at: number, from: number): string[] | null => {
     if (at === answer.length) return []
+    if (failed.has(`${at}:${from}`)) return null
     for (let i = from; i < options.length; i++) {
       const end = at + options[i].length
       if (!answer.startsWith(options[i], at) || (end !== answer.length && !answer.startsWith(', ', end))) continue
       const rest = end === answer.length ? [] : walk(end + 2, i + 1)
       if (rest) return [options[i], ...rest]
     }
+    failed.add(`${at}:${from}`)
     return null
   }
   return walk(0, 0) ?? []
