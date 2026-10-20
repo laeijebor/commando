@@ -151,7 +151,7 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode, readableDir, resume } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
@@ -163,6 +163,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   }
   if (resume !== undefined && !isChatLaunchProvider(provider) && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
+  if (fullAccess !== undefined && (fullAccess !== true || provider !== 'muse-chat' || permissionMode !== 'bypassPermissions')) throw new Error('Only a Muse chat in bypassPermissions can ask for full access')
   const chatName = provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : provider === 'cursor-chat' ? 'Cursor' : 'Claude'
   if (chatName !== 'Claude' && (configDir !== undefined || readableDir !== undefined)) throw new Error(`${chatName} chat does not accept a Claude profile or readable folder`)
   if (isChatLaunchProvider(provider) && permissionMode !== undefined && !chatPermissionModes(provider).some((mode) => mode.value === permissionMode)) throw new Error(`Unsupported ${chatName} permission mode`)
@@ -183,6 +184,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
     ...(typeof readableDir === 'string' ? { readableDir } : {}),
     ...(typeof resume === 'string' ? { resume } : {}),
+    ...(fullAccess === true ? { fullAccess: true as const } : {}),
   }
 }
 

@@ -121,7 +121,7 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
   const list = isRecord(value) && Array.isArray(value.conversations) ? value.conversations : []
   return list.flatMap((entry): ChatConversation[] => {
     if (!isRecord(entry)) return []
-    if ((entry.provider !== 'claude' && entry.provider !== 'codex' && entry.provider !== 'cursor' && entry.provider !== 'opencode') || !isChatConversationSessionId(entry.sessionId)) return []
+    if ((entry.provider !== 'claude' && entry.provider !== 'codex' && entry.provider !== 'cursor' && entry.provider !== 'opencode' && entry.provider !== 'muse') || !isChatConversationSessionId(entry.sessionId)) return []
     const cwd = optionalString(entry.cwd)
     const title = optionalString(entry.title, 500)
     if (!cwd || title === undefined || typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) return []

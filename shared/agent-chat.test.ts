@@ -43,6 +43,12 @@ describe('chat providers', () => {
     expect(parseHostMessage({ ...legacy, provider: 'other' })).toBeNull()
   })
 
+  it('keeps whether a Muse host runs without its sandbox, and nothing else in its place', () => {
+    const info = { ...session, provider: 'muse', sandboxed: false }
+    expect(parseChatSessionInfo(info)).toEqual(info)
+    expect(parseChatSessionInfo({ ...info, sandboxed: 'no' })).toEqual({ ...session, provider: 'muse' })
+  })
+
   it.each(['claude', 'codex', 'cursor'])('keeps %s on sessions, snapshots and updates', (provider) => {
     const info = { ...session, provider }
     expect(parseChatSessionInfo({ ...info, extra: 'dropped' })).toEqual(info)

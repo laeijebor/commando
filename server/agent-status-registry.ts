@@ -811,6 +811,15 @@ export const PANE_EVICTION_GRACE_MS = 30_000
 
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
+  // Private model context: never part of AgentDetails or client snapshots.
+  private readonly finalMessages = new Map<string, string>()
+
+  finalMessage(paneId: string): string | undefined { return this.finalMessages.get(paneId) }
+
+  private retainFinalMessage(paneId: string, value: unknown): void {
+    if (typeof value === 'string' && value.trim()) this.finalMessages.set(paneId, value.slice(0, 2000))
+    else this.finalMessages.delete(paneId)
+  }
   // Bounded tombstones reject late session/turn starts without retaining response text.
   private readonly cursorProducers = new Map<string, { identity: string; turnStarted?: string }>()
   private readonly retiredCursorTurns = new Map<string, Set<string>>()
@@ -897,6 +906,7 @@ export class AgentStatusRegistry {
     this.missingSince.delete(paneId)
     this.completeDeclarations.delete(paneId)
     this.chatHosts.delete(paneId)
+    this.finalMessages.delete(paneId)
     this.retiredCursorTurns.delete(paneId)
     this.cursorProducers.delete(paneId)
     if (!this.records.delete(paneId)) return null
@@ -918,6 +928,7 @@ export class AgentStatusRegistry {
       }
       if (now - since < PANE_EVICTION_GRACE_MS) continue
       this.missingSince.delete(paneId)
+      this.finalMessages.delete(paneId)
       this.records.delete(paneId)
       this.completeDeclarations.delete(paneId)
       this.retiredCursorTurns.delete(paneId)
@@ -1274,7 +1285,9 @@ export class AgentStatusRegistry {
       clearRunningChecks(details, runningChecks)
       delete details.currentActivity
     }
+    if (eventName === 'UserPromptSubmit' || !sameSession) this.finalMessages.delete(paneId)
     if (eventName === 'Stop' || eventName === 'StopFailure') {
+      this.retainFinalMessage(paneId, payload.finalMessage)
       runningActivities.clear()
       clearRunningChecks(details, runningChecks)
       delete details.currentActivity
@@ -1382,6 +1395,7 @@ export class AgentStatusRegistry {
       this.retireCursorTurn(paneId, previous, !sameSession)
     }
     const reset = !sameSession || newTurn
+    if (reset) this.finalMessages.delete(paneId)
     const details = reset ? emptyDetails() : cloneDetails(previous.status.details ?? emptyDetails())
     const runningActivities = reset ? new Map<string, AgentActivity>() : new Map(previous.runningActivities)
     const runningChecks = reset ? new Map<string, AgentCheck>() : new Map(previous.runningChecks)
@@ -1391,6 +1405,7 @@ export class AgentStatusRegistry {
     if (association) cursor.association = association
     let status: AgentStatusKind = event === 'sessionStart' ? 'unknown' : 'working'
     if (event === 'beforeSubmitPrompt') {
+      this.finalMessages.delete(paneId)
       if (emitted) cursor.turnStarted = emitted
       cursor.promptSubmitted = true
       details.intent = boundedText(payload.intent, MAX_INTENT_LENGTH) ?? undefined
@@ -1406,6 +1421,7 @@ export class AgentStatusRegistry {
     updateCheck(details, runningChecks, payload.check, payload.activityId, updatedAt)
     addChangedFile(details, changedFiles, payload.filePath)
     if (event === 'afterAgentResponse') {
+      this.retainFinalMessage(paneId, payload.finalMessage)
       if (correctsCompletion) {
         const recap = createRecap('cursor', 'done', details, false, payload.finalMessage, 0, undefined, details.recap!.completedAt)
         setRecap(details, recap)
@@ -1687,6 +1703,7 @@ export class AgentStatusRegistry {
     const details = emptyDetails(intent)
     const finalMessage = event.payload['last-assistant-message'] ??
       event.payload.last_assistant_message
+    this.retainFinalMessage(paneId, finalMessage)
     const recap = createRecap(
       'codex',
       'done',
@@ -1792,6 +1809,7 @@ export class AgentStatusRegistry {
       })
       return null
     }
+    this.finalMessages.delete(paneId)
     this.records.delete(paneId)
     this.inferenceSuppressions.set(paneId, {
       provider,
@@ -1819,6 +1837,7 @@ export class AgentStatusRegistry {
       })
       return null
     }
+    this.finalMessages.delete(paneId)
     this.records.delete(paneId)
     this.inferenceSuppressions.set(paneId, {
       provider: record.status.provider,

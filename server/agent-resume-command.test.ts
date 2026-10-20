@@ -95,7 +95,7 @@ describe('buildResumeCommand', () => {
 })
 
 describe('isChatResumeCommand', () => {
-  it.each(['claude', 'codex'] as const)('recognises %s resume and return commands from the builders, with or without an environment prefix', (provider) => {
+  it.each(['claude', 'codex', 'muse'] as const)('recognises %s resume and return commands from the builders, with or without an environment prefix', (provider) => {
     const environments: Record<string, string>[] = [{}, { COMMANDO_PORT: '4410', COMMANDO_SOCKET: "/tmp/O'Brien/commando socket" }]
     for (const launcher of ['/c/scripts/commando-agent', "/checkout with spaces/O'Brien/scripts/commando-agent"]) {
       for (const daemonEnv of environments) {
@@ -118,7 +118,7 @@ describe('isChatResumeCommand', () => {
     }
   })
 
-  it.each(['claude', 'codex'] as const)('does not mistake a %s TUI command for a chat', (provider) => {
+  it.each(['claude', 'codex', 'muse'] as const)('does not mistake a %s TUI command for a chat', (provider) => {
     const command = buildResumeCommand(provider, SESSION, { args: [provider], env: {} })
     expect(command).not.toBeNull()
     expect(isChatResumeCommand(command!)).toBe(false)
@@ -192,6 +192,10 @@ describe('chat hosts', () => {
     const muse = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts muse --permission-mode default'
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: muse.split(' '), env: { XDG_DATA_HOME: '/Users/me/.data' } }))
       .toBe('env XDG_DATA_HOME=/Users/me/.data /c/launcher muse --permission-mode default --resume abcdef12-3456')
+    // Full access is named by --yolo, which a resume keeps alongside the chat's current settings.
+    const yolo = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts muse --permission-mode bypassPermissions --yolo'
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: yolo.split(' '), env: {} }, {}, { permissionMode: 'bypassPermissions', bypassAllowed: true }))
+      .toBe('/c/launcher muse --yolo --permission-mode bypassPermissions --resume abcdef12-3456')
     expect(buildChatResumeCommand('$(bad)', '/c/launcher', { args: host.split(' '), env: {} })).toBeNull()
   })
 

@@ -28,7 +28,8 @@ export interface WebPanesApiClient {
   replyThread(webPaneId: string, threadId: string, text: string): Promise<void>
   setThreadStatus(webPaneId: string, threadId: string, status: 'open' | 'resolved'): Promise<void>
   answerSpotlight(webPaneId: string, requestId: string, decision: 'accept' | 'dismiss'): Promise<void>
-  pendingNotes(webPaneId: string): Promise<WebPanePendingSnapshot>
+  /** `sentPage` reads that page's sent answers instead of the tile's own page. */
+  pendingNotes(webPaneId: string, sentPage?: string): Promise<WebPanePendingSnapshot>
   addPendingNote(webPaneId: string, note: PendingNoteDraft): Promise<WebPanePendingSnapshot>
   addPendingResponse(
     webPaneId: string,
@@ -191,8 +192,9 @@ export function createWebPanesApi(
     answerSpotlight: async (id, requestId, decision) => {
       await request(`/${encodeURIComponent(id)}/spotlight-requests/${encodeURIComponent(requestId)}`, { method: 'POST', body: JSON.stringify({ decision }) })
     },
-    pendingNotes: async (webPaneId) => {
-      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending`, { method: 'GET' }))
+    pendingNotes: async (webPaneId, sentPage) => {
+      const query = sentPage ? `?sentPage=${encodeURIComponent(sentPage)}` : ''
+      return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending${query}`, { method: 'GET' }))
     },
     addPendingNote: async (webPaneId, note) => {
       return toSnapshot(await request(`/${encodeURIComponent(webPaneId)}/pending`, {

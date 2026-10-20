@@ -301,6 +301,28 @@ describe('ChatConversationsApi', () => {
     expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'codex-chat', permissionMode: 'default', resume: ID })
   })
 
+  it('switches a chat pane to a Muse conversation as a Muse chat', async () => {
+    const { creator, resume } = setup({ conversation: { provider: 'muse' } })
+    expect(await resume({ provider: 'muse' })).toMatchObject({ status: 200, body: { paneId: '%1' } })
+    expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'muse-chat', permissionMode: expect.any(String), resume: ID })
+  })
+
+  it('resumes a saved Muse chat through the chat host, never above the calling chat', async () => {
+    const { creator, resume } = setup({
+      conversation: { provider: 'muse' },
+      chats: [chat({ provider: 'codex', permissionMode: 'plan' })],
+      resumeRecord: { provider: 'muse', command: `env COMMANDO_PORT=4410 /c/scripts/commando-agent muse --permission-mode bypassPermissions --resume ${ID}` },
+    })
+    expect(await resume({ provider: 'muse' })).toMatchObject({ status: 200 })
+    expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'muse-chat', permissionMode: 'plan', resume: ID })
+  })
+
+  it('resumes a Muse conversation from a terminal in the Muse TUI', async () => {
+    const { creator, resume } = setup({ conversation: { provider: 'muse' }, chats: [] })
+    expect(await resume({ provider: 'muse', placement: 'split' })).toMatchObject({ status: 200 })
+    expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ targetId: '%1', cwd: folder }), undefined, `env muse resume ${ID}`)
+  })
+
   it('opens a Claude conversation beside the pane with its own profile, in plan mode from a plan chat', async () => {
     const { creator, resume } = setup({ conversation: { provider: 'claude', configDir: '/home/me/.claudew' }, chats: [chat({ provider: 'codex', permissionMode: 'plan' })] })
     expect(await resume({ provider: 'claude', placement: 'split' })).toMatchObject({ status: 200, body: { paneId: '%9' } })
