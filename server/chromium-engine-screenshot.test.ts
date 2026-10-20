@@ -22,9 +22,11 @@ describe('ChromiumEngine temporary screenshot', () => {
     expect(page.send).toHaveBeenCalledWith('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: false })
     expect(browser.cdp.send).toHaveBeenCalledWith('Target.createBrowserContext', { disposeOnDetach: true })
     expect(browser.cdp.send).toHaveBeenCalledWith('Target.createTarget', expect.objectContaining({ browserContextId: 'isolated' }))
-    const navigation = page.send.mock.calls.find(([method]) => method === 'Page.navigate')!
-    const wrapper = decodeURIComponent((navigation[1] as { url: string }).url.split(',')[1])
-    expect(wrapper).toContain('<iframe sandbox="allow-scripts" width="390" height="844" src="http://localhost/frame.html">')
+    expect(page.send).toHaveBeenCalledWith('Page.navigate', { url: 'http://localhost/redline/capture.html' })
+    const embed = (page.send.mock.calls.find(([method]) => method === 'Runtime.evaluate')![1] as { expression: string }).expression
+    expect(embed).toContain(`frame.setAttribute('sandbox', 'allow-scripts')`)
+    expect(embed).toContain('frame.width = 390; frame.height = 844;')
+    expect(embed).toContain('frame.src = "http://localhost/frame.html"')
     expect(browser.cdp.sendAndForget).toHaveBeenCalledWith('Target.disposeBrowserContext', { browserContextId: 'isolated' })
     expect(page.send).toHaveBeenCalledWith('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
     expect(page.send.mock.calls.some(([method]) => /Binding|ScriptToEvaluate|Screencast/.test(method))).toBe(false)

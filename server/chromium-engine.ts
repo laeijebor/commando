@@ -859,13 +859,17 @@ export class ChromiumEngine {
         await page.send('Page.enable'); check()
         await page.send('Emulation.setDeviceMetricsOverride', { width: Math.ceil(width), height: Math.ceil(height), deviceScaleFactor: 2, mobile: false }); check()
         const loaded = new Promise<void>((resolve) => page!.on('Page.loadEventFired', () => resolve()))
-        const escapedUrl = url.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;')
-        const wrapper = `<html><head><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{border:0;display:block}</style></head><body><iframe sandbox="allow-scripts" width="${Math.ceil(width)}" height="${Math.ceil(height)}" src="${escapedUrl}"></iframe></body></html>`
-        const navigation = await page.send('Page.navigate', { url: `data:text/html;charset=utf-8,${encodeURIComponent(wrapper)}` }); check()
+        // The sandboxed frame is embedded from a blank page on its own origin. A data: wrapper
+        // (opaque origin) is blocked from loading 127.0.0.1 by Chrome's Local Network Access.
+        const navigation = await page.send('Page.navigate', { url: `${new URL(url).origin}/redline/capture.html` }); check()
         if (navigation.errorText) throw new WebPaneError(502, `PNG navigation failed: ${navigation.errorText}`)
         await loaded; check()
-        // Wait for fonts and a paint after load; external pages that never settle hit the overall deadline.
-        await page.send('Runtime.evaluate', { expression: 'document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))', awaitPromise: true }); check()
+        // Wait for the frame, fonts and a paint; pages that never settle hit the overall deadline.
+        const embed = `new Promise((resolve) => { const frame = document.createElement('iframe'); frame.setAttribute('sandbox', 'allow-scripts');`
+          + ` frame.width = ${Math.ceil(width)}; frame.height = ${Math.ceil(height)}; frame.addEventListener('load', resolve, { once: true });`
+          + ` frame.src = ${JSON.stringify(url)}; document.body.append(frame) })`
+          + `.then(() => document.fonts.ready).then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))`
+        await page.send('Runtime.evaluate', { expression: embed, awaitPromise: true }); check()
         const result = await page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); check()
         if (typeof result.data !== 'string') throw new WebPaneError(502, 'Chromium returned no PNG data')
         return Buffer.from(result.data, 'base64')
