@@ -51,6 +51,29 @@ describe('AgentsInbox', () => {
     fireEvent.click(first)
     expect(onOpenPane).toHaveBeenLastCalledWith('%1', 'target-%1')
   })
+  it('reads an agent in the reading pane on click and follows the arrow keys once it is open', () => {
+    const onOpenPane = vi.fn(), onPeek = vi.fn()
+    const view = render(<AgentsInbox groups={groups()} token="token" onOpenPane={onOpenPane} onRelay={vi.fn()} onPeek={onPeek} />)
+    expect(screen.getByText(/Click to read/)).toBeInTheDocument()
+    const first = screen.getByRole('option', { name: 'Agent %1' })
+    // Closed: arrows only move the selection.
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(onPeek).not.toHaveBeenCalled()
+    fireEvent.click(first)
+    expect(onPeek).toHaveBeenLastCalledWith('%1', 'target-%1')
+    expect(onOpenPane).not.toHaveBeenCalled()
+    view.rerender(<AgentsInbox groups={groups()} token="token" onOpenPane={onOpenPane} onRelay={vi.fn()} onPeek={onPeek} peekTargetId="target-%1" />)
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(onPeek).toHaveBeenLastCalledWith('%2', 'target-%2')
+    // Enter and the arrow button still open the agent's own session.
+    fireEvent.keyDown(screen.getByRole('option', { name: 'Agent %2' }), { key: 'Enter' })
+    expect(onOpenPane).toHaveBeenLastCalledWith('%2', 'target-%2')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Agent %3' }))
+    expect(onOpenPane).toHaveBeenLastCalledWith('%3', 'target-%3')
+    // Stepping from the reading pane moves the selection with it.
+    view.rerender(<AgentsInbox groups={groups()} token="token" onOpenPane={onOpenPane} onRelay={vi.fn()} onPeek={onPeek} peekTargetId="target-%3" />)
+    expect(screen.getByRole('option', { name: 'Agent %3' })).toHaveAttribute('aria-selected', 'true')
+  })
   it('queues an inline reply without opening the pane and shows the returned receipt', async () => {
     const relay = { id: 'r', toPaneId: '%1', toTargetId: 'target-%1', createdAt: Date.now(), status: 'queued' } as CommanderRelay
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ ok: true, relay }))
