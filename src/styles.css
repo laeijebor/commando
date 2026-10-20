@@ -1289,11 +1289,17 @@ kbd {
 
 .terminal-pane-body > .terminal-source-grid,
 .terminal-pane-body > .terminal-find-shell,
-.terminal-pane-body > .terminal-chat-shell {
+.terminal-pane-body > .terminal-chat-shell,
+.terminal-pane-body > .commander-split {
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
+}
+
+/* Commander's chat and its reading pane fill the split like a lone chat fills the pane. */
+.commander-split .terminal-chat-shell {
+  height: 100%;
 }
 
 /* A maximized pane is the layout root's only child, so nothing else bounds

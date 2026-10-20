@@ -1,5 +1,6 @@
 import type { CommanderState } from '../../shared/commander'
 import { AgentsInbox, type AgentsInboxProps } from './AgentsInbox'
+import { CommanderSplit, type CommanderPeek } from './CommanderReadingPane'
 import { Component, useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
@@ -81,7 +82,11 @@ export class ChatErrorBoundary extends Component<{ children: ReactNode }, { erro
 
 /** A chat pane: the agent host's turns as a narrow, readable column. */
 export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
-  return <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
+  const column = <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
+  // Commander's pane always renders its split, so opening a chat beside it keeps Commander's draft.
+  return props.paneId && props.commander?.state.paneId === props.paneId
+    ? <CommanderSplit {...(props.commander.peek ? { peek: props.commander.peek } : {})}>{column}</CommanderSplit>
+    : column
 }
 
 function ChatColumn({
@@ -116,7 +121,7 @@ function ChatColumn({
   pane?: TmuxPane
   snapshot?: LineageSnapshot
   statuses?: Record<string, AgentStatus>
-  commander?: AgentsInboxProps & { state: CommanderState }
+  commander?: AgentsInboxProps & { state: CommanderState; peek?: CommanderPeek }
   onSelectPane?: (id: string) => void
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
@@ -226,6 +231,8 @@ function ChatColumn({
     // Esc in a subagent's view goes back to main, unless the composer has a use for it.
     if (event.key !== 'Escape' || !viewing || event.defaultPrevented) return
     if (event.target instanceof HTMLTextAreaElement && (event.target.value || working)) return
+    // Handled here, so an enclosing view (Commander's reading pane) leaves it alone.
+    event.preventDefault()
     setViewing(undefined)
     setRelay(undefined)
   }
