@@ -274,6 +274,25 @@ describe('CanvasPane', () => {
     fireEvent.wheel(viewport, { deltaY: -20, ctrlKey: true, clientX: 50, clientY: 80 }); expect(layer.style.transform).not.toBe(panned)
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' })); expect(screen.getByLabelText('Zoom')).toHaveTextContent('%')
   })
+  it('zooms on WebKit trackpad pinch gestures around the gesture point', async () => {
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    await screen.findByTitle('Settings')
+    const layer = container.querySelector('.canvas-world') as HTMLElement, viewport = container.querySelector('.canvas-viewport')!
+    const camera = () => { const [, x, y, scale] = /translate\(([-.\d]+)px, ([-.\d]+)px\) scale\(([-.\d]+)\)/.exec(layer.style.transform)!.map(Number); return { x, y, scale } }
+    const pinch = (type: string, scale?: number) => {
+      const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 200, clientY: 150 })
+      act(() => { viewport.dispatchEvent(event) }); return event
+    }
+    const before = camera(), world = { x: (200 - before.x) / before.scale, y: (150 - before.y) / before.scale }
+    expect(pinch('gesturestart').defaultPrevented).toBe(true)
+    expect(pinch('gesturechange', 1.2).defaultPrevented).toBe(true)
+    pinch('gesturechange', 1.5)
+    const after = camera()
+    expect(after.scale).toBeCloseTo(before.scale * 1.5)
+    expect((200 - after.x) / after.scale).toBeCloseTo(world.x)
+    expect((150 - after.y) / after.scale).toBeCloseTo(world.y)
+    expect(screen.getByLabelText('Zoom')).toHaveTextContent(`${Math.round(after.scale * 100)}%`)
+  })
   it('promotes the world to a compositor layer only while the camera moves', async () => {
     const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
     await screen.findByTitle('Settings')

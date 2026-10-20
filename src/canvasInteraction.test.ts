@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasFrame } from '../shared/canvas-manifest'
-import { CANVAS_HISTORY_LIMIT, INERT_CANVAS, canvasInteraction, canvasWheelRoute, snapCanvasMove } from './canvasInteraction'
+import { CANVAS_HISTORY_LIMIT, INERT_CANVAS, canvasGestureStep, canvasInteraction, canvasWheelRoute, snapCanvasMove } from './canvasInteraction'
+import { zoomAt } from './canvasCamera'
 import { readCanvasFrameInput } from './canvasFrameBridge'
 
 const frames: CanvasFrame[] = [{ id: 'a', title: 'A', src: 'a.html', x: 0, y: 0, w: 100, h: 100, interactive: true, focus: 1 },
@@ -45,5 +46,16 @@ describe('canvas interaction', () => {
     expect(readCanvasFrameInput({ type: 'zoom', deltaY: 10, deltaMode: 0, x: 4, y: 5 })).toMatchObject({ type: 'zoom' })
     expect(readCanvasFrameInput({ type: 'zoom', deltaY: Infinity, deltaMode: 0, x: 4, y: 5 })).toBeNull()
     expect(snapCanvasMove({ x: 3, y: -13 }, { x: 21, y: -20 }, 0.5)).toEqual({ x: 50, y: -50 })
+  })
+  it('turns cumulative pinch scales into steps that compound to the gesture scale', () => {
+    const scales = [1.1, 1.3, 1.25, 0.9]
+    let previous = 1, camera = { x: -40, y: 25, scale: 0.5 }
+    const point = { x: 300, y: 200 }, world = { x: (point.x - camera.x) / camera.scale, y: (point.y - camera.y) / camera.scale }
+    for (const scale of scales) { camera = zoomAt(camera, canvasGestureStep(previous, scale)!, point); previous = scale }
+    expect(camera.scale).toBeCloseTo(0.5 * 0.9)
+    expect((point.x - camera.x) / camera.scale).toBeCloseTo(world.x)
+    expect((point.y - camera.y) / camera.scale).toBeCloseTo(world.y)
+    expect(canvasGestureStep(1.2, 1.2)).toBe(1)
+    for (const [previous, scale] of [[1, 0], [1, -2], [1, NaN], [1, Infinity], [0, 1]]) expect(canvasGestureStep(previous, scale)).toBeNull()
   })
 })

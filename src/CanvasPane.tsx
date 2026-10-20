@@ -18,7 +18,7 @@ import { canvasFrameUrl, useCanvasFrameBridge } from './canvasFrameBridge'
 import { useCanvasFlight } from './canvasFlight'
 import { labelKey, labelsForFrame, type CanvasLabelRef } from './canvasLabels'
 import './canvas-pane.css'
-import { canvasWheelRoute, useCanvasInteraction } from './canvasInteraction'
+import { canvasGestureStep, canvasWheelRoute, useCanvasInteraction } from './canvasInteraction'
 import { useCanvasLayout } from './useCanvasLayout'
 import { useCanvasFrameDrag } from './useCanvasFrameDrag'
 import { CanvasSectionStatus } from './CanvasSectionStatus'
@@ -210,8 +210,27 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
         ? zoomAt(current, Math.exp(-event.deltaY * multiplier * 0.01), { x: event.clientX - rect.left, y: event.clientY - rect.top })
         : { ...current, x: current.x - event.deltaX * multiplier, y: current.y - event.deltaY * multiplier })
     }
+    // WKWebView delivers trackpad pinch as WebKit gesture events, not ctrl+wheel.
+    let gestureScale = 1
+    const gesture = (event: Event) => {
+      event.preventDefault()
+      const { scale, clientX, clientY } = event as Event & { scale?: number; clientX?: number; clientY?: number }
+      if (event.type === 'gesturestart') { gestureScale = 1; cancelFlight(); initialFit.current = true; return }
+      const step = canvasGestureStep(gestureScale, scale ?? NaN)
+      if (step === null) return
+      gestureScale = scale!
+      const rect = node.getBoundingClientRect()
+      const point = clientX === undefined || clientY === undefined ? { x: node.clientWidth / 2, y: node.clientHeight / 2 } : { x: clientX - rect.left, y: clientY - rect.top }
+      setCamera((current) => zoomAt(current, step, point))
+    }
     node.addEventListener('wheel', wheel, { passive: false })
-    return () => node.removeEventListener('wheel', wheel)
+    node.addEventListener('gesturestart', gesture)
+    node.addEventListener('gesturechange', gesture)
+    return () => {
+      node.removeEventListener('wheel', wheel)
+      node.removeEventListener('gesturestart', gesture)
+      node.removeEventListener('gesturechange', gesture)
+    }
   }, [])
   const zoom = (factor: number) => {
     cancelFlight()

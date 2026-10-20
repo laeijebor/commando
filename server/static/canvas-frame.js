@@ -111,6 +111,19 @@
     event.preventDefault()
     post('zoom', { deltaY: event.deltaY, deltaMode: event.deltaMode, x: event.clientX, y: event.clientY })
   }, { passive: false, capture: true })
+  // WebKit trackpad pinch: scale is cumulative since gesturestart; relay each step as an equivalent zoom wheel.
+  var gestureScale = 1
+  function gesture(event) {
+    if (!live) return
+    event.preventDefault()
+    if (event.type === 'gesturestart') { gestureScale = 1; return }
+    if (!(event.scale > 0) || !isFinite(event.scale)) return
+    var step = event.scale / gestureScale
+    gestureScale = event.scale
+    post('zoom', { deltaY: -100 * Math.log(step), deltaMode: 0, x: event.clientX || 0, y: event.clientY || 0 })
+  }
+  window.addEventListener('gesturestart', gesture, true)
+  window.addEventListener('gesturechange', gesture, true)
   function schedule() {
     clearTimeout(timer)
     timer = setTimeout(report, 100)
