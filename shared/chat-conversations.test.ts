@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { groupChatConversations, matchesChatConversation, isChatConversationSessionId, parseChatConversations, type ChatConversation } from './chat-conversations.js'
+import { chatConversationProviderLabel, groupChatConversations, matchesChatConversation, isChatConversationSessionId, parseChatConversations, type ChatConversation } from './chat-conversations.js'
 
 const conversation = (cwd: string, extra: Partial<ChatConversation> = {}): ChatConversation => ({ provider: 'claude', sessionId: 'aaaaaaaa-0001', cwd, title: 't', updatedAt: 1, ...extra })
 
 const current = { id: '$1', name: 'current' }
 
 describe('conversation response validation', () => {
+  it('accepts and labels Muse without dropping session and open pane metadata', () => {
+    const muse = conversation('/repo', { provider: 'muse', sessionId: '0199ea33-1234-7000-8000-123456789abc',
+      session: current, headline: 'Muse ready', refs: [{ label: 'PR #540' }], openPaneId: '%7', paneOpen: true })
+    expect(parseChatConversations({ conversations: [muse] })).toEqual([muse])
+    expect(chatConversationProviderLabel(muse)).toBe('Muse')
+    expect(isChatConversationSessionId(muse.sessionId)).toBe(true)
+    expect(parseChatConversations({ conversations: [{ ...muse, provider: 'unsupported' }] })).toEqual([])
+  })
+
   it('preserves server open pane ids and drops malformed optional ids', () => {
     const open = conversation('/repo', { openPaneId: '%7' })
     expect(parseChatConversations({ conversations: [open] })).toEqual([open])

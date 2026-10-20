@@ -43,16 +43,17 @@ function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0
 }
 
 describe('ConversationPicker', () => {
-  it('labels Cursor and OpenCode conversations', async () => {
+  it('labels Muse, Cursor and OpenCode conversations', async () => {
     renderPicker({ load: async () => [
       conversation('aaaaaaaa-0005', 'Cursor work', pane.path, 1, { provider: 'cursor' }),
       conversation('ses_session123', 'OpenCode work', pane.path, 2, { provider: 'opencode' }),
+      conversation('aaaaaaaa-0006', 'Muse work', pane.path, 3, { provider: 'muse' }),
     ] })
     const options = await screen.findAllByRole('option')
-    expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode'])
+    expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode', 'Muse'])
   })
 
-  it.each(['cursor', 'opencode'] as const)('jumps to a server-verified live %s TUI instead of resuming it', async (provider) => {
+  it.each(['muse', 'cursor', 'opencode'] as const)('jumps to a server-verified live %s TUI instead of resuming it', async (provider) => {
     const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
     const { input, onJump, onPick } = renderPicker({
       load: async () => [conversation(sessionId, 'Open terminal work', pane.path, 1, { provider, openPaneId: '%7' })],
@@ -64,7 +65,7 @@ describe('ConversationPicker', () => {
     expect(onPick).not.toHaveBeenCalled()
   })
 
-  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('resumes an exited %s TUI now running vim when the server reports no open pane', async (provider) => {
+  it.each(['claude', 'codex', 'muse', 'cursor', 'opencode'] as const)('resumes an exited %s TUI now running vim when the server reports no open pane', async (provider) => {
     const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
     const past = conversation(sessionId, 'Exited terminal work', pane.path, 1, { provider })
     const { input, onJump, onPick } = renderPicker({

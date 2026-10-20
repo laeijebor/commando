@@ -14,6 +14,7 @@ import {
   type WebPaneEngine,
   type WebPanePlacement,
 } from '../shared/protocol.js'
+import { isChatConversationProvider } from '../shared/chat-conversations.js'
 import { canvasRelativePath } from '../shared/canvas-manifest.js'
 import { guideRelativePath } from '../shared/guide.js'
 import { parsePrPanelKey, prPanelKey, isLegacyPrPanelKey, isBuiltinPanelKey, neighbouringTab, nextWebPaneOrder, panelTabs, resolveAutoPlacement } from '../shared/web-pane-placement.js'
@@ -106,7 +107,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseAgentSession(value: unknown): AgentSessionRef | undefined {
   if (!isRecord(value) || typeof value.id !== 'string' || !AGENT_SESSION_ID.test(value.id)) return undefined
-  if (value.provider !== 'claude' && value.provider !== 'codex' && value.provider !== 'opencode' && value.provider !== 'cursor') return undefined
+  if (!isChatConversationProvider(value.provider)) return undefined
   return { provider: value.provider, id: value.id }
 }
 
