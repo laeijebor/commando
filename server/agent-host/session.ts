@@ -68,6 +68,8 @@ export interface AgentSessionSpec {
   log?: (message: string) => void
   /** Claude Code just exited and handed the conversation back; the chat says so. */
   returnedFromClaudeCode?: boolean
+  /** Muse only: bypassPermissions runs without Muse's sandbox (`commando-agent muse --yolo`). */
+  fullAccess?: boolean
 }
 
 /** The chat image store as a session uses it (see server/chat-images.ts). */

@@ -42,6 +42,23 @@ describe('provider-aware composer permissions', () => {
     expect(permissionModeOptions(codex)).toEqual(['default', 'plan'])
   })
 
+  it('keeps Muse full access to chats started with it, and offers sandboxed approve-everything otherwise', () => {
+    const muse = { ...codex, provider: 'muse' as const, sandboxed: true }
+    expect(permissionModeOptions({ ...muse, bypassAllowed: true })).toEqual(['default', 'acceptEdits'])
+    const full = { ...muse, permissionMode: 'bypassPermissions', bypassAllowed: true, sandboxed: false }
+    expect(permissionModeOptions(full)).toEqual(['bypassPermissions'])
+    expect(permissionLabel('bypassPermissions', full)).toBe('Full access')
+    expect(permissionDescription('acceptEdits', muse)).toContain('inside its sandbox')
+  })
+
+  it('shows an older Muse host\'s bypassPermissions as the sandboxed approve-everything it is, and lets it be lowered', () => {
+    const legacy = { ...codex, provider: 'muse' as const, permissionMode: 'bypassPermissions', bypassAllowed: true }
+    expect(permissionModeOptions(legacy)).toEqual(['default', 'bypassPermissions'])
+    expect(permissionLabel('bypassPermissions', legacy)).toBe('Approve everything')
+    expect(permissionDescription('bypassPermissions', legacy)).toContain('inside its sandbox')
+    expect(permissionModeOptions({ ...legacy, permissionMode: 'default', bypassAllowed: false })).toEqual(['default'])
+  })
+
   it('offers full access only when enabled or already current', () => {
     expect(permissionModeOptions({ ...codex, bypassAllowed: true })).toEqual(['default', 'plan', 'bypassPermissions'])
     expect(permissionModeOptions({ ...codex, permissionMode: 'bypassPermissions' })).toEqual(['default', 'plan', 'bypassPermissions'])

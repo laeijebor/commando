@@ -14,7 +14,7 @@ import {
   type ChatSessionInfo,
   type ChatSettingsChange,
 } from '@commando/agent-chat'
-import { EFFORT_LABELS, PERMISSION_MODES, formatTokens, modelLabel, modelMenuAvailable, permissionLabel, permissionModeOptions } from '@commando/chat-composer'
+import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable, permissionLabel, permissionModeOptions } from '@commando/chat-composer'
 
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
@@ -202,7 +202,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   const modes = settable ? permissionModeOptions(session) : []
   const pickPermission = async () => {
     const current = session.permissionMode
-    const index = await showSheet(permissionRef.current, 'Permissions', modes.map((mode) => PERMISSION_MODES[mode].label), modes.findIndex((mode) => mode === current))
+    const index = await showSheet(permissionRef.current, 'Permissions', modes.map((mode) => permissionLabel(mode, session)), modes.findIndex((mode) => mode === current))
     const mode = index === null ? undefined : modes[index]
     if (mode && mode !== current) onConfigure({ permissionMode: mode })
   }
@@ -223,7 +223,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
         <Pill
           a11y="Permissions"
           disabled={disabled || !modes.length}
-          label={permissionLabel(session.permissionMode)}
+          label={permissionLabel(session.permissionMode, session)}
           onPress={() => void pickPermission()}
           ref={permissionRef}
         />

@@ -192,6 +192,10 @@ describe('chat hosts', () => {
     const muse = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts muse --permission-mode default'
     expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: muse.split(' '), env: { XDG_DATA_HOME: '/Users/me/.data' } }))
       .toBe('env XDG_DATA_HOME=/Users/me/.data /c/launcher muse --permission-mode default --resume abcdef12-3456')
+    // Full access is named by --yolo, which a resume keeps alongside the chat's current settings.
+    const yolo = 'node --import /c/node_modules/tsx/dist/loader.mjs /c/server/agent-host/main.ts muse --permission-mode bypassPermissions --yolo'
+    expect(buildChatResumeCommand('abcdef12-3456', '/c/launcher', { args: yolo.split(' '), env: {} }, {}, { permissionMode: 'bypassPermissions', bypassAllowed: true }))
+      .toBe('/c/launcher muse --yolo --permission-mode bypassPermissions --resume abcdef12-3456')
     expect(buildChatResumeCommand('$(bad)', '/c/launcher', { args: host.split(' '), env: {} })).toBeNull()
   })
 

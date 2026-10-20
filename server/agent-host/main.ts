@@ -28,6 +28,8 @@ Options:
   --model MODEL                    Model to use
   --effort LEVEL                   low | medium | high | xhigh | max
   --fast                           Fast mode, on a model that offers it
+  --yolo                           Muse only: with --permission-mode bypassPermissions, full access
+                                   (no prompts, no sandbox); without it Muse approves everything sandboxed
   --permission-mode MODE           default | acceptEdits | plan | auto | dontAsk | bypassPermissions
   --pre-plan-permission-mode MODE  In plan mode: the mode Implement returns to
   --dangerously-skip-permissions   Same as --permission-mode bypassPermissions
@@ -63,6 +65,8 @@ export interface HostArgs {
   prompt?: string
   /** Started by Commando's switch when Claude Code exited; never carried into restarts. */
   fromClaudeCode?: boolean
+  /** Muse only: run without Muse's sandbox. An explicit flag, so commands from before it existed stay sandboxed. */
+  yolo?: boolean
 }
 
 export function parseHostArgs(argv: string[], env: Record<string, string | undefined>): HostArgs | string {
@@ -100,6 +104,10 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
         case '--prompt': args.prompt = needValue(true); break
         case '--from-claude-code': args.fromClaudeCode = true; break
         case '--fast': args.fast = true; break
+        case '--yolo':
+          if (provider !== 'muse') return `--yolo is only for muse\n\n${USAGE}`
+          args.yolo = true
+          break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
         case '--allow-dangerously-skip-permissions': args.bypassAllowed = true; break
         case '--effort': {
@@ -151,6 +159,7 @@ export function sessionFlags(args: HostArgs): string[] {
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
     ...(args.fast ? ['--fast'] : []),
+    ...(args.yolo ? ['--yolo'] : []),
     '--permission-mode', args.permissionMode,
     ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
@@ -268,6 +277,7 @@ async function main(): Promise<void> {
       ...(parsed.model ? { model: parsed.model } : {}),
       ...(parsed.effort ? { effort: parsed.effort } : {}),
       ...(parsed.fast ? { fast: true } : {}),
+      ...(parsed.yolo ? { fullAccess: true } : {}),
       ...(parsed.bypassAllowed ? { bypassAllowed: true } : {}),
       ...(parsed.claudePath ? { claudePath: parsed.claudePath } : {}),
       ...(parsed.prompt ? { initialPrompt: parsed.prompt } : {}),
