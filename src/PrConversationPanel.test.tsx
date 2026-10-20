@@ -116,6 +116,20 @@ describe('review thread controls', () => {
     expect(heading()).toHaveTextContent('0 unresolved threads')
   })
 
+  it('keeps the optimistic state until details newer than the write arrive, using GitHub state-bound permissions', async () => {
+    const { rerender, value } = setup({ viewerCanResolve: true, viewerCanUnresolve: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(screen.getByRole('button', { name: 'Resolving…' })).toBeDisabled()
+    await screen.findByText('Thread resolved.')
+    // The refresh finished but was superseded, so the same pre-write details object is still showing.
+    expect(screen.getByText('✓ Resolved')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reopen' })).toBeEnabled()
+    rerender({ ...value, unresolvedThreads: 0, conversation: value.conversation.map((entry) => entry.thread
+      ? { ...entry, thread: { ...entry.thread, isResolved: true, viewerCanResolve: false, viewerCanUnresolve: true } } : entry) })
+    expect(screen.getByText('✓ Resolved')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Conversation/ })).toHaveTextContent('0 unresolved threads')
+  })
+
   it('rolls back an optimistic resolve when GitHub rejects it', async () => {
     const { api, onChanged } = setup()
     let fail!: (error: Error) => void

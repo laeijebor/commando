@@ -4,7 +4,7 @@ import type { PrsApiClient } from './prsApi'
 import { groupPrConversation } from './prConversation'
 
 type ThreadAction = 'reply' | 'resolve' | 'reopen'
-type Optimistic = { isResolved: boolean; token: number }
+type Optimistic = { isResolved: boolean; token: number; settled?: boolean }
 type ThreadState = {
   draft?: string
   composing?: boolean
@@ -25,7 +25,8 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
 }) {
   // Keep drafts outside individual rows so polling/reloading never destroys a reply in progress.
   const [states, setStates] = useState<Record<string, ThreadState>>({})
-  // Resolve/reopen shows immediately; an entry lasts until GitHub's data agrees or a later refresh lands.
+  // Resolve/reopen shows immediately; an entry lasts until GitHub's data agrees, or until the first
+  // details that land after its post-write refresh (which may itself have been superseded by a poll).
   const [optimistic, setOptimistic] = useState<Record<string, Optimistic>>({})
   const optimisticToken = useRef(0)
   const refreshQueue = useRef<{ running?: Promise<void>; next?: Promise<void> }>({})
@@ -49,7 +50,7 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
     if (!details) return
     const server = serverResolution(details)
     setOptimistic((current) => {
-      const kept = Object.entries(current).filter(([id, entry]) => server.get(id) !== entry.isResolved)
+      const kept = Object.entries(current).filter(([id, entry]) => !entry.settled && server.get(id) !== entry.isResolved)
       return kept.length === Object.keys(current).length ? current : Object.fromEntries(kept)
     })
   }, [details])
@@ -59,6 +60,8 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
     const { [id]: _dropped, ...rest } = current
     return rest
   })
+  const settleOptimistic = (id: string, token: number) => setOptimistic((current) =>
+    current[id]?.token === token ? { ...current, [id]: { ...current[id], settled: true } } : current)
   // Back-to-back writes share one trailing refresh instead of reloading the PR once per click.
   const refreshConversation = (): Promise<void> => {
     const queue = refreshQueue.current
@@ -101,8 +104,12 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
     update(thread.id, { busy: undefined, notice, ...(action === 'reply' ? { draft: '', composing: false } : {}) })
     try {
       await refreshConversation()
-      // This refresh started after the write, so its data is authoritative even if GitHub disagrees.
-      if (active()) dropOptimistic(thread.id, token)
+      if (!active()) return
+      settleOptimistic(thread.id, token)
+      // A newer successful refresh clears a failure left by this thread's earlier action.
+      setStates((current) => current[thread.id]?.refreshFailed
+        ? { ...current, [thread.id]: { ...current[thread.id], refreshFailed: false, error: '' } }
+        : current)
     } catch (cause) {
       if (active()) update(thread.id, { refreshFailed: true, error: `Saved on GitHub, but refresh failed: ${cause instanceof Error ? cause.message : 'Unable to refresh'}` })
     }
@@ -139,7 +146,10 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
       </h3>
       {conversation.length ? conversation.map(({ entry, replies: threadReplies, detachedReply }) => {
         const pending = entry.thread && optimistic[entry.thread.id]
-        const thread = entry.thread && pending ? { ...entry.thread, isResolved: pending.isResolved } : entry.thread
+        // GitHub ties viewerCanResolve/viewerCanUnresolve to the current state, so flip them with it.
+        const thread = entry.thread && pending && pending.isResolved !== entry.thread.isResolved
+          ? { ...entry.thread, isResolved: pending.isResolved, viewerCanResolve: entry.thread.viewerCanUnresolve, viewerCanUnresolve: entry.thread.viewerCanResolve }
+          : entry.thread
         const state = thread ? states[thread.id] ?? {} : {}
         return <article className="pr-quick-comment" key={entry.id} data-comment-id={entry.id}>
           {renderComment(entry, { detached: detachedReply })}
