@@ -58,11 +58,22 @@ describe('canvas frame script', () => {
       document.body.dispatchEvent(wheel); expect(wheel.defaultPrevented).toBe(true)
       expect(latest()).toMatchObject({ type: 'zoom', deltaY: -12, deltaMode: 0, x: 20, y: 30 })
     }
+    const pinch = (type: string, scale?: number) => {
+      const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 20, clientY: 30 })
+      document.body.dispatchEvent(event); return event
+    }
+    expect(pinch('gesturestart').defaultPrevented).toBe(true)
+    expect(pinch('gesturechange', 1.5).defaultPrevented).toBe(true)
+    expect(Math.exp(-latest().deltaY * 0.01)).toBeCloseTo(1.5)
+    pinch('gesturechange', 1.8)
+    expect(latest()).toMatchObject({ type: 'zoom', deltaMode: 0, x: 20, y: 30 })
+    expect(Math.exp(-latest().deltaY * 0.01)).toBeCloseTo(1.2)
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(latest()).toMatchObject({ type: 'escape' })
     window.dispatchEvent(new MessageEvent('message', { source: window, data: { ...activate, live: false } }))
     post.mockClear(); expect(click().defaultPrevented).toBe(false)
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(pinch('gesturechange', 2).defaultPrevented).toBe(false)
     expect(post).not.toHaveBeenCalled()
   })
   it('reports labels in document order, inherits nearest groups in viewport coordinates', async () => {

@@ -50,3 +50,8 @@ export function useCanvasInteraction(frames: CanvasFrame[], navigate: (frame: Ca
   }, [state.hint])
   return { state, act, current }
 }
+/** WebKit's trackpad pinch (gesturechange) reports a scale cumulative since
+ * gesturestart; zoomAt wants the step since the previous change. */
+export function canvasGestureStep(previous: number, scale: number): number | null {
+  return Number.isFinite(scale) && scale > 0 && Number.isFinite(previous) && previous > 0 ? scale / previous : null
+}
