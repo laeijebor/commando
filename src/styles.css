@@ -5164,3 +5164,50 @@ body.is-resizing-hud-pinned-note {
   margin: 0 0 10px;
   font-size: 10px;
 }
+
+/* Pane palette screens (menu, conversations, MCP): use the pane's height and denser rows. */
+.conversation-picker-backdrop {
+  padding-top: 24px;
+}
+
+.command-palette.conversation-picker {
+  max-height: min(1200px, 100%);
+}
+
+.conversation-picker .command-results {
+  padding: 4px 6px 6px;
+}
+
+.conversation-picker .command-results button {
+  min-height: 36px;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 7px;
+}
+
+.conversation-picker .command-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+.conversation-picker .command-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.conversation-picker .command-results small {
+  margin-top: 1px;
+}
+
+.conversation-picker .conversation-picker-group {
+  padding: 6px 8px 2px;
+}
+
+.conversation-picker .conversation-picker-refs {
+  margin-top: 3px;
+}
+
+.conversation-picker .conversation-picker-title {
+  margin-top: 1px;
+}
