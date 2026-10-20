@@ -140,7 +140,10 @@ answer. Every question also takes an optional note.
 - `options`: 1–50 strings, each up to 256 characters. `multiple: true` allows
   several; the answer arrives as `"A, C"` and `response.data.choice` is the array.
 - `key`: answer identity (defaults to the note id). Keep it stable between
-  rounds. Re-answering before sending replaces the queued answer.
+  rounds and unique among question notes (a clashing key is reported and
+  ignored). Re-answering before sending replaces the queued answer. An answer
+  queued before you change the question's text or options no longer counts
+  as its answer; it stays in the queue until the user replaces or removes it.
 - Answers queue in the canvas's answer queue (the strip at the bottom of the
   canvas, same drawer as redline: edit, attach images, Send this, Send all,
   Send all + Build). The Questions tab in the overview lists every question

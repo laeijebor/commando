@@ -176,5 +176,15 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
     }
     if (annotationId && kind && x !== undefined && y !== undefined) manifest.annotations.push({ id: annotationId, kind, x, y, w, title, text, items, target, ...question })
   })
+  // Answers queue by key (default id), so two questions sharing one would overwrite each other's answer.
+  // Ids are unique, so dropping a key that repeats another question's id or an earlier key keeps all unique.
+  const questions = manifest.annotations.filter((note) => note.kind === 'question'), keys = new Set<string>()
+  for (const note of questions) {
+    if (note.key === undefined) continue
+    if (keys.has(note.key) || questions.some((other) => other !== note && other.id === note.key)) {
+      fail(`annotations[${manifest.annotations.indexOf(note)}].key`, `duplicate question key "${note.key}"`)
+      delete note.key
+    } else keys.add(note.key)
+  }
   return { manifest, errors }
 }
