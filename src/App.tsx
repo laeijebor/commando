@@ -782,6 +782,7 @@ export function TerminalPaneCard({
             connected={connected}
             focused={focused}
             onFocus={onFocus}
+            onSelectionCopied={showSelectionCopied}
             onSend={(text, images, options) => onChatSend?.(text, images, options)}
             onInterrupt={(dropQueued) => onChatInterrupt?.(dropQueued)}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}

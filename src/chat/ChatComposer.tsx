@@ -326,7 +326,6 @@ export function ChatComposer({
   onInterrupt,
   onAnswer,
   onConfigure,
-  autoFocus,
   plan,
   onImplement,
   onImplementInNewPane,
@@ -356,7 +355,6 @@ export function ChatComposer({
   onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   onConfigure: (change: ChatSettingsChange) => void
-  autoFocus?: boolean
   /** Claude's latest plan, while it waits to be implemented or refined. */
   plan?: { item: PlanItem; implementMode: ChatSessionPermissionMode }
   onImplement?: () => void
@@ -442,10 +440,6 @@ export function ChatComposer({
     element.style.height = 'auto'
     element.style.height = `${Math.min(element.scrollHeight, 240)}px`
   }, [draft])
-
-  useEffect(() => {
-    if (autoFocus) textarea.current?.focus()
-  }, [autoFocus])
 
   // Object URLs for previews are released when attachments go or the composer unmounts.
   const previews = useRef(new Set<string>())
