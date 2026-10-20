@@ -1,3 +1,4 @@
+import type { CommanderRelay, CommanderState, TurnBrief } from './commander.js'
 import type { AgentChatRequest } from './agent-chats.js'
 import type { ExternalAgentRun, ChatAnswer, ChatCommand, ChatFileSearchResult, ChatHandoffInfo, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 import type { ChatStashEntry } from './chat-stash.js'
@@ -799,6 +800,16 @@ export type ServerMessage =
   | ({ type: 'chat_file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   /** Answers one client's `chat_subagent_transcript`. */
   | ({ type: 'chat_subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
+  /** Commander: one turn brief upserted (keyed by targetId). */
+  | { type: 'turn_brief'; brief: TurnBrief }
+  /** Commander: every current turn brief, sent on connect. */
+  | { type: 'turn_brief_snapshot'; briefs: TurnBrief[] }
+  /** Commander: one relay created or changed status. */
+  | { type: 'commander_relay'; relay: CommanderRelay }
+  /** Commander: recent relays (newest first, bounded), sent on connect. */
+  | { type: 'commander_relay_snapshot'; relays: CommanderRelay[] }
+  /** Commander: which pane is the Commander; sent on connect and on change. */
+  | { type: 'commander_state'; state: CommanderState }
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024

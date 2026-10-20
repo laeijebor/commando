@@ -34,6 +34,7 @@ import {
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
 import { shellQuote } from '../agent-resume-command.js'
+import { commanderAllowedTools } from '../commander-tools.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
 import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
@@ -464,6 +465,8 @@ export class AgentSession implements ChatProviderSession {
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
         thinking: { type: 'adaptive', display: 'summarized' },
         permissionMode: this.spec.permissionMode,
+        // Commander may run its own CLI without asking; nothing else is pre-approved.
+        ...(commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
         ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
         // Load the same settings, skills, CLAUDE.md and hooks the TUI would.
         settingSources: ['user', 'project', 'local'],
