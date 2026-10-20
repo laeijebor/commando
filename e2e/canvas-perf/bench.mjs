@@ -150,7 +150,12 @@ for (let run = 0; run < runs; run++) for (const name of browsers) for (const var
 for (const browser of Object.values(launched)) await browser.close()
 
 // Median per browser × scenario × variant across runs.
-const groups = Map.groupBy(all, (r) => `${r.browser} ${r.scenario} ${r.variant}`)
+// A plain loop rather than Map.groupBy, which Node 20 lacks.
+const groups = new Map()
+for (const r of all) {
+  const key = `${r.browser} ${r.scenario} ${r.variant}`
+  groups.set(key, [...(groups.get(key) ?? []), r])
+}
 const summary = [...groups.values()].map((rows) => {
   const out = { browser: rows[0].browser, scenario: rows[0].scenario, variant: rows[0].variant, frames: rows[0].frameCount }
   for (const key of Object.keys(rows[0]).filter((k) => typeof rows[0][k] === 'number' && !['run', 'frameCount'].includes(k))) out[key] = quantile(rows.map((r) => r[key]), 0.5)
