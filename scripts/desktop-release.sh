@@ -43,7 +43,8 @@ ensure_env_file() {
     [[ -f "$env_file" ]] && return 0
     local token="${COMMANDO_TOKEN:-$(openssl rand -hex 24)}"
     mkdir -p "$(dirname "$env_file")"
-    (umask 077 && printf 'COMMANDO_PORT=%s\nCOMMANDO_TOKEN=%s\n' "${COMMANDO_PORT:-4310}" "$token" >"$env_file")
+    # %q keeps the values literal when load_env sources the file.
+    (umask 077 && printf 'COMMANDO_PORT=%q\nCOMMANDO_TOKEN=%q\n' "${COMMANDO_PORT:-4310}" "$token" >"$env_file")
     log "Created $env_file"
 }
 
@@ -149,31 +150,43 @@ install_builds() {
     log "Installed $app"
 }
 
+xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# Renders and lints the agent into $agent_plist.new, so a bad plist fails before
+# the running agent is unloaded.
 write_agent() {
     mkdir -p "$log_dir" "$(dirname "$agent_plist")"
+    local label_xml script_xml env_file_xml state_dir_xml launchd_log_xml
+    label_xml="$(xml_escape "$label")"
+    script_xml="$(xml_escape "$script")"
+    env_file_xml="$(xml_escape "$env_file")"
+    state_dir_xml="$(xml_escape "$state_dir")"
+    launchd_log_xml="$(xml_escape "$log_dir/daemon-launchd.log")"
     # A login, interactive zsh gives the daemon (and the agents it launches) the
     # same PATH and environment as a terminal. Without ProcessType launchd
     # applies background CPU and I/O limits.
-    cat >"$agent_plist" <<PLIST
+    cat >"$agent_plist.new" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>$label</string>
+    <string>$label_xml</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
         <string>-lic</string>
         <string>exec "\$0" daemon</string>
-        <string>$script</string>
+        <string>$script_xml</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>COMMANDO_RELEASE_ENV_FILE</key>
-        <string>$env_file</string>
+        <string>$env_file_xml</string>
         <key>COMMANDO_RELEASE_STATE_DIR</key>
-        <string>$state_dir</string>
+        <string>$state_dir_xml</string>
     </dict>
     <key>ProcessType</key>
     <string>Interactive</string>
@@ -187,13 +200,13 @@ write_agent() {
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>$log_dir/daemon-launchd.log</string>
+    <string>$launchd_log_xml</string>
     <key>StandardErrorPath</key>
-    <string>$log_dir/daemon-launchd.log</string>
+    <string>$launchd_log_xml</string>
 </dict>
 </plist>
 PLIST
-    plutil -lint "$agent_plist" >/dev/null
+    plutil -lint "$agent_plist.new" >/dev/null
 }
 
 # Wait for a process other than the one that was running before: the old
@@ -236,27 +249,21 @@ make_rebuild_icon() {
     log "Created $rebuild_icon"
 }
 
+# A kernel flock on fd 9: it is atomic, and it is released when this shell exits
+# or dies, so a crashed rebuild never leaves a stale lock behind.
 take_rebuild_lock() {
-    mkdir -p "$log_dir"
-    # noclobber makes creating the lock atomic, so two rebuilds started together can't both pass.
-    if ! (set -o noclobber; echo $$ >"$rebuild_lock") 2>/dev/null; then
-        local holder
-        holder="$(cat "$rebuild_lock" 2>/dev/null)"
-        # An empty lock is still being written by its owner, so it counts as held.
-        if [[ -z "$holder" ]] || kill -0 "$holder" 2>/dev/null; then
-            notify "A rebuild is already running"
-            fail "A rebuild is already running (pid ${holder:-starting})"
-        fi
-        # The previous rebuild died without cleaning up; take over its lock.
-        rm -f "$rebuild_lock"
-        (set -o noclobber; echo $$ >"$rebuild_lock") 2>/dev/null || fail "A rebuild is already running"
+    mkdir -p "$log_dir" "$(dirname "$rebuild_lock")"
+    exec 9>>"$rebuild_lock"
+    if ! perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1'; then
+        notify "A rebuild is already running"
+        fail "A rebuild is already running (pid $(cat "$rebuild_lock" 2>/dev/null))"
     fi
+    printf '%s\n' $$ >"$rebuild_lock"
     trap finish_rebuild EXIT
 }
 
 finish_rebuild() {
     local status=$?
-    [[ "$(cat "$rebuild_lock" 2>/dev/null)" == "$$" ]] && rm -f "$rebuild_lock"
     (( status == 0 )) || notify "Rebuild failed. Log: $rebuild_log"
 }
 
@@ -277,8 +284,9 @@ rebuild() {
     build_app
     install_builds
     if [[ -n "$installing" ]]; then
-        unload_agent
         write_agent
+        unload_agent
+        mv -f "$agent_plist.new" "$agent_plist"
         make_rebuild_icon
     fi
     restart_daemon
