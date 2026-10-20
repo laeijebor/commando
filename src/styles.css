@@ -5151,3 +5151,8 @@ body.is-resizing-hud-pinned-note {
   width: 13px;
   height: 13px;
 }
+
+.mcp-detail-body .conversation-picker-error {
+  margin: 0 0 10px;
+  font-size: 10px;
+}

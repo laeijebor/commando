@@ -69,7 +69,10 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
   pollMs?: number
 }) {
   const [servers, setServers] = useState<ChatMcpServer[] | null>(null)
+  /** A failed status read; the last list stays. */
   const [error, setError] = useState<string | null>(null)
+  /** A failed action shows on its own server until the next action there. */
+  const [actionError, setActionError] = useState<{ server: string; message: string } | null>(null)
   const [query, setQuery] = useState('')
   const [chosen, setChosen] = useState(0)
   const [detail, setDetail] = useState<string | null>(null)
@@ -97,7 +100,7 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
     // A failed read keeps the last list rather than blanking it.
     if (result.servers.length || !result.error) setServers(result.servers)
     else setServers((current) => current ?? [])
-    setError(result.error ?? null)
+    setError(result.servers.length ? null : result.error ?? null)
   }, [])
 
   // Status reads keep the list current while sign-ins and reconnects finish in the background.
@@ -119,11 +122,12 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
     if (acting.current) return
     acting.current = true
     setPending({ server, action })
-    setError(null)
+    setActionError(null)
     if (action === 'authenticate') setSignIn(null)
     try {
       const result = await load({ action, server })
       apply(result)
+      if (live.current && result.error) setActionError({ server, message: result.error })
       if (live.current && result.authUrl) setSignIn({ server, url: result.authUrl, opened: open(result.authUrl) })
     } finally {
       acting.current = false
@@ -217,7 +221,8 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
                     {' '}<a href={signIn.url} target="_blank" rel="noreferrer" onClick={() => { openedAt.current = Date.now() }}>Open sign-in page <ExternalLink aria-hidden="true" /></a>
                   </p>
                 ) : null}
-                {error ? <div className="conversation-picker-error" role="alert">{error}</div> : null}
+                {actionError?.server === selected.name ? <div className="conversation-picker-error" role="alert">{actionError.message}</div>
+                  : error ? <div className="conversation-picker-error" role="alert">{error}</div> : null}
                 <div className="mcp-tools">
                   <div className="conversation-picker-group"><span>Tools</span><span>{selected.tools.length}</span></div>
                   {selected.tools.length ? (

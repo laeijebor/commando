@@ -74,3 +74,17 @@ describe('McpSettings', () => {
     expect(screen.getByText('github')).toBeInTheDocument()
   })
 })
+
+describe('McpSettings action errors', () => {
+  it('shows a failed action on its own server only, and keeps it through status reads', async () => {
+    renderSettings((request) => ({ servers: [github, linear], ...(request.action === 'reconnect' ? { error: 'spawn ENOENT' } : {}) }), { pollMs: 20 })
+    fireEvent.click(await screen.findByRole('option', { name: /github/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Reconnect/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('spawn ENOENT')
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(screen.getByRole('alert')).toHaveTextContent('spawn ENOENT')
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the palette' }))
+    fireEvent.click(await screen.findByRole('option', { name: /linear/ }))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
