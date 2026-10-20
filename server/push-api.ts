@@ -14,6 +14,8 @@ const MAX_REQUEST_BYTES = 16 * 1024
 
 export type PushApiDependencies = {
   registry: Pick<PushDeviceRegistry, 'list' | 'get' | 'upsert' | 'remove'>
+  devicePrincipal?: (request: IncomingMessage) => string | undefined
+  principalActive?: (id: string) => boolean
   sendTest: (device: PushDevice) => Promise<ExpoPushOutcome>
 }
 
@@ -115,9 +117,16 @@ export class PushApi {
 
       if (request.method === 'PUT') {
         const body = await readJson(request)
-        const device = await this.dependencies.registry.upsert(
-          validatePushDeviceInput(route.deviceId, body),
-        )
+        const principalId = this.dependencies.devicePrincipal?.(request)
+        if (principalId && !this.dependencies.principalActive?.(principalId)) throw new HttpError(401, 'Access revoked')
+        const device = await this.dependencies.registry.upsert({
+          ...validatePushDeviceInput(route.deviceId, body),
+          ...(principalId ? { principalId } : {}),
+        })
+        if (principalId && !this.dependencies.principalActive?.(principalId)) {
+          if (this.dependencies.registry.get(route.deviceId)?.principalId === principalId) await this.dependencies.registry.remove(route.deviceId)
+          throw new HttpError(401, 'Access revoked')
+        }
         writeJson(response, 200, { ok: true, device })
         return true
       }

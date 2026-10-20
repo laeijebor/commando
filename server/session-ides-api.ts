@@ -22,6 +22,7 @@ export class SessionIdeApi {
     currentSessionIds: () => string[]
     currentPanes: () => TmuxPane[]
     refresh: () => Promise<unknown>
+    isDeviceRequest?: (request: IncomingMessage) => boolean
     validRequest?: (request: IncomingMessage) => boolean
   }) {}
 
@@ -106,6 +107,7 @@ export class SessionIdeApi {
         return true
       }
       if (request.method !== 'POST') { response.setHeader('Allow', 'POST, DELETE'); json(response, 405, { error: 'Method not allowed' }); return true }
+      if (this.dependencies.isDeviceRequest?.(request)) { json(response, 403, { error: 'Paired devices cannot create IDE sessions' }); return true }
       await this.dependencies.refresh()
       if (!this.dependencies.currentSessionIds().includes(sessionId)) { json(response, 404, { error: 'Session no longer exists' }); return true }
       if (request.headers['content-type']?.split(';')[0] !== 'application/json') { json(response, 415, { error: 'Content-Type must be application/json' }); return true }

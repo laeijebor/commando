@@ -45,6 +45,7 @@ export type PushNotifierOptions = {
   sender: Pick<ExpoPushSender, 'send'>
   /** Resolves the tmux session a pane belongs to, as the snapshot sees it. */
   paneContext: (paneId: string) => PushPaneContext | null
+  principalActive?: (id: string) => boolean
   now?: () => number
   debounceMs?: number
   logger?: Pick<Console, 'warn'>
@@ -278,6 +279,7 @@ export class PushNotifier {
 
   /** Sends a single notification to one device, bypassing its rules. */
   async sendTest(device: PushDevice): Promise<ExpoPushOutcome> {
+    if (!this.active(device)) return { accepted: 0, rejected: 0, unregisteredTokens: [] }
     return this.options.sender.send([{
       to: device.expoPushToken,
       title: 'Commando',
@@ -311,19 +313,24 @@ export class PushNotifier {
     if (!context) return
     const notification = buildNotification(status, previous, context)
     if (!notification || this.sentKeys.has(notification.dedupeKey)) return
-    const timestamp = this.now()
-    const messages = this.options.registry
-      .list()
-      .filter((device) => deviceAcceptsNotification(device, notification, timestamp))
-      .map((device) => toMessage(device, notification))
     this.rememberKey(notification.dedupeKey)
-    if (!messages.length) return
     this.sends = this.sends
-      .then(() => this.options.sender.send(messages))
+      .then(() => {
+        // Read registrations and principal validity at delivery time, after queued sends.
+        const timestamp = this.now()
+        const messages = this.options.registry.list()
+          .filter((device) => this.active(device) && deviceAcceptsNotification(device, notification, timestamp))
+          .map((device) => toMessage(device, notification))
+        return messages.length ? this.options.sender.send(messages) : undefined
+      })
       .then(() => undefined)
       .catch((error: unknown) => {
         this.logger.warn('[commando] failed to send a push notification', error)
       })
+  }
+
+  private active(device: PushDevice): boolean {
+    return !device.principalId || this.options.principalActive?.(device.principalId) === true
   }
 
   private rememberKey(key: string): void {

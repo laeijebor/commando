@@ -1,3 +1,5 @@
+import { useRouter, type Href } from 'expo-router'
+import { ACCESS_REVOKED } from '../hosts/access'
 import { useEffect, useMemo, useState } from 'react'
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
 import * as Haptics from 'expo-haptics'
@@ -16,7 +18,7 @@ import {
 } from '../prefs'
 import { useTheme } from '../theme'
 import { AttentionList } from './AttentionList'
-import { EmptyState, Segmented } from './primitives'
+import { Button, EmptyState, Segmented } from './primitives'
 import { SessionTree } from './SessionTree'
 import { ChatList } from './ChatList'
 
@@ -83,6 +85,7 @@ export function SessionsPanel({
   selectedPaneId,
 }: SessionsPanelProps): React.JSX.Element {
   const theme = useTheme()
+  const router = useRouter()
 
   const rows = useMemo(
     () => buildAgentRows({
@@ -101,6 +104,7 @@ export function SessionsPanel({
   return (
     <View style={styles.panel}>
       <View style={[styles.header, { backgroundColor: theme.bg }]}>
+        {state.phase === 'unauthorized' && state.detail === ACCESS_REVOKED ? <View style={{ padding: 16, gap: 8 }}><Text style={{ color: theme.amber }}>{ACCESS_REVOKED}</Text><Button label="Re-pair" variant="primary" onPress={() => router.push('/pair' as Href)} /></View> : null}
         <Segmented options={VIEW_OPTIONS} onChange={onChangeView} value={view} />
         {state.phase !== 'live' ? (
         <Text style={[styles.connection, { color: theme.muted }]}>{state.detail}</Text>

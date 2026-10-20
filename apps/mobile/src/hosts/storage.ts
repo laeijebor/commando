@@ -16,6 +16,7 @@ function isHost(value: unknown): value is Host {
   if (typeof candidate.id !== 'string' || !candidate.id) return false
   if (typeof candidate.name !== 'string') return false
   if (typeof candidate.baseUrl !== 'string' || !candidate.baseUrl) return false
+  if (candidate.pairing !== undefined && (!candidate.pairing || typeof candidate.pairing.name !== 'string' || !Array.isArray(candidate.pairing.urls) || !candidate.pairing.urls.every((url) => typeof url === 'string'))) return false
   const auth: unknown = candidate.auth
   if (typeof auth !== 'object' || auth === null) return false
   const kind = (auth as { kind?: unknown }).kind
@@ -40,10 +41,11 @@ export async function loadHosts(): Promise<Host[]> {
   }
 }
 
-export async function saveHosts(hosts: readonly Host[]): Promise<void> {
+export async function saveHosts(hosts: readonly Host[], requirePersistence = false): Promise<void> {
   try {
     await SecureStore.setItemAsync(HOSTS_STORAGE_KEY, JSON.stringify(hosts))
   } catch {
+    if (requirePersistence) throw new Error('Could not save this phone’s token securely. Ask your Mac for a new code and try again.')
     // Losing the write is better than losing the running session; the list
     // still applies until the app is killed.
   }
