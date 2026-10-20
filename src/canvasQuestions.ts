@@ -11,9 +11,11 @@ export const canvasQuestionsPage = (artifactBase: string, manifest: string) =>
 
 /** The redline question a question note asks: a choice when it lists options, else free text. */
 export function canvasQuestion(note: CanvasAnnotation): RedlinePageQuestion | null {
-  if (note.kind !== 'question') return null
+  const question = note.text || note.title || note.id
+  // Too long to send whole; the manifest reports it, and a truncated prompt would hide later edits.
+  if (note.kind !== 'question' || question.length > MAX_RESPONSE_QUESTION) return null
   return {
-    question: (note.text || note.title || note.id).slice(0, MAX_RESPONSE_QUESTION),
+    question,
     kind: note.options ? 'choice' : 'text',
     ...(note.options ? { options: note.options, multiple: note.multiple === true } : {}),
     selector: canvasNoteSelector(note.id),

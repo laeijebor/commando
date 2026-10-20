@@ -125,7 +125,9 @@ Frame roles:
 ## Ask the user questions
 
 Every `question` note is answerable on the canvas. Put the question itself in
-`text` (the `title` is a short label such as "Your call"). Add `options` for a
+`text`, at most 256 characters (longer ones are reported and get no answer
+controls; put detail in `items`). The `title` is a short label such as "Your
+call". Add `options` for a
 choice; picking one queues it at once. Without options the note takes a text
 answer. Every question also takes an optional note.
 

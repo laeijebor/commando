@@ -75,7 +75,7 @@ export function CanvasQuestionControls({ question, recorded, pending, sent, disa
       </div>
       : <textarea aria-label={`Answer: ${question.question}`} placeholder="Your answer…" rows={2} disabled={disabled}
         value={draft.answer} onChange={(event) => setDraft({ ...draft, answer: event.target.value })} />}
-    {noteOpen
+    {noteOpen || draft.note
       ? <textarea aria-label="Note (optional)" placeholder="Note (optional)" rows={2} disabled={disabled}
         value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} />
       : <button type="button" className="canvas-q-link" onClick={() => setNoteOpen(true)}>+ Add note</button>}

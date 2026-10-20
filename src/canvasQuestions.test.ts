@@ -11,6 +11,8 @@ describe('canvas questions', () => {
       selector: '[data-canvas-note="q"]', queueKey: 'ship' })
     expect(canvasQuestion(note({ text: undefined }))).toEqual({ question: 'Your call', kind: 'text', selector: '[data-canvas-note="q"]', queueKey: 'q' })
     expect(canvasQuestion(note({ kind: 'design' }))).toBeNull()
+    expect(canvasQuestion(note({ text: 'x'.repeat(257) }))).toBeNull()
+    expect(canvasQuestion(note({ text: 'x'.repeat(256) }))?.question).toHaveLength(256)
   })
   it('treats a recorded answer as settled', () => {
     expect(openCanvasQuestions([note({ id: 'a' }), note({ id: 'b', answer: 'Yes' }), note({ id: 'c', kind: 'important' })]).map((q) => q.queueKey)).toEqual(['a'])

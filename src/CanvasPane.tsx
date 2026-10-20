@@ -398,7 +398,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
             return <div key={note.id} className="canvas-note" data-canvas-note={note.id} data-measure={`note:${note.id}`} style={{ left: note.x, top: note.y, width: note.w ?? 300 }}>
               <span className="canvas-kind" style={{ background: NOTE_COLOURS[note.kind] }}>{KIND_LABELS[note.kind]}</span>
               {note.title && <strong className="canvas-note-title">{note.title}</strong>}{note.text && <div>{note.text}</div>}{note.items && <ul>{note.items.map((item, i) => <li key={i}>{item}</li>)}</ul>}
-              {ask && <CanvasQuestionControls key={ask.question.queueKey} question={ask.question} recorded={note.answer} pending={ask.pending} sent={ask.sent}
+              {ask && <CanvasQuestionControls key={JSON.stringify([ask.question.queueKey, ask.question.question, ask.question.options ?? null, ask.question.multiple ?? null])} question={ask.question} recorded={note.answer} pending={ask.pending} sent={ask.sent}
                 disabled={feedbackBusy} onQueue={comments.answer} onRemove={comments.remove} />}
             </div>
           })}
