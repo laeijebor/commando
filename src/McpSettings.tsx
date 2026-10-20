@@ -84,6 +84,8 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
   const list = useRef<HTMLDivElement>(null)
   const live = useRef(true)
   const acting = useRef(false)
+  /** Bumped by each action, so a status read that started before it can't undo what it shows. */
+  const generation = useRef(0)
   /** When it last opened a sign-in page, which takes the window's focus. */
   const openedAt = useRef(0)
   const open = (url: string) => {
@@ -106,9 +108,15 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
   // Status reads keep the list current while sign-ins and reconnects finish in the background.
   useEffect(() => {
     let stopped = false
+    let reading = false
     const read = () => {
-      if (acting.current) return
-      void load({ action: 'status' }).then((result) => { if (!stopped && !acting.current) apply(result) })
+      if (acting.current || reading) return
+      reading = true
+      const started = generation.current
+      void load({ action: 'status' }).then((result) => {
+        reading = false
+        if (!stopped && !acting.current && generation.current === started) apply(result)
+      })
     }
     read()
     const timer = window.setInterval(read, pollMs)
@@ -121,6 +129,7 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
   const run = async (server: string, action: ChatMcpServerAction) => {
     if (acting.current) return
     acting.current = true
+    generation.current += 1
     setPending({ server, action })
     setActionError(null)
     if (action === 'authenticate') setSignIn(null)
@@ -159,7 +168,7 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
     } else if (event.key === 'Enter' || (event.key === 'ArrowRight' && !query)) {
       event.preventDefault()
       if (rows[index]) setDetail(rows[index]!.name)
-    } else if (event.key === 'Backspace' && !query) {
+    } else if (event.key === 'Backspace' && !query && !event.repeat) {
       event.preventDefault()
       onBack()
     }
@@ -170,6 +179,7 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
     if (event.metaKey || event.ctrlKey || event.altKey) return
     if (event.key === 'Escape' || event.key === 'Backspace' || event.key === 'ArrowLeft') {
       event.preventDefault()
+      if (event.repeat && event.key !== 'Escape') return
       event.stopPropagation()
       setDetail(null)
       return
@@ -208,7 +218,8 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
                 </dl>
                 <div className="mcp-actions" role="group" aria-label="Server actions">
                   {actions.map((entry) => (
-                    <button type="button" key={entry.action} disabled={pending !== null} onClick={() => void run(selected.name, entry.action)}
+                    // aria-disabled, not disabled: a disabled button drops focus, and with it the keys.
+                    <button type="button" key={entry.action} aria-disabled={pending !== null} onClick={() => void run(selected.name, entry.action)}
                       className={entry.action === 'authenticate' && selected.status === 'needs-auth' ? 'primary' : ''}>
                       {pending?.server === selected.name && pending.action === entry.action ? <LoaderCircle className="spin" aria-hidden="true" /> : null}
                       {entry.label} <kbd>{entry.key.toUpperCase()}</kbd>

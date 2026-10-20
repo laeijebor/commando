@@ -15,21 +15,49 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** A URL without its query, fragment or credentials, which may carry tokens. */
-function displayUrl(value: string): string {
+const HIDDEN = '•••'
+const SECRET_NAME = /key|token|secret|password|passwd|auth|credential|bearer/i
+/** A long run of id characters with a digit in it reads as a key (`/s/k3j4h5…/mcp`). */
+const OPAQUE = /^(?=.*\d)[A-Za-z0-9_-]{20,}$/
+
+/** A URL without its query, fragment, credentials or key-like path segments, which may carry tokens. */
+export function displayUrl(value: string): string | undefined {
   try {
     const url = new URL(value)
-    return `${url.protocol}//${url.host}${url.pathname === '/' ? '' : url.pathname}`
+    if (!url.host) return undefined
+    const path = url.pathname === '/' ? '' : url.pathname.split('/').map((segment) => OPAQUE.test(segment) ? HIDDEN : segment).join('/')
+    return `${url.protocol}//${url.host}${path}`
   } catch {
-    return ''
+    return undefined
   }
+}
+
+/** A command line with what looks secret masked: values of key-like flags or variables, and URLs' credentials. */
+export function displayCommand(command: string, args: readonly string[] = []): string {
+  const shown: string[] = [command]
+  let hideNext = false
+  for (const arg of args) {
+    if (hideNext && !arg.startsWith('-')) {
+      shown.push(HIDDEN)
+      hideNext = false
+      continue
+    }
+    hideNext = false
+    const assigned = /^(-{0,2}[A-Za-z_][\w.-]*)=(.*)$/.exec(arg)
+    if (assigned) shown.push(SECRET_NAME.test(assigned[1]!) ? `${assigned[1]}=${HIDDEN}` : `${assigned[1]}=${displayUrl(assigned[2]!) ?? assigned[2]}`)
+    else if (arg.startsWith('-')) {
+      shown.push(arg)
+      hideNext = SECRET_NAME.test(arg)
+    } else shown.push(/^[a-z][a-z0-9+.-]*:\/\//i.test(arg) ? displayUrl(arg) ?? HIDDEN : OPAQUE.test(arg) ? HIDDEN : arg)
+  }
+  return shown.join(' ')
 }
 
 /** Never env or headers: they hold secrets. */
 function target(config: McpServerStatus['config']): { transport?: string; target?: string } {
   if (!config) return {}
   if ('url' in config && typeof config.url === 'string') return { transport: config.type, target: displayUrl(config.url) }
-  if ('command' in config) return { transport: config.type ?? 'stdio', target: [config.command, ...(config.args ?? [])].join(' ') }
+  if ('command' in config) return { transport: config.type ?? 'stdio', target: displayCommand(config.command, config.args) }
   return { transport: config.type }
 }
 

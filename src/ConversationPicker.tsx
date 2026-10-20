@@ -128,7 +128,7 @@ export function ConversationPicker({ pane, sessionName, current, chats, paneLabe
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       if (rows.length) setIndex((index + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length)
-    } else if (event.key === 'Backspace' && !query && onBack) {
+    } else if (event.key === 'Backspace' && !query && !event.repeat && onBack) {
       event.preventDefault()
       onBack()
     } else if (event.key === 'Enter') {

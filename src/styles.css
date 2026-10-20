@@ -5056,7 +5056,7 @@ body.is-resizing-hud-pinned-note {
   cursor: pointer;
 }
 
-.mcp-actions button:hover:not(:disabled),
+.mcp-actions button:hover:not([aria-disabled="true"]),
 .mcp-actions button:focus-visible {
   border-color: var(--accent);
 }
@@ -5066,7 +5066,7 @@ body.is-resizing-hud-pinned-note {
   color: var(--accent);
 }
 
-.mcp-actions button:disabled {
+.mcp-actions button[aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
 }

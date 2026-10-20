@@ -1,6 +1,6 @@
 import type { McpServerStatus } from '@anthropic-ai/claude-agent-sdk'
 import { describe, expect, it, vi } from 'vitest'
-import { chatMcpServers, runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
+import { chatMcpServers, displayCommand, displayUrl, runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
 
 const statuses: McpServerStatus[] = [
   {
@@ -30,6 +30,14 @@ describe('Claude MCP servers', () => {
       { name: 'docs', status: 'failed', scope: 'plugin', error: 'spawn ENOENT', tools: [] },
     ])
     expect(JSON.stringify(servers)).not.toMatch(/secret|abc|pw/)
+  })
+
+  it('masks secrets that commands and URLs commonly carry', () => {
+    expect(displayCommand('npx', ['-y', '@upstash/context7-mcp', '--api-key', 'ctx7sk-abc'])).toBe('npx -y @upstash/context7-mcp --api-key •••')
+    expect(displayCommand('npx', ['--token=ghp_123', '--port=3000', 'API_KEY=xyz'])).toBe('npx --token=••• --port=3000 API_KEY=•••')
+    expect(displayCommand('npx', ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://me:hunter2@db.local/app'])).toBe('npx -y @modelcontextprotocol/server-postgres postgresql://db.local/app')
+    expect(displayCommand('mcp-server', ['sk1234567890abcdefghijklmnop'])).toBe('mcp-server •••')
+    expect(displayUrl('https://actions.zapier.com/mcp/sk-ak-1a2b3c4d5e6f7g8h9i0j/sse')).toBe('https://actions.zapier.com/mcp/•••/sse')
   })
 
   it('runs the action, then lists the servers as they are after it', async () => {
