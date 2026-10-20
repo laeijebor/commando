@@ -143,6 +143,7 @@ function questionKey(question: RedlinePageQuestion): string {
 
 function questionDraftKey(question: RedlinePageQuestion): string {
   return `${questionKey(question)}:${JSON.stringify([
+    question.question,
     question.kind,
     question.options ?? null,
     question.multiple === true,
