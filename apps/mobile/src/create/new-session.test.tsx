@@ -82,7 +82,7 @@ it.each(['old-host', 'wrong-provider', 'api-error'])('preserves and opens the cr
 it.each([
   ['Claude chat', 'claude-chat', 'Accept edits', 'acceptEdits'],
   ['Codex chat', 'codex-chat', 'Read only', 'plan'],
-  ['Muse chat', 'muse-chat', 'Approve everything', 'bypassPermissions'],
+  ['Muse chat', 'muse-chat', 'Full access (--yolo)', 'bypassPermissions'],
 ])('creates %s with its chosen permission and opens the acknowledged pane', async (label, provider, modeLabel, permissionMode) => {
   await openScreen()
   fireEvent.press(screen.getByRole('radio', { name: label }))
