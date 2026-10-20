@@ -100,9 +100,9 @@ describe('answerable question notes', () => {
   })
   it('drops custom question keys that clash, so every question keeps its own answer', () => {
     const q = (id: string, key?: string) => ({ id, kind: 'question', x: 0, y: 0, text: id, ...(key ? { key } : {}) })
-    const result = parseCanvasManifest({ ...base, annotations: [q('q1', 'x'), q('q2', 'x'), q('q3', 'q1'), q('q4', 'own')] })
+    const result = parseCanvasManifest({ ...base, annotations: [q('q1', 'x'), { id: 'broken' }, q('q2', 'x'), q('q3', 'q1'), q('q4', 'own')] })
     expect(result.manifest.annotations.map((note) => note.key ?? note.id)).toEqual(['x', 'q2', 'q3', 'own'])
-    expect(result.errors).toEqual(['annotations[1].key: duplicate question key "x"', 'annotations[2].key: duplicate question key "q1"'])
+    expect(result.errors.filter((error) => error.includes('duplicate question key'))).toEqual(['annotations[2].key: duplicate question key "x"', 'annotations[3].key: duplicate question key "q1"'])
   })
   it('ignores question fields on other note kinds', () => {
     const result = parseCanvasManifest({ ...base, annotations: [{ id: 'd', kind: 'design', x: 0, y: 0, options: ['a'] }] })
