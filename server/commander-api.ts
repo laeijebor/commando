@@ -10,6 +10,7 @@ import { TokenBucketRateLimiter } from './client-messages.js'
 import type { Commander } from './commander.js'
 import type { CommanderRelays } from './commander-relays.js'
 import type { CommanderStalls } from './commander-stalls.js'
+import { claudeTranscriptItems, codexRolloutItems, tailJsonLines } from './commander-transcript.js'
 import { record, textContent } from './external-agents/progress.js'
 
 const ROOT = '/api/commander'
@@ -105,7 +106,10 @@ type Dependencies = {
   chatSession: (paneId: string) => ChatSessionInfo | undefined; owns: (id: string) => boolean; items: (id: string) => ChatItem[]
   seen: () => Record<string, number>; configDir: (pane: TmuxPane) => Promise<string | undefined>
   screen: (pane: TmuxPane) => Promise<string>; now?: () => number
+  /** Path of a Codex rollout by session id. */
+  codexRollout?: (sessionId: string) => Promise<string | undefined>
 }
+export type CommanderTranscript = { source: 'transcript' | 'screen'; items: ChatItem[]; screen?: string }
 export class CommanderApi {
   private readonly tokenDigest: Buffer
   private readonly buckets = new Map<string, TokenBucketRateLimiter>()
@@ -148,6 +152,22 @@ export class CommanderApi {
     if (!agent) throw new HttpError(404, 'Agent pane does not exist')
     return this.dependencies.snapshot().panes.find((p) => p.id === id)!
   }
+  /** A terminal agent's recent conversation for Commander's reading pane; its screen when no transcript is found. */
+  private async transcript(pane: TmuxPane): Promise<CommanderTranscript> {
+    const d = this.dependencies, status = d.status(pane.id), sessionId = status?.agentSessionId ?? ''
+    if (/^[A-Za-z0-9_-]+$/.test(sessionId)) {
+      try {
+        let file: string | undefined
+        if (status?.provider === 'claude') {
+          const config = await d.configDir(pane)
+          if (config) file = join(config, 'projects', pane.path.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`)
+        } else if (status?.provider === 'codex') file = await d.codexRollout?.(sessionId)
+        const items = !file ? [] : status?.provider === 'claude' ? claudeTranscriptItems(await tailJsonLines(file)) : codexRolloutItems(await tailJsonLines(file))
+        if (items.length) return { source: 'transcript', items }
+      } catch { /* Missing/unreadable transcripts fall back to the rendered screen. */ }
+    }
+    return { source: 'screen', items: [], screen: stripVTControlCharacters(await d.screen(pane)).slice(-20_000) }
+  }
   private take(caller: TmuxPane): boolean {
     const live = new Set(this.dependencies.snapshot().panes.map((p) => p.targetId))
     for (const key of this.buckets.keys()) if (!live.has(key)) this.buckets.delete(key)
@@ -172,6 +192,7 @@ export class CommanderApi {
         json(response, 200, { ok: true, relay })
       } else if (path === ROOT && request.method === 'POST') json(response, 200, { ok: true, state: await d.commander.ensure() })
       else if (path === ROOT && request.method === 'DELETE') { await d.commander.forget(); json(response, 200, { ok: true, state: d.commander.state() }) }
+      else if (path === `${ROOT}/transcript` && request.method === 'GET') json(response, 200, { ok: true, ...await this.transcript(this.target(url.searchParams.get('pane'))) })
       else if (path === `${AGENT}/list` && request.method === 'GET') { await d.stalls.check(); json(response, 200, this.agents()) }
       else if (path === `${AGENT}/relays` && request.method === 'GET') {
         const limit = Number(url.searchParams.get('limit') ?? 20)

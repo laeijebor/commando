@@ -26,6 +26,7 @@ import {
   type ServerResponse,
 } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
+import { findResumeRollout, type ResumeRolloutLookup } from './external-agents/codex-rollout.js'
 import { homedir } from 'node:os'
 import type { Duplex } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
@@ -2003,6 +2004,7 @@ async function main(): Promise<void> {
     agents: () => commanderApi.agents(), status: (id) => agentStatuses.get(id),
     commander: () => commander.state(), relays: commanderRelays,
   })
+  const codexRolloutLookups = new Map<string, ResumeRolloutLookup>()
   const commanderApi: CommanderApi = new CommanderApi({
     agentToken: agentHookToken, ownerAuthorized: requestIsAuthorized, snapshot: () => snapshot,
     status: (id) => agentStatuses.get(id), commander, relays: commanderRelays, stalls: commanderStalls,
@@ -2011,6 +2013,7 @@ async function main(): Promise<void> {
     owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id), seen: () => paneSeen.snapshot(),
     configDir: commanderConfigDir,
     screen: async (pane) => (await captureRenderedCompanionOutput(tmux, pane.sessionId, pane.id)).output,
+    codexRollout: async (sessionId) => (await findResumeRollout(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions'), sessionId, Date.now(), codexRolloutLookups))?.path,
   })
   observeCommanderStatus = createCommanderStatusObserver({
     pane: paneForId, owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id),
