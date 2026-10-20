@@ -249,7 +249,10 @@ function ChatColumn({
     return next
   })
   return (
-    <section ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+    <section ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onFocus={(event) => {
+      // A pane jump focuses the shell; hand the caret to the composer.
+      if (event.target === event.currentTarget) event.currentTarget.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
+    }} onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />

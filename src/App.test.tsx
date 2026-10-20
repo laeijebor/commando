@@ -20,6 +20,8 @@ const appMocks = vi.hoisted(() => ({
   send: vi.fn(),
   useDaemon: vi.fn(),
   sessionTree: vi.fn(),
+  // Terminal panes that never register a focus node, like a renderer that fails to mount.
+  unfocusablePanes: new Set<string>(),
 }))
 
 vi.mock('./authClient', () => ({
@@ -74,7 +76,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
 
     return (
       <div
-        ref={(node) => registerFocusable(paneId, node)}
+        ref={(node) => { if (!appMocks.unfocusablePanes.has(paneId)) registerFocusable(paneId, node) }}
         tabIndex={-1}
         data-testid={`renderer-${paneId}`}
         data-renderer={renderer}
@@ -3101,13 +3103,32 @@ describe('Commander integration', () => {
     })
     const inbox = await screen.findByTestId('agents-inbox')
     fireEvent.click(within(inbox).getByRole('button', { name: /^Open review-agent/ }))
-    // The chat pane registers a focus target, so the jump completes.
-    await waitFor(() => expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused', 'is-jump-highlighted'))
+    // The chat pane registers a focus target, so the jump completes with the caret in its composer.
+    const remote = () => document.querySelector<HTMLElement>(`[data-pane-id="${remotePane.id}"]`)!
+    await waitFor(() => expect(remote()).toHaveClass('is-focused', 'is-jump-highlighted'))
+    await waitFor(() => expect(document.activeElement).toBe(within(remote()).getByRole('textbox', { name: /^Message/ })))
     const tree = () => appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string, onSelectSession: (id: string) => void }
     act(() => tree().onSelectSession(pane.sessionId))
     await waitFor(() => expect(tree().selectedSessionId).toBe(pane.sessionId))
     act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
     expect(tree().selectedSessionId).toBe(pane.sessionId)
+  })
+
+  it('lets the session tree navigate away from a jump whose pane never takes focus', async () => {
+    appMocks.unfocusablePanes.add(remotePane.id)
+    try {
+      await renderAppWithSnapshot()
+      act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+      const tree = () => appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string, onSelectSession: (id: string) => void, onSelectPane: (id: string) => void }
+      act(() => tree().onSelectPane(remotePane.id))
+      await waitFor(() => expect(tree().selectedSessionId).toBe(remotePane.sessionId))
+      act(() => tree().onSelectSession(pane.sessionId))
+      await waitFor(() => expect(tree().selectedSessionId).toBe(pane.sessionId))
+      act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+      expect(tree().selectedSessionId).toBe(pane.sessionId)
+    } finally {
+      appMocks.unfocusablePanes.clear()
+    }
   })
 
   it.each(['response first', 'snapshot first'] as const)('opens the created Commander with %s', async (order) => {
