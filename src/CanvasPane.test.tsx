@@ -7,6 +7,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebPane } from '../shared/protocol'
 import { CanvasPane } from './CanvasPane'
+import { CanvasTip } from './CanvasHotspotDots'
 import { WebPaneCard } from './WebPaneCard'
 import { publishCanvasChange } from './webPanesApi'
 import { parseCanvasManifest } from '../shared/canvas-manifest'
@@ -386,6 +387,52 @@ describe('canvas overview and frame bridge', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Threads' }))
     expect(screen.getByText('No comments yet')).toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+  it('marks working controls in interactive frames with pulsing dots and explains the frame on badge hover', async () => {
+    const note = 'This screen supports dark mode — toggle the theme button in the menu'
+    fetcher.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify({ ...example, frames: [{ ...example.frames[0], interactiveNote: note }, example.frames[1]] }), json: async () => ({ notes: [], threads: [], knownUpTo: 0, dropped: 0 }) }))
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    const settings = await screen.findByTitle('Settings'), accounts = screen.getByTitle('Accounts')
+    report(settings, 'settings', [], { hotspots: [{ rect: labelRect, tip: 'Toggles dark mode' }, { rect: { ...labelRect, y: 100 }, goto: 'accounts' }, { rect: { ...labelRect, y: 200 } }] })
+    report(accounts, 'accounts', [], { hotspots: [{ rect: labelRect, tip: 'Static frames never work' }] })
+    const dots = () => container.querySelectorAll('.canvas-hotspot')
+    expect(dots()).toHaveLength(3)
+    const theme = screen.getByRole('note', { name: 'Toggles dark mode' })
+    fireEvent.pointerEnter(theme)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Toggles dark mode')
+    fireEvent.pointerLeave(theme)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(screen.getByRole('note', { name: 'Opens “Accounts”' })).toBeInTheDocument()
+    expect(dots()[2]).not.toHaveClass('has-tip')
+    expect(screen.queryByText('Static frames never work')).not.toBeInTheDocument()
+    fireEvent.doubleClick(settings)
+    fireEvent.click(dots()[0])
+    expect(screen.getByText('Live — Esc to leave')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }))
+    expect(dots()).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }))
+    expect(dots()).toHaveLength(3)
+    push(['Settings.html'])
+    expect(dots()).toHaveLength(0)
+
+    const badge = container.querySelector('.canvas-badge.has-note')!
+    expect(badge).toHaveAttribute('aria-description', note)
+    fireEvent.pointerEnter(badge)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(note)
+    fireEvent.pointerLeave(badge)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    fireEvent.pointerEnter(badge)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(container.querySelectorAll('.canvas-badge.has-note')).toHaveLength(1)
+  })
+  it('keeps tooltips inside the viewport and flips them below near the top edge', () => {
+    // Mocked layout: the tip is 330×165 and its overlay 800 wide.
+    const tip = (x: number, y: number) => { cleanup(); render(<div><CanvasTip text="Tip" x={x} y={y} /></div>); return screen.getByRole('tooltip') }
+    expect(tip(790, 400)).toHaveStyle({ left: '627px' })
+    expect(tip(4, 400)).toHaveStyle({ left: '173px' })
+    expect(tip(400, 400)).not.toHaveClass('is-below')
+    expect(tip(400, 100)).toHaveClass('is-below')
   })
   it('defaults overview off below 420px and permits an explicit toggle', async () => {
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(419)

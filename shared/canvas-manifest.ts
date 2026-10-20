@@ -2,7 +2,7 @@ export const CANVAS_STATUSES = ['idea', 'in-progress', 'ready-for-review', 'read
 export const CANVAS_ANNOTATION_KINDS = ['development', 'important', 'design', 'question'] as const
 export type CanvasFrame = {
   id: string; title: string; platform?: string; src: string; x: number; y: number; w: number; h: number
-  focus?: number; interactive?: boolean
+  focus?: number; interactive?: boolean; interactiveNote?: string
   variant?: { title: string; context?: string; description?: string }
 }
 export type CanvasSection = {
@@ -91,6 +91,8 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
       if (typeof value.interactive !== 'boolean') fail(`${path}interactive`, 'must be a boolean')
       else interactive = value.interactive
     }
+    let interactiveNote = string(value, 'interactiveNote', path)
+    if (interactiveNote !== undefined && interactive !== true) { fail(`${path}interactiveNote`, 'requires interactive: true'); interactiveNote = undefined }
     let variant: CanvasFrame['variant']
     if (value.variant !== undefined) {
       if (!record(value.variant)) fail(`${path}variant`, 'must be an object')
@@ -101,7 +103,7 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
         if (title) variant = { title, context, description }
       }
     }
-    if (frameId && title && src && x !== undefined && y !== undefined) manifest.frames.push({ id: frameId, title, src, x, y, w, h, platform, focus, interactive, variant })
+    if (frameId && title && src && x !== undefined && y !== undefined) manifest.frames.push({ id: frameId, title, src, x, y, w, h, platform, focus, interactive, interactiveNote, variant })
   })
   const frameIds = new Set(manifest.frames.map((frame) => frame.id))
   array('sections').forEach((value, index) => {

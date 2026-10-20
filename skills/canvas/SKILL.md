@@ -80,7 +80,8 @@ default to 390/844. Optional platform prefixes describe the target device.
   "frames": [
     { "id": "settings", "title": "Settings (top level)", "platform": "Mobile",
       "src": "Settings.html", "x": 0, "y": 0, "w": 390, "h": 844,
-      "focus": 1, "interactive": true },
+      "focus": 1, "interactive": true,
+      "interactiveNote": "Supports dark mode — toggle the theme button in the menu" },
     { "id": "accounts", "title": "Connected accounts", "platform": "Mobile",
       "src": "Accounts.html", "x": 960, "y": 0, "interactive": false,
       "variant": { "title": "Needs attention", "context": "Connected accounts",
@@ -105,6 +106,9 @@ Frame roles:
   includes everything. Set focus on the screens to discuss first.
 - `interactive`: boolean distinguishing a planned clickable prototype (cyan
   ▶ Interactive) from a Static reference. Frames stay inert until double-clicked or entered through Play.
+- `interactiveNote`: optional string, only with `interactive: true`. Hovering
+  the ▶ Interactive badge shows it; say what the interactivity covers, e.g.
+  “Supports dark mode — toggle the theme button in the menu”.
 - Sections group frame ids with an optional ticket. Status must be `idea`,
   `in-progress`, `ready-for-review`, `ready-for-dev` or `shipped`.
 - `variant`: title required, context and description optional; appears above
@@ -177,6 +181,17 @@ manifest frame ids; static targets fit into view but stay inert.
     Outlook
   </button>
 </div>
+```
+
+Interactive frames show a pulsing blue dot on each control that works, so
+reviewers know what to try. Every `data-canvas-goto` element gets one, with a
+tooltip naming its target frame. Mark other working controls (in-page JS such
+as a theme toggle or an expanding row) with `data-canvas-hotspot`; its value is
+an optional tooltip. Only mark controls that respond — leave decorative buttons
+unmarked. Static frames, snapshots, comment mode and Notes off hide the dots.
+
+```html
+<button data-canvas-hotspot="Toggles dark mode" onclick="toggleTheme()">Theme</button>
 ```
 
 ## Collecting feedback

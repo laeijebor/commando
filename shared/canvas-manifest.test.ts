@@ -22,6 +22,12 @@ describe('canvas manifest', () => {
     expect(manifest.sections[0].frames).toHaveLength(3)
     expect(manifest.annotations[0].target).toEqual({ frame: 'accounts', label: 'Outlook row' })
   })
+  it('keeps an interactive note only on interactive frames', () => {
+    const note = 'Supports dark mode — toggle the theme button in the menu'
+    const { manifest, errors } = parseCanvasManifest({ title: 'Notes', frames: [{ ...frame, interactiveNote: note }, { ...frame, id: 'b', interactiveNote: 'x', interactive: false }, { ...frame, id: 'c', interactiveNote: 3 }] })
+    expect(manifest.frames.map((f) => f.interactiveNote)).toEqual([note, undefined, undefined])
+    expect(errors).toEqual(['frames[1].interactiveNote: requires interactive: true', 'frames[2].interactiveNote: must be a non-empty string'])
+  })
   it.each(['../outside.html', 'frames/../../out', '/absolute', 'https://example.com', 'file:frame', 'C:\\frame', '\\outside', 'x\0.html', '%2e%2e/out', 'foo?bar', '#hash', '', './'])('rejects escaping or non-file path %j', (src) => {
     expect(canvasRelativePath(src)).toBeNull()
     expect(parseCanvasManifest({ title: 'test', frames: [{ ...frame, src }] }).errors).toContain('frames[0].src: must be a relative path inside the canvas folder')
