@@ -891,6 +891,7 @@ export function ChatComposer({
         ) : null}
         <textarea
           ref={textarea}
+          data-chat-composer=""
           rows={1}
           value={draft}
           disabled={disabled}

@@ -2479,6 +2479,12 @@ async function main(): Promise<void> {
         })
         return
       }
+      case 'chat_mcp': {
+        void agentHosts.mcp(message.paneId, message.request).then((result) => {
+          send(client, { type: 'chat_mcp_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        })
+        return
+      }
       case 'chat_subagent_transcript': {
         void agentHosts.subagentTranscript(message.paneId, message.agentId).then((result) => {
           send(client, { type: 'chat_subagent_transcript_result', paneId: message.paneId, requestId: message.requestId, ...result })

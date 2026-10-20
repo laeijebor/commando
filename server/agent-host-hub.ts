@@ -4,6 +4,7 @@ import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
   hostTakesInput,
+  hostTakesMcp,
   hostTakesSettings,
   hostTakesSwitch,
   hostTakesTurnFlow,
@@ -24,6 +25,7 @@ import {
   type DaemonToHostMessage,
   type HostToDaemonMessage,
 } from '../shared/agent-chat.js'
+import type { ChatMcpRequest, ChatMcpResult } from '../shared/chat-mcp.js'
 import type { AgentInteractionAnswer, ServerMessage } from '../shared/protocol.js'
 import type { ChatResumeSettings } from './agent-resume-command.js'
 import type { ChatHandoffStore } from './chat-handoffs.js'
@@ -39,6 +41,8 @@ const DISCONNECTED_GRACE_MS = 60_000
 const FILE_SEARCH_TIMEOUT_MS = 10_000
 /** Reading a long subagent transcript can take a moment. */
 const SUBAGENT_TRANSCRIPT_TIMEOUT_MS = 20_000
+/** Reconnecting or starting a sign-in can wait on a slow server. */
+const MCP_TIMEOUT_MS = 45_000
 
 /**
  * Where a chat's requests and status show beyond its pane: the approvals
@@ -118,6 +122,7 @@ export class AgentHostHub {
   private readonly chats = new Map<string, ChatEntry>()
   private readonly fileSearches = new Map<string, PendingHostRequest<ChatFileSearchResult>>()
   private readonly transcripts = new Map<string, PendingHostRequest<ChatSubagentTranscript>>()
+  private readonly mcpRequests = new Map<string, PendingHostRequest<ChatMcpResult>>()
   /** Drafts of chats waiting to switch to Claude Code, by pane, until the host hands over. */
   private readonly switchDrafts = new Map<string, ChatSwitchDraft>()
 
@@ -152,6 +157,9 @@ export class AgentHostHub {
       }
       for (const [requestId, read] of this.transcripts) {
         if (read.socket === socket) this.finish(this.transcripts, requestId, { items: [], error: 'The agent host disconnected' })
+      }
+      for (const [requestId, request] of this.mcpRequests) {
+        if (request.socket === socket) this.finish(this.mcpRequests, requestId, { servers: [], error: 'The agent host disconnected' })
       }
       for (const [paneId, entry] of this.chats) {
         if (entry.socket !== socket) continue
@@ -287,6 +295,13 @@ export class AgentHostHub {
         this.finish(this.transcripts, message.requestId, message.error ? { items: message.items, error: message.error } : { items: message.items })
         return
       }
+      case 'mcp_result': {
+        const request = this.mcpRequests.get(message.requestId)
+        if (!request || request.socket !== socket || request.paneId !== message.paneId) return
+        const { type: _type, paneId: _paneId, requestId, ...result } = message
+        this.finish(this.mcpRequests, requestId, result)
+        return
+      }
       case 'handoff': {
         const entry = this.owned(socket, message.paneId)
         const handoffs = this.dependencies.handoffs
@@ -365,6 +380,22 @@ export class AgentHostHub {
       this.transcripts.set(requestId, { paneId, socket, timer, resolve })
       if (!this.sendTo(socket, { type: 'subagent_transcript', paneId, agentId, requestId })) {
         this.finish(this.transcripts, requestId, { items: [], error: 'No agent host is connected for this pane' })
+      }
+    })
+  }
+
+  /** Lists the pane agent's MCP servers, after acting on one when asked. */
+  mcp(paneId: string, request: ChatMcpRequest): Promise<ChatMcpResult> {
+    const entry = this.chats.get(paneId)
+    if (!entry?.socket) return Promise.resolve({ servers: [], error: 'No agent host is connected for this pane' })
+    if (!hostTakesMcp(entry.state.session)) return Promise.resolve({ servers: [], error: 'Restart this chat to manage its MCP servers' })
+    const socket = entry.socket
+    const requestId = randomUUID()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.finish(this.mcpRequests, requestId, { servers: [], error: 'The agent took too long to answer' }), MCP_TIMEOUT_MS)
+      this.mcpRequests.set(requestId, { paneId, socket, timer, resolve })
+      if (!this.sendTo(socket, { type: 'mcp', paneId, request, requestId })) {
+        this.finish(this.mcpRequests, requestId, { servers: [], error: 'No agent host is connected for this pane' })
       }
     })
   }

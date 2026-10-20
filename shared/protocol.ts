@@ -2,6 +2,7 @@ import type { CommanderRelay, CommanderState, TurnBrief } from './commander.js'
 import type { AgentChatRequest } from './agent-chats.js'
 import type { ExternalAgentRun, ChatAnswer, ChatCommand, ChatFileSearchResult, ChatHandoffInfo, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 import type { ChatStashEntry } from './chat-stash.js'
+import type { ChatMcpRequest, ChatMcpResult } from './chat-mcp.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'muse' | 'unknown'
 
@@ -810,6 +811,8 @@ export type ServerMessage =
   | { type: 'commander_relay_snapshot'; relays: CommanderRelay[] }
   /** Commander: which pane is the Commander; sent on connect and on change. */
   | { type: 'commander_state'; state: CommanderState }
+  /** Answers one client's `chat_mcp`. */
+  | ({ type: 'chat_mcp_result'; paneId: string; requestId: string } & ChatMcpResult)
   | { type: 'error'; code: string; message: string; requestId?: string }
 
 export const MAX_PASTE_BYTES = 256 * 1024
@@ -904,6 +907,7 @@ export type ClientMessage =
   | { type: 'chat_external_stop'; paneId: string; runId: string; requestId: string }
   | { type: 'chat_task'; paneId: string; action: ChatTaskAction; agentId: string; toolUseId: string; requestId: string }
   | { type: 'chat_subagent_transcript'; paneId: string; agentId: string; requestId: string }
+  | { type: 'chat_mcp'; paneId: string; request: ChatMcpRequest; requestId: string }
   /** Files and folders for an `@` mention, searched in the chat's folder by its host. */
   | { type: 'chat_file_search'; paneId: string; query: string; requestId: string }
   /** `dropQueued`: queued messages the client took back into its draft. */
