@@ -56,6 +56,32 @@ describe('PaneScreenshots', () => {
     expect(onSeen).toHaveBeenCalled()
   })
 
+  it('sizes each tile to its image shape and crops only full-page captures', () => {
+    render(
+      <PaneScreenshots
+        paneId="%1" folders={[folder]} collapsed={false} seenAt={0}
+        screenshotsApi={{ list: vi.fn().mockResolvedValue(listing) }}
+        paneManagementApi={{ revealPaneScreenshot: vi.fn() }}
+        onCollapsedChange={vi.fn()} onSeen={vi.fn()} onOpen={vi.fn()}
+      />,
+    )
+    const load = (name: string, width: number, height: number) => {
+      const tile = screen.getByRole('button', { name: `Open screenshot ${name}` })
+      const img = tile.querySelector('img')!
+      Object.defineProperty(img, 'naturalWidth', { value: width })
+      Object.defineProperty(img, 'naturalHeight', { value: height })
+      fireEvent.load(img)
+      return tile
+    }
+
+    const desktop = load('round-one.png', 2000, 1000)
+    expect(desktop.style.aspectRatio).toBe('2')
+    expect(desktop).not.toHaveClass('is-tall')
+    const fullPage = load('round-two.png', 1000, 5000)
+    expect(fullPage.style.aspectRatio).toBe('0.4')
+    expect(fullPage).toHaveClass('is-tall')
+  })
+
   it('refetches a republished folder and lets the newer brief beat an older cached listing', async () => {
     const list = vi.fn()
       .mockResolvedValueOnce(listing)
