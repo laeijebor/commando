@@ -244,8 +244,12 @@ restart_daemon() {
 make_rebuild_icon() {
     mkdir -p "$icon_dir"
     rm -rf "$rebuild_icon"
-    local command="nohup '$script' rebuild >/dev/null 2>&1 &"
-    osacompile -o "$rebuild_icon" -e "do shell script \"/bin/zsh -lic \" & quoted form of \"$command\""
+    # %q quotes the path for zsh; the AppleScript string literal then needs \ and " escaped.
+    local command applescript
+    printf -v command 'nohup %q rebuild >/dev/null 2>&1 &' "$script"
+    applescript="${command//\\/\\\\}"
+    applescript="${applescript//\"/\\\"}"
+    osacompile -o "$rebuild_icon" -e "do shell script \"/bin/zsh -lic \" & quoted form of \"$applescript\""
     log "Created $rebuild_icon"
 }
 
@@ -287,10 +291,11 @@ rebuild() {
     build_app
     install_builds
     if [[ -n "$installing" ]]; then
+        # Build the plist and icon first, so a failure there leaves the running agent up.
         write_agent
+        make_rebuild_icon
         unload_agent
         mv -f "$agent_plist.new" "$agent_plist"
-        make_rebuild_icon
     fi
     restart_daemon
     open "$app"
