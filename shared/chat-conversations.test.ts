@@ -26,7 +26,8 @@ describe('conversation response validation', () => {
   it('accepts Cursor and OpenCode while keeping session ids shell-safe and bounded', () => {
     const cursor = conversation('/repo', { provider: 'cursor' })
     const opencode = conversation('/repo', { provider: 'opencode', sessionId: 'ses_ed3f6d576ffeGGkSAFgSk4Snvz' })
-    expect(parseChatConversations({ conversations: [cursor, opencode] })).toEqual([cursor, opencode])
+    const muse = conversation('/repo', { provider: 'muse', sessionId: '01a1509e-bbc8-7a33-bd71-167c86ced013' })
+    expect(parseChatConversations({ conversations: [cursor, opencode, muse] })).toEqual([cursor, opencode, muse])
     for (const id of ['ses_a;whoami', 'ses_$(pwd)', 'ses_abc\n', 'ses_a bcd', 'ses_abc/def', 'ses_abc_def', `ses_${'a'.repeat(77)}`]) {
       expect(isChatConversationSessionId(id)).toBe(false)
       expect(parseChatConversations({ conversations: [{ ...opencode, sessionId: id }] })).toEqual([])
