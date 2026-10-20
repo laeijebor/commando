@@ -370,6 +370,27 @@ describe('AgentHostHub richer input', () => {
     socket.close()
     expect((await dropped).error).toMatch(/disconnected/)
   })
+
+  it('relays MCP requests to hosts that manage them and answers only with their own reply', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    const other = connect()
+    expect((await hub.mcp('%1', { action: 'status' })).error).toMatch(/No agent host/)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 5 }), items: [] })
+    await settle()
+    expect((await hub.mcp('%1', { action: 'status' })).error).toMatch(/Restart this chat/)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: AGENT_HOST_PROTOCOL_VERSION }), items: [] })
+    await settle()
+    const pending = hub.mcp('%1', { action: 'disable', server: 'github' })
+    const request = socket.sent.at(-1) as { type: string; requestId: string }
+    expect(request).toMatchObject({ type: 'mcp', paneId: '%1', request: { action: 'disable', server: 'github' } })
+    other.host({ type: 'mcp_result', paneId: '%1', requestId: request.requestId, servers: [] })
+    socket.host({ type: 'mcp_result', paneId: '%1', requestId: request.requestId, servers: [{ name: 'github', status: 'disabled', tools: [] }], authUrl: 'javascript:alert(1)' })
+    expect(await pending).toEqual({ servers: [{ name: 'github', status: 'disabled', tools: [] }] })
+    const dropped = hub.mcp('%1', { action: 'status' })
+    socket.close()
+    expect((await dropped).error).toMatch(/disconnected/)
+  })
 })
 
 describe('AgentHostHub switch to Claude Code', () => {
