@@ -92,7 +92,7 @@ describe('answerable question notes', () => {
   })
   it.each([
     [{ options: [] }, 'annotations[0].options:'], [{ options: ['ok', ''] }, 'annotations[0].options[1]:'], [{ multiple: true }, 'annotations[0].multiple: needs options'],
-    [{ key: 'k'.repeat(129) }, 'annotations[0].key:'], [{ text: 't'.repeat(257) }, 'annotations[0].text: question notes must be at most 256'], [{ answer: 3 }, 'annotations[0].answer:'], [{ multiple: 'yes', options: ['a'] }, 'annotations[0].multiple:'],
+    [{ key: 'k'.repeat(129) }, 'annotations[0].key:'], [{ text: 't'.repeat(257) }, 'annotations[0].text: question notes must be at most 256'], [{ text: '', title: 't'.repeat(257) }, 'annotations[0].title: question notes must be at most 256'], [{ answer: 3 }, 'annotations[0].answer:'], [{ multiple: 'yes', options: ['a'] }, 'annotations[0].multiple:'],
   ])('reports invalid question field %o', (note, prefix) => {
     const result = parse(note)
     expect(result.errors.some((error) => error.startsWith(prefix))).toBe(true)

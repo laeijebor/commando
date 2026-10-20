@@ -27,6 +27,8 @@ export function CanvasQuestionControls({ question, recorded, pending, sent, disa
   const [draft, setDraft] = useState<QuestionDraft>(() => queued ?? EMPTY)
   const [reopened, setReopened] = useState(false)
   const [noteOpen, setNoteOpen] = useState(() => !!draft.note)
+  // A restored note (Change, Reopen, an edit from the drawer) opens the field and keeps it open.
+  useEffect(() => { if (draft.note) setNoteOpen(true) }, [draft.note])
   const base = queued ?? EMPTY
   const dirty = !same(draft, base)
   // Follow edits made elsewhere (the queue drawer, a send) unless the owner is mid-edit here.
@@ -75,7 +77,7 @@ export function CanvasQuestionControls({ question, recorded, pending, sent, disa
       </div>
       : <textarea aria-label={`Answer: ${question.question}`} placeholder="Your answer…" rows={2} disabled={disabled}
         value={draft.answer} onChange={(event) => setDraft({ ...draft, answer: event.target.value })} />}
-    {noteOpen || draft.note
+    {noteOpen
       ? <textarea aria-label="Note (optional)" placeholder="Note (optional)" rows={2} disabled={disabled}
         value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} />
       : <button type="button" className="canvas-q-link" onClick={() => setNoteOpen(true)}>+ Add note</button>}
