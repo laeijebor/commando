@@ -206,7 +206,7 @@ write_agent() {
 </dict>
 </plist>
 PLIST
-    plutil -lint "$agent_plist.new" >/dev/null
+    plutil -lint "$agent_plist.new" >/dev/null || { rm -f "$agent_plist.new"; fail "Generated an invalid $agent_plist"; }
 }
 
 # Wait for a process other than the one that was running before: the old
@@ -254,10 +254,13 @@ make_rebuild_icon() {
 take_rebuild_lock() {
     mkdir -p "$log_dir" "$(dirname "$rebuild_lock")"
     exec 9>>"$rebuild_lock"
-    if ! perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1'; then
+    local held=0
+    /usr/bin/perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1' || held=$?
+    if (( held == 1 )); then
         notify "A rebuild is already running"
         fail "A rebuild is already running (pid $(cat "$rebuild_lock" 2>/dev/null))"
     fi
+    (( held == 0 )) || fail "Could not lock $rebuild_lock (perl exited $held)"
     printf '%s\n' $$ >"$rebuild_lock"
     trap finish_rebuild EXIT
 }
