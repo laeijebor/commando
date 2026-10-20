@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WebPanePendingNote, WebPaneSentAnswer } from '../shared/protocol'
-import type { RedlinePageQuestion, RedlinePageResponse } from '../shared/redline-response'
+import { MAX_RESPONSE_ANSWER, MAX_RESPONSE_NOTE, type RedlinePageQuestion, type RedlinePageResponse } from '../shared/redline-response'
+import { canvasChoicesFromAnswer } from './canvasQuestions'
 import { draftFromSent, draftValues, responseForQuestion, sentAgo, sentAnswerLabel, type QuestionDraft } from './TileReviewLayer'
 
 const EMPTY: QuestionDraft = { answer: '', note: '', choices: [] }
@@ -22,7 +23,7 @@ export function CanvasQuestionControls({ question, recorded, pending, sent, disa
 }) {
   // Choices may only be recoverable from the answer text (a recorded answer, or a sent one without data).
   const withChoices = (values: QuestionDraft): QuestionDraft => question.kind !== 'choice' || values.choices.length ? values
-    : { ...values, choices: (question.options ?? []).filter((o) => question.multiple ? values.answer.split(', ').includes(o) : o === values.answer) }
+    : { ...values, choices: question.multiple ? canvasChoicesFromAnswer(values.answer, question.options ?? []) : (question.options ?? []).filter((o) => o === values.answer) }
   const queued = pending ? draftValues(pending) : null
   const [draft, setDraft] = useState<QuestionDraft>(() => queued ?? EMPTY)
   const [reopened, setReopened] = useState(false)
@@ -75,10 +76,10 @@ export function CanvasQuestionControls({ question, recorded, pending, sent, disa
           aria-pressed={question.multiple ? draft.choices.includes(option) : undefined}
           className={draft.choices.includes(option) ? 'is-picked' : ''} onClick={() => pick(option)}>{option}</button>)}
       </div>
-      : <textarea aria-label={`Answer: ${question.question}`} placeholder="Your answer…" rows={2} disabled={disabled}
+      : <textarea aria-label={`Answer: ${question.question}`} placeholder="Your answer…" rows={2} disabled={disabled} maxLength={MAX_RESPONSE_ANSWER}
         value={draft.answer} onChange={(event) => setDraft({ ...draft, answer: event.target.value })} />}
     {noteOpen
-      ? <textarea aria-label="Note (optional)" placeholder="Note (optional)" rows={2} disabled={disabled}
+      ? <textarea aria-label="Note (optional)" placeholder="Note (optional)" rows={2} disabled={disabled} maxLength={MAX_RESPONSE_NOTE}
         value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} />
       : <button type="button" className="canvas-q-link" onClick={() => setNoteOpen(true)}>+ Add note</button>}
     <div className="canvas-q-foot">

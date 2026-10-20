@@ -15,6 +15,7 @@ const initialManifest = {
     { id: 'q-recipe', kind: 'question', title: 'Your call', text: 'Should archived copies fail?', options: ['Fail with error', 'Allow'], x: 500, y: 0 },
     { id: 'q-name', kind: 'question', title: 'Naming', text: 'Better name?', x: 500, y: 300 },
     { id: 'q-done', kind: 'question', title: 'Mixing', text: 'Mix?', answer: 'Off', x: 500, y: 600 },
+    { id: 'q-days', kind: 'question', title: 'Days', text: 'Which days?', options: ['Mon', 'No', 'No, wait', 'Tue'], multiple: true, answer: 'Mon, No, wait', x: 500, y: 900 },
     { id: 'design', kind: 'design', text: 'Just a note', x: 900, y: 0 },
   ],
 }
@@ -142,6 +143,24 @@ describe('canvas question answers', () => {
     act(() => publishCanvasChange({ artifactId, changed: ['canvas.json'] }))
     const revised = await within(note(container, 'q-name')).findByRole('textbox', { name: 'Answer: Best name for the editor?' })
     expect(revised).toHaveValue('')
+  })
+
+  it('restores recorded multi-choice answers whose options contain commas', async () => {
+    const { container } = await mount()
+    const card = within(note(container, 'q-days'))
+    fireEvent.click(card.getByRole('button', { name: 'Reopen' }))
+    expect(card.getByRole('button', { name: 'Mon' })).toHaveAttribute('aria-pressed', 'true')
+    expect(card.getByRole('button', { name: 'No, wait' })).toHaveAttribute('aria-pressed', 'true')
+    expect(card.getByRole('button', { name: 'No', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    expect(card.getByRole('button', { name: 'Tue' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('caps answer and note text at the response limits', async () => {
+    const { container } = await mount()
+    const card = within(note(container, 'q-name'))
+    fireEvent.click(card.getByRole('button', { name: '+ Add note' }))
+    expect(card.getByRole('textbox', { name: 'Answer: Better name?' })).toHaveAttribute('maxLength', '1024')
+    expect(card.getByRole('textbox', { name: 'Note (optional)' })).toHaveAttribute('maxLength', '1024')
   })
 
   it('lists question notes with their state in the Questions tab', async () => {
