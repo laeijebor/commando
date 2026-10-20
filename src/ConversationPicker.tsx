@@ -1,7 +1,9 @@
 import { assignSessionIdentities, sessionIdentityForName, type SessionIdentities } from '../shared/session-identity'
 import { SessionAvatar } from './SessionAvatar'
+import { usePaletteDismiss } from './usePaletteDismiss'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { History, LoaderCircle, Search } from 'lucide-react'
+import { PaletteBack } from './PanePalette'
 import type { ChatState } from '../shared/agent-chat'
 import {
   chatConversationProviderLabel,
@@ -45,7 +47,7 @@ function folder(path: string): string {
 }
 
 /** Session-first conversation history; open conversations jump to their existing pane. */
-export function ConversationPicker({ pane, sessionName, current, chats, paneLabel, busy, load, onPick, onJump, onClose, defaultPlacement = 'replace', initialSessionFilter, sessionIdentities = {}, now = Date.now() }: {
+export function ConversationPicker({ pane, sessionName, current, chats, paneLabel, busy, load, onPick, onJump, onClose, onBack, defaultPlacement = 'replace', initialSessionFilter, sessionIdentities = {}, now = Date.now() }: {
   pane: TmuxPane
   sessionName: string
   sessionIdentities?: SessionIdentities
@@ -61,6 +63,8 @@ export function ConversationPicker({ pane, sessionName, current, chats, paneLabe
   onPick: (conversation: ChatConversation, placement: ChatConversationPlacement) => Promise<void>
   onJump: (paneId: string) => void
   onClose: () => void
+  /** Back to the pane palette's menu (Backspace in an empty search). */
+  onBack?: () => void
   now?: number
 }) {
   const [conversations, setConversations] = useState<ChatConversation[] | null>(null)
@@ -74,23 +78,7 @@ export function ConversationPicker({ pane, sessionName, current, chats, paneLabe
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const dialog = useRef<HTMLElement>(null)
-  const close = useRef(onClose)
-  close.current = onClose
-
-  // It covers only its pane, so a click anywhere else closes it like a menu. A click
-  // into an embedded page never reaches this document; it only blurs the window.
-  useEffect(() => {
-    const onPointerDown = (event: Event) => {
-      if (!(event.target instanceof Node) || !dialog.current?.contains(event.target)) close.current()
-    }
-    const onBlur = () => close.current()
-    document.addEventListener('pointerdown', onPointerDown, true)
-    window.addEventListener('blur', onBlur)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true)
-      window.removeEventListener('blur', onBlur)
-    }
-  }, [])
+  usePaletteDismiss(dialog, onClose)
 
   useEffect(() => {
     let live = true
@@ -140,6 +128,9 @@ export function ConversationPicker({ pane, sessionName, current, chats, paneLabe
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       if (rows.length) setIndex((index + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length)
+    } else if (event.key === 'Backspace' && !query && !event.repeat && onBack) {
+      event.preventDefault()
+      onBack()
     } else if (event.key === 'Enter') {
       event.preventDefault()
       void pick(selected, event.altKey ? 'session' : event.metaKey || event.ctrlKey ? 'split' : defaultPlacement)
@@ -159,7 +150,7 @@ export function ConversationPicker({ pane, sessionName, current, chats, paneLabe
         }}
       >
         <div className="palette-search">
-          <Search aria-hidden="true" />
+          {onBack ? <PaletteBack onBack={onBack} /> : <Search aria-hidden="true" />}
           <input
             ref={input}
             value={query}

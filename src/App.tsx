@@ -116,6 +116,10 @@ import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { createChatConversationsApi } from './chatConversationsApi'
 import { ConversationPicker } from './ConversationPicker'
+import { PanePaletteMenu, panePaletteEntries, type PanePaletteScreen } from './PanePalette'
+import { McpSettings } from './McpSettings'
+import type { ChatMcpRequest, ChatMcpResult } from '../shared/chat-mcp'
+import { providerLabel } from '../shared/chat-composer'
 import { chatConversationKey } from '../shared/chat-conversations'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
@@ -151,6 +155,7 @@ import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
+  hostTakesMcp,
   hostTakesSwitch,
   mergeChatItems,
   planImplementationPrompt,
@@ -1130,6 +1135,10 @@ export function App() {
   const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
   /** Pending subagent transcript reads, answered by `chat_subagent_transcript_result`. */
   const chatTranscripts = useRef(new Map<string, (result: ChatSubagentTranscript) => void>())
+  /** Pending MCP reads and actions, answered by `chat_mcp_result`. */
+  const chatMcpReplies = useRef(new Map<string, (result: ChatMcpResult) => void>())
+  /** One loader per pane, so the MCP screen's polling keeps a stable callback. */
+  const chatMcpLoaders = useRef(new Map<string, (request: ChatMcpRequest) => Promise<ChatMcpResult>>())
   /** Recent chat sends by request id, so a refusal shows on the right pane. */
   const chatSendPanes = useRef(new Map<string, string>())
   const [chatViews, setChatViews] = useState<Record<string, 'chat' | 'terminal'>>({})
@@ -1182,8 +1191,9 @@ export function App() {
   const [dropPreview, setDropPreview] = useState<{ paneId: string; placement: 'right' | 'below' } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   /** The workspace pane whose conversation picker is open. */
-  const [conversationPaneId, setConversationPaneId] = useState<string | null>(null)
-  const [conversationSessionFilter, setConversationSessionFilter] = useState<{ id: string; name: string } | undefined>()
+  /** The ⌘P palette over one pane, and the screen it shows. */
+  const [panePalette, setPanePalette] = useState<{ paneId: string; screen: PanePaletteScreen; sessionFilter?: { id: string; name: string } } | null>(null)
+  const palettePaneId = panePalette?.paneId ?? null
   const reopeningConversation = useRef(false)
   const [paletteQuery, setPaletteQuery] = useState('')
   const [paletteIndex, setPaletteIndex] = useState(0)
@@ -1580,6 +1590,11 @@ export function App() {
       case 'chat_subagent_transcript_result': {
         const { type: _type, paneId: _paneId, requestId: readId, ...result } = message
         chatTranscripts.current.get(readId)?.(result)
+        break
+      }
+      case 'chat_mcp_result': {
+        const { type: _type, paneId: _paneId, requestId: mcpId, ...result } = message
+        chatMcpReplies.current.get(mcpId)?.(result)
         break
       }
       case 'chat_handoffs':
@@ -2648,6 +2663,27 @@ export function App() {
     }
     return services
   }
+  const chatMcpFor = (paneId: string) => {
+    let load = chatMcpLoaders.current.get(paneId)
+    if (!load) {
+      load = (request) => new Promise<ChatMcpResult>((resolve) => {
+        const id = requestId('chat-mcp')
+        const finish = (result: ChatMcpResult) => {
+          window.clearTimeout(timer)
+          chatMcpReplies.current.delete(id)
+          resolve(result)
+        }
+        // The daemon gives the agent 45s; this only covers a reply that never comes.
+        const timer = window.setTimeout(() => finish({ servers: [], error: 'The agent took too long to answer' }), 50_000)
+        chatMcpReplies.current.set(id, finish)
+        if (!latestChatDeps.current.send({ type: 'chat_mcp', paneId, request, requestId: id })) {
+          finish({ servers: [], error: 'Not connected to Commando' })
+        }
+      })
+      chatMcpLoaders.current.set(paneId, load)
+    }
+    return load
+  }
   const chatFlowCache = useRef(new Map<string, ChatFlowServices>())
   const chatFlowFor = (paneId: string): ChatFlowServices => {
     let flow = chatFlowCache.current.get(paneId)
@@ -3061,11 +3097,15 @@ export function App() {
     // Only in the workspace: elsewhere the last focused chat is hidden.
     const canToggle = (paneId: string | null | undefined): paneId is string => Boolean(connected && area === 'workspace' && !paletteOpen && paneId && paneMap.has(paneId))
     const toggle = (paneId: string) => {
-      // Closes only a picker that is showing; one whose pane went away opens afresh.
-      const showing = conversationPaneId && paneMap.has(conversationPaneId)
-      setConversationSessionFilter(undefined)
-      setConversationPaneId(showing ? null : paneId)
-      // The picker shows in its pane, and closes once another pane takes focus.
+      // Closes only a palette that is showing; one whose pane went away opens afresh.
+      const showing = panePalette && paneMap.has(panePalette.paneId) ? panePalette : null
+      // ⌘P ⌘P goes straight on to resuming a conversation.
+      if (showing?.screen === 'menu') {
+        setPanePalette({ paneId: showing.paneId, screen: 'conversations' })
+        return
+      }
+      setPanePalette(showing ? null : { paneId, screen: 'menu' })
+      // The palette shows in its pane, and closes once another pane takes focus.
       if (!showing) setFocusedPaneId(paneId)
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -3090,12 +3130,12 @@ export function App() {
     }
   })
 
-  // Like a menu, the picker closes when another pane is focused (a native terminal
+  // Like a menu, the palette closes when another pane is focused (a native terminal
   // click reaches the page only as focus) or its pane leaves the screen.
-  const conversationPaneShown = area === 'workspace' && Boolean(conversationPaneId && allVisiblePaneIds.includes(conversationPaneId))
+  const palettePaneShown = area === 'workspace' && Boolean(palettePaneId && allVisiblePaneIds.includes(palettePaneId))
   useEffect(() => {
-    if (conversationPaneId && (!conversationPaneShown || (effectivePaneId && effectivePaneId !== conversationPaneId && pendingPaneFocus?.paneId !== conversationPaneId))) setConversationPaneId(null)
-  }, [conversationPaneId, conversationPaneShown, effectivePaneId, pendingPaneFocus])
+    if (palettePaneId && (!palettePaneShown || (effectivePaneId && effectivePaneId !== palettePaneId && pendingPaneFocus?.paneId !== palettePaneId))) setPanePalette(null)
+  }, [palettePaneId, palettePaneShown, effectivePaneId, pendingPaneFocus])
 
   const reopenConversation = async () => {
     if (!connected || area !== 'workspace' || paletteOpen || reopeningConversation.current) return
@@ -3111,7 +3151,7 @@ export function App() {
         return
       }
       const paneId = await chatConversationsApi.resume({ provider: conversation.provider, sessionId: conversation.sessionId, placement: 'session' })
-      setConversationPaneId(null)
+      setPanePalette(null)
       setPendingPaneFocus({ paneId, waitForCreation: true })
     } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not reopen conversation')
@@ -3167,8 +3207,10 @@ export function App() {
     }
   })
 
-  const conversationPane = conversationPaneId ? paneMap.get(conversationPaneId) : undefined
-  const conversationChat = conversationPaneId ? chats[conversationPaneId] : undefined
+  const conversationPane = palettePaneId ? paneMap.get(palettePaneId) : undefined
+  const conversationChat = palettePaneId ? chats[palettePaneId] : undefined
+  const conversationSessionFilter = panePalette?.sessionFilter
+  const backToPaneMenu = () => setPanePalette((current) => current && { paneId: current.paneId, screen: 'menu' })
   const conversationPicker = conversationPane ? (
     <ConversationPicker
       key={`${conversationPane.id}:${conversationSessionFilter?.id ?? ''}`}
@@ -3187,16 +3229,40 @@ export function App() {
       load={loadConversations}
       onPick={async (conversation, placement) => {
         const paneId = await chatConversationsApi.resume({ paneId: conversationPane.id, provider: conversation.provider, sessionId: conversation.sessionId, placement })
-        setConversationPaneId(null)
+        setPanePalette(null)
         setPendingPaneFocus({ paneId, waitForCreation: true })
       }}
       onJump={(paneId) => {
-        setConversationPaneId(null)
+        setPanePalette(null)
         jumpToPane(paneId, undefined, true)
       }}
-      onClose={() => setConversationPaneId(null)}
+      onClose={() => setPanePalette(null)}
+      onBack={backToPaneMenu}
     />
   ) : null
+  const panePaletteNode = !conversationPane || !panePalette ? null
+    : panePalette.screen === 'conversations' ? conversationPicker
+      : panePalette.screen === 'mcp' && conversationChat ? (
+        <McpSettings
+          key={`${conversationPane.id}:mcp`}
+          agentLabel={providerLabel(conversationChat.session)}
+          load={chatMcpFor(conversationPane.id)}
+          onBack={backToPaneMenu}
+          onClose={() => setPanePalette(null)}
+        />
+      ) : (
+        <PanePaletteMenu
+          key={`${conversationPane.id}:menu`}
+          entries={panePaletteEntries(conversationChat && {
+            provider: conversationChat.session.provider,
+            providerLabel: providerLabel(conversationChat.session),
+            hostConnected: conversationChat.hostConnected,
+            takesMcp: hostTakesMcp(conversationChat.session),
+          })}
+          onOpen={(screen) => setPanePalette((current) => current && { paneId: current.paneId, screen })}
+          onClose={() => setPanePalette(null)}
+        />
+      )
   const paletteWebPaneUrl = webPaneUrlFromQuery(paletteQuery)
   const paletteRunCommand = runCommandFromQuery(paletteQuery)
   const paletteRunPane = currentPrPane && !currentPrPane.dead ? currentPrPane : undefined
@@ -3687,8 +3753,7 @@ export function App() {
                 if (!session || !pane) return
                 jumpToPane(pane.id)
                 setActiveTabs((current) => ({ ...current, [sessionId]: pane.windowId }))
-                setConversationSessionFilter({ id: session.id, name: session.name })
-                setConversationPaneId(pane.id)
+                setPanePalette({ paneId: pane.id, screen: 'conversations', sessionFilter: { id: session.id, name: session.name } })
               }}
               creation={{
                 disabled: !connected,
@@ -4064,7 +4129,7 @@ export function App() {
                             <div key={rendererIdentity} className="conversation-picker-anchor" data-pane-id={pane.id}
                               onPointerDown={() => setFocusedPaneId(pane.id)} onFocusCapture={() => setFocusedPaneId(pane.id)}>
                               <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
-                              {conversationPaneId === pane.id ? conversationPicker : null}
+                              {palettePaneId === pane.id ? panePaletteNode : null}
                             </div>,
                           ] as const
                         }
@@ -4083,7 +4148,7 @@ export function App() {
                             onSelectPane={jumpToPane}
                             attributionVisible={attributionTargets.has(pane.targetId)}
                             agentChatRequests={Object.values(agentChatRequests).filter((request) => request.callerPaneId === pane.id && request.callerTargetId === pane.targetId)}
-                            {...(conversationPaneId === pane.id && conversationPicker ? { overlay: conversationPicker } : {})}
+                            {...(palettePaneId === pane.id && panePaletteNode ? { overlay: panePaletteNode } : {})}
                             onAnswerAgentChatRequest={async (id, decision) => {
                               setPaneActionError('')
                               try {

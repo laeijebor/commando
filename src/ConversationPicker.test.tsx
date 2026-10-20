@@ -43,6 +43,20 @@ function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0
 }
 
 describe('ConversationPicker', () => {
+  it('goes back to the pane palette with Backspace in an empty search', async () => {
+    const onBack = vi.fn()
+    const { input } = renderPicker({ onBack })
+    await screen.findAllByRole('option')
+    fireEvent.change(input, { target: { value: 'f' } })
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    expect(onBack).not.toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    expect(onBack).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the palette' }))
+    expect(onBack).toHaveBeenCalledTimes(2)
+  })
+
   it('labels Muse, Cursor and OpenCode conversations', async () => {
     renderPicker({ load: async () => [
       conversation('aaaaaaaa-0005', 'Cursor work', pane.path, 1, { provider: 'cursor' }),

@@ -5,7 +5,9 @@
  * host can carry one session (per-pane mode) or many (shared mode).
  */
 
-export const AGENT_HOST_PROTOCOL_VERSION = 5
+import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type ChatMcpResult } from './chat-mcp.js'
+
+export const AGENT_HOST_PROTOCOL_VERSION = 6
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -36,6 +38,12 @@ export const CHAT_SWITCH_HOST_VERSION = 5
 
 export function hostTakesSwitch(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_SWITCH_HOST_VERSION
+}
+/** Hosts from this version list and manage their agent's MCP servers. */
+export const CHAT_MCP_HOST_VERSION = 6
+
+export function hostTakesMcp(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_MCP_HOST_VERSION
 }
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
@@ -492,6 +500,7 @@ export type HostToDaemonMessage =
   | { type: 'commands'; paneId: string; commands: ChatCommand[] }
   | ({ type: 'file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   | ({ type: 'subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
+  | ({ type: 'mcp_result'; paneId: string; requestId: string } & ChatMcpResult)
   /**
    * The host is about to hand the conversation to its TUI: the daemon keeps
    * its queue (and the client's draft) until the chat comes back, and the
@@ -548,6 +557,8 @@ export type DaemonToHostMessage =
   /** Stop or background one running subagent. */
   | { type: 'task'; paneId: string; action: ChatTaskAction; agentId: string; toolUseId: string; requestId: string }
   | { type: 'subagent_transcript'; paneId: string; agentId: string; requestId: string }
+  /** Lists the agent's MCP servers, or acts on one first. */
+  | { type: 'mcp'; paneId: string; request: ChatMcpRequest; requestId: string }
   /** Finds files and folders in the session's folder for an `@` mention. */
   | { type: 'file_search'; paneId: string; query: string; requestId: string }
   /** `dropQueued` names queued messages the client took back into its draft. */
@@ -1010,6 +1021,11 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
         error: optionalText(value.error, 1000),
       })
     }
+    case 'mcp_result': {
+      const result = parseChatMcpResult(value)
+      if (!isPaneId(value.paneId) || !shortString(value.requestId) || !result) return null
+      return { type: 'mcp_result', paneId: value.paneId, requestId: value.requestId, ...result }
+    }
     case 'handoff': {
       const queue = parseQueue(value.queue)
       const flags = Array.isArray(value.returnFlags) && value.returnFlags.length <= 64 && value.returnFlags.every((flag) => typeof flag === 'string' && flag.length <= 4096 && !flag.includes('\0'))
@@ -1050,6 +1066,12 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
       return isPaneId(value.paneId) && isAgentId(value.agentId) && shortString(value.requestId)
         ? { type: 'subagent_transcript', paneId: value.paneId, agentId: value.agentId, requestId: value.requestId }
         : null
+    case 'mcp': {
+      const request = parseChatMcpRequest(value.request)
+      return isPaneId(value.paneId) && request && shortString(value.requestId)
+        ? { type: 'mcp', paneId: value.paneId, request, requestId: value.requestId }
+        : null
+    }
     case 'file_search':
       return isPaneId(value.paneId) && typeof value.query === 'string' && value.query.length <= MAX_FILE_QUERY && shortString(value.requestId)
         ? { type: 'file_search', paneId: value.paneId, query: value.query, requestId: value.requestId }
