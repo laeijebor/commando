@@ -96,3 +96,10 @@ describe('PNG export route', () => {
     expect(result.headers['Cache-Control']).toBe('no-store'); expect(closeTarget).toHaveBeenCalledWith('Target.closeTarget', { targetId: 'export' }); expect(closeTarget).toHaveBeenCalledWith('Target.disposeBrowserContext', { browserContextId: 'isolated' }); expect(page.close).toHaveBeenCalledOnce()
   })
 })
+describe('capture host page', () => {
+  it('serves a blank same-origin capture host page without auth', async () => {
+    const result = await request('/redline/capture.html', 'none')
+    expect(result.status).toBe(200); expect(result.headers['Content-Type']).toMatch(/text\/html/)
+    expect(result.body.toString()).toContain('<body></body>')
+  })
+})
