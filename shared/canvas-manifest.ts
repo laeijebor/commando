@@ -171,6 +171,9 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
         else if (!question.options) fail(`${path}multiple`, 'needs options')
         else question.multiple = value.multiple
       }
+      // Answers carry the question text, capped at 256 characters; a longer prompt could not be told apart from an edit.
+      const prompt = text ?? title
+      if (prompt !== undefined && prompt.length > 256) fail(`${path}${text !== undefined ? 'text' : 'title'}`, 'question notes must be at most 256 characters; move detail into items')
       const answer = string(value, 'answer', path)
       if (answer !== undefined && (!answer.trim() || answer.length > 1024)) fail(`${path}answer`, 'must be 1–1024 characters')
       else if (answer !== undefined) question.answer = answer
