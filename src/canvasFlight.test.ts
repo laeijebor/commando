@@ -18,7 +18,7 @@ function setup(reduced = false) {
   Object.defineProperties(viewport, { clientWidth: { value: 800 }, clientHeight: { value: 600 } })
   const hook = renderHook(() => {
     const [camera, setCamera] = useState(start)
-    return { camera, ...useCanvasFlight(camera, setCamera, { current: viewport }) }
+    return { camera, ...useCanvasFlight(() => camera, setCamera, { current: viewport }) }
   })
   const step = (time: number) => act(() => {
     const [id, callback] = callbacks.entries().next().value!

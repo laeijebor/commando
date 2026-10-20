@@ -128,6 +128,9 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-o-export:hover { color: var(--text); background: var(--surface-hover); }
 
 .canvas-toolbar .canvas-history > summary { padding: 3px 5px; }
+.canvas-world.is-moving { will-change: transform; }
+/* The viewport holds pointer capture while drag-panning; skip hover hit-testing the world. */
+.canvas-viewport.is-panning .canvas-world { pointer-events: none; }
 .canvas-pane[data-review-summary] .canvas-hint { bottom: calc(var(--tile-review-strip-height, 30px) + 14px); }
 .canvas-o-question em { text-transform: none; }
 .canvas-o-question.is-open em { color: #22a5c4; }
