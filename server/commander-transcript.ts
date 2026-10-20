@@ -4,9 +4,9 @@ import { ClaudeItemMapper } from './agent-host/claude-items.js'
 import { completedCommand } from './external-agents/codex-rollout.js'
 import { record, textContent } from './external-agents/progress.js'
 
-/** Starting window for a transcript tail; it grows until the current turn's prompt is in it. */
+/** First window for a transcript tail; a second, larger read happens when the current turn's prompt isn't in it. */
 const TAIL_BYTES = 4 * 1024 * 1024
-/** Large request/result entries can push one turn past many megabytes; stop here. */
+/** Large request/result entries can push one turn past many megabytes; read no further than this. */
 const MAX_TAIL_BYTES = 32 * 1024 * 1024
 
 /** JSON lines from the end of a file, dropping a first line the slice cut in half. */
@@ -25,8 +25,8 @@ export async function tailJsonLines(path: string, bytes = TAIL_BYTES): Promise<{
 }
 
 const isMessage = (line: Record<string, unknown>) => (line.type === 'user' || line.type === 'assistant') && !line.isSidechain
-/** Harness messages logged as user turns (background task results, slash command output). */
-const INJECTED = /^\s*<(?:task-notification|local-command-|command-name|command-message|system-reminder)/
+/** Harness messages logged as user turns: background task results, command output, interrupt markers. */
+const INJECTED = /^\s*(?:<(?:task-notification|local-command-|system-reminder)|\[Request interrupted by user)/
 /** A prompt the user typed, as opposed to tool results or injected context. */
 const isPrompt = (line: Record<string, unknown>) => {
   if (line.type !== 'user' || line.isMeta || line.isSidechain) return false
@@ -61,13 +61,12 @@ export function claudeTranscriptItems(lines: readonly Record<string, unknown>[],
   return new ClaudeItemMapper(now).replay(messages)
 }
 
-/** Reads further back until the newest turn's prompt (or the conversation's start) is in the window. */
+/** Reads once more, further back, when the newest turn's prompt (or the conversation's start) isn't in the first window. */
 export async function claudeTranscriptFileItems(path: string, now = Date.now): Promise<ChatItem[]> {
-  for (let bytes = TAIL_BYTES; ; bytes *= 2) {
-    const { lines, whole } = await tailJsonLines(path, bytes)
-    const { chain, complete } = currentChain(lines)
-    if (whole || complete || chain.some(isPrompt) || bytes >= MAX_TAIL_BYTES) return claudeTranscriptItems(lines, now)
-  }
+  let { lines, whole } = await tailJsonLines(path, TAIL_BYTES)
+  const { chain, complete } = currentChain(lines)
+  if (!whole && !complete && !chain.some(isPrompt)) lines = (await tailJsonLines(path, MAX_TAIL_BYTES)).lines
+  return claudeTranscriptItems(lines, now)
 }
 
 /** A terminal Codex rollout's messages and commands as chat items. */

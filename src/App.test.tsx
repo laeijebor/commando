@@ -3115,9 +3115,22 @@ describe('Commander integration', () => {
     expect(seen()).toBe(false)
     // (jsdom has no width, so the pane covers Commander and its inbox is aria-hidden.)
     expect(within(inbox).getByRole('option', { name: /^review-agent/, hidden: true })).toHaveAttribute('aria-selected', 'true')
+    // A mark the socket refuses on close is sent again after a reconnect.
+    const marks = () => appMocks.send.mock.calls.filter(([message]) => (message as { type?: string }).type === 'mark_panes_seen').length
+    appMocks.send.mockReturnValue(false)
     fireEvent.keyDown(within(reading).getByRole('button', { name: 'Next agent' }), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('commander-reading-pane')).toBeNull())
     expect(seen()).toBe(true)
+    const refused = marks()
+    const live = daemonConnection
+    daemonConnection = { phase: 'reconnecting', detail: 'Offline', attempt: 1 }
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    appMocks.send.mockReturnValue(true)
+    daemonConnection = live
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    await waitFor(() => expect(marks()).toBeGreaterThan(refused))
+    // clearAllMocks keeps return values; restore the default for later tests.
+    appMocks.send.mockReset()
   })
 
   it.each(['response first', 'snapshot first'] as const)('opens the created Commander with %s', async (order) => {

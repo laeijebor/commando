@@ -43,8 +43,9 @@ describe('claudeTranscriptFileItems', () => {
       // Claude Code logs whole API requests; one can outweigh the starting window.
       JSON.stringify({ type: 'api-request-blob', blob: 'x'.repeat(5 * 1024 * 1024) }),
       JSON.stringify(entry('a1', 'u1', 'assistant', [{ type: 'text', text: 'The cache expired early.' }])),
-      // A background task's result is logged as a user turn but isn't the prompt.
+      // A background task's result and an interrupt are logged as user turns but aren't the prompt.
       JSON.stringify(entry('n1', 'a1', 'user', '<task-notification>\n<task-id>b1</task-id>\n</task-notification>')),
+      JSON.stringify(entry('i1', 'n1', 'user', [{ type: 'text', text: '[Request interrupted by user]' }])),
     ].join('\n') + '\n')
     const window = await tailJsonLines(file)
     expect(window.whole).toBe(false)

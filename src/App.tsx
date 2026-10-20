@@ -1897,18 +1897,21 @@ export function App() {
         .join('\u0000')
     : ''
 
-  // An agent read in Commander's reading pane is seen once you move on, so its
-  // row stays put (not regrouped as idle) while you read it.
+  // Agents read in Commander's reading pane are marked seen when it closes, so
+  // their rows stay put (not regrouped as idle) while you step through them.
   const readingPaneId = commanderPeek?.paneId
-  const previousReadingPaneId = useRef<string | undefined>(undefined)
+  const readAgents = useRef(new Set<string>())
   useEffect(() => {
-    const left = previousReadingPaneId.current
-    previousReadingPaneId.current = readingPaneId
-    if (!left || left === readingPaneId || !connected) return
-    const settledAt = agentStatuses[left]?.settledAt
-    if (settledAt !== undefined && settledAt > (paneSeen[left] ?? -Infinity)) send({ type: 'mark_panes_seen', paneIds: [left] })
-    // Runs only when the reading pane moves; statuses are read at that moment.
-  }, [readingPaneId])
+    if (readingPaneId) readAgents.current.add(readingPaneId)
+    if (readingPaneId || !connected || !readAgents.current.size) return
+    const paneIds = [...readAgents.current].filter((paneId) => {
+      const settledAt = agentStatuses[paneId]?.settledAt
+      return settledAt !== undefined && settledAt > (paneSeen[paneId] ?? -Infinity)
+    })
+    // Kept for a reconnect if the socket refuses it.
+    if (!paneIds.length || send({ type: 'mark_panes_seen', paneIds: paneIds.slice(0, 64) })) readAgents.current.clear()
+    // Runs when the pane opens, moves or closes, and on reconnect; statuses are read at that moment.
+  }, [readingPaneId, connected])
 
   useEffect(() => {
     if (!connected || !unseenViewedPaneKey) return
