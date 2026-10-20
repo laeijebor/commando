@@ -14,8 +14,10 @@ import {
   type ChatSessionInfo,
   type ChatSettingsChange,
 } from '@commando/agent-chat'
-import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable, permissionLabel, permissionModeOptions } from '@commando/chat-composer'
+import { EFFORT_LABELS, formatTokens, modelLabel, modelMenuAvailable } from '@commando/chat-composer'
 
+import { settingsPresentation } from './settingsPresentation'
+import { providerPresentation } from '../ui/providerPresentation'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 
@@ -23,7 +25,8 @@ import { withAlpha } from '../ui/primitives'
  * Messages the host holds until Claude's turn ends (the web's QueuedMessages):
  * edit, remove, or steer one in now.
  */
-export function QueueList({ queue, disabled, onChange, onEditOrphaned }: {
+export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider }: {
+  provider?: string
   queue: ChatQueuedMessage[]
   disabled: boolean
   onChange: (change: ChatQueueAction) => void
@@ -47,7 +50,7 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned }: {
   }, [])
   return (
     <View style={[styles.queue, { borderBottomColor: theme.border }]} testID="chat-queue">
-      <Text style={[styles.queueNote, { color: theme.muted }]}>Queued · sent together when Claude's turn ends</Text>
+      <Text style={[styles.queueNote, { color: theme.muted }]}>Queued · sent together when {providerPresentation(provider).name}'s turn ends</Text>
       <ScrollView contentContainerStyle={styles.queueRows} keyboardShouldPersistTaps="handled" nestedScrollEnabled style={styles.queueScroll}>
         {queue.map((queued) => (
           <View key={queued.id} style={[styles.queued, { backgroundColor: theme.surfaceSoft }]}>
@@ -174,7 +177,8 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   const permissionRef = useRef<View>(null)
   const label = modelLabel(session)
   const selected = selectedModelOption(session)
-  const efforts = selected?.efforts ?? []
+  const presentation = settingsPresentation(session)
+  const efforts = presentation.efforts
   const settable = hostTakesSettings(session)
   const models = modelMenuAvailable(session) ? session.models ?? [] : []
 
@@ -199,10 +203,10 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
     if (effort && effort !== session.effort) onConfigure({ effort })
   }
 
-  const modes = settable ? permissionModeOptions(session) : []
+  const modes = presentation.modes
   const pickPermission = async () => {
     const current = session.permissionMode
-    const index = await showSheet(permissionRef.current, 'Permissions', modes.map((mode) => permissionLabel(mode, session)), modes.findIndex((mode) => mode === current))
+    const index = await showSheet(permissionRef.current, 'Permissions', modes.map(presentation.label), modes.findIndex((mode) => mode === current))
     const mode = index === null ? undefined : modes[index]
     if (mode && mode !== current) onConfigure({ permissionMode: mode })
   }
@@ -210,7 +214,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   return (
     <>
       {label ? <Pill disabled={disabled || !models.length} label={label} onPress={() => void pickModel()} ref={modelRef} a11y="Model" /> : null}
-      {efforts.length || session.effort ? (
+      {efforts.length ? (
         <Pill
           a11y="Effort"
           disabled={disabled || !settable || !efforts.length}
@@ -219,11 +223,11 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
           ref={effortRef}
         />
       ) : null}
-      {session.permissionMode ? (
+      {presentation.showPermission && session.permissionMode ? (
         <Pill
           a11y="Permissions"
           disabled={disabled || !modes.length}
-          label={permissionLabel(session.permissionMode, session)}
+          label={presentation.label(session.permissionMode)}
           onPress={() => void pickPermission()}
           ref={permissionRef}
         />

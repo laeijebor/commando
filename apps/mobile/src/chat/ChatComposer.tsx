@@ -28,6 +28,7 @@ import {
 } from '@commando/chat-composer'
 
 import type { Host } from '../hosts/types'
+import { providerPresentation } from '../ui/providerPresentation'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
@@ -96,7 +97,7 @@ function menuFor(
         // Skills run anywhere in a message; commands only at its start (a pick mid-message moves it there).
         ...matched.map((command) => ({ key: `${command.kind}:${command.name}`, type: 'command' as const, command, runsHere: command.kind === 'skill' || trigger.atStart })),
       ],
-      status: commands ? (natives.length || matched.length ? null : 'No matching commands') : hostTakesInput(session) ? "Claude's commands appear once the session has started" : "Restart this chat to list Claude's commands",
+      status: commands ? (natives.length || matched.length ? null : 'No matching commands') : hostTakesInput(session) ? `${providerPresentation(session.provider).name}'s commands appear once the session has started` : `Restart this chat to list ${providerPresentation(session.provider).name}'s commands`,
     }
   }
   const entries = files.result?.entries ?? []
@@ -112,7 +113,8 @@ function menuFor(
  * queue while Claude works), Steer and Stop, the queue, images, the `/` and
  * `@` menus and the settings pills. Open requests sit above it.
  */
-export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError }: {
+export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend }: {
+  onSend?: () => void
   host: Host
   session: ChatSessionInfo
   /** The phone is connected to the daemon, and the daemon to the chat's host. */
@@ -288,6 +290,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     const options: ChatSendOptions = running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
     const sent = text.trim()
     const requestId = channel.send(sent, images, options)
+    onSend?.()
     const now = Date.now()
     for (const [id, draft] of sentDrafts.current) if (now - draft.at > CHAT_SEND_REFUSAL_MS) sentDrafts.current.delete(id)
     sentDrafts.current.set(requestId, { text: sent, images, at: now })
@@ -329,13 +332,13 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       ? 'Switching to Claude Code…'
       : closed
         ? 'This session has ended'
-        : running ? 'Queue a message…' : 'Ask Claude… / for commands, @ for files'
+        : running ? 'Queue a message…' : `Ask ${providerPresentation(session.provider).name}… / for commands, @ for files`
 
   return (
     <View style={styles.wrap}>
       <View style={[styles.box, { backgroundColor: theme.surface, borderColor: theme.borderMid }]} testID="chat-composer">
         {queue.length ? (
-          <QueueList
+          <QueueList provider={session.provider}
             disabled={!hostConnected}
             onChange={(change) => channel.queue(change)}
             onEditOrphaned={(edit) => {
@@ -381,7 +384,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           </View>
         ) : null}
         <TextInput
-          accessibilityLabel="Message Claude"
+          accessibilityLabel={`Message ${providerPresentation(session.provider).name}`}
           autoCapitalize="sentences"
           editable={!disabled}
           multiline
@@ -427,7 +430,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           {running && turnFlow ? (
             <Pressable
               accessibilityLabel="Steer now"
-              accessibilityHint="Ends Claude's turn at its next safe point and sends this"
+              accessibilityHint={`Ends ${providerPresentation(session.provider).name}'s turn at its next safe point and sends this`}
               accessibilityRole="button"
               accessibilityState={{ disabled: !canSend }}
               disabled={!canSend}
@@ -454,7 +457,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
 }
 
 const styles = StyleSheet.create({
-  wrap: { flexShrink: 0, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 },
+  wrap: { width: '100%', maxWidth: 776, alignSelf: 'center', flexShrink: 0, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 },
   box: { borderWidth: 1, borderRadius: 20, overflow: 'hidden' },
   attachments: { gap: 8, paddingHorizontal: 12, paddingTop: 10 },
   thumb: { width: 56, height: 56 },

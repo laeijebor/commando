@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
 import {
   Alert,
   Modal,
@@ -17,10 +17,12 @@ import * as Haptics from 'expo-haptics'
 import type { WebPanePendingNote } from '@commando/protocol'
 
 import { useDaemonConnection } from '../../../../src/daemon/useDaemonConnection'
+import { isDemoHost } from '../../../../src/demo/flags'
 import { useHostsStore } from '../../../../src/hosts/store'
 import { useTheme } from '../../../../src/theme'
 import {
   addPendingNote,
+  markTileSeen,
   dismissDroppedAnswers,
   removePendingNote,
   sendPendingNotes,
@@ -43,7 +45,10 @@ import {
   type TileGeometry,
   type TilePoint,
 } from '../../../../src/tiles/input'
-import { describeTileUrl } from '../../../../src/tiles/list'
+import { useAppActive } from '../../../../src/daemon/useAppActive'
+import { returnFromTile } from '../../../../src/tiles/returnToPane'
+import { tileWasViewed } from '../../../../src/tiles/seen'
+import { describeTileUrl, tileTitle } from '../../../../src/tiles/list'
 import {
   resolvableSelector,
   type TileInspectSuccess,
@@ -56,14 +61,28 @@ import { Button, EmptyState, Pill, withAlpha } from '../../../../src/ui/primitiv
 const PIN_SETTLE_MS = 350
 
 export default function TileScreen(): React.JSX.Element {
+  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
+  if (__DEV__ && host && isDemoHost(host)) {
+    const { DemoTileScreen } = require('../../../../src/demo/DemoTileScreen') as typeof import('../../../../src/demo/DemoTileScreen')
+    return <DemoTileScreen />
+  }
+  return <LiveTileScreen />
+}
+
+function LiveTileScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
-  const { hostId, tileId } = useLocalSearchParams<{ hostId: string; tileId: string }>()
+  const { hostId, tileId, fromPaneId } = useLocalSearchParams<{ hostId: string; tileId: string; fromPaneId?: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const daemon = useDaemonConnection(host)
   const tile = daemon.webPanes.find((candidate) => candidate.id === tileId)
-
-  const { state, client } = useTileRelay(host, tileId)
+  const foreground = useAppActive(useIsFocused())
+  const { state, client } = useTileRelay(host, tileId, { enabled: foreground })
+  const hasFrame = Boolean(state.frame)
+  useEffect(() => {
+    if (host && tile && tileWasViewed(tile, foreground, hasFrame)) void markTileSeen(host, tile.id).catch(() => undefined)
+  }, [foreground, host, tile?.id, tile?.unseen, tile?.status, hasFrame])
 
   const [surface, setSurface] = useState({ width: 0, height: 0 })
   const [viewport, setViewport] = useState({ width: 0, height: 0 })
@@ -308,18 +327,18 @@ export default function TileScreen(): React.JSX.Element {
     (note) => note.id === selectedNoteId,
   )
 
-  const { host: urlHost, path: urlPath } = describeTileUrl(tile?.url ?? '')
+  const { path: urlPath } = describeTileUrl(tile?.url ?? '')
   const chromium = tile?.engine === 'chromium'
 
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
       <View style={styles.nav}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable accessibilityRole="button" onPress={() => returnFromTile(router, hostId, fromPaneId)} style={styles.back}>
           <Feather color={theme.accent} name="chevron-left" size={20} />
-          <Text style={[styles.backLabel, { color: theme.accent }]}>Tiles</Text>
+          <Text style={[styles.backLabel, { color: theme.accent }]}>{fromPaneId ? 'Chat' : 'Tiles'}</Text>
         </Pressable>
         <View style={styles.navTitle}>
-          <Text numberOfLines={1} style={[styles.navTitleText, { color: theme.text }]}>{urlHost}</Text>
+          <Text numberOfLines={1} style={[styles.navTitleText, { color: theme.text }]}>{tile ? tileTitle(tile) : 'Tile'}</Text>
           <Text numberOfLines={1} style={[styles.navSubtitle, { color: theme.muted }]}>{urlPath}</Text>
         </View>
         <Pill label={tile?.engine ?? 'tile'} tone={chromium ? 'claude' : 'mute'} />

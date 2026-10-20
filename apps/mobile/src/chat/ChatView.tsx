@@ -1,4 +1,4 @@
-import { Component, useMemo, type ReactNode } from 'react'
+import { Component, useMemo, useState, type ReactNode } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
@@ -39,6 +39,7 @@ export function ChatView({ host, chat, client, phase }: {
   phase: ConnectionPhase
 }): React.JSX.Element {
   const theme = useTheme()
+  const [sendVersion, setSendVersion] = useState(0)
   const { channel, sendError, dismissSendError, actionError, dismissActionError } = useChatChannel(client, chat.paneId)
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const connected = phase === 'live'
@@ -55,7 +56,7 @@ export function ChatView({ host, chat, client, phase }: {
     <View style={styles.root} testID="chat-view">
       {banner ? <Banner icon="wifi-off" text={banner} tone="amber" /> : null}
       {chat.session.status === 'error' && chat.session.error ? <Banner icon="alert-circle" text={chat.session.error} tone="red" /> : null}
-      <ChatTimeline baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} />
+      <ChatTimeline sendVersion={sendVersion} baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} provider={chat.session.provider} />
       {chat.session.claudeCodeSwitch ? (
         <Banner
           icon="terminal"
@@ -65,6 +66,7 @@ export function ChatView({ host, chat, client, phase }: {
       ) : null}
       {request && channel ? (
         <RequestCard
+          provider={chat.session.provider}
           cwd={chat.session.cwd}
           disabled={!hostConnected}
           key={request.requestId}
@@ -74,18 +76,19 @@ export function ChatView({ host, chat, client, phase }: {
         />
       ) : null}
       {channel ? (
-        <ChatComposer
+        <View testID="chat-composer-dock" style={styles.composerDock}><ChatComposer
           actionError={actionError}
           carried={chat.carried}
           channel={channel}
           commands={chat.commands}
           host={host}
           hostConnected={hostConnected}
+          onSend={() => setSendVersion((version) => version + 1)}
           onDismissActionError={dismissActionError}
           onDismissSendError={dismissSendError}
           sendError={sendError}
           session={chat.session}
-        />
+        /></View>
       ) : (
         <Text style={[styles.waiting, { color: theme.muted }]}>Connecting…</Text>
       )}
@@ -118,8 +121,9 @@ export class ChatErrorBoundary extends Component<{ children: ReactNode; fallback
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, minHeight: 0 },
-  banner: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
+  root: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
+  composerDock: { flexShrink: 0 },
+  banner: { flexShrink: 0, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
   bannerText: { flex: 1, fontSize: 12.5, lineHeight: 17 },
   waiting: { fontSize: 13, textAlign: 'center', padding: 12 },
 })

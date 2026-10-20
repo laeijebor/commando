@@ -1,11 +1,15 @@
 import { useEffect } from 'react'
 import { Stack } from 'expo-router'
+import { LogBox } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import { useHostsStore } from '../src/hosts/store'
 import { useNotificationRouting, usePushRegistration } from '../src/notifications'
 import { ThemeProvider, useTheme } from '../src/theme'
+
+// RN's native animation emitter can deliver a final update after listeners detach.
+if (__DEV__) LogBox.ignoreLogs(['Sending `onAnimatedValueUpdate` with no listeners registered.'])
 
 function RootStack(): React.JSX.Element {
   const theme = useTheme()
@@ -25,6 +29,7 @@ function RootStack(): React.JSX.Element {
       <StatusBar style="light" />
       <Stack
         screenOptions={{
+          headerShown: false,
           headerStyle: { backgroundColor: theme.bg },
           headerTintColor: theme.accent,
           headerTitleStyle: { color: theme.text },
@@ -32,8 +37,8 @@ function RootStack(): React.JSX.Element {
         }}
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(host)" options={{ headerShown: false }} />
-        <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+        <Stack.Screen name="(host)/[hostId]" options={{ headerShown: false }} />
+        <Stack.Screen name="settings" options={{ title: 'Settings', headerShown: true }} />
       </Stack>
     </>
   )

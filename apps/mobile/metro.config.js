@@ -25,6 +25,7 @@ config.resolver.nodeModulesPaths = [
 ]
 config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
+  '@commando/session-identity': path.join(repoRoot, 'shared', 'session-identity.ts'),
   '@commando/protocol': path.join(repoRoot, 'shared', 'protocol.ts'),
   '@commando/tmux-create': path.join(repoRoot, 'shared', 'tmux-create.ts'),
   '@commando/agent-chat': path.join(repoRoot, 'shared', 'agent-chat.ts'),

@@ -37,7 +37,7 @@ export default function PaneScreen(): React.JSX.Element {
   }
 
   return (
-    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
+    <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.screen, { backgroundColor: theme.bg }]}>
       <PaneView
         active={focused}
         host={host}
@@ -52,7 +52,7 @@ export default function PaneScreen(): React.JSX.Element {
           if (canStream(tile)) {
             router.push({
               pathname: '/(host)/[hostId]/tile/[tileId]',
-              params: { hostId: hostId ?? '', tileId: tile.id },
+              params: { hostId: hostId ?? '', tileId: tile.id, fromPaneId: paneId },
             })
             return
           }

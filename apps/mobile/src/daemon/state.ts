@@ -25,6 +25,7 @@ export type HostDaemonState = {
   agentStatuses: Record<string, AgentStatus>
   briefs: Record<string, SessionBrief>
   marks: Record<string, PaneMark>
+  dismissedPrTabs?: Record<string, Record<string, string>>
   webPanes: WebPane[]
   feedback: Record<string, WebPaneFeedbackInfo>
   usage: ProviderUsage[]
@@ -129,7 +130,7 @@ export function applyServerMessage(
     }
 
     case 'web_panes':
-      return stamped({ webPanes: message.webPanes, feedback: message.feedback ?? {} })
+      return stamped({ dismissedPrTabs: message.dismissedPrTabs, webPanes: message.webPanes, feedback: message.feedback ?? {} })
 
     case 'provider_usage':
       return stamped({ usage: message.usage })

@@ -1,3 +1,4 @@
+import * as SecureStore from 'expo-secure-store'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 
 import { useChatStore } from '../chat/store'
@@ -59,7 +60,9 @@ function jsonResponse(value: unknown): Response {
   })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Existing Attention-view scenarios keep exercising the remembered preference.
+  await SecureStore.setItemAsync('commando.sessions.view', 'attention')
   mockRouter.push.mockClear()
   useFocusStore.setState({ byHost: {} })
   useChatStore.setState({ byHost: {} })
@@ -95,6 +98,15 @@ async function renderCockpit(mode: 'wide' | 'tablet' = 'wide'): Promise<void> {
 }
 
 describe('the iPad cockpit', () => {
+  it('defaults to Chats for an install without a remembered view', async () => {
+    await SecureStore.deleteItemAsync('commando.sessions.view')
+    await renderCockpit()
+    expect(screen.getByLabelText('lavish').props.accessibilityState.selected).toBe(false)
+    fireEvent.press(screen.getByLabelText('lavish'))
+    await act(async () => undefined)
+    expect(useFocusStore.getState().byHost['host-1']).toBe('%20')
+    expect(mockRouter.push).not.toHaveBeenCalled()
+  })
   it('draws the status row, the three columns and their content', async () => {
     await renderCockpit()
 
@@ -197,8 +209,9 @@ describe('the iPad cockpit', () => {
     await renderCockpit()
     expect(screen.getByTestId('chat-view')).toBeTruthy()
     expect(screen.queryByTestId('terminal-surface')).toBeNull()
-    expect(screen.getByText('Add approvals to the HUD')).toBeTruthy()
-    expect(screen.getByText('commando · chat · working')).toBeTruthy()
+    // Header uses the stable session identity rather than a turn title.
+    expect(screen.getAllByText('commando').length).toBeGreaterThan(0)
+    expect(screen.getByText(/ · Claude · working$/)).toBeTruthy()
     expect(screen.getByText('The card now shows the request.')).toBeTruthy()
   })
 })
