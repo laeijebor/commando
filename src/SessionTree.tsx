@@ -63,6 +63,7 @@ const providerLabels: Record<AgentStatus['provider'], string> = {
   opencode: 'OpenCode',
   cursor: 'Cursor',
   muse: 'Muse',
+  deepseek: 'DeepSeek',
   unknown: 'Unknown agent',
 }
 

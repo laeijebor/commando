@@ -23,7 +23,7 @@ const ICONS: Record<PanePaletteEntry['screen'], ReactNode> = {
 export function panePaletteEntries(chat: { provider: string; providerLabel: string; hostConnected: boolean; takesMcp: boolean } | undefined): PanePaletteEntry[] {
   const entries: PanePaletteEntry[] = [{ screen: 'conversations', label: 'Resume conversation', detail: 'Switch to or open a past chat', shortcut: '⌘P' }]
   if (!chat) return entries
-  const unavailable = chat.provider !== 'claude' ? `Not available for ${chat.providerLabel} chats yet`
+  const unavailable = chat.provider !== 'claude' && chat.provider !== 'deepseek' ? `Not available for ${chat.providerLabel} chats yet`
     : !chat.hostConnected ? "This chat's agent host is disconnected"
       : !chat.takesMcp ? 'Restart this chat to manage its MCP servers'
         : undefined

@@ -36,8 +36,8 @@ export function hostTakesTurnFlow(session: { hostVersion: number }): boolean {
 /** Hosts from this version can hand their conversation to Claude Code in the same pane. */
 export const CHAT_SWITCH_HOST_VERSION = 5
 
-export function hostTakesSwitch(session: { hostVersion: number }): boolean {
-  return session.hostVersion >= CHAT_SWITCH_HOST_VERSION
+export function hostTakesSwitch(session: { hostVersion: number; provider?: ChatProvider }): boolean {
+  return session.provider !== 'deepseek' && session.hostVersion >= CHAT_SWITCH_HOST_VERSION
 }
 /** Hosts from this version list and manage their agent's MCP servers. */
 export const CHAT_MCP_HOST_VERSION = 6
@@ -49,14 +49,14 @@ export function hostTakesMcp(session: { hostVersion: number }): boolean {
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
-export type ChatProvider = 'claude' | 'codex' | 'muse' | 'cursor'
-export const CHAT_PROVIDERS: readonly ChatProvider[] = ['claude', 'codex', 'muse', 'cursor']
+export type ChatProvider = 'claude' | 'codex' | 'muse' | 'cursor' | 'deepseek'
+export const CHAT_PROVIDERS: readonly ChatProvider[] = ['claude', 'codex', 'muse', 'cursor', 'deepseek']
 /** The provider's own terminal UI, which a chat can hand its conversation to. */
 export function providerTuiLabel(provider: ChatProvider | undefined): string {
   return provider === 'codex' ? 'Codex TUI' : provider === 'muse' ? 'Muse TUI' : provider === 'cursor' ? 'Cursor' : 'Claude Code'
 }
 export function providerName(provider: ChatProvider | undefined): string {
-  return provider === 'codex' ? 'Codex' : provider === 'muse' ? 'Muse' : provider === 'cursor' ? 'Cursor' : 'Claude'
+  return provider === 'deepseek' ? 'DeepSeek' : provider === 'codex' ? 'Codex' : provider === 'muse' ? 'Muse' : provider === 'cursor' ? 'Cursor' : 'Claude'
 }
 export function isChatProvider(value: unknown): value is ChatProvider {
   return typeof value === 'string' && (CHAT_PROVIDERS as readonly string[]).includes(value)

@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { stripAttachmentNotes } from '../shared/agent-chat.js'
 import { isChatConversationSessionId, type ChatConversation, type ChatConversationProvider } from '../shared/chat-conversations.js'
 import type { PaneRepo } from '../shared/protocol.js'
+import { deepseekConfigDir } from './agent-host/deepseek.js'
 import { listClaudeProfiles } from './tmux-create.js'
 
 /** Enough of a transcript's start for its folder and first prompt, and of its end for its latest title. */
@@ -284,12 +285,12 @@ export class ChatConversationIndex {
       ? await this.options.claudeConfigDirs()
       : (await listClaudeProfiles(this.home)).map((profile) => profile.configDir)
     const files: { file: string; provider: ChatConversationProvider; configDir: string }[] = []
-    for (const configDir of configDirs) {
+    for (const configDir of [...new Set([...configDirs, deepseekConfigDir(this.home)])]) {
       const projects = join(configDir, 'projects')
       for (const project of await entries(projects)) {
         if (!project.directory) continue
         for (const entry of await entries(join(projects, project.name))) {
-          if (entry.file && entry.name.endsWith('.jsonl')) files.push({ file: join(projects, project.name, entry.name), provider: 'claude', configDir })
+          if (entry.file && entry.name.endsWith('.jsonl')) files.push({ file: join(projects, project.name, entry.name), provider: configDir === deepseekConfigDir(this.home) ? 'deepseek' : 'claude', configDir })
         }
       }
     }
@@ -409,10 +410,11 @@ export class ChatConversationIndex {
     const cached = this.parsed.get(candidate.file)
     if (cached && cached.mtimeMs === candidate.mtimeMs && cached.size === candidate.size && cached.cwd === candidate.cwd) return cached.value
     try {
-      const value = await (candidate.provider === 'claude'
+      const parsed = await (candidate.provider === 'claude' || candidate.provider === 'deepseek'
         ? parseClaudeTranscript(candidate.file, candidate.size, candidate.configDir)
         : candidate.provider === 'cursor' ? parseCursorTranscript(candidate.file, candidate.size, candidate.cwd)
         : parseCodexRollout(candidate.file, candidate.size, threadNames))
+      const value = parsed && candidate.provider === 'deepseek' ? { ...parsed, provider: 'deepseek' as const } : parsed
       this.parsed.set(candidate.file, { mtimeMs: candidate.mtimeMs, size: candidate.size, cwd: candidate.cwd, value })
       return value
     } catch {

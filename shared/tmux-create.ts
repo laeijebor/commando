@@ -17,18 +17,18 @@ export type TmuxSplitPlacement = 'before' | 'after'
  * Interactive CLIs supported by creation; provider names are not executable names.
  * `claude-chat` runs Claude through Commando's agent host and shows it as a chat.
  */
-export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
+export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'deepseek-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
 /** The providers that run through Commando's agent host as a chat. */
-export type ChatLaunchProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat'
+export type ChatLaunchProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'deepseek-chat'
 export function isChatLaunchProvider(provider: unknown): provider is ChatLaunchProvider {
-  return provider === 'claude-chat' || provider === 'codex-chat' || provider === 'muse-chat' || provider === 'cursor-chat'
+  return provider === 'claude-chat' || provider === 'codex-chat' || provider === 'muse-chat' || provider === 'cursor-chat' || provider === 'deepseek-chat'
 }
 /** The agent host's name for a chat provider: `commando-agent <name>`. */
 export function chatHostProvider(provider: ChatLaunchProvider): ChatProvider {
-  return provider === 'codex-chat' ? 'codex' : provider === 'muse-chat' ? 'muse' : provider === 'cursor-chat' ? 'cursor' : 'claude'
+  return provider === 'deepseek-chat' ? 'deepseek' : provider === 'codex-chat' ? 'codex' : provider === 'muse-chat' ? 'muse' : provider === 'cursor-chat' ? 'cursor' : 'claude'
 }
 export function chatLaunchProvider(provider: ChatProvider): ChatLaunchProvider {
-  return provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : provider === 'cursor' ? 'cursor-chat' : 'claude-chat'
+  return provider === 'deepseek' ? 'deepseek-chat' : provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : provider === 'cursor' ? 'cursor-chat' : 'claude-chat'
 }
 export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'auto'
 export type SessionAgentLaunch = {
@@ -106,6 +106,7 @@ export const SESSION_AGENT_CHOICES = [
   { value: 'codex-chat', label: 'Codex chat' },
   { value: 'muse-chat', label: 'Muse chat' },
   { value: 'cursor-chat', label: 'Cursor chat' },
+  { value: 'deepseek-chat', label: 'DeepSeek chat' },
   { value: 'claude', label: 'Claude (terminal)' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
@@ -113,7 +114,7 @@ export const SESSION_AGENT_CHOICES = [
 ] as const
 
 export const SESSION_AGENT_EXECUTABLES: Record<SessionAgentProvider, string> = {
-  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', 'muse-chat': 'commando-agent', 'cursor-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
+  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', 'muse-chat': 'commando-agent', 'cursor-chat': 'commando-agent', 'deepseek-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
 }
 
 /** Keep prompt data out of the shell and CLI option/subcommand parsers. */

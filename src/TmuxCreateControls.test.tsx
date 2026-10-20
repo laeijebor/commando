@@ -745,3 +745,15 @@ describe('prepare-command daemon sync', () => {
     expect(warn).toHaveBeenCalledWith('Unable to sync repository prepare command', expect.any(Error))
   })
 })
+
+
+it('creates a DeepSeek chat with its own permissions and no Claude profile', async () => {
+  const onCreateSession = vi.fn(async () => ({ created, agentLaunch: { version: 1 as const, provider: 'deepseek-chat' as const, paneId: created.paneId, mode: 'interactive-pty' as const, state: 'initiated' as const } }))
+  const loadClaudeProfiles = vi.fn(async () => [{ name: 'claudew', configDir: '/home/.claudew' }])
+  render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadClaudeProfiles={loadClaudeProfiles} />)
+  fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'deepseek' } })
+  fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'deepseek-chat' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+  await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'deepseek-chat', permissionMode: 'default' } })))
+  expect(loadClaudeProfiles).not.toHaveBeenCalled()
+})

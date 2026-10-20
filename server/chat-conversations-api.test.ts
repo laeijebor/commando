@@ -594,3 +594,10 @@ it('rejects a Cursor conversation already open in another pane', async () => {
   const { resume } = setup({ conversation: { provider: 'cursor', sessionId }, chats: [chat(), chat({ paneId: '%2', provider: 'cursor', sessionId })] })
   expect(await resume({ provider: 'cursor', sessionId })).toMatchObject({ status: 409, body: { error: 'That conversation is already open in pane %2' } })
 })
+
+
+it('reopens DeepSeek as a chat with inherited permissions, never as a Claude or Codex TUI', async () => {
+  const { creator, resume } = setup({ conversation: { provider: 'deepseek', configDir: '/home/.commando/deepseek' }, chats: [] })
+  expect(await resume({ provider: 'deepseek', placement: 'split' })).toMatchObject({ status: 200 })
+  expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'deepseek-chat', permissionMode: 'default', resume: ID } }))
+})

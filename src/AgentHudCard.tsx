@@ -56,6 +56,8 @@ function providerInitials(provider: AgentProvider) {
       return 'CU'
     case 'muse':
       return 'MU'
+    case 'deepseek':
+      return 'DS'
     case 'unknown':
       return 'AG'
   }

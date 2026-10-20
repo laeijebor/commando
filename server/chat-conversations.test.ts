@@ -515,3 +515,16 @@ describe('Cursor SQLite conversation stores', () => {
     expect((await index().index.list()).map((entry) => entry.title)).toEqual(['Cursor work'])
   })
 })
+
+
+it('indexes DeepSeek transcripts separately from Claude even for the same session id', async () => {
+  await claudeTranscript(CLAUDE_ID, [user('Claude conversation')], 1000)
+  const profile = join(home, '.commando', 'deepseek')
+  await claudeTranscript(CLAUDE_ID, [user('DeepSeek conversation')], 2000, profile)
+  const { index: conversations } = index()
+  const found = await conversations.list()
+  expect(found.map(({ provider, title }) => ({ provider, title }))).toEqual([
+    { provider: 'deepseek', title: 'DeepSeek conversation' }, { provider: 'claude', title: 'Claude conversation' },
+  ])
+  expect(await conversations.find('deepseek', CLAUDE_ID)).toMatchObject({ configDir: profile })
+})

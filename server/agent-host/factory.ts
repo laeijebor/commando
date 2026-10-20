@@ -1,6 +1,7 @@
 import type { ChatProvider } from '../../shared/agent-chat.js'
 import type { ChatProviderSession } from './provider.js'
 import { AgentSession, type AgentSessionSpec } from './session.js'
+import { deepseekSessionSpec } from './deepseek.js'
 import { which } from './which.js'
 import { CursorChatSession } from './cursor/session.js'
 import { CodexChatSession } from './codex/session.js'
@@ -8,6 +9,9 @@ import { MuseChatSession } from './muse/session.js'
 
 export async function createChatProviderSession(provider: ChatProvider, spec: AgentSessionSpec): Promise<ChatProviderSession> {
   switch (provider) {
+    case 'deepseek':
+      spec = await deepseekSessionSpec(spec)
+      // Fall through to the Claude Code runtime, with an isolated API profile.
     case 'claude': {
       const claudePath = spec.claudePath ?? await which('claude')
       // getSessionMessages/getSessionInfo read transcripts from the chosen profile.

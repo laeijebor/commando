@@ -24,7 +24,7 @@ function readAll(): Record<string, ChatLaunchPreference> {
  */
 function storageKeys(repoKey: string | undefined, provider: ChatLaunchProvider): { key: string | undefined; lastKey: string } {
   if (provider === 'claude-chat') return { key: repoKey, lastKey: LAST_KEY }
-  const prefix = provider === 'codex-chat' ? 'codex' : provider === 'cursor-chat' ? 'cursor' : 'muse2'
+  const prefix = provider === 'codex-chat' ? 'codex' : provider === 'cursor-chat' ? 'cursor' : provider === 'deepseek-chat' ? 'deepseek' : 'muse2'
   return { key: `${prefix}:${repoKey ?? LAST_KEY}`, lastKey: `${prefix}:${LAST_KEY}` }
 }
 

@@ -128,3 +128,9 @@ describe('Cursor chat launch arguments', () => {
       .toEqual(['commando-agent', 'cursor', '--permission-mode', 'auto', '--resume', 'agent-12345678-0000', '--prompt', '--model injected\nhello'])
   })
 })
+
+
+it('launches DeepSeek without inheriting Claude profile or readable-directory flags', () => {
+  expect(sessionAgentArgv({ provider: 'deepseek-chat', configDir: '/unused', readableDir: '/unused', permissionMode: 'plan', resume: 'session-1234', prompt: 'hello' }))
+    .toEqual(['commando-agent', 'deepseek', '--permission-mode', 'plan', '--resume', 'session-1234', '--prompt', 'hello'])
+})

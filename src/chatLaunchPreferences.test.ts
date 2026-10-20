@@ -18,3 +18,12 @@ describe('Muse chat launch preferences', () => {
     expect(loadChatLaunch('/repo', 'codex-chat')).toEqual({ permissionMode: 'default' })
   })
 })
+
+
+it('keeps DeepSeek permissions separate from Claude and Muse preferences', () => {
+  saveChatLaunch('/repo', { permissionMode: 'bypassPermissions', configDir: '/home/.claude' })
+  saveChatLaunch('/repo', { permissionMode: 'plan' }, 'deepseek-chat')
+  expect(loadChatLaunch('/repo', 'deepseek-chat')).toEqual({ permissionMode: 'plan' })
+  expect(loadChatLaunch('/repo', 'muse-chat')).toEqual({ permissionMode: 'default' })
+  expect(loadChatLaunch('/repo')).toEqual({ permissionMode: 'bypassPermissions', configDir: '/home/.claude' })
+})

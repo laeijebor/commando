@@ -5,6 +5,7 @@
  */
 import {
   MAX_CHAT_IMAGES,
+  providerName,
   baseModelId,
   hostTakesSettings,
   selectedModelOption,
@@ -155,7 +156,7 @@ function providerPermissionModes(session?: Pick<ChatSessionInfo, 'provider'>): P
 }
 
 export function providerLabel(session: Pick<ChatSessionInfo, 'provider'>): string {
-  return session.provider === 'claude' ? 'Claude' : session.provider === 'muse' ? 'Muse' : session.provider === 'cursor' ? 'Cursor' : 'Codex'
+  return providerName(session.provider)
 }
 
 type PermissionSession = Pick<ChatSessionInfo, 'provider'> & Partial<Pick<ChatSessionInfo, 'sandboxed'>>
@@ -221,7 +222,7 @@ export function permissionModeOptions(session: ChatSessionInfo): ChatSessionPerm
   return (Object.keys(PERMISSION_MODES) as ChatSessionPermissionMode[]).filter((mode) => (
     mode === current
     || mode === 'default' || (mode === 'plan' && session.provider !== 'muse')
-    || (session.provider === 'claude' && (mode === 'acceptEdits' || (mode === 'auto' && supportsAuto)))
+    || ((session.provider === 'claude' || session.provider === 'deepseek') && (mode === 'acceptEdits' || (mode === 'auto' && supportsAuto)))
     || (mode === 'bypassPermissions' && session.bypassAllowed)
   ))
 }

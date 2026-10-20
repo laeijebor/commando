@@ -963,7 +963,7 @@ export function ChatComposer({
           </span>
           {planUsage ? <PlanUsageMeter usage={planUsage} profile={profile} /> : null}
           {session.contextUsage ? (
-            <ContextMeter usage={session.contextUsage} canCompact={session.provider === 'claude' && !disabled && !running} onCompact={() => onSend('/compact')} />
+            <ContextMeter usage={session.contextUsage} canCompact={(session.provider === 'claude' || session.provider === 'deepseek') && !disabled && !running} onCompact={() => onSend('/compact')} />
           ) : null}
           {running ? (
             <Button size="icon-sm" variant="outline" aria-label="Stop" title={queue.length ? 'Stop (Esc): queued messages come back here' : 'Stop (Esc)'} onClick={interrupt} disabled={!hostConnected}>
