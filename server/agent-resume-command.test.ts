@@ -95,7 +95,7 @@ describe('buildResumeCommand', () => {
 })
 
 describe('isChatResumeCommand', () => {
-  it.each(['claude', 'codex'] as const)('recognises %s resume and return commands from the builders, with or without an environment prefix', (provider) => {
+  it.each(['claude', 'codex', 'muse'] as const)('recognises %s resume and return commands from the builders, with or without an environment prefix', (provider) => {
     const environments: Record<string, string>[] = [{}, { COMMANDO_PORT: '4410', COMMANDO_SOCKET: "/tmp/O'Brien/commando socket" }]
     for (const launcher of ['/c/scripts/commando-agent', "/checkout with spaces/O'Brien/scripts/commando-agent"]) {
       for (const daemonEnv of environments) {
@@ -118,7 +118,7 @@ describe('isChatResumeCommand', () => {
     }
   })
 
-  it.each(['claude', 'codex'] as const)('does not mistake a %s TUI command for a chat', (provider) => {
+  it.each(['claude', 'codex', 'muse'] as const)('does not mistake a %s TUI command for a chat', (provider) => {
     const command = buildResumeCommand(provider, SESSION, { args: [provider], env: {} })
     expect(command).not.toBeNull()
     expect(isChatResumeCommand(command!)).toBe(false)

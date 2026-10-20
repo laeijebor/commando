@@ -66,7 +66,41 @@ async function opencodeDb(dataHome = join(home, '.local', 'share')) {
   return db
 }
 
+async function museDb(dataHome = join(home, '.local', 'share')) {
+  await mkdir(join(dataHome, 'muse'), { recursive: true })
+  const db = new DatabaseSync(join(dataHome, 'muse', 'session-index.db'))
+  db.exec(`CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace_root TEXT, title TEXT NOT NULL, git_branch TEXT,
+    updated_at_us INTEGER, prompt_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, msp_parent_session_id TEXT)`)
+  return db
+}
+
 describe('ChatConversationIndex', () => {
+  it('reads prompted top-level Muse sessions from its index, sharing the global limit', async () => {
+    const db = await museDb()
+    const id = '01a1509e-bbc8-7a33-bd71-167c86ced013'
+    try {
+      const insert = db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      insert.run(id, home, 'Mock up the landing page', 'landing', 3_000_000_000, 4, 'valid', null)
+      insert.run('01a155ff-bd2e-7061-b388-ea2f43cd6b99', home, 'New session', null, 9_000_000_000, 0, 'valid', null)
+      insert.run('01a155ff-bd2e-7061-b388-ea2f43cd6b9a', home, 'Child', null, 9_000_000_000, 2, 'valid', id)
+      insert.run('6f1c5bd4-d694-7ff1-831f-e2f5f5409c39', null, 'No folder', null, 9_000_000_000, 2, 'missing_metadata', null)
+      insert.run('01a155ff-bd2e-7061-b388-ea2f43cd6b9b', 'relative/path', 'Relative', null, 9_000_000_000, 2, 'valid', null)
+      await claudeTranscript(CLAUDE_ID, [user('Claude')], 1_000_000)
+      await cursorTranscript(CODEX_ID, home, { at: 2_000_000 })
+      expect(await index(2).index.list()).toMatchObject([
+        { provider: 'muse', sessionId: id, cwd: home, title: 'Mock up the landing page', branch: 'landing', updatedAt: 3_000_000 },
+        { provider: 'cursor', updatedAt: 2_000_000 },
+      ])
+    } finally { db.close() }
+  })
+
+  it('ignores a missing or malformed Muse index', async () => {
+    expect(await index().index.list()).toEqual([])
+    await mkdir(join(home, '.local', 'share', 'muse'), { recursive: true })
+    await writeFile(join(home, '.local', 'share', 'muse', 'session-index.db'), 'not sqlite')
+    expect(await index().index.list()).toEqual([])
+  })
+
   it.each([false, true])('indexes CLI Cursor transcripts (flat: %s), with exact cwd from the sidecar', async (flat) => {
     const cwd = join(home, 'workspace with spaces-and-dashes')
     await mkdir(cwd)
