@@ -477,7 +477,7 @@ export class TmuxCreator {
     const { worktree, rollback } = await this.worktrees.createWorktree({
       mainRoot: repo.mainRoot,
       branch,
-      path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch, repo.worktreeRoot),
+      path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch, repo.worktreesParent),
       ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
     })
     try {
@@ -718,7 +718,7 @@ export class TmuxCreator {
       const repo = await this.worktrees!.probe(cwd!)
       if (!repo.isRepo || !repo.mainRoot) throw new GitWorktreeError('not-repo', `${cwd} is not inside a git repository`)
       const result = await this.worktrees!.createWorktree({
-        mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!, repo.worktreeRoot),
+        mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!, repo.worktreesParent),
         ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
       })
       worktree = result.worktree

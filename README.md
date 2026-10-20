@@ -446,14 +446,17 @@ reboot. A dedicated APFS volume with journaling and Spotlight switched off avoid
 that: watchers still receive live events, only the journal stops.
 
 ```bash
-sudo bash scripts/dev-volume.sh          # creates /Volumes/Dev (set DEV_VOLUME_NAME for another name)
+sudo bash scripts/dev-volume.sh                        # creates /Volumes/Dev
+sudo DEV_VOLUME_NAME=Work bash scripts/dev-volume.sh   # another name
 export COMMANDO_WORKTREE_ROOT=/Volumes/Dev/worktrees   # in the shell profile the daemon starts from
 ```
 
 The script adds the volume to the existing APFS container (no repartitioning),
 marks it `.fseventsd/no_log`, runs `mdutil -i off`, excludes it from Time
-Machine, moves the npm cache and Xcode DerivedData there, and is safe to re-run.
-pnpm needs no change: it keeps a per-volume store so hard links keep working.
+Machine, and points the npm cache and Xcode DerivedData at it (the old cache
+folders are left in place). It is safe to re-run, and refuses a volume of that
+name it did not create unless `DEV_VOLUME_ADOPT=1` is set. pnpm needs no change:
+it keeps a per-volume store so hard links keep working.
 With `COMMANDO_WORKTREE_ROOT` set, new worktrees are created at
 `<root>/<repo>-worktrees/<branch>` and both clients preview that path; existing
 worktrees stay where they are, so migrate gradually as branches merge.

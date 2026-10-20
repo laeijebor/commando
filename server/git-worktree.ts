@@ -47,15 +47,15 @@ export type GitWorktreeServiceOptions = {
   pathExists?: (target: string) => Promise<boolean>
   fetchTimeoutMs?: number
   environment?: NodeJS.ProcessEnv
-  /** Absolute parent folder for new worktrees; see `worktreeRootFromEnv`. */
-  worktreeRoot?: string
+  /** Absolute folder new `<repo>-worktrees` folders go under; see `worktreesParentFromEnv`. */
+  worktreesParent?: string
 }
 
 /**
  * `COMMANDO_WORKTREE_ROOT`: where new worktrees go (`<root>/<repo>-worktrees/<branch>`)
  * instead of beside the main checkout. Unset or blank keeps the sibling layout.
  */
-export function worktreeRootFromEnv(environment: NodeJS.ProcessEnv): string | undefined {
+export function worktreesParentFromEnv(environment: NodeJS.ProcessEnv): string | undefined {
   const value = environment.COMMANDO_WORKTREE_ROOT?.trim()
   if (!value) return undefined
   if (!path.isAbsolute(value) || /[\u0000-\u001f\u007f]/u.test(value)) {
@@ -125,7 +125,7 @@ export class GitWorktreeService {
   private readonly pathExists: (target: string) => Promise<boolean>
   private readonly fetchTimeoutMs: number
   private readonly environment: NodeJS.ProcessEnv
-  private readonly worktreeRoot: string | undefined
+  private readonly worktreesParent: string | undefined
 
   constructor(
     private readonly execute: GitProcessExecutor = defaultExecutor,
@@ -134,7 +134,7 @@ export class GitWorktreeService {
     this.pathExists = options.pathExists ?? defaultPathExists
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
     this.environment = options.environment ?? process.env
-    this.worktreeRoot = options.worktreeRoot
+    this.worktreesParent = options.worktreesParent
   }
 
   /** Describe the repository containing `directory`, or `{ isRepo: false }`. */
@@ -151,7 +151,7 @@ export class GitWorktreeService {
       branch: branch ?? '',
       isWorktree: root !== mainRoot,
       ...(defaultBranch ? { defaultBranch, remote: REMOTE } : {}),
-      ...(this.worktreeRoot ? { worktreeRoot: this.worktreeRoot } : {}),
+      ...(this.worktreesParent ? { worktreesParent: this.worktreesParent } : {}),
     }
   }
 

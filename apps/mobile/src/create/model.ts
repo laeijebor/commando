@@ -69,7 +69,7 @@ export function effectiveBranch(sessionName: string, edited: string | null): str
 /** The daemon's default worktree path for the branch, with a placeholder while the branch is empty. */
 export function previewWorktreePath(repo: GitRepoInfo | null, branch: string): string {
   if (!repo?.mainRoot) return ''
-  return defaultWorktreePath(repo.mainRoot, branch || '<branch>', repo.worktreeRoot)
+  return defaultWorktreePath(repo.mainRoot, branch || '<branch>', repo.worktreesParent)
 }
 
 /** `origin/main`, or plain `HEAD` when the checkout has no remote. */
