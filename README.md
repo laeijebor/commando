@@ -415,6 +415,7 @@ Opting in holds agent hooks open exactly like Island does: a pending permission 
 | --- | --- | --- |
 | `COMMANDO_PORT` | Local daemon port | `4310` |
 | `COMMANDO_GITHUB` | `on`/`off`: GitHub reads (PR lists, quick look, branch PR badges). Daemons on other ports share the same `gh` API budget | `on` at `4310`, `off` on other ports |
+| `COMMANDO_WORKTREE_ROOT` | Absolute folder new worktrees are created under, as `<root>/<repo>-worktrees/<branch>`; see [Worktree volume](#worktree-volume) | Beside the main checkout: `<parent>/<repo>-worktrees/<branch>` |
 | `COMMANDO_TURN_BRIEFS` | Case-insensitive `off`/`0`/`false` disables model turn briefs; `on`/`1`/`true` enables them | Enabled at `4310`, disabled on other ports |
 | `COMMANDO_OWNER_EMAIL` | Enables email/password auth and restricts first-owner creation to this address | Token-only mode |
 | `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
@@ -435,6 +436,27 @@ Opting in holds agent hooks open exactly like Island does: a pending permission 
 | `COMMANDO_TMUX_SOCKET_PATH` | Connect through `tmux -S <path>` | Default tmux server |
 
 Set only one tmux socket override.
+
+### Worktree volume
+
+With many agents churning `node_modules` and build output, macOS's `fseventsd`
+can fall behind writing its on-disk journal. The kernel then drops file events
+and every watcher (watchman, Metro, Vite, Spotlight) rescans in a loop until a
+reboot. A dedicated APFS volume with journaling and Spotlight switched off avoids
+that: watchers still receive live events, only the journal stops.
+
+```bash
+sudo bash scripts/dev-volume.sh          # creates /Volumes/Dev (set DEV_VOLUME_NAME for another name)
+export COMMANDO_WORKTREE_ROOT=/Volumes/Dev/worktrees   # in the shell profile the daemon starts from
+```
+
+The script adds the volume to the existing APFS container (no repartitioning),
+marks it `.fseventsd/no_log`, runs `mdutil -i off`, excludes it from Time
+Machine, moves the npm cache and Xcode DerivedData there, and is safe to re-run.
+pnpm needs no change: it keeps a per-volume store so hard links keep working.
+With `COMMANDO_WORKTREE_ROOT` set, new worktrees are created at
+`<root>/<repo>-worktrees/<branch>` and both clients preview that path; existing
+worktrees stay where they are, so migrate gradually as branches merge.
 
 ## Tailscale Access
 

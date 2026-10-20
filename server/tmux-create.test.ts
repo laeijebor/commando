@@ -679,6 +679,15 @@ describe('TmuxCreator worktree-backed sessions', () => {
     expect(git.createWorktree.mock.calls[0][0].path).toBe(target)
   })
 
+  it('defaults the worktree path under the configured worktree root the probe reports', async () => {
+    const git = worktrees({ probe: { ...repo, worktreeRoot: '/Volumes/Dev/worktrees' } })
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    await creator.createSession({ name: 'flow', cwd: MAIN, worktree: { branch: 'bot-rematch-flow' } })
+    expect(git.createWorktree.mock.calls[0][0].path).toBe('/Volumes/Dev/worktrees/Save-All-worktrees/bot-rematch-flow')
+    await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: MAIN, worktree: { branch: 'pane-flow' } })
+    expect(git.createWorktree.mock.calls.at(-1)?.[0].path).toBe('/Volumes/Dev/worktrees/Save-All-worktrees/pane-flow')
+  })
+
   it('runs the repository preparation command in the new pane before opening a shell', async () => {
     const git = worktrees()
     const run = tmuxRunner()

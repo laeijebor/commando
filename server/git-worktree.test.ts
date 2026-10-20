@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { GitExecutorOptions } from './git-diff.js'
-import { GitWorktreeError, GitWorktreeService } from './git-worktree.js'
+import { GitWorktreeError, GitWorktreeService, worktreeRootFromEnv } from './git-worktree.js'
 
 type Call = { args: string[]; cwd: string; timeout: number }
 
@@ -59,6 +59,15 @@ describe('GitWorktreeService.probe', () => {
     expect(git.calls[0].cwd).toBe(`${MAIN}/apps/web`)
   })
 
+  it('reports the configured worktree root so clients preview the same default path', async () => {
+    const git = fakeGit([
+      [['rev-parse', '--path-format=absolute'], `${MAIN}\n${MAIN}/.git\nmain\n`],
+      [['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], 'origin/main\n'],
+    ])
+    const service = new GitWorktreeService(git.execute, { worktreeRoot: '/Volumes/Dev/worktrees' })
+    await expect(service.probe(MAIN)).resolves.toMatchObject({ isRepo: true, worktreeRoot: '/Volumes/Dev/worktrees' })
+  })
+
   it('maps a linked worktree back to its main checkout', async () => {
     const worktree = '/Users/dev/gizmo/Save-All-worktrees/coins'
     const git = fakeGit([
@@ -111,6 +120,17 @@ describe('GitWorktreeService.probe', () => {
     const info = await new GitWorktreeService(noRemote.execute).probe(MAIN)
     expect(info.defaultBranch).toBeUndefined()
     expect(info.remote).toBeUndefined()
+  })
+})
+
+describe('worktreeRootFromEnv', () => {
+  it('is unset unless COMMANDO_WORKTREE_ROOT names an absolute folder', () => {
+    expect(worktreeRootFromEnv({})).toBeUndefined()
+    expect(worktreeRootFromEnv({ COMMANDO_WORKTREE_ROOT: '  ' })).toBeUndefined()
+    expect(worktreeRootFromEnv({ COMMANDO_WORKTREE_ROOT: '/Volumes/Dev/worktrees/' })).toBe('/Volumes/Dev/worktrees')
+    expect(() => worktreeRootFromEnv({ COMMANDO_WORKTREE_ROOT: 'worktrees' })).toThrow(/absolute path/)
+    expect(() => worktreeRootFromEnv({ COMMANDO_WORKTREE_ROOT: '/Volumes/Dev\n' })).not.toThrow()
+    expect(() => worktreeRootFromEnv({ COMMANDO_WORKTREE_ROOT: '/Volumes/De\u0001v' })).toThrow(/absolute path/)
   })
 })
 
