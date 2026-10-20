@@ -264,6 +264,7 @@ export class ChatConversationIndex {
   private readonly home: string
   private readonly codexHome: string
   private readonly opencodeDb: string
+  private readonly museDb: string
   private readonly limit: number
   private readonly parsed = new Map<string, { mtimeMs: number; size: number; cwd?: string; value: Parsed }>()
   private threadNames: { mtimeMs: number; names: Map<string, string> } | undefined
@@ -272,7 +273,9 @@ export class ChatConversationIndex {
   constructor(private readonly options: ChatConversationIndexOptions) {
     this.home = options.home ?? homedir()
     this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex')
-    this.opencodeDb = join(options.xdgDataHome ?? process.env.XDG_DATA_HOME ?? join(this.home, '.local', 'share'), 'opencode', 'opencode.db')
+    const dataHome = options.xdgDataHome ?? process.env.XDG_DATA_HOME ?? join(this.home, '.local', 'share')
+    this.opencodeDb = join(dataHome, 'opencode', 'opencode.db')
+    this.museDb = join(dataHome, 'muse', 'session-index.db')
     this.limit = options.limit ?? DEFAULT_LIMIT
   }
 
@@ -366,6 +369,28 @@ export class ChatConversationIndex {
     }
   }
 
+  /**
+   * Muse's own session index, read the same way as OpenCode's. Sessions nobody prompted, child
+   * sessions and ones Muse could not read are not conversations to carry on.
+   */
+  private museConversations(): Omit<ChatConversation, 'repoRoot' | 'checkoutRoot'>[] {
+    let db: DatabaseSync | undefined
+    try {
+      db = new DatabaseSync(this.museDb, { readOnly: true })
+      return db.prepare(`SELECT session_id, workspace_root, title, git_branch, updated_at_us FROM sessions
+        WHERE status = 'valid' AND prompt_count > 0 AND msp_parent_session_id IS NULL`).all().flatMap((row) => {
+        if (!isChatConversationSessionId(row.session_id) || typeof row.workspace_root !== 'string' || !isAbsolute(row.workspace_root)
+          || typeof row.title !== 'string' || !row.title.trim() || typeof row.updated_at_us !== 'number' || !Number.isFinite(row.updated_at_us)) return []
+        const branch = typeof row.git_branch === 'string' && row.git_branch ? { branch: row.git_branch } : {}
+        return [{ provider: 'muse' as const, sessionId: row.session_id, cwd: row.workspace_root, title: shortTitle(row.title), updatedAt: Math.round(row.updated_at_us / 1000), ...branch }]
+      })
+    } catch {
+      return []
+    } finally {
+      db?.close()
+    }
+  }
+
   /** Names given to Codex threads, from Codex's own index. */
   private async codexThreadNames(): Promise<Map<string, string>> {
     const file = join(this.codexHome, 'session_index.jsonl')
@@ -440,6 +465,7 @@ export class ChatConversationIndex {
   async list(): Promise<ChatConversation[]> {
     const [claude, codex, cursor, threadNames, cursorChats] = await Promise.all([this.claudeFiles(), this.codexFiles(), this.cursorFiles(), this.codexThreadNames(), this.cursorConversations()])
     const opencode = this.opencodeConversations()
+    const muse = this.museConversations()
     const candidates = (await withStats([...claude, ...codex, ...cursor])).sort((a, b) => b.mtimeMs - a.mtimeMs)
     const found: (Omit<ChatConversation, 'repoRoot' | 'checkoutRoot'>)[] = []
     const seen = new Set<string>()
@@ -455,7 +481,7 @@ export class ChatConversationIndex {
         found.push({ ...value, updatedAt: Math.round(batch[offset]!.mtimeMs) })
       })
     }
-    const newest = [...found, ...opencode, ...cursorChats].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, this.limit)
+    const newest = [...found, ...opencode, ...muse, ...cursorChats].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, this.limit)
     const repos = await this.options.resolveRepos([...new Set(newest.map((conversation) => conversation.cwd))])
     this.last = newest.map((conversation) => {
       const repo = repos.get(conversation.cwd)
