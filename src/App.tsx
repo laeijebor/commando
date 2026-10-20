@@ -768,6 +768,7 @@ export function TerminalPaneCard({
         {showChat && chat ? (
           <ChatPane
             paneId={pane.id}
+            registerFocusable={registerFocusable}
             pane={pane}
             snapshot={lineageSnapshot}
             statuses={lineageStatuses}
@@ -1995,6 +1996,7 @@ export function App() {
     })
   }
 
+  const revealedPaneFocus = useRef<typeof pendingPaneFocus>(null)
   useEffect(() => {
     if (!pendingPaneFocus) return
     const pane = paneMap.get(pendingPaneFocus.paneId)
@@ -2003,16 +2005,24 @@ export function App() {
       setPendingPaneFocus(null)
       return
     }
+    const group = groups.find((candidate) => candidate.paneIds.includes(pendingPaneFocus.paneId))
+    const shown = pane.sessionId === selectedSessionId && (!group || group === activeGroup)
+    // Once the pane was shown, a different selection means the user moved on:
+    // drop the jump instead of pulling them back on every render.
+    if (!shown && revealedPaneFocus.current === pendingPaneFocus) {
+      setPendingPaneFocus(null)
+      return
+    }
     if (pane.sessionId !== selectedSessionId) {
       setArea('workspace')
       setSelectedSessionId(pane.sessionId)
       return
     }
-    const group = groups.find((candidate) => candidate.paneIds.includes(pendingPaneFocus.paneId))
     if (group && group !== activeGroup) {
       setActiveTabs((current) => ({ ...current, [pane.sessionId]: group.windowId }))
       return
     }
+    revealedPaneFocus.current = pendingPaneFocus
     const frame = window.requestAnimationFrame(() => {
       const node = paneRefs.current.get(pendingPaneFocus.paneId)
       if (!node?.isConnected) return
