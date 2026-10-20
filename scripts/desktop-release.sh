@@ -246,7 +246,9 @@ make_rebuild_icon() {
     rm -rf "$rebuild_icon"
     # %q quotes the path for zsh; the AppleScript string literal then needs \ and " escaped.
     local command applescript
-    printf -v command 'nohup %q rebuild >/dev/null 2>&1 &' "$script"
+    # Finder launches the icon without install's environment, so carry the effective settings in the command.
+    printf -v command 'nohup env COMMANDO_RELEASE_LABEL=%q COMMANDO_RELEASE_STATE_DIR=%q COMMANDO_RELEASE_ENV_FILE=%q COMMANDO_DESKTOP_INSTALL_DIR=%q COMMANDO_RELEASE_ICON_DIR=%q %q rebuild >/dev/null 2>&1 &' \
+        "$label" "$state_dir" "$env_file" "$install_dir" "$icon_dir" "$script"
     applescript="${command//\\/\\\\}"
     applescript="${applescript//\"/\\\"}"
     osacompile -o "$rebuild_icon" -e "do shell script \"/bin/zsh -lic \" & quoted form of \"$applescript\""
@@ -254,19 +256,19 @@ make_rebuild_icon() {
 }
 
 # A kernel flock on fd 9: it is atomic, and it is released when this shell exits
-# or dies, so a crashed rebuild never leaves a stale lock behind.
-take_rebuild_lock() {
+# or dies, so a crashed rebuild never leaves a stale lock behind. stop takes it
+# too, so it can't run while a rebuild is about to restart the daemon.
+take_release_lock() {
     mkdir -p "$log_dir" "$(dirname "$rebuild_lock")"
     exec 9>>"$rebuild_lock"
     local held=0
     /usr/bin/perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1' || held=$?
     if (( held == 1 )); then
         notify "A rebuild is already running"
-        fail "A rebuild is already running (pid $(cat "$rebuild_lock" 2>/dev/null))"
+        fail "A rebuild is already running (pid $(cat "$rebuild_lock" 2>/dev/null)); try again when it finishes"
     fi
     (( held == 0 )) || fail "Could not lock $rebuild_lock (perl exited $held)"
     printf '%s\n' $$ >"$rebuild_lock"
-    trap finish_rebuild EXIT
 }
 
 finish_rebuild() {
@@ -278,7 +280,8 @@ finish_rebuild() {
 # install leaves no agent behind to restart at every login.
 rebuild() {
     local installing="${1:-}"
-    take_rebuild_lock
+    take_release_lock
+    trap finish_rebuild EXIT
     exec > >(tee "$rebuild_log") 2>&1
 
     local revision
@@ -335,6 +338,7 @@ case "${1:-}" in
         open "$app"
         ;;
     stop)
+        take_release_lock
         quit_app
         # Disabling persists across logins, so the agent stays off until start.
         launchctl disable "$service"
