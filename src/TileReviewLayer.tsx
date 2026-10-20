@@ -27,6 +27,7 @@ import {
   MAX_RESPONSE_DATA_JSON,
   questionShapeOf,
   redlinePageKey,
+  sameQuestionShape,
   sentAnswerForQuestion,
 } from '../shared/redline-response'
 import type { PendingQueueApi } from './pendingQueueApi'
@@ -107,7 +108,7 @@ type PendingEditor =
   | { kind: 'rating'; max: number }
   | { kind: 'text' }
 
-type QuestionDraft = { answer: string; note: string; choices: string[] }
+export type QuestionDraft = { answer: string; note: string; choices: string[] }
 
 /** The daemon rejected a revision we held; our view is behind, not wrong. */
 function isStaleRevision(error: unknown): boolean {
@@ -142,6 +143,7 @@ function questionKey(question: RedlinePageQuestion): string {
 
 function questionDraftKey(question: RedlinePageQuestion): string {
   return `${questionKey(question)}:${JSON.stringify([
+    question.question,
     question.kind,
     question.options ?? null,
     question.multiple === true,
@@ -149,7 +151,7 @@ function questionDraftKey(question: RedlinePageQuestion): string {
   ])}`
 }
 
-function pendingForQuestion(
+export function pendingForQuestion(
   question: RedlinePageQuestion,
   notes: readonly WebPanePendingNote[],
   pageUrl: string,
@@ -159,12 +161,14 @@ function pendingForQuestion(
     (note.pageUrl === undefined || redlinePageKey(note.pageUrl) === redlinePageKey(pageUrl)) &&
     (question.queueKey
       ? note.queueKey === question.queueKey
-      : note.queueKey === undefined && note.selector === question.selector)
+      : note.queueKey === undefined && note.selector === question.selector) &&
+    // An answer queued for an earlier prompt or option set does not answer the revised question.
+    (note.questionShape === undefined || sameQuestionShape(note.questionShape, question))
   ))
 }
 
 /** The sent answer still standing for a question on the page being reviewed. */
-function sentForQuestion(
+export function sentForQuestion(
   question: RedlinePageQuestion,
   sent: WebPanePendingSnapshot['sent'],
   pageUrl: string,
@@ -177,13 +181,13 @@ function sentForQuestion(
 const SKIPPED_ANSWER = '(skipped)'
 const NOTE_ONLY_ANSWER = '(none — see note)'
 
-function sentAnswerLabel(sent: WebPaneSentAnswer): string {
+export function sentAnswerLabel(sent: WebPaneSentAnswer): string {
   if (sent.response.answer === SKIPPED_ANSWER) return 'Skipped'
   if (sent.response.answer === NOTE_ONLY_ANSWER) return sent.response.note ?? 'Note only'
   return sent.response.answer
 }
 
-function sentAgo(sentAt: number): string {
+export function sentAgo(sentAt: number): string {
   const minutes = Math.floor((Date.now() - sentAt) / 60_000)
   if (!Number.isFinite(minutes) || minutes < 1) return 'Sent · just now'
   if (minutes < 60) return `Sent · ${minutes}m ago`
@@ -193,7 +197,7 @@ function sentAgo(sentAt: number): string {
 }
 
 /** Pre-fills the question editor with a sent answer, as Reopen does in the page. */
-function draftFromSent(sent: WebPaneSentAnswer): QuestionDraft {
+export function draftFromSent(sent: WebPaneSentAnswer): QuestionDraft {
   if (sent.response.answer === SKIPPED_ANSWER) return { answer: '', note: '', choices: [] }
   const values = draftValues({
     id: 0,
@@ -206,7 +210,7 @@ function draftFromSent(sent: WebPaneSentAnswer): QuestionDraft {
   return values.answer === NOTE_ONLY_ANSWER ? { ...values, answer: '' } : values
 }
 
-function responseForQuestion(question: RedlinePageQuestion, draft: QuestionDraft): RedlinePageResponse {
+export function responseForQuestion(question: RedlinePageQuestion, draft: QuestionDraft): RedlinePageResponse {
   const answer = question.kind === 'choice' && question.multiple
     ? displayAnswerForChoices(draft.choices, draft.answer)
     : draft.answer.trim()
@@ -275,7 +279,7 @@ function editorForQuestion(question: RedlinePageQuestion): PendingEditor {
   return { kind: 'text' }
 }
 
-function draftValues(note: WebPanePendingNote): { answer: string; note: string; choices: string[] } {
+export function draftValues(note: WebPanePendingNote): { answer: string; note: string; choices: string[] } {
   if (!note.response) return { answer: note.comment, note: '', choices: [] }
   const data = responseData(note)
   const editor = editorFor(note)

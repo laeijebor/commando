@@ -1,0 +1,176 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import '@testing-library/jest-dom/vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
+import { CanvasPane } from './CanvasPane'
+import { publishCanvasChange, publishCanvasPendingChanged } from './webPanesApi'
+
+const id = 'w-questions', artifactId = '0123456789abcdef'
+const page = new URL(`/redline/artifacts/${artifactId}/canvas.json`, location.href).href
+let manifest: Record<string, unknown>
+const initialManifest = {
+  title: 'Board', frames: [{ id: 'settings', title: 'Settings', src: 'Settings.html', x: 0, y: 0, w: 390, h: 844 }],
+  annotations: [
+    { id: 'q-recipe', kind: 'question', title: 'Your call', text: 'Should archived copies fail?', options: ['Fail with error', 'Allow'], x: 500, y: 0 },
+    { id: 'q-name', kind: 'question', title: 'Naming', text: 'Better name?', x: 500, y: 300 },
+    { id: 'q-done', kind: 'question', title: 'Mixing', text: 'Mix?', answer: 'Off', x: 500, y: 600 },
+    { id: 'q-days', kind: 'question', title: 'Days', text: 'Which days?', options: ['Mon', 'No', 'No, wait', 'Tue'], multiple: true, answer: 'Mon, No, wait', x: 500, y: 900 },
+    { id: 'design', kind: 'design', text: 'Just a note', x: 900, y: 0 },
+  ],
+}
+let snapshot: WebPanePendingSnapshot, calls: Array<{ url: string; body?: Record<string, unknown> }>
+beforeEach(() => {
+  localStorage.clear(); manifest = structuredClone(initialManifest)
+  snapshot = { revision: 1, notes: [], knownUpTo: 0, dropped: 0 }; calls = []
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800)
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/canvas.json') && !url.includes('/pending')) return { ok: true, text: async () => JSON.stringify(manifest), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined
+    calls.push({ url, body })
+    if (url.endsWith('/threads')) return { ok: true, json: async () => ({ threads: [] }) }
+    if (url.endsWith('/pending/response')) {
+      const response = body!.response as NonNullable<WebPanePendingNote['response']> & { queueKey: string; selector: string }
+      const kept = snapshot.notes.filter((note) => note.queueKey !== response.queueKey)
+      const added: WebPanePendingNote = { id: snapshot.knownUpTo + 1, revision: 1, selector: response.selector, tag: 'redline', rect: { x: 0, y: 0, width: 0, height: 0 },
+        comment: response.answer, pageUrl: body!.pageUrl as string, response, queueKey: response.queueKey }
+      snapshot = { ...snapshot, revision: snapshot.revision! + 1, knownUpTo: added.id, notes: [...kept, added] }
+    }
+    return { ok: true, json: async () => structuredClone(snapshot) }
+  }))
+})
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+const mount = async () => {
+  const view = render(<CanvasPane webPaneId={id} token="owner" artifactId={artifactId} manifest="canvas.json" />)
+  await screen.findByTitle('Settings')
+  return view
+}
+const note = (container: HTMLElement, noteId: string) => container.querySelector<HTMLElement>(`[data-canvas-note="${noteId}"]`)!
+
+describe('canvas question answers', () => {
+  it('reads the manifest page\'s sent answers without moving the tile page', async () => {
+    await mount()
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith(`/pending?sentPage=${encodeURIComponent(page)}`))).toBe(true))
+    act(() => publishCanvasPendingChanged(id))
+    await waitFor(() => expect(calls.filter((call) => call.url.includes('?sentPage=')).length).toBeGreaterThan(1))
+    expect(calls.some((call) => call.url.endsWith('/pending/page'))).toBe(false)
+  })
+
+  it('queues a picked choice straight away with the question shape', async () => {
+    const { container } = await mount()
+    fireEvent.click(within(note(container, 'q-recipe')).getByRole('radio', { name: 'Allow' }))
+    await within(note(container, 'q-recipe')).findByText('Queued ✓')
+    const request = calls.find((call) => call.url.endsWith('/pending/response'))!
+    expect(request.body).toEqual({ pageUrl: page, response: expect.objectContaining({
+      question: 'Should archived copies fail?', answer: 'Allow', queueKey: 'q-recipe', selector: '[data-canvas-note="q-recipe"]',
+      shape: { question: 'Should archived copies fail?', kind: 'choice', options: ['Fail with error', 'Allow'], multiple: false } }) })
+    expect(request.body).not.toHaveProperty('canvas')
+    expect(within(note(container, 'q-recipe')).getByRole('radio', { name: 'Allow' })).toHaveAttribute('aria-checked', 'true')
+    expect(await screen.findByRole('button', { name: /Answer queue · 2/ })).toBeInTheDocument()
+  })
+
+  it('queues a text answer with an optional note only when asked', async () => {
+    const { container } = await mount()
+    const card = within(note(container, 'q-name'))
+    fireEvent.change(card.getByRole('textbox', { name: 'Answer: Better name?' }), { target: { value: 'Meal plans' } })
+    expect(calls.some((call) => call.url.endsWith('/pending/response'))).toBe(false)
+    fireEvent.click(card.getByRole('button', { name: '+ Add note' }))
+    fireEvent.change(card.getByRole('textbox', { name: 'Note (optional)' }), { target: { value: 'Matches the app' } })
+    fireEvent.click(card.getByRole('button', { name: 'Queue answer' }))
+    await card.findByText('Queued ✓')
+    expect(calls.find((call) => call.url.endsWith('/pending/response'))!.body!.response).toMatchObject({ answer: 'Meal plans', note: 'Matches the app', queueKey: 'q-name' })
+    fireEvent.change(card.getByRole('textbox', { name: 'Answer: Better name?' }), { target: { value: 'Meal planner' } })
+    expect(card.getByText('Changed since queued')).toBeInTheDocument()
+    expect(card.getByRole('button', { name: 'Update answer' })).toBeEnabled()
+    // Sending the older queued answer elsewhere must not hide or discard the edit.
+    snapshot = { ...snapshot, revision: 9, notes: [] }
+    act(() => publishCanvasPendingChanged(id))
+    await waitFor(() => expect(card.queryByText('Changed since queued')).not.toBeInTheDocument())
+    expect(card.getByRole('textbox', { name: 'Answer: Better name?' })).toHaveValue('Meal planner')
+    expect(card.getByRole('button', { name: 'Queue answer' })).toBeEnabled()
+  })
+
+  it('shows sent and agent-recorded answers as settled, and Change reopens the controls', async () => {
+    snapshot = { ...snapshot, sent: { page, answers: [{ queueKey: 'q-done', selector: '[data-canvas-note="q-done"]', sentAt: Date.now(),
+      shape: { question: 'Mix?', kind: 'text' }, response: { question: 'Mix?', answer: 'Off' } }, { queueKey: 'q-recipe', selector: '[data-canvas-note="q-recipe"]', sentAt: Date.now(),
+      shape: { question: 'Should archived copies fail?', kind: 'choice', options: ['Fail with error', 'Allow'], multiple: false },
+      response: { question: 'Should archived copies fail?', answer: 'Fail with error' } }] } }
+    const { container } = await mount()
+    const card = within(note(container, 'q-recipe'))
+    expect(await card.findByText('Fail with error')).toBeInTheDocument()
+    expect(card.getByText(/Sent · just now/)).toBeInTheDocument()
+    fireEvent.click(card.getByRole('button', { name: 'Change' }))
+    expect(card.getByRole('radio', { name: 'Fail with error' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(note(container, 'q-done')).getByText('Off')).toBeInTheDocument()
+    expect(within(note(container, 'q-done')).queryByText(/Sent/)).not.toBeInTheDocument()
+    expect(within(note(container, 'q-done')).getByRole('button', { name: 'Reopen' })).toBeInTheDocument()
+    expect(within(note(container, 'design')).queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  it('does not count an answer queued for an earlier version of the question', async () => {
+    snapshot = { ...snapshot, revision: 3, knownUpTo: 1, notes: [{ id: 1, revision: 1, selector: '[data-canvas-note="q-recipe"]', tag: 'redline', rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Yes', pageUrl: page, queueKey: 'q-recipe', response: { question: 'Should archived copies fail?', answer: 'Yes', data: { choice: 'Yes' } },
+      questionShape: { question: 'Should archived copies fail?', kind: 'choice', options: ['Yes', 'No'], multiple: false } }] }
+    const { container } = await mount()
+    const card = within(note(container, 'q-recipe'))
+    expect(await screen.findByText(/2 unanswered · 1 queued/)).toBeInTheDocument()
+    expect(card.queryByText('Queued ✓')).not.toBeInTheDocument()
+    expect(card.getByRole('radio', { name: 'Allow' })).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(screen.getByRole('tab', { name: /Questions/ }))
+    expect(screen.getByRole('button', { name: /Your call Open/ })).toBeInTheDocument()
+  })
+
+  it('shows the note restored by Change instead of hiding it behind + Add note', async () => {
+    snapshot = { ...snapshot, sent: { page, answers: [{ queueKey: 'q-recipe', selector: '[data-canvas-note="q-recipe"]', sentAt: Date.now(),
+      shape: { question: 'Should archived copies fail?', kind: 'choice', options: ['Fail with error', 'Allow'], multiple: false },
+      response: { question: 'Should archived copies fail?', answer: 'Allow', note: 'Coaches asked for it', data: { choice: 'Allow' } } }] } }
+    const { container } = await mount()
+    const card = within(note(container, 'q-recipe'))
+    fireEvent.click(await card.findByRole('button', { name: 'Change' }))
+    expect(card.getByRole('textbox', { name: 'Note (optional)' })).toHaveValue('Coaches asked for it')
+    expect(card.queryByRole('button', { name: '+ Add note' })).not.toBeInTheDocument()
+    fireEvent.change(card.getByRole('textbox', { name: 'Note (optional)' }), { target: { value: '' } })
+    expect(card.getByRole('textbox', { name: 'Note (optional)' })).toBeInTheDocument()
+  })
+
+  it('drops an unqueued draft when the agent revises the question', async () => {
+    const { container } = await mount()
+    fireEvent.change(within(note(container, 'q-name')).getByRole('textbox', { name: 'Answer: Better name?' }), { target: { value: 'Meal plans' } })
+    manifest = { ...manifest, annotations: (manifest.annotations as Array<Record<string, unknown>>).map((a) => a.id === 'q-name' ? { ...a, text: 'Best name for the editor?' } : a) }
+    act(() => publishCanvasChange({ artifactId, changed: ['canvas.json'] }))
+    const revised = await within(note(container, 'q-name')).findByRole('textbox', { name: 'Answer: Best name for the editor?' })
+    expect(revised).toHaveValue('')
+  })
+
+  it('restores recorded multi-choice answers whose options contain commas', async () => {
+    const { container } = await mount()
+    const card = within(note(container, 'q-days'))
+    fireEvent.click(card.getByRole('button', { name: 'Reopen' }))
+    expect(card.getByRole('button', { name: 'Mon' })).toHaveAttribute('aria-pressed', 'true')
+    expect(card.getByRole('button', { name: 'No, wait' })).toHaveAttribute('aria-pressed', 'true')
+    expect(card.getByRole('button', { name: 'No', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    expect(card.getByRole('button', { name: 'Tue' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('caps answer and note text at the response limits', async () => {
+    const { container } = await mount()
+    const card = within(note(container, 'q-name'))
+    fireEvent.click(card.getByRole('button', { name: '+ Add note' }))
+    expect(card.getByRole('textbox', { name: 'Answer: Better name?' })).toHaveAttribute('maxLength', '1024')
+    expect(card.getByRole('textbox', { name: 'Note (optional)' })).toHaveAttribute('maxLength', '1024')
+  })
+
+  it('lists question notes with their state in the Questions tab', async () => {
+    await mount()
+    fireEvent.click(screen.getByRole('tab', { name: /Questions/ }))
+    expect(screen.getByRole('button', { name: /Your call Open/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Mixing Answered/ })).toBeInTheDocument()
+    snapshot = { ...snapshot, revision: 5, knownUpTo: 1, notes: [{ id: 1, revision: 1, selector: '[data-canvas-note="q-name"]', tag: 'redline', rect: { x: 0, y: 0, width: 0, height: 0 },
+      comment: 'Meal plans', pageUrl: page, queueKey: 'q-name', response: { question: 'Better name?', answer: 'Meal plans' } }] }
+    act(() => publishCanvasPendingChanged(id))
+    expect(await screen.findByRole('button', { name: /Naming Queued/ })).toBeInTheDocument()
+  })
+})

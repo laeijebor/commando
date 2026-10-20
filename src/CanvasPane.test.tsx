@@ -493,7 +493,7 @@ it('registers Escape once through manifest refreshes and ignores outside targets
   fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
   fireEvent.keyDown(document.body, { key: 'Escape' })
   expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'true')
-  push(['canvas.json']); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('canvas.json')).length).toBe(2))
+  push(['canvas.json']); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => (String(url).endsWith('canvas.json') && !String(url).includes('/pending'))).length).toBe(2))
   expect(add.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(1)
   expect(remove.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(0)
   fireEvent.keyDown(view.container.querySelector('.canvas-pane')!, { key: 'Escape' })
