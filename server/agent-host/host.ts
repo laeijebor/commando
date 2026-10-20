@@ -241,6 +241,10 @@ export class AgentHost {
       const result = await session.subagentTranscript(message.agentId)
       this.link.send({ type: 'subagent_transcript_result', paneId: message.paneId, requestId: message.requestId, items: snapshotItems(result.items), ...(result.error ? { error: result.error } : {}) })
     }
+    else if (message.type === 'mcp') {
+      const result = session.mcp ? await session.mcp(message.request) : { servers: [], error: "This agent's MCP servers can't be managed from Commando yet" }
+      this.link.send({ type: 'mcp_result', paneId: message.paneId, requestId: message.requestId, ...result })
+    }
     else if (message.type === 'queue') {
       const { type: _type, paneId: _paneId, requestId: _requestId, ...change } = message
       session.updateQueue(change)

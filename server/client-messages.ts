@@ -19,6 +19,7 @@ import {
 } from './agent-request-answers.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 import { MAX_FILE_QUERY, isAgentId, isChatSwitchAction, type ChatImageRef, parseChatAnswer, parseChatImageRefs, parseChatQueueAction, parseChatSendOptions, parseChatSettingsChange, parseQueueIds } from '../shared/agent-chat.js'
+import { parseChatMcpRequest } from '../shared/chat-mcp.js'
 import { parseSavedWorkspace } from './workspaces.js'
 
 export const MAX_CLIENT_MESSAGE_BYTES = MAX_PASTE_BYTES * 6 + 1024
@@ -580,6 +581,13 @@ export function parseClientMessage(value: unknown): ParseResult {
       return id && isPaneId(value.paneId) && isAgentId(value.agentId)
         ? { ok: true, message: { type: 'chat_subagent_transcript', paneId: value.paneId, agentId: value.agentId, requestId: id } }
         : { ok: false, error: 'Invalid subagent transcript request', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
+    case 'chat_mcp': {
+      const id = requestId(value.requestId)
+      const request = parseChatMcpRequest(value.request)
+      return id && isPaneId(value.paneId) && request
+        ? { ok: true, message: { type: 'chat_mcp', paneId: value.paneId, request, requestId: id } }
+        : { ok: false, error: 'Invalid MCP request', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
     case 'chat_file_search': {
       const id = requestId(value.requestId)
