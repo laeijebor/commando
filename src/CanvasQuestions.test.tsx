@@ -131,6 +131,8 @@ describe('canvas question answers', () => {
     fireEvent.click(await card.findByRole('button', { name: 'Change' }))
     expect(card.getByRole('textbox', { name: 'Note (optional)' })).toHaveValue('Coaches asked for it')
     expect(card.queryByRole('button', { name: '+ Add note' })).not.toBeInTheDocument()
+    fireEvent.change(card.getByRole('textbox', { name: 'Note (optional)' }), { target: { value: '' } })
+    expect(card.getByRole('textbox', { name: 'Note (optional)' })).toBeInTheDocument()
   })
 
   it('drops an unqueued draft when the agent revises the question', async () => {
