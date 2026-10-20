@@ -69,6 +69,9 @@ test('the ⌘P picker covers only its chat pane and closes when another pane is 
   await expect(chatArticle).toBeVisible()
   await expect(otherArticle).toBeVisible()
   await chatArticle.getByRole('textbox').first().click()
+  // ⌘P opens the pane's palette; ⌘P again goes on to its conversations.
+  await page.keyboard.press('Meta+p')
+  await expect(chatArticle.getByRole('dialog', { name: 'Pane palette' })).toBeVisible()
   await page.keyboard.press('Meta+p')
 
   const picker = page.getByRole('dialog', { name: 'Conversations' })
@@ -95,6 +98,7 @@ test('the ⌘P picker covers only its chat pane and closes when another pane is 
   // The visible hint is also a close control; Escape works after focus leaves search.
   for (const dismiss of ['click', 'escape-search', 'escape-button'] as const) {
     await chatArticle.getByRole('textbox').first().click()
+    await page.keyboard.press('Meta+p')
     await page.keyboard.press('Meta+p')
     await expect(picker).toBeVisible()
     const close = picker.getByRole('button', { name: 'Close conversations' })
