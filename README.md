@@ -415,6 +415,7 @@ Opting in holds agent hooks open exactly like Island does: a pending permission 
 | --- | --- | --- |
 | `COMMANDO_PORT` | Local daemon port | `4310` |
 | `COMMANDO_GITHUB` | `on`/`off`: GitHub reads (PR lists, quick look, branch PR badges). Daemons on other ports share the same `gh` API budget | `on` at `4310`, `off` on other ports |
+| `COMMANDO_TURN_BRIEFS` | Case-insensitive `off`/`0`/`false` disables model turn briefs; `on`/`1`/`true` enables them | Enabled at `4310`, disabled on other ports |
 | `COMMANDO_OWNER_EMAIL` | Enables email/password auth and restricts first-owner creation to this address | Token-only mode |
 | `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
 | `COMMANDO_AUTH_SECRET_PATH` | Generated cookie-signing secret | `~/.commando/auth.secret` |

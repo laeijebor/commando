@@ -1,6 +1,7 @@
+import type { CommanderState } from '../shared/commander'
 import { isSessionGlyph, sessionIdentityForName } from '../shared/session-identity'
 import { SessionAvatar } from './SessionAvatar'
-import { Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, Trash2 } from 'lucide-react'
+import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
@@ -26,6 +27,11 @@ type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateS
 
 type Props = {
   token: string
+  commanderState?: CommanderState
+  commanderNeedsYou?: number
+  commanderUnreadFinished?: boolean
+  commanderOpening?: boolean
+  onCreateCommander?: () => Promise<void>
   sessions: TmuxSession[]
   panes: TmuxPane[]
   displayedPaneIds: string[]
@@ -156,7 +162,10 @@ export function SessionTree(props: Props) {
     }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to save session order'))
   }
 
+  const commanderSessionId = props.commanderState?.sessionId && sessionMap.has(props.commanderState.sessionId)
+    ? props.commanderState.sessionId : undefined
   const auxiliarySessions = props.sessions.filter((session) => {
+    if (session.id === commanderSessionId) return false
     const repo = props.panes.find((pane) => pane.sessionId === session.id && pane.repo?.worktreeRoot)?.repo
     const root = repo?.worktreeRoot
     return Boolean(root && isAuxiliarySession(session.name, root) &&
@@ -165,14 +174,14 @@ export function SessionTree(props: Props) {
   })
   const auxiliaryIds = new Set(auxiliarySessions.map((session) => session.id))
   const containers: SessionTreeContainer[] = [
-    ...sessionTreeContainers(preferences, props.sessions.filter((session) => !auxiliaryIds.has(session.id)), { mode, panes: props.panes })
-      .map((container) => ({ ...container, sessionIds: container.sessionIds.filter((id) => !auxiliaryIds.has(id)) })),
+    ...sessionTreeContainers(preferences, props.sessions.filter((session) => !auxiliaryIds.has(session.id) && session.id !== commanderSessionId), { mode, panes: props.panes })
+      .map((container) => ({ ...container, sessionIds: container.sessionIds.filter((id) => !auxiliaryIds.has(id) && id !== commanderSessionId) })),
     ...(auxiliarySessions.length ? [{ id: 'auxiliary', kind: 'auxiliary' as const, name: 'Background sessions', sessionIds: auxiliarySessions.map((session) => session.id), group: null }] : []),
   ]
   const shortcutSessionIds = containers
     .filter((container) => container.kind !== 'auxiliary')
     .flatMap((container) => container.sessionIds)
-    .filter((sessionId) => sessionMap.has(sessionId))
+    .filter((sessionId) => sessionMap.has(sessionId) && sessionId !== commanderSessionId)
 
   useEffect(() => {
     const selectShortcutSession = (event: globalThis.KeyboardEvent) => {
@@ -352,6 +361,10 @@ export function SessionTree(props: Props) {
       <div className="session-tree-tools">
         <span title={auxiliarySessions.length ? `${auxiliarySessions.length} background sessions are listed separately` : undefined}>{props.sessions.length - auxiliarySessions.length} sessions{auxiliarySessions.length ? ` · ${auxiliarySessions.length} bg` : ''}</span>
         <span className="session-tree-tools-actions">
+          {!commanderSessionId ? <button type="button" disabled={props.commanderOpening || !props.onCreateCommander || props.connected === false}
+            onClick={() => { void props.onCreateCommander?.().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to open Commander')) }}>
+            <Bot />{props.commanderOpening ? 'Opening…' : 'Commander'}
+          </button> : null}
           {manual ? <button type="button" onClick={createGroup}><FolderPlus /> Group</button> : null}
           <span className="session-grouping-switch" role="group" aria-label="Group sessions by">
             <button type="button" aria-pressed={!manual} aria-label="Group sessions by repository" title="Group sessions by repository" onClick={() => setGroupingMode('repository')}><FolderGit2 />Repo</button>
@@ -360,6 +373,14 @@ export function SessionTree(props: Props) {
         </span>
       </div>
       {error ? <button type="button" className="session-tree-error" onClick={() => setError('')}>{error}</button> : null}
+      {commanderSessionId ? <button type="button"
+        className={`session-commander-row${props.selectedSessionId === commanderSessionId ? ' selected' : ''}`}
+        aria-label="Commander" aria-current={props.selectedSessionId === commanderSessionId ? 'page' : undefined}
+        onClick={() => props.onSelectSession(commanderSessionId)}>
+        <Bot aria-hidden="true" /><span className="session-commander-label">Commander</span>
+        {props.commanderNeedsYou ? <span className="session-commander-count" aria-label={`${props.commanderNeedsYou} agents need you`}>{props.commanderNeedsYou}</span> : null}
+        {props.commanderUnreadFinished ? <span className="session-commander-unread" aria-label="Unread finished turns" /> : null}
+      </button> : null}
       {containers.map((container) => {
         const groupIndex = container.group ? preferences.groups.findIndex((group) => group.id === container.id) : -1
         const collapsed = collapsedContainerIds.has(container.id)

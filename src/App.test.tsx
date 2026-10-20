@@ -19,6 +19,7 @@ const appMocks = vi.hoisted(() => ({
   nativeConnect: vi.fn(),
   send: vi.fn(),
   useDaemon: vi.fn(),
+  sessionTree: vi.fn(),
 }))
 
 vi.mock('./authClient', () => ({
@@ -111,7 +112,7 @@ vi.mock('./PaneGitStats', () => ({
     <button type="button" className="pane-git-stats" aria-label="Git changes vs main: 1 files, +3 -1" onClick={onOpenChanges}>+3 −1</button>
   ),
 }))
-vi.mock('./SessionTree', () => ({ SessionTree: () => null }))
+vi.mock('./SessionTree', () => ({ SessionTree: (props: unknown) => { appMocks.sessionTree(props); return null } }))
 vi.mock('./PortsSection', () => ({ PortsSection: () => null }))
 
 let daemonMessage: ((message: ServerMessage) => void) | undefined
@@ -3061,5 +3062,58 @@ describe('agent-opened chat integration', () => {
     expect(screen.getByRole('alert')).toHaveClass('pane-action-error')
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss pane action error' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('Commander integration', () => {
+  it('routes daemon briefs and relays through the pane card to the inbox', async () => {
+    await renderAppWithSnapshot()
+    const now = Date.now()
+    act(() => {
+      daemonMessage?.({ type: 'commander_state', state: { targetId: adjacentPane.targetId, paneId: adjacentPane.id, sessionId: adjacentPane.sessionId } })
+      daemonMessage?.({ type: 'agent_status', status: { paneId: pane.id, provider: 'codex', status: 'done', source: 'hook', confidence: 'high', reason: '', summary: 'Fallback headline', updatedAt: now, settledAt: now } })
+      daemonMessage?.({ type: 'turn_brief_snapshot', briefs: [{ paneId: pane.id, targetId: pane.targetId, turnKey: String(now), text: 'Needs a decision', kind: 'needs_you', source: 'model', endedAt: now, createdAt: now }] })
+      daemonMessage?.({ type: 'chat_state', chat: { paneId: adjacentPane.id, hostConnected: true, items: [], session: { paneId: adjacentPane.id, provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 1 } } })
+    })
+    const inbox = await screen.findByTestId('agents-inbox')
+    expect(within(inbox).getByText('Needs a decision')).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'commander_relay', relay: { id: 'relay-1', origin: 'inbox', kind: 'relay', toPaneId: pane.id, toTargetId: pane.targetId, text: 'Reply', delivery: 'queue', status: 'delivered', createdAt: now } }))
+    expect(within(inbox).getByText('Relayed · delivered')).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'turn_brief', brief: { paneId: pane.id, targetId: pane.targetId, turnKey: String(now), text: 'Latest summary', kind: 'done', source: 'model', endedAt: now, createdAt: now } }))
+    expect(within(inbox).getByText('Latest summary')).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'commander_relay_snapshot', relays: [] }))
+    expect(within(inbox).queryByText('Relayed · delivered')).toBeNull()
+    act(() => daemonMessage?.({ type: 'commander_state', state: { targetId: null } }))
+    expect(screen.queryByTestId('agents-inbox')).toBeNull()
+  })
+
+  it.each(['response first', 'snapshot first'] as const)('opens the created Commander with %s', async (order) => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    await renderAppWithSnapshot()
+    const fetcher = vi.mocked(fetch)
+    const fallback = fetcher.getMockImplementation()!
+    let respond!: (response: Response) => void
+    fetcher.mockImplementation((url, init) => String(url) === '/api/commander'
+      ? new Promise((resolve) => { respond = resolve }) : fallback(url, init))
+    const controls = appMocks.sessionTree.mock.lastCall![0] as { onCreateCommander: () => Promise<void> }
+    let creating!: Promise<void>
+    act(() => { creating = controls.onCreateCommander() })
+    if (order === 'response first') {
+      await act(async () => {
+        respond(new Response(JSON.stringify({ ok: true, state: { targetId: remotePane.targetId, paneId: remotePane.id, sessionId: remotePane.sessionId } })))
+        await creating
+      })
+    }
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    if (order === 'snapshot first') {
+      act(() => daemonMessage?.({ type: 'commander_state', state: { targetId: remotePane.targetId, paneId: remotePane.id, sessionId: remotePane.sessionId } }))
+      // The late response lacks the live pane; it must not erase the broadcast.
+      await act(async () => {
+        respond(new Response(JSON.stringify({ ok: true, state: { targetId: remotePane.targetId } })))
+        await creating
+      })
+    }
+    await waitFor(() => expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused', 'is-jump-highlighted'))
+    expect(fetcher).toHaveBeenCalledWith('/api/commander', expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: expect.objectContaining({ Authorization: 'Bearer test-token' }) }))
   })
 })

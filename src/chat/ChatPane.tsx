@@ -1,3 +1,5 @@
+import type { CommanderState } from '../../shared/commander'
+import { AgentsInbox, type AgentsInboxProps } from './AgentsInbox'
 import { Component, useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
@@ -89,6 +91,7 @@ function ChatColumn({
   pane,
   snapshot,
   statuses = {},
+  commander,
   onSelectPane,
   prsApi,
   connected,
@@ -113,6 +116,7 @@ function ChatColumn({
   pane?: TmuxPane
   snapshot?: LineageSnapshot
   statuses?: Record<string, AgentStatus>
+  commander?: AgentsInboxProps & { state: CommanderState }
   onSelectPane?: (id: string) => void
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
@@ -290,6 +294,9 @@ function ChatColumn({
           {...(flow ? { onSavePlan: flow.savePlan } : {})}
         />
       )}
+      {commander?.state.paneId && commander.state.paneId === paneId ? (
+        <div className="px-4"><AgentsInbox {...commander} /></div>
+      ) : null}
       {agents.length ? (
         <div className="px-4">
           <AgentSwitcher provider={providerLabel(chat.session)} agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} externalDisabled={!connected || !flow?.stopExternal} onSelect={select} onTask={task} />
