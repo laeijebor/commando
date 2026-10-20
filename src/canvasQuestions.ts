@@ -29,3 +29,22 @@ export const openCanvasQuestions = (annotations: CanvasAnnotation[]) =>
     const question = note.answer === undefined ? canvasQuestion(note) : null
     return question ? [question] : []
   })
+
+/**
+ * The options a multi-choice answer names. Answers join the chosen options in option
+ * order with ", ", and options may themselves contain ", ", so match whole options in sequence.
+ */
+export function canvasChoicesFromAnswer(answer: string, options: readonly string[]): string[] {
+  if (options.includes(answer)) return [answer]
+  const walk = (at: number, from: number): string[] | null => {
+    if (at === answer.length) return []
+    for (let i = from; i < options.length; i++) {
+      const end = at + options[i].length
+      if (!answer.startsWith(options[i], at) || (end !== answer.length && !answer.startsWith(', ', end))) continue
+      const rest = end === answer.length ? [] : walk(end + 2, i + 1)
+      if (rest) return [options[i], ...rest]
+    }
+    return null
+  }
+  return walk(0, 0) ?? []
+}
