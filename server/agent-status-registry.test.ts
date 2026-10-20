@@ -1795,6 +1795,15 @@ describe('observed Cursor stop/response ordering', () => {
     expect(registry.get('%1')?.details?.currentActivity).toBeUndefined()
     expect(JSON.stringify(registry.get('%1'))).not.toContain('opaque/')
   })
+  it('reserves a live Muse hook conversation and releases it after the process exits', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook('%12', { hook_event_name: 'SessionStart', session_id: 'muse-session-123' }, 1, null, 'muse')
+    expect(registry.openConversationStatus('%12', 'muse', 'muse')).toMatchObject({ provider: 'muse', agentSessionId: 'muse-session-123' })
+    expect(registry.openConversationStatus('%12', 'vim', 'unknown')).toBeUndefined()
+    registry.applyClaudeHook('%12', { hook_event_name: 'SessionEnd', session_id: 'muse-session-123' }, 2, null, 'muse')
+    expect(registry.openConversationStatus('%12', 'muse', 'muse')).toBeUndefined()
+  })
+
   it('counts a SessionStart-only hook as an open conversation without changing process liveness', () => {
     const registry = new AgentStatusRegistry()
     expect(registry.openConversationStatus(paneId, '2.1.295', 'claude')).toBeUndefined()
