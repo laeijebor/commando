@@ -25,7 +25,7 @@ import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from '../provider.js'
 import { RpcError, record, type RpcNotification, type RpcRequest } from '../rpc-client.js'
 import type { AgentSessionSpec } from '../session.js'
-import { MuseRpcClient, uuidv7, type MuseApprovalMode, type MuseInput, type MuseMethods, type MuseTransport, type MuseUserInputAnswer } from './client.js'
+import { MUSE_SANDBOX_NETWORK, MuseRpcClient, uuidv7, type MuseApprovalMode, type MuseInput, type MuseMethods, type MuseTransport, type MuseUserInputAnswer } from './client.js'
 import { MuseItemMapper, museQuestions } from './items.js'
 
 const string = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined
@@ -35,6 +35,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
 /**
  * Commando's modes as Muse approval modes. Muse has no plan mode.
  * - default, "Ask when needed": Muse's own default; tools run in its sandbox and it asks before going beyond it.
+ *   The sandbox has open network, so dev servers run in every mode.
  * - acceptEdits, "Approve everything": no prompts, still inside the sandbox.
  * - bypassPermissions, "Full access": no prompts and no sandbox (`--yolo`). The sandbox is set when
  *   the host starts, so a chat is started in full access or never reaches it.
@@ -48,7 +49,7 @@ export function museApprovalMode(mode: ChatSessionPermissionMode): MuseApprovalM
 /** The Muse TUI's flags for the same mode. */
 function tuiPermissionFlags(mode: ChatSessionPermissionMode): string[] {
   if (mode === 'bypassPermissions') return ['--yolo']
-  return ['--approval-mode', museApprovalMode(mode) === 'allowAll' ? 'never' : 'on-request']
+  return ['--approval-mode', museApprovalMode(mode) === 'allowAll' ? 'never' : 'on-request', ...MUSE_SANDBOX_NETWORK]
 }
 
 export function museModels(value: unknown): ChatModelOption[] {
