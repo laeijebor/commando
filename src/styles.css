@@ -2568,13 +2568,15 @@ a.pane-worklog-reference:hover { border-color: var(--border-strong); background:
 .pane-worklog-screenshot-folder > b { color: var(--muted-dim); font: 600 7px/1 var(--mono); }
 .pane-worklog-screenshot-folder > small { color: var(--muted-dim); font: 500 6px/1 var(--mono); }
 
-.pane-worklog-screenshot-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
-.pane-worklog-screenshot-grid > button { position: relative; display: block; aspect-ratio: 4 / 5; overflow: hidden; padding: 0; border: 1px solid var(--border-mid); border-radius: 5px; background: #0a0a0a; }
+/* Fixed-height tiles take each image's aspect ratio (set on load): small in wide panes, two per row in narrow ones, uncropped. */
+.pane-worklog-screenshot-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+.pane-worklog-screenshot-grid > button { position: relative; flex: none; display: block; height: 112px; aspect-ratio: 3 / 4; max-width: min(240px, calc(50% - 2.5px)); overflow: hidden; padding: 0; border: 1px solid var(--border-mid); border-radius: 5px; background: #0a0a0a; }
 .pane-worklog-screenshot-grid > button:hover,
 .pane-worklog-screenshot-grid > button:focus-visible { border-color: var(--accent); }
-.pane-worklog-screenshot-grid img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.pane-worklog-screenshot-grid img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.pane-worklog-screenshot-grid > button.is-tall img { object-fit: cover; object-position: top; }
 .pane-worklog-screenshot-grid > button.is-new::after { position: absolute; top: 3px; left: 3px; padding: 2px 3px; border-radius: 3px; color: var(--bg); background: var(--cyan); content: 'NEW'; font: 800 5px/1 var(--mono); letter-spacing: .08em; }
-.pane-worklog-screenshot-grid > button.is-more { display: grid; place-items: center; color: var(--muted); background: var(--surface-soft); font: 700 8px/1 var(--mono); }
+.pane-worklog-screenshot-grid > button.is-more { width: 72px; display: grid; place-items: center; color: var(--muted); background: var(--surface-soft); font: 700 8px/1 var(--mono); }
 .pane-worklog-screenshot-grid > button.is-more b { display: block; margin-top: 3px; color: var(--muted-dim); font: 600 5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .pane-worklog-screenshot-footer { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 6px; }
 .pane-worklog-screenshot-footer small { min-width: 0; overflow: hidden; color: var(--muted-dim); font: 500 6px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
