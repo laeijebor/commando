@@ -59,7 +59,9 @@ function ReadingPane({ peek, full }: { peek: CommanderPeek; full: boolean }) {
     event.preventDefault()
     peek.onClose()
   }
-  return <section className="commando-chat flex min-h-0 min-w-0 flex-1 flex-col bg-background" aria-label={`${row.title} chat`} data-testid="commander-reading-pane" onKeyDown={onKeyDown}>
+  // Size containment: the pane takes its height from Commander's column, so a long
+  // transcript scrolls inside it instead of growing a lone pane to the transcript's height.
+  return <section className="commando-chat flex min-h-0 min-w-0 flex-1 flex-col bg-background contain-size" aria-label={`${row.title} chat`} data-testid="commander-reading-pane" onKeyDown={onKeyDown}>
     <header className="@container flex min-w-0 items-center gap-1.5 border-b border-border bg-card px-3 py-1.5 text-xs text-muted-foreground">
       {full ? <Button size="xs" variant="ghost-muted" onClick={peek.onClose} aria-label="Back to Commander"><ArrowLeft aria-hidden="true" />Commander</Button> : null}
       <StateIcon group={group} row={row} />
