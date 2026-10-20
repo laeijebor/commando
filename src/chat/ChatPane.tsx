@@ -1,5 +1,6 @@
 import type { CommanderState } from '../../shared/commander'
 import { AgentsInbox, type AgentsInboxProps } from './AgentsInbox'
+import { CommanderSplit, type CommanderPeek } from './CommanderReadingPane'
 import { Component, useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
@@ -81,7 +82,11 @@ export class ChatErrorBoundary extends Component<{ children: ReactNode }, { erro
 
 /** A chat pane: the agent host's turns as a narrow, readable column. */
 export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
-  return <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
+  const column = <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
+  // Commander's pane always renders its split, so opening a chat beside it keeps Commander's draft.
+  return props.paneId && props.commander?.state.paneId === props.paneId
+    ? <CommanderSplit {...(props.commander.peek ? { peek: props.commander.peek } : {})}>{column}</CommanderSplit>
+    : column
 }
 
 function ChatColumn({
@@ -93,6 +98,7 @@ function ChatColumn({
   statuses = {},
   commander,
   onSelectPane,
+  registerFocusable,
   prsApi,
   connected,
   focused,
@@ -116,8 +122,10 @@ function ChatColumn({
   pane?: TmuxPane
   snapshot?: LineageSnapshot
   statuses?: Record<string, AgentStatus>
-  commander?: AgentsInboxProps & { state: CommanderState }
+  commander?: AgentsInboxProps & { state: CommanderState; peek?: CommanderPeek }
   onSelectPane?: (id: string) => void
+  /** Lets pane jumps find and focus this chat, like terminal panes do. */
+  registerFocusable?: (paneId: string, node: HTMLElement | null) => void
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
   connected: boolean
@@ -226,6 +234,8 @@ function ChatColumn({
     // Esc in a subagent's view goes back to main, unless the composer has a use for it.
     if (event.key !== 'Escape' || !viewing || event.defaultPrevented) return
     if (event.target instanceof HTMLTextAreaElement && (event.target.value || working)) return
+    // Handled here, so an enclosing view (Commander's reading pane) leaves it alone.
+    event.preventDefault()
     setViewing(undefined)
     setRelay(undefined)
   }
@@ -234,13 +244,22 @@ function ChatColumn({
     if (flowError) setFlowError(null)
     else onDismissActionError?.()
   }
+  const shell = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!paneId || !registerFocusable) return
+    registerFocusable(paneId, shell.current)
+    return () => registerFocusable(paneId, null)
+  }, [paneId, registerFocusable])
   const retryTranscript = (id: string) => setTranscripts((current) => {
     const next = { ...current }
     delete next[id]
     return next
   })
   return (
-    <section className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col" onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+    <section ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onFocus={(event) => {
+      // A pane jump focuses the shell; hand the caret to the composer.
+      if (event.target === event.currentTarget) event.currentTarget.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
+    }} onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />

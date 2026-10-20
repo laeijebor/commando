@@ -106,6 +106,7 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
     if (frameId && title && src && x !== undefined && y !== undefined) manifest.frames.push({ id: frameId, title, src, x, y, w, h, platform, focus, interactive, interactiveNote, variant })
   })
   const frameIds = new Set(manifest.frames.map((frame) => frame.id))
+  const annotationPaths = new Map<CanvasAnnotation, string>()
   array('sections').forEach((value, index) => {
     const path = `sections[${index}].`
     if (!record(value)) { fail(path.slice(0, -1), 'must be an object'); return }
@@ -170,11 +171,27 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
         else if (!question.options) fail(`${path}multiple`, 'needs options')
         else question.multiple = value.multiple
       }
+      // Answers carry the question text, capped at 256 characters; a longer prompt could not be told apart from an edit.
+      const prompt = text || title
+      if (prompt !== undefined && prompt.length > 256) fail(`${path}${text ? 'text' : 'title'}`, 'question notes must be at most 256 characters; move detail into items')
       const answer = string(value, 'answer', path)
       if (answer !== undefined && (!answer.trim() || answer.length > 1024)) fail(`${path}answer`, 'must be 1–1024 characters')
       else if (answer !== undefined) question.answer = answer
     }
-    if (annotationId && kind && x !== undefined && y !== undefined) manifest.annotations.push({ id: annotationId, kind, x, y, w, title, text, items, target, ...question })
+    if (annotationId && kind && x !== undefined && y !== undefined) {
+      const note: CanvasAnnotation = { id: annotationId, kind, x, y, w, title, text, items, target, ...question }
+      manifest.annotations.push(note); annotationPaths.set(note, path)
+    }
   })
+  // Answers queue by key (default id), so two questions sharing one would overwrite each other's answer.
+  // Ids are unique, so dropping a key that repeats another question's id or an earlier key keeps all unique.
+  const questions = manifest.annotations.filter((note) => note.kind === 'question'), keys = new Set<string>()
+  for (const note of questions) {
+    if (note.key === undefined) continue
+    if (keys.has(note.key) || questions.some((other) => other !== note && other.id === note.key)) {
+      fail(`${annotationPaths.get(note)}key`, `duplicate question key "${note.key}"`)
+      delete note.key
+    } else keys.add(note.key)
+  }
   return { manifest, errors }
 }

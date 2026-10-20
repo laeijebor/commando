@@ -27,6 +27,7 @@ import {
   MAX_RESPONSE_DATA_JSON,
   questionShapeOf,
   redlinePageKey,
+  sameQuestionShape,
   sentAnswerForQuestion,
 } from '../shared/redline-response'
 import type { PendingQueueApi } from './pendingQueueApi'
@@ -142,6 +143,7 @@ function questionKey(question: RedlinePageQuestion): string {
 
 function questionDraftKey(question: RedlinePageQuestion): string {
   return `${questionKey(question)}:${JSON.stringify([
+    question.question,
     question.kind,
     question.options ?? null,
     question.multiple === true,
@@ -159,7 +161,9 @@ export function pendingForQuestion(
     (note.pageUrl === undefined || redlinePageKey(note.pageUrl) === redlinePageKey(pageUrl)) &&
     (question.queueKey
       ? note.queueKey === question.queueKey
-      : note.queueKey === undefined && note.selector === question.selector)
+      : note.queueKey === undefined && note.selector === question.selector) &&
+    // An answer queued for an earlier prompt or option set does not answer the revised question.
+    (note.questionShape === undefined || sameQuestionShape(note.questionShape, question))
   ))
 }
 

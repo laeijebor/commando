@@ -20,6 +20,8 @@ const appMocks = vi.hoisted(() => ({
   send: vi.fn(),
   useDaemon: vi.fn(),
   sessionTree: vi.fn(),
+  // Terminal panes that never register a focus node, like a renderer that fails to mount.
+  unfocusablePanes: new Set<string>(),
 }))
 
 vi.mock('./authClient', () => ({
@@ -74,7 +76,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
 
     return (
       <div
-        ref={(node) => registerFocusable(paneId, node)}
+        ref={(node) => { if (!appMocks.unfocusablePanes.has(paneId)) registerFocusable(paneId, node) }}
         tabIndex={-1}
         data-testid={`renderer-${paneId}`}
         data-renderer={renderer}
@@ -3085,6 +3087,94 @@ describe('Commander integration', () => {
     expect(within(inbox).queryByText('Relayed · delivered')).toBeNull()
     act(() => daemonMessage?.({ type: 'commander_state', state: { targetId: null } }))
     expect(screen.queryByTestId('agents-inbox')).toBeNull()
+  })
+
+  it('reads another agent in the reading pane and sends what you type straight to it', async () => {
+    await renderAppWithSnapshot()
+    const now = Date.now()
+    const chat = (id: string, text: string) => ({ type: 'chat_state' as const, chat: { paneId: id, hostConnected: true,
+      items: [{ id: `${id}-a`, turnId: 't', status: 'completed' as const, createdAt: now, updatedAt: now, kind: 'assistant_message' as const, text }],
+      session: { paneId: id, provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 1 } } })
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() })
+      daemonMessage?.({ type: 'commander_state', state: { targetId: pane.targetId, paneId: pane.id, sessionId: pane.sessionId } })
+      daemonMessage?.(chat(pane.id, 'Commander here'))
+      daemonMessage?.(chat(remotePane.id, 'Review finished; two nits left'))
+      daemonMessage?.({ type: 'agent_status', status: { paneId: remotePane.id, provider: 'claude', status: 'done', source: 'hook', confidence: 'high', reason: '', summary: 'Review finished', updatedAt: now, settledAt: now } })
+    })
+    const inbox = await screen.findByTestId('agents-inbox')
+    fireEvent.click(within(inbox).getByRole('option', { name: /^review-agent/ }))
+    const reading = await screen.findByTestId('commander-reading-pane')
+    expect(within(reading).getByText('Review finished; two nits left')).toBeInTheDocument()
+    // Still in Commander's session: nothing navigated.
+    expect((appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string }).selectedSessionId).toBe(pane.sessionId)
+    const composer = within(reading).getByRole('textbox', { name: /^Message/ })
+    fireEvent.change(composer, { target: { value: 'Fix the nits too' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: remotePane.id, text: 'Fix the nits too' })))
+    // Read only once you move on, so the row doesn't regroup under you.
+    const seen = () => appMocks.send.mock.calls.some(([message]) => (message as { type?: string, paneIds?: string[] }).type === 'mark_panes_seen' && (message as { paneIds: string[] }).paneIds.includes(remotePane.id))
+    expect(seen()).toBe(false)
+    // (jsdom has no width, so the pane covers Commander and its inbox is aria-hidden.)
+    expect(within(inbox).getByRole('option', { name: /^review-agent/, hidden: true })).toHaveAttribute('aria-selected', 'true')
+    // A mark the socket refuses on close is sent again after a reconnect.
+    const marks = () => appMocks.send.mock.calls.filter(([message]) => (message as { type?: string }).type === 'mark_panes_seen').length
+    appMocks.send.mockReturnValue(false)
+    fireEvent.keyDown(within(reading).getByRole('button', { name: 'Next agent' }), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('commander-reading-pane')).toBeNull())
+    expect(seen()).toBe(true)
+    const refused = marks()
+    const live = daemonConnection
+    daemonConnection = { phase: 'reconnecting', detail: 'Offline', attempt: 1 }
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    appMocks.send.mockReturnValue(true)
+    daemonConnection = live
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    await waitFor(() => expect(marks()).toBeGreaterThan(refused))
+    // clearAllMocks keeps return values; restore the default for later tests.
+    appMocks.send.mockReset()
+  })
+
+  it('opens a chat from the inbox and still lets the session tree navigate away', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    await renderAppWithSnapshot()
+    const now = Date.now()
+    const chat = (id: string) => ({ type: 'chat_state' as const, chat: { paneId: id, hostConnected: true, items: [], session: { paneId: id, provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 1 } } })
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() })
+      daemonMessage?.({ type: 'commander_state', state: { targetId: pane.targetId, paneId: pane.id, sessionId: pane.sessionId } })
+      daemonMessage?.(chat(pane.id))
+      daemonMessage?.(chat(remotePane.id))
+      daemonMessage?.({ type: 'agent_status', status: { paneId: remotePane.id, provider: 'claude', status: 'done', source: 'hook', confidence: 'high', reason: '', summary: 'Review finished', updatedAt: now, settledAt: now } })
+    })
+    const inbox = await screen.findByTestId('agents-inbox')
+    fireEvent.click(within(inbox).getByRole('button', { name: /^Open review-agent/ }))
+    // The chat pane registers a focus target, so the jump completes with the caret in its composer.
+    const remote = () => document.querySelector<HTMLElement>(`[data-pane-id="${remotePane.id}"]`)!
+    await waitFor(() => expect(remote()).toHaveClass('is-focused', 'is-jump-highlighted'))
+    await waitFor(() => expect(document.activeElement).toBe(within(remote()).getByRole('textbox', { name: /^Message/ })))
+    const tree = () => appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string, onSelectSession: (id: string) => void }
+    act(() => tree().onSelectSession(pane.sessionId))
+    await waitFor(() => expect(tree().selectedSessionId).toBe(pane.sessionId))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    expect(tree().selectedSessionId).toBe(pane.sessionId)
+  })
+
+  it('lets the session tree navigate away from a jump whose pane never takes focus', async () => {
+    appMocks.unfocusablePanes.add(remotePane.id)
+    try {
+      await renderAppWithSnapshot()
+      act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+      const tree = () => appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string, onSelectSession: (id: string) => void, onSelectPane: (id: string) => void }
+      act(() => tree().onSelectPane(remotePane.id))
+      await waitFor(() => expect(tree().selectedSessionId).toBe(remotePane.sessionId))
+      act(() => tree().onSelectSession(pane.sessionId))
+      await waitFor(() => expect(tree().selectedSessionId).toBe(pane.sessionId))
+      act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+      expect(tree().selectedSessionId).toBe(pane.sessionId)
+    } finally {
+      appMocks.unfocusablePanes.clear()
+    }
   })
 
   it.each(['response first', 'snapshot first'] as const)('opens the created Commander with %s', async (order) => {

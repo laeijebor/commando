@@ -58,6 +58,7 @@ describe('AgentHost input relays', () => {
           socket.send(JSON.stringify({ type: 'task', paneId: '%4', action: 'background', agentId: 'a1b2', toolUseId: 'toolu_1', requestId: 't1' }))
           socket.send(JSON.stringify({ type: 'interrupt', paneId: '%4', dropQueued: ['queued-2'], requestId: 'i1' }))
           socket.send(JSON.stringify({ type: 'subagent_transcript', paneId: '%4', agentId: 'a1b2', requestId: 'r1' }))
+          socket.send(JSON.stringify({ type: 'mcp', paneId: '%4', request: { action: 'status' }, requestId: 'm1' }))
         }
       })
     })
@@ -79,6 +80,9 @@ describe('AgentHost input relays', () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
     host.stop()
     server.close()
+    // A provider without MCP management answers at once, so the palette doesn't wait out a timeout.
+    const mcp = received.findIndex((message) => message.type === 'mcp_result')
+    expect(received.splice(mcp, 1)[0]).toMatchObject({ type: 'mcp_result', paneId: '%4', requestId: 'm1', servers: [], error: expect.stringMatching(/can't be managed/) })
     expect(received.map((message) => message.type)).toEqual(['hello', 'session_snapshot', 'commands', 'file_search_result', 'subagent_transcript_result'])
     expect(received[3]).toEqual({ type: 'file_search_result', paneId: '%4', requestId: 'q1', entries: [{ path: 'src/comp.ts', kind: 'file' }], truncated: false })
     expect(received[4]).toEqual({ type: 'subagent_transcript_result', paneId: '%4', requestId: 'r1', items: [], error: 'no transcript for a1b2' })

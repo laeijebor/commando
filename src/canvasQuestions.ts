@@ -11,9 +11,11 @@ export const canvasQuestionsPage = (artifactBase: string, manifest: string) =>
 
 /** The redline question a question note asks: a choice when it lists options, else free text. */
 export function canvasQuestion(note: CanvasAnnotation): RedlinePageQuestion | null {
-  if (note.kind !== 'question') return null
+  const question = note.text || note.title || note.id
+  // Too long to send whole; the manifest reports it, and a truncated prompt would hide later edits.
+  if (note.kind !== 'question' || question.length > MAX_RESPONSE_QUESTION) return null
   return {
-    question: (note.text || note.title || note.id).slice(0, MAX_RESPONSE_QUESTION),
+    question,
     kind: note.options ? 'choice' : 'text',
     ...(note.options ? { options: note.options, multiple: note.multiple === true } : {}),
     selector: canvasNoteSelector(note.id),
@@ -27,3 +29,26 @@ export const openCanvasQuestions = (annotations: CanvasAnnotation[]) =>
     const question = note.answer === undefined ? canvasQuestion(note) : null
     return question ? [question] : []
   })
+
+/**
+ * The options a multi-choice answer names. Answers join the chosen options in option
+ * order with ", ", and options may themselves contain ", ", so match whole options in sequence.
+ */
+export function canvasChoicesFromAnswer(answer: string, options: readonly string[]): string[] {
+  if (options.includes(answer)) return [answer]
+  // Each (position, next option) state is tried once, so overlapping labels can't blow up the search.
+  const failed = new Set<string>()
+  const walk = (at: number, from: number): string[] | null => {
+    if (at === answer.length) return []
+    if (failed.has(`${at}:${from}`)) return null
+    for (let i = from; i < options.length; i++) {
+      const end = at + options[i].length
+      if (!answer.startsWith(options[i], at) || (end !== answer.length && !answer.startsWith(', ', end))) continue
+      const rest = end === answer.length ? [] : walk(end + 2, i + 1)
+      if (rest) return [options[i], ...rest]
+    }
+    failed.add(`${at}:${from}`)
+    return null
+  }
+  return walk(0, 0) ?? []
+}

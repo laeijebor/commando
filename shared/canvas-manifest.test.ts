@@ -92,11 +92,17 @@ describe('answerable question notes', () => {
   })
   it.each([
     [{ options: [] }, 'annotations[0].options:'], [{ options: ['ok', ''] }, 'annotations[0].options[1]:'], [{ multiple: true }, 'annotations[0].multiple: needs options'],
-    [{ key: 'k'.repeat(129) }, 'annotations[0].key:'], [{ answer: 3 }, 'annotations[0].answer:'], [{ multiple: 'yes', options: ['a'] }, 'annotations[0].multiple:'],
+    [{ key: 'k'.repeat(129) }, 'annotations[0].key:'], [{ text: 't'.repeat(257) }, 'annotations[0].text: question notes must be at most 256'], [{ text: '', title: 't'.repeat(257) }, 'annotations[0].title: question notes must be at most 256'], [{ answer: 3 }, 'annotations[0].answer:'], [{ multiple: 'yes', options: ['a'] }, 'annotations[0].multiple:'],
   ])('reports invalid question field %o', (note, prefix) => {
     const result = parse(note)
     expect(result.errors.some((error) => error.startsWith(prefix))).toBe(true)
     expect(result.manifest.annotations).toHaveLength(1)
+  })
+  it('drops custom question keys that clash, so every question keeps its own answer', () => {
+    const q = (id: string, key?: string) => ({ id, kind: 'question', x: 0, y: 0, text: id, ...(key ? { key } : {}) })
+    const result = parseCanvasManifest({ ...base, annotations: [q('q1', 'x'), { id: 'broken' }, q('q2', 'x'), q('q3', 'q1'), q('q4', 'own')] })
+    expect(result.manifest.annotations.map((note) => note.key ?? note.id)).toEqual(['x', 'q2', 'q3', 'own'])
+    expect(result.errors.filter((error) => error.includes('duplicate question key'))).toEqual(['annotations[2].key: duplicate question key "x"', 'annotations[3].key: duplicate question key "q1"'])
   })
   it('ignores question fields on other note kinds', () => {
     const result = parseCanvasManifest({ ...base, annotations: [{ id: 'd', kind: 'design', x: 0, y: 0, options: ['a'] }] })

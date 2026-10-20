@@ -125,7 +125,9 @@ Frame roles:
 ## Ask the user questions
 
 Every `question` note is answerable on the canvas. Put the question itself in
-`text` (the `title` is a short label such as "Your call"). Add `options` for a
+`text`, at most 256 characters (longer ones are reported and get no answer
+controls; put detail in `items`). The `title` is a short label such as "Your
+call". Add `options` for a
 choice; picking one queues it at once. Without options the note takes a text
 answer. Every question also takes an optional note.
 
@@ -140,7 +142,10 @@ answer. Every question also takes an optional note.
 - `options`: 1–50 strings, each up to 256 characters. `multiple: true` allows
   several; the answer arrives as `"A, C"` and `response.data.choice` is the array.
 - `key`: answer identity (defaults to the note id). Keep it stable between
-  rounds. Re-answering before sending replaces the queued answer.
+  rounds and unique among question notes (a clashing key is reported and
+  ignored). Re-answering before sending replaces the queued answer. An answer
+  queued before you change the question's text or options no longer counts
+  as its answer; it stays in the queue until the user replaces or removes it.
 - Answers queue in the canvas's answer queue (the strip at the bottom of the
   canvas, same drawer as redline: edit, attach images, Send this, Send all,
   Send all + Build). The Questions tab in the overview lists every question
@@ -151,7 +156,8 @@ answer. Every question also takes an optional note.
 - Once you have the answer, record it so the question is settled:
   `"answer": "Fail with a clear error (recommended)"`. The note then shows
   "Answered" with Reopen and leaves the answer queue. Until you do, a sent
-  answer shows as "Sent · 2h ago". To ask again, change the text or options.
+  answer shows as "Sent · 2h ago". To ask again, change the text or options
+  and remove `answer`; a note with a recorded `answer` stays settled.
 - Use a question note when the decision belongs on the board; use plain
   annotations for open-ended review.
 

@@ -43,7 +43,8 @@ ensure_env_file() {
     [[ -f "$env_file" ]] && return 0
     local token="${COMMANDO_TOKEN:-$(openssl rand -hex 24)}"
     mkdir -p "$(dirname "$env_file")"
-    (umask 077 && printf 'COMMANDO_PORT=%s\nCOMMANDO_TOKEN=%s\n' "${COMMANDO_PORT:-4310}" "$token" >"$env_file")
+    # %q keeps the values literal when load_env sources the file.
+    (umask 077 && printf 'COMMANDO_PORT=%q\nCOMMANDO_TOKEN=%q\n' "${COMMANDO_PORT:-4310}" "$token" >"$env_file")
     log "Created $env_file"
 }
 
@@ -62,7 +63,7 @@ load_env() {
 require_main_checkout() {
     [[ "$(git -C "$root" rev-parse --git-dir)" == "$(git -C "$root" rev-parse --git-common-dir)" ]] && return 0
     [[ -n "${COMMANDO_RELEASE_ALLOW_WORKTREE:-}" ]] && return 0
-    fail "$root is a git worktree; install from the main checkout"
+    fail "$root is a git worktree; run this from the main checkout, which the agent and Rebuild icon use"
 }
 
 agent_pid() {
@@ -89,8 +90,11 @@ ensure_port_free() {
     [[ -z "$listener" ]] || fail "Port $port is already in use (pid $listener). Stop npm run desktop:dev first."
 }
 
+# pgrep -f takes an extended regex, so escape the path to match it literally.
 app_pid() {
-    pgrep -f -- "^$app/Contents/MacOS/CommandoDesktop" | head -1 || true
+    local pattern
+    pattern="$(printf '%s' "$app/Contents/MacOS/CommandoDesktop" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
+    pgrep -f -- "^$pattern" | head -1 || true
 }
 
 quit_app() {
@@ -149,31 +153,43 @@ install_builds() {
     log "Installed $app"
 }
 
+xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# Renders and lints the agent into $agent_plist.new, so a bad plist fails before
+# the running agent is unloaded.
 write_agent() {
     mkdir -p "$log_dir" "$(dirname "$agent_plist")"
+    local label_xml script_xml env_file_xml state_dir_xml launchd_log_xml
+    label_xml="$(xml_escape "$label")"
+    script_xml="$(xml_escape "$script")"
+    env_file_xml="$(xml_escape "$env_file")"
+    state_dir_xml="$(xml_escape "$state_dir")"
+    launchd_log_xml="$(xml_escape "$log_dir/daemon-launchd.log")"
     # A login, interactive zsh gives the daemon (and the agents it launches) the
     # same PATH and environment as a terminal. Without ProcessType launchd
     # applies background CPU and I/O limits.
-    cat >"$agent_plist" <<PLIST
+    cat >"$agent_plist.new" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>$label</string>
+    <string>$label_xml</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/zsh</string>
         <string>-lic</string>
         <string>exec "\$0" daemon</string>
-        <string>$script</string>
+        <string>$script_xml</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>COMMANDO_RELEASE_ENV_FILE</key>
-        <string>$env_file</string>
+        <string>$env_file_xml</string>
         <key>COMMANDO_RELEASE_STATE_DIR</key>
-        <string>$state_dir</string>
+        <string>$state_dir_xml</string>
     </dict>
     <key>ProcessType</key>
     <string>Interactive</string>
@@ -187,13 +203,13 @@ write_agent() {
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>$log_dir/daemon-launchd.log</string>
+    <string>$launchd_log_xml</string>
     <key>StandardErrorPath</key>
-    <string>$log_dir/daemon-launchd.log</string>
+    <string>$launchd_log_xml</string>
 </dict>
 </plist>
 PLIST
-    plutil -lint "$agent_plist" >/dev/null
+    plutil -lint "$agent_plist.new" >/dev/null || { rm -f "$agent_plist.new"; fail "Generated an invalid $agent_plist"; }
 }
 
 # Wait for a process other than the one that was running before: the old
@@ -231,24 +247,40 @@ restart_daemon() {
 make_rebuild_icon() {
     mkdir -p "$icon_dir"
     rm -rf "$rebuild_icon"
-    local command="nohup '$script' rebuild >/dev/null 2>&1 &"
-    osacompile -o "$rebuild_icon" -e "do shell script \"/bin/zsh -lic \" & quoted form of \"$command\""
+    # %q quotes the path for zsh; the AppleScript string literal then needs \ and " escaped.
+    local command applescript
+    # Finder launches the icon without install's environment, so carry the effective settings in the command.
+    # Optional settings are carried only when set, so values from the login shell still apply.
+    local optional="" name
+    for name in COMMANDO_CODESIGN_IDENTITY COMMANDO_RELEASE_ALLOW_WORKTREE; do
+        [[ -z "${!name:-}" ]] || printf -v optional '%s %s=%q' "$optional" "$name" "${!name}"
+    done
+    printf -v command 'nohup env COMMANDO_RELEASE_LABEL=%q COMMANDO_RELEASE_STATE_DIR=%q COMMANDO_RELEASE_ENV_FILE=%q COMMANDO_DESKTOP_INSTALL_DIR=%q COMMANDO_RELEASE_ICON_DIR=%q%s %q rebuild >/dev/null 2>&1 &' \
+        "$label" "$state_dir" "$env_file" "$install_dir" "$icon_dir" "$optional" "$script"
+    applescript="${command//\\/\\\\}"
+    applescript="${applescript//\"/\\\"}"
+    osacompile -o "$rebuild_icon" -e "do shell script \"/bin/zsh -lic \" & quoted form of \"$applescript\""
     log "Created $rebuild_icon"
 }
 
-take_rebuild_lock() {
-    mkdir -p "$log_dir"
-    if [[ -f "$rebuild_lock" ]] && kill -0 "$(cat "$rebuild_lock")" 2>/dev/null; then
+# A kernel flock on fd 9: it is atomic, and it is released when this shell exits
+# or dies, so a crashed rebuild never leaves a stale lock behind. stop takes it
+# too, so it can't run while a rebuild is about to restart the daemon.
+take_release_lock() {
+    mkdir -p "$log_dir" "$(dirname "$rebuild_lock")"
+    exec 9>>"$rebuild_lock"
+    local held=0
+    /usr/bin/perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or exit 2; flock($fh, LOCK_EX | LOCK_NB) or exit 1' || held=$?
+    if (( held == 1 )); then
         notify "A rebuild is already running"
-        fail "A rebuild is already running (pid $(cat "$rebuild_lock"))"
+        fail "A rebuild is already running (pid $(cat "$rebuild_lock" 2>/dev/null)); try again when it finishes"
     fi
-    echo $$ >"$rebuild_lock"
-    trap finish_rebuild EXIT
+    (( held == 0 )) || fail "Could not lock $rebuild_lock (perl exited $held)"
+    printf '%s\n' $$ >"$rebuild_lock"
 }
 
 finish_rebuild() {
     local status=$?
-    rm -f "$rebuild_lock"
     (( status == 0 )) || notify "Rebuild failed. Log: $rebuild_log"
 }
 
@@ -256,7 +288,8 @@ finish_rebuild() {
 # install leaves no agent behind to restart at every login.
 rebuild() {
     local installing="${1:-}"
-    take_rebuild_lock
+    take_release_lock
+    trap finish_rebuild EXIT
     exec > >(tee "$rebuild_log") 2>&1
 
     local revision
@@ -269,9 +302,11 @@ rebuild() {
     build_app
     install_builds
     if [[ -n "$installing" ]]; then
-        unload_agent
+        # Build the plist and icon first, so a failure there leaves the running agent up.
         write_agent
         make_rebuild_icon
+        unload_agent
+        mv -f "$agent_plist.new" "$agent_plist"
     fi
     restart_daemon
     open "$app"
@@ -300,13 +335,18 @@ case "${1:-}" in
         ensure_env_file
         rebuild installing
         ;;
-    rebuild) rebuild ;;
+    rebuild)
+        # The agent serves the main checkout, so a worktree rebuild would mix builds.
+        require_main_checkout
+        rebuild
+        ;;
     start)
         load_env
         if agent_loaded; then wait_for_daemon; else restart_daemon; fi
         open "$app"
         ;;
     stop)
+        take_release_lock
         quit_app
         # Disabling persists across logins, so the agent stays off until start.
         launchctl disable "$service"

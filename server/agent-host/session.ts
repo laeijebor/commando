@@ -33,6 +33,8 @@ import {
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
+import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
+import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { commanderAllowedTools } from '../commander-tools.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
@@ -812,6 +814,13 @@ export class AgentSession implements ChatProviderSession {
     } catch (error) {
       return { items: [], error: `Couldn't read the subagent's transcript: ${errorText(error)}` }
     }
+  }
+
+  /** The session's MCP servers, as Claude Code's `/mcp` shows them, after acting on one when asked. */
+  async mcp(request: ChatMcpRequest): Promise<ChatMcpResult> {
+    const handle = this.queryHandle
+    if (!handle || this.info.status === 'closed' || this.info.status === 'error') return { servers: [], error: "This session isn't running" }
+    return runClaudeMcp(handle as ClaudeMcpHandle, request)
   }
 
   /** Files and folders for an `@` mention, from the session's folder. */
