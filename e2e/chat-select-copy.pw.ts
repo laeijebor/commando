@@ -42,6 +42,7 @@ test('selecting chat text copies it to the clipboard', async ({ page, context },
     items: [
       { ...base, id: 'u1', kind: 'user_message', text: 'Where does the daemon listen?' },
       { ...base, id: 'a1', kind: 'assistant_message', text: 'The daemon listens on port 4310 by default.' },
+      { ...base, id: 'p1', kind: 'plan', toolUseId: 'plan-1', text: 'Move the daemon to port 4410.' },
     ],
   }
   await page.routeWebSocket((url) => url.pathname === '/ws', (socket) => {
@@ -75,6 +76,12 @@ test('selecting chat text copies it to the clipboard', async ({ page, context },
   await expect(page.getByRole('status').filter({ hasText: 'Copied' })).toBeVisible()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('daemon listens on port 4310')
   await page.screenshot({ path: testInfo.outputPath('selected.png') })
+
+  // A button pressed while that selection stands doesn't copy it again over the button's own copy.
+  await chatPane.getByRole('button', { name: 'Copy plan' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Move the daemon to port 4410.\n')
+  await page.waitForTimeout(100)
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('Move the daemon to port 4410.\n')
 
   // Clicking without dragging still hands the caret to the composer.
   await answer.click()
