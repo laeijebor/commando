@@ -414,3 +414,27 @@ describe('Cursor late response notification corrections', () => {
     expect(messages()).toEqual([])
   })
 })
+
+it('skips revoked principals at delivery time, including notifications queued behind a slow send', async () => {
+  const principalId = '11111111-1111-4111-8111-111111111111'
+  let active = true
+  let complete!: (value: { accepted: number; rejected: number; unregisteredTokens: string[] }) => void
+  const send = vi.fn(() => new Promise<{ accepted: number; rejected: number; unregisteredTokens: string[] }>((resolve) => { complete = resolve }))
+  const notifier = new PushNotifier({
+    registry: { list: () => [device({ principalId })] }, sender: { send }, principalActive: () => active,
+    paneContext: () => ({ sessionId: '$1', sessionName: 'work' }),
+  })
+  notifiers.push(notifier)
+  notifier.handleStatusChange({ type: 'upsert', status: status('done') })
+  const first = notifier.flush()
+  await Promise.resolve()
+  expect(send).toHaveBeenCalledOnce()
+  notifier.handleStatusChange({ type: 'upsert', status: status('failed') })
+  const queued = notifier.flush()
+  active = false
+  complete({ accepted: 1, rejected: 0, unregisteredTokens: [] })
+  await first
+  await queued
+  expect(send).toHaveBeenCalledOnce()
+  expect((await notifier.sendTest(device({ principalId }))).accepted).toBe(0)
+})

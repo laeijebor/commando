@@ -1,3 +1,4 @@
+import { waitFor } from '@testing-library/react-native'
 import type { ClientMessage, ServerMessage } from '@commando/protocol'
 
 import type { Host } from '../hosts/types'
@@ -17,7 +18,7 @@ class FakeSocket {
   onerror: (() => void) | null = null
   onclose: ((event: { code?: number; reason?: string }) => void) | null = null
 
-  constructor(readonly url: string) {
+  constructor(readonly url: string, _protocols?: unknown, readonly options?: { headers?: Record<string, string> }) {
     FakeSocket.last = this
   }
 
@@ -146,7 +147,7 @@ describe('pane subscriptions', () => {
     client.stop()
   })
 
-  it('re-subscribes, re-watches and drops its leases on a reconnect', () => {
+  it('re-subscribes, re-watches and drops its leases on a reconnect', async () => {
     jest.useFakeTimers()
     try {
       const { client, socket } = connect()
@@ -160,7 +161,7 @@ describe('pane subscriptions', () => {
       // The daemon drops every lease a socket held when it goes away.
       expect(client.holdsResizeLease('%14')).toBe(false)
 
-      jest.advanceTimersByTime(1_000)
+      await jest.advanceTimersByTimeAsync(1_000)
       const reconnected = FakeSocket.last
       expect(reconnected).not.toBe(socket)
       reconnected?.open()
@@ -204,3 +205,18 @@ function subscribedPanes(socket: FakeSocket): string[][] {
     ))
     .map((message) => message.paneIds)
 }
+
+it('uses an Authorization header without query tokens or explicit cookies on native sockets', () => {
+  const { client, socket } = connect()
+  expect(socket.url).toBe(`${HOST.baseUrl.replace('http:', 'ws:')}/ws`)
+  expect(socket.options?.headers).toEqual({ Authorization: 'Bearer secret' })
+  client.stop()
+})
+
+it('probes an abnormal token socket close and stops retrying when health rejects the token', async () => {
+  const { client, socket } = connect()
+  ;(fetch as jest.Mock).mockResolvedValueOnce(new Response('{}', { status: 401 }))
+  socket.onclose?.({ code: 1006, reason: 'socket hang up' })
+  await waitFor(() => expect(useDaemonStore.getState().byHost[HOST.id]).toMatchObject({ phase: 'unauthorized', detail: 'Access revoked — scan a new code' }))
+  client.stop()
+})

@@ -41,12 +41,16 @@ export function uuidv7(now = Date.now()): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+/** Muse's sandbox allows only proxied network by default, which can't listen on a port. */
+export const MUSE_SANDBOX_NETWORK = ['--sandbox-network', 'enabled'] as const
+
 /**
  * `muse serve`'s arguments. Like Claude and Codex chats, the host loads the workspace's own rules
  * and skills; `sandbox: false` runs every session on it without Muse's sandbox, for full access.
+ * The sandbox keeps the network open, so agents can run and reach dev servers.
  */
 export function museServeArgs(sandbox: boolean): string[] {
-  return ['serve', '--trust-workspace', ...(sandbox ? [] : ['--disable-sandbox'])]
+  return ['serve', '--trust-workspace', ...(sandbox ? MUSE_SANDBOX_NETWORK : ['--disable-sandbox'])]
 }
 
 /** One owned `muse serve` child, which keeps its sessions on disk so they can be resumed. */

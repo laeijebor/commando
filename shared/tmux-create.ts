@@ -149,7 +149,7 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
 export type CreateTmuxSessionWorktree = {
   /** Branch to create (or reuse when it exists and is not checked out elsewhere). */
   branch: string
-  /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch)` when omitted. */
+  /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch, worktreesParent)` when omitted. */
   path?: string
   /** Multiline shell command to run in the new worktree before opening its interactive shell. */
   prepareCommand?: string
@@ -290,6 +290,12 @@ export type GitRepoInfo = {
   /** Default branch on the remote, e.g. `main`; undefined without a remote. */
   defaultBranch?: string
   remote?: string
+  /**
+   * Folder the daemon creates new `<repo>-worktrees` folders under
+   * (`COMMANDO_WORKTREE_ROOT`); absent when they go beside the main checkout.
+   * Not a checkout path: `PaneRepo.worktreeRoot` is the linked worktree itself.
+   */
+  worktreesParent?: string
 }
 
 export const MAX_BRANCH_NAME_LENGTH = 64
@@ -315,8 +321,13 @@ export function sanitizeBranchName(name: string): string {
   return value
 }
 
-/** `<parent of main checkout>/<repo>-worktrees/<branch>` */
-export function defaultWorktreePath(mainRoot: string, branch: string): string {
-  const root = mainRoot.replace(/\/+$/u, '')
-  return `${root}-worktrees/${branch}`
+/**
+ * `<parent of main checkout>/<repo>-worktrees/<branch>`, or
+ * `<worktreesParent>/<repo>-worktrees/<branch>` when the daemon has one configured.
+ */
+export function defaultWorktreePath(mainRoot: string, branch: string, worktreesParent?: string): string {
+  const main = mainRoot.replace(/\/+$/u, '')
+  if (!worktreesParent) return `${main}-worktrees/${branch}`
+  const name = main.slice(main.lastIndexOf('/') + 1)
+  return `${worktreesParent.replace(/\/+$/u, '')}/${name}-worktrees/${branch}`
 }

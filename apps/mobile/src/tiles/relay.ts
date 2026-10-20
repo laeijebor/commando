@@ -1,3 +1,5 @@
+import { ACCESS_REVOKED, reportTokenRejected, socketAuthHeaders } from '../hosts/access'
+import { probeHost } from '../hosts/api'
 import type { WebPanePendingNote, WebPanePendingSnapshot } from '@commando/protocol'
 
 import type { Host } from '../hosts/types'
@@ -198,9 +200,6 @@ export class TileRelayClient {
   get url(): string {
     const base = `${webSocketBase(this.options.host.baseUrl)}/ws/web-tiles/${encodeURIComponent(this.options.webPaneId)}`
     const query: string[] = []
-    if (this.options.host.auth.kind === 'token') {
-      query.push(`token=${encodeURIComponent(this.options.host.auth.token)}`)
-    }
     if (this.options.mode === 'review') query.push('mode=review')
     return query.length ? `${base}?${query.join('&')}` : base
   }
@@ -337,10 +336,7 @@ export class TileRelayClient {
     if (this.stopped || this.socket) return
     this.setState({ ...this.state, phase: 'connecting', detail: 'Connecting to the tile…' })
 
-    const headers: Record<string, string> = {}
-    if (this.options.host.auth.kind === 'session' && this.options.cookie) {
-      headers.Cookie = this.options.cookie
-    }
+    const headers = socketAuthHeaders(this.options.host, this.options.cookie)
 
     let socket: WebSocket
     try {
@@ -394,7 +390,15 @@ export class TileRelayClient {
       if (this.stopped) return
       // 4404 / 4410 / 4503 are the daemon saying "not this tile, not now".
       if (next.phase === 'gone' || next.phase === 'unavailable') return
-      this.scheduleRetry(next.detail)
+      if (this.options.host.auth.kind === 'token') {
+        void probeHost(this.options.host).then((result) => {
+          if (this.stopped) return
+          if ((event.code === 4401 || event.code === 4403) || (result.state === 'unauthorized' && result.message === ACCESS_REVOKED)) {
+            reportTokenRejected(this.options.host)
+            this.setState({ ...this.state, phase: 'unavailable', detail: ACCESS_REVOKED })
+          } else this.scheduleRetry(next.detail)
+        })
+      } else this.scheduleRetry(next.detail)
     }
   }
 

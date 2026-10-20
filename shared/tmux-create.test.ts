@@ -77,6 +77,14 @@ describe('defaultWorktreePath', () => {
     const { defaultWorktreePath } = await import('./tmux-create.js')
     expect(defaultWorktreePath('/Users/leo/vivifit/', 'chat-video')).toBe('/Users/leo/vivifit-worktrees/chat-video')
   })
+
+  it('keeps the <repo>-worktrees folder under a configured root instead of beside the checkout', async () => {
+    const { defaultWorktreePath } = await import('./tmux-create.js')
+    expect(defaultWorktreePath('/Users/leo/dev/gizmo/Save-All', 'bot-rematch-flow', '/Volumes/Dev/worktrees'))
+      .toBe('/Volumes/Dev/worktrees/Save-All-worktrees/bot-rematch-flow')
+    expect(defaultWorktreePath('/Users/leo/vivifit/', 'fix/chat-video', '/Volumes/Dev/worktrees/'))
+      .toBe('/Volumes/Dev/worktrees/vivifit-worktrees/fix/chat-video')
+  })
 })
 
 describe('chat launch arguments', () => {

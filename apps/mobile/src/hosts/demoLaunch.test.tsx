@@ -51,3 +51,12 @@ it('never auto-selects demo over an existing real host or remembered selection',
   await useHostsStore.getState().hydrate()
   expect(useHostsStore.getState().initialHostId).toBeNull()
 })
+
+it('offers a scanner action for a revoked token host', async () => {
+  useHostsStore.setState({ hosts: [{ ...real, auth: { kind: 'token', token: 'revoked' } }], hydrated: true, reachability: { real: { state: 'unauthorized', message: 'Access revoked — scan a new code' } } })
+  render(<ThemeProvider><HostsScreen /></ThemeProvider>)
+  await act(async () => undefined)
+  expect(screen.getByText('Access revoked — scan a new code')).toBeTruthy()
+  fireEvent.press(screen.getByText('Re-pair'))
+  expect(mockRouter.push).toHaveBeenCalledWith('/pair')
+})
