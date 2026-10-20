@@ -1925,8 +1925,15 @@ export function App() {
       const settledAt = agentStatuses[paneId]?.settledAt
       return settledAt !== undefined && settledAt > (paneSeen[paneId] ?? -Infinity)
     })
-    // Kept for a reconnect if the socket refuses it.
-    if (!paneIds.length || send({ type: 'mark_panes_seen', paneIds: paneIds.slice(0, 64) })) readAgents.current.clear()
+    // Sent in the protocol's batches of 64; anything the socket refuses waits for a reconnect.
+    const unsent = new Set(readAgents.current)
+    for (const paneId of readAgents.current) if (!paneIds.includes(paneId)) unsent.delete(paneId)
+    for (let start = 0; start < paneIds.length; start += 64) {
+      const batch = paneIds.slice(start, start + 64)
+      if (!send({ type: 'mark_panes_seen', paneIds: batch })) break
+      for (const paneId of batch) unsent.delete(paneId)
+    }
+    readAgents.current = unsent
     // Runs when the pane opens, moves or closes, and on reconnect; statuses are read at that moment.
   }, [readingPaneId, connected])
 
