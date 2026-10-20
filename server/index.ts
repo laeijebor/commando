@@ -9,6 +9,12 @@ import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
+import { Commander } from './commander.js'
+import { createCommanderStatusObserver } from './commander-observer.js'
+import { CommanderApi } from './commander-api.js'
+import { CommanderRelays } from './commander-relays.js'
+import { CommanderStalls } from './commander-stalls.js'
+import { TurnBriefs } from './turn-briefs.js'
 import { defaultGuideStatePath, GuideStateStore, Guides } from './guides.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
@@ -34,6 +40,7 @@ import type {
   SavedWorkspace,
   ServerMessage,
   SessionBrief,
+  TmuxPane,
 } from '../shared/protocol.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
@@ -835,7 +842,11 @@ async function main(): Promise<void> {
     }
   }
 
+  let observeCommanderStatus: ((change: AgentStatusChange, restored?: boolean) => void) | undefined
+  let reconcileCommander: (() => void) | undefined
+
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
+    observeCommanderStatus?.(change, restored)
     if (change?.type === 'upsert') {
       if (reconcileWebPaneAgentSession(change.status.paneId)) publishWebPanes()
       void canvasPush?.statusChanged(change.status.paneId)
@@ -1482,6 +1493,7 @@ async function main(): Promise<void> {
         snapshot = nextSnapshot
         snapshotServerId = nextServerId
         snapshotReady = true
+        reconcileCommander?.()
         // Invalidate pending tab ownership before any brief/status publication
         // can stamp it with evidence from a replacement foreground agent.
         for (const pane of snapshot.panes) {
@@ -1524,7 +1536,7 @@ async function main(): Promise<void> {
           // A switch hands the same conversation from the chat host to Claude Code, so the
           // registry still scopes its status to the host's process; the resume checks that
           // Claude Code in the pane really resumes that conversation.
-          const live = agentStatuses.liveHookStatus(paneId, pane.command)
+          const live = agentStatuses.liveHookStatus(paneId, pane.command) ?? agentStatuses.chatHostStatus(paneId)
           if (live) return live
           const status = agentStatuses.get(paneId)
           const switched = status?.source === 'hook' && isChatProvider(status.provider) && status.agentSessionId !== undefined
@@ -1884,7 +1896,7 @@ async function main(): Promise<void> {
   const sendAgentTerminal = async (paneId: string, text: string): Promise<void> => {
     const pane = paneForId(paneId)
     const status = agentStatuses.get(paneId)
-    if (!pane || pane.dead || agentHosts.owns(paneId) || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
+    if (!pane || pane.dead || agentHosts.owns(paneId) || !status || !(status.status === 'done' || (status.status === 'failed' && status.source === 'hook')) || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
     // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
     await tmux.pasteText(paneId, text)
     await new Promise((resolve) => setTimeout(resolve, 150))
@@ -1946,6 +1958,74 @@ async function main(): Promise<void> {
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
   const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const commander = new Commander({
+    statePath: `${sessionBriefs.statePath}.commander.json`, snapshot: () => snapshot,
+    creator: tmuxCreator, refreshSnapshot: refreshSnapshotFresh,
+    changed: (state) => broadcast({ type: 'commander_state', state }),
+  })
+  await commander.load()
+  const commanderRelays = new CommanderRelays({
+    statePath: `${sessionBriefs.statePath}.commander-relays.json`, pane: paneForId,
+    chatStatus: (id) => agentHosts.states().find((state) => state.paneId === id)?.session.status,
+    status: (id) => agentStatuses.get(id), owns: (id) => agentHosts.owns(id),
+    sendChat: (id, text, requestId, options) => agentHosts.send(id, text, requestId, [], options),
+    sendTerminal: async (id, text) => {
+      if (agentPushes.has(id)) throw new Error('Another delivery is in progress')
+      agentPushes.add(id)
+      try { await sendAgentTerminal(id, text) } finally { agentPushes.delete(id) }
+    },
+    changed: (relay) => broadcast({ type: 'commander_relay', relay }),
+  })
+  await commanderRelays.load()
+  const commanderError = (error: unknown): void => console.warn('[commando] Commander observer failed', error)
+  const commanderConfigDir = async (pane: TmuxPane): Promise<string | undefined> => {
+    const chat = agentHosts.states().find((s) => s.paneId === pane.id)?.session
+    if (chat?.configDir) return chat.configDir
+    const status = agentStatuses.get(pane.id)
+    if (status?.provider !== 'claude') return undefined
+    if (pane.processId !== undefined) {
+      const launch = await readPaneAgentLaunch(pane.processId, 'claude').catch(() => undefined)
+      if (launch?.env.CLAUDE_CONFIG_DIR) return launch.env.CLAUDE_CONFIG_DIR
+    }
+    return status.agentSessionId ? (await chatConversations.find('claude', status.agentSessionId))?.configDir : undefined
+  }
+  const turnBriefs = new TurnBriefs({
+    statePath: `${sessionBriefs.statePath}.turn-briefs.json`, port,
+    commanderTarget: () => commander.state().targetId,
+    configDir: async (id) => { const pane = paneForId(id); return pane ? commanderConfigDir(pane) : undefined },
+    changed: (brief) => {
+      broadcast({ type: 'turn_brief', brief })
+      void commanderStalls.check().catch(commanderError)
+    },
+  })
+  await turnBriefs.load()
+  const commanderStalls: CommanderStalls = new CommanderStalls({
+    agents: () => commanderApi.agents(), status: (id) => agentStatuses.get(id),
+    commander: () => commander.state(), relays: commanderRelays,
+  })
+  const commanderApi: CommanderApi = new CommanderApi({
+    agentToken: agentHookToken, ownerAuthorized: requestIsAuthorized, snapshot: () => snapshot,
+    status: (id) => agentStatuses.get(id), commander, relays: commanderRelays, stalls: commanderStalls,
+    brief: (target) => turnBriefs.get(target), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
+    chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
+    owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id), seen: () => paneSeen.snapshot(),
+    configDir: commanderConfigDir,
+    screen: async (pane) => (await captureRenderedCompanionOutput(tmux, pane.sessionId, pane.id)).output,
+  })
+  observeCommanderStatus = createCommanderStatusObserver({
+    pane: paneForId, owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id),
+    finalMessage: (id) => agentStatuses.finalMessage(id), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
+    chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
+    briefs: turnBriefs, stalls: commanderStalls, relays: commanderRelays, error: commanderError,
+  })
+  reconcileCommander = () => {
+    commander.reconcile()
+    void commanderRelays.flush().catch(commanderError)
+    void commanderStalls.check().catch(commanderError)
+  }
+  turnBriefs.start()
+  commanderRelays.start()
+  commanderStalls.start()
   const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
   conversationTitles.start()
   const chatConversationsApi = new ChatConversationsApi({
@@ -2570,6 +2650,9 @@ async function main(): Promise<void> {
     send(client, webPanesMessage())
     void queueBriefPublication(async () => {
       send(client, { type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
+      send(client, { type: 'turn_brief_snapshot', briefs: turnBriefs.values() })
+      send(client, { type: 'commander_relay_snapshot', relays: commanderRelays.values() })
+      send(client, { type: 'commander_state', state: commander.state() })
     })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
@@ -2674,6 +2757,7 @@ async function main(): Promise<void> {
       if (await simLeaseApi.handle(request, response, url)) return
       if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
+      if (await commanderApi.handle(request, response, url)) return
       if (await agentChatsApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
       if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
@@ -2899,6 +2983,9 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    turnBriefs.stop()
+    commanderRelays.stop()
+    commanderStalls.stop()
     conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()

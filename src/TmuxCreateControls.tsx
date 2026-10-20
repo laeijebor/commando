@@ -16,6 +16,7 @@ import {
   type TmuxCreatedTarget,
   type TmuxCreatedWorktree,
   type TmuxCreateResponse,
+  chatLaunchPermission,
 } from '../shared/tmux-create'
 import { loadChatLaunch, saveChatLaunch, type ChatLaunchPreference } from './chatLaunchPreferences'
 import './tmux-create.css'
@@ -445,13 +446,13 @@ export function TmuxCreateControls({
         request.agent = {
           provider: agentProvider,
           ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
-          ...(agentProvider === 'codex-chat' || agentProvider === 'muse-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
+          ...(agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat' ? chatLaunchPermission(agentProvider, chatLaunch.permissionMode) : {}),
           ...(agentProvider === 'claude-chat' ? {
             ...((chatConfigDir ?? chatLaunch.configDir) ? { configDir: chatConfigDir ?? chatLaunch.configDir } : {}),
             permissionMode: chatLaunch.permissionMode,
           } : {}),
         }
-        if (agentProvider === 'codex-chat' || agentProvider === 'muse-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, agentProvider)
+        if (agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, agentProvider)
         if (agentProvider === 'claude-chat') {
           // Keep a remembered profile even when the list could not be loaded this time.
           const configDir = chatConfigDir ?? chatLaunch.configDir

@@ -1489,7 +1489,7 @@ describe('Muse hooks', () => {
     expect(start.code).toBe(0)
     const context = JSON.parse(start.stdout).hookSpecificOutput.additionalContext
     expect(context).toContain(paths.prMarkerCliPath)
-    expect(context).toContain(`Resume command for this conversation: muse resume ${session}`)
+    expect(context).toContain(`Resume command for this conversation: muse --yolo resume ${session}`)
 
     const reminder = await runMuseHook(command, { hook_event_name: 'SubagentStart', session_id: 'child', subagent_id: 'skill-reminder' }, { ...env, MUSE_THREAD_ID: 'child' })
     expect(reminder).toEqual({ code: 0, stdout: '' })

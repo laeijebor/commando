@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chatPermissionModes, sanitizeBranchName, sessionAgentArgv } from './tmux-create.js'
+import { chatLaunchPermission, chatPermissionModes, sanitizeBranchName, sessionAgentArgv } from './tmux-create.js'
 
 describe('interactive agent arguments', () => {
   it.each([['claude', 'claude'], ['codex', 'codex'], ['opencode', 'opencode'], ['cursor', 'agent']] as const)('maps %s to its actual CLI', (provider, command) => {
@@ -99,8 +99,24 @@ describe('Codex chat launch', () => {
 
 describe('Muse chat launch', () => {
   it('launches the host with Muse, its resume target and literal prompt text', () => {
-    expect(sessionAgentArgv({ provider: 'muse-chat', permissionMode: 'bypassPermissions', resume: '01a14dc2-082e-7781-9892-8b5bc1fea332', prompt: 'hi' }))
-      .toEqual(['commando-agent', 'muse', '--permission-mode', 'bypassPermissions', '--resume', '01a14dc2-082e-7781-9892-8b5bc1fea332', '--prompt', 'hi'])
-    expect(chatPermissionModes('muse-chat').map((mode) => mode.value)).toEqual(['default', 'bypassPermissions'])
+    expect(sessionAgentArgv({ provider: 'muse-chat', permissionMode: 'bypassPermissions', fullAccess: true, resume: '01a14dc2-082e-7781-9892-8b5bc1fea332', prompt: 'hi' }))
+      .toEqual(['commando-agent', 'muse', '--permission-mode', 'bypassPermissions', '--yolo', '--resume', '01a14dc2-082e-7781-9892-8b5bc1fea332', '--prompt', 'hi'])
+    expect(sessionAgentArgv({ provider: 'muse-chat', permissionMode: 'acceptEdits' })).toEqual(['commando-agent', 'muse', '--permission-mode', 'acceptEdits'])
+    // A bare bypassPermissions, as older clients send it, keeps the sandbox.
+    expect(sessionAgentArgv({ provider: 'muse-chat', permissionMode: 'bypassPermissions' })).toEqual(['commando-agent', 'muse', '--permission-mode', 'bypassPermissions'])
+    expect(chatLaunchPermission('muse-chat', 'bypassPermissions')).toEqual({ permissionMode: 'bypassPermissions', fullAccess: true })
+    expect(chatLaunchPermission('codex-chat', 'bypassPermissions')).toEqual({ permissionMode: 'bypassPermissions' })
+    expect(chatPermissionModes('muse-chat').map((mode) => mode.value)).toEqual(['default', 'acceptEdits', 'bypassPermissions'])
+  })
+})
+
+describe('Cursor chat launch arguments', () => {
+  it('defaults to full access without carrying Claude directories', () => {
+    expect(sessionAgentArgv({ provider: 'cursor-chat', configDir: '/unused', readableDir: '/unused' }))
+      .toEqual(['commando-agent', 'cursor', '--permission-mode', 'bypassPermissions'])
+  })
+  it('places resume before arbitrary prompt data', () => {
+    expect(sessionAgentArgv({ provider: 'cursor-chat', permissionMode: 'auto', resume: 'agent-12345678-0000', prompt: '--model injected\nhello' }))
+      .toEqual(['commando-agent', 'cursor', '--permission-mode', 'auto', '--resume', 'agent-12345678-0000', '--prompt', '--model injected\nhello'])
   })
 })

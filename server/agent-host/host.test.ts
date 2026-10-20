@@ -90,3 +90,15 @@ describe('AgentHost input relays', () => {
     ])
   })
 })
+
+describe('Cursor host arguments', () => {
+  it('defaults to full access and keeps bypass available with explicit sandboxed mode', async () => {
+    const { parseHostArgs, chatResumeCommand, restartEnv } = await import('./main.js')
+    expect(parseHostArgs(['cursor'], {})).toEqual({ provider: 'cursor', permissionMode: 'bypassPermissions', bypassAllowed: true })
+    const args = parseHostArgs(['cursor', '--permission-mode', 'default', '--model', 'auto', '--resume', 'agent-123'], { CLAUDE_CONFIG_DIR: '/profile' })
+    expect(args).toEqual({ provider: 'cursor', permissionMode: 'default', bypassAllowed: true, model: 'auto', resume: 'agent-123' })
+    if (typeof args === 'string') throw new Error(args)
+    expect(chatResumeCommand('/c/commando-agent', args)).toBe('/c/commando-agent cursor --model auto --permission-mode default --allow-dangerously-skip-permissions')
+    expect(restartEnv('cursor', { CURSOR_API_KEY: 'never-forward', CODEX_HOME: '/codex', COMMANDO_PORT: '4410' })).toEqual(['-e', 'COMMANDO_PORT=4410'])
+  })
+})

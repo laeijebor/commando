@@ -1,3 +1,6 @@
+import { commanderInbox } from './commanderInbox'
+import { createCommanderApi } from './commanderApi'
+import { initialCommanderClientState, reduceCommanderMessage } from './commanderClientState'
 import { isSessionName } from '../shared/session-identity'
 import {
   Activity,
@@ -51,6 +54,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from 'react'
@@ -144,7 +148,7 @@ import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type Chat
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   hostTakesSwitch,
@@ -328,6 +332,7 @@ type TerminalPaneProps = {
   pane: TmuxPane
   lineageSnapshot?: LineageSnapshot
   lineageStatuses?: Record<string, AgentStatus>
+  commander?: Parameters<typeof ChatPane>[0]['commander']
   onSelectPane?: (id: string) => void
   attributionVisible?: boolean
   agentChatRequests?: AgentChatRequest[]
@@ -417,6 +422,7 @@ type TerminalPaneProps = {
 
 /** What clicking Claude Code in a chat's header does, or why it can't. */
 function claudeCodeSwitchTitle(chat: ChatState): string {
+  if (chat.session.provider === 'cursor') return 'Cursor chat does not support switching to a terminal UI'
   const label = providerTuiLabel(chat.session.provider)
   if (!chat.hostConnected) return 'The agent host is disconnected'
   if (!hostTakesSwitch(chat.session)) return `This chat started before switching to ${label}; restart it to switch`
@@ -432,6 +438,7 @@ export function TerminalPaneCard({
   pane,
   lineageSnapshot,
   lineageStatuses = {},
+  commander,
   onSelectPane,
   attributionVisible,
   agentChatRequests = [],
@@ -759,6 +766,7 @@ export function TerminalPaneCard({
             pane={pane}
             snapshot={lineageSnapshot}
             statuses={lineageStatuses}
+            commander={commander}
             onSelectPane={onSelectPane}
             {...(prsApi ? { prsApi } : {})}
             chat={chat}
@@ -1098,6 +1106,9 @@ export function App() {
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [paneSeen, setPaneSeen] = useState<Record<string, number>>({})
+  const [{ turnBriefs, relays, commanderState }, dispatchCommander] = useReducer(reduceCommanderMessage, initialCommanderClientState)
+  const [commanderOpening, setCommanderOpening] = useState(false)
+  const commanderStateVersion = useRef(0)
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
@@ -1476,6 +1487,16 @@ export function App() {
         setPaneBriefs(Object.fromEntries(
           message.briefs.map((brief) => [brief.paneId, brief]),
         ))
+        break
+      case 'turn_brief':
+      case 'turn_brief_snapshot':
+      case 'commander_relay':
+      case 'commander_relay_snapshot':
+        dispatchCommander(message)
+        break
+      case 'commander_state':
+        commanderStateVersion.current += 1
+        dispatchCommander(message)
         break
       case 'pane_mark':
         setPaneMarks((current) => ({ ...current, [message.mark.targetId]: message.mark }))
@@ -2095,6 +2116,27 @@ export function App() {
     setRightPanelOpen(false)
   }
 
+  const openCommander = async () => {
+    setCommanderOpening(true)
+    const version = commanderStateVersion.current
+    try {
+      const state = await createCommanderApi(token).ensure()
+      // A live broadcast received during the request is newer than its response.
+      if (version === commanderStateVersion.current) dispatchCommander({ type: 'commander_state', state })
+    } catch (cause) {
+      setCommanderOpening(false)
+      throw cause
+    }
+  }
+  // Creation may report state before its structural snapshot arrives (or vice versa).
+  useEffect(() => {
+    if (!commanderOpening || !commanderState.paneId) return
+    const pane = snapshot?.panes.find((item) => item.id === commanderState.paneId && item.targetId === commanderState.targetId)
+    if (!pane) return
+    jumpToPane(pane.id, pane.targetId, true)
+    setCommanderOpening(false)
+  }, [commanderOpening, commanderState, snapshot?.panes])
+
   const jumpToPaneTarget = (targetId: string) => {
     const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
     if (matches.length !== 1) return
@@ -2682,6 +2724,11 @@ export function App() {
     }
   }
 
+  const commanderGroups = useMemo(() => commanderInbox({
+    snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays,
+    commanderPaneId: commanderState.paneId,
+  }), [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId])
+
   const paneSimulators = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
     const brief = paneBriefs[pane.id]
     return brief?.simulator && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.simulator]] : []
@@ -2912,10 +2959,10 @@ export function App() {
     }
   }
 
-  /** A Codex or Muse chat launch with the permission mode remembered for the path's repository. */
-  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat'): Promise<SessionAgentLaunch> => {
+  /** A Codex, Muse or Cursor chat launch with the permission mode remembered for the path's repository. */
+  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat' | 'cursor-chat'): Promise<SessionAgentLaunch> => {
     const repoRoot = await gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined)
-    return { provider, permissionMode: loadChatLaunch(repoRoot ?? path, provider).permissionMode }
+    return { provider, ...chatLaunchPermission(provider, loadChatLaunch(repoRoot ?? path, provider).permissionMode) }
   }
 
   /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */
@@ -2943,7 +2990,7 @@ export function App() {
     try {
       const agent = choice === 'shell' ? undefined
         : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path)
-          : choice === 'codex-chat' || choice === 'muse-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
+          : choice === 'codex-chat' || choice === 'muse-chat' || choice === 'cursor-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
             : { provider: choice }
       await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
       // Focus lands once the snapshot swaps the launcher for the running pane.
@@ -3598,6 +3645,11 @@ export function App() {
           <div className="session-tree">
             <SessionTree
               token={token}
+              commanderState={commanderState}
+              commanderNeedsYou={commanderGroups.needs_you.length}
+              commanderUnreadFinished={commanderGroups.finished.some((row) => row.unread)}
+              commanderOpening={commanderOpening}
+              onCreateCommander={openCommander}
               prsApi={prsApi}
               connected={connected}
               sessions={snapshot?.sessions ?? []}
@@ -4013,6 +4065,11 @@ export function App() {
                             pane={pane}
                             lineageSnapshot={snapshot ?? undefined}
                             lineageStatuses={agentStatuses}
+                            commander={{ state: commanderState, groups: commanderGroups, token,
+                              onOpenPane: (paneId, targetId) => jumpToPane(paneId, targetId, true),
+                              onRelay: (relay) => dispatchCommander({ type: 'commander_relay', relay }),
+                              disabled: !connected,
+                            }}
                             onSelectPane={jumpToPane}
                             attributionVisible={attributionTargets.has(pane.targetId)}
                             agentChatRequests={Object.values(agentChatRequests).filter((request) => request.callerPaneId === pane.id && request.callerTargetId === pane.targetId)}

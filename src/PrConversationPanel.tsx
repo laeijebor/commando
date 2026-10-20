@@ -4,6 +4,7 @@ import type { PrsApiClient } from './prsApi'
 import { groupPrConversation } from './prConversation'
 
 type ThreadAction = 'reply' | 'resolve' | 'reopen'
+type Optimistic = { isResolved: boolean; token: number; settled?: boolean }
 type ThreadState = {
   draft?: string
   composing?: boolean
@@ -24,6 +25,13 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
 }) {
   // Keep drafts outside individual rows so polling/reloading never destroys a reply in progress.
   const [states, setStates] = useState<Record<string, ThreadState>>({})
+  // Resolve/reopen shows immediately; an entry lasts until GitHub's data agrees, or until the first
+  // details that land after its post-write refresh (which may itself have been superseded by a poll).
+  const [optimistic, setOptimistic] = useState<Record<string, Optimistic>>({})
+  const optimisticToken = useRef(0)
+  const refreshQueue = useRef<{ running?: Promise<void>; next?: Promise<void> }>({})
+  const onChangedRef = useRef(onChanged)
+  onChangedRef.current = onChanged
   const inFlight = useRef(new Set<string>())
   const context = useRef({ api, repo, number })
   const mounted = useRef(true)
@@ -33,35 +41,77 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
   useEffect(() => {
     mounted.current = true
     setStates({})
+    setOptimistic({})
+    refreshQueue.current = {}
     inFlight.current.clear()
     return () => { mounted.current = false }
   }, [api, repo, number])
+  useEffect(() => {
+    if (!details) return
+    const server = serverResolution(details)
+    setOptimistic((current) => {
+      const kept = Object.entries(current).filter(([id, entry]) => !entry.settled && server.get(id) !== entry.isResolved)
+      return kept.length === Object.keys(current).length ? current : Object.fromEntries(kept)
+    })
+  }, [details])
   const update = (id: string, patch: ThreadState) => setStates((current) => ({ ...current, [id]: { ...current[id], ...patch } }))
+  const dropOptimistic = (id: string, token: number) => setOptimistic((current) => {
+    if (current[id]?.token !== token) return current
+    const { [id]: _dropped, ...rest } = current
+    return rest
+  })
+  const settleOptimistic = (id: string, token: number) => setOptimistic((current) =>
+    current[id]?.token === token ? { ...current, [id]: { ...current[id], settled: true } } : current)
+  // Back-to-back writes share one trailing refresh instead of reloading the PR once per click.
+  const refreshConversation = (): Promise<void> => {
+    const queue = refreshQueue.current
+    if (queue.next) return queue.next
+    if (!queue.running) {
+      const run = onChangedRef.current().finally(() => { if (queue.running === run) queue.running = undefined })
+      queue.running = run
+      return run
+    }
+    queue.next = queue.running.catch(() => undefined).then(() => {
+      queue.next = undefined
+      return refreshConversation()
+    })
+    return queue.next
+  }
   const act = async (thread: PrReviewThread, action: ThreadAction) => {
     if (inFlight.current.has(thread.id)) return
     const draft = states[thread.id]?.draft ?? ''
     if (action === 'reply' && !draft.trim()) return
     const started = context.current
     const active = () => mounted.current && context.current === started
+    const token = ++optimisticToken.current
     inFlight.current.add(thread.id)
     update(thread.id, { busy: action, error: '', notice: '', refreshFailed: false })
+    if (action !== 'reply') setOptimistic((current) => ({ ...current, [thread.id]: { isResolved: action === 'resolve', token } }))
     try {
       await api.threadAction(repo, number, thread.id, action, action === 'reply' ? draft : undefined)
     } catch (cause) {
-      if (active()) update(thread.id, { busy: undefined, error: cause instanceof Error ? cause.message : 'Unable to update review thread' })
-      if (active()) inFlight.current.delete(thread.id)
+      if (active()) {
+        dropOptimistic(thread.id, token)
+        update(thread.id, { busy: undefined, error: cause instanceof Error ? cause.message : 'Unable to update review thread' })
+        inFlight.current.delete(thread.id)
+      }
       return
     }
     if (!active()) return
+    // The write is done, so free this thread straight away; the refresh runs in the background.
+    inFlight.current.delete(thread.id)
     const notice = action === 'reply' ? 'Reply sent.' : action === 'resolve' ? 'Thread resolved.' : 'Thread reopened.'
-    update(thread.id, { notice, ...(action === 'reply' ? { draft: '', composing: false } : {}) })
+    update(thread.id, { busy: undefined, notice, ...(action === 'reply' ? { draft: '', composing: false } : {}) })
     try {
-      await onChanged()
+      await refreshConversation()
+      if (!active()) return
+      settleOptimistic(thread.id, token)
+      // A newer successful refresh clears a failure left by this thread's earlier action.
+      setStates((current) => current[thread.id]?.refreshFailed
+        ? { ...current, [thread.id]: { ...current[thread.id], refreshFailed: false, error: '' } }
+        : current)
     } catch (cause) {
       if (active()) update(thread.id, { refreshFailed: true, error: `Saved on GitHub, but refresh failed: ${cause instanceof Error ? cause.message : 'Unable to refresh'}` })
-    } finally {
-      if (active()) update(thread.id, { busy: undefined })
-      if (active()) inFlight.current.delete(thread.id)
     }
   }
   const refresh = async (id: string) => {
@@ -70,7 +120,7 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
     inFlight.current.add(id)
     update(id, { busy: 'refresh', error: '' })
     try {
-      await onChanged()
+      await refreshConversation()
       if (mounted.current && context.current === started) update(id, { refreshFailed: false })
     } catch (cause) {
       if (mounted.current && context.current === started) update(id, { error: `Refresh failed: ${cause instanceof Error ? cause.message : 'Unable to refresh'}` })
@@ -81,7 +131,9 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
   }
   const conversation = useMemo(() => groupPrConversation(details?.conversation ?? []), [details])
   const replies = conversation.reduce((count, thread) => count + thread.replies.length, 0)
-  const unresolved = details?.unresolvedThreads ?? unresolvedThreads
+  const server = useMemo(() => details ? serverResolution(details) : new Map<string, boolean>(), [details])
+  const unresolved = (details?.unresolvedThreads ?? unresolvedThreads) + Object.entries(optimistic)
+    .reduce((delta, [id, entry]) => server.has(id) && server.get(id) !== entry.isResolved ? delta + (entry.isResolved ? -1 : 1) : delta, 0)
   return (
     <>
       {!details ? <p role="status">Loading conversation…</p> : <>
@@ -93,7 +145,11 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
         </small>
       </h3>
       {conversation.length ? conversation.map(({ entry, replies: threadReplies, detachedReply }) => {
-        const thread = entry.thread
+        const pending = entry.thread && optimistic[entry.thread.id]
+        // GitHub ties viewerCanResolve/viewerCanUnresolve to the current state, so flip them with it.
+        const thread = entry.thread && pending && pending.isResolved !== entry.thread.isResolved
+          ? { ...entry.thread, isResolved: pending.isResolved, viewerCanResolve: entry.thread.viewerCanUnresolve, viewerCanUnresolve: entry.thread.viewerCanResolve }
+          : entry.thread
         const state = thread ? states[thread.id] ?? {} : {}
         return <article className="pr-quick-comment" key={entry.id} data-comment-id={entry.id}>
           {renderComment(entry, { detached: detachedReply })}
@@ -167,4 +223,8 @@ export function PrConversationPanel({ details, unresolvedThreads, repo, number, 
       </>}
     </>
   )
+}
+
+function serverResolution(details: PrDetails): Map<string, boolean> {
+  return new Map(details.conversation.flatMap((entry) => entry.thread ? [[entry.thread.id, entry.thread.isResolved] as const] : []))
 }

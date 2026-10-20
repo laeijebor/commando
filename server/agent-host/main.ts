@@ -16,10 +16,11 @@ import { claudeCodeSwitchCommand as providerSwitchCommand } from './session.js'
 
 export { claudeCodeFlags } from './session.js'
 
-const USAGE = `Usage: commando-agent <claude|codex|muse> [options]
+const USAGE = `Usage: commando-agent <claude|codex|muse|cursor> [options]
 
 Runs a provider session in this tmux pane and shows it as a chat in Commando.
 Codex uses the local codex app-server and Muse uses muse serve, each with its existing login.
+Cursor uses the local Cursor SDK; use /login to sign in.
 
 Options:
   --config-dir DIR                 Claude config dir (default: $CLAUDE_CONFIG_DIR)
@@ -27,6 +28,8 @@ Options:
   --model MODEL                    Model to use
   --effort LEVEL                   low | medium | high | xhigh | max
   --fast                           Fast mode, on a model that offers it
+  --yolo                           Muse only: with --permission-mode bypassPermissions, full access
+                                   (no prompts, no sandbox); without it Muse approves everything sandboxed
   --permission-mode MODE           default | acceptEdits | plan | auto | dontAsk | bypassPermissions
   --pre-plan-permission-mode MODE  In plan mode: the mode Implement returns to
   --dangerously-skip-permissions   Same as --permission-mode bypassPermissions
@@ -62,12 +65,14 @@ export interface HostArgs {
   prompt?: string
   /** Started by Commando's switch when Claude Code exited; never carried into restarts. */
   fromClaudeCode?: boolean
+  /** Muse only: run without Muse's sandbox. An explicit flag, so commands from before it existed stay sandboxed. */
+  yolo?: boolean
 }
 
 export function parseHostArgs(argv: string[], env: Record<string, string | undefined>): HostArgs | string {
   const [provider, ...rest] = argv
   if (!isChatProvider(provider)) return USAGE
-  const args: HostArgs = { provider, permissionMode: 'default' }
+  const args: HostArgs = { provider, permissionMode: provider === 'cursor' ? 'bypassPermissions' : 'default', ...(provider === 'cursor' ? { bypassAllowed: true } : {}) }
   if (provider === 'claude' && env.CLAUDE_CONFIG_DIR) args.configDir = expandHome(env.CLAUDE_CONFIG_DIR)
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index]
@@ -99,6 +104,10 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
         case '--prompt': args.prompt = needValue(true); break
         case '--from-claude-code': args.fromClaudeCode = true; break
         case '--fast': args.fast = true; break
+        case '--yolo':
+          if (provider !== 'muse') return `--yolo is only for muse\n\n${USAGE}`
+          args.yolo = true
+          break
         case '--dangerously-skip-permissions': args.permissionMode = 'bypassPermissions'; args.bypassAllowed = true; break
         case '--allow-dangerously-skip-permissions': args.bypassAllowed = true; break
         case '--effort': {
@@ -150,6 +159,7 @@ export function sessionFlags(args: HostArgs): string[] {
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
     ...(args.fast ? ['--fast'] : []),
+    ...(args.yolo ? ['--yolo'] : []),
     '--permission-mode', args.permissionMode,
     ...(args.bypassAllowed && args.permissionMode !== 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
     ...(args.claudePath ? ['--claude-path', args.claudePath] : []),
@@ -267,6 +277,7 @@ async function main(): Promise<void> {
       ...(parsed.model ? { model: parsed.model } : {}),
       ...(parsed.effort ? { effort: parsed.effort } : {}),
       ...(parsed.fast ? { fast: true } : {}),
+      ...(parsed.yolo ? { fullAccess: true } : {}),
       ...(parsed.bypassAllowed ? { bypassAllowed: true } : {}),
       ...(parsed.claudePath ? { claudePath: parsed.claudePath } : {}),
       ...(parsed.prompt ? { initialPrompt: parsed.prompt } : {}),
@@ -316,13 +327,19 @@ async function main(): Promise<void> {
 
   // Restart on the same conversation (to pick up new host code) once Claude is idle.
   let restarting = false
+  // Set from the respawn until it fails: a later idle update must not respawn the new host too.
+  let respawning = false
+  const restartFailed = (message: string) => {
+    write(color(31, message))
+    session.hostNotice?.('error', message)
+    restarting = false
+    respawning = false
+  }
   const restartNow = async () => {
+    if (respawning) return
     const sessionId = session.snapshot().session.sessionId
-    if (!launcher) {
-      write(color(31, 'Restart needs the commando-agent launcher; quit and start it again instead.'))
-      restarting = false
-      return
-    }
+    if (!launcher) return restartFailed('Restart needs the commando-agent launcher; quit and start it again instead.')
+    respawning = true
     // tmux replaces this process with a fresh host in the same pane (same pane id
     // and Commando target), continuing the same conversation. Nothing is closed
     // first: on success -k ends this process, on failure this host keeps going.
@@ -333,9 +350,7 @@ async function main(): Promise<void> {
     const env = restartEnv(settings.provider, process.env)
     write(dim('Restarting to update…'))
     execFile('tmux', ['respawn-pane', '-k', ...env, '-t', paneId, '-c', process.cwd(), command], (error) => {
-      if (!error) return
-      write(color(31, `Restart failed: ${error.message}. The chat keeps running; quit and start commando-agent again to update.`))
-      restarting = false
+      if (error) restartFailed(`Restart failed: ${error.message}. The chat keeps running; quit and start commando-agent again to restart it.`)
     })
   }
   /** The daemon keeps the queue before the provider hands its conversation to its TUI. */
@@ -385,6 +400,7 @@ async function main(): Promise<void> {
       if (restarting && info.status === 'idle' && !session.busy) void restartNow()
     })
   }
+  session.on('restart', () => requestRestart())
 
   const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY })
   let lastInterrupt = 0

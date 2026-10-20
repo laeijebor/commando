@@ -36,8 +36,14 @@ export type AgentResumeRecord = {
   updatedAt: number
 }
 
+/** A resume that failed: kept, with its reason, until Retry or the pane moves on. */
+type FailedResume = { record: AgentResumeRecord; error: string; failedAt: number }
+
 /** The part of a record an archived session keeps. */
-export type ArchivedAgent = Pick<AgentResumeRecord, 'provider' | 'sessionId' | 'path' | 'command'>
+export type ArchivedAgent = Pick<AgentResumeRecord, 'provider' | 'sessionId' | 'path' | 'command'> & {
+  /** Why its resume failed: a restore offers Retry instead of typing it. */
+  failed?: string
+}
 
 export type ResumePane = Pick<TmuxPane, 'id' | 'targetId' | 'sessionId' | 'command' | 'path' | 'processId' | 'active'>
 
@@ -46,6 +52,10 @@ const MAX_RECORDS = 512
 const RECORD_TTL_MS = 30 * 24 * 60 * 60 * 1_000
 /** A restored shell needs a moment before it reads typed input. */
 const SHELL_READY_MS = 4_000
+/** How often to read a restored pane's prompt while waiting for it to settle. */
+const PROMPT_POLL_MS = 500
+/** Shells that never show a steady prompt are resumed anyway after this long. */
+const PROMPT_SETTLE_MAX_MS = 30_000
 const STAGGER_MS = 2_500
 const VERIFY_MS = 20_000
 const RESUMED_RETENTION_MS = 5 * 60 * 1_000
@@ -102,7 +112,8 @@ function validRecord(value: unknown): value is AgentResumeRecord {
 }
 
 export function validArchivedAgent(value: unknown): value is ArchivedAgent {
-  return validRecord({ ...(value as object), targetId: '00000000-0000-4000-8000-000000000000', serverId: ARCHIVED_SERVER_ID, updatedAt: 0 })
+  const failed = (value as ArchivedAgent | null)?.failed
+  return (failed === undefined || typeof failed === 'string') && validRecord({ ...(value as object), targetId: '00000000-0000-4000-8000-000000000000', serverId: ARCHIVED_SERVER_ID, updatedAt: 0 })
 }
 
 /** Claude Code first; when it exits, however it exits, the chat it was switched from. */
@@ -140,7 +151,19 @@ export type AgentResumeDeps = {
   onError?: (error: unknown) => void
 }
 
-type Job = { targetId: string; serverId: string; queuedAt: number; notBefore: number; active: boolean; baseline?: string }
+type Job = {
+  targetId: string
+  serverId: string
+  queuedAt: number
+  notBefore: number
+  active: boolean
+  /** The prompt line once the shell drew it; anything that changes it later is the user's. */
+  baseline?: string
+  /** The record this job resumes; a newer one captured meanwhile belongs to a live agent. */
+  record?: AgentResumeRecord
+  /** The shell has drawn a steady prompt, or stopped being waited for. */
+  settled?: boolean
+}
 
 /**
  * Remembers which conversation each pane target runs and resumes it when tmux restores the
@@ -155,8 +178,11 @@ export class AgentResumeService {
   private readonly captureMisses = new Map<string, { key: string; at: number }>()
   /** The chat settings each chat record was built with; a change in the chat rebuilds the record. */
   private readonly chatSettingsKeys = new Map<string, string>()
-  /** Records whose resume failed; only Retry brings them back, so a later restart never retypes them. */
-  private readonly failedRecords = new Map<string, AgentResumeRecord>()
+  /**
+   * Resumes that failed; only Retry brings them back, so a later restart never retypes them.
+   * They are saved too, so a daemon restart keeps the Retry instead of forgetting the conversation.
+   */
+  private readonly failedRecords = new Map<string, FailedResume>()
   private queue: Job[] = []
   private draining = false
   private lastSentAt = 0
@@ -179,6 +205,11 @@ export class AgentResumeService {
       const cutoff = this.now() - RECORD_TTL_MS
       for (const record of state.records) {
         if (validRecord(record) && record.updatedAt >= cutoff) this.records.set(record.targetId, record)
+      }
+      for (const failed of Array.isArray(state.failed) ? state.failed : []) {
+        if (!validRecord(failed?.record) || typeof failed.error !== 'string' || !Number.isFinite(failed.failedAt)) continue
+        if (failed.failedAt < cutoff || this.records.has(failed.record.targetId)) continue
+        this.failedRecords.set(failed.record.targetId, { record: failed.record, error: failed.error, failedAt: failed.failedAt })
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.onError(error)
@@ -210,7 +241,7 @@ export class AgentResumeService {
     const chatProvider = isChatProvider(status.provider)
     const chatSettings = chatProvider ? this.deps.chatSettings?.(pane.id) : undefined
     // A chat's settings, or the way back for Claude Code running a chat's conversation.
-    const chatReturn = chatProvider && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
+    const chatReturn = chatProvider && status.provider !== 'cursor' && !chatSettings ? this.deps.chatReturnCommand?.(status.agentSessionId) : undefined
     const chatKey = chatSettings ? JSON.stringify(chatSettings) : chatReturn ? `return:${chatReturn}` : undefined
     if (existing?.sessionId === status.agentSessionId && existing.provider === status.provider
       && existing.serverId === serverId && existing.path === pane.path
@@ -254,7 +285,9 @@ export class AgentResumeService {
       this.records.set(pane.targetId, record)
       if (chatKey) this.chatSettingsKeys.set(pane.targetId, chatKey)
       else this.chatSettingsKeys.delete(pane.targetId)
+      // The agent is back in this pane, so an earlier failed resume no longer applies.
       this.failedRecords.delete(pane.targetId)
+      if (this.resumes.get(pane.targetId)?.state === 'failed') this.dropResume(pane.targetId)
       this.persist()
       recorded = true
     } finally {
@@ -276,6 +309,20 @@ export class AgentResumeService {
     for (const pane of panes) {
       const status = statusFor(pane.id)
       if (status && !isShellCommand(pane.command)) void this.observeHookStatus(status, pane, serverId).catch(this.onError)
+      const failed = this.failedRecords.get(pane.targetId)
+      if (failed && isShellCommand(pane.command) && !this.resumes.has(pane.targetId)) {
+        // Saved before a daemon restart: show it again so Retry is still there. A pane that runs
+        // something again gets none; if that is the agent, its hook capture clears the failure.
+        this.setResume({
+          targetId: pane.targetId,
+          paneId: pane.id,
+          provider: failed.record.provider,
+          command: failed.record.command,
+          state: 'failed',
+          error: failed.error,
+          updatedAt: failed.failedAt,
+        })
+      }
       const record = this.records.get(pane.targetId)
       if (!record || !isShellCommand(pane.command) || this.inFlight(pane.targetId)) continue
       if (record.serverId === serverId || record.attemptedServerId === serverId) {
@@ -294,9 +341,11 @@ export class AgentResumeService {
   archivedAgents(targetIds: readonly string[]): Record<string, ArchivedAgent> {
     const agents: Record<string, ArchivedAgent> = {}
     for (const targetId of targetIds) {
-      const record = this.records.get(targetId)
+      const failed = this.failedRecords.get(targetId)
+      const record = this.records.get(targetId) ?? failed?.record
       if (record && validRecord(record)) {
         agents[targetId] = { provider: record.provider, sessionId: record.sessionId, path: record.path, command: record.command }
+        if (record === failed?.record) agents[targetId].failed = failed.error
       }
     }
     return agents
@@ -305,15 +354,30 @@ export class AgentResumeService {
   /** Drops records whose panes were archived; the archive now holds them. */
   forgetTargets(targetIds: readonly string[]): void {
     let changed = false
-    for (const targetId of targetIds) changed = this.records.delete(targetId) || changed
+    for (const targetId of targetIds) {
+      changed = this.records.delete(targetId) || changed
+      changed = this.failedRecords.delete(targetId) || changed
+      if (this.resumes.get(targetId)?.state === 'failed') this.dropResume(targetId)
+    }
     if (changed) this.persist()
   }
 
-  /** Puts archived agents back; the next discovery queues them like any restored pane. */
+  /**
+   * Puts archived agents back; the next discovery queues them like any restored pane, except one
+   * whose resume had failed, which comes back with its Retry.
+   */
   restoreArchived(agents: Readonly<Record<string, ArchivedAgent>>): void {
     for (const [targetId, agent] of Object.entries(agents)) {
       if (!isCommandoTargetId(targetId) || !validArchivedAgent(agent)) continue
-      this.records.set(targetId, { ...agent, targetId, serverId: ARCHIVED_SERVER_ID, updatedAt: this.now() })
+      const { failed, ...kept } = agent
+      const record = { ...kept, targetId, serverId: ARCHIVED_SERVER_ID, updatedAt: this.now() }
+      if (failed === undefined) {
+        this.records.set(targetId, record)
+        this.failedRecords.delete(targetId)
+      } else {
+        this.records.delete(targetId)
+        this.failedRecords.set(targetId, { record, error: failed, failedAt: this.now() })
+      }
     }
     this.persist()
   }
@@ -321,8 +385,11 @@ export class AgentResumeService {
   /** Retries one failed resume, or every failed one. */
   retry(targetId?: string, serverId?: string | null): number {
     const jobs: Job[] = []
-    for (const [failedTarget, record] of this.failedRecords) {
+    for (const [failedTarget, { record }] of this.failedRecords) {
       if (targetId !== undefined && failedTarget !== targetId) continue
+      // A pane running something again keeps its failure; its hook capture clears it if that is the agent.
+      const pane = this.deps.currentPane(failedTarget)
+      if (pane && !isShellCommand(pane.command)) continue
       this.failedRecords.delete(failedTarget)
       this.records.set(failedTarget, record)
       jobs.push({ targetId: failedTarget, serverId: serverId ?? record.attemptedServerId ?? record.serverId, queuedAt: this.now(), notBefore: this.now(), active: true })
@@ -350,12 +417,9 @@ export class AgentResumeService {
         this.dropResume(job.targetId)
         continue
       }
+      job.record = record
       this.queue.push(job)
-      // What the prompt looks like once the shell is ready; anything typed after that is the user's.
-      this.setTimer(() => {
-        if (!this.queue.includes(job)) return
-        void this.promptLine(job.targetId).then((line) => { if (job.baseline === undefined) job.baseline = line })
-      }, Math.max(job.notBefore - this.now(), 0))
+      this.setTimer(() => this.settle(job), Math.max(job.notBefore - this.now(), 0))
       this.setResume({
         targetId: job.targetId,
         paneId: pane.id,
@@ -370,30 +434,44 @@ export class AgentResumeService {
     this.drain()
   }
 
+  /**
+   * Waits for the shell to draw its prompt before recording it. Shells restored together can take
+   * several seconds to start, and a prompt that appears late must not look like the user's typing.
+   */
+  private settle(job: Job, previous?: string): void {
+    if (!this.queue.includes(job)) return
+    void this.promptLine(job.targetId).then((line) => {
+      if (!this.queue.includes(job)) return
+      const steady = Boolean(line) && line === previous
+      const waiting = this.deps.readPromptLine && this.deps.currentPane(job.targetId)
+        && this.now() - job.notBefore < PROMPT_SETTLE_MAX_MS
+      if (!steady && waiting) {
+        this.setTimer(() => this.settle(job, line), PROMPT_POLL_MS)
+        return
+      }
+      // A shell that never steadied gets no baseline; only input through Commando then counts.
+      job.baseline = steady ? line : undefined
+      job.settled = true
+      this.drain()
+    })
+  }
+
   private drain(): void {
-    if (this.draining) return
-    const head = this.queue[0]
-    if (!head) return
-    const wait = Math.max(head.notBefore - this.now(), this.lastSentAt + STAGGER_MS - this.now(), 0)
+    if (this.draining || !this.queue.some((job) => job.settled)) return
     this.draining = true
     this.setTimer(() => {
-      // An active pane may have been queued ahead while this timer waited; run whatever is first now.
-      const job = this.queue.shift()
-      if (!job) {
+      // An active pane may have settled ahead while this timer waited; run whatever is first now.
+      const index = this.queue.findIndex((job) => job.settled)
+      if (index < 0) {
         this.draining = false
         return
       }
-      if (job.notBefore > this.now()) {
-        this.queue.unshift(job)
-        this.draining = false
-        this.drain()
-        return
-      }
+      const [job] = this.queue.splice(index, 1)
       void this.run(job).catch(this.onError).finally(() => {
         this.draining = false
         this.drain()
       })
-    }, wait)
+    }, Math.max(this.lastSentAt + STAGGER_MS - this.now(), 0))
   }
 
   private async promptLine(targetId: string): Promise<string | undefined> {
@@ -412,10 +490,13 @@ export class AgentResumeService {
       this.persist()
       return this.dropResume(job.targetId)
     }
-    // Someone already started something here; it is theirs now.
+    // Someone already started something here; it is theirs now. A record captured from it since
+    // this job was queued describes that live agent, so only the record this job carried goes.
     if (!isShellCommand(pane.command)) {
-      this.records.delete(job.targetId)
-      this.persist()
+      if (record === job.record) {
+        this.records.delete(job.targetId)
+        this.persist()
+      }
       return this.dropResume(job.targetId)
     }
     if (!(await this.deps.pathExists(record.path))) return this.fail(resume, `The folder no longer exists: ${record.path}`)
@@ -451,14 +532,14 @@ export class AgentResumeService {
     const record = this.records.get(resume.targetId)
     if (record) {
       this.records.delete(resume.targetId)
-      this.failedRecords.set(resume.targetId, record)
+      this.failedRecords.set(resume.targetId, { record, error, failedAt: this.now() })
       this.persist()
     }
     this.setResume({ ...resume, state: 'failed', error })
   }
 
   private dropResume(targetId: string): void {
-    this.failedRecords.delete(targetId)
+    if (this.failedRecords.delete(targetId)) this.persist()
     if (this.resumes.delete(targetId)) this.deps.onChange({ type: 'remove', targetId })
   }
 
@@ -479,7 +560,10 @@ export class AgentResumeService {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, MAX_RECORDS)
     if (records.length < this.records.size) this.records = new Map(records.map((record) => [record.targetId, record]))
-    this.writes = this.writes.then(() => this.write(records)).catch(this.onError)
+    const failed = [...this.failedRecords.values()]
+      .sort((left, right) => right.failedAt - left.failedAt)
+      .slice(0, MAX_RECORDS)
+    this.writes = this.writes.then(() => this.write(records, failed)).catch(this.onError)
   }
 
   /** Resolves once queued writes have reached disk. */
@@ -487,12 +571,12 @@ export class AgentResumeService {
     return this.writes
   }
 
-  private async write(records: AgentResumeRecord[]): Promise<void> {
+  private async write(records: AgentResumeRecord[], failed: FailedResume[]): Promise<void> {
     await mkdir(dirname(this.statePath), { recursive: true, mode: 0o700 })
     const temporary = `${this.statePath}.${randomUUID()}.tmp`
     const handle = await open(temporary, 'wx', 0o600)
     try {
-      await handle.writeFile(`${JSON.stringify({ version: 1, records }, null, 2)}\n`)
+      await handle.writeFile(`${JSON.stringify({ version: 1, records, failed }, null, 2)}\n`)
       await handle.sync()
       await handle.close()
       await rename(temporary, this.statePath)

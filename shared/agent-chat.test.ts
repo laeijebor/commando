@@ -38,11 +38,18 @@ describe('chat providers', () => {
     const legacy = { type: 'handoff', paneId: '%1', sessionId: 'thread-123', cwd: '/w', queue: [], returnFlags: [] }
     expect(parseHostMessage(legacy)).toEqual(legacy)
     expect(parseHostMessage({ ...legacy, provider: 'codex' })).toEqual({ ...legacy, provider: 'codex' })
+    expect(parseHostMessage({ ...legacy, provider: 'cursor' })).toEqual({ ...legacy, provider: 'cursor' })
     expect(parseHostMessage({ ...legacy, provider: 'claude' })).toEqual({ ...legacy, provider: 'claude' })
     expect(parseHostMessage({ ...legacy, provider: 'other' })).toBeNull()
   })
 
-  it.each(['claude', 'codex'])('keeps %s on sessions, snapshots and updates', (provider) => {
+  it('keeps whether a Muse host runs without its sandbox, and nothing else in its place', () => {
+    const info = { ...session, provider: 'muse', sandboxed: false }
+    expect(parseChatSessionInfo(info)).toEqual(info)
+    expect(parseChatSessionInfo({ ...info, sandboxed: 'no' })).toEqual({ ...session, provider: 'muse' })
+  })
+
+  it.each(['claude', 'codex', 'cursor'])('keeps %s on sessions, snapshots and updates', (provider) => {
     const info = { ...session, provider }
     expect(parseChatSessionInfo({ ...info, extra: 'dropped' })).toEqual(info)
     expect(parseHostMessage({ type: 'session_snapshot', session: info, items: [] }))
@@ -51,7 +58,7 @@ describe('chat providers', () => {
       .toEqual({ type: 'session_update', session: info })
   })
 
-  it.each(['cursor', '', undefined, 7])('rejects unknown provider %s', (provider) => {
+  it.each(['other', '', undefined, 7])('rejects unknown provider %s', (provider) => {
     const info = { ...session, provider }
     expect(parseChatSessionInfo(info)).toBeNull()
     expect(parseHostMessage({ type: 'session_snapshot', session: info, items: [] })).toBeNull()
@@ -218,5 +225,22 @@ describe('attachment notes', () => {
     expect(stripAttachmentNotesFromSummary('see list[0] and [docs]')).toBe('see list[0] and [docs]')
     expect(stripAttachmentNotesFromSummary('arr[A')).toBe('arr[A')
     expect(stripAttachmentNotesFromSummary('no notes here')).toBe('no notes here')
+  })
+})
+
+describe('chat login', () => {
+  it.each(['required', 'pending'])('keeps validated login state %s', (state) => {
+    const login = { state, reason: 'Sign in', url: 'https://cursor.com/login' }
+    expect(parseChatSessionInfo({ ...session, provider: 'cursor', login })?.login).toEqual(login)
+  })
+  it.each([null, {}, { state: 'logged-in' }, { state: 1 }])('drops malformed login %j', (login) => {
+    expect(parseChatSessionInfo({ ...session, login })?.login).toBeUndefined()
+  })
+  it.each(['http://cursor.com', 'javascript:alert(1)', 'not a url', `https://cursor.com/${'a'.repeat(2048)}`])('drops unsafe or oversized login URLs', (url) => {
+    expect(parseChatSessionInfo({ ...session, login: { state: 'pending', url } })?.login).toEqual({ state: 'pending' })
+  })
+  it('bounds the reason and drops nonstring optional fields', () => {
+    expect(parseChatSessionInfo({ ...session, login: { state: 'required', reason: 'x'.repeat(1000) } })?.login?.reason).toHaveLength(500)
+    expect(parseChatSessionInfo({ ...session, login: { state: 'required', reason: {}, url: 7 } })?.login).toEqual({ state: 'required' })
   })
 })

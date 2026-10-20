@@ -164,7 +164,7 @@ export class ChatConversationsApi {
     const { provider, sessionId, placement } = input
     if (input.paneId !== undefined && (typeof input.paneId !== 'string' || !/^%\d+$/.test(input.paneId))) throw new HttpError(400, 'paneId must be a tmux pane id')
     if (input.paneId === undefined && placement !== 'session') throw new HttpError(400, 'paneId is required outside session placement')
-    if (provider !== 'claude' && provider !== 'codex' && provider !== 'cursor' && provider !== 'opencode') throw new HttpError(400, 'Unsupported conversation provider')
+    if (provider !== 'claude' && provider !== 'codex' && provider !== 'cursor' && provider !== 'opencode' && provider !== 'muse') throw new HttpError(400, 'Unsupported conversation provider')
     if (!isChatConversationSessionId(sessionId)) throw new HttpError(400, 'Invalid conversation id')
     if (placement !== 'replace' && placement !== 'split' && placement !== 'session') throw new HttpError(400, 'placement must be replace, split or session')
     const snapshot = this.dependencies.snapshot()
@@ -187,23 +187,26 @@ export class ChatConversationsApi {
       if (!conversation) throw new HttpError(404, 'That conversation was not found')
       if (!(await stat(conversation.cwd).then((info) => info.isDirectory(), () => false))) throw new HttpError(409, `Its folder no longer exists: ${conversation.cwd}`)
       const record = this.dependencies.resumes.findConversation(provider, sessionId)
-      const isTui = provider === 'cursor' || provider === 'opencode'
-        || (record ? !isChatResumeCommand(record.command) : !chat)
+      // Cursor SDK chats (`agent-…`) have their own store: they resume as a Cursor chat, never in the CLI.
+      const cursorChat = provider === 'cursor' && sessionId.startsWith('agent-')
+      const isTui = !cursorChat && (provider === 'cursor' || provider === 'opencode'
+        || (record ? !isChatResumeCommand(record.command) : !chat))
       let agent: SessionAgentLaunch | undefined
       let command: string | undefined
       if (isTui && record) command = record.command
-      else if (isTui && (provider === 'claude' || provider === 'codex')) {
-        const env = conversation.configDir ? { [provider === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME']: conversation.configDir } : {}
+      else if (isTui && (provider === 'claude' || provider === 'codex' || provider === 'muse')) {
+        const env = conversation.configDir && provider !== 'muse' ? { [provider === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME']: conversation.configDir } : {}
         command = buildResumeCommand(provider, sessionId, { args: [provider], env }) ?? undefined
         if (!command) throw new HttpError(409, 'Could not build a resume command')
       } else if (isTui && (provider === 'cursor' || provider === 'opencode')) agent = { provider, resume: sessionId }
       else {
-        const agentProvider = provider === 'codex' ? 'codex-chat' : 'claude-chat'
+        const agentProvider = cursorChat ? 'cursor-chat' : provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : 'claude-chat'
         agent = {
           provider: agentProvider,
-          permissionMode: chat ? inheritedChatPermissionMode(chat, agentProvider) : 'default',
+          // Without a calling chat, a resumed chat starts as a new one would.
+          permissionMode: chat ? inheritedChatPermissionMode(chat, agentProvider) : cursorChat ? 'bypassPermissions' : 'default',
           resume: sessionId,
-          ...(conversation.configDir ? { configDir: conversation.configDir } : {}),
+          ...(conversation.configDir && agentProvider === 'claude-chat' ? { configDir: conversation.configDir } : {}),
         }
       }
       // Session ownership is daemon metadata, never supplied by the requester.

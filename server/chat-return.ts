@@ -51,6 +51,7 @@ export async function returnToChat(deps: ChatReturnDeps, paneId: string): Promis
   // Codex and Muse handoffs belong to their pane; Claude's are found by conversation.
   const handoff = (paneHandoff?.provider && paneHandoff.provider !== 'claude' ? paneHandoff : undefined) ?? (sessionId ? deps.handoff(sessionId) : undefined)
   const provider = handoff?.provider ?? 'claude'
+  if (provider === 'cursor') return 'Cursor chat does not support switching to a terminal UI'
   const label = providerTuiLabel(provider)
   if (!handoff || handoff.returnedAt !== undefined || (provider === 'claude' && status?.provider !== 'claude')) return `This pane isn't running ${label} on a chat's conversation`
   const matchingStatus = status?.provider === provider && status.agentSessionId === handoff.sessionId ? status : undefined

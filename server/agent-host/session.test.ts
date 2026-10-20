@@ -223,9 +223,17 @@ describe('commando-agent arguments', () => {
     expect(sessionFlags(withSessionSettings(args, info))).not.toContain('--fast')
   })
 
+  it('takes --yolo only for Muse and keeps it across restarts', () => {
+    const args = parseHostArgs(['muse', '--permission-mode', 'bypassPermissions', '--yolo'], {})
+    expect(args).toMatchObject({ provider: 'muse', permissionMode: 'bypassPermissions', yolo: true })
+    if (typeof args === 'string') throw new Error(args)
+    expect(sessionFlags(withSessionSettings(args, { paneId: '%1', provider: 'muse', cwd: '/', status: 'idle', hostPid: 1, hostVersion: 1, permissionMode: 'bypassPermissions' }))).toContain('--yolo')
+    expect(parseHostArgs(['claude', '--yolo'], {})).toMatch(/--yolo is only for muse/)
+  })
+
   it('lists every provider in help and rejects unsupported subcommands', () => {
-    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse>/)
-    expect(parseHostArgs(['cursor'], {})).toMatch(/^Usage/)
+    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse\|cursor>/)
+    expect(parseHostArgs(['cursor'], {})).toEqual({ provider: 'cursor', permissionMode: 'bypassPermissions', bypassAllowed: true })
     expect(parseHostArgs([], {})).toMatch(/^Usage/)
     expect(parseHostArgs(['codex', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
   })

@@ -166,15 +166,17 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
   const [selectedPath, setSelectedPath] = useState('')
   const [filter, setFilter] = useState('')
   const [conflictSnapshot, setConflictSnapshot] = useState<Snapshot<PrConflicts> | null>(null)
-  // Hide stale data immediately on a new render, including before effects or old requests settle.
-  const details =
-    detailSnapshot?.api === api && detailSnapshot.revision === detailRevision ? detailSnapshot.value : null
+  // Hide another head/base's data immediately, but keep showing this head/base's last details while a
+  // newer revision (comment counts, checks, updatedAt) revalidates in the background.
+  const detailsMatch = detailSnapshot?.api === api && detailSnapshot.references === references
+  const details = detailsMatch ? detailSnapshot.value : null
+  const detailsFresh = detailsMatch && detailSnapshot.revision === detailRevision && detailSnapshot.retry === retry
   const diff = diffSnapshot?.api === api && diffSnapshot.revision === references ? diffSnapshot.value : null
   const conflicts =
     conflictSnapshot?.api === api && conflictSnapshot.revision === references ? conflictSnapshot.value : null
   const detailRequest = useRef(0)
-  const latest = useRef({ api, references, detailRevision, pr })
-  latest.current = { api, references, detailRevision, pr }
+  const latest = useRef({ api, references, detailRevision, pr, retry })
+  latest.current = { api, references, detailRevision, pr, retry }
 
   useEffect(() => {
     setDetailSnapshot(null)
@@ -188,7 +190,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
   useEffect(() => () => { detailRequest.current += 1 }, [])
 
   useEffect(() => {
-    if (!visible || (details && detailSnapshot?.retry === retry)) return
+    if (!visible || detailsFresh) return
     let active = true
     const request = ++detailRequest.current
     setDetailError('')
@@ -208,7 +210,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
     return () => {
       active = false
     }
-  }, [api, repo, pr.number, references, detailRevision, retry, visible, details])
+  }, [api, repo, pr.number, references, detailRevision, retry, visible, detailsFresh])
 
   useEffect(() => {
     if (diffView !== undefined || !visible || tab !== 'Diff' || (diff && diffSnapshot?.retry === retry)) return
@@ -233,7 +235,9 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
 
   const file = diff?.files.find((candidate) => candidate.path === selectedPath)
   const error = tab === 'Diff' ? (diffView !== undefined ? '' : diffError) : detailError
-  const checks = details?.checks ?? pr.checks?.runs.map((run) => ({ ...run, url: '' })) ?? []
+  // Prefer the card's newer summary over revalidating details so check states never step backwards.
+  const checks = (detailsFresh ? details?.checks : undefined)
+    ?? pr.checks?.runs.map((run) => ({ ...run, url: '' })) ?? details?.checks ?? []
   const knownTarget =
     detailSnapshot?.api === api && detailSnapshot.references === references
       ? detailSnapshot.value.mergeTarget?.branch
@@ -266,7 +270,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
       throw new Error(message)
     }
     setDetailError('')
-    setDetailSnapshot({ api, references: current.references, revision: current.detailRevision, value, retry })
+    setDetailSnapshot({ api, references: current.references, revision: current.detailRevision, value, retry: current.retry })
     if (refreshError) throw refreshError
   }
   return (

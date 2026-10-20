@@ -17,19 +17,23 @@ function readAll(): Record<string, ChatLaunchPreference> {
   }
 }
 
-/** The preference remembered for a repository (or folder), else the last one used anywhere. */
-/** Claude keeps the bare keys it always had; other chats prefix theirs (`codex:`, `muse:`). */
+/**
+ * Claude keeps the bare keys it always had; other chats prefix theirs (`codex:`, `cursor:`, `muse2:`).
+ * Muse's first keys (`muse:`) stored a sandboxed "approve everything" as bypassPermissions,
+ * which now means full access, so those choices are left behind rather than reread.
+ */
 function storageKeys(repoKey: string | undefined, provider: ChatLaunchProvider): { key: string | undefined; lastKey: string } {
   if (provider === 'claude-chat') return { key: repoKey, lastKey: LAST_KEY }
-  const prefix = provider === 'codex-chat' ? 'codex' : 'muse'
+  const prefix = provider === 'codex-chat' ? 'codex' : provider === 'cursor-chat' ? 'cursor' : 'muse2'
   return { key: `${prefix}:${repoKey ?? LAST_KEY}`, lastKey: `${prefix}:${LAST_KEY}` }
 }
 
+/** The preference remembered for a repository (or folder), else the last one used anywhere. */
 export function loadChatLaunch(repoKey: string | undefined, provider: ChatLaunchProvider = 'claude-chat'): ChatLaunchPreference {
   const { key, lastKey } = storageKeys(repoKey, provider)
   const all = readAll()
   const stored = (key && all[key]) || all[lastKey]
-  if (provider !== 'claude-chat') return { permissionMode: chatPermissionModes(provider).some((mode) => mode.value === stored?.permissionMode) ? stored.permissionMode : 'default' }
+  if (provider !== 'claude-chat') return { permissionMode: chatPermissionModes(provider).some((mode) => mode.value === stored?.permissionMode) ? stored.permissionMode : provider === 'cursor-chat' ? 'bypassPermissions' : 'default' }
   return stored && typeof stored === 'object' ? { ...DEFAULT_PREFERENCE, ...stored } : DEFAULT_PREFERENCE
 }
 

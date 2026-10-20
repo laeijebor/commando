@@ -29,6 +29,40 @@ export function screenshotRelativeAge(timestamp: number, suffix = ''): string {
   return value === 'now' && suffix ? 'just now' : `${value}${suffix}`
 }
 
+// Narrower than 1:2.5 (beyond any phone screen) means a full-page capture; its tile shows the top instead of a sliver.
+const MIN_TILE_RATIO = 0.4
+
+// The tile takes the image's own aspect ratio once it loads, so it is shown whole rather than cropped.
+function ScreenshotTile({ src, name, isNew, onOpen }: {
+  src: string
+  name: string
+  isNew: boolean
+  onOpen: (event: MouseEvent<HTMLElement>) => void
+}) {
+  const [ratio, setRatio] = useState<number>()
+  const isTall = ratio !== undefined && ratio < MIN_TILE_RATIO
+  return (
+    <button
+      type="button"
+      className={[isNew ? 'is-new' : '', isTall ? 'is-tall' : ''].filter(Boolean).join(' ')}
+      style={ratio === undefined ? undefined : { aspectRatio: Math.max(ratio, MIN_TILE_RATIO) }}
+      title={name}
+      aria-label={`Open screenshot ${name}`}
+      onClick={onOpen}
+    >
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        onLoad={(event) => {
+          const { naturalWidth, naturalHeight } = event.currentTarget
+          if (naturalWidth && naturalHeight) setRatio(naturalWidth / naturalHeight)
+        }}
+      />
+    </button>
+  )
+}
+
 function folderPrefix(dir: string, topic: string): string {
   const suffix = `/${topic}`
   const parent = dir.endsWith(suffix) ? dir.slice(0, -suffix.length) : dir
@@ -159,16 +193,13 @@ export function PaneScreenshots({
             <>
               <div className="pane-worklog-screenshot-grid">
                 {preview.map((file) => (
-                  <button
-                    type="button"
-                    className={file.modifiedAt > displaySeenAt ? 'is-new' : ''}
-                    title={file.name}
-                    aria-label={`Open screenshot ${file.name}`}
-                    onClick={(event) => open(event, file.name)}
+                  <ScreenshotTile
+                    src={paneScreenshotUrl(selected.id, file.name, file.modifiedAt)}
+                    name={file.name}
+                    isNew={file.modifiedAt > displaySeenAt}
+                    onOpen={(event) => open(event, file.name)}
                     key={file.name}
-                  >
-                    <img src={paneScreenshotUrl(selected.id, file.name, file.modifiedAt)} alt="" loading="lazy" />
-                  </button>
+                  />
                 ))}
                 {selected.imageCount > 5 ? (
                   <button type="button" className="is-more" onClick={(event) => open(event)}>

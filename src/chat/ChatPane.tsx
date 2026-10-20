@@ -1,3 +1,5 @@
+import type { CommanderState } from '../../shared/commander'
+import { AgentsInbox, type AgentsInboxProps } from './AgentsInbox'
 import { Component, useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
@@ -12,6 +14,7 @@ import {
   type ChatSendOptions,
   type ChatSessionPermissionMode,
   type ChatProvider,
+  type ChatLogin,
   type ChatSettingsChange,
   type ChatState,
   type ChatSubagentTranscript,
@@ -88,6 +91,7 @@ function ChatColumn({
   pane,
   snapshot,
   statuses = {},
+  commander,
   onSelectPane,
   prsApi,
   connected,
@@ -112,6 +116,7 @@ function ChatColumn({
   pane?: TmuxPane
   snapshot?: LineageSnapshot
   statuses?: Record<string, AgentStatus>
+  commander?: AgentsInboxProps & { state: CommanderState }
   onSelectPane?: (id: string) => void
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
@@ -289,12 +294,15 @@ function ChatColumn({
           {...(flow ? { onSavePlan: flow.savePlan } : {})}
         />
       )}
+      {commander?.state.paneId && commander.state.paneId === paneId ? (
+        <div className="px-4"><AgentsInbox {...commander} /></div>
+      ) : null}
       {agents.length ? (
         <div className="px-4">
           <AgentSwitcher provider={providerLabel(chat.session)} agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} externalDisabled={!connected || !flow?.stopExternal} onSelect={select} onTask={task} />
         </div>
       ) : null}
-      {chat.session.claudeCodeSwitch ? (
+      {chat.session.provider !== 'cursor' && chat.session.claudeCodeSwitch ? (
         <ClaudeCodeSwitchBanner
           state={chat.session.claudeCodeSwitch}
           provider={chat.session.provider}
@@ -302,6 +310,7 @@ function ChatColumn({
           {...(flow?.switchToClaudeCode ? { onSwitch: flow.switchToClaudeCode } : {})}
         />
       ) : null}
+      {chat.session.login ? <CursorLoginBanner login={chat.session.login} disabled={!connected || !chat.hostConnected} onSend={onSend} /> : null}
       {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
       <ChatComposer
         session={chat.session}
@@ -328,6 +337,28 @@ function ChatColumn({
         {...(flow?.setUploading ? { onUploadingChange: flow.setUploading } : {})}
       />
     </section>
+  )
+}
+
+function CursorLoginBanner({ login, disabled, onSend }: {
+  login: ChatLogin
+  disabled: boolean
+  onSend: (text: string) => string | void
+}) {
+  return (
+    <div className="px-4 pt-2">
+      <div className="chat-login-banner" role="status">
+        <span className="min-w-40 flex-1">{login.state === 'required' ? login.reason || 'Cursor needs you to log in.' : 'Finish logging in to Cursor in your browser.'}</span>
+        {login.state === 'required' ? (
+          <Button size="xs" disabled={disabled} onClick={() => onSend('/login')}>Log in to Cursor</Button>
+        ) : (
+          <>
+            {login.url ? <a className="text-primary hover:underline" href={login.url} target="_blank" rel="noopener noreferrer">Open the login page</a> : null}
+            <Button size="xs" variant="outline" disabled={disabled} onClick={() => onSend('/login cancel')}>Cancel</Button>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 

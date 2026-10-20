@@ -811,6 +811,15 @@ export const PANE_EVICTION_GRACE_MS = 30_000
 
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
+  // Private model context: never part of AgentDetails or client snapshots.
+  private readonly finalMessages = new Map<string, string>()
+
+  finalMessage(paneId: string): string | undefined { return this.finalMessages.get(paneId) }
+
+  private retainFinalMessage(paneId: string, value: unknown): void {
+    if (typeof value === 'string' && value.trim()) this.finalMessages.set(paneId, value.slice(0, 2000))
+    else this.finalMessages.delete(paneId)
+  }
   // Bounded tombstones reject late session/turn starts without retaining response text.
   private readonly cursorProducers = new Map<string, { identity: string; turnStarted?: string }>()
   private readonly retiredCursorTurns = new Map<string, Set<string>>()
@@ -848,30 +857,41 @@ export class AgentStatusRegistry {
     return cloneStatus(record.status)
   }
 
+  /**
+   * A connected Cursor chat host vouches for its conversation: Cursor's SDK runs no provider
+   * hooks, which the other chats rely on. The host drops out when it disconnects.
+   */
+  chatHostStatus(paneId: string): AgentStatus | undefined {
+    const chat = this.chatHosts.get(paneId)
+    const record = this.records.get(paneId)
+    if (chat?.provider !== 'cursor' || !chat.sessionId || record?.status.provider !== chat.provider || record.status.agentSessionId !== chat.sessionId) return undefined
+    return cloneStatus(record.status)
+  }
+
   /** Hook evidence is scoped to the observed foreground process, never just the pane. */
   hasCursorHookProcess(paneId: string, command?: string): boolean {
     const record = this.records.get(paneId)
-    return record?.status.provider === 'cursor' && record.status.source === 'hook' &&
+    return !this.chatHosts.has(paneId) && record?.status.provider === 'cursor' && record.status.source === 'hook' &&
       !record.retainedCompletion && record.cursor?.ended === false && record.cursor.association !== undefined &&
       (command === undefined || (record.processCommand === command && /(?:^|\/)(?:agent|node|bun|deno|cursor-agent)$/i.test(command.trim())))
   }
 
   cursorAssociation(paneId: string): CursorHookAssociation | null {
     const record = this.records.get(paneId)
-    return record?.status.provider === 'cursor' && !record.retainedCompletion && !record.cursor?.ended
+    return !this.chatHosts.has(paneId) && record?.status.provider === 'cursor' && !record.retainedCompletion && record.cursor?.ended === false
       ? record.cursor?.association ?? null : null
   }
 
   acceptsCursorContext(paneId: string, session: string, association: CursorHookAssociation): boolean {
     const record = this.records.get(paneId)
-    return record?.status.provider === 'cursor' && record.providerSessionId === session &&
+    return !this.chatHosts.has(paneId) && record?.status.provider === 'cursor' && record.providerSessionId === session &&
       !record.cursor?.ended && record.cursor?.association !== undefined &&
       cursorProducerIdentity(record.cursor.association) === cursorProducerIdentity(association)
   }
 
   invalidateCursorAssociation(paneId: string, association: CursorHookAssociation): AgentStatusChange {
     const record = this.records.get(paneId)
-    if (!record?.cursor?.association || cursorProducerIdentity(record.cursor.association) !== cursorProducerIdentity(association)) return null
+    if (this.chatHosts.has(paneId) || !record?.cursor?.association || cursorProducerIdentity(record.cursor.association) !== cursorProducerIdentity(association)) return null
     record.cursor.candidate = null
     record.cursor.ended = true
     this.retireCursorTurn(paneId, record, true)
@@ -886,6 +906,7 @@ export class AgentStatusRegistry {
     this.missingSince.delete(paneId)
     this.completeDeclarations.delete(paneId)
     this.chatHosts.delete(paneId)
+    this.finalMessages.delete(paneId)
     this.retiredCursorTurns.delete(paneId)
     this.cursorProducers.delete(paneId)
     if (!this.records.delete(paneId)) return null
@@ -907,6 +928,7 @@ export class AgentStatusRegistry {
       }
       if (now - since < PANE_EVICTION_GRACE_MS) continue
       this.missingSince.delete(paneId)
+      this.finalMessages.delete(paneId)
       this.records.delete(paneId)
       this.completeDeclarations.delete(paneId)
       this.retiredCursorTurns.delete(paneId)
@@ -1263,7 +1285,9 @@ export class AgentStatusRegistry {
       clearRunningChecks(details, runningChecks)
       delete details.currentActivity
     }
+    if (eventName === 'UserPromptSubmit' || !sameSession) this.finalMessages.delete(paneId)
     if (eventName === 'Stop' || eventName === 'StopFailure') {
+      this.retainFinalMessage(paneId, payload.finalMessage)
       runningActivities.clear()
       clearRunningChecks(details, runningChecks)
       delete details.currentActivity
@@ -1371,6 +1395,7 @@ export class AgentStatusRegistry {
       this.retireCursorTurn(paneId, previous, !sameSession)
     }
     const reset = !sameSession || newTurn
+    if (reset) this.finalMessages.delete(paneId)
     const details = reset ? emptyDetails() : cloneDetails(previous.status.details ?? emptyDetails())
     const runningActivities = reset ? new Map<string, AgentActivity>() : new Map(previous.runningActivities)
     const runningChecks = reset ? new Map<string, AgentCheck>() : new Map(previous.runningChecks)
@@ -1380,6 +1405,7 @@ export class AgentStatusRegistry {
     if (association) cursor.association = association
     let status: AgentStatusKind = event === 'sessionStart' ? 'unknown' : 'working'
     if (event === 'beforeSubmitPrompt') {
+      this.finalMessages.delete(paneId)
       if (emitted) cursor.turnStarted = emitted
       cursor.promptSubmitted = true
       details.intent = boundedText(payload.intent, MAX_INTENT_LENGTH) ?? undefined
@@ -1395,6 +1421,7 @@ export class AgentStatusRegistry {
     updateCheck(details, runningChecks, payload.check, payload.activityId, updatedAt)
     addChangedFile(details, changedFiles, payload.filePath)
     if (event === 'afterAgentResponse') {
+      this.retainFinalMessage(paneId, payload.finalMessage)
       if (correctsCompletion) {
         const recap = createRecap('cursor', 'done', details, false, payload.finalMessage, 0, undefined, details.recap!.completedAt)
         setRecap(details, recap)
@@ -1676,6 +1703,7 @@ export class AgentStatusRegistry {
     const details = emptyDetails(intent)
     const finalMessage = event.payload['last-assistant-message'] ??
       event.payload.last_assistant_message
+    this.retainFinalMessage(paneId, finalMessage)
     const recap = createRecap(
       'codex',
       'done',
@@ -1781,6 +1809,7 @@ export class AgentStatusRegistry {
       })
       return null
     }
+    this.finalMessages.delete(paneId)
     this.records.delete(paneId)
     this.inferenceSuppressions.set(paneId, {
       provider,
@@ -1808,6 +1837,7 @@ export class AgentStatusRegistry {
       })
       return null
     }
+    this.finalMessages.delete(paneId)
     this.records.delete(paneId)
     this.inferenceSuppressions.set(paneId, {
       provider: record.status.provider,

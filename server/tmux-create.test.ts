@@ -520,6 +520,18 @@ describe('switching a chat pane to another conversation', () => {
     expect(sessionAgentArgv(agent)).toEqual(['commando-agent', 'claude', '--config-dir', `${homedir()}/.claudep`, '--permission-mode', 'plan', '--resume', 'abcd1234-0000'])
   })
 
+  it('respawns a Cursor chat in the conversation folder with a chat resuming it', async () => {
+    const run = vi.fn(async (_args: readonly string[]): Promise<string> => '')
+    const env = { COMMANDO_PORT: '4410' }
+    const agent = { provider: 'cursor-chat' as const, permissionMode: 'auto' as const, resume: 'agent-abcd1234-0000' }
+    await new TmuxCreator(run, ['-L', 'test'], undefined, undefined, env).respawnChatPane('%3', '/work/app', agent)
+    const args = run.mock.calls[0]![0]
+    expect(args.slice(0, 8)).toEqual(['-L', 'test', 'respawn-pane', '-k', '-t', '%3', '-c', '/work/app'])
+    expect(args).toContain('COMMANDO_PORT=4410')
+    expect(args.at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, ...sessionAgentArgv(agent).slice(1)], undefined, env))
+    expect(sessionAgentArgv(agent)).toEqual(['commando-agent', 'cursor', '--permission-mode', 'auto', '--resume', 'agent-abcd1234-0000'])
+  })
+
   it('only starts chats, on a valid conversation id', async () => {
     const run = vi.fn(async (_args: readonly string[]): Promise<string> => '')
     const creator = new TmuxCreator(run, [])
@@ -947,10 +959,10 @@ describe('Codex chat creation', () => {
   })
   it('starts the Muse chat host with its permission mode and refuses Claude-only settings', async () => {
     const run = runner()
-    const response = await new TmuxCreator(run, [], undefined, vi.fn(), {}).createSession({ name: 'muse-chat', cwd: '/tmp', agent: { provider: 'muse-chat', permissionMode: 'bypassPermissions', prompt: 'Hello' } })
+    const response = await new TmuxCreator(run, [], undefined, vi.fn(), {}).createSession({ name: 'muse-chat', cwd: '/tmp', agent: { provider: 'muse-chat', permissionMode: 'bypassPermissions', fullAccess: true, prompt: 'Hello' } })
     expect(response.agentLaunch).toMatchObject({ provider: 'muse-chat', paneId: '%12' })
-    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'muse', '--permission-mode', 'bypassPermissions', '--prompt', 'Hello'], undefined, {}))
-    for (const settings of [{ permissionMode: 'plan' }, { configDir: '/Users/dev/.claude' }]) {
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'muse', '--permission-mode', 'bypassPermissions', '--yolo', '--prompt', 'Hello'], undefined, {}))
+    for (const settings of [{ permissionMode: 'plan' }, { configDir: '/Users/dev/.claude' }, { permissionMode: 'default', fullAccess: true }]) {
       await expect(new TmuxCreator(runner(), []).createSession({ name: 'test', agent: { provider: 'muse-chat', ...settings } } as never)).rejects.toThrow(/Muse/)
     }
   })
@@ -996,5 +1008,21 @@ describe('server-owned resume commands', () => {
     const creator = new TmuxCreator(run, [], undefined, undefined, {})
     await creator.createWindow({ sessionId: '$1', cwd: '/repo', agent: { provider: 'codex-chat', resume: 'abcdefgh' } })
     expect(run.mock.calls[0]![0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'codex', '--permission-mode', 'default', '--resume', 'abcdefgh'], undefined, {}))
+  })
+})
+
+describe('Cursor chat creation', () => {
+  it.each(['bypassPermissions', 'default', 'auto', 'plan'] as const)('starts the owned chat host with %s', async (permissionMode) => {
+    const run = runner()
+    const resolve = vi.fn(async () => '/unused/agent')
+    const response = await new TmuxCreator(run, [], undefined, resolve, {}).createSession({ name: 'cursor-chat', cwd: '/tmp', agent: { provider: 'cursor-chat', permissionMode, resume: 'agent-12345678-0000', prompt: 'Hello' } })
+    expect(resolve).not.toHaveBeenCalled()
+    expect(response.agentLaunch).toMatchObject({ provider: 'cursor-chat', paneId: '%12' })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'cursor', '--permission-mode', permissionMode, '--resume', 'agent-12345678-0000', '--prompt', 'Hello'], undefined, {}))
+  })
+  it.each([{ configDir: '/Users/dev/.claude' }, { readableDir: '/tmp' }, { permissionMode: 'acceptEdits' }, { permissionMode: 'dontAsk' }])('rejects incompatible Cursor settings %j before running tmux', async (settings) => {
+    const run = runner()
+    await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'cursor-chat', ...settings } } as never)).rejects.toThrow(/Cursor/)
+    expect(run).not.toHaveBeenCalled()
   })
 })
