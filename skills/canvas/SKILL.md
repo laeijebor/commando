@@ -156,7 +156,8 @@ answer. Every question also takes an optional note.
 - Once you have the answer, record it so the question is settled:
   `"answer": "Fail with a clear error (recommended)"`. The note then shows
   "Answered" with Reopen and leaves the answer queue. Until you do, a sent
-  answer shows as "Sent · 2h ago". To ask again, change the text or options.
+  answer shows as "Sent · 2h ago". To ask again, change the text or options
+  and remove `answer`; a note with a recorded `answer` stays settled.
 - Use a question note when the decision belongs on the board; use plain
   annotations for open-ended review.
 
