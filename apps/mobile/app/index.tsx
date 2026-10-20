@@ -1,5 +1,6 @@
+import { ACCESS_REVOKED } from '../src/hosts/access'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useRouter } from 'expo-router'
+import { Link, useRouter, type Href } from 'expo-router'
 import {
   KeyboardAvoidingView,
   Modal,
@@ -82,6 +83,7 @@ export default function HostsScreen(): React.JSX.Element {
           />
         ) : null}
 
+        <Button label="Scan QR code" variant="primary" onPress={() => router.push('/pair' as Href)} />
         <Button label="Add host" onPress={() => setAddVisible(true)} />
 
         <Text style={[styles.footnote, { color: theme.textDim }]}>
@@ -98,7 +100,7 @@ export default function HostsScreen(): React.JSX.Element {
         </Link>
       </ScrollView>
 
-      <AddHostSheet onClose={() => setAddVisible(false)} visible={addVisible} />
+      <AddHostSheet onClose={() => setAddVisible(false)} onScan={() => { setAddVisible(false); router.push('/pair' as Href) }} visible={addVisible} />
       <SignInSheet host={signInHost} onClose={() => setSignInHost(null)} visible={signInHost !== null} />
     </SafeAreaView>
   )
@@ -130,7 +132,8 @@ function HostCard({
   const connected = state.phase === 'live'
 
   const openHost = useCallback(() => {
-    if (status === 'unauthorized') onSignIn()
+    if (status === 'unauthorized' && host.auth.kind === 'token') router.push('/pair' as Href)
+    else if (status === 'unauthorized') onSignIn()
     else {
       useHostsStore.getState().rememberHost(host.id)
       router.push({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
@@ -162,6 +165,7 @@ function HostCard({
             </Text>
           )}
         </View>
+        {status === 'unauthorized' && host.auth.kind === 'token' ? <Pressable accessibilityRole="button" onPress={() => router.push('/pair' as Href)}><Text style={{ color: theme.accent }}>Re-pair</Text></Pressable> : null}
         {editing ? (
           <Pressable accessibilityLabel={`Remove ${host.name}`} onPress={onRemove}>
             <Feather color={theme.red} name="trash-2" size={18} />
@@ -176,7 +180,7 @@ function HostCard({
 
 function hostSubtitle(state: HostReachability['state'], reachability: HostReachability | undefined): string {
   if (state === 'checking') return 'Checking…'
-  if (state === 'unauthorized') return 'Sign in required'
+  if (state === 'unauthorized') return reachability?.message === ACCESS_REVOKED ? ACCESS_REVOKED : 'Sign in required'
   if (state === 'online') return 'Reachable · connecting'
   if (state === 'offline') {
     const seen = reachability?.checkedAt ? relativeTime(reachability.checkedAt) : null
@@ -185,7 +189,7 @@ function hostSubtitle(state: HostReachability['state'], reachability: HostReacha
   return 'Not checked yet'
 }
 
-function AddHostSheet({ visible, onClose }: { visible: boolean; onClose: () => void }): React.JSX.Element {
+function AddHostSheet({ visible, onClose, onScan }: { visible: boolean; onClose: () => void; onScan: () => void }): React.JSX.Element {
   const theme = useTheme()
   const addHost = useHostsStore((state) => state.addHost)
   const [name, setName] = useState('')
@@ -211,6 +215,7 @@ function AddHostSheet({ visible, onClose }: { visible: boolean; onClose: () => v
         <View style={[styles.sheet, { backgroundColor: theme.surface, borderColor: theme.borderMid }]}>
           <View style={[styles.grab, { backgroundColor: theme.borderStrong }]} />
           <Text style={[styles.sheetTitle, { color: theme.text }]}>Add host</Text>
+          <Button label="Scan QR code" onPress={onScan} variant="primary" />
           <View style={[styles.field, { backgroundColor: theme.surfaceRaised, borderColor: theme.border }]}>
             <Text style={[styles.fieldLabel, { color: theme.muted }]}>Name</Text>
             <TextInput

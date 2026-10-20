@@ -39,6 +39,8 @@ export type PushDevice = {
   rules: PushDeviceRules
   createdAt: number
   updatedAt: number
+  /** Device-token principal that last registered this destination; absent for owner registrations. */
+  principalId?: string
 }
 
 export type PushDeviceInput = Omit<PushDevice, 'createdAt' | 'updatedAt'>
@@ -174,7 +176,9 @@ function parsePersistedDevice(value: unknown): PushDevice | null {
     const updatedAt = typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)
       ? value.updatedAt
       : createdAt
-    return { ...input, createdAt, updatedAt }
+    const principalId = value.principalId
+    if (principalId !== undefined && (typeof principalId !== 'string' || !/^[a-f0-9-]{36}$/.test(principalId))) return null
+    return { ...input, createdAt, updatedAt, ...(principalId ? { principalId } : {}) }
   } catch {
     return null
   }
@@ -263,6 +267,13 @@ export class PushDeviceRegistry {
     if (!this.devices.delete(id)) return false
     await this.persist()
     return true
+  }
+
+  async removeByPrincipal(principalId: string): Promise<string[]> {
+    const ids = [...this.devices.values()].filter((device) => device.principalId === principalId).map((device) => device.id)
+    for (const id of ids) this.devices.delete(id)
+    if (ids.length) await this.persist()
+    return ids
   }
 
   /** Drops every device holding an Expo token the push service rejected. */

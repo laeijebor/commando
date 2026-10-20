@@ -1,3 +1,4 @@
+import { reportTokenRejected } from '../hosts/access'
 import { requireOptionalNativeModule } from 'expo'
 
 import {
@@ -131,7 +132,8 @@ export async function uploadChatImage(host: Host, image: PreparedImage, fetcher:
     response = await fetcher(`${host.baseUrl}/api/chat/images`, {
       method: 'POST',
       body: blob,
-      credentials: 'include',
+      credentials: host.auth.kind === 'token' ? 'omit' : 'include',
+      redirect: host.auth.kind === 'token' ? 'error' : 'follow',
       headers: { 'Content-Type': image.type, ...authHeaders(host) },
       signal: controller.signal,
     })
@@ -140,6 +142,7 @@ export async function uploadChatImage(host: Host, image: PreparedImage, fetcher:
   } finally {
     clearTimeout(timer)
   }
+  if (response.status === 401) reportTokenRejected(host)
   const result = await response.json().catch(() => ({})) as { image?: { id?: unknown }; error?: string }
   if (!response.ok || !isChatImageId(result.image?.id)) throw new Error(result.error ?? `Upload failed (${response.status})`)
   return { id: result.image.id, name: image.name }

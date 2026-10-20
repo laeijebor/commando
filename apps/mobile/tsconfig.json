@@ -31,6 +31,9 @@
       ],
       "@commando/session-identity": [
         "../../shared/session-identity.ts"
+      ],
+      "@commando/pairing": [
+        "../../shared/pairing.ts"
       ]
     }
   },
@@ -43,7 +46,8 @@
     "../../shared/tmux-create.ts",
     "../../shared/agent-chat.ts",
     "../../shared/chat-timeline.ts",
-    "../../shared/chat-composer.ts"
+    "../../shared/chat-composer.ts",
+    "../../shared/pairing.ts"
   ],
   "exclude": [
     "node_modules"
