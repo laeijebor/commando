@@ -615,3 +615,5 @@ network access rules. Device-token hashes and metadata live in
 `~/.commando/paired-devices-<port>.json` (0600); codes live only in memory. Device tokens
 have the existing automation bearer’s access, except pairing management, which
 requires the owner session or `COMMANDO_TOKEN`.
+
+DeepSeek V4.1 Flash is available as **DeepSeek chat**. See [DeepSeek chat setup](docs/deepseek-chat.md) for API key configuration and supported behavior.
