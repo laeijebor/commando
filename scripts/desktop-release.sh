@@ -62,7 +62,7 @@ load_env() {
 require_main_checkout() {
     [[ "$(git -C "$root" rev-parse --git-dir)" == "$(git -C "$root" rev-parse --git-common-dir)" ]] && return 0
     [[ -n "${COMMANDO_RELEASE_ALLOW_WORKTREE:-}" ]] && return 0
-    fail "$root is a git worktree; install from the main checkout"
+    fail "$root is a git worktree; run this from the main checkout, which the agent and Rebuild icon use"
 }
 
 agent_pid() {
@@ -238,17 +238,25 @@ make_rebuild_icon() {
 
 take_rebuild_lock() {
     mkdir -p "$log_dir"
-    if [[ -f "$rebuild_lock" ]] && kill -0 "$(cat "$rebuild_lock")" 2>/dev/null; then
-        notify "A rebuild is already running"
-        fail "A rebuild is already running (pid $(cat "$rebuild_lock"))"
+    # noclobber makes creating the lock atomic, so two rebuilds started together can't both pass.
+    if ! (set -o noclobber; echo $$ >"$rebuild_lock") 2>/dev/null; then
+        local holder
+        holder="$(cat "$rebuild_lock" 2>/dev/null)"
+        # An empty lock is still being written by its owner, so it counts as held.
+        if [[ -z "$holder" ]] || kill -0 "$holder" 2>/dev/null; then
+            notify "A rebuild is already running"
+            fail "A rebuild is already running (pid ${holder:-starting})"
+        fi
+        # The previous rebuild died without cleaning up; take over its lock.
+        rm -f "$rebuild_lock"
+        (set -o noclobber; echo $$ >"$rebuild_lock") 2>/dev/null || fail "A rebuild is already running"
     fi
-    echo $$ >"$rebuild_lock"
     trap finish_rebuild EXIT
 }
 
 finish_rebuild() {
     local status=$?
-    rm -f "$rebuild_lock"
+    [[ "$(cat "$rebuild_lock" 2>/dev/null)" == "$$" ]] && rm -f "$rebuild_lock"
     (( status == 0 )) || notify "Rebuild failed. Log: $rebuild_log"
 }
 
@@ -300,7 +308,11 @@ case "${1:-}" in
         ensure_env_file
         rebuild installing
         ;;
-    rebuild) rebuild ;;
+    rebuild)
+        # The agent serves the main checkout, so a worktree rebuild would mix builds.
+        require_main_checkout
+        rebuild
+        ;;
     start)
         load_env
         if agent_loaded; then wait_for_daemon; else restart_daemon; fi
