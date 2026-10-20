@@ -57,6 +57,12 @@ export const SCREENCAST_FALLBACK_AFTER_MS = 2_000
 export const SCREENCAST_POLL_INTERVAL_MS = 700
 const PAGE_TITLE_INTERVAL_MS = 250
 const MAX_VIEWPORT_DIMENSION = 8_192
+/** The capture host page lives on the daemon itself: loopback http, `/redline/` paths only. */
+export function isDaemonCaptureUrl(url: string): boolean {
+  let parsed: URL
+  try { parsed = new URL(url) } catch { return false }
+  return parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) && parsed.pathname.startsWith('/redline/')
+}
 const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
 const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
 const MAX_PENDING_SNAPSHOT_EXPRESSION_BYTES = 4 * 1024 * 1024
@@ -827,13 +833,20 @@ export class ChromiumEngine {
     return this.tiles.has(webPaneId)
   }
 
-  /** A temporary page, with no tile, review binding, or canvas frame script. */
+  /**
+   * A temporary page, with no tile, review binding, or canvas frame script.
+   * Renders a daemon-served page (a canvas frame under `/redline/`) in a
+   * sandboxed iframe. The iframe is hosted by `/redline/capture.html` on the
+   * URL's own origin, so only loopback daemon URLs are accepted; anything else
+   * is rejected with a 400 before Chromium is touched.
+   */
   async screenshot(url: string, width: number, height: number,
     connect: (url: string, timeoutMs: number) => Promise<ScreenshotCdp> = CdpConnection.open,
   ): Promise<Buffer> {
     if (![width, height].every((size) => Number.isFinite(size) && size > 0 && size <= MAX_VIEWPORT_DIMENSION)) {
       throw new WebPaneError(400, `PNG dimensions must be between 1 and ${MAX_VIEWPORT_DIMENSION}`)
     }
+    if (!isDaemonCaptureUrl(url)) throw new WebPaneError(400, 'Captures only support daemon-served /redline/ URLs')
     let browser: BrowserSession | undefined, targetId: string | undefined, contextId: string | undefined, page: ScreenshotCdp | undefined
     let expired = false
     const check = () => { if (expired) throw new WebPaneError(504, 'PNG export timed out after 15s') }
