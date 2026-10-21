@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { CANVAS_STATUSES, type CanvasPage, type CanvasSection } from '../shared/canvas-manifest'
 
 export type CanvasPageRow = CanvasPage & { frames: number; questions: number; comments: number; status?: CanvasSection['status'] }
@@ -63,14 +64,21 @@ export function CanvasPagesList({ pages, active, onSelect }: { pages: CanvasPage
   </>
 }
 
-/** Narrow tiles hide the sidebar, so the toolbar offers the pages instead. */
-export function CanvasPageMenu({ pages, active, onSelect }: { pages: CanvasPageRow[]; active?: string; onSelect: (id: string) => void }) {
+/** Narrow tiles hide the sidebar, so the toolbar offers the pages instead.
+ * The list renders into the pane's overlay so the toolbar cannot clip it. */
+export function CanvasPageMenu({ pages, active, onSelect, overlay }: { pages: CanvasPageRow[]; active?: string; onSelect: (id: string) => void; overlay: HTMLElement | null }) {
   const [open, setOpen] = useState(false)
-  const root = useRef<HTMLDivElement>(null)
+  const root = useRef<HTMLDivElement>(null), list = useRef<HTMLDivElement>(null)
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   const index = pages.findIndex((page) => page.id === active)
+  useLayoutEffect(() => {
+    if (!open || !overlay || !root.current) { setPosition(null); return }
+    const bounds = overlay.getBoundingClientRect(), trigger = root.current.getBoundingClientRect()
+    setPosition({ left: Math.max(4, trigger.left - bounds.left), top: trigger.bottom - bounds.top + 4 })
+  }, [open, overlay])
   useEffect(() => {
     if (!open) return
-    const close = (event: Event) => { if (!(event.target instanceof Node) || !root.current?.contains(event.target)) setOpen(false) }
+    const close = (event: Event) => { if (!(event.target instanceof Node) || !(root.current?.contains(event.target) || list.current?.contains(event.target))) setOpen(false) }
     const escape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
     window.addEventListener('pointerdown', close, true); window.addEventListener('keydown', escape)
     return () => { window.removeEventListener('pointerdown', close, true); window.removeEventListener('keydown', escape) }
@@ -79,11 +87,12 @@ export function CanvasPageMenu({ pages, active, onSelect }: { pages: CanvasPageR
     <button type="button" className="canvas-page-picker" aria-haspopup="menu" aria-expanded={open} aria-label={`Page: ${pages[index]?.title ?? ''}`} onClick={() => setOpen(!open)}>
       <span>{pages[index]?.title}</span><em>{index + 1}/{pages.length}</em><span aria-hidden="true">▾</span>
     </button>
-    {open && <div className="canvas-page-menu-list" role="menu" aria-label="Pages">
+    {open && overlay && createPortal(<div ref={list} className="canvas-page-menu-list" role="menu" aria-label="Pages"
+      style={position ? { left: position.left, top: position.top } : { visibility: 'hidden' }}>
       {pages.map((page, i) => <button type="button" role="menuitemradio" aria-checked={page.id === active} key={page.id}
         className={`canvas-page-row${page.id === active ? ' is-active' : ''}`} onClick={() => { setOpen(false); onSelect(page.id) }}>
         <span>{i + 1} · {page.title}</span><PageBadges page={page} />
       </button>)}
-    </div>}
+    </div>, overlay)}
   </div>
 }

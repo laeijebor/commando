@@ -389,7 +389,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   return <div className={`canvas-pane${readOnly ? ' is-snapshot' : ''}`} ref={pane}>
     <div className="canvas-toolbar" role="toolbar" aria-label="Canvas controls">
       <button type="button" aria-label="Toggle overview" aria-pressed={overviewVisible} onClick={() => { setExportMenu(null); setOverviewOverride(!overviewVisible); setHovered(null) }}>☰</button>
-      {pages.length > 1 && !overviewVisible && <CanvasPageMenu pages={pageRows} active={page} onSelect={pickPage} />}
+      {pages.length > 1 && !overviewVisible && <CanvasPageMenu pages={pageRows} active={page} onSelect={pickPage} overlay={exportOverlay.current} />}
       <button type="button" aria-label="Zoom out" onClick={() => zoom(0.8)}>−</button>
       <output className="canvas-zoom" aria-label="Zoom"><CanvasCameraView store={cameraStore}>{(camera) => `${Math.round(camera.scale * 100)}%`}</CanvasCameraView></output>
       <button type="button" aria-label="Zoom in" onClick={() => zoom(1.25)}>+</button>
