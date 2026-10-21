@@ -1,20 +1,23 @@
 export const CANVAS_STATUSES = ['idea', 'in-progress', 'ready-for-review', 'ready-for-dev', 'shipped'] as const
 export const CANVAS_ANNOTATION_KINDS = ['development', 'important', 'design', 'question'] as const
+/** Each page has its own coordinate space. A manifest without `pages` is one page and parses with `pages: []`.
+ * The parser keeps every page's frames, sections and notes in the flat lists, tagged with `page`. */
+export type CanvasPage = { id: string; title: string }
 export type CanvasFrame = {
-  id: string; title: string; platform?: string; src: string; x: number; y: number; w: number; h: number
+  id: string; title: string; platform?: string; src: string; x: number; y: number; w: number; h: number; page?: string
   focus?: number; interactive?: boolean; interactiveNote?: string
   variant?: { title: string; context?: string; description?: string }
 }
 export type CanvasSection = {
-  id: string; title: string; ticket?: string; status: typeof CANVAS_STATUSES[number]; frames: string[]
+  id: string; title: string; ticket?: string; status: typeof CANVAS_STATUSES[number]; frames: string[]; page?: string
 }
 export type CanvasAnnotation = {
   id: string; kind: typeof CANVAS_ANNOTATION_KINDS[number]; text?: string; title?: string; items?: string[]
-  target?: { frame: string; label?: string }; x: number; y: number; w?: number
+  target?: { frame: string; label?: string }; x: number; y: number; w?: number; page?: string
   /** Question notes only: answer queue identity (defaults to id), choices, and the agent-recorded answer. */
   key?: string; options?: string[]; multiple?: boolean; answer?: string
 }
-export type CanvasManifest = { title: string; sections: CanvasSection[]; frames: CanvasFrame[]; annotations: CanvasAnnotation[] }
+export type CanvasManifest = { title: string; pages: CanvasPage[]; sections: CanvasSection[]; frames: CanvasFrame[]; annotations: CanvasAnnotation[] }
 export type CanvasManifestResult = { manifest: CanvasManifest; errors: string[] }
 export type CanvasMove = { id: string; x: number; y: number }
 export type CanvasStatusChange = { id: string; status: CanvasSection['status'] }
@@ -36,7 +39,7 @@ function record(value: unknown): value is Record<string, unknown> {
 
 /** Keeps usable entries while reporting malformed fields to both author and viewer. */
 export function parseCanvasManifest(input: unknown): CanvasManifestResult {
-  const manifest: CanvasManifest = { title: '', sections: [], frames: [], annotations: [] }
+  const manifest: CanvasManifest = { title: '', pages: [], sections: [], frames: [], annotations: [] }
   const errors: string[] = []
   const fail = (path: string, reason: string) => { errors.push(`${path}: ${reason}`) }
   if (typeof input === 'string') {
@@ -65,15 +68,31 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
     if (ids.has(value)) { fail(`${path}id`, `duplicate id "${value}"`); return undefined }
     ids.add(value); return value
   }
-  const array = (key: string, required = false): unknown[] => {
-    const value = input[key]
-    if (value === undefined && !required) return []
-    if (!Array.isArray(value)) { fail(key, 'must be an array'); return [] }
-    return value
+  type Entry = { value: unknown; path: string; page?: string }
+  const entries: Record<'frames' | 'sections' | 'annotations', Entry[]> = { frames: [], sections: [], annotations: [] }
+  const list = (obj: Record<string, unknown>, key: keyof typeof entries, prefix: string, required: boolean, page?: string) => {
+    const value = obj[key]
+    if (value === undefined && !required) return
+    if (!Array.isArray(value)) { fail(`${prefix}${key}`, 'must be an array'); return }
+    value.forEach((item, index) => entries[key].push({ value: item, path: `${prefix}${key}[${index}].`, ...(page ? { page } : {}) }))
   }
+  const at = (page?: string) => page ? { page } : {}
   manifest.title = string(input, 'title', '', true) ?? ''
-  array('frames', true).forEach((value, index) => {
-    const path = `frames[${index}].`
+  if (input.pages === undefined) {
+    list(input, 'frames', '', true); list(input, 'sections', '', false); list(input, 'annotations', '', false)
+  } else if (!Array.isArray(input.pages) || !input.pages.length) fail('pages', 'must be a non-empty array of pages')
+  else {
+    for (const key of ['frames', 'sections', 'annotations']) if (input[key] !== undefined) fail(key, 'belongs inside a page; a canvas with pages keeps its frames, sections and notes in pages[]')
+    input.pages.forEach((value, index) => {
+      const path = `pages[${index}].`
+      if (!record(value)) { fail(path.slice(0, -1), 'must be an object'); return }
+      const pageId = id(value, path), title = string(value, 'title', path, true)
+      if (!pageId || !title) return
+      manifest.pages.push({ id: pageId, title })
+      list(value, 'frames', path, true, pageId); list(value, 'sections', path, false, pageId); list(value, 'annotations', path, false, pageId)
+    })
+  }
+  entries.frames.forEach(({ value, path, page }) => {
     if (!record(value)) { fail(path.slice(0, -1), 'must be an object'); return }
     const frameId = id(value, path), title = string(value, 'title', path, true)
     const src = canvasRelativePath(value.src)
@@ -103,12 +122,14 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
         if (title) variant = { title, context, description }
       }
     }
-    if (frameId && title && src && x !== undefined && y !== undefined) manifest.frames.push({ id: frameId, title, src, x, y, w, h, platform, focus, interactive, interactiveNote, variant })
+    if (frameId && title && src && x !== undefined && y !== undefined) manifest.frames.push({ id: frameId, title, src, x, y, w, h, platform, focus, interactive, interactiveNote, variant, ...at(page) })
   })
-  const frameIds = new Set(manifest.frames.map((frame) => frame.id))
+  const framePages = new Map(manifest.frames.map((frame) => [frame.id, frame.page]))
+  // A section or note draws on its own page, so the frames it points at must be there too.
+  const frameError = (frame: string, page?: string) => !framePages.has(frame) ? `unknown frame "${frame}"`
+    : framePages.get(frame) !== page ? `frame "${frame}" is on another page` : null
   const annotationPaths = new Map<CanvasAnnotation, string>()
-  array('sections').forEach((value, index) => {
-    const path = `sections[${index}].`
+  entries.sections.forEach(({ value, path, page }) => {
     if (!record(value)) { fail(path.slice(0, -1), 'must be an object'); return }
     const sectionId = id(value, path), title = string(value, 'title', path, true), ticket = string(value, 'ticket', path)
     const status = CANVAS_STATUSES.find((status) => status === value.status)
@@ -116,13 +137,13 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
     const frames: string[] = []
     if (!Array.isArray(value.frames)) fail(`${path}frames`, 'must be an array of frame ids')
     else value.frames.forEach((frame, i) => {
-      if (typeof frame !== 'string' || !frameIds.has(frame)) fail(`${path}frames[${i}]`, `unknown frame "${String(frame)}"`)
-      else frames.push(frame)
+      const error = typeof frame === 'string' ? frameError(frame, page) : `unknown frame "${String(frame)}"`
+      if (error) fail(`${path}frames[${i}]`, error)
+      else frames.push(frame as string)
     })
-    if (sectionId && title && status) manifest.sections.push({ id: sectionId, title, ticket, status, frames })
+    if (sectionId && title && status) manifest.sections.push({ id: sectionId, title, ticket, status, frames, ...at(page) })
   })
-  array('annotations').forEach((value, index) => {
-    const path = `annotations[${index}].`
+  entries.annotations.forEach(({ value, path, page }) => {
     if (!record(value)) { fail(path.slice(0, -1), 'must be an object'); return }
     const annotationId = id(value, path)
     const kind = CANVAS_ANNOTATION_KINDS.find((kind) => kind === value.kind)
@@ -144,8 +165,9 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
       else {
         const frame = string(value.target, 'frame', `${path}target.`, true)
         const label = string(value.target, 'label', `${path}target.`)
-        if (frame && frameIds.has(frame)) target = { frame, label }
-        else if (frame) fail(`${path}target.frame`, `unknown frame "${frame}"`)
+        const error = frame ? frameError(frame, page) : null
+        if (frame && !error) target = { frame, label }
+        else if (error) fail(`${path}target.frame`, error)
       }
     }
     const question: Pick<CanvasAnnotation, 'key' | 'options' | 'multiple' | 'answer'> = {}
@@ -179,7 +201,7 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
       else if (answer !== undefined) question.answer = answer
     }
     if (annotationId && kind && x !== undefined && y !== undefined) {
-      const note: CanvasAnnotation = { id: annotationId, kind, x, y, w, title, text, items, target, ...question }
+      const note: CanvasAnnotation = { id: annotationId, kind, x, y, w, title, text, items, target, ...question, ...at(page) }
       manifest.annotations.push(note); annotationPaths.set(note, path)
     }
   })

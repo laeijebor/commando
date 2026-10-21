@@ -31,6 +31,20 @@ async function request(path: string, body?: unknown, auth: 'agent' | 'owner' | '
 }
 const move = () => ({ manifest: 'canvas.json', expectedHash: canvasContentHash(original), moves: [{ id: 'a', x: 30, y: -20 }] })
 describe('canvas writer and owner-only API without sockets', () => {
+  it('writes moves and statuses into the page that holds them', async () => {
+    const paged = { title: 'Paged', pages: [
+      { id: 'one', title: 'One', frames: [{ id: 'a', title: 'A', src: 'a.html', x: 1, y: 2 }] },
+      { id: 'two', title: 'Two', frames: [{ id: 'b', title: 'B', src: 'b.html', x: 3, y: 4 }], sections: [{ id: 's', title: 'S', status: 'idea', frames: ['b'] }] }] }
+    const text = JSON.stringify(paged, null, 2) + '\n'
+    await writeFile(join(dir, 'canvas.json'), text)
+    const moved = writeCanvas(artifacts, id, { manifest: 'canvas.json', expectedHash: canvasContentHash(text), moves: [{ id: 'b', x: 30, y: 40 }] }, 'frames')
+    expect(moved.manifest.frames[1]).toMatchObject({ id: 'b', page: 'two', x: 30, y: 40 })
+    writeCanvas(artifacts, id, { manifest: 'canvas.json', expectedHash: moved.contentHash, statuses: [{ id: 's', status: 'shipped' }] }, 'sections')
+    const written = JSON.parse(await readFile(join(dir, 'canvas.json'), 'utf8'))
+    expect(written.pages[1].frames[0]).toMatchObject({ x: 30, y: 40 })
+    expect(written.pages[1].sections[0].status).toBe('shipped')
+    expect(written.pages[0].frames[0]).toMatchObject({ x: 1, y: 2 })
+  })
   it('retains numeric key order, precise unknown numbers and escaped strings during reformatting', async () => {
     const text = original.replace('"unknownFirst": {', '"unknownFirst": {\n    "20": 90071992547409931234,\n    "3": "escape \\"quote\\"",')
     await writeFile(join(dir, 'canvas.json'), text)
