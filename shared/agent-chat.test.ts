@@ -1,9 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { attachmentNote, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
+import { attachmentNote, chatImageContentType, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
 describe('parseChatItem', () => {
+  it('keeps the images a reply shows, and drops ones that do not parse', () => {
+    const svg = `${'a'.repeat(64)}.svg`
+    expect(parseChatItem({ ...base, kind: 'assistant_message', text: '![d](d.svg)', images: [
+      { src: 'd.svg', id: svg },
+      { src: 'gone.png', error: 'missing' },
+      { src: 'bad.png', id: '../secret' },
+      { src: 'odd.png', error: 'exploded' },
+      { id: svg },
+    ] })).toEqual({ ...base, kind: 'assistant_message', text: '![d](d.svg)', images: [{ src: 'd.svg', id: svg }, { src: 'gone.png', error: 'missing' }] })
+    expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'x', images: [{ src: 'bad.png', id: 'nope' }] })).toEqual({ ...base, kind: 'assistant_message', text: 'x' })
+  })
+
+  it('names an SVG reply image and the PNG drawn from it', () => {
+    const svg = `${'a'.repeat(64)}.svg`
+    expect(chatImageStillId(svg)).toBe(`${svg}.png`)
+    expect(chatImageStillId(`${'a'.repeat(64)}.jpg`)).toBe(`${'a'.repeat(64)}.jpg`)
+    expect(chatImageContentType(svg)).toBe('image/svg+xml')
+    expect(chatImageContentType(`${svg}.png`)).toBe('image/png')
+    expect(chatImageContentType(`${'a'.repeat(64)}.webp`)).toBe('image/webp')
+    // Attachments, which reach Claude, never take SVG.
+    expect(isChatImageId(svg)).toBe(false)
+  })
+
   it('copies only known fields and normalises nested request and todo data', () => {
     expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'hi', extra: 'dropped' })).toEqual({ ...base, kind: 'assistant_message', text: 'hi' })
     expect(parseChatItem({

@@ -495,4 +495,77 @@ describe('images in the timeline', () => {
     const viewer = await screen.findByRole('dialog', { name: 'pane.png' })
     expect(within(viewer).getByRole('img', { name: 'pane.png' })).toBeInTheDocument()
   })
+
+  it('shows the local images a reply shows with Markdown, and enlarges one on click', async () => {
+    const svg = `${'b'.repeat(64)}.svg`
+    const text = [
+      '![Slide preview](/Users/me/Downloads/slide.png)',
+      '![PR diagram](<./out/my diagram.svg>)',
+      '![gone](/tmp/gone.png)',
+      '![web](https://example.com/chart.png)',
+      '![nope](javascript:alert(1))',
+      '`~/Downloads/slide.pptx`',
+    ].join('\n\n')
+    const items: ChatItem[] = [{ ...base, id: 'a1', kind: 'assistant_message', text, images: [
+      { src: '/Users/me/Downloads/slide.png', id: imageId },
+      { src: './out/my diagram.svg', id: svg },
+      { src: '/tmp/gone.png', error: 'missing' },
+    ] }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    expect(screen.getByRole('img', { name: 'Slide preview' })).toHaveAttribute('src', `/chat-images/${imageId}`)
+    expect(screen.getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
+    expect(screen.getByRole('img', { name: 'Image not found: /tmp/gone.png' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'web' })).toHaveAttribute('src', 'https://example.com/chart.png')
+    expect(screen.getByRole('img', { name: "Image isn't available: javascript:alert(1)" })).toBeInTheDocument()
+    expect(document.querySelector('img[src^="javascript:"], img[src^="/Users/"]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open PR diagram' }))
+    const viewer = await screen.findByRole('dialog', { name: 'PR diagram' })
+    expect(within(viewer).getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
+  })
+
+  it('zooms and pans the enlarged image, and fits it again', async () => {
+    const items: ChatItem[] = [{ ...base, id: 'u1', kind: 'user_message', text: 'look', images: [{ id: imageId, name: 'wide.png' }] }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open wide.png' }))
+    const viewer = await screen.findByRole('dialog', { name: 'wide.png' })
+    const image = within(viewer).getByRole('img', { name: 'wide.png' })
+    Object.defineProperty(image, 'naturalWidth', { value: 4000 })
+    Object.defineProperty(image, 'naturalHeight', { value: 1000 })
+    fireEvent.load(image)
+    const percent = () => within(viewer).getByText(/^\d+%$/).textContent
+    const opened = percent()
+    expect(within(viewer).getByRole('button', { name: 'Zoom out' })).toBeDisabled()
+    fireEvent.click(within(viewer).getByRole('button', { name: 'Zoom in' }))
+    expect(Number.parseInt(percent()!)).toBeGreaterThan(Number.parseInt(opened!))
+    fireEvent.keyDown(window, { key: '+' })
+    const zoomed = image.style.width
+    fireEvent.click(within(viewer).getByRole('button', { name: 'Fit to screen' }))
+    expect(percent()).toBe(opened)
+    expect(image.style.width).not.toBe(zoomed)
+    fireEvent.keyDown(window, { key: '0' })
+    expect(within(viewer).getByRole('button', { name: 'Fit to screen' })).toBeDisabled()
+
+    // Zoomed in, a click on the image (or the first click of a double-click) keeps the viewer open.
+    fireEvent.keyDown(window, { key: '+' })
+    const surface = image.parentElement!
+    fireEvent.pointerDown(image, { pointerId: 1, button: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 10, clientY: 10 })
+    fireEvent.doubleClick(image)
+    expect(screen.getByRole('dialog', { name: 'wide.png' })).toBeInTheDocument()
+    expect(within(viewer).getByRole('button', { name: 'Fit to screen' })).toBeDisabled()
+    // A click on the space around it still closes it.
+    fireEvent.pointerDown(surface, { pointerId: 2, button: 0, clientX: 5, clientY: 5 })
+    fireEvent.pointerUp(surface, { pointerId: 2, clientX: 5, clientY: 5 })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'wide.png' })).toBeNull())
+  })
+
+  it('waits for a streaming reply to store its image instead of showing a broken one', () => {
+    const items: ChatItem[] = [{ ...base, id: 'a1', kind: 'assistant_message', status: 'running', text: 'Here: ![Chart](/tmp/chart.png)' }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    expect(screen.getByText('Chart')).toBeInTheDocument()
+    expect(document.querySelector('img[src="/tmp/chart.png"]')).toBeNull()
+  })
 })

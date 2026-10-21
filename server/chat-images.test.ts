@@ -4,12 +4,13 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ChatImageStore, chatImagesDir, handleChatImage, handleChatImageUpload, sniffImageType } from './chat-images.js'
+import { ChatImageStore, chatImagesDir, handleChatImage, handleChatImageUpload, looksLikeSvg, sniffImageType, stillZoom, svgReferencesFiles } from './chat-images.js'
 
 const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex')
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10])
 const GIF = Buffer.from('GIF89a\x01\x00\x01\x00', 'latin1')
 const WEBP = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0, 0, 0, 0]), Buffer.from('WEBPVP8 ')])
+const SVG = Buffer.from('<?xml version="1.0"?>\n<!-- drawn by a test -->\n<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20"><rect width="40" height="20" fill="#36c"/></svg>')
 
 let dir: string
 let store: ChatImageStore
@@ -131,6 +132,69 @@ describe('chat image store', () => {
     await expect(new ChatImageStore(file).prune()).rejects.toThrow(/ENOTDIR/)
   })
 
+  it('recognises SVG documents, and nothing that merely mentions one', () => {
+    expect(looksLikeSvg(SVG)).toBe(true)
+    expect(looksLikeSvg(Buffer.from('\uFEFF<svg viewBox="0 0 1 1"/>'))).toBe(true)
+    expect(looksLikeSvg(Buffer.from('<html><svg></svg></html>'))).toBe(false)
+    expect(looksLikeSvg(Buffer.from('# notes about <svg>'))).toBe(false)
+    expect(looksLikeSvg(Buffer.concat([Buffer.from('<svg>'), Buffer.from([0])]))).toBe(false)
+  })
+
+  it('never draws an SVG that refers to other files', () => {
+    expect(svgReferencesFiles(SVG)).toBe(false)
+    expect(svgReferencesFiles(Buffer.from('<svg><use href="#a"/><image href="data:image/png;base64,AAAA"/></svg>'))).toBe(false)
+    expect(svgReferencesFiles(Buffer.from('<svg><image xlink:href="/Users/me/Desktop/secret.png"/></svg>'))).toBe(true)
+    expect(svgReferencesFiles(Buffer.from("<svg><image href = ' secret.png'/></svg>"))).toBe(true)
+    expect(svgReferencesFiles(Buffer.from('<svg><image href="&#47;etc/x.png"/></svg>'))).toBe(true)
+  })
+
+  it('draws at twice the size, within 1600 by 4096 pixels', () => {
+    expect(stillZoom(40, 20)).toBe(2)
+    expect(stillZoom(1708, 428)).toBeCloseTo(1600 / 1708)
+    expect(stillZoom(1600, 200_000)).toBeCloseTo(4096 / 200_000)
+  })
+
+  it('stores reply images, SVG included, which uploads still refuse', async () => {
+    expect(await store.saveReplyImage(PNG)).toEqual(await store.save(PNG))
+    const svg = await store.saveReplyImage(SVG)
+    expect('id' in svg && svg.id).toMatch(/^[0-9a-f]{64}\.svg$/)
+    expect(await store.save(SVG)).toEqual({ error: 'unsupported' })
+    expect(await store.saveReplyImage(Buffer.from('plain text'))).toEqual({ error: 'unsupported' })
+    // Attachment paths stay raster-only: an SVG never reaches Claude.
+    expect(store.path('id' in svg ? svg.id : '')).toBeNull()
+    expect(store.servedPath('id' in svg ? svg.id : '')).toBe(join(store.dir, 'id' in svg ? svg.id : ''))
+  })
+
+  it('draws an SVG as a PNG once, on first use', async () => {
+    const saved = await store.saveReplyImage(SVG)
+    const id = 'id' in saved ? saved.id : ''
+    const [first, second] = await Promise.all([store.still(id), store.still(id)])
+    expect(first).toBe(join(store.dir, `${id}.png`))
+    expect(second).toBe(first)
+    const png = await readFile(first!)
+    expect(sniffImageType(png)).toBe('image/png')
+    // Twice the SVG's 40px width.
+    expect(png.readUInt32BE(16)).toBe(80)
+    expect(await store.still(`${'0'.repeat(64)}.svg`)).toBeNull()
+    // Only SVGs are drawn.
+    expect(await store.still(`${'1'.repeat(64)}.png`)).toBeNull()
+  })
+
+  it('refuses to draw an SVG that refers to a file on disk, and keeps a tall one within bounds', async () => {
+    const logs: string[] = []
+    const logged = new ChatImageStore(join(dir, 'logged'), (message) => logs.push(message))
+    const still = async (svg: string) => {
+      const saved = await logged.saveReplyImage(Buffer.from(svg))
+      return logged.still('id' in saved ? saved.id : '')
+    }
+    expect(await still('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image xlink:href="/tmp/secret.png" width="10" height="10"/></svg>')).toBeNull()
+    expect(logs).toEqual([expect.stringContaining('refers to other files')])
+    const tall = await still('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000000"><rect width="1000" height="1000000"/></svg>')
+    expect((await readFile(tall!)).readUInt32BE(20)).toBe(4096)
+    // So thin that it scales to nothing: refused, not drawn huge.
+    expect(await still('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1000000"><rect width="1" height="1000000"/></svg>')).toBeNull()
+  })
+
   it('can be pointed at another folder', () => {
     expect(chatImagesDir({ COMMANDO_CHAT_IMAGES_DIR: '/tmp/x' })).toBe('/tmp/x')
     expect(chatImagesDir({})).toMatch(/\.commando\/chat-images$/)
@@ -177,6 +241,20 @@ describe('chat image routes', () => {
     expect((await fetch(`${base}/api/chat/images`)).status).toBe(405)
     expect((await fetch(`${base}/chat-images/${'0'.repeat(64)}.png`)).status).toBe(404)
     expect((await fetch(`${base}/chat-images/..%2Fsecret`)).status).toBe(404)
+  })
+
+  it('serves a reply SVG with scripts off, and its PNG drawn on request', async () => {
+    const saved = await store.saveReplyImage(SVG)
+    const id = 'id' in saved ? saved.id : ''
+    const svg = await fetch(`${base}/chat-images/${id}`)
+    expect(svg.status).toBe(200)
+    expect(svg.headers.get('content-type')).toBe('image/svg+xml')
+    expect(svg.headers.get('content-security-policy')).toMatch(/default-src 'none'.*sandbox/)
+    const still = await fetch(`${base}/chat-images/${id}.png`)
+    expect(still.status).toBe(200)
+    expect(still.headers.get('content-type')).toBe('image/png')
+    expect(sniffImageType(Buffer.from(await still.arrayBuffer()))).toBe('image/png')
+    expect((await fetch(`${base}/chat-images/${'0'.repeat(64)}.svg.png`)).status).toBe(404)
   })
 
   it('refuses an upload over 10 MB', async () => {

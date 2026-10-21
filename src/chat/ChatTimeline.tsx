@@ -1,13 +1,14 @@
 import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatTaskAction } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { providerLabel } from './ComposerControls'
 import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
+import { ReplyImage } from './ReplyImage'
 import { SubagentGroup, useNow } from './Subagents'
 import { activitySummary, deriveTimelineRows, isWork, mergeActivityRows, patchLines, shortPath, thoughtLabel, type ActivityRow, type ActivitySummary, type QuietTimelineRow, type ReasoningItem, type SubagentItem, type WorkItem } from '../../shared/chat-timeline'
 import { elapsedLabel } from './turnFlow'
@@ -24,17 +25,32 @@ const markdownComponents: Components = {
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
 const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0, provider: 'Claude' })
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+/** Image addresses reach `ReplyImage` as written: it decides what loads, and a local path is never a link. */
+const keepImageSources: UrlTransform = (url, key, node) => key === 'src' && node.tagName === 'img' ? url : defaultUrlTransform(url)
+
+/** The reply a Markdown image belongs to; context keeps `img` one component, so images don't reload as a reply streams. */
+const ReplyImagesContext = createContext<{ images?: readonly ChatReplyImage[]; running?: boolean }>({})
+
+function MarkdownImage({ src, alt }: { src?: unknown; alt?: string }) {
+  const { images, running } = use(ReplyImagesContext)
+  return <ReplyImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} images={images} running={running} />
+}
+
+const replyComponents: Components = { ...markdownComponents, img: MarkdownImage }
+
+/** `images` are the local files a reply shows; `running` while it still streams. */
+export const Markdown = memo(function Markdown({ text, images, running }: { text: string; images?: readonly ChatReplyImage[]; running?: boolean }) {
+  const reply = useMemo(() => ({ images, running }), [images, running])
   return (
-    <div className="chat-markdown">
-      <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
-        {text}
-      </ReactMarkdown>
-    </div>
+    <ReplyImagesContext value={reply}>
+      <div className="chat-markdown">
+        <ReactMarkdown remarkPlugins={markdownPlugins} components={replyComponents} urlTransform={keepImageSources}>
+          {text}
+        </ReactMarkdown>
+      </div>
+    </ReplyImagesContext>
   )
 })
-
-
 
 function WorkIcon({ item }: { item: WorkItem }) {
   const className = cn('size-3.5', item.status === 'running' ? 'text-primary' : item.status === 'failed' ? 'text-destructive' : 'text-icon-muted')
@@ -293,7 +309,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
     case 'subagents':
       return <SubagentGroup row={row} items={context.items} now={context.now} onTask={context.onTask} controlsDisabled={context.controlsDisabled} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
     case 'assistant':
-      return <div className="chat-reply pb-3"><Markdown text={row.item.text} /></div>
+      return <div className="chat-reply pb-3"><Markdown text={row.item.text} images={row.item.images} running={row.item.status === 'running'} /></div>
     case 'activity':
       return <ActivityGroup row={row} cwd={cwd} />
     case 'notice':
