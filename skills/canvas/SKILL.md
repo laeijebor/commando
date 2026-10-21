@@ -154,7 +154,8 @@ tab remembers each page's zoom and the last page opened.
 - A section's frames and a note's target frame must be on the same page.
 - `focus` numbers form one reading order across pages; Play starts at focus 1
   and follows prototype links onto other pages. Threads, questions, queued
-  answers and spotlights open the right page.
+  answers and spotlights open the right page. Pass `--frame` with a spotlight
+  on a paged canvas: labels are only known for the open page.
 - Order pages the way you want them read. The sidebar shows each page's
   section status (its least advanced section), frame count, open questions
   and open comments.

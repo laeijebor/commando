@@ -45,7 +45,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
 }) {
   const [result, setResult] = useState<CanvasManifestResult>(EMPTY)
   const [snapshot, setSnapshot] = useState<CanvasSnapshot | null>(null)
-  const liveView = useRef<{ result: CanvasManifestResult; camera: CanvasCamera } | null>(null)
+  const liveView = useRef<{ result: CanvasManifestResult; camera: CanvasCamera; page: string | null; cameras: Map<string, CanvasCamera> } | null>(null)
   const restoringCamera = useRef(false)
   const readOnly = snapshot !== null
   const [loaded, setLoaded] = useState(false)
@@ -177,8 +177,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     }
     if (page !== undefined) pageCameras.current.set(page, cameraStore.get())
     cancelFlight(); setExportMenu(null); setBadgeTip(null); setSpotlightFrame(null)
-    setPageChoice(next)
-    try { localStorage.setItem(pageKey, next) } catch { /* private mode */ }
+    // The other page's measurements must not drive this page's first fit.
+    setSizes({}); setPageChoice(next)
+    if (!readOnly) try { localStorage.setItem(pageKey, next) } catch { /* private mode */ }
     const node = viewport.current, saved = pageCameras.current.get(next)
     if (target && node?.clientWidth && node.clientHeight) { initialFit.current = true; setCamera(flyToCanvasRect(target, { w: node.clientWidth, h: node.clientHeight })) }
     else if (saved) { initialFit.current = true; setCamera(saved) }
@@ -187,6 +188,8 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const pickPage = (next: string) => {
     if (next === page) return
     ++hitSequence.current; comments.close(); setSelected(null); setHovered(null); interaction.act({ type: 'background' })
+    // A spotlight still looking for its label must not yank the camera on the page you chose instead.
+    setSpotlightTarget(null); spotlightFallback.current = null
     showPage(next)
   }
   const framePage = (frameId: string) => allFrames.find((frame) => frame.id === frameId)?.page
@@ -376,12 +379,13 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
 
   const selectSnapshot = (next: CanvasSnapshot | null) => {
     if (feedbackBusy || layout.hasPreview() || next?.id === snapshot?.id) return
-    if (next && !snapshot) liveView.current = { result, camera: cameraStore.get() }
+    if (next && !snapshot) liveView.current = { result, camera: cameraStore.get(), page: page ?? null, cameras: new Map(pageCameras.current) }
     ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight()
     drag.current = null; frameDrag.reset(); setPanning(false)
     setSelected(null); setHovered(null)
     if (!next && liveView.current) {
       setResult(liveView.current.result); setCamera(liveView.current.camera); restoringCamera.current = true
+      setPageChoice(liveView.current.page); pageCameras.current = liveView.current.cameras; setSizes({})
     } else setResult(EMPTY)
     setLoaded(false); setSnapshot(next)
   }

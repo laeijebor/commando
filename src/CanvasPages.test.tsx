@@ -105,10 +105,40 @@ describe('canvas pages', () => {
     const picker = screen.getByRole('button', { name: 'Page: Today and the rail' })
     expect(picker).toHaveTextContent('1/2')
     fireEvent.click(picker)
+    expect(screen.getByRole('menuitemradio', { name: /1 · Today/ })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' })
+    expect(screen.getByRole('menuitemradio', { name: /2 · Client profile/ })).toHaveFocus()
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(picker).toHaveFocus()
+    fireEvent.click(picker)
     fireEvent.click(screen.getByRole('menuitemradio', { name: /2 · Client profile/ }))
     expect(await screen.findByTitle('Client overview')).toBeInTheDocument()
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Page: Client profile' })).toHaveTextContent('2/2')
+  })
+
+  it('returns from a history snapshot to the live page and lists threads without a page under Other', async () => {
+    const snapshot = { id: '22222222-2222-2222-2222-222222222222', createdAt: Date.now(), comments: 0, partial: false, manifestTitle: 'Earlier' }
+    const thread = (id: string, frameId: string) => ({ id, frameId, label: id, status: 'open', point: { x: 1, y: 1 }, selector: 'body', pageUrl: 'x', messages: [{ id: `${id}-m`, author: 'user', text: `${id} text`, createdAt: 1 }], createdAt: 1, updatedAt: 1 })
+    fetcher.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify(paged),
+      json: async () => ({ snapshots: [snapshot], notes: [], threads: [thread('on-client', 'manage'), thread('orphan', 'gone')], knownUpTo: 0, dropped: 0 }) }))
+    render(<CanvasPane artifactId={artifactId} manifest="canvas.json" webPaneId="w-snap" token="owner" />)
+    await screen.findByTitle('Today')
+    fireEvent.click(screen.getByRole('tab', { name: 'Threads' }))
+    const heads = await screen.findAllByText(/^(Client profile|Other)$/, { selector: '.canvas-o-head' })
+    expect(heads.map((head) => head.textContent)).toEqual(['Client profile', 'Other'])
+    expect(screen.getByRole('button', { name: /orphan/ })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('History'))
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /Earlier|0 comments/ }))
+    await screen.findByText(/Viewing snapshot from/)
+    fireEvent.click(pageRow(/Client profile/))
+    expect(await screen.findByTitle('Client overview')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+    expect(await screen.findByTitle('Today')).toBeInTheDocument()
+    expect(pageRow(/Today and the rail/)).toHaveAttribute('aria-current', 'page')
+    expect(localStorage.getItem(`commando:canvas-page:${artifactId}:canvas.json`)).toBeNull()
   })
 
   it('shows no page list for a canvas without pages', async () => {

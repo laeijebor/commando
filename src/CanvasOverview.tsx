@@ -25,11 +25,13 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
   const cursors = useRef(new Map<string, number>())
   const tree = useMemo(() => buildCanvasLabelTree(frames, reports, filter), [frames, reports, filter])
   const paged = pages.length > 1
-  const byPage = <T,>(items: T[], pageOf: (item: T) => string | undefined, render: (item: T) => ReactNode): ReactNode[] => !paged ? items.map(render)
-    : pages.flatMap((p) => {
-      const mine = items.filter((item) => pageOf(item) === p.id)
-      return mine.length ? [<div className="canvas-o-head" key={`page:${p.id}`}>{p.title}</div>, ...mine.map(render)] : []
-    })
+  const byPage = <T,>(items: T[], pageOf: (item: T) => string | undefined, render: (item: T) => ReactNode): ReactNode[] => {
+    if (!paged) return items.map(render)
+    // Threads can outlive their frame, so anything without a page still gets listed.
+    const groups = [...pages.map((p) => ({ key: p.id, title: p.title, items: items.filter((item) => pageOf(item) === p.id) })),
+      { key: '', title: 'Other', items: items.filter((item) => !pages.some((p) => p.id === pageOf(item))) }]
+    return groups.flatMap((group) => group.items.length ? [<div className="canvas-o-head" key={`page:${group.key}`}>{group.title}</div>, ...group.items.map(render)] : [])
+  }
   const pinCount = (instances: CanvasLabelInstance[]) => [...threads.filter((thread) => thread.status === 'open'), ...queued.flatMap((note) => note.canvas ? [note.canvas] : [])]
     .filter((pin) => instances.some((instance) => pin.frameId === instance.frameId && (pin.labelId ? pin.labelId === instance.label.id : pin.label === instance.label.name))).length
   const item = (instance: CanvasLabelInstance, grouped: boolean) => <button type="button" key={instance.key}

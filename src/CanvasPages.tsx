@@ -68,7 +68,7 @@ export function CanvasPagesList({ pages, active, onSelect }: { pages: CanvasPage
  * The list renders into the pane's overlay so the toolbar cannot clip it. */
 export function CanvasPageMenu({ pages, active, onSelect, overlay }: { pages: CanvasPageRow[]; active?: string; onSelect: (id: string) => void; overlay: HTMLElement | null }) {
   const [open, setOpen] = useState(false)
-  const root = useRef<HTMLDivElement>(null), list = useRef<HTMLDivElement>(null)
+  const root = useRef<HTMLDivElement>(null), list = useRef<HTMLDivElement>(null), picker = useRef<HTMLButtonElement>(null)
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
   const index = pages.findIndex((page) => page.id === active)
   useLayoutEffect(() => {
@@ -76,21 +76,35 @@ export function CanvasPageMenu({ pages, active, onSelect, overlay }: { pages: Ca
     const bounds = overlay.getBoundingClientRect(), trigger = root.current.getBoundingClientRect()
     setPosition({ left: Math.max(4, trigger.left - bounds.left), top: trigger.bottom - bounds.top + 4 })
   }, [open, overlay])
+  // The list lives in the overlay, at the end of the tab order, so focus moves into it and back.
+  useLayoutEffect(() => {
+    if (position) list.current?.querySelector<HTMLButtonElement>('[aria-checked="true"], button')?.focus()
+  }, [position])
+  const close = (refocus: boolean) => { setOpen(false); if (refocus) picker.current?.focus() }
+  const move = (event: KeyboardEvent) => {
+    const items = [...list.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? []]
+    const at = items.indexOf(document.activeElement as HTMLButtonElement)
+    const next = event.key === 'ArrowDown' ? (at + 1) % items.length : event.key === 'ArrowUp' ? (at - 1 + items.length) % items.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : null
+    if (event.key === 'Tab') close(false)
+    if (next === null) return
+    event.preventDefault(); items[next]?.focus()
+  }
   useEffect(() => {
     if (!open) return
     const close = (event: Event) => { if (!(event.target instanceof Node) || !(root.current?.contains(event.target) || list.current?.contains(event.target))) setOpen(false) }
-    const escape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    const escape = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') { setOpen(false); picker.current?.focus() } }
     window.addEventListener('pointerdown', close, true); window.addEventListener('keydown', escape)
     return () => { window.removeEventListener('pointerdown', close, true); window.removeEventListener('keydown', escape) }
   }, [open])
   return <div className="canvas-page-menu" ref={root}>
-    <button type="button" className="canvas-page-picker" aria-haspopup="menu" aria-expanded={open} aria-label={`Page: ${pages[index]?.title ?? ''}`} onClick={() => setOpen(!open)}>
+    <button type="button" ref={picker} className="canvas-page-picker" aria-haspopup="menu" aria-expanded={open} aria-label={`Page: ${pages[index]?.title ?? ''}`} onClick={() => setOpen(!open)}>
       <span>{pages[index]?.title}</span><em>{index + 1}/{pages.length}</em><span aria-hidden="true">▾</span>
     </button>
-    {open && overlay && createPortal(<div ref={list} className="canvas-page-menu-list" role="menu" aria-label="Pages"
+    {open && overlay && createPortal(<div ref={list} className="canvas-page-menu-list" role="menu" aria-label="Pages" onKeyDown={move}
       style={position ? { left: position.left, top: position.top } : { visibility: 'hidden' }}>
       {pages.map((page, i) => <button type="button" role="menuitemradio" aria-checked={page.id === active} key={page.id}
-        className={`canvas-page-row${page.id === active ? ' is-active' : ''}`} onClick={() => { setOpen(false); onSelect(page.id) }}>
+        className={`canvas-page-row${page.id === active ? ' is-active' : ''}`} tabIndex={page.id === active ? 0 : -1} onClick={() => { close(true); onSelect(page.id) }}>
         <span>{i + 1} · {page.title}</span><PageBadges page={page} />
       </button>)}
     </div>, overlay)}
