@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canvasNoteConnector, layoutCanvasNotes, stack } from './canvasNoteLayout'
+import { canvasNoteConnector, canvasNoteGutterX, layoutCanvasNotes, stack } from './canvasNoteLayout'
 
 const frame = { x: 0, y: 0, w: 390, h: 844 }
 const label = (y: number, x = 20) => ({ x, y, w: 100, h: 20 })
@@ -64,5 +64,22 @@ describe('canvasNoteConnector', () => {
   })
   it('has no dashed part when the target starts at the frame edge', () => {
     expect(canvasNoteConnector({ x: 500, y: 0, w: 300, h: 100 }, 'right', frame, frame).inner).toBeNull()
+  })
+})
+
+describe('canvasNoteGutterX', () => {
+  it('keeps a note that is already beside its frame', () => {
+    expect(canvasNoteGutterX({ x: -400, w: 300 }, [frame], frame, label(300, 300))).toBe(-400)
+  })
+  it('moves a note off its frame into the gutter on its label side', () => {
+    expect(canvasNoteGutterX({ x: 100, w: 300 }, [frame], frame, label(300, 20))).toBe(-380)
+    expect(canvasNoteGutterX({ x: 100, w: 300 }, [frame], frame, label(300, 300))).toBe(470)
+  })
+  it('uses the other gutter when a neighbouring frame fills the label side', () => {
+    const neighbour = { x: 600, y: 0, w: 390, h: 844 }
+    expect(canvasNoteGutterX({ x: 100, w: 300 }, [frame, neighbour], frame, label(300, 300))).toBe(-380)
+  })
+  it('leaves untargeted notes where they are', () => {
+    expect(canvasNoteGutterX({ x: 100, w: 300 }, [frame])).toBe(100)
   })
 })

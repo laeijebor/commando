@@ -21,7 +21,7 @@ import './canvas-pane.css'
 import { canvasWheelRoute, useCanvasInteraction } from './canvasInteraction'
 import { useCanvasLayout } from './useCanvasLayout'
 import { useCanvasFrameDrag } from './useCanvasFrameDrag'
-import { canvasNoteConnector, layoutCanvasNotes, type CanvasNotePlacement } from './canvasNoteLayout'
+import { canvasNoteConnector, canvasNoteGutterX, layoutCanvasNotes, type CanvasNotePlacement } from './canvasNoteLayout'
 import { CanvasSectionStatus } from './CanvasSectionStatus'
 import { CanvasQuestionControls } from './CanvasQuestionControls'
 import { canvasNoteIdFromSelector, canvasQuestion, canvasQuestionsPage, openCanvasQuestions } from './canvasQuestions'
@@ -421,7 +421,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
               }} onPointerMove={noteDrag.move} onPointerUp={noteDrag.end} onPointerCancel={noteDrag.cancel} onLostPointerCapture={noteDrag.cancel}>
               <span className="canvas-kind" style={{ background: NOTE_COLOURS[note.kind] }}>{KIND_LABELS[note.kind]}</span>
               {note.fixed && !readOnly && <button type="button" className="canvas-note-auto" title="Place this note automatically beside its target" disabled={layout.busy}
-                onClick={() => { void layout.moveNote({ id: note.id, x: note.x, y: note.y, fixed: false }) }}>Auto</button>}
+                onClick={() => { const { frame, label } = noteTargets.get(note.id) ?? {}; void layout.moveNote({ id: note.id, x: canvasNoteGutterX({ x: note.x, w: box.w }, frames, frame, label), y: note.y, fixed: false }) }}>Auto</button>}
               {note.title && <strong className="canvas-note-title">{note.title}</strong>}{note.text && <div>{note.text}</div>}{note.items && <ul>{note.items.map((item, i) => <li key={i}>{item}</li>)}</ul>}
               {ask && <CanvasQuestionControls key={JSON.stringify([ask.question.queueKey, ask.question.question, ask.question.options ?? null, ask.question.multiple ?? null])} question={ask.question} recorded={note.answer} pending={ask.pending} sent={ask.sent}
                 disabled={feedbackBusy} onQueue={comments.answer} onRemove={comments.remove} />}

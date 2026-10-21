@@ -1,7 +1,7 @@
 import type { CanvasBounds } from './canvasCamera'
 
-/** Gap between stacked notes, and the clearance a flipped note needs from other frames. */
-const GAP = 16, CLEARANCE = 40
+/** Gap between stacked notes, the clearance a flipped note needs from other frames, and a new gutter's distance. */
+const GAP = 16, CLEARANCE = 40, GUTTER = 80
 
 export type CanvasNoteInput = {
   id: string; x: number; y: number; w: number; h: number; fixed?: boolean
@@ -12,6 +12,11 @@ export type CanvasNotePlacement = CanvasBounds & { side?: 'left' | 'right' }
 
 const overlaps = (a: CanvasBounds, b: CanvasBounds) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 const sideOf = (box: CanvasBounds, frame: CanvasBounds) => box.x + box.w <= frame.x ? 'left' as const : box.x >= frame.x + frame.w ? 'right' as const : undefined
+/** No other frame within CLEARANCE of a note column at x beside the frame. */
+const clear = (x: number, w: number, frame: CanvasBounds, frames: readonly CanvasBounds[]) => {
+  const band = { x: x - CLEARANCE, y: frame.y, w: w + CLEARANCE * 2, h: frame.h }
+  return !frames.some((other) => other !== frame && overlaps(band, other))
+}
 
 /**
  * Lays notes out like margin comments. Notes beside their target frame line up with
@@ -34,8 +39,7 @@ export function layoutCanvasNotes(notes: readonly CanvasNoteInput[], frames: rea
         // Mirror across the frame at the same distance, if no other frame is in the way.
         const gap = side === 'left' ? frame.x - (box.x + box.w) : box.x - (frame.x + frame.w)
         const x = labelSide === 'left' ? frame.x - gap - box.w : frame.x + frame.w + gap
-        const band = { x: x - CLEARANCE, y: frame.y, w: box.w + CLEARANCE * 2, h: frame.h }
-        if (!frames.some((other) => other !== frame && overlaps(band, other))) { box = { ...box, x }; side = labelSide }
+        if (clear(x, box.w, frame, frames)) { box = { ...box, x }; side = labelSide }
       }
     }
     box.side = side
@@ -62,6 +66,19 @@ export function layoutCanvasNotes(notes: readonly CanvasNoteInput[], frames: rea
   }
   return new Map(placed.map((item) => [item.note.id, item.box]))
 }
+
+/**
+ * Where an auto-placed note should sit horizontally: unchanged when it is already
+ * beside its frame, otherwise in a clear gutter, preferring its label's side (or the note's).
+ */
+export function canvasNoteGutterX(note: { x: number; w: number }, frames: readonly CanvasBounds[], frame?: CanvasBounds, label?: CanvasBounds): number {
+  if (!frame || sideOf({ ...note, y: 0, h: 0 }, frame)) return note.x
+  const anchor = label ? label.x + label.w / 2 : note.x + note.w / 2
+  const left = frame.x - GUTTER - note.w, right = frame.x + frame.w + GUTTER
+  const sides = anchor < frame.x + frame.w / 2 ? [left, right] : [right, left]
+  return sides.find((x) => clear(x, note.w, frame, frames)) ?? left
+}
+
 
 /** Tops closest (least squares) to the wanted tops that keep order with GAP between items. */
 export function stack(items: ReadonlyArray<{ top: number; h: number }>): number[] {
