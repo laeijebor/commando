@@ -49,7 +49,17 @@ export function writeCanvas(artifacts: RedlineArtifactRegistry, artifactId: stri
   const raw = JSON.parse(original) as Record<string, unknown>
   const changes = kind === 'frames' ? body.moves : body.statuses
   if (!Array.isArray(changes) || !changes.length || changes.length > 100) return fail(400, 'Expected 1–100 canvas changes')
-  const entries = raw[kind] as Array<Record<string, unknown>> | undefined
+  // A paged canvas keeps frames and sections inside pages[]; the parse above guarantees the shapes.
+  const lists: Array<{ path: Array<string | number>; items: Array<Record<string, unknown>> }> = Array.isArray(raw.pages)
+    ? (raw.pages as Array<Record<string, unknown>>).flatMap((page, p) => Array.isArray(page[kind]) ? [{ path: ['pages', p, kind], items: page[kind] as Array<Record<string, unknown>> }] : [])
+    : Array.isArray(raw[kind]) ? [{ path: [kind], items: raw[kind] as Array<Record<string, unknown>> }] : []
+  const locate = (id: string) => {
+    for (const { path, items } of lists) {
+      const index = items.findIndex((entry) => entry?.id === id)
+      if (index >= 0) return [...path, index]
+    }
+    return null
+  }
   const seen = new Set<string>()
   const updates = new Map<string, unknown>()
   for (const change of changes) {
@@ -57,15 +67,14 @@ export function writeCanvas(artifacts: RedlineArtifactRegistry, artifactId: stri
     const item = change as Record<string, unknown>
     if (typeof item.id !== 'string' || seen.has(item.id)) return fail(400, 'Invalid or duplicate canvas id')
     seen.add(item.id)
-    const index = entries?.findIndex((entry) => entry.id === item.id) ?? -1
-    const entry = entries?.[index]
-    if (!entry) return fail(400, 'Unknown canvas id')
+    const path = locate(item.id)
+    if (!path) return fail(400, 'Unknown canvas id')
     if (kind === 'frames') {
       if (![item.x, item.y].every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 1_000_000)) return fail(400, 'Invalid frame coordinates')
-      updates.set(JSON.stringify([kind, index, 'x']), item.x); updates.set(JSON.stringify([kind, index, 'y']), item.y)
+      updates.set(JSON.stringify([...path, 'x']), item.x); updates.set(JSON.stringify([...path, 'y']), item.y)
     } else {
       if (!CANVAS_STATUSES.some((status) => status === item.status)) return fail(400, 'Invalid section status')
-      updates.set(JSON.stringify([kind, index, 'status']), item.status)
+      updates.set(JSON.stringify([...path, 'status']), item.status)
     }
   }
   const text = rewriteJson(original, updates)
