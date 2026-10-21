@@ -184,6 +184,13 @@ describe('ClaudeItemMapper images', () => {
     expect(mapper.handle({ type: 'conversation_reset', new_conversation_id: 'n', uuid: 'n', session_id: 's' } as unknown as SDKMessage))
       .toEqual([expect.objectContaining({ kind: 'notice', level: 'info' })])
   })
+
+  it('forgets the timeline on clear', () => {
+    const mapper = new ClaudeItemMapper(() => 1)
+    mapper.startTurn('first question')
+    mapper.clear()
+    expect(mapper.list()).toEqual([])
+  })
 })
 
 describe('ClaudeItemMapper replay of unstorable images', () => {
