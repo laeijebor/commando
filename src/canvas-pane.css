@@ -44,6 +44,11 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-note { position: absolute; box-sizing: border-box; padding: 14px 16px; border-radius: 12px; background: #f6f5fb; color: #17141f; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
 .canvas-note ul { margin: 6px 0 0; padding-left: 18px; }
 .canvas-note-title { display: block; margin-bottom: 6px; }
+.canvas-note { cursor: grab; user-select: none; touch-action: none; }
+.canvas-note :is(input, textarea, [contenteditable="true"]) { user-select: text; }
+.canvas-note-auto { position: absolute; top: 10px; right: 10px; padding: 2px 8px; border: 1px solid rgba(23,20,31,.18); border-radius: 5px; background: transparent; color: #4b4658; font: inherit; font-size: 12px; cursor: pointer; opacity: 0; }
+.canvas-note:hover .canvas-note-auto, .canvas-note-auto:focus-visible { opacity: 1; }
+.canvas-pane.is-snapshot .canvas-note { cursor: default; }
 .canvas-kind { display: inline-block; margin-bottom: 6px; padding: 2px 8px; border-radius: 5px; font-size: 13px; font-weight: 700; color: #fff; }
 .canvas-connectors { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
 .canvas-world.hide-notes .canvas-note, .canvas-world.hide-notes .canvas-connectors, .canvas-world.hide-notes .canvas-variant { visibility: hidden; }

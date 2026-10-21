@@ -24,9 +24,10 @@ const sideOf = (box: CanvasBounds, frame: CanvasBounds) => box.x + box.w <= fram
 export function layoutCanvasNotes(notes: readonly CanvasNoteInput[], frames: readonly CanvasBounds[]): Map<string, CanvasNotePlacement> {
   const placed = notes.map((note, index) => {
     let box: CanvasNotePlacement = { x: note.x, y: note.y, w: note.w, h: note.h }
-    if (note.fixed || !note.frame) return { note, index, box, centre: note.y + note.h / 2 }
+    if (!note.frame) return { note, index, box, centre: note.y + note.h / 2 }
     const { frame, label } = note
     let side = sideOf(box, frame)
+    if (note.fixed) return { note, index, box: { ...box, side }, centre: note.y + note.h / 2 }
     if (side && label) {
       const labelSide = label.x + label.w / 2 < frame.x + frame.w / 2 ? 'left' : 'right'
       if (labelSide !== side) {

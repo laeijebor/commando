@@ -177,6 +177,35 @@ describe('CanvasPane', () => {
     expect(wrapper).toHaveStyle({ left: '20px', top: '40px' })
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
   })
+  it('drags a note to a fixed spot and hands it back to auto layout', async () => {
+    vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
+    let board = structuredClone(example) as typeof example & { annotations: Array<{ fixed?: boolean }> }
+    fetcher.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        const move = JSON.parse(String(init.body)).moves[0]
+        board = { ...board, annotations: board.annotations.map((n) => n.id === move.id ? { ...n, x: move.x, y: move.y, fixed: move.fixed ?? true } : n) }
+        return { ok: true, json: async () => ({ ...parseCanvasManifest(board), contentHash: 'b'.repeat(64) }) }
+      }
+      return { ok: true, text: async () => JSON.stringify(board), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    })
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" token="owner" />)
+    await screen.findByTitle('Settings')
+    const note = container.querySelector('[data-canvas-note="warn"]') as HTMLElement
+    note.setPointerCapture = vi.fn()
+    const scale = Number(/scale\(([^)]+)\)/.exec((container.querySelector('.canvas-world') as HTMLElement).style.transform)![1])
+    fireEvent.pointerDown(note, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(note, { pointerId: 1, clientX: 23 * scale, clientY: 37 * scale })
+    expect(note).toHaveStyle({ left: '-10px', top: '-170px' })
+    fireEvent.pointerUp(note, { pointerId: 1 })
+    const patches = () => fetcher.mock.calls.filter(([, init]) => init?.method === 'PATCH')
+    await waitFor(() => expect(patches()).toHaveLength(1))
+    expect(patches()[0][0]).toBe(`/api/redline/artifacts/${artifactId}/canvas/annotations`)
+    expect(JSON.parse(patches()[0][1].body).moves).toEqual([{ id: 'warn', x: -10, y: -170 }])
+    fireEvent.click(await screen.findByRole('button', { name: 'Auto' }))
+    await waitFor(() => expect(patches()).toHaveLength(2))
+    expect(JSON.parse(patches()[1][1].body).moves).toEqual([{ id: 'warn', x: -10, y: -170, fixed: false }])
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument())
+  })
   it('reloads on a stale drag write and reports the conflict without remounting the iframe', async () => {
     vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
     let changed = false
@@ -452,7 +481,9 @@ describe('canvas overview and frame bridge', () => {
     const path = container.querySelector('.canvas-connectors path')!, fallback = path.getAttribute('d')
     report(accounts, 'accounts', [{ name: 'Outlook row', rect: labelRect }])
     expect(path.getAttribute('d')).not.toBe(fallback)
-    expect(container.querySelector('.canvas-connectors circle')).toHaveAttribute('cx', '1070')
+    // The label is on the frame's left half, so the note moves to the left gutter and the connector meets the label's left edge.
+    expect(container.querySelector('.canvas-connectors circle')).toHaveAttribute('cx', '970')
+    expect(container.querySelector('[data-canvas-note="dev"]')).toHaveStyle({ left: '560px' })
     push(['Accounts.html'])
     expect(path.getAttribute('d')).toBe(fallback)
     expect(container.querySelector('.canvas-connectors circle')).not.toBeInTheDocument()

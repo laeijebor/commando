@@ -34,7 +34,7 @@ describe('layoutCanvasNotes', () => {
 
   it('keeps fixed notes in place and steps other notes past them', () => {
     const layout = layoutCanvasNotes([note('pinned', 280, { fixed: true }), note('moving', 0, { label: label(300) })], [frame])
-    expect(layout.get('pinned')).toMatchObject({ x: -400, y: 280 })
+    expect(layout.get('pinned')).toMatchObject({ x: -400, y: 280, side: 'left' })
     expect(layout.get('moving')!.y).toBe(280 + 100 + 16)
   })
 

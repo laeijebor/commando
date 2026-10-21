@@ -21,6 +21,7 @@ import './canvas-pane.css'
 import { canvasWheelRoute, useCanvasInteraction } from './canvasInteraction'
 import { useCanvasLayout } from './useCanvasLayout'
 import { useCanvasFrameDrag } from './useCanvasFrameDrag'
+import { canvasNoteConnector, layoutCanvasNotes, type CanvasNotePlacement } from './canvasNoteLayout'
 import { CanvasSectionStatus } from './CanvasSectionStatus'
 import { CanvasQuestionControls } from './CanvasQuestionControls'
 import { canvasNoteIdFromSelector, canvasQuestion, canvasQuestionsPage, openCanvasQuestions } from './canvasQuestions'
@@ -90,6 +91,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   })
   const live = !readOnly && !commentMode && result.manifest.frames.some((f) => f.id === interaction.state.live && f.interactive) ? interaction.state.live : null
   const frameDrag = useCanvasFrameDrag(layout.preview, layout.move, cancelFlight)
+  const noteDrag = useCanvasFrameDrag(layout.preview, layout.moveNote, cancelFlight)
   const { reports, hotspots, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, readOnly ? undefined : comments.relay, {
     live, onInput: (frameId, input) => {
       if (input.type === 'escape') { interaction.act({ type: 'escape' }); cancelFlight() }
@@ -140,7 +142,15 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
 
   const { frames, sections, annotations, title } = result.manifest
   const variantBounds = (frame: typeof frames[number]): CanvasBounds => ({ x: frame.x + 16, y: frame.y - 35 - (sizes[`variant:${frame.id}`]?.h || 165), w: sizes[`variant:${frame.id}`]?.w || 330, h: sizes[`variant:${frame.id}`]?.h || 165 })
-  const noteBounds = (note: CanvasAnnotation): CanvasBounds => ({ x: note.x, y: note.y, w: note.w ?? 300, h: sizes[`note:${note.id}`]?.h || 120 })
+  const noteTargets = useMemo(() => new Map(annotations.map((note) => {
+    const frame = frames.find((f) => f.id === note.target?.frame)
+    const label = frame && labelsForFrame(reports, frame.id).find((label) => label.name === note.target?.label)
+    return [note.id, { frame, label: frame && label ? canvasLabelBounds(frame, label.rect) : undefined }]
+  })), [annotations, frames, reports])
+  const notePlacements = useMemo(() => layoutCanvasNotes(annotations.map((note) => ({
+    id: note.id, x: note.x, y: note.y, w: note.w ?? 300, h: sizes[`note:${note.id}`]?.h || 120, fixed: note.fixed, ...noteTargets.get(note.id),
+  })), frames), [annotations, frames, noteTargets, sizes])
+  const noteBounds = (note: CanvasAnnotation): CanvasNotePlacement => notePlacements.get(note.id) ?? { x: note.x, y: note.y, w: note.w ?? 300, h: sizes[`note:${note.id}`]?.h || 120 }
   const sectionBoxes = useMemo(() => sections.map((section) => {
     const members = frames.filter((frame) => section.frames.includes(frame.id))
     if (!members.length) return null
@@ -300,7 +310,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     if (feedbackBusy || layout.hasPreview() || next?.id === snapshot?.id) return
     if (next && !snapshot) liveView.current = { result, camera }
     ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight()
-    drag.current = null; frameDrag.reset(); setPanning(false)
+    drag.current = null; frameDrag.reset(); noteDrag.reset(); setPanning(false)
     setSelected(null); setHovered(null)
     if (!next && liveView.current) {
       setResult(liveView.current.result); setCamera(liveView.current.camera); restoringCamera.current = true
@@ -387,16 +397,31 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
             {frame.variant!.context && <span>{frame.variant!.context}</span>}<b>{frame.variant!.title}</b>{frame.variant!.description && <span>{frame.variant!.description}</span>}
           </div>)}
           <svg className="canvas-connectors" aria-hidden="true">{annotations.map((note) => {
-            const frame = frames.find((frame) => frame.id === note.target?.frame)
+            const { frame, label } = noteTargets.get(note.id) ?? {}
             if (!frame) return null
-            const label = labelsForFrame(reports, frame.id).find((label) => label.name === note.target?.label)
-            const { path, end } = canvasConnector(noteBounds(note), label ? canvasLabelBounds(frame, label.rect) : frame)
-            return <g key={note.id}><path d={path} fill="none" stroke={NOTE_COLOURS[note.kind]} strokeWidth="2.5" />{label && <circle cx={end.x} cy={end.y} r="4" fill={NOTE_COLOURS[note.kind]} />}</g>
+            const box = noteBounds(note), colour = NOTE_COLOURS[note.kind]
+            // Beside its frame, a connector runs level to the frame edge and dashes in to the label.
+            if (box.side) {
+              const { outer, inner, end } = canvasNoteConnector(box, box.side, frame, label ?? frame)
+              return <g key={note.id}><path d={outer} fill="none" stroke={colour} strokeWidth="2.5" />
+                {inner && <path d={inner} fill="none" stroke={colour} strokeWidth="2" strokeDasharray="5 5" opacity="0.7" />}
+                {label && <circle cx={end.x} cy={end.y} r="4" fill={colour} />}</g>
+            }
+            const { path, end } = canvasConnector(box, label ?? frame)
+            return <g key={note.id}><path d={path} fill="none" stroke={colour} strokeWidth="2.5" />{label && <circle cx={end.x} cy={end.y} r="4" fill={colour} />}</g>
           })}</svg>
           {annotations.map((note) => {
             const ask = answerable ? questionState(note) : null
-            return <div key={note.id} className="canvas-note" data-canvas-note={note.id} data-measure={`note:${note.id}`} style={{ left: note.x, top: note.y, width: note.w ?? 300 }}>
+            const box = noteBounds(note), movable = !readOnly && !commentMode && !interaction.state.playing && !layout.busy
+            return <div key={note.id} className={`canvas-note${note.fixed ? ' is-fixed' : ''}`} data-canvas-note={note.id} data-measure={`note:${note.id}`} style={{ left: box.x, top: box.y, width: note.w ?? 300 }}
+              onPointerDown={(event) => {
+                // Controls inside the note (question options, note fields) keep their own pointer handling.
+                if (movable && !(event.target as HTMLElement).closest('button, a, input, textarea, select, label, [contenteditable="true"]'))
+                  noteDrag.start(event, { id: note.id, x: box.x, y: box.y }, camera.scale, { id: note.id, x: note.x, y: note.y, fixed: note.fixed ?? false })
+              }} onPointerMove={noteDrag.move} onPointerUp={noteDrag.end} onPointerCancel={noteDrag.cancel} onLostPointerCapture={noteDrag.cancel}>
               <span className="canvas-kind" style={{ background: NOTE_COLOURS[note.kind] }}>{KIND_LABELS[note.kind]}</span>
+              {note.fixed && !readOnly && <button type="button" className="canvas-note-auto" title="Place this note automatically beside its target" disabled={layout.busy}
+                onClick={() => { void layout.moveNote({ id: note.id, x: note.x, y: note.y, fixed: false }) }}>Auto</button>}
               {note.title && <strong className="canvas-note-title">{note.title}</strong>}{note.text && <div>{note.text}</div>}{note.items && <ul>{note.items.map((item, i) => <li key={i}>{item}</li>)}</ul>}
               {ask && <CanvasQuestionControls key={JSON.stringify([ask.question.queueKey, ask.question.question, ask.question.options ?? null, ask.question.multiple ?? null])} question={ask.question} recorded={note.answer} pending={ask.pending} sent={ask.sent}
                 disabled={feedbackBusy} onQueue={comments.answer} onRemove={comments.remove} />}
