@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { groupChatConversations, matchesChatConversation, isChatConversationSessionId, parseChatConversations, type ChatConversation } from './chat-conversations.js'
+import { chatConversationProviderLabel, groupChatConversations, matchesChatConversation, isChatConversationSessionId, parseChatConversations, type ChatConversation } from './chat-conversations.js'
 
 const conversation = (cwd: string, extra: Partial<ChatConversation> = {}): ChatConversation => ({ provider: 'claude', sessionId: 'aaaaaaaa-0001', cwd, title: 't', updatedAt: 1, ...extra })
 
 const current = { id: '$1', name: 'current' }
 
 describe('conversation response validation', () => {
+  it('accepts and labels Muse without dropping session and open pane metadata', () => {
+    const muse = conversation('/repo', { provider: 'muse', sessionId: '0199ea33-1234-7000-8000-123456789abc',
+      session: current, headline: 'Muse ready', refs: [{ label: 'PR #540' }], openPaneId: '%7', paneOpen: true })
+    expect(parseChatConversations({ conversations: [muse] })).toEqual([muse])
+    expect(chatConversationProviderLabel(muse)).toBe('Muse')
+    expect(isChatConversationSessionId(muse.sessionId)).toBe(true)
+    expect(parseChatConversations({ conversations: [{ ...muse, provider: 'unsupported' }] })).toEqual([])
+  })
+
   it('preserves server open pane ids and drops malformed optional ids', () => {
     const open = conversation('/repo', { openPaneId: '%7' })
     expect(parseChatConversations({ conversations: [open] })).toEqual([open])
@@ -17,7 +26,8 @@ describe('conversation response validation', () => {
   it('accepts Cursor and OpenCode while keeping session ids shell-safe and bounded', () => {
     const cursor = conversation('/repo', { provider: 'cursor' })
     const opencode = conversation('/repo', { provider: 'opencode', sessionId: 'ses_ed3f6d576ffeGGkSAFgSk4Snvz' })
-    expect(parseChatConversations({ conversations: [cursor, opencode] })).toEqual([cursor, opencode])
+    const muse = conversation('/repo', { provider: 'muse', sessionId: '01a1509e-bbc8-7a33-bd71-167c86ced013' })
+    expect(parseChatConversations({ conversations: [cursor, opencode, muse] })).toEqual([cursor, opencode, muse])
     for (const id of ['ses_a;whoami', 'ses_$(pwd)', 'ses_abc\n', 'ses_a bcd', 'ses_abc/def', 'ses_abc_def', `ses_${'a'.repeat(77)}`]) {
       expect(isChatConversationSessionId(id)).toBe(false)
       expect(parseChatConversations({ conversations: [{ ...opencode, sessionId: id }] })).toEqual([])

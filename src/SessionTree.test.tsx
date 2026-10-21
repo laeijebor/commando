@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { deriveSessionIdentity } from '../shared/session-identity'
-import { SessionTree } from './SessionTree'
+import { SessionTree, type SessionActions } from './SessionTree'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import type { PrsApiClient, PanePrSummary } from './prsApi'
 
@@ -811,6 +811,35 @@ describe('SessionTree', () => {
       expect(onSessionsChanged).toHaveBeenCalledTimes(2)
     })
 
+    it('lets another menu skip or replace the archive and delete dialogs, but always confirms deleting a worktree', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      sessionApi.archiveSession.mockResolvedValue(undefined)
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const actions = { current: null as SessionActions | null }
+      renderTree({ actionsRef: actions })
+      await screen.findByRole('button', { name: 'Actions for Coins everywhere' })
+      await act(() => actions.current!.archiveSession('$2', null))
+      await act(() => actions.current!.deleteSession('$1', false, null))
+      expect(confirm).not.toHaveBeenCalled()
+      expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2')
+      expect(sessionApi.deleteSession).toHaveBeenCalledWith('$1', false, [])
+      confirm.mockReturnValue(false)
+      await act(() => actions.current!.archiveSession('$2', 'Two processes will stop'))
+      expect(confirm).toHaveBeenLastCalledWith('Two processes will stop')
+      expect(sessionApi.archiveSession).toHaveBeenCalledTimes(1)
+      await act(() => actions.current!.deleteSession('$2', true, 'Two processes will stop'))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Two processes will stop\n\nDelete tmux session “Coins everywhere” and its linked worktree\?.*Uncommitted changes/s))
+      await act(() => actions.current!.deleteSession('$2', true, null))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Delete tmux session “Coins everywhere” and its linked worktree\?/))
+      expect(sessionApi.deleteSession).toHaveBeenCalledTimes(1)
+      const onError = vi.fn()
+      confirm.mockReturnValue(true)
+      sessionApi.archiveSession.mockRejectedValueOnce(new Error('Daemon said no'))
+      await act(() => actions.current!.archiveSession('$2', null, onError))
+      expect(onError).toHaveBeenCalledWith('Daemon said no')
+      expect(screen.queryByText('Daemon said no')).toBeNull()
+    })
+
     it('keeps the dialog open when Escape dismisses directory suggestions, then closes on Escape', async () => {
       sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
       const onCreateSession = vi.fn()
@@ -951,4 +980,43 @@ it('renders the saved avatar and codename, validates glyph changes, and resets i
   actions()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Reset identity' }))
   await waitFor(() => expect(sessionApi.changeIdentity).toHaveBeenLastCalledWith('$1', null))
+})
+
+
+describe('Commander session', () => {
+  const sessions = [
+    { id: '$1', name: 'Work', attached: true, activeWindowId: null, windowIds: [] },
+    { id: '$2', name: 'Commander', attached: true, activeWindowId: null, windowIds: [] },
+  ]
+  const baseProps = {
+    token: 'token', sessions, panes: [], displayedPaneIds: [], statuses: {}, selectedSessionId: '$2',
+    onSelectSession: vi.fn(), onSelectPane: vi.fn(), onSessionsChanged: vi.fn(), onPreferencesChanged: vi.fn(),
+  }
+  it('pins Commander once, with attention badges, outside numbered shortcuts', async () => {
+    const onSelectSession = vi.fn()
+    render(<SessionTree {...baseProps} onSelectSession={onSelectSession}
+      commanderState={{ targetId: 'commander', sessionId: '$2', paneId: '%2' }} commanderNeedsYou={2} commanderUnreadFinished />)
+    const pinned = screen.getByRole('button', { name: 'Commander' })
+    expect(pinned).toHaveClass('session-commander-row', 'selected')
+    expect(within(pinned).getByLabelText('2 agents need you')).toHaveTextContent('2')
+    expect(within(pinned).getByLabelText('Unread finished turns')).toBeInTheDocument()
+    expect(screen.getAllByText('Commander')).toHaveLength(1)
+    fireEvent.click(pinned)
+    expect(onSelectSession).toHaveBeenLastCalledWith('$2')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Group sessions manually' })).toHaveAttribute('aria-pressed', 'true'))
+    fireEvent(window, new CustomEvent(NATIVE_TERMINAL_SHORTCUT_EVENT, { detail: { key: '1' } }))
+    expect(onSelectSession).toHaveBeenLastCalledWith('$1')
+    expect(pinned.compareDocumentPosition(screen.getByText('Work')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+  it('offers creation when the Commander session is no longer live and surfaces errors', async () => {
+    const onCreateCommander = vi.fn().mockRejectedValue(new Error('Unable to start Commander'))
+    render(<SessionTree {...baseProps} sessions={[sessions[0]]} commanderState={{ targetId: 'commander', sessionId: '$2' }} onCreateCommander={onCreateCommander} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Commander' }))
+    expect(onCreateCommander).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Unable to start Commander')).toBeInTheDocument()
+  })
+  it('prevents duplicate creation while waiting for the live pane', () => {
+    render(<SessionTree {...baseProps} sessions={[sessions[0]]} commanderOpening onCreateCommander={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Opening…' })).toBeDisabled()
+  })
 })

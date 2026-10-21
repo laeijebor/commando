@@ -1489,7 +1489,7 @@ describe('Muse hooks', () => {
     expect(start.code).toBe(0)
     const context = JSON.parse(start.stdout).hookSpecificOutput.additionalContext
     expect(context).toContain(paths.prMarkerCliPath)
-    expect(context).toContain(`Resume command for this conversation: muse resume ${session}`)
+    expect(context).toContain(`Resume command for this conversation: muse --yolo resume ${session}`)
 
     const reminder = await runMuseHook(command, { hook_event_name: 'SubagentStart', session_id: 'child', subagent_id: 'skill-reminder' }, { ...env, MUSE_THREAD_ID: 'child' })
     expect(reminder).toEqual({ code: 0, stdout: '' })
@@ -1983,7 +1983,9 @@ describe('generated simulator lease CLI', () => {
     }
     expect(Array.from(cli.formatLabel('😀'.repeat(100)))).toHaveLength(60)
     expect(() => cli.verifySlim(fakeSlim, simUdid.toLowerCase())).not.toThrow()
-    for (const output of ['', fakeSlim.replace('170/170', '169/170'), fakeSlim.replace('170/170', '0/0'),
+    // liveactivitiesd stays enabled on newly slimmed devices.
+    expect(() => cli.verifySlim(fakeSlim.replace('170/170', '169/170'), simUdid)).not.toThrow()
+    for (const output of ['', fakeSlim.replace('170/170', '168/170'), fakeSlim.replace('170/170', '0/0'),
       fakeSlim.replace('booted', 'shutdown'), fakeSlim.replace(simUdid, secondSimUdid)]) {
       expect(() => cli.verifySlim(output, simUdid)).toThrow('not booted and fully slim')
     }
@@ -1996,7 +1998,7 @@ describe('generated simulator lease CLI', () => {
       udid: simUdid, label: 'Session name · check empty state', originalName: 'Commando Pool 1',
     })
     expect(dependencies.run.mock.calls).toEqual([
-      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid]], disableDictationCall,
+      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid, '--keep', 'com.apple.liveactivitiesd']], disableDictationCall,
       ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · check empty state']],
     ])
     expect(dependencies.request.mock.calls).toEqual([
@@ -2036,7 +2038,7 @@ describe('generated simulator lease CLI', () => {
     const fallback = simDependencies()
     fallback.exists.mockResolvedValue(true)
     await cli.runSimCommand(['lease'], fallback)
-    expect(fallback.run).toHaveBeenCalledWith('simslim', ['on', simUdid])
+    expect(fallback.run).toHaveBeenCalledWith('simslim', ['on', simUdid, '--keep', 'com.apple.liveactivitiesd'])
   })
 
   it('rolls back a fresh boot and claim when turning off dictation fails', async () => {
@@ -2083,7 +2085,7 @@ describe('generated simulator lease CLI', () => {
       deps.run.mockImplementation(async (file, args) => {
         if (file === 'xcrun') return JSON.stringify(fakeDevices)
         if (args[0] === failingCommand && failingCommand === 'on') throw new Error('boot failed')
-        return fakeSlim.replace('170/170', '169/170')
+        return fakeSlim.replace('170/170', '168/170')
       })
       await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow(failingCommand === 'on' ? 'boot failed' : 'fully slim')
       const renames = deps.run.mock.calls.filter(([, args]) => args.includes('rename'))
@@ -2191,7 +2193,7 @@ describe('generated simulator lease CLI', () => {
         ...(via === 'simfleet' ? [
           ['simfleet', ['sim', 'boot', simUdid], '/original-main'],
           ['simfleet', ['claim', simUdid, label], '/original-main'],
-        ] : [['simslim', ['on', simUdid]]]),
+        ] : [['simslim', ['on', simUdid, '--keep', 'com.apple.liveactivitiesd']]]),
         disableDictationCall, ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, label]],
       ])
       expect(deps.exists).not.toHaveBeenCalled()
@@ -2225,7 +2227,7 @@ describe('generated simulator lease CLI', () => {
         deps.run.mockImplementation(async (file, args) => {
           if (file === 'xcrun' && args[1] === 'list') return JSON.stringify(fakeDevices)
           if (bootFails && (args[0] === 'on' || args[0] === 'sim')) throw new Error('boot failed')
-          return fakeSlim.replace('170/170', '169/170')
+          return fakeSlim.replace('170/170', '168/170')
         })
         await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow(bootFails ? 'boot failed' : 'fully slim')
         expect(deps.run.mock.calls.some(([, args]) => args.includes('rename'))).toBe(false)
@@ -2434,7 +2436,7 @@ describe('generated simulator pool CLI', () => {
     expect(result).toEqual({ udid: thirdSimUdid, label: 'Pool session', originalName: 'Commando Pool 1' })
     expect(deps.members).toEqual([{ udid: thirdSimUdid, name: 'Commando Pool 1', created: true, addedAt: 1, projects: [] }])
     const create = deps.events.indexOf('xcrun simctl create Commando Pool 1 iPhone 17 Pro com.apple.CoreSimulator.SimRuntime.iOS-26-10')
-    const slim = deps.events.indexOf(`simslim on ${thirdSimUdid} --preserve-boot-state`)
+    const slim = deps.events.indexOf(`simslim on ${thirdSimUdid} --keep com.apple.liveactivitiesd --preserve-boot-state`)
     const record = deps.events.indexOf(`POST /pool ${thirdSimUdid}`)
     const reserve = deps.events.indexOf(`POST /reservation ${thirdSimUdid}`)
     expect(create).toBeGreaterThan(-1)
@@ -2462,8 +2464,8 @@ describe('generated simulator pool CLI', () => {
     await cli.runSimCommand(['pool', 'add', simUdid, secondSimUdid], deps)
     const changes = deps.events.filter((event) => event.startsWith('simslim on') || event.startsWith('xcrun simctl rename') || event.startsWith('POST /pool'))
     expect(changes).toEqual([
-      `simslim on ${simUdid} --preserve-boot-state`, `xcrun simctl rename ${simUdid} Commando Pool 1`, `POST /pool ${simUdid}`,
-      `simslim on ${secondSimUdid} --preserve-boot-state`, `xcrun simctl rename ${secondSimUdid} Commando Pool 3`, `POST /pool ${secondSimUdid}`,
+      `simslim on ${simUdid} --keep com.apple.liveactivitiesd --preserve-boot-state`, `xcrun simctl rename ${simUdid} Commando Pool 1`, `POST /pool ${simUdid}`,
+      `simslim on ${secondSimUdid} --keep com.apple.liveactivitiesd --preserve-boot-state`, `xcrun simctl rename ${secondSimUdid} Commando Pool 3`, `POST /pool ${secondSimUdid}`,
     ])
     expect(deps.members.map((entry) => entry.created)).toEqual([true, false, false])
     deps.events.length = 0
@@ -2479,7 +2481,7 @@ describe('generated simulator pool CLI', () => {
     expect(deps.members).toEqual([{ udid: secondSimUdid, name: 'Commando Pool 1', created: false, addedAt: 1, projects: [] }])
     expect(deps.events).not.toContain(`POST /pool ${simUdid}`)
     expect(deps.events.some((event) => event.startsWith(`xcrun simctl rename ${simUdid}`))).toBe(false)
-    expect(deps.events.indexOf(`simslim on ${simUdid} --preserve-boot-state`)).toBeLessThan(deps.events.indexOf(`simslim on ${secondSimUdid} --preserve-boot-state`))
+    expect(deps.events.indexOf(`simslim on ${simUdid} --keep com.apple.liveactivitiesd --preserve-boot-state`)).toBeLessThan(deps.events.indexOf(`simslim on ${secondSimUdid} --keep com.apple.liveactivitiesd --preserve-boot-state`))
   })
 
   it('validates add eligibility and refuses leased removal without changing the device', async () => {

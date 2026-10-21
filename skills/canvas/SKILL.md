@@ -129,6 +129,44 @@ Frame roles:
 - `fixed`: optional boolean. `true` keeps the note exactly at x/y (others
   flow around it). Dragging a note sets it; the note's Auto button clears it.
 
+### Pages
+
+Split a large canvas into pages when one board would be hard to navigate or
+heavy to load; you decide when that helps. Each page is its own board: it
+holds its own `sections`, `frames` and `annotations`, with its own
+coordinates. Only the open page's frames load. The sidebar lists the pages
+above the open page's components (a toolbar menu on narrow tiles), and the
+tab remembers each page's zoom and the last page opened.
+
+```json
+{
+  "title": "Trainer web app — new UI audit",
+  "pages": [
+    { "id": "today", "title": "Today and the rail",
+      "sections": [{ "id": "s-today", "title": "Today and the rail", "status": "ready-for-review", "frames": ["p-today"] }],
+      "frames": [{ "id": "p-today", "title": "Today — proposed", "src": "today.html", "x": 0, "y": 0, "focus": 1 }],
+      "annotations": [] },
+    { "id": "client", "title": "Client profile",
+      "frames": [{ "id": "p-client", "title": "Client overview", "src": "client.html", "x": 0, "y": 0 }] }
+  ]
+}
+```
+
+- A manifest uses either `pages` or top-level `frames`/`sections`/`annotations`,
+  not both. Without `pages` the canvas is a single page, as before.
+- Pages need an `id` (unique among pages) and a `title`, and each page needs a
+  `frames` array. Frame, section and note ids stay unique across the whole
+  canvas, so prototype links (`data-canvas-goto`), question keys, threads and
+  feedback work across pages.
+- A section's frames and a note's target frame must be on the same page.
+- `focus` numbers form one reading order across pages; Play starts at focus 1
+  and follows prototype links onto other pages. Threads, questions, queued
+  answers and spotlights open the right page. Pass `--frame` with a spotlight
+  on a paged canvas: labels are only known for the open page.
+- Order pages the way you want them read. The sidebar shows each page's
+  section status (its least advanced section), frame count, open questions
+  and open comments.
+
 ## Ask the user questions
 
 Every `question` note is answerable on the canvas. Put the question itself in

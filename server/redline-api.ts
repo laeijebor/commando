@@ -129,6 +129,13 @@ export class RedlineApi {
       this.serveFile(response, join(staticDir, 'redline-sdk.js'))
       return
     }
+    if (pathname === '/redline/capture.html') {
+      // Blank same-origin host page for headless frame captures (see ChromiumEngine.screenshot).
+      const body = Buffer.from('<!doctype html><html><head><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{border:0;display:block}</style></head><body></body></html>')
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': body.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+      response.end(body)
+      return
+    }
     if (pathname === '/redline/canvas-frame.js') {
       this.serveFile(response, join(staticDir, 'canvas-frame.js'))
       return

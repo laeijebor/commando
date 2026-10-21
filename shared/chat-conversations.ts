@@ -3,12 +3,18 @@
  * ⌘P picker: switch a chat pane to one, or resume one in a new pane.
  */
 
+import { isChatProvider, providerName, type ChatProvider } from './agent-chat.js'
+
 export const CHAT_CONVERSATION_ROUTES = {
   list: '/api/chat-conversations',
   resume: '/api/chat-conversations/resume',
 } as const
 
-export type ChatConversationProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'muse'
+export type ChatConversationProvider = ChatProvider | 'cursor' | 'opencode'
+
+export function isChatConversationProvider(value: unknown): value is ChatConversationProvider {
+  return isChatProvider(value) || value === 'cursor' || value === 'opencode'
+}
 
 export interface ChatConversation {
   provider: ChatConversationProvider
@@ -105,7 +111,7 @@ export function groupChatConversations(
 
 export function chatConversationProviderLabel(conversation: ChatConversation): string {
   return conversation.provider === 'claude' && conversation.profile ? conversation.profile
-    : { claude: 'Claude', codex: 'Codex', cursor: 'Cursor', opencode: 'OpenCode', muse: 'Muse' }[conversation.provider]
+    : isChatProvider(conversation.provider) ? providerName(conversation.provider) : 'OpenCode'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -121,7 +127,7 @@ export function parseChatConversations(value: unknown): ChatConversation[] {
   const list = isRecord(value) && Array.isArray(value.conversations) ? value.conversations : []
   return list.flatMap((entry): ChatConversation[] => {
     if (!isRecord(entry)) return []
-    if ((entry.provider !== 'claude' && entry.provider !== 'codex' && entry.provider !== 'cursor' && entry.provider !== 'opencode') || !isChatConversationSessionId(entry.sessionId)) return []
+    if (!isChatConversationProvider(entry.provider) || !isChatConversationSessionId(entry.sessionId)) return []
     const cwd = optionalString(entry.cwd)
     const title = optionalString(entry.title, 500)
     if (!cwd || title === undefined || typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) return []

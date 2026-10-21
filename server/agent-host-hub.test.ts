@@ -66,6 +66,16 @@ describe('AgentHostHub', () => {
     expect(hub.owns('%1')).toBe(true)
   })
 
+  it('replaces the timeline when the host starts the conversation over', async () => {
+    const { hub, broadcasts, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'old'), item('b', 'older')] })
+    socket.host({ type: 'items', paneId: '%1', items: [item('n', 'cleared')], replace: true })
+    await settle()
+    expect(hub.items('%1').map((entry) => entry.id)).toEqual(['n'])
+    expect(broadcasts.at(-1)).toEqual({ type: 'chat_items', paneId: '%1', items: [item('n', 'cleared')], replace: true })
+  })
+
   it('holds a session for a pane tmux has not reported yet, then shows it once the pane appears', async () => {
     let now = 0
     const panes = new Set<string>()
@@ -367,6 +377,27 @@ describe('AgentHostHub richer input', () => {
     socket.host({ type: 'subagent_transcript_result', paneId: '%1', requestId: request.requestId, items: [item('m1', 'It is Sunday.')] })
     expect((await pending).items.map((entry) => entry.id)).toEqual(['m1'])
     const dropped = hub.subagentTranscript('%1', 'a711')
+    socket.close()
+    expect((await dropped).error).toMatch(/disconnected/)
+  })
+
+  it('relays MCP requests to hosts that manage them and answers only with their own reply', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    const other = connect()
+    expect((await hub.mcp('%1', { action: 'status' })).error).toMatch(/No agent host/)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 5 }), items: [] })
+    await settle()
+    expect((await hub.mcp('%1', { action: 'status' })).error).toMatch(/Restart this chat/)
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: AGENT_HOST_PROTOCOL_VERSION }), items: [] })
+    await settle()
+    const pending = hub.mcp('%1', { action: 'disable', server: 'github' })
+    const request = socket.sent.at(-1) as { type: string; requestId: string }
+    expect(request).toMatchObject({ type: 'mcp', paneId: '%1', request: { action: 'disable', server: 'github' } })
+    other.host({ type: 'mcp_result', paneId: '%1', requestId: request.requestId, servers: [] })
+    socket.host({ type: 'mcp_result', paneId: '%1', requestId: request.requestId, servers: [{ name: 'github', status: 'disabled', tools: [] }], authUrl: 'javascript:alert(1)' })
+    expect(await pending).toEqual({ servers: [{ name: 'github', status: 'disabled', tools: [] }] })
+    const dropped = hub.mcp('%1', { action: 'status' })
     socket.close()
     expect((await dropped).error).toMatch(/disconnected/)
   })

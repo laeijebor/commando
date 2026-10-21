@@ -1,8 +1,10 @@
 import type { ClientMessage, ServerMessage, SpecialKey } from '@commando/protocol'
 
+import { isDemoHost } from '../demo/flags'
 import type { Host } from '../hosts/types'
 import { webSocketBase } from '../hosts/types'
 import { inputFits, MAX_INPUT_BYTES, MAX_PASTE_BYTES, pasteFits } from './limits'
+import { useSessionPreferences } from '../ui/sessionPreferences'
 import { useChatStore } from '../chat/store'
 import { parseServerMessage } from './state'
 import { useDaemonStore } from './store'
@@ -290,6 +292,7 @@ export class DaemonClient {
       if (this.stopped || this.socket !== socket) return
       this.attempt = 0
       this.setPhase('live', `Live · ${this.host.name}`)
+      void useSessionPreferences.getState().refresh(this.host)
       // A new socket is subscribed to nothing and holds no lease, whatever the
       // last one was told.
       this.sentPaneIds = null
@@ -361,7 +364,9 @@ export function connectHost(host: Host, cookie?: string | null): DaemonClient {
     existing.reconfigure(host, cookie ?? null)
     return existing
   }
-  const client = new DaemonClient({ host, cookie })
+  const client: DaemonClient = __DEV__ && isDemoHost(host)
+    ? new (require('../demo/client') as typeof import('../demo/client')).DemoDaemonClient({ host, cookie })
+    : new DaemonClient({ host, cookie })
   clients.set(host.id, client)
   client.start()
   return client

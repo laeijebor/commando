@@ -65,8 +65,8 @@ describe('the create form model', () => {
     expect(request.worktree).toEqual({ branch: 'companion-app', path: '/Volumes/work/companion' })
   })
 
-  it('keeps Claude as the mobile default and offers Cursor', () => {
-    expect(DEFAULT_AGENT_CHOICE).toBe('claude')
+  it('keeps Claude chat as the mobile default and offers Cursor', () => {
+    expect(DEFAULT_AGENT_CHOICE).toBe('claude-chat')
     expect(AGENT_CHOICES).toContainEqual({ value: 'cursor', label: 'Cursor' })
   })
 
@@ -88,4 +88,14 @@ describe('the create form model', () => {
     expect(options[0]?.defaultBranch).toBe('main')
     expect(options.at(-1)).toEqual({ root: '/Users/leo/notes', name: 'notes', fromHistory: true })
   })
+})
+
+it.each(['claude-chat', 'codex-chat', 'muse-chat'] as const)('mirrors the desktop chat launch body for %s', (provider) => {
+  const prompt = "Read the spec\nthen ship"
+  expect(buildSessionRequest({ ...FORM, agent: provider, prompt, permissionMode: 'default' }, REPO).agent).toEqual({ provider, prompt, permissionMode: 'default' })
+  expect(AGENT_CHOICES.some((choice) => choice.value === provider)).toBe(true)
+})
+it('allows provider-supported permission modes and rejects incompatible selections', () => {
+  expect(buildSessionRequest({ ...FORM, agent: 'codex-chat', permissionMode: 'plan' }, REPO).agent).toEqual({ provider: 'codex-chat', permissionMode: 'plan' })
+  expect(() => buildSessionRequest({ ...FORM, agent: 'muse-chat', permissionMode: 'plan' }, REPO)).toThrow('supported permission mode')
 })

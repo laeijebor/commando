@@ -33,7 +33,10 @@ import {
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
+import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
+import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
+import { commanderAllowedTools } from '../commander-tools.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
 import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
@@ -67,6 +70,8 @@ export interface AgentSessionSpec {
   log?: (message: string) => void
   /** Claude Code just exited and handed the conversation back; the chat says so. */
   returnedFromClaudeCode?: boolean
+  /** Muse only: bypassPermissions runs without Muse's sandbox (`commando-agent muse --yolo`). */
+  fullAccess?: boolean
 }
 
 /** The chat image store as a session uses it (see server/chat-images.ts). */
@@ -464,6 +469,8 @@ export class AgentSession implements ChatProviderSession {
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
         thinking: { type: 'adaptive', display: 'summarized' },
         permissionMode: this.spec.permissionMode,
+        // Commander may run its own CLI without asking; nothing else is pre-approved.
+        ...(commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
         ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
         // Load the same settings, skills, CLAUDE.md and hooks the TUI would.
         settingSources: ['user', 'project', 'local'],
@@ -807,6 +814,13 @@ export class AgentSession implements ChatProviderSession {
     } catch (error) {
       return { items: [], error: `Couldn't read the subagent's transcript: ${errorText(error)}` }
     }
+  }
+
+  /** The session's MCP servers, as Claude Code's `/mcp` shows them, after acting on one when asked. */
+  async mcp(request: ChatMcpRequest): Promise<ChatMcpResult> {
+    const handle = this.queryHandle
+    if (!handle || this.info.status === 'closed' || this.info.status === 'error') return { servers: [], error: "This session isn't running" }
+    return runClaudeMcp(handle as ClaudeMcpHandle, request)
   }
 
   /** Files and folders for an `@` mention, from the session's folder. */
@@ -1215,11 +1229,16 @@ export class AgentSession implements ChatProviderSession {
       this.setSlashCommands(message.commands)
       return
     }
-    if (message.type === 'conversation_reset' && this.info.title) {
-      // /clear starts a new conversation, which gets its own title.
-      const { title: _previous, ...rest } = this.info
-      this.info = rest
-      this.emitSession()
+    if (message.type === 'conversation_reset') {
+      // /clear starts a new conversation, which gets its own title and an empty timeline.
+      if (this.info.title) {
+        const { title: _previous, ...rest } = this.info
+        this.info = rest
+        this.emitSession()
+      }
+      this.mapper.clear()
+      this.emitItems(this.mapper.handle(message), true)
+      return
     }
     if (message.type === 'system' && (message.subtype === 'init' || message.subtype === 'status')) {
       // Claude re-sends init each turn, and status when the mode changes (e.g. entering plan mode itself).
@@ -1312,8 +1331,8 @@ export class AgentSession implements ChatProviderSession {
     for (const listener of this.listeners.session) listener({ ...this.info })
   }
 
-  private emitItems(items: ChatItem[]): void {
-    if (!items.length) return
-    for (const listener of this.listeners.items) listener(items)
+  private emitItems(items: ChatItem[], replace?: true): void {
+    if (!items.length && !replace) return
+    for (const listener of this.listeners.items) listener(items, replace)
   }
 }

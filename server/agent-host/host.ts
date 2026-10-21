@@ -172,7 +172,12 @@ export class AgentHost {
 
   add(session: ChatProviderSession): void {
     this.sessions.set(session.paneId, session)
-    session.on('items', (items) => this.queueItems(session.paneId, items))
+    session.on('items', (items, replace) => {
+      if (!replace) return this.queueItems(session.paneId, items)
+      // Updates still queued belong to the old timeline.
+      this.pendingItems.delete(session.paneId)
+      this.link.send({ type: 'items', paneId: session.paneId, items, replace })
+    })
     session.on('session', (info) => {
       this.flush()
       this.link.send({ type: 'session_update', session: info })
@@ -240,6 +245,10 @@ export class AgentHost {
     } else if (message.type === 'subagent_transcript') {
       const result = await session.subagentTranscript(message.agentId)
       this.link.send({ type: 'subagent_transcript_result', paneId: message.paneId, requestId: message.requestId, items: snapshotItems(result.items), ...(result.error ? { error: result.error } : {}) })
+    }
+    else if (message.type === 'mcp') {
+      const result = session.mcp ? await session.mcp(message.request) : { servers: [], error: "This agent's MCP servers can't be managed from Commando yet" }
+      this.link.send({ type: 'mcp_result', paneId: message.paneId, requestId: message.requestId, ...result })
     }
     else if (message.type === 'queue') {
       const { type: _type, paneId: _paneId, requestId: _requestId, ...change } = message

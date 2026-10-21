@@ -288,7 +288,7 @@ export function launchFromProcess(
 
 const CHAT_HOST_ENTRY = '/server/agent-host/main.ts'
 const CHAT_FLAGS: FlagSpec = {
-  bare: ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--fast'],
+  bare: ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--fast', '--yolo'],
   single: ['--config-dir', '--model', '--effort', '--permission-mode', '--pre-plan-permission-mode', '--claude-path', '--readable-dir'],
   dropped: ['--resume'],
 }
@@ -433,5 +433,6 @@ export function isChatResumeCommand(command: string): boolean {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[index] ?? '')) index += 1
   }
   return basename(words[index] ?? '') === 'commando-agent'
-    && (words[index + 1] === 'claude' || words[index + 1] === 'codex')
+    // Cursor chats are told apart by their `agent-…` session id, not their saved command.
+    && isChatProvider(words[index + 1]) && words[index + 1] !== 'cursor'
 }

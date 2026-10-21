@@ -12,7 +12,7 @@ import {
   type TreeWindowNode,
 } from '../agents/selectors'
 import { useTheme } from '../theme'
-import { canStream } from '../tiles/list'
+import { canStream, tileTitle } from '../tiles/list'
 import { Pill, SectionHeader, StatusDot, withAlpha } from './primitives'
 
 /**
@@ -187,7 +187,7 @@ function WindowNode({
         if (child.kind === 'tile') {
           return (
             <Pressable
-              accessibilityLabel={`Tile ${child.webPane.url}`}
+              accessibilityLabel={`Tile ${tileTitle(child.webPane)}`}
               accessibilityRole="button"
               key={child.webPane.id}
               onPress={() => routes.openTile(child.webPane)}
@@ -196,7 +196,7 @@ function WindowNode({
               <Pill label="tile" tone="mute" />
               <View style={styles.leafText}>
                 <Text numberOfLines={1} style={[styles.leafName, { color: theme.text }]}>
-                  {child.webPane.url}
+                  {tileTitle(child.webPane)}
                 </Text>
                 <Text numberOfLines={1} style={[styles.leafMeta, { color: theme.muted }]}>
                   {child.webPane.engine} · {child.webPane.status}

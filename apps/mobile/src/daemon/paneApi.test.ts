@@ -1,6 +1,6 @@
 import { TmuxAgentLaunchCompatibilityError } from '@commando/tmux-create'
 import type { Host } from '../hosts/types'
-import { createTmuxSession } from './paneApi'
+import { createTmuxSession, fetchPanePrs } from './paneApi'
 
 const host: Host = { id: 'fixture', name: 'fixture', baseUrl: 'http://localhost:4310', auth: { kind: 'token', token: 'fixture' } }
 const created = { kind: 'session' as const, sessionId: '$1', sessionName: 'created', windowId: '@1', windowIndex: 0, windowName: 'agent', paneId: '%7', paneIndex: 0, panePath: '/tmp' }
@@ -27,4 +27,11 @@ it('accepts a matching acknowledgment and preserves literal prompt content in on
 it('accepts an old daemon response for a requested shell', async () => {
   globalThis.fetch = jest.fn(async () => new Response(JSON.stringify({ created }), { status: 201 })) as unknown as typeof fetch
   await expect(createTmuxSession(host, { name: 'created' })).resolves.toEqual({ created })
+})
+
+it('fetches PR badges through the daemon background cache with normal authentication', async () => {
+  const fetcher = jest.fn(async (_url: unknown, _init: unknown) => new Response(JSON.stringify({ list: { pullRequests: [] } }), { status: 200 }))
+  globalThis.fetch = fetcher as unknown as typeof fetch
+  await fetchPanePrs(host, '%14', { background: true })
+  expect(fetcher).toHaveBeenCalledWith('http://localhost:4310/api/prs/pane?paneId=%2514&background=1', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer fixture' }) }))
 })

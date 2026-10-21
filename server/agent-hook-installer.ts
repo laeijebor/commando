@@ -63,6 +63,7 @@ const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
 const SIM_CLI_FILENAME = 'commando-sim.mjs'
 const CHAT_CLI_FILENAME = 'commando-chat.mjs'
+const AGENTS_CLI_FILENAME = 'commando-agents.mjs'
 const PR_MARKER_CLI_FILENAME = 'commando-pr-marker.mjs'
 
 type JsonObject = Record<string, unknown>
@@ -80,6 +81,7 @@ export type AgentHookInstallerOptions = {
   openCodePluginPath?: string
   prMarkerCliPath?: string
   simCliPath?: string
+  agentsCliPath?: string
   chatCliPath?: string
   sessionBriefCliPath?: string
   tokenPath?: string
@@ -109,6 +111,7 @@ export type AgentHookInstallResult = {
   openCodePluginPath: string
   prMarkerCliPath: string
   simCliPath: string
+  agentsCliPath: string
   chatCliPath: string
   sessionBriefCliPath: string
   tokenPath: string
@@ -523,7 +526,8 @@ function resumeContext(sessionId, inheritedChat) {
   if (typeof chat === 'string' && chat.length > 0 && chat.length < 2000 && !/[\\x00-\\x1f]/.test(chat)) {
     return '\\nResume command for this conversation: ' + chat + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
   }
-  if (PROVIDER === 'muse') return '\\nResume command for this conversation: muse resume ' + sessionId + ' (pin it once with the --session flag)'
+  // Like OpenCode's 'opencode --yolo -s', the pinned command reopens Muse without prompts or sandbox.
+  if (PROVIDER === 'muse') return '\\nResume command for this conversation: muse --yolo resume ' + sessionId + ' (pin it once with the --session flag)'
   const profile = /^\\.(claude[wp])$/.exec((process.env.CLAUDE_CONFIG_DIR ?? '').split('/').filter(Boolean).pop() ?? '')?.[1] ?? 'claude'
   return '\\nResume command for this conversation: ' + profile + ' --resume ' + sessionId + ' (pin it once with the --session flag)'
 }
@@ -862,6 +866,66 @@ try {
 `
 }
 
+export function generatedAgentsCli(tokenPath: string): string {
+  return `#!/usr/bin/env node
+import { realpathSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
+const defaultTokenPath = ${JSON.stringify(tokenPath)}
+` + String.raw`
+export function parseAgentsArgs(args) {
+  const [command, ...parameters] = args
+  const asJson = parameters.at(-1) === '--json' && (command === 'list' || ['relay', 'nudge'].includes(command) && parameters.length >= 3)
+  const rest = asJson ? parameters.slice(0, -1) : parameters
+  const invalid = () => { throw new Error('Usage: commando-agents list [--json] | read %N [--turns 1-10] | relay %N "message" [--steer] | nudge %N "message" | relays | cancel <id>') }
+  if (command === 'list' && !rest.length) return { method: 'GET', path: '/list', human: !asJson }
+  if (command === 'relays' && !rest.length) return { method: 'GET', path: '/relays' }
+  if (command === 'cancel' && rest.length === 1 && /^[a-f0-9-]+$/.test(rest[0])) return { method: 'POST', path: '/relays/' + rest[0] + '/cancel' }
+  const pane = rest[0]
+  if (!/^%\d+$/.test(pane ?? '')) return invalid()
+  if (command === 'read' && (rest.length === 1 || rest.length === 3 && rest[1] === '--turns' && /^(?:[1-9]|10)$/.test(rest[2]))) {
+    return { method: 'GET', path: '/read?pane=' + encodeURIComponent(pane) + '&turns=' + (rest[2] ?? '3') }
+  }
+  if (['relay', 'nudge'].includes(command) && (rest.length === 2 || command === 'relay' && rest.length === 3 && rest[2] === '--steer')) {
+    if (!rest[1].trim() || rest[1].length > 4000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(rest[1])) return invalid()
+    return { method: 'POST', path: '/' + command, ...(asJson ? { json: true } : {}), body: { pane, text: rest[1], ...(rest[2] ? { steer: true } : {}) } }
+  }
+  return invalid()
+}
+export async function runAgentsCli(args, request, { out = (value) => console.log(typeof value === 'string' ? value : JSON.stringify(value)), err = (text) => console.error(text) } = {}) {
+  const input = parseAgentsArgs(args)
+  const response = await request(input.method, input.path, input.body)
+  if (response.status >= 400 || response.result?.ok === false) { err(response.result?.error ?? ('Commando returned ' + response.status)); return 1 }
+  if (response.result?.relay?.status === 'failed') { err(response.result.relay.error ?? 'Relay failed'); return 1 }
+  if (response.result?.relay && !input.json) { out(response.result.relay.status + ' ' + response.result.relay.id) }
+  else if (input.human && Array.isArray(response.result)) {
+    out([...response.result].sort((a, b) => Number(!!b.needsYou) - Number(!!a.needsYou)).map((a) =>
+      a.paneId + ' ' + (a.needsYou ? 'NEEDS YOU' : a.stalled ? 'STALLED' : a.status) + ' · ' + a.title.replace(/[\r\n]/g, ' ') + (a.sessionName && a.sessionName !== a.title ? ' (session: ' + a.sessionName.replace(/[\r\n]/g, ' ') + ')' : '') + ' · ' + (a.brief?.text ?? a.headline).replace(/[\r\n]/g, ' ')).join('\n'))
+  } else out(response.result)
+  return 0
+}
+export async function agentsRequest(env = process.env, fetchRequest = fetch, read = readFile) {
+  const paneId = env.TMUX_PANE
+  if (!/^%\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
+  const port = Number(env.COMMANDO_PORT ?? '4310')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('COMMANDO_PORT is invalid')
+  const token = (await read(env.COMMANDO_AGENT_HOOK_TOKEN_PATH ?? defaultTokenPath, 'utf8')).trim()
+  return async (method, path, body) => {
+    const response = await fetchRequest('http://127.0.0.1:' + port + '/api/commander/agent' + path, {
+      method, headers: { Authorization: 'Bearer ' + token, 'X-Commando-Pane': paneId, 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(30_000),
+    })
+    const result = await response.json().catch(() => ({ ok: false, error: 'Commando returned invalid JSON' }))
+    return { status: response.status, result }
+  }
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  try { process.exitCode = await runAgentsCli(process.argv.slice(2), await agentsRequest()) }
+  catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1 }
+}
+`
+}
+
 export function generatedChatCli(tokenPath: string): string {
   return `#!/usr/bin/env node
 import { realpathSync } from 'node:fs'
@@ -1021,7 +1085,7 @@ async function createPoolDevice(request, run, requestedType, projects = []) {
   const udid = (await run('xcrun', ['simctl', 'create', name, type.name, runtime.identifier])).trim().toUpperCase()
   if (!/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(udid)) throw new Error('simctl create did not return a simulator UUID')
   try {
-    await run('simslim', ['on', udid, '--preserve-boot-state'])
+    await run('simslim', ['on', udid, ...slimKeepArgs, '--preserve-boot-state'])
     await request('POST', '/pool', { udid, name, created: true, projects })
   } catch (error) { throw new Error('Pool create failed for ' + udid + ': ' + String(error?.message ?? error)) }
   return { udid, name, state: 'Shutdown', isAvailable: true }
@@ -1078,7 +1142,7 @@ async function runPoolCommand(args, request, run) {
       if (!device || !(device.deviceTypeIdentifier ? /\.iPhone-/.test(device.deviceTypeIdentifier) : device.name.startsWith('iPhone'))) throw new Error('Device must exist and be an iPhone simulator')
       if (device.state !== 'Shutdown' || held.has(udid)) throw new Error('Device must be Shutdown and not leased')
       if (members.some((entry) => entry.udid.toUpperCase() === udid)) continue
-      await run('simslim', ['on', udid, '--preserve-boot-state'])
+      await run('simslim', ['on', udid, ...slimKeepArgs, '--preserve-boot-state'])
       const name = nextPoolName((await request('GET', '/pool')).members)
       await run('xcrun', ['simctl', 'rename', udid, name])
       const { member } = await request('POST', '/pool', { udid, name, created: false, projects })
@@ -1094,10 +1158,17 @@ async function runPoolCommand(args, request, run) {
 const disableDictation = (run, udid) =>
   run('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false'])
 
+// Slim boots keep liveactivitiesd: without it every ActivityKit call fails, and concurrent failures corrupt the heap in
+// SessionFoundation, crashing apps that observe Live Activities at launch. It costs about 11 MB per simulator.
+const slimKeptDaemons = ['com.apple.liveactivitiesd']
+const slimKeepArgs = ['--keep', slimKeptDaemons.join(',')]
+
 export function verifySlim(output, udid) {
   const line = output.split(/\r?\n/).find((entry) => entry.trim().split(/\s+/)[0]?.toUpperCase() === udid.toUpperCase())
   const match = line && /\bbooted\s*·\s*(\d+)\/(\d+)\s+slim\s*$/.exec(line)
-  if (!match || Number(match[1]) === 0 || Number(match[1]) !== Number(match[2])) {
+  const [disabled, managed] = match ? [Number(match[1]), Number(match[2])] : [0, 0]
+  // Devices slimmed before the keep list stay fully slim until a later lease re-slims them.
+  if (disabled === 0 || (disabled !== managed && disabled + slimKeptDaemons.length !== managed)) {
     throw new Error('Simulator ' + udid + ' is not booted and fully slim; no new lease recorded. Check simslim list --booted.')
   }
 }
@@ -1236,7 +1307,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
         const root = existing?.repo?.root ?? context.repo?.root
         await run('simfleet', ['sim', 'boot', udid], root)
         await run('simfleet', ['claim', udid, label], root)
-      } else await run('simslim', ['on', udid])
+      } else await run('simslim', ['on', udid, ...slimKeepArgs])
     }
     try {
       if (via !== 'adopted') {
@@ -2397,6 +2468,7 @@ export class AgentHookInstaller {
         options.prMarkerCliPath
           ?? resolve(resolvedHome, '.commando', 'hooks', PR_MARKER_CLI_FILENAME),
       ),
+      agentsCliPath: resolve(options.agentsCliPath ?? resolve(resolvedHome, '.commando', 'hooks', AGENTS_CLI_FILENAME)),
       chatCliPath: resolve(options.chatCliPath ?? resolve(resolvedHome, '.commando', 'hooks', CHAT_CLI_FILENAME)),
       simCliPath: resolve(
         options.simCliPath ?? resolve(resolvedHome, '.commando', 'hooks', SIM_CLI_FILENAME),
@@ -2511,7 +2583,7 @@ export class AgentHookInstaller {
     }, [this.paths.cursorBridgePath, this.paths.cursorHooksPath])
     const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex, ...staleCursor, ...staleMuse])].sort()
     if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
-    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
+    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.agentsCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
     await this.installGeneratedScripts({ claude: staleClaude.length > 0, openCode: false, muse: staleMuse.length > 0 })
     if (staleCursor.length > 0) await this.installCursorHooks(true)
     if (staleCodex.length > 0) await this.installCodexNotify()
@@ -2578,6 +2650,7 @@ export class AgentHookInstaller {
       0o700,
     )
     await writeAtomically(this.paths.chatCliPath, generatedChatCli(this.paths.tokenPath), 0o700)
+    await writeAtomically(this.paths.agentsCliPath, generatedAgentsCli(this.paths.tokenPath), 0o700)
     await writeAtomically(this.paths.simCliPath, generatedSimCli(this.paths.tokenPath), 0o700)
     await writeAtomically(
       this.paths.prMarkerCliPath,

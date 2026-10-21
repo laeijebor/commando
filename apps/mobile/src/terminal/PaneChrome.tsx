@@ -3,6 +3,8 @@ import Feather from '@expo/vector-icons/Feather'
 
 import type { AgentStatus, WebPane } from '@commando/protocol'
 
+import type { SessionIdentity } from '@commando/session-identity'
+import { SessionAvatar } from '../ui/SessionAvatar'
 import { statusLabel, useTheme } from '../theme'
 import { Dot, ProgressBar, StatusDot, withAlpha } from '../ui/primitives'
 import { tileLabel, type PaneContext, type PaneWindowChip } from './paneContext'
@@ -14,12 +16,14 @@ import { tileLabel, type PaneContext, type PaneWindowChip } from './paneContext'
  */
 export function PaneNav({
   title,
+  identity,
   subtitle,
   fit,
   onToggleFit,
   onBack,
   onInfo,
 }: {
+  identity?: SessionIdentity
   title: string
   subtitle: string
   /** Omitted for a chat pane, which has no terminal to fit. */
@@ -34,10 +38,11 @@ export function PaneNav({
   return (
     <View style={styles.nav}>
       {onBack ? (
-        <Pressable accessibilityLabel="Back to sessions" accessibilityRole="button" onPress={onBack}>
+        <Pressable accessibilityLabel="Back to chats" hitSlop={10} accessibilityRole="button" onPress={onBack}>
           <Feather color={theme.accent} name="chevron-left" size={26} />
         </Pressable>
       ) : null}
+      {identity ? <SessionAvatar identity={identity} /> : null}
       <View style={styles.navTitle}>
         <Text numberOfLines={1} style={[styles.navTitleText, { color: theme.text }]}>
           {title}
@@ -65,7 +70,7 @@ export function PaneNav({
         </Pressable>
       ) : null}
       {onInfo ? (
-        <Pressable accessibilityLabel="Pane info" accessibilityRole="button" onPress={onInfo}>
+        <Pressable accessibilityLabel="Pane info" hitSlop={10} accessibilityRole="button" onPress={onInfo}>
           <Text style={[styles.action, { color: theme.accent }]}>Info</Text>
         </Pressable>
       ) : null}

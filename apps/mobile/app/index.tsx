@@ -27,14 +27,23 @@ import { SignInSheet } from '../src/ui/SignInSheet'
 
 export default function HostsScreen(): React.JSX.Element {
   const theme = useTheme()
+  const router = useRouter()
   const hosts = useHostsStore((state) => state.hosts)
   const hydrated = useHostsStore((state) => state.hydrated)
+  const initialHostId = useHostsStore((state) => state.initialHostId)
+  const rememberHost = useHostsStore((state) => state.rememberHost)
   const reachability = useHostsStore((state) => state.reachability)
   const cookies = useHostsStore((state) => state.cookies)
   const removeHost = useHostsStore((state) => state.removeHost)
   const [signInHost, setSignInHost] = useState<Host | null>(null)
   const [addVisible, setAddVisible] = useState(false)
   const [editing, setEditing] = useState(false)
+
+  useEffect(() => {
+    if (!hydrated || !initialHostId) return
+    rememberHost(initialHostId)
+    router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: initialHostId } })
+  }, [hydrated, initialHostId, rememberHost, router])
 
   // Badge counts come from the live snapshot, so reachable hosts get a socket
   // as soon as the list appears.
@@ -122,7 +131,10 @@ function HostCard({
 
   const openHost = useCallback(() => {
     if (status === 'unauthorized') onSignIn()
-    else router.push({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
+    else {
+      useHostsStore.getState().rememberHost(host.id)
+      router.push({ pathname: '/(host)/[hostId]/sessions', params: { hostId: host.id } })
+    }
   }, [host.id, onSignIn, router, status])
 
   return (

@@ -9,6 +9,7 @@ import {
   type TextInputKeyPressEventData,
 } from 'react-native'
 
+import { useTerminalDrafts } from './drafts'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 
@@ -20,6 +21,7 @@ import { withAlpha } from '../ui/primitives'
  */
 export function Composer({
   raw,
+  draftKey,
   onToggleRaw,
   onSend,
   onRawText,
@@ -27,6 +29,7 @@ export function Composer({
   disabled,
   notice,
 }: {
+  draftKey?: string
   raw: boolean
   onToggleRaw: (next: boolean) => void
   onSend: (text: string) => void
@@ -36,7 +39,10 @@ export function Composer({
   notice?: string | null
 }): React.JSX.Element {
   const theme = useTheme()
-  const [text, setText] = useState('')
+  const [localText, setLocalText] = useState('')
+  const saved = useTerminalDrafts((store) => draftKey ? store.drafts[draftKey] ?? '' : '')
+  const text = draftKey ? saved : localText
+  const setText = (value: string) => draftKey ? useTerminalDrafts.getState().setDraft(draftKey, value) : setLocalText(value)
 
   const submit = (): void => {
     if (raw) {

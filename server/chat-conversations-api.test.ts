@@ -301,6 +301,29 @@ describe('ChatConversationsApi', () => {
     expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'codex-chat', permissionMode: 'default', resume: ID })
   })
 
+  it('switches a chat pane to a Muse conversation as a Muse chat', async () => {
+    const { creator, resume } = setup({ conversation: { provider: 'muse' } })
+    expect(await resume({ provider: 'muse' })).toMatchObject({ status: 200, body: { paneId: '%1' } })
+    expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'muse-chat', permissionMode: expect.any(String), resume: ID })
+  })
+
+  it('resumes a saved Muse chat through the chat host, never above the calling chat', async () => {
+    const resumeRecord = { provider: 'muse' as const, command: `env COMMANDO_PORT=4410 /c/scripts/commando-agent muse --permission-mode bypassPermissions --resume ${ID}` }
+    const workspace = setup({ conversation: { provider: 'muse' }, chats: [chat({ provider: 'codex', permissionMode: 'default' })], resumeRecord })
+    expect(await workspace.resume({ provider: 'muse' })).toMatchObject({ status: 200 })
+    expect(workspace.creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'muse-chat', permissionMode: 'default', resume: ID })
+    // Muse has no plan mode, so a plan chat can't hand it the saved full access either.
+    const plan = setup({ conversation: { provider: 'muse' }, chats: [chat({ provider: 'codex', permissionMode: 'plan' })], resumeRecord })
+    expect(await plan.resume({ provider: 'muse' })).toMatchObject({ status: 403 })
+    expect(plan.creator.respawnChatPane).not.toHaveBeenCalled()
+  })
+
+  it('resumes a Muse conversation from a terminal in the Muse TUI', async () => {
+    const { creator, resume } = setup({ conversation: { provider: 'muse' }, chats: [] })
+    expect(await resume({ provider: 'muse', placement: 'split' })).toMatchObject({ status: 200 })
+    expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ targetId: '%1', cwd: folder }), undefined, `env muse resume ${ID}`)
+  })
+
   it('opens a Claude conversation beside the pane with its own profile, in plan mode from a plan chat', async () => {
     const { creator, resume } = setup({ conversation: { provider: 'claude', configDir: '/home/me/.claudew' }, chats: [chat({ provider: 'codex', permissionMode: 'plan' })] })
     expect(await resume({ provider: 'claude', placement: 'split' })).toMatchObject({ status: 200, body: { paneId: '%9' } })
@@ -332,7 +355,7 @@ describe('ChatConversationsApi', () => {
     expect(open.creator.respawnChatPane).not.toHaveBeenCalled()
   })
 
-  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation in another live pane after the reservation expires', async (provider) => {
+  it.each(['claude', 'codex', 'muse', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation in another live pane after the reservation expires', async (provider) => {
     vi.useFakeTimers({ toFake: ['setTimeout'] })
     try {
       const sessionId = provider === 'opencode' ? 'ses_session123' : ID
@@ -349,7 +372,7 @@ describe('ChatConversationsApi', () => {
     }
   })
 
-  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation for every placement, including without a requester', async (provider) => {
+  it.each(['claude', 'codex', 'muse', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation for every placement, including without a requester', async (provider) => {
     const sessionId = provider === 'opencode' ? 'ses_session123' : ID
     for (const input of [{ placement: 'replace' }, { placement: 'split' }, { placement: 'session' }, { placement: 'session', paneId: undefined }]) {
       const status: AgentStatus = { paneId: '%2', provider, agentSessionId: sessionId, source: 'hook', status: 'done', summary: '', confidence: 'high', reason: 'Hook report', updatedAt: Date.now() }
@@ -486,7 +509,7 @@ describe('resume placement and launch selection', () => {
     expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, { provider: 'claude-chat', resume: ID, configDir: join(homedir(), '.claudep'), permissionMode: 'plan' })
   })
 
-  it.each(['claude', 'codex'] as const)('resumes builder-generated %s chats with server-owned settings in a renumbered session', async (provider) => {
+  it.each(['claude', 'codex', 'muse'] as const)('resumes builder-generated %s chats with server-owned settings in a renumbered session', async (provider) => {
     const launcher = "/checkout with spaces/O'Brien/scripts/commando-agent"
     const flags = ['--permission-mode', 'bypassPermissions']
     const daemonEnv = { COMMANDO_PORT: '4410' }
@@ -505,6 +528,27 @@ describe('resume placement and launch selection', () => {
       expect(creator.createWindow).toHaveBeenCalledWith({ sessionId: '$9', cwd: folder, agent: { provider: `${provider}-chat`, resume: ID, permissionMode: 'default' } })
       expect(creator.createSession).not.toHaveBeenCalled()
     }
+  })
+
+  it.each(['replace', 'split', 'session'] as const)('resumes Muse as a chat with capped permissions for %s', async (placement) => {
+    const { resume, creator } = setup({ conversation: { provider: 'muse' }, chats: [chat({ permissionMode: 'acceptEdits' })] })
+    expect(await resume({ provider: 'muse', placement })).toMatchObject({ status: 200 })
+    const agent = { provider: 'muse-chat', resume: ID, permissionMode: 'default' }
+    if (placement === 'replace') expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, agent)
+    else expect(creator.createPane).toHaveBeenCalledWith(expect.objectContaining({ agent }))
+  })
+
+  it.each(['plan', 'default'] as const)('refuses to raise a Claude %s chat to Muse sandbox access', async (permissionMode) => {
+    const { resume, creator } = setup({ conversation: { provider: 'muse' }, chats: [chat({ permissionMode })] })
+    expect(await resume({ provider: 'muse' })).toMatchObject({ status: 403 })
+    expect(creator.respawnChatPane).not.toHaveBeenCalled()
+    expect(creator.createPane).not.toHaveBeenCalled()
+  })
+
+  it('resumes a Muse TUI from a terminal without a saved command', async () => {
+    const { resume, creator } = setup({ conversation: { provider: 'muse' }, chats: [], empty: true })
+    expect(await resume({ provider: 'muse' })).toMatchObject({ status: 200 })
+    expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', folder, undefined, `env muse resume ${ID}`)
   })
 
   it('resumes a saved chat from outside a chat with default permissions', async () => {

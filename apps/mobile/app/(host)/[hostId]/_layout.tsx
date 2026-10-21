@@ -1,4 +1,8 @@
-import { Tabs } from 'expo-router'
+import { useEffect } from 'react'
+import { useLocalSearchParams } from 'expo-router'
+import { useHostsStore } from '../../../src/hosts/store'
+import { Tabs, BottomTabBar, type BottomTabBarProps } from 'expo-router/js-tabs'
+import { isHostTab, visibleHostTabs } from '../../../src/layout/hostTabs'
 import Feather from '@expo/vector-icons/Feather'
 
 import { useTheme } from '../../../src/theme'
@@ -10,8 +14,12 @@ import { useTheme } from '../../../src/theme'
  */
 export default function HostTabsLayout(): React.JSX.Element {
   const theme = useTheme()
+  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  const rememberHost = useHostsStore((state) => state.rememberHost)
+  useEffect(() => { if (hostId) rememberHost(hostId) }, [hostId, rememberHost])
   return (
     <Tabs
+      tabBar={(props: BottomTabBarProps) => isHostTab(props.state.routes[props.state.index]?.name ?? '') ? <BottomTabBar {...props} state={visibleHostTabs(props.state)} /> : null}
       screenOptions={{
         headerShown: false,
         sceneStyle: { backgroundColor: theme.bg },
@@ -24,8 +32,8 @@ export default function HostTabsLayout(): React.JSX.Element {
       <Tabs.Screen
         name="sessions"
         options={{
-          title: 'Sessions',
-          tabBarIcon: ({ color, size }) => <Feather color={color} name="terminal" size={size} />,
+          title: 'Chats',
+          tabBarIcon: ({ color, size }) => <Feather color={color} name="message-circle" size={size} />,
         }}
       />
       <Tabs.Screen

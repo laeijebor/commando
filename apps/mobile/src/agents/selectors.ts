@@ -1,3 +1,5 @@
+import { providerPresentation } from '../ui/providerPresentation'
+
 import type {
   AgentInteractionRequest,
   AgentProvider,
@@ -361,10 +363,5 @@ export function sortStatusKinds(statuses: readonly AgentStatusKind[]): AgentStat
 }
 
 export function providerLabel(provider: AgentProvider): string {
-  if (provider === 'claude') return 'Claude'
-  if (provider === 'codex') return 'Codex'
-  if (provider === 'opencode') return 'OpenCode'
-  if (provider === 'cursor') return 'Cursor'
-  if (provider === 'muse') return 'Muse'
-  return 'Agent'
+  return providerPresentation(provider).name
 }
