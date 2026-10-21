@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -69,9 +69,28 @@ describe('ChatReplyImages', () => {
     ] })
   })
 
-  it('reports missing files and files that are not images', async () => {
-    const [item] = await images.attach([reply('![gone](/nowhere/x.png) ![text](notes.txt)')], dir)
-    expect(item).toMatchObject({ images: [{ src: '/nowhere/x.png', error: 'missing' }, { src: 'notes.txt', error: 'unsupported' }] })
+  it('says why an image is not shown, and where a relative one was looked for', async () => {
+    await writeFile(join(dir, 'empty.png'), '')
+    await writeFile(join(dir, 'locked.png'), PNG)
+    await chmod(join(dir, 'locked.png'), 0)
+    const [item] = await images.attach([reply('![gone](/nowhere/x.png) ![text](notes.txt) ![e](empty.png) ![l](locked.png) ![d](~/Downloads)')], dir)
+    expect(item).toMatchObject({ images: [
+      { src: '/nowhere/x.png', error: 'missing' },
+      { src: 'notes.txt', error: 'unsupported', path: join(dir, 'notes.txt') },
+      { src: 'empty.png', error: 'empty' },
+      { src: 'locked.png', error: 'unreadable' },
+      { src: '~/Downloads', error: 'unsupported', path: join(dir, 'home', 'Downloads') },
+    ] })
+    expect((item as { images: object[] }).images[0]).not.toHaveProperty('path')
+  })
+
+  it('logs once when the store fails, and says so on the image', async () => {
+    const logs: string[] = []
+    const failing = new ChatReplyImages({ saveReplyImage: async () => { throw new Error('disk full') } }, join(dir, 'home'), (message) => logs.push(message))
+    const [item] = await failing.attach([reply('![a](~/Downloads/slide.png) ![b](~/Downloads/slide.png "again")')], dir)
+    expect(item).toMatchObject({ images: [{ error: 'failed' }] })
+    await failing.attach([reply('![a](~/Downloads/slide.png)')], dir)
+    expect(logs).toEqual([expect.stringContaining('disk full')])
   })
 
   it('finds a percent-encoded path', async () => {

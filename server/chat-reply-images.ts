@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
@@ -58,12 +59,21 @@ export function localImagePath(src: string, cwd: string, home = homedir()): stri
 
 type Resolved = { id: string } | { error: ChatReplyImageError }
 
+/** A file that isn't there; any other failure is one the user can fix (permissions, a file for a folder). */
+const ABSENT = new Set(['ENOENT', 'ENOTDIR'])
+
+function failure(error: unknown): ChatReplyImageError {
+  return ABSENT.has((error as NodeJS.ErrnoException).code ?? '') ? 'missing' : 'unreadable'
+}
+
 export class ChatReplyImages {
   private readonly remembered = new Map<string, { mtimeMs: number; size: number; resolved: Resolved }>()
+  private loggedStoreFailure = false
 
   constructor(
     private readonly store: Pick<ChatImageStore, 'saveReplyImage'>,
     private readonly home = homedir(),
+    private readonly log?: (message: string) => void,
   ) {}
 
   /** The items with each reply's local images attached; other items are returned as they are. */
@@ -75,7 +85,10 @@ export class ChatReplyImages {
     const images: ChatReplyImage[] = []
     for (const src of markdownImageSources(item.text).slice(0, MAX_IMAGES_PER_REPLY)) {
       const path = localImagePath(src, cwd, this.home)
-      if (path) images.push({ src, ...await this.resolve(path) })
+      if (!path) continue
+      const resolved = await this.resolve(path)
+      // A relative or ~/ address: the notice says where the daemon looked.
+      images.push({ src, ...resolved, ...('error' in resolved && path !== src ? { path } : {}) })
     }
     const { images: _previous, ...rest } = item
     return images.length ? { ...rest, images } : rest
@@ -83,27 +96,45 @@ export class ChatReplyImages {
 
   private async resolve(written: string): Promise<Resolved> {
     let path = written
-    let stats = await stat(path).catch(() => null)
+    let stats: Stats | null = null
+    let statError: unknown
+    try {
+      stats = await stat(path)
+    } catch (error) {
+      statError = error
+    }
     // `My%20Shot.png` for `My Shot.png`: an agent may encode the address itself.
     if (!stats && path.includes('%')) {
       try {
-        path = decodeURIComponent(path)
-        stats = await stat(path).catch(() => null)
+        const decoded = decodeURIComponent(path)
+        stats = await stat(decoded)
+        path = decoded
       } catch {
-        // Not valid percent-encoding: the written path was the only candidate.
+        // Not valid percent-encoding, or no file there either: report the path as written.
       }
     }
-    if (!stats?.isFile()) return { error: 'missing' }
+    if (!stats) return { error: failure(statError) }
+    if (!stats.isFile()) return { error: 'unsupported' }
     if (stats.size > MAX_STORED_IMAGE_BYTES) return { error: 'too_large' }
     const known = this.remembered.get(path)
     if (known && known.mtimeMs === stats.mtimeMs && known.size === stats.size) return known.resolved
+    let bytes: Buffer
+    try {
+      bytes = await readFile(path)
+    } catch (error) {
+      // Not remembered, so a later update tries again.
+      return { error: failure(error) }
+    }
     let resolved: Resolved
     try {
-      const saved = await this.store.saveReplyImage(await readFile(path))
-      resolved = 'error' in saved ? { error: saved.error === 'too_large' ? 'too_large' : 'unsupported' } : { id: saved.id }
-    } catch {
-      // Unreadable now (permissions, or gone since the stat); not remembered, so a later update tries again.
-      return { error: 'missing' }
+      const saved = await this.store.saveReplyImage(bytes)
+      resolved = 'error' in saved ? { error: saved.error } : { id: saved.id }
+    } catch (error) {
+      if (!this.loggedStoreFailure) {
+        this.loggedStoreFailure = true
+        this.log?.(`Couldn't store a reply image from ${path}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return { error: 'failed' }
     }
     this.remembered.delete(path)
     this.remembered.set(path, { mtimeMs: stats.mtimeMs, size: stats.size, resolved })

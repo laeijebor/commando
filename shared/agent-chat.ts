@@ -176,14 +176,20 @@ export function chatImageContentType(id: string): string {
   return id.endsWith('.svg.png') ? 'image/png' : chatImageType(id)
 }
 
-export type ChatReplyImageError = 'missing' | 'unsupported' | 'too_large'
+/** Why a reply image isn't shown: no file there, one the daemon can't read, not an image, or the store failed. */
+export type ChatReplyImageError = 'missing' | 'unreadable' | 'unsupported' | 'too_large' | 'empty' | 'failed'
 
 /**
  * An image an agent shows in a reply with Markdown, `![caption](/path.png)`.
  * `src` is the address exactly as the Markdown parser reads it, so the
  * renderer can match it; the daemon stores the file and gives it an id.
  */
-export type ChatReplyImage = { src: string; id: string } | { src: string; error: ChatReplyImageError }
+export type ChatReplyImage = { src: string; id: string } | {
+  src: string
+  error: ChatReplyImageError
+  /** The file the daemon looked for, when `src` is relative or `~/`. */
+  path?: string
+}
 
 function decodedAddress(value: string): string {
   try {
@@ -813,7 +819,7 @@ function optionalImages(value: unknown): ChatImageRef[] | undefined {
   return refs?.length ? refs : undefined
 }
 
-const REPLY_IMAGE_ERRORS: readonly ChatReplyImageError[] = ['missing', 'unsupported', 'too_large']
+const REPLY_IMAGE_ERRORS: readonly ChatReplyImageError[] = ['missing', 'unreadable', 'unsupported', 'too_large', 'empty', 'failed']
 
 /** A reply's images; one that doesn't parse is dropped, and the reply shows its address instead. */
 function parseChatReplyImages(value: unknown): ChatReplyImage[] | undefined {
@@ -821,7 +827,9 @@ function parseChatReplyImages(value: unknown): ChatReplyImage[] | undefined {
   const images = value.slice(0, MAX_ITEM_IMAGES).flatMap((image): ChatReplyImage[] => {
     if (!isRecord(image) || typeof image.src !== 'string' || !image.src || image.src.length > 4096) return []
     if (isChatReplyImageId(image.id)) return [{ src: image.src, id: image.id }]
-    return REPLY_IMAGE_ERRORS.includes(image.error as ChatReplyImageError) ? [{ src: image.src, error: image.error as ChatReplyImageError }] : []
+    if (!REPLY_IMAGE_ERRORS.includes(image.error as ChatReplyImageError)) return []
+    const path = typeof image.path === 'string' && image.path && image.path.length <= 4096 && image.path !== image.src ? image.path : undefined
+    return [withOptional({ src: image.src, error: image.error as ChatReplyImageError }, { path })]
   })
   return images.length ? images : undefined
 }

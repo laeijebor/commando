@@ -927,7 +927,7 @@ async function main(): Promise<void> {
   }
   const interactions = new AgentInteractionBroker()
   const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
-  const replyImages = new ChatReplyImages(chatImages)
+  const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
   const agentHosts: AgentHostHub = new AgentHostHub({

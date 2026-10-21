@@ -148,15 +148,28 @@ export class ChatImageStore {
         await utimes(path, now, now).catch(() => undefined)
         return path
       }
-      const svg = await readFile(source).catch(() => null)
-      if (!svg) return null
+      const failed = (what: string, error: unknown) => {
+        this.log?.(`Couldn't ${what} ${svgId}: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+      let svg: Buffer
       try {
-        const png = await drawSvg(svg)
+        svg = await readFile(source)
+      } catch (error) {
+        // Pruned, or never stored: a 404, nothing to report.
+        return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : failed('read', error)
+      }
+      let png: Buffer
+      try {
+        png = await drawSvg(svg)
+      } catch (error) {
+        return failed('draw a PNG of', error)
+      }
+      try {
         await this.write(basename(path), png)
         return path
       } catch (error) {
-        this.log?.(`Couldn't draw ${svgId} as a PNG: ${error instanceof Error ? error.message : String(error)}`)
-        return null
+        return failed('store the PNG of', error)
       }
     })().finally(() => this.drawing.delete(path))
     this.drawing.set(path, draw)
@@ -294,23 +307,33 @@ export class ChatImageStore {
 /** Fonts for SVG text on macOS. Loading every system font instead takes seconds a drawing. */
 const MAC_FONTS = ['/System/Library/Fonts/Helvetica.ttc', '/System/Library/Fonts/SFNS.ttf', '/System/Library/Fonts/Menlo.ttc']
 
-/** The SVG's own width in pixels, from its root `width` or `viewBox`. */
-export function svgWidth(svg: Buffer): number | null {
-  const root = /<svg\b[^>]*>/i.exec(svg.subarray(0, 8192).toString('utf8'))?.[0]
-  if (!root) return null
-  const width = /\swidth\s*=\s*["']\s*([\d.]+)(px)?\s*["']/i.exec(root)?.[1]
-  const box = /\sviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)/i.exec(root)?.[1]
-  const value = Number(width ?? box)
-  return Number.isFinite(value) && value > 0 ? value : null
+/** The tallest PNG drawn from an SVG; a taller diagram is drawn smaller. */
+const STILL_MAX_HEIGHT = 4096
+
+/**
+ * Whether an SVG names anything outside itself. resvg loads `<image href>`
+ * paths from disk, and the PNG is served to anyone with the SVG's hash, so a
+ * diagram that does is never drawn. Only `data:` and `#fragment` are kept.
+ */
+export function svgReferencesFiles(svg: Buffer): boolean {
+  return /\bhref\s*=\s*(["'])\s*(?!data:|#)/i.test(svg.toString('utf8'))
 }
 
-/** Draws an SVG as a PNG at twice its size, no wider than `STILL_MAX_WIDTH`. */
+/** How much to scale an SVG of this size: twice, within `STILL_MAX_WIDTH` by `STILL_MAX_HEIGHT`. */
+export function stillZoom(width: number, height: number): number {
+  return Math.min(2, STILL_MAX_WIDTH / width, STILL_MAX_HEIGHT / height)
+}
+
+/** Draws an SVG as a PNG, off the main thread. */
 async function drawSvg(svg: Buffer): Promise<Buffer> {
-  const { renderAsync } = await import('@resvg/resvg-js')
+  if (svgReferencesFiles(svg)) throw new Error('it refers to other files, which are never drawn')
+  const { Resvg, renderAsync } = await import('@resvg/resvg-js')
+  // Parsing without fonts is quick and gives the size resvg will draw at, before any pixels exist.
+  const { width, height } = new Resvg(svg, { font: { loadSystemFonts: false }, logLevel: 'off' })
+  if (!(width > 0 && height > 0)) throw new Error('it has no size')
   const fonts = MAC_FONTS.filter((path) => existsSync(path))
-  const width = svgWidth(svg)
   const image = await renderAsync(svg, {
-    fitTo: width ? { mode: 'zoom', value: Math.min(2, STILL_MAX_WIDTH / width) } : { mode: 'width', value: STILL_MAX_WIDTH },
+    fitTo: { mode: 'zoom', value: stillZoom(width, height) },
     font: fonts.length
       ? { loadSystemFonts: false, fontFiles: fonts, defaultFontFamily: 'Helvetica', sansSerifFamily: 'Helvetica', monospaceFamily: 'Menlo' }
       : { loadSystemFonts: true },
