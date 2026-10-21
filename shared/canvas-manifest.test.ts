@@ -56,7 +56,8 @@ describe('canvas manifest', () => {
     })
     it('rejects mixing pages with top-level lists, and empty or malformed pages', () => {
       expect(parseCanvasManifest({ ...paged, frames: [] }).errors).toEqual(['frames: belongs inside a page; a canvas with pages keeps its frames, sections and notes in pages[]'])
-      expect(parseCanvasManifest({ title: 'x', pages: [] }).errors).toEqual(['pages: must be a non-empty array of pages'])
+      expect(parseCanvasManifest({ title: 'x', pages: {} }).errors).toEqual(['pages: must be an array of pages'])
+      expect(parseCanvasManifest({ title: 'x', pages: [], frames: [] }).errors).toEqual([])
       const { manifest, errors } = parseCanvasManifest({ title: 'x', pages: [{ id: 'p', frames: [] }, 'nope', { id: 'q', title: 'Q' }] })
       expect(errors).toEqual(['pages[0].title: must be a non-empty string', 'pages[1]: must be an object', 'pages[2].frames: must be an array'])
       expect(manifest.pages).toEqual([{ id: 'q', title: 'Q' }])

@@ -79,9 +79,10 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
   }
   const at = (page?: string) => page ? { page } : {}
   manifest.title = string(input, 'title', '', true) ?? ''
-  if (input.pages === undefined) {
+  // An empty pages list reads as no pages, so a parsed single-page manifest round-trips.
+  if (input.pages === undefined || (Array.isArray(input.pages) && !input.pages.length)) {
     list(input, 'frames', '', true); list(input, 'sections', '', false); list(input, 'annotations', '', false)
-  } else if (!Array.isArray(input.pages) || !input.pages.length) fail('pages', 'must be a non-empty array of pages')
+  } else if (!Array.isArray(input.pages)) fail('pages', 'must be an array of pages')
   else {
     for (const key of ['frames', 'sections', 'annotations']) if (input[key] !== undefined) fail(key, 'belongs inside a page; a canvas with pages keeps its frames, sections and notes in pages[]')
     input.pages.forEach((value, index) => {
