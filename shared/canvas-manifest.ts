@@ -11,12 +11,15 @@ export type CanvasSection = {
 export type CanvasAnnotation = {
   id: string; kind: typeof CANVAS_ANNOTATION_KINDS[number]; text?: string; title?: string; items?: string[]
   target?: { frame: string; label?: string }; x: number; y: number; w?: number
+  /** Stays at x/y instead of being laid out beside its target. Set when the user drags the note. */
+  fixed?: boolean
   /** Question notes only: answer queue identity (defaults to id), choices, and the agent-recorded answer. */
   key?: string; options?: string[]; multiple?: boolean; answer?: string
 }
 export type CanvasManifest = { title: string; sections: CanvasSection[]; frames: CanvasFrame[]; annotations: CanvasAnnotation[] }
 export type CanvasManifestResult = { manifest: CanvasManifest; errors: string[] }
-export type CanvasMove = { id: string; x: number; y: number }
+/** A frame or note move. `fixed` applies to notes only and defaults to true. */
+export type CanvasMove = { id: string; x: number; y: number; fixed?: boolean }
 export type CanvasStatusChange = { id: string; status: CanvasSection['status'] }
 export type CanvasWriteResult = CanvasManifestResult & { contentHash: string }
 
@@ -130,6 +133,11 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
     const x = number(value, 'x', path), y = number(value, 'y', path)
     const w = value.w === undefined ? undefined : number(value, 'w', path, undefined, true)
     const title = string(value, 'title', path), text = string(value, 'text', path)
+    let fixed: boolean | undefined
+    if (value.fixed !== undefined) {
+      if (typeof value.fixed !== 'boolean') fail(`${path}fixed`, 'must be a boolean')
+      else fixed = value.fixed
+    }
     let items: string[] | undefined
     if (value.items !== undefined) {
       if (!Array.isArray(value.items)) fail(`${path}items`, 'must be an array of strings')
@@ -179,7 +187,7 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
       else if (answer !== undefined) question.answer = answer
     }
     if (annotationId && kind && x !== undefined && y !== undefined) {
-      const note: CanvasAnnotation = { id: annotationId, kind, x, y, w, title, text, items, target, ...question }
+      const note: CanvasAnnotation = { id: annotationId, kind, x, y, w, fixed, title, text, items, target, ...question }
       manifest.annotations.push(note); annotationPaths.set(note, path)
     }
   })

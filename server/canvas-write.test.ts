@@ -99,4 +99,16 @@ describe('canvas writer and owner-only API without sockets', () => {
     await writeFile(join(dir, 'canvas.json'), '{')
     expect(() => writeCanvas(artifacts, id, { ...move(), expectedHash: canvasContentHash('{') }, 'frames')).toThrow('Fix manifest errors')
   })
+  it('saves a dragged note as fixed, adding the key, and can hand it back to auto layout', async () => {
+    const text = JSON.stringify({ ...board, annotations: [{ id: 'n', kind: 'design', x: 0, y: 0, target: { frame: 'a' } }] }, null, 2) + '\n'
+    await writeFile(join(dir, 'canvas.json'), text)
+    const result = await request(`/api/redline/artifacts/${id}/canvas/annotations`, { manifest: 'canvas.json', expectedHash: canvasContentHash(text), moves: [{ id: 'n', x: 40, y: 50 }] })
+    expect(result.status).toBe(200)
+    const fixed = await readFile(join(dir, 'canvas.json'), 'utf8')
+    expect(fixed).toBe(text.replace('"x": 0,\n      "y": 0,', '"x": 40,\n      "y": 50,').replace('"frame": "a"\n      }\n', '"frame": "a"\n      },\n      "fixed": true\n'))
+    expect(JSON.parse(result.body).manifest.annotations[0]).toMatchObject({ x: 40, y: 50, fixed: true })
+    writeCanvas(artifacts, id, { manifest: 'canvas.json', expectedHash: canvasContentHash(fixed), moves: [{ id: 'n', x: 40, y: 50, fixed: false }] }, 'annotations')
+    expect(await readFile(join(dir, 'canvas.json'), 'utf8')).toBe(fixed.replace('"fixed": true', '"fixed": false'))
+    expect(() => writeCanvas(artifacts, id, { manifest: 'canvas.json', expectedHash: canvasContentHash(fixed.replace('"fixed": true', '"fixed": false')), moves: [{ id: 'a', x: 1, y: 1 }] }, 'annotations')).toThrow('Unknown canvas id')
+  })
 })
