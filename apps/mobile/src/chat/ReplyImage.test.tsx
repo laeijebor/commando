@@ -53,6 +53,13 @@ it('opens an image full screen on tap, and closes it', async () => {
   expect(screen.queryByTestId('chat-image-viewer')).toBeNull()
 })
 
+it('keeps the alt text for images outside a reply, as in a plan or a thought', async () => {
+  render(<ThemeProvider><Markdown text={'See ![Flow](./docs/flow.png) here'} /></ThemeProvider>)
+  await act(async () => undefined)
+  expect(screen.getByText('Flow')).toBeTruthy()
+  expect(screen.queryByText(/isn't available/)).toBeNull()
+})
+
 it('opens an image as large as the screen allows, keeping its shape', () => {
   expect(fitImage({ w: 1708, h: 428 }, { w: 390, h: 700 })).toEqual({ w: 390, h: 428 * (390 / 1708) })
   expect(fitImage({ w: 100, h: 400 }, { w: 390, h: 700 })).toEqual({ w: 175, h: 700 })

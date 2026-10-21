@@ -28,7 +28,9 @@ export const Markdown = memo(function Markdown({ text, tone = 'body', images, ba
   const base: TextStyle = tone === 'thought'
     ? { color: theme.muted, fontStyle: 'italic', fontSize: 14, lineHeight: 20 }
     : { color: theme.textSoft, fontSize: 15, lineHeight: 21 }
-  return <ReplyImagesContext value={reply}><View style={styles.root}>{blocks(tokens, theme, base, 'md')}</View></ReplyImagesContext>
+  // Only a reply draws images (the daemon stores them for replies); thoughts and plans keep the alt text.
+  const showImages = baseUrl !== undefined
+  return <ReplyImagesContext value={reply}><View style={styles.root}>{blocks(tokens, theme, base, 'md', false, showImages)}</View></ReplyImagesContext>
 })
 
 function lex(text: string): Token[] {
@@ -40,14 +42,14 @@ function lex(text: string): Token[] {
   }
 }
 
-function blocks(tokens: readonly Token[], theme: Theme, base: TextStyle, key: string, completed = false): ReactNode[] {
+function blocks(tokens: readonly Token[], theme: Theme, base: TextStyle, key: string, completed = false, showImages = false): ReactNode[] {
   return tokens.flatMap((token, index) => {
-    const node = block(token, theme, base, `${key}.${index}`, completed)
+    const node = block(token, theme, base, `${key}.${index}`, completed, showImages)
     return node === null ? [] : [node]
   })
 }
 
-function block(token: Token, theme: Theme, base: TextStyle, key: string, completed: boolean): ReactNode {
+function block(token: Token, theme: Theme, base: TextStyle, key: string, completed: boolean, showImages: boolean): ReactNode {
   switch (token.type) {
     case 'space':
     case 'def':
@@ -55,7 +57,7 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string, complet
     case 'paragraph':
     case 'text': {
       const item = token as Tokens.Paragraph | Tokens.Text
-      if (item.tokens?.some((part) => part.type === 'image')) return <View key={key} style={styles.withImages}>{withImages(item.tokens, theme, base, key, completed)}</View>
+      if (showImages && item.tokens?.some((part) => part.type === 'image')) return <View key={key} style={styles.withImages}>{withImages(item.tokens, theme, base, key, completed)}</View>
       return <Text key={key} selectable style={base}>{item.tokens ? inline(item.tokens, theme, key, completed) : item.text}</Text>
     }
     case 'heading': {
@@ -71,7 +73,7 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string, complet
     case 'blockquote':
       return (
         <View key={key} style={[styles.quote, { borderLeftColor: theme.borderStrong }]}>
-          {blocks((token as Tokens.Blockquote).tokens, theme, { ...base, color: theme.muted }, key, completed)}
+          {blocks((token as Tokens.Blockquote).tokens, theme, { ...base, color: theme.muted }, key, completed, showImages)}
         </View>
       )
     case 'list': {
@@ -84,7 +86,7 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string, complet
               <Text style={[base, styles.marker, { color: item.task && item.checked ? theme.green : theme.muted }]}>
                 {item.task ? (item.checked ? '✓' : '☐') : list.ordered ? `${start + index}.` : '•'}
               </Text>
-              <View style={styles.listBody}>{blocks(item.tokens, theme, item.task && item.checked ? { ...base, color: theme.muted } : base, `${key}.${index}`, completed || Boolean(item.task && item.checked))}</View>
+              <View style={styles.listBody}>{blocks(item.tokens, theme, item.task && item.checked ? { ...base, color: theme.muted } : base, `${key}.${index}`, completed || Boolean(item.task && item.checked), showImages)}</View>
             </View>
           ))}
         </View>
@@ -160,7 +162,7 @@ function inline(tokens: readonly Token[], theme: Theme, key: string, completed =
         )
       }
       case 'image':
-        // An image inside a link or table cell can't leave the text; its alt text stands in.
+        // Outside a reply, or inside a link or table cell, an image's alt text stands in for it.
         return (token as Tokens.Image).text ? <Text key={id} style={{ color: theme.muted }}>{(token as Tokens.Image).text}</Text> : null
       case 'br':
         return '\n'

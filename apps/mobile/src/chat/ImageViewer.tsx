@@ -23,9 +23,21 @@ export function fitImage(natural: { w: number; h: number } | null, room: { w: nu
  * close button, closes it.
  */
 export function ImageViewer({ image, onClose }: { image: ViewableImage | null; onClose: () => void }): React.JSX.Element {
+  // The modal fades out after `image` is cleared; the last one stays on screen until it has.
+  const [shown, setShown] = useState(image)
+  if (image && image !== shown) setShown(image)
+  const current = image ?? shown
   return (
-    <Modal visible={image !== null} animationType="fade" onRequestClose={onClose} statusBarTranslucent supportedOrientations={['portrait', 'landscape']}>
-      {image ? <ZoomableImage key={image.uri} image={image} onClose={onClose} /> : null}
+    <Modal
+      visible={image !== null}
+      animationType="fade"
+      backdropColor="#000"
+      onRequestClose={onClose}
+      onDismiss={() => setShown(null)}
+      statusBarTranslucent
+      supportedOrientations={['portrait', 'landscape']}
+    >
+      {current ? <ZoomableImage key={current.uri} image={current} onClose={onClose} /> : null}
     </Modal>
   )
 }
@@ -39,6 +51,8 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
   const zoom = useRef(1)
   const lastTap = useRef(0)
   const fitted = fitImage(natural, { w: width, h: height - insets.top - insets.bottom - 88 })
+
+  const trackZoom = (event: NativeSyntheticEvent<NativeScrollEvent>) => { zoom.current = event.nativeEvent.zoomScale ?? 1 }
 
   const zoomTo = (rect: { x: number; y: number; width: number; height: number }) => {
     // iOS zooms the scroll view to a rectangle of its content.
@@ -72,8 +86,11 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
         centerContent
         showsHorizontalScrollIndicator={false}
         showsVerticalScrollIndicator={false}
-        scrollEventThrottle={32}
-        onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => { zoom.current = event.nativeEvent.zoomScale ?? 1 }}
+        // Every zoom change, and where a pinch or fling settles: a throttled stream can miss the last one.
+        scrollEventThrottle={16}
+        onScroll={trackZoom}
+        onScrollEndDrag={trackZoom}
+        onMomentumScrollEnd={trackZoom}
         contentContainerStyle={{ width, height }}
       >
         <Pressable style={styles.stage} onPress={() => { if (zoom.current <= 1.05) onClose() }} accessibilityLabel="Close image" accessible={false}>
