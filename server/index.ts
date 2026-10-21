@@ -116,6 +116,7 @@ import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
+import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
 import { AGENT_HOST_WS_PATH, isChatProvider } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
@@ -925,6 +926,8 @@ async function main(): Promise<void> {
     return hostBuildCache.build
   }
   const interactions = new AgentInteractionBroker()
+  const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
+  const replyImages = new ChatReplyImages(chatImages)
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
   const agentHosts: AgentHostHub = new AgentHostHub({
@@ -953,6 +956,7 @@ async function main(): Promise<void> {
     }),
     log: (message) => console.log(message),
     handoffs: chatHandoffs,
+    replyImages: (items, cwd) => replyImages.attach(items, cwd),
     onHandoffsChange: () => publishChatHandoffs(),
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
@@ -991,7 +995,6 @@ async function main(): Promise<void> {
     const pid = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
     return Number.isInteger(pid) && pid > 0 ? pid : undefined
   }
-  const chatImages = new ChatImageStore()
   const chatSends = new Map<string, Promise<void>>()
   const deliverChatSend = async (client: ClientState, message: Extract<ClientMessage, { type: 'chat_send' }>): Promise<void> => {
     const images = message.images ?? []

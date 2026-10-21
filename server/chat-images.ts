@@ -7,8 +7,10 @@ import { basename, dirname, join } from 'node:path'
 import {
   CHAT_IMAGE_EXTENSIONS,
   MAX_CHAT_IMAGE_BYTES,
-  chatImageType,
+  chatImageContentType,
   isChatImageId,
+  isChatImageStillId,
+  isChatReplyImageId,
   type ChatImageRef,
   type ChatImageType,
 } from '../shared/agent-chat.js'
@@ -29,13 +31,17 @@ export function chatImagesDir(env: Record<string, string | undefined> = process.
   return env.COMMANDO_CHAT_IMAGES_DIR || join(homedir(), '.commando', 'chat-images')
 }
 
-/** Images in tool results can be larger than the ones people attach. */
-const MAX_STORED_IMAGE_BYTES = 32 * 1024 * 1024
+/** Images in tool results and replies can be larger than the ones people attach. */
+export const MAX_STORED_IMAGE_BYTES = 32 * 1024 * 1024
+/** A diagram is text; anything bigger is not one worth drawing. */
+const MAX_SVG_BYTES = 5 * 1024 * 1024
+/** The widest PNG drawn from an SVG: sharp on a phone, small enough to load quickly. */
+const STILL_MAX_WIDTH = 1600
 /** Unused images are pruned; a resumed transcript stores them again. */
 export const CHAT_IMAGE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 /** Claude session ids name the session folders; the same rule the host checks `--resume` with. */
 const SESSION_ID = /^[A-Za-z0-9-]{8,80}$/
-const TEMPORARY = /^\.[0-9a-f]{64}\.\w+\.[0-9a-f]+\.tmp$/
+const TEMPORARY = /^\.[0-9a-f]{64}\.[\w.]+\.[0-9a-f]+\.tmp$/
 
 /** The image type from its first bytes; the declared type is never trusted. */
 export function sniffImageType(bytes: Uint8Array): ChatImageType | null {
@@ -45,6 +51,18 @@ export function sniffImageType(bytes: Uint8Array): ChatImageType | null {
   if (bytes.length >= 6 && (ascii(0, 'GIF87a') || ascii(0, 'GIF89a'))) return 'image/gif'
   if (bytes.length >= 12 && ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp'
   return null
+}
+
+/**
+ * Whether the bytes are an SVG document: optional XML declaration, comments
+ * and doctype, then an `<svg>` element. It is only ever shown through `<img>`
+ * and served with scripts off (see `handleChatImage`).
+ */
+export function looksLikeSvg(bytes: Uint8Array): boolean {
+  const head = Buffer.from(bytes.subarray(0, 4096))
+  if (head.includes(0)) return false
+  const text = head.toString('utf8').replace(/^\uFEFF/, '')
+  return /^\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*|<!DOCTYPE[^>]*>\s*)*<svg[\s>]/i.test(text)
 }
 
 export type ChatImageSaveError = 'unsupported' | 'too_large' | 'empty'
@@ -61,6 +79,11 @@ export class ChatImageStore {
 
   path(id: string): string | null {
     return isChatImageId(id) ? join(this.dir, id) : null
+  }
+
+  /** Any stored image the daemon serves: attachments, reply images (SVG too) and SVG stills. */
+  servedPath(id: string): string | null {
+    return isChatReplyImageId(id) || isChatImageStillId(id) ? join(this.dir, id) : null
   }
 
   async exists(id: string): Promise<boolean> {
@@ -85,18 +108,74 @@ export class ChatImageStore {
   async save(bytes: Uint8Array, maxBytes = MAX_CHAT_IMAGE_BYTES): Promise<{ id: string } | { error: ChatImageSaveError }> {
     const checked = this.check(bytes, maxBytes)
     if ('error' in checked) return checked
+    await this.write(checked.id, bytes)
+    return checked
+  }
+
+  /**
+   * Stores an image an agent shows in its reply: what an upload accepts, and
+   * SVG. Nothing stored here is sent to Claude.
+   */
+  async saveReplyImage(bytes: Uint8Array): Promise<{ id: string } | { error: ChatImageSaveError }> {
+    const checked = this.check(bytes, MAX_STORED_IMAGE_BYTES)
+    if (!('error' in checked) || checked.error !== 'unsupported') {
+      if (!('error' in checked)) await this.write(checked.id, bytes)
+      return checked
+    }
+    if (!looksLikeSvg(bytes)) return checked
+    if (bytes.length > MAX_SVG_BYTES) return { error: 'too_large' }
+    const id = `${createHash('sha256').update(bytes).digest('hex')}.svg`
+    await this.write(id, bytes)
+    return { id }
+  }
+
+  private readonly drawing = new Map<string, Promise<string | null>>()
+
+  /**
+   * The path of a PNG drawn from a stored SVG, drawn on first use (for the
+   * phone, which can't show SVG). Drawing runs off the main thread; it has no
+   * animation, so a diagram shows its first frame. Null when it can't be drawn.
+   */
+  still(svgId: string): Promise<string | null> {
+    const source = isChatReplyImageId(svgId) && svgId.endsWith('.svg') ? join(this.dir, svgId) : null
+    if (!source) return Promise.resolve(null)
+    const path = `${source}.png`
+    const running = this.drawing.get(path)
+    if (running) return running
+    const draw = (async () => {
+      if (existsSync(path)) {
+        const now = new Date()
+        await utimes(path, now, now).catch(() => undefined)
+        return path
+      }
+      const svg = await readFile(source).catch(() => null)
+      if (!svg) return null
+      try {
+        const png = await drawSvg(svg)
+        await this.write(basename(path), png)
+        return path
+      } catch (error) {
+        this.log?.(`Couldn't draw ${svgId} as a PNG: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+    })().finally(() => this.drawing.delete(path))
+    this.drawing.set(path, draw)
+    return draw
+  }
+
+  /** Writes a stored file by id, atomically; an existing one is only marked as used. */
+  private async write(id: string, bytes: Uint8Array): Promise<void> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 })
-    const path = join(this.dir, checked.id)
+    const path = join(this.dir, id)
     if (existsSync(path)) {
       // Keep a reused image from being pruned.
       const now = new Date()
       await utimes(path, now, now).catch(() => undefined)
-      return checked
+      return
     }
-    const temporary = join(this.dir, `.${checked.id}.${randomBytes(6).toString('hex')}.tmp`)
+    const temporary = join(this.dir, `.${id}.${randomBytes(6).toString('hex')}.tmp`)
     await writeFile(temporary, bytes, { mode: 0o600 })
     await rename(temporary, path)
-    return checked
   }
 
   /**
@@ -212,6 +291,34 @@ export class ChatImageStore {
   }
 }
 
+/** Fonts for SVG text on macOS. Loading every system font instead takes seconds a drawing. */
+const MAC_FONTS = ['/System/Library/Fonts/Helvetica.ttc', '/System/Library/Fonts/SFNS.ttf', '/System/Library/Fonts/Menlo.ttc']
+
+/** The SVG's own width in pixels, from its root `width` or `viewBox`. */
+export function svgWidth(svg: Buffer): number | null {
+  const root = /<svg\b[^>]*>/i.exec(svg.subarray(0, 8192).toString('utf8'))?.[0]
+  if (!root) return null
+  const width = /\swidth\s*=\s*["']\s*([\d.]+)(px)?\s*["']/i.exec(root)?.[1]
+  const box = /\sviewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)/i.exec(root)?.[1]
+  const value = Number(width ?? box)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+/** Draws an SVG as a PNG at twice its size, no wider than `STILL_MAX_WIDTH`. */
+async function drawSvg(svg: Buffer): Promise<Buffer> {
+  const { renderAsync } = await import('@resvg/resvg-js')
+  const fonts = MAC_FONTS.filter((path) => existsSync(path))
+  const width = svgWidth(svg)
+  const image = await renderAsync(svg, {
+    fitTo: width ? { mode: 'zoom', value: Math.min(2, STILL_MAX_WIDTH / width) } : { mode: 'width', value: STILL_MAX_WIDTH },
+    font: fonts.length
+      ? { loadSystemFonts: false, fontFiles: fonts, defaultFontFamily: 'Helvetica', sansSerifFamily: 'Helvetica', monospaceFamily: 'Menlo' }
+      : { loadSystemFonts: true },
+    logLevel: 'off',
+  })
+  return image.asPng()
+}
+
 /** A folder's names, or null when it doesn't exist yet. */
 async function listFolder(folder: string): Promise<string[] | null> {
   try {
@@ -226,7 +333,7 @@ async function pruneFolder(folder: string, maxAgeMs: number, now: number): Promi
   let removed = 0
   for (const name of await listFolder(folder) ?? []) {
     // Only our own files: content-hash names and abandoned temporaries.
-    if (!isChatImageId(name) && !TEMPORARY.test(name)) continue
+    if (!isChatReplyImageId(name) && !isChatImageStillId(name) && !TEMPORARY.test(name)) continue
     const path = join(folder, name)
     try {
       const stats = await stat(path)
@@ -313,6 +420,7 @@ export async function handleChatImageUpload(request: IncomingMessage, response: 
  * `GET /chat-images/<sha256>.<ext>`: served without the API token, like pane
  * screenshots, so plain `<img>` tags can load it. The id is the content's
  * hash, so it can only be asked for by someone who already has the image.
+ * `<sha256>.svg.png` is that SVG drawn as a PNG, drawn on first request.
  */
 export async function handleChatImage(request: IncomingMessage, response: ServerResponse, url: URL, store: ChatImageStore): Promise<boolean> {
   const match = /^\/chat-images\/([^/]+)$/.exec(url.pathname)
@@ -323,7 +431,8 @@ export async function handleChatImage(request: IncomingMessage, response: Server
     return true
   }
   const id = match[1]!
-  const path = store.path(id)
+  let path = store.servedPath(id)
+  if (path && isChatImageStillId(id) && !existsSync(path)) path = await store.still(id.slice(0, -'.png'.length))
   let size = 0
   try {
     const stats = path ? await stat(path) : null
@@ -335,12 +444,13 @@ export async function handleChatImage(request: IncomingMessage, response: Server
     return true
   }
   response.writeHead(200, {
-    'Content-Type': chatImageType(id),
+    'Content-Type': chatImageContentType(id),
     'Content-Length': size,
     // Content-addressed: the bytes behind an id never change.
     'Cache-Control': 'private, max-age=31536000, immutable',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': "default-src 'none'",
+    // An SVG opened on its own is a document: no scripts, no requests, and a sandbox.
+    'Content-Security-Policy': id.endsWith('.svg') ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox" : "default-src 'none'",
   })
   if (request.method === 'HEAD') {
     response.end()

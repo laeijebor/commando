@@ -31,7 +31,7 @@ const item = (id: string, text: string, overrides: Partial<ChatItem> = {}): Chat
   id, turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'assistant_message', text, ...overrides,
 } as ChatItem)
 
-function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined>; handoffs?: ConstructorParameters<typeof AgentHostHub>[0]['handoffs'] } = {}) {
+function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hostPid: number) => Promise<boolean>; now?: () => number; currentHostBuild?: () => Promise<string | undefined>; handoffs?: ConstructorParameters<typeof AgentHostHub>[0]['handoffs']; replyImages?: ConstructorParameters<typeof AgentHostHub>[0]['replyImages'] } = {}) {
   const panes = options.panes ?? new Set(['%1', '%2'])
   const broadcasts: ServerMessage[] = []
   const hub = new AgentHostHub({
@@ -42,6 +42,7 @@ function setup(options: { panes?: Set<string>; verifyHost?: (paneId: string, hos
     ...(options.now ? { now: options.now } : {}),
     ...(options.currentHostBuild ? { currentHostBuild: options.currentHostBuild } : {}),
     ...(options.handoffs ? { handoffs: options.handoffs } : {}),
+    ...(options.replyImages ? { replyImages: options.replyImages } : {}),
   })
   const connect = () => {
     const socket = new FakeSocket()
@@ -64,6 +65,38 @@ describe('AgentHostHub', () => {
     expect(hub.items('%1').map((entry) => entry.kind === 'assistant_message' && entry.text)).toEqual(['Hello', 'more'])
     expect(broadcasts.map((message) => message.type)).toEqual(['chat_state', 'chat_items'])
     expect(hub.owns('%1')).toBe(true)
+  })
+
+  it('attaches the local images replies show, in snapshots and streamed items, against the chat folder', async () => {
+    const calls: string[] = []
+    const replyImages = async (items: readonly ChatItem[], cwd: string) => items.map((entry) => {
+      calls.push(`${entry.id}@${cwd}`)
+      return entry.kind === 'assistant_message' ? { ...entry, images: [{ src: 'a.png', id: `${'a'.repeat(64)}.png` }] } : entry
+    })
+    const { hub, broadcasts, connect } = setup({ replyImages })
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', '![a](a.png)'), item('p', 'plain')] })
+    socket.host({ type: 'items', paneId: '%1', items: [item('b', '![a](a.png) again')] })
+    socket.host({ type: 'items', paneId: '%1', items: [item('c', 'no image')] })
+    await settle()
+    // Only batches with a Markdown image go through the store.
+    expect(calls).toEqual(['a@/work', 'p@/work', 'b@/work'])
+    expect(hub.items('%1').filter((entry) => entry.kind === 'assistant_message' && entry.images).map((entry) => entry.id)).toEqual(['a', 'p', 'b'])
+    expect(broadcasts.at(-2)).toMatchObject({ type: 'chat_items', items: [{ id: 'b', images: [{ src: 'a.png' }] }] })
+  })
+
+  it('shows replies without their images when storing them fails', async () => {
+    const logs: string[] = []
+    const hub = new AgentHostHub({
+      paneExists: () => true, targetIdFor: () => undefined, broadcast: () => undefined, log: (message) => logs.push(message),
+      replyImages: async () => { throw new Error('disk full') },
+    })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', '![a](a.png)')] })
+    await settle()
+    expect(hub.items('%1')).toEqual([item('a', '![a](a.png)')])
+    expect(logs).toEqual([expect.stringContaining('disk full')])
   })
 
   it('replaces the timeline when the host starts the conversation over', async () => {

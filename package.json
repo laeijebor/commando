@@ -41,6 +41,7 @@
     "@blocknote/react": "^0.51.4",
     "@cursor/sdk": "1.0.37",
     "@fontsource/jetbrains-mono": "5.2.8",
+    "@resvg/resvg-js": "2.6.2",
     "@tailwindcss/browser": "^4.3.3",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/xterm": "^6.0.0",
