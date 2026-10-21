@@ -13,6 +13,56 @@ const example = {
     { id: 'important', kind: 'important', title: 'Important', items: ['Daily planning moves to the top group.'], x: -30, y: -205 }],
 }
 describe('canvas manifest', () => {
+  describe('pages', () => {
+    const paged = {
+      title: 'Audit',
+      pages: [
+        { id: 'today', title: 'Today', frames: [{ id: 't1', title: 'Today', src: 'today.html', x: 0, y: 0, focus: 1 }],
+          sections: [{ id: 's-today', title: 'Today', status: 'idea', frames: ['t1'] }],
+          annotations: [{ id: 'n1', kind: 'design', text: 'Urgent first', target: { frame: 't1' }, x: 0, y: -200 }] },
+        { id: 'client', title: 'Client', frames: [{ id: 'c1', title: 'Client', src: 'client.html', x: 0, y: 0 }] },
+      ],
+    }
+    it('flattens every page into the shared lists, tagged with its page', () => {
+      const { manifest, errors } = parseCanvasManifest(paged)
+      expect(errors).toEqual([])
+      expect(manifest.pages).toEqual([{ id: 'today', title: 'Today' }, { id: 'client', title: 'Client' }])
+      expect(manifest.frames.map((f) => [f.id, f.page])).toEqual([['t1', 'today'], ['c1', 'client']])
+      expect(manifest.sections[0].page).toBe('today')
+      expect(manifest.annotations[0]).toMatchObject({ page: 'today', target: { frame: 't1' } })
+    })
+    it('reads a manifest without pages as one untagged page', () => {
+      const { manifest } = parseCanvasManifest(example)
+      expect(manifest.pages).toEqual([])
+      expect(manifest.frames[0]).not.toHaveProperty('page')
+    })
+    it('keeps ids unique across pages and reports errors at their page path', () => {
+      const { manifest, errors } = parseCanvasManifest({ ...paged, pages: [paged.pages[0], { id: 'client', title: 'Client', frames: [{ id: 't1', title: 'Again', src: 'x.html', x: 0, y: 0 }, { id: 'c2', title: 'C', src: '/abs.html', x: 0, y: 0 }] }] })
+      expect(errors).toEqual(['pages[1].frames[0].id: duplicate id "t1"', 'pages[1].frames[1].src: must be a relative path inside the canvas folder'])
+      expect(manifest.frames.map((f) => f.id)).toEqual(['t1'])
+    })
+    it('rejects sections and notes that point at a frame on another page', () => {
+      const { manifest, errors } = parseCanvasManifest({ ...paged, pages: [paged.pages[0], { ...paged.pages[1],
+        sections: [{ id: 's-client', title: 'Client', status: 'idea', frames: ['c1', 't1'] }],
+        annotations: [{ id: 'n2', kind: 'design', text: 'x', target: { frame: 't1' }, x: 0, y: 0 }] }] })
+      expect(errors).toEqual(['pages[1].sections[0].frames[1]: frame "t1" is on another page', 'pages[1].annotations[0].target.frame: frame "t1" is on another page'])
+      expect(manifest.sections[1].frames).toEqual(['c1'])
+      expect(manifest.annotations[1].target).toBeUndefined()
+    })
+    it('gives page ids their own namespace', () => {
+      const { manifest, errors } = parseCanvasManifest({ title: 'x', pages: [{ id: 'today', title: 'Today', frames: [{ id: 'today', title: 'T', src: 't.html', x: 0, y: 0 }] }, { id: 'today', title: 'Again', frames: [] }] })
+      expect(errors).toEqual(['pages[1].id: duplicate id "today"'])
+      expect(manifest.frames.map((f) => [f.id, f.page])).toEqual([['today', 'today']])
+    })
+    it('rejects mixing pages with top-level lists, and empty or malformed pages', () => {
+      expect(parseCanvasManifest({ ...paged, frames: [] }).errors).toEqual(['frames: belongs inside a page; a canvas with pages keeps its frames, sections and notes in pages[]'])
+      expect(parseCanvasManifest({ title: 'x', pages: {} }).errors).toEqual(['pages: must be an array of pages'])
+      expect(parseCanvasManifest({ title: 'x', pages: [], frames: [] }).errors).toEqual([])
+      const { manifest, errors } = parseCanvasManifest({ title: 'x', pages: [{ id: 'p', frames: [] }, 'nope', { id: 'q', title: 'Q' }] })
+      expect(errors).toEqual(['pages[0].title: must be a non-empty string', 'pages[1]: must be an object', 'pages[2].frames: must be an array'])
+      expect(manifest.pages).toEqual([{ id: 'q', title: 'Q' }])
+    })
+  })
   it('parses the Settings design example, defaults size, and ignores unknown keys', () => {
     const { manifest, errors } = parseCanvasManifest(JSON.stringify({ ...example, future: true, frames: [{ ...frame, extra: true }, ...example.frames.slice(1)] }))
     expect(errors).toEqual([])

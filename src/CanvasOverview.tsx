@@ -1,5 +1,6 @@
 import type { CanvasThread, WebPanePendingNote } from '../shared/protocol'
-import { useId, useMemo, useRef, useState } from 'react'
+import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { CanvasPagesList, type CanvasPageRow } from './CanvasPages'
 import type { CanvasAnnotation, CanvasFrame } from '../shared/canvas-manifest'
 import { buildCanvasLabelTree, sameLabel, type CanvasLabelInstance, type CanvasLabelRef, type CanvasLabelReports } from './canvasLabels'
 
@@ -7,13 +8,15 @@ export type CanvasQuestionRow = { note: CanvasAnnotation; state: 'open' | 'queue
 const QUESTION_STATES = { open: 'Open', queued: 'Queued', sent: 'Sent', answered: 'Answered' }
 const threadState = (thread: CanvasThread) => thread.status === 'resolved' ? 'resolved' : thread.messages.at(-1)?.author === 'agent' ? 'replied' : 'open'
 
-export function CanvasOverview({ frames, annotations, reports, selected, onHover, onSelect, onFrame, onNote, threads = [], queued = [], questions = [], onThread, onExport, hideThreads = false }: {
+export function CanvasOverview({ frames, annotations, reports, selected, onHover, onSelect, onFrame, onNote, threads = [], queued = [], questions = [], onThread, onExport, hideThreads = false, pages = [], page, onPage, framePage }: {
   frames: CanvasFrame[]; annotations: CanvasAnnotation[]; reports: CanvasLabelReports; selected: CanvasLabelRef | null
   onHover: (label: CanvasLabelRef | null) => void; onSelect: (label: CanvasLabelInstance) => void
   hideThreads?: boolean; threads?: CanvasThread[]; queued?: WebPanePendingNote[]; onThread?: (thread: CanvasThread) => void
   questions?: CanvasQuestionRow[]
   onExport?: (frame: CanvasFrame, anchor: HTMLElement) => void
   onFrame: (frame: CanvasFrame) => void; onNote: (note: CanvasAnnotation) => void
+  /** Pages of a multi-page canvas. `frames` and `annotations` are the open page's; threads and questions span every page. */
+  pages?: CanvasPageRow[]; page?: string; onPage?: (id: string) => void; framePage?: (frameId: string) => string | undefined
 }) {
   const [selectedTab, setTab] = useState('components'), [filter, setFilter] = useState('')
   const tab = selectedTab === 'questions' && !questions.length ? 'components' : selectedTab
@@ -21,6 +24,14 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
   const id = useId()
   const cursors = useRef(new Map<string, number>())
   const tree = useMemo(() => buildCanvasLabelTree(frames, reports, filter), [frames, reports, filter])
+  const paged = pages.length > 1
+  const byPage = <T,>(items: T[], pageOf: (item: T) => string | undefined, render: (item: T) => ReactNode): ReactNode[] => {
+    if (!paged) return items.map(render)
+    // Threads can outlive their frame, so anything without a page still gets listed.
+    const groups = [...pages.map((p) => ({ key: p.id, title: p.title, items: items.filter((item) => pageOf(item) === p.id) })),
+      { key: '', title: 'Other', items: items.filter((item) => !pages.some((p) => p.id === pageOf(item))) }]
+    return groups.flatMap((group) => group.items.length ? [<div className="canvas-o-head" key={`page:${group.key}`}>{group.title}</div>, ...group.items.map(render)] : [])
+  }
   const pinCount = (instances: CanvasLabelInstance[]) => [...threads.filter((thread) => thread.status === 'open'), ...queued.flatMap((note) => note.canvas ? [note.canvas] : [])]
     .filter((pin) => instances.some((instance) => pin.frameId === instance.frameId && (pin.labelId ? pin.labelId === instance.label.id : pin.label === instance.label.name))).length
   const item = (instance: CanvasLabelInstance, grouped: boolean) => <button type="button" key={instance.key}
@@ -32,17 +43,18 @@ export function CanvasOverview({ frames, annotations, reports, selected, onHover
     {onExport && <button type="button" className="canvas-o-export" aria-label={`Export ${frame.title} from overview`} title={`Export ${frame.title}`} aria-haspopup="menu"
       onClick={(event) => onExport(frame, event.currentTarget.parentElement!)}>Export…</button>}
   </div>
-  return <aside className={`canvas-overview${questions.length && !hideThreads ? ' has-questions' : ''}`} aria-label="Canvas overview" onPointerLeave={() => onHover(null)}>
+  return <aside className={`canvas-overview${questions.length && !hideThreads ? ' has-questions' : ''}${paged ? ' has-pages' : ''}`} aria-label="Canvas overview" onPointerLeave={() => onHover(null)}>
+    {paged && onPage && <CanvasPagesList pages={pages} active={page} onSelect={(id) => { onHover(null); onPage(id) }} />}
     <div className="canvas-overview-tabs" role="tablist" aria-label="Overview">
       {(hideThreads ? ['components'] : ['components', 'threads', ...(questions.length ? ['questions'] : [])]).map((name) => <button type="button" key={name} role="tab" id={`${id}-${name}`} aria-controls={`${id}-panel`}
         aria-selected={tab === name} onClick={() => { setTab(name); onHover(null) }}>{name === 'components' ? 'Components' : name === 'threads' ? 'Threads' : <>Questions{open > 0 && <em className="canvas-o-count" aria-label={`${open} open`}>{open}</em>}</>}</button>)}
     </div>
     {tab === 'components' && <input className="canvas-overview-filter" aria-label="Filter labels" placeholder="Filter labels…" value={filter} onChange={(event) => { setFilter(event.target.value); onHover(null) }} />}
     <div className="canvas-overview-body" role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${tab}`}>
-      {tab === 'questions' && questions.length ? questions.map(({ note, state }) => <button type="button" key={note.id} className={`canvas-o-thread canvas-o-question is-${state}`}
+      {tab === 'questions' && questions.length ? byPage(questions, ({ note }) => note.page, ({ note, state }) => <button type="button" key={note.id} className={`canvas-o-thread canvas-o-question is-${state}`}
         aria-label={`${note.title || 'Question'} ${QUESTION_STATES[state]} ${note.text || ''}`} onClick={() => onNote(note)}>
         <b>{note.title || 'Question'}</b><em>{QUESTION_STATES[state]}</em><span>{note.text}</span>
-      </button>) : tab === 'threads' ? threads.length ? threads.map((thread) => <button type="button" key={thread.id} className="canvas-o-thread" aria-label={`${thread.label || 'Unlabelled'} ${threadState(thread)} ${thread.messages[0]?.text.split('\n')[0] || ''}`} onClick={() => onThread?.(thread)}>
+      </button>) : tab === 'threads' ? threads.length ? byPage(threads, (thread) => framePage?.(thread.frameId), (thread) => <button type="button" key={thread.id} className="canvas-o-thread" aria-label={`${thread.label || 'Unlabelled'} ${threadState(thread)} ${thread.messages[0]?.text.split('\n')[0] || ''}`} onClick={() => onThread?.(thread)}>
         <b>{thread.label || 'Unlabelled'}</b><em>{threadState(thread)}</em><span>{thread.messages[0]?.text.split('\n')[0]}</span>
       </button>) : <p className="canvas-overview-empty">No comments yet</p> : <>
         {!filter.trim() && <>
