@@ -185,6 +185,24 @@ export type ChatReplyImageError = 'missing' | 'unsupported' | 'too_large'
  */
 export type ChatReplyImage = { src: string; id: string } | { src: string; error: ChatReplyImageError }
 
+function decodedAddress(value: string): string {
+  try {
+    return decodeURI(value)
+  } catch {
+    return value
+  }
+}
+
+/**
+ * The reply image a rendered `<img>` means. Renderers percent-encode the
+ * address (`my shot.png` becomes `my%20shot.png`), so both sides are decoded.
+ */
+export function findChatReplyImage(images: readonly ChatReplyImage[] | undefined, src: string): ChatReplyImage | undefined {
+  if (!images?.length) return undefined
+  const wanted = decodedAddress(src)
+  return images.find((image) => image.src === src || decodedAddress(image.src) === wanted)
+}
+
 /** An image in a message or tool result, stored by the daemon or host. */
 export interface ChatImageRef {
   id: string

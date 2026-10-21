@@ -495,4 +495,40 @@ describe('images in the timeline', () => {
     const viewer = await screen.findByRole('dialog', { name: 'pane.png' })
     expect(within(viewer).getByRole('img', { name: 'pane.png' })).toBeInTheDocument()
   })
+
+  it('shows the local images a reply shows with Markdown, and enlarges one on click', async () => {
+    const svg = `${'b'.repeat(64)}.svg`
+    const text = [
+      '![Slide preview](/Users/me/Downloads/slide.png)',
+      '![PR diagram](<./out/my diagram.svg>)',
+      '![gone](/tmp/gone.png)',
+      '![web](https://example.com/chart.png)',
+      '![nope](javascript:alert(1))',
+      '`~/Downloads/slide.pptx`',
+    ].join('\n\n')
+    const items: ChatItem[] = [{ ...base, id: 'a1', kind: 'assistant_message', text, images: [
+      { src: '/Users/me/Downloads/slide.png', id: imageId },
+      { src: './out/my diagram.svg', id: svg },
+      { src: '/tmp/gone.png', error: 'missing' },
+    ] }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    expect(screen.getByRole('img', { name: 'Slide preview' })).toHaveAttribute('src', `/chat-images/${imageId}`)
+    expect(screen.getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
+    expect(screen.getByRole('img', { name: 'Image not found: /tmp/gone.png' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'web' })).toHaveAttribute('src', 'https://example.com/chart.png')
+    expect(screen.getByRole('img', { name: "Image isn't available: javascript:alert(1)" })).toBeInTheDocument()
+    expect(document.querySelector('img[src^="javascript:"], img[src^="/Users/"]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open PR diagram' }))
+    const viewer = await screen.findByRole('dialog', { name: 'PR diagram' })
+    expect(within(viewer).getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
+  })
+
+  it('waits for a streaming reply to store its image instead of showing a broken one', () => {
+    const items: ChatItem[] = [{ ...base, id: 'a1', kind: 'assistant_message', status: 'running', text: 'Here: ![Chart](/tmp/chart.png)' }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    expect(screen.getByText('Chart')).toBeInTheDocument()
+    expect(document.querySelector('img[src="/tmp/chart.png"]')).toBeNull()
+  })
 })
