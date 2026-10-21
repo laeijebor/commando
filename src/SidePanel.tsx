@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { FileDiff, GitPullRequest, LayoutDashboard, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X } from 'lucide-react'
+import { FileDiff, GitPullRequest, LayoutDashboard, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X, type LucideIcon } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
 import type { TmuxPane, WebPane, WebPaneEngine } from '../shared/protocol'
 import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, panelScrimClipPath, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
@@ -41,7 +41,13 @@ function loadDrawerHeight(windowId: string): number {
   catch { return rememberedDrawerHeight(null) }
 }
 
-function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string {
+/** A panel tab's icon, shared with Commander's reading pane. */
+export function panelTabIcon(tab: PanelTab): LucideIcon {
+  if (isBuiltinTab(tab)) return tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
+  return tab.content?.kind === 'canvas' ? LayoutDashboard : tab.content?.kind === 'guide' ? ListChecks : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
+}
+
+export function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string {
   if (tab.title) return tab.title
   if (title) return title
   if (tab.content?.kind === 'simulator') return simulatorName ?? 'Simulator'
@@ -309,7 +315,7 @@ export function SidePanel({
         {!expanded && !narrowMode ? <div className="side-panel-rail">
           <button className="side-panel-expand" type="button" aria-label="Expand side panel" onClick={() => changeCollapsed(false)}><PanelRightOpen /></button>
           {focusedTabs.filter(isBuiltinTab).filter((tab, index, builtins) => !tab.prState || builtins.findIndex((candidate) => candidate.prState) === index).map((tab) => {
-            const Icon = tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
+            const Icon = panelTabIcon(tab)
             return <button key={tab.id} className="side-panel-expand" type="button" aria-label={`Open ${tab.prState ? 'PRs' : tab.label}`} title={tab.prState ? 'PRs' : tab.label} onClick={() => { onSelect(tab); changeCollapsed(false) }}><Icon />{tab.unseen && <i className={`side-panel-new${tab.warning ? ' is-warning' : ''}`} aria-label={tab.warning ? 'Session resume failed' : 'New updates'} />}</button>
           })}
         </div> : (
@@ -318,7 +324,7 @@ export function SidePanel({
               {focusedTabs.map((tab) => {
                 if (isBuiltinTab(tab)) {
                   const pr = parsePrPanelKey(tab.key)
-                  const Icon = tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
+                  const Icon = panelTabIcon(tab)
                   return <div className={`side-panel-tab${active?.id === tab.id ? ' is-active' : ''}`} key={tab.id}>
                     <button type="button" role="tab" aria-label={tab.prState ? `${tab.label} ${tab.prState}` : undefined} aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)}>
                       <Icon aria-hidden="true" className={tab.prState ? `side-panel-pr-state ${tab.prState}` : undefined} /><span>{tab.label}</span>
@@ -330,7 +336,7 @@ export function SidePanel({
                       ? resolveActivePanelTab(focusedTabs.filter((candidate) => candidate.id !== tab.id), tab.key, focusedTabs) : undefined)}><X /></button>}
                   </div>
                 }
-                const Icon = tab.content?.kind === 'canvas' ? LayoutDashboard : tab.content?.kind === 'guide' ? ListChecks : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
+                const Icon = panelTabIcon(tab)
                 const label = tabLabel(tab, titles[tab.id], tab.content?.kind === 'simulator' ? simulatorNames[tab.content.udid] : undefined)
                 return <div className={`side-panel-tab${active?.id === tab.id ? ' is-active' : ''}${tab.id === focusedTabs.find((item) => !isBuiltinTab(item))?.id ? ' first-web-tab' : ''}`} key={tab.id}>
                   <button type="button" role="tab" aria-selected={active?.id === tab.id} aria-controls={`panel-tab-${tab.id}`} onClick={() => onSelect(tab)} title={tab.url || label}>
