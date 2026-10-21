@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { deriveSessionIdentity } from '../shared/session-identity'
-import { SessionTree } from './SessionTree'
+import { SessionTree, type SessionActions } from './SessionTree'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import type { PrsApiClient, PanePrSummary } from './prsApi'
 
@@ -809,6 +809,30 @@ describe('SessionTree', () => {
       await waitFor(() => expect(sessionApi.restoreSession).toHaveBeenCalledWith('archive-id'))
       await waitFor(() => expect(screen.queryByRole('button', { name: 'Restore Coins everywhere' })).not.toBeInTheDocument())
       expect(onSessionsChanged).toHaveBeenCalledTimes(2)
+    })
+
+    it('lets another menu skip or replace the archive and delete dialogs, but always confirms deleting a worktree', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      sessionApi.archiveSession.mockResolvedValue(undefined)
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const actions = { current: null as SessionActions | null }
+      renderTree({ actionsRef: actions })
+      await screen.findByRole('button', { name: 'Actions for Coins everywhere' })
+      await act(() => actions.current!.archiveSession('$2', null))
+      await act(() => actions.current!.deleteSession('$1', false, null))
+      expect(confirm).not.toHaveBeenCalled()
+      expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2')
+      expect(sessionApi.deleteSession).toHaveBeenCalledWith('$1', false, [])
+      confirm.mockReturnValue(false)
+      await act(() => actions.current!.archiveSession('$2', 'Two processes will stop'))
+      expect(confirm).toHaveBeenLastCalledWith('Two processes will stop')
+      expect(sessionApi.archiveSession).toHaveBeenCalledTimes(1)
+      await act(() => actions.current!.deleteSession('$2', true, 'Two processes will stop'))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Two processes will stop\n\nDelete tmux session “Coins everywhere” and its linked worktree\?.*Uncommitted changes/s))
+      await act(() => actions.current!.deleteSession('$2', true, null))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Delete tmux session “Coins everywhere” and its linked worktree\?/))
+      expect(sessionApi.deleteSession).toHaveBeenCalledTimes(1)
+      expect(actions.current!.isAuxiliary('$2')).toBe(false)
     })
 
     it('keeps the dialog open when Escape dismisses directory suggestions, then closes on Escape', async () => {

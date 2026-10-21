@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, Send, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, Menu as MenuIcon, Send, X } from 'lucide-react'
 import type { ChatProvider } from '../../shared/agent-chat'
 import { RELAY_MAX_CHARS, type CommanderRelay } from '../../shared/commander'
 import type { CommanderInboxRow, InboxGroup } from '../commanderInbox'
@@ -8,6 +8,7 @@ import { StateIcon } from './AgentsInbox'
 import { ChatTimeline } from './ChatTimeline'
 import { cn } from './cn'
 import { Button } from './ui/button'
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from './ui/menu'
 
 /** Below this width the reading pane takes over Commander's column instead of sitting beside it. */
 export const READING_PANE_SPLIT_WIDTH = 900
@@ -26,6 +27,14 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
   return width
 }
 
+export type CommanderPeekAction = {
+  label: string
+  icon: ComponentType
+  onSelect: () => void
+  danger?: boolean
+  disabled?: boolean
+}
+
 export type CommanderPeek = {
   row: CommanderInboxRow
   group: InboxGroup
@@ -35,6 +44,8 @@ export type CommanderPeek = {
   onOpen: () => void
   /** Steps to the previous (-1) or next (1) agent in the inbox. */
   onStep: (direction: -1 | 1) => void
+  /** The agent's session menu, as in the session tree. */
+  sessionActions?: CommanderPeekAction[]
 }
 
 /** Commander's column and, beside it or over it, the selected agent's chat. */
@@ -71,6 +82,13 @@ function ReadingPane({ peek, full }: { peek: CommanderPeek; full: boolean }) {
       <Button size="icon-xs" variant="ghost-muted" onClick={() => peek.onStep(-1)} aria-label="Previous agent" title="Previous agent"><ChevronUp aria-hidden="true" /></Button>
       <Button size="icon-xs" variant="ghost-muted" onClick={() => peek.onStep(1)} aria-label="Next agent" title="Next agent"><ChevronDown aria-hidden="true" /></Button>
       <Button size="xs" variant="outline" onClick={peek.onOpen} title="Open its session"><ArrowUpRight aria-hidden="true" />Open in session</Button>
+      {peek.sessionActions?.length ? <Menu>
+        <MenuTrigger render={<Button size="icon-xs" variant="ghost-muted" aria-label="Session actions" title="Session actions" />}><MenuIcon aria-hidden="true" /></MenuTrigger>
+        <MenuPopup aria-label={`${row.sessionName} session actions`}>
+          {peek.sessionActions.map(({ label, icon: Icon, onSelect, danger, disabled }) =>
+            <MenuItem key={label} danger={danger} disabled={disabled} onClick={onSelect}><Icon aria-hidden="true" />{label}</MenuItem>)}
+        </MenuPopup>
+      </Menu> : null}
       {full ? null : <Button size="icon-xs" variant="ghost-muted" onClick={peek.onClose} aria-label="Close" title="Close"><X aria-hidden="true" /></Button>}
     </header>
     <div className="commander-reading-body flex min-h-0 flex-1 flex-col">{peek.view}</div>

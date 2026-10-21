@@ -13,7 +13,12 @@ import {
   Bot,
   Check,
   CircleDotDashed,
+  Archive,
   Code2,
+  FolderX,
+  Pencil,
+  RotateCcw,
+  Trash2,
   Command,
   Grid2X2,
   KeyRound,
@@ -107,7 +112,8 @@ import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
-import { SessionTree } from './SessionTree'
+import { ARCHIVE_RESTORE_NOTE, SessionTree, type SessionActions } from './SessionTree'
+import { sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
 import type { AgentChatRequest } from '../shared/agent-chats'
 import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
@@ -1249,6 +1255,7 @@ export function App() {
   const leftPanelResizePointer = useRef<number | null>(null)
   const leftPanelResizeWidth = useRef(leftPanelWidth)
   const cockpitBodyRef = useRef<HTMLDivElement | null>(null)
+  const sessionActionsRef = useRef<SessionActions | null>(null)
   const responsiveDrawersOpen = leftPanelOpen || rightPanelOpen
   const drawerOcclusionActive = responsiveDrawersOpen || drawerTransitionOcclusion
 
@@ -2808,6 +2815,41 @@ export function App() {
   useEffect(() => {
     if (commanderPeek && snapshot && !commanderPeekEntry) setCommanderPeek(null)
   }, [commanderPeek, commanderPeekEntry, snapshot])
+  const resumeSessionChat = (sessionId: string) => {
+    const session = sessionMap.get(sessionId)
+    const panes = snapshot?.panes.filter((pane) => pane.sessionId === sessionId) ?? []
+    const pane = panes.find((pane) => pane.windowId === session?.activeWindowId && pane.active)
+      ?? panes.find((pane) => pane.active) ?? panes[0]
+    if (!session || !pane) return
+    jumpToPane(pane.id)
+    setActiveTabs((current) => ({ ...current, [sessionId]: pane.windowId }))
+    setPanePalette({ paneId: pane.id, screen: 'conversations', sessionFilter: { id: session.id, name: session.name } })
+  }
+  /** The session tree's menu for a read agent's session. Archiving or deleting warns only when other processes would stop with it. */
+  const commanderPeekSessionActions = (sessionId: string): CommanderPeek['sessionActions'] => {
+    const session = sessionMap.get(sessionId), actions = sessionActionsRef.current
+    if (!session || !actions) return undefined
+    const panes = snapshot?.panes ?? []
+    const warning = () => sessionProcessesWarning(session.name, sessionProcesses(panes, sessionId, new Set(Object.keys(chats))))
+    const auxiliary = actions.isAuxiliary(sessionId)
+    return [
+      { label: 'Open IDE', icon: Code2, onSelect: () => { void openSessionIde(sessionId) } },
+      { label: 'Change glyph…', icon: Pencil, onSelect: () => { void actions.changeIdentity(sessionId) } },
+      { label: 'Reset identity', icon: RotateCcw, onSelect: () => { void actions.changeIdentity(sessionId, true) } },
+      { label: 'Rename', icon: Pencil, onSelect: () => { void actions.renameSession(sessionId) } },
+      { label: 'Resume a chat…', icon: RotateCcw, disabled: !connected, onSelect: () => resumeSessionChat(sessionId) },
+      ...auxiliary ? [] : [{ label: 'Archive session', icon: Archive, onSelect: () => {
+        const text = warning()
+        void actions.archiveSession(sessionId, text ? `Archive session “${session.name}”?\n\n${text}\n\n${ARCHIVE_RESTORE_NOTE}` : null)
+      } }],
+      { label: 'Delete session', icon: Trash2, danger: true, onSelect: () => {
+        const text = warning()
+        void actions.deleteSession(sessionId, false, text ? `Delete session “${session.name}” and all of its windows and panes?\n\n${text}` : null)
+      } },
+      ...!auxiliary && panes.some((pane) => pane.sessionId === sessionId && pane.repo?.isWorktree)
+        ? [{ label: 'Delete session and worktree', icon: FolderX, danger: true, onSelect: () => { void actions.deleteSession(sessionId, true, warning()) } }] : [],
+    ]
+  }
   const commanderPeekView = (): CommanderPeek | undefined => {
     if (!commanderPeekEntry) return undefined
     const { row, group } = commanderPeekEntry
@@ -2831,8 +2873,10 @@ export function App() {
       : <CommanderTranscriptView key={row.targetId} token={token} row={row} provider={status?.provider === 'codex' ? 'codex' : 'claude'} cwd={pane?.path ?? ''}
           refreshKey={`${status?.status ?? ''}:${status?.settledAt ?? ''}`} disabled={!connected}
           onRelay={(relay) => dispatchCommander({ type: 'commander_relay', relay })} />
+    const sessionActions = pane ? commanderPeekSessionActions(pane.sessionId) : undefined
     return {
       row, group, view,
+      ...sessionActions ? { sessionActions } : {},
       onClose: () => setCommanderPeek(null),
       onOpen: () => jumpToPane(row.paneId, row.targetId, true),
       onStep: (direction) => {
@@ -3812,16 +3856,8 @@ export function App() {
               ides={sessionIdes}
               ideSessionId={area === 'ide' ? selectedSessionId : null}
               onOpenIde={(sessionId) => { void openSessionIde(sessionId) }}
-              onResumeChat={(sessionId) => {
-                const session = sessionMap.get(sessionId)
-                const panes = snapshot?.panes.filter((pane) => pane.sessionId === sessionId) ?? []
-                const pane = panes.find((pane) => pane.windowId === session?.activeWindowId && pane.active)
-                  ?? panes.find((pane) => pane.active) ?? panes[0]
-                if (!session || !pane) return
-                jumpToPane(pane.id)
-                setActiveTabs((current) => ({ ...current, [sessionId]: pane.windowId }))
-                setPanePalette({ paneId: pane.id, screen: 'conversations', sessionFilter: { id: session.id, name: session.name } })
-              }}
+              onResumeChat={resumeSessionChat}
+              actionsRef={sessionActionsRef}
               creation={{
                 disabled: !connected,
                 onCreateSession: tmuxCreateApi.createSession,
