@@ -103,6 +103,7 @@ function ChatColumn({
   connected,
   focused,
   onFocus,
+  onSelectionCopied,
   onSend,
   onInterrupt,
   onAnswer,
@@ -131,6 +132,8 @@ function ChatColumn({
   connected: boolean
   focused: boolean
   onFocus: () => void
+  /** Selecting transcript text copies it, like terminal panes; this confirms the copy. */
+  onSelectionCopied?: () => void
   onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
   onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
@@ -250,6 +253,45 @@ function ChatColumn({
     registerFocusable(paneId, shell.current)
     return () => registerFocusable(paneId, null)
   }, [paneId, registerFocusable])
+  const focusComposer = () => shell.current?.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
+  // A press in the transcript may start a text selection, so the composer only
+  // takes the caret once the mouse is released without one.
+  const pressing = useRef(false)
+  // The selection a press started with; clicking a button keeps it, and that is no new selection.
+  const pressedRange = useRef<Range | null>(null)
+  const selectionCopied = useRef(onSelectionCopied)
+  selectionCopied.current = onSelectionCopied
+  useEffect(() => {
+    if (focused && !pressing.current) focusComposer()
+  }, [focused])
+  useEffect(() => {
+    const settle = () => {
+      const node = shell.current
+      const selection = window.getSelection()
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+      const before = pressedRange.current
+      pressedRange.current = null
+      const unchanged = before && range
+        && before.compareBoundaryPoints(Range.START_TO_START, range) === 0
+        && before.compareBoundaryPoints(Range.END_TO_END, range) === 0
+      const text = node && selection && !selection.isCollapsed && !unchanged && node.contains(selection.anchorNode) ? selection.toString() : ''
+      if (text) {
+        void navigator.clipboard?.writeText(text).then(() => selectionCopied.current?.(), () => undefined)
+      } else if (node && document.activeElement === node) {
+        focusComposer()
+      }
+    }
+    const release = () => {
+      if (!pressing.current) return
+      pressing.current = false
+      // A click inside an old selection clears it after mouseup's handlers run.
+      setTimeout(settle)
+    }
+    // Dragging a link ends without a mouseup.
+    const releases = ['mouseup', 'pointercancel', 'dragend'] as const
+    for (const type of releases) document.addEventListener(type, release)
+    return () => { for (const type of releases) document.removeEventListener(type, release) }
+  }, [])
   const retryTranscript = (id: string) => setTranscripts((current) => {
     const next = { ...current }
     delete next[id]
@@ -258,8 +300,15 @@ function ChatColumn({
   return (
     <section ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onFocus={(event) => {
       // A pane jump focuses the shell; hand the caret to the composer.
-      if (event.target === event.currentTarget) event.currentTarget.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
-    }} onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+      if (event.target === event.currentTarget && !pressing.current) focusComposer()
+    }} onMouseDown={(event) => {
+      if (event.button === 0) {
+        pressing.current = true
+        const selection = window.getSelection()
+        pressedRange.current = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null
+      }
+      onFocus()
+    }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />
@@ -345,7 +394,6 @@ function ChatColumn({
         onInterrupt={onInterrupt}
         onAnswer={onAnswer}
         onConfigure={onConfigure}
-        autoFocus={focused}
         {...(plan ? { plan: { item: plan, implementMode: implementPermissionMode(chat.session) }, onImplement: implement } : {})}
         {...(implementInNewPane ? { onImplementInNewPane: implementInNewPane } : {})}
         {...(turnFlow && flow ? { onQueue: flow.queue } : {})}
