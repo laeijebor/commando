@@ -24,7 +24,7 @@ export function fitImage(natural: { w: number; h: number } | null, room: { w: nu
  */
 export function ImageViewer({ image, onClose }: { image: ViewableImage | null; onClose: () => void }): React.JSX.Element {
   return (
-    <Modal visible={image !== null} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent supportedOrientations={['portrait', 'landscape']}>
+    <Modal visible={image !== null} animationType="fade" onRequestClose={onClose} statusBarTranslucent supportedOrientations={['portrait', 'landscape']}>
       {image ? <ZoomableImage key={image.uri} image={image} onClose={onClose} /> : null}
     </Modal>
   )
@@ -77,7 +77,7 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
         contentContainerStyle={{ width, height }}
       >
         <Pressable style={styles.stage} onPress={() => { if (zoom.current <= 1.05) onClose() }} accessibilityLabel="Close image" accessible={false}>
-          <Pressable onPress={onImagePress} accessibilityRole="image" accessibilityLabel={image.name} accessibilityHint="Pinch or double-tap to zoom">
+          <Pressable onPress={onImagePress} accessibilityLabel={image.name} accessibilityHint="Pinch or double-tap to zoom">
             <Image
               source={{ uri: image.uri }}
               style={{ width: fitted.w, height: fitted.h }}
@@ -99,7 +99,8 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.94)' },
+  // Opaque, so the chat behind neither shows through nor reaches VoiceOver.
+  backdrop: { flex: 1, backgroundColor: '#000' },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   close: { position: 'absolute', right: 14, width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.16)' },
   caption: { position: 'absolute', left: 24, right: 24, textAlign: 'center', color: 'rgba(255,255,255,0.8)', fontSize: 12 },

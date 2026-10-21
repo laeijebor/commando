@@ -25,6 +25,12 @@ it('shows the images a reply stored, an SVG as the PNG the daemon draws of it, w
   expect(screen.getByText('after')).toBeTruthy()
 })
 
+it('keeps no stray line breaks around an image', async () => {
+  await show('Here is the screenshot:\n![Shot](/tmp/s.png)\nAnd the diagram:', [{ src: '/tmp/s.png', id: PNG }])
+  expect(screen.getByText('Here is the screenshot:')).toBeTruthy()
+  expect(screen.getByText('And the diagram:')).toBeTruthy()
+})
+
 it('names an image it cannot show instead of drawing a broken one', async () => {
   await show('![Gone](~/gone.png) and ![Old](/tmp/old.png)', [{ src: '~/gone.png', error: 'missing' }])
   expect(screen.getByText('Image not found: ~/gone.png')).toBeTruthy()

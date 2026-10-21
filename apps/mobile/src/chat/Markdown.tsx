@@ -106,8 +106,20 @@ function withImages(tokens: readonly Token[], theme: Theme, base: TextStyle, key
   const nodes: ReactNode[] = []
   let run: Token[] = []
   const flush = () => {
-    const blank = run.every((part) => part.type === 'br' || (part.type === 'text' && !(part as Tokens.Text).text.trim()))
-    if (!blank) nodes.push(<Text key={`${key}.t${nodes.length}`} selectable style={base}>{inline(run, theme, `${key}.t${nodes.length}`, completed)}</Text>)
+    // The line breaks around an image end with it: trim them from the run's edges.
+    while (run.length && isBreak(run[0]!)) run.shift()
+    while (run.length && isBreak(run.at(-1)!)) run.pop()
+    if (run.length) {
+      const last = run.length - 1
+      run = run.map((part, index) => {
+        if (part.type !== 'text' || part.tokens) return part
+        let text = (part as Tokens.Text).text
+        if (index === 0) text = text.trimStart()
+        if (index === last) text = text.trimEnd()
+        return { ...part, text }
+      })
+      nodes.push(<Text key={`${key}.t${nodes.length}`} selectable style={base}>{inline(run, theme, `${key}.t${nodes.length}`, completed)}</Text>)
+    }
     run = []
   }
   for (const part of tokens) {
@@ -121,6 +133,10 @@ function withImages(tokens: readonly Token[], theme: Theme, base: TextStyle, key
   }
   flush()
   return nodes
+}
+
+function isBreak(token: Token): boolean {
+  return token.type === 'br' || (token.type === 'text' && !(token as Tokens.Text).tokens && !(token as Tokens.Text).text.trim())
 }
 
 function inline(tokens: readonly Token[], theme: Theme, key: string, completed = false): ReactNode[] {
