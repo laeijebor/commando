@@ -79,7 +79,8 @@ import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { SessionArchives } from './session-archives.js'
-import { releaseClosedSimLease } from './sim-lease-release.js'
+import { releaseClosedSimLease, runSimTool } from './sim-lease-release.js'
+import { POOL_REAP_INTERVAL_MS, SimPoolReaper, leasedUdidsInSiblingFiles, simPoolReaperEnabled } from './sim-pool-reaper.js'
 import { AgentResumeService, readPaneAgentLaunch, readProcessTable } from './agent-resume.js'
 import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
 import { ChatHandoffStore, type ChatHandoff } from './chat-handoffs.js'
@@ -766,7 +767,15 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
-  const simLeaseRegistry = new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port), pool: new SimPoolRegistry({ statePath: defaultSimPoolStatePath() }) })
+  const simLeaseStatePath = defaultSimLeaseStatePath(port)
+  const simLeaseRegistry = new SimLeaseRegistry({ statePath: simLeaseStatePath, pool: new SimPoolRegistry({ statePath: defaultSimPoolStatePath() }) })
+  const simPoolReaper = simPoolReaperEnabled(process.env, port, DEFAULT_PORT) ? new SimPoolReaper({
+    poolUdids: () => simLeaseRegistry.pool.list().map((member) => member.udid),
+    isHeld: (udid) => simLeaseRegistry.isHeld(udid),
+    otherLeasedUdids: () => leasedUdidsInSiblingFiles(simLeaseStatePath),
+    runner: runSimTool,
+    log: (message) => console.log(`[sim-pool] ${message}`),
+  }) : undefined
 
   const publishedBriefs = new Map(sessionBriefs.values().map((brief) => [brief.paneId, brief]))
   const briefTargetIds = new Map<string, string>()
@@ -2970,6 +2979,9 @@ async function main(): Promise<void> {
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
   resurrectSaver.start()
+  const simPoolReaperTimer = simPoolReaper && setInterval(() => {
+    void simPoolReaper.sweep().catch((error: unknown) => console.warn('[sim-pool] unleased simulator check failed', error))
+  }, POOL_REAP_INTERVAL_MS)
 
   const encodedToken = encodeURIComponent(token)
   console.log(`[commando] development: http://127.0.0.1:${DEVELOPMENT_WEB_PORT}/${auth ? '' : `#token=${encodedToken}`}`)
@@ -2987,6 +2999,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     clearInterval(snapshotTimer)
+    if (simPoolReaperTimer) clearInterval(simPoolReaperTimer)
     externalAgents.close()
     prAutofix.stop()
     resurrectSaver.stop()
