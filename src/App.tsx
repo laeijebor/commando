@@ -135,7 +135,8 @@ import { createPaneManagementApi, type PaneManagementApiClient } from './paneMan
 import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
-import { SidePanel } from './SidePanel'
+import { SidePanel, type PanePanelData } from './SidePanel'
+import { CommanderPeekTabs } from './CommanderPeekTabs'
 import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, NARROW_PANEL_QUERY, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
@@ -2884,7 +2885,13 @@ export function App() {
           onRelay={(relay) => dispatchCommander({ type: 'commander_relay', relay })} />
     const sessionActions = pane ? commanderPeekSessionActions(pane.sessionId) : undefined
     return {
-      row, group, view,
+      row, group,
+      // Keyed by agent, so stepping to another agent starts on its chat.
+      view: pane ? <CommanderPeekTabs key={row.targetId} pane={pane} chat={view}
+        webTabs={webPanes.filter((webPane) => webPane.anchorPaneId === pane.id && webPane.dock !== 'split')}
+        gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
+        sessionUnseen={sessionAttention[pane.id]} sessionWarning={sessionWarnings[pane.id]} dismissedPrs={dismissedPrTabs[pane.id]}
+        titles={webPaneTitles} simulatorNames={simulatorNames} renderBuiltin={renderBuiltinPanelTab} renderTab={renderWebPane} /> : view,
       ...sessionActions ? { sessionActions } : {},
       onClose: () => setCommanderPeek(null),
       onOpen: () => jumpToPane(row.paneId, row.targetId, true),
@@ -3647,6 +3654,134 @@ export function App() {
     )
   }
 
+  /** A web tab (browser, canvas, guide, simulator), in a window group (where it can be dragged) or Commander's reading pane. */
+  const renderWebPane = (webPane: WebPane, visible: boolean, groupId?: string) => (
+    <WebPaneCard
+      key={webPane.id}
+      webPane={webPane}
+      visible={visible}
+      onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
+      simulatorActive={activeSimulatorTileId === webPane.id}
+      onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
+      onDock={() => void dockWebPane(webPane)}
+      onClose={() => void closeWebPane(webPane.id)}
+      onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
+      wsToken={token}
+      connected={connected}
+      onOpenDevtools={
+        webPane.engine === 'chromium'
+          ? () => void openWebPaneDevtools(webPane)
+          : undefined
+      }
+      detached={detachedWebPaneIds.has(webPane.id)}
+      onPopOut={
+        nativeWindowBridge && webPane.engine === 'chromium' && webPane.status === 'open'
+          ? () => nativeWindowBridge.open(webPane.id)
+          : undefined
+      }
+      onFocusDetached={
+        nativeWindowBridge ? () => nativeWindowBridge.focus(webPane.id) : undefined
+      }
+      onReattach={
+        nativeWindowBridge ? () => nativeWindowBridge.reattach(webPane.id) : undefined
+      }
+      feedback={webPaneFeedback[webPane.id]}
+      pendingQueue={{
+        list: () => webPanesApi.pendingNotes(webPane.id),
+        add: (note) => webPanesApi.addPendingNote(webPane.id, note),
+        addResponse: (pageUrl, response) => webPanesApi.addPendingResponse(
+          webPane.id,
+          pageUrl,
+          response,
+        ),
+        update: (noteId, revision, change) => webPanesApi.updatePendingNote(
+          webPane.id,
+          noteId,
+          revision,
+          change,
+        ),
+        upload: (noteId, revision, file) => webPanesApi.uploadPendingAttachment(
+          webPane.id,
+          noteId,
+          revision,
+          file,
+        ),
+        removeAttachment: (noteId, revision, attachmentId) => (
+          webPanesApi.removePendingAttachment(
+            webPane.id,
+            noteId,
+            revision,
+            attachmentId,
+          )
+        ),
+        attachmentUrl: (attachmentId) => webPanesApi.pendingAttachmentUrl(
+          webPane.id,
+          attachmentId,
+        ),
+        remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
+        send: (ids, options) => webPanesApi.sendPendingNotes(
+          webPane.id,
+          ids,
+          options,
+        ),
+        dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
+        setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
+      }}
+      {...groupId ? {
+        onDragStart: (event: DragEvent<HTMLElement>) => {
+          setDraggedPane({ kind: 'web', groupId, webPaneId: webPane.id })
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData('text/plain', webPane.id)
+        },
+        onDragEnd: () => {
+          setDraggedPane(null)
+          setDropPreview(null)
+        },
+      } : {}}
+      onNavigate={(url) => void navigateWebPane(webPane.id, url)}
+      navigateRequest={webPaneNavigateRequests[webPane.id]}
+      onAnswerNavigateRequest={(requestId, accept) => (
+        void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
+      )}
+      reloadRevision={webPaneReloads[webPane.id]}
+      maximized={maximizedPaneId === webPane.id}
+      onMaximize={() => {
+        clearLayoutTimers()
+        setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
+      }}
+    />
+  )
+  /** A built-in panel tab (session log, changes, PR), in the side panel or Commander's reading pane. */
+  const renderBuiltinPanelTab = (tab: BuiltinPanelTab, visible: boolean, data: PanePanelData) => {
+    const pane = paneMap.get(tab.anchorPaneId)
+    if (!pane) return null
+    if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
+    const identity = parsePrPanelKey(tab.key)
+    if (identity) {
+      const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
+      return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
+        <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
+          onSelectionApplied={() => setPrSelections((current) => {
+            if (current[tab.id] !== prSelections[tab.id]) return current
+            const next = { ...current }; delete next[tab.id]; return next
+          })} />
+      </Suspense> : null
+    }
+    const supplied = paneBriefs[pane.id]
+    const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
+    const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
+      paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
+      state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
+    }
+    return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
+      fullWidth visible={visible} onAttentionChange={reportSessionAttention}
+      empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
+      simsApi={simsApi} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
+      screenshotsApi={paneScreenshotsApi} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
+      onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
+      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
+  }
+
   return (
     <ChatStashContext.Provider value={chatStash}>
     <PlanUsageContext.Provider value={planUsageByProfile}>
@@ -4016,100 +4151,6 @@ export function App() {
               const splitWebPanes = groupWebPanes.filter((webPane) => webPane.dock === 'split')
               const panelPaneId = builtinMaximized?.anchorPaneId ?? maximizedPanelTab?.anchorPaneId ?? effectivePaneId
               const focusedPane = panelPaneId ? paneMap.get(panelPaneId) : undefined
-              const renderWebPane = (webPane: WebPane, visible: boolean) => (
-                <WebPaneCard
-                  key={webPane.id}
-                  webPane={webPane}
-                  visible={visible}
-                  onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
-                  simulatorActive={activeSimulatorTileId === webPane.id}
-                  onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
-                  onDock={() => void dockWebPane(webPane)}
-                  onClose={() => void closeWebPane(webPane.id)}
-                  onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
-                  wsToken={token}
-                  connected={connected}
-                  onOpenDevtools={
-                    webPane.engine === 'chromium'
-                      ? () => void openWebPaneDevtools(webPane)
-                      : undefined
-                  }
-                  detached={detachedWebPaneIds.has(webPane.id)}
-                  onPopOut={
-                    nativeWindowBridge && webPane.engine === 'chromium' && webPane.status === 'open'
-                      ? () => nativeWindowBridge.open(webPane.id)
-                      : undefined
-                  }
-                  onFocusDetached={
-                    nativeWindowBridge ? () => nativeWindowBridge.focus(webPane.id) : undefined
-                  }
-                  onReattach={
-                    nativeWindowBridge ? () => nativeWindowBridge.reattach(webPane.id) : undefined
-                  }
-                  feedback={webPaneFeedback[webPane.id]}
-                  pendingQueue={{
-                    list: () => webPanesApi.pendingNotes(webPane.id),
-                    add: (note) => webPanesApi.addPendingNote(webPane.id, note),
-                    addResponse: (pageUrl, response) => webPanesApi.addPendingResponse(
-                      webPane.id,
-                      pageUrl,
-                      response,
-                    ),
-                    update: (noteId, revision, change) => webPanesApi.updatePendingNote(
-                      webPane.id,
-                      noteId,
-                      revision,
-                      change,
-                    ),
-                    upload: (noteId, revision, file) => webPanesApi.uploadPendingAttachment(
-                      webPane.id,
-                      noteId,
-                      revision,
-                      file,
-                    ),
-                    removeAttachment: (noteId, revision, attachmentId) => (
-                      webPanesApi.removePendingAttachment(
-                        webPane.id,
-                        noteId,
-                        revision,
-                        attachmentId,
-                      )
-                    ),
-                    attachmentUrl: (attachmentId) => webPanesApi.pendingAttachmentUrl(
-                      webPane.id,
-                      attachmentId,
-                    ),
-                    remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
-                    send: (ids, options) => webPanesApi.sendPendingNotes(
-                      webPane.id,
-                      ids,
-                      options,
-                    ),
-                    dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
-                    setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
-                  }}
-                  onDragStart={(event) => {
-                    setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })
-                    event.dataTransfer.effectAllowed = 'move'
-                    event.dataTransfer.setData('text/plain', webPane.id)
-                  }}
-                  onDragEnd={() => {
-                    setDraggedPane(null)
-                    setDropPreview(null)
-                  }}
-                  onNavigate={(url) => void navigateWebPane(webPane.id, url)}
-                  navigateRequest={webPaneNavigateRequests[webPane.id]}
-                  onAnswerNavigateRequest={(requestId, accept) => (
-                    void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
-                  )}
-                  reloadRevision={webPaneReloads[webPane.id]}
-                  maximized={maximizedPaneId === webPane.id}
-                  onMaximize={() => {
-                    clearLayoutTimers()
-                    setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
-                  }}
-                />
-              )
               const leafPaneIds = windowTree
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
@@ -4167,40 +4208,12 @@ export function App() {
                         setMaximizedPaneId((current) => current === tab.id ? null : tab.id)
                       }
                     }}
-                    renderBuiltin={(tab, visible, data) => {
-                      const pane = paneMap.get(tab.anchorPaneId)
-                      if (!pane) return null
-                      if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
-                      const identity = parsePrPanelKey(tab.key)
-                      if (identity) {
-                        const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
-                        return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
-                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
-                            onSelectionApplied={() => setPrSelections((current) => {
-                              if (current[tab.id] !== prSelections[tab.id]) return current
-                              const next = { ...current }; delete next[tab.id]; return next
-                            })} />
-                        </Suspense> : null
-                      }
-                      const supplied = paneBriefs[pane.id]
-                      const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
-                      const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
-                        paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
-                        state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
-                      }
-                      return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
-                        fullWidth visible={visible} onAttentionChange={reportSessionAttention}
-                        empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
-                        simsApi={simsApi} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
-                        screenshotsApi={paneScreenshotsApi} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
-                        onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
-                        onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
-                    }}
+                    renderBuiltin={renderBuiltinPanelTab}
                     onSelect={(tab) => { void selectPanelTab(tab) }}
                     onSeen={connected ? markPanelTabSeen : undefined}
                     onClose={(id) => { void closeWebPane(id) }}
                     onOpen={(url, anchor, engine) => { void openWebPane(url, anchor, engine) }}
-                    renderTab={renderWebPane}>
+                    renderTab={(tab, visible) => renderWebPane(tab, visible, group.id)}>
                   {displayTree && (visibleGroupPanes.length || maximizedWebPane) ? (
                     <ResizablePaneLayout
                       key={`${group.id}:${maximizedGridPaneId ?? 'grid'}`}
@@ -4409,7 +4422,7 @@ export function App() {
                             registerFocusable={registerFocusable}
                           />,
                           ] as const
-                      }).concat(splitWebPanes.map((webPane) => [webPane.id, renderWebPane(webPane, true)] as const)))}
+                      }).concat(splitWebPanes.map((webPane) => [webPane.id, renderWebPane(webPane, true, group.id)] as const)))}
                     />
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
