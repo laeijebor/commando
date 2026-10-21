@@ -493,8 +493,8 @@ export type HostToDaemonMessage =
   /** Full state for one session: sent on (re)connect and when a session starts. */
   | { type: 'session_snapshot'; session: ChatSessionInfo; items: ChatItem[] }
   | { type: 'session_update'; session: ChatSessionInfo }
-  /** Upserts by item id, in order. */
-  | { type: 'items'; paneId: string; items: ChatItem[] }
+  /** Upserts by item id, in order; `replace` drops the earlier items first (after /clear). */
+  | { type: 'items'; paneId: string; items: ChatItem[]; replace?: true }
   | { type: 'session_closed'; paneId: string }
   /** The full command list; replaces the previous one. */
   | { type: 'commands'; paneId: string; commands: ChatCommand[] }
@@ -999,7 +999,7 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
     }
     case 'items': {
       const items = parseItems(value.items)
-      return isPaneId(value.paneId) && items ? { type: 'items', paneId: value.paneId, items } : null
+      return isPaneId(value.paneId) && items ? { type: 'items', paneId: value.paneId, items, ...(value.replace === true ? { replace: true } : {}) } : null
     }
     case 'session_closed':
       return isPaneId(value.paneId) ? { type: 'session_closed', paneId: value.paneId } : null
