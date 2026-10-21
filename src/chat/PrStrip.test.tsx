@@ -45,12 +45,15 @@ describe('chat PR strip', () => {
   it('renders every PR with open PRs first, diffs and external links', async () => {
     setup([pr(10, 'merged'), pr(11, 'closed'), pr(12), pr(13)])
     const section = await screen.findByRole('region', { name: 'Linked pull requests' })
-    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#12 Change 12', '#13 Change 13', '#10 Change 10', '#11 Change 11'])
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual([
+      '#12', 'Change 12', '#13', 'Change 13', '#10', 'Change 10', '#11', 'Change 11',
+    ])
     expect(screen.getAllByText('+125')).toHaveLength(4)
     expect(screen.getAllByText('−16')).toHaveLength(4)
-    const link = screen.getByRole('link', { name: '#12 Change 12' })
-    expect(link).toHaveAttribute('href', 'https://github.com/acme/widgets/pull/12')
-    expect(link).toHaveAttribute('target', '_blank')
+    const number = screen.getByRole('link', { name: 'Open PR #12 on GitHub' })
+    expect(number).toHaveAttribute('href', 'https://github.com/acme/widgets/pull/12')
+    expect(number).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: 'Change 12' })).toHaveAttribute('href', 'https://github.com/acme/widgets/pull/12')
     expect(screen.getByText('Merged').closest('.chat-pr-row')).toHaveClass('merged')
     expect(screen.getByText('Closed').closest('.chat-pr-row')).toHaveClass('closed')
     expect(screen.queryByRole('button', { name: 'CI monitoring for PR #10' })).not.toBeInTheDocument()
@@ -62,21 +65,23 @@ describe('chat PR strip', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss PR #12' }))
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss PR #10' }))
     const section = screen.getByRole('region', { name: 'Linked pull requests' })
-    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#13 Change 13'])
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#13', 'Change 13'])
     expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual([`${targetId}:acme/widgets#12`, `${targetId}:acme/widgets#10`])
 
     fireEvent.click(screen.getByRole('button', { name: 'Show 2 more' }))
-    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#13 Change 13', '#12 Change 12', '#10 Change 10'])
-    expect(screen.getByRole('link', { name: '#12 Change 12' }).closest('.chat-pr-row')).toHaveClass('dismissed')
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual([
+      '#13', 'Change 13', '#12', 'Change 12', '#10', 'Change 10',
+    ])
+    expect(screen.getByRole('link', { name: 'Open PR #12 on GitHub' }).closest('.chat-pr-row')).toHaveClass('dismissed')
     fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
-    expect(screen.queryByRole('link', { name: '#12 Change 12' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open PR #12 on GitHub' })).not.toBeInTheDocument()
 
     view.unmount()
     setup([pr(10, 'merged'), pr(12), pr(13)])
     fireEvent.click(await screen.findByRole('button', { name: 'Show 2 more' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restore PR #12' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restore PR #10' }))
-    expect(screen.getByRole('link', { name: '#12 Change 12' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
+    expect(screen.getByRole('link', { name: 'Open PR #12 on GitHub' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
     expect(screen.queryByRole('button', { name: /^Show/ })).not.toBeInTheDocument()
     expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual([])
   })
@@ -84,19 +89,22 @@ describe('chat PR strip', () => {
   it('shows the shared HUD status chips for open PRs only', async () => {
     const open = { ...pr(12), unresolvedThreads: 7, unansweredThreads: 2, conflicting: true }
     setup([open, { ...pr(10, 'merged'), unresolvedThreads: 4 }])
-    const row = (await screen.findByRole('link', { name: '#12 Change 12' })).closest('.chat-pr-row') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'Open PR #12 on GitHub' })).closest('.chat-pr-row') as HTMLElement
     for (const chip of ['✗ 2 failing', '2 unanswered', '5 unresolved', '⚠ conflicts']) expect(within(row).getByText(chip)).toBeInTheDocument()
     const merged = screen.getByText('Merged').closest('.chat-pr-row') as HTMLElement
     expect(within(merged).queryByText(/unresolved|unanswered|failing/)).not.toBeInTheDocument()
   })
 
-  it('opens a PR in the side panel on a plain click and leaves modified clicks to the browser', async () => {
+  it('opens GitHub from the PR number and the side panel from the title', async () => {
     const onOpenPr = vi.fn()
     setup([pr(12)], null, onOpenPr)
-    const link = await screen.findByRole('link', { name: '#12 Change 12' })
-    expect(fireEvent.click(link)).toBe(false)
+    const number = await screen.findByRole('link', { name: 'Open PR #12 on GitHub' })
+    expect(fireEvent.click(number)).toBe(true)
+    expect(onOpenPr).not.toHaveBeenCalled()
+    const title = screen.getByRole('link', { name: 'Change 12' })
+    expect(fireEvent.click(title)).toBe(false)
     expect(onOpenPr).toHaveBeenCalledWith('acme/widgets', 12, 'Description')
-    expect(fireEvent.click(link, { metaKey: true })).toBe(true)
+    expect(fireEvent.click(title, { metaKey: true })).toBe(true)
     expect(onOpenPr).toHaveBeenCalledTimes(1)
   })
 
@@ -111,7 +119,7 @@ describe('chat PR strip', () => {
       ['Open conversation for PR #12: 5 unresolved', url, 'Conversation'],
       ['Open conflicts for PR #12: ⚠ conflicts', url, 'Conflicts'],
     ] as const
-    await screen.findByRole('link', { name: '#12 Change 12' })
+    await screen.findByRole('link', { name: 'Open PR #12 on GitHub' })
     for (const [name, href, tab] of chips) {
       const chip = screen.getByRole('link', { name })
       expect(chip).toHaveAttribute('href', href)
@@ -126,8 +134,8 @@ describe('chat PR strip', () => {
 
   it('leaves the status chips as plain text without an in-app opener', async () => {
     setup([{ ...pr(12), unresolvedThreads: 2, conflicting: true }])
-    const row = (await screen.findByRole('link', { name: '#12 Change 12' })).closest('.chat-pr-row') as HTMLElement
-    expect(within(row).getAllByRole('link')).toHaveLength(1)
+    const row = (await screen.findByRole('link', { name: 'Open PR #12 on GitHub' })).closest('.chat-pr-row') as HTMLElement
+    expect(within(row).getAllByRole('link')).toHaveLength(2)
     for (const chip of ['✗ 2 failing', '2 unanswered', '⚠ conflicts']) expect(within(row).getByText(chip).tagName).toBe('SPAN')
   })
 
