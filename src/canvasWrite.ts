@@ -1,10 +1,13 @@
 import type { CanvasMove, CanvasStatusChange, CanvasWriteResult } from '../shared/canvas-manifest'
 
-export async function writeCanvasLayout(artifactId: string, manifest: string, expectedHash: string, change: { moves: CanvasMove[] } | { statuses: CanvasStatusChange[] }, token: string): Promise<CanvasWriteResult> {
-  const response = await canvasRequest(`/api/redline/artifacts/${encodeURIComponent(artifactId)}/canvas/${'moves' in change ? 'frames' : 'sections'}`, token, {
+export type CanvasLayoutChange = { moves: CanvasMove[] } | { notes: CanvasMove[] } | { statuses: CanvasStatusChange[] }
+
+export async function writeCanvasLayout(artifactId: string, manifest: string, expectedHash: string, change: CanvasLayoutChange, token: string): Promise<CanvasWriteResult> {
+  const kind = 'statuses' in change ? 'sections' : 'notes' in change ? 'annotations' : 'frames'
+  const response = await canvasRequest(`/api/redline/artifacts/${encodeURIComponent(artifactId)}/canvas/${kind}`, token, {
     method: 'PATCH', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest, expectedHash, ...change }),
+    body: JSON.stringify({ manifest, expectedHash, ...('notes' in change ? { moves: change.notes } : change) }),
   }, 'Canvas write failed')
   const body = await response.json()
   return body as CanvasWriteResult
