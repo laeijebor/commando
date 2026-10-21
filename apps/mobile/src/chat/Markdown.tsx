@@ -2,7 +2,9 @@ import { memo, useMemo, type ReactNode } from 'react'
 import { Linking, Platform, ScrollView, StyleSheet, Text, View, type TextStyle } from 'react-native'
 import { Lexer, type Token, type Tokens } from 'marked'
 
+import type { ChatReplyImage } from '@commando/agent-chat'
 import { useTheme, type Theme } from '../theme'
+import { ReplyImage, ReplyImagesContext } from './ReplyImage'
 
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
@@ -12,13 +14,21 @@ const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
  * blocks and tables scroll sideways instead of wrapping, so a long line keeps
  * its shape on a phone.
  */
-export const Markdown = memo(function Markdown({ text, tone = 'body' }: { text: string; tone?: 'body' | 'thought' }) {
+export const Markdown = memo(function Markdown({ text, tone = 'body', images, baseUrl, running }: {
+  text: string
+  tone?: 'body' | 'thought'
+  /** A reply's stored local images, the daemon they load from, and whether the reply still streams. */
+  images?: readonly ChatReplyImage[] | undefined
+  baseUrl?: string | undefined
+  running?: boolean | undefined
+}) {
   const theme = useTheme()
   const tokens = useMemo(() => lex(text), [text])
+  const reply = useMemo(() => ({ images, baseUrl, running }), [images, baseUrl, running])
   const base: TextStyle = tone === 'thought'
     ? { color: theme.muted, fontStyle: 'italic', fontSize: 14, lineHeight: 20 }
     : { color: theme.textSoft, fontSize: 15, lineHeight: 21 }
-  return <View style={styles.root}>{blocks(tokens, theme, base, 'md')}</View>
+  return <ReplyImagesContext value={reply}><View style={styles.root}>{blocks(tokens, theme, base, 'md')}</View></ReplyImagesContext>
 })
 
 function lex(text: string): Token[] {
@@ -45,6 +55,7 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string, complet
     case 'paragraph':
     case 'text': {
       const item = token as Tokens.Paragraph | Tokens.Text
+      if (item.tokens?.some((part) => part.type === 'image')) return <View key={key} style={styles.withImages}>{withImages(item.tokens, theme, base, key, completed)}</View>
       return <Text key={key} selectable style={base}>{item.tokens ? inline(item.tokens, theme, key, completed) : item.text}</Text>
     }
     case 'heading': {
@@ -90,6 +101,28 @@ function block(token: Token, theme: Theme, base: TextStyle, key: string, complet
   }
 }
 
+/** A paragraph holding images: its text in runs, each image on its own line at the reply's width (a native image can't sit in text). */
+function withImages(tokens: readonly Token[], theme: Theme, base: TextStyle, key: string, completed: boolean): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let run: Token[] = []
+  const flush = () => {
+    const blank = run.every((part) => part.type === 'br' || (part.type === 'text' && !(part as Tokens.Text).text.trim()))
+    if (!blank) nodes.push(<Text key={`${key}.t${nodes.length}`} selectable style={base}>{inline(run, theme, `${key}.t${nodes.length}`, completed)}</Text>)
+    run = []
+  }
+  for (const part of tokens) {
+    if (part.type !== 'image') {
+      run.push(part)
+      continue
+    }
+    flush()
+    const image = part as Tokens.Image
+    nodes.push(<ReplyImage key={`${key}.i${nodes.length}`} src={image.href} alt={image.text} />)
+  }
+  flush()
+  return nodes
+}
+
 function inline(tokens: readonly Token[], theme: Theme, key: string, completed = false): ReactNode[] {
   return tokens.map((token, index) => {
     const id = `${key}.${index}`
@@ -111,7 +144,7 @@ function inline(tokens: readonly Token[], theme: Theme, key: string, completed =
         )
       }
       case 'image':
-        // The web drops images in replies too; keep the alt text so nothing reads as missing.
+        // An image inside a link or table cell can't leave the text; its alt text stands in.
         return (token as Tokens.Image).text ? <Text key={id} style={{ color: theme.muted }}>{(token as Tokens.Image).text}</Text> : null
       case 'br':
         return '\n'
@@ -176,6 +209,7 @@ function Table({ table, base }: { table: Tokens.Table; base: TextStyle }): React
 
 const styles = StyleSheet.create({
   root: { gap: 8 },
+  withImages: { gap: 8 },
   heading: { fontWeight: '700', marginTop: 2 },
   strong: { fontWeight: '700' },
   em: { fontStyle: 'italic' },
