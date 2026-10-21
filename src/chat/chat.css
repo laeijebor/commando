@@ -205,11 +205,12 @@
 .commando-chat .chat-pr-row.closed, .commando-chat .chat-pr-row.dismissed { opacity: .6; }
 .commando-chat .chat-pr-dismiss { display: flex; flex-shrink: 0; padding: 2px; border-radius: 4px; color: var(--muted); cursor: pointer; }
 .commando-chat .chat-pr-dismiss:hover { color: var(--text-soft); background: var(--surface-deep); }
-.commando-chat .chat-pr-link { display: flex; flex: 1 1 14rem; gap: 8px; min-width: 0; color: inherit; text-decoration: none; }
+.commando-chat .chat-pr-link { display: flex; flex: 1 1 14rem; gap: 8px; min-width: 0; color: inherit; }
+.commando-chat .chat-pr-link a { color: inherit; text-decoration: none; }
 /* HUD status chips, sized for the chat column; they move below the title before squeezing it. */
 .commando-chat .chat-pr-badges { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; margin-left: auto; }
 .commando-chat .chat-pr-badges .pr-chip { font-size: 11px; white-space: nowrap; }
-.commando-chat .chat-pr-link:hover { text-decoration: underline; }
+.commando-chat .chat-pr-link a:hover { text-decoration: underline; }
 .commando-chat .chat-pr-diff { flex-shrink: 0; font-family: var(--mono); white-space: nowrap; padding: 2px 5px; border-radius: 4px; background: var(--surface-deep); }
 .commando-chat .chat-pr-ci { display: flex; align-items: center; gap: 5px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap; }
 .commando-chat .chat-pr-more { display: block; text-align: left; color: var(--muted); cursor: pointer; padding: 2px 8px 5px; }

@@ -172,8 +172,12 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
         return (
           <div key={`${pr.repo}#${pr.number}`} className={`chat-pr-row ${pr.state}${isDismissed ? ' dismissed' : ''}`}>
             <Icon className="size-4 shrink-0" />
-            <a className="chat-pr-link" href={pr.url} target="_blank" rel="noopener noreferrer" title={`${pr.repo}#${pr.number}: ${pr.title}`}
-              onClick={(event) => openInPanel(event, pr, 'Description')}><span className="font-mono">#{pr.number}</span> <span className="truncate">{pr.title}</span></a>
+            <span className="chat-pr-link" title={`${pr.repo}#${pr.number}: ${pr.title}`}>
+              <a className="font-mono shrink-0" href={pr.url} target="_blank" rel="noopener noreferrer"
+                aria-label={`Open PR #${pr.number} on GitHub`}>#{pr.number}</a>
+              <a className="truncate" href={pr.url} target="_blank" rel="noopener noreferrer"
+                onClick={(event) => openInPanel(event, pr, 'Description')}>{pr.title}</a>
+            </span>
             {pr.state === 'open' ? <>
               {/* The same shared PR status the HUD shows, updated as any view refreshes it. */}
               <span className="chat-pr-badges">
