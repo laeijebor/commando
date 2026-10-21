@@ -260,12 +260,14 @@ export class AgentHostHub {
       }
       case 'items': {
         const entry = this.owned(socket, message.paneId)
-        if (!entry || message.items.length === 0) return
-        entry.state = { ...entry.state, items: mergeChatItems(entry.state.items, message.items) }
+        if (!entry || (message.items.length === 0 && !message.replace)) return
+        entry.state = { ...entry.state, items: mergeChatItems(message.replace ? [] : entry.state.items, message.items) }
         const startsTurn = !entry.hadTurn && message.items.some((item) => item.kind === 'user_message')
         if (startsTurn) entry.hadTurn = true
         if (entry.visible) {
-          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items })
+          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items, ...(message.replace ? { replace: true } : {}) })
+          // Requests in the replaced timeline can no longer be answered.
+          if (message.replace) this.closeRequests(message.paneId, entry)
           this.syncInteractions(message.paneId, entry, message.items)
           if (startsTurn) this.reportStatus(message.paneId, entry)
         }

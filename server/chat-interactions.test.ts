@@ -180,6 +180,17 @@ describe('chat requests in the approvals broker', () => {
     expect(answersToHost()).toEqual([expect.objectContaining({ answer: { kind: 'approval', decision: 'deny' } })])
   })
 
+  it('withdraws open requests when /clear replaces the timeline', async () => {
+    const { broker, socket, registry } = setup()
+    socket.host({ type: 'session_snapshot', session: session({ status: 'waiting' }), items: [approval('r1')] })
+    await settle()
+    expect(broker.hasPending('%1', 'r1')).toBe(true)
+    socket.host({ type: 'items', paneId: '%1', items: [{ ...userMessage, id: 'notice-1', kind: 'notice', level: 'info', text: 'Context cleared' }], replace: true })
+    await settle()
+    expect(broker.hasPending('%1', 'r1')).toBe(false)
+    expect(registry.get('%1')?.details?.requests).toBeUndefined()
+  })
+
   it('withdraws requests the host cancels, and every request and its status when the host disconnects', async () => {
     const { broker, socket, registry } = setup()
     socket.host({ type: 'session_snapshot', session: session({ status: 'waiting' }), items: [approval('r1'), approval('r2')] })

@@ -790,8 +790,8 @@ export type ServerMessage =
   /** A chat pane's whole state: sent when its host connects or reconnects. */
   | { type: 'chat_state'; chat: ChatState }
   | { type: 'chat_session'; paneId: string; session: ChatSessionInfo; hostConnected: boolean }
-  /** Upserts by item id. */
-  | { type: 'chat_items'; paneId: string; items: ChatItem[] }
+  /** Upserts by item id; `replace` drops the earlier items first (after /clear). */
+  | { type: 'chat_items'; paneId: string; items: ChatItem[]; replace?: true }
   | { type: 'chat_removed'; paneId: string }
   /** A chat's `/` menu list changed. */
   | { type: 'chat_commands'; paneId: string; commands: ChatCommand[] }

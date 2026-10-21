@@ -172,7 +172,12 @@ export class AgentHost {
 
   add(session: ChatProviderSession): void {
     this.sessions.set(session.paneId, session)
-    session.on('items', (items) => this.queueItems(session.paneId, items))
+    session.on('items', (items, replace) => {
+      if (!replace) return this.queueItems(session.paneId, items)
+      // Updates still queued belong to the old timeline.
+      this.pendingItems.delete(session.paneId)
+      this.link.send({ type: 'items', paneId: session.paneId, items, replace })
+    })
     session.on('session', (info) => {
       this.flush()
       this.link.send({ type: 'session_update', session: info })

@@ -92,7 +92,10 @@ function started(spec: Partial<ConstructorParameters<typeof AgentSession>[0]> = 
   const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, configDir: '/home/me/.claudew', ...spec }, fake.run, () => 1, store)
   const items = new Map<string, ChatItem>()
   const sessions: ChatSessionInfo[] = []
-  session.on('items', (changed) => { for (const item of changed) items.set(item.id, item) })
+  session.on('items', (changed, replace) => {
+    if (replace) items.clear()
+    for (const item of changed) items.set(item.id, item)
+  })
   session.on('session', (info) => sessions.push(info))
   session.start()
   return { fake, session, items, sessions }
@@ -1034,13 +1037,14 @@ describe('AgentSession richer input', () => {
     expect([...items.values()].find((item) => item.kind === 'notice')).toMatchObject({ level: 'error', text: "Claude couldn't read an attached image: Could not process image. Try a smaller PNG or JPEG." })
   })
 
-  it('marks /clear in the timeline and drops the old title', async () => {
+  it('clears the timeline on /clear, leaving a notice, and drops the old title', async () => {
     const { fake, session, items, sessions } = started()
     session.send('first question')
     await tick()
     fake.push({ type: 'conversation_reset', new_conversation_id: 'n', uuid: 'n', trigger: 'clear', session_id: 's2' } as unknown as SDKMessage)
     await tick()
-    expect([...items.values()].some((item) => item.kind === 'notice' && /Context cleared/.test(item.text))).toBe(true)
+    expect([...items.values()]).toEqual([expect.objectContaining({ kind: 'notice', text: expect.stringMatching(/Context cleared/) })])
+    expect(session.snapshot().items).toEqual([...items.values()])
     expect(sessions.at(-1)?.title).toBeUndefined()
   })
 
