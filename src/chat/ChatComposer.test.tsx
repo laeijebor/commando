@@ -524,6 +524,30 @@ describe('images in the timeline', () => {
     expect(within(viewer).getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
   })
 
+  it('zooms and pans the enlarged image, and fits it again', async () => {
+    const items: ChatItem[] = [{ ...base, id: 'u1', kind: 'user_message', text: 'look', images: [{ id: imageId, name: 'wide.png' }] }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open wide.png' }))
+    const viewer = await screen.findByRole('dialog', { name: 'wide.png' })
+    const image = within(viewer).getByRole('img', { name: 'wide.png' })
+    Object.defineProperty(image, 'naturalWidth', { value: 4000 })
+    Object.defineProperty(image, 'naturalHeight', { value: 1000 })
+    fireEvent.load(image)
+    const percent = () => within(viewer).getByText(/^\d+%$/).textContent
+    const opened = percent()
+    expect(within(viewer).getByRole('button', { name: 'Zoom out' })).toBeDisabled()
+    fireEvent.click(within(viewer).getByRole('button', { name: 'Zoom in' }))
+    expect(Number.parseInt(percent()!)).toBeGreaterThan(Number.parseInt(opened!))
+    fireEvent.keyDown(window, { key: '+' })
+    const zoomed = image.style.width
+    fireEvent.click(within(viewer).getByRole('button', { name: 'Fit to screen' }))
+    expect(percent()).toBe(opened)
+    expect(image.style.width).not.toBe(zoomed)
+    fireEvent.keyDown(window, { key: '0' })
+    expect(within(viewer).getByRole('button', { name: 'Fit to screen' })).toBeDisabled()
+  })
+
   it('waits for a streaming reply to store its image instead of showing a broken one', () => {
     const items: ChatItem[] = [{ ...base, id: 'a1', kind: 'assistant_message', status: 'running', text: 'Here: ![Chart](/tmp/chart.png)' }]
     const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
