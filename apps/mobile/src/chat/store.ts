@@ -24,7 +24,7 @@ export function applyChatMessage(chats: HostChats, message: ServerMessage): Host
     }
     case 'chat_items': {
       const chat = chats[message.paneId]
-      return chat ? { ...chats, [message.paneId]: { ...chat, items: mergeChatItems(chat.items, message.items) } } : chats
+      return chat ? { ...chats, [message.paneId]: { ...chat, items: mergeChatItems(message.replace ? [] : chat.items, message.items) } } : chats
     }
     case 'chat_commands': {
       const chat = chats[message.paneId]

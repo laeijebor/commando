@@ -311,6 +311,11 @@ export class ClaudeItemMapper {
     return [...this.items.values()]
   }
 
+  /** Forgets the timeline when the conversation starts over. */
+  clear(): void {
+    this.items.clear()
+  }
+
   get currentTurnId(): string {
     return this.turnId
   }
@@ -459,7 +464,7 @@ export class ClaudeItemMapper {
         }
         return []
       case 'conversation_reset':
-        // /clear: Claude carries on in a fresh conversation; the earlier turns stay visible above.
+        // /clear: Claude carries on in a fresh conversation, which the session shows from empty.
         return this.notice('info', 'Context cleared: Claude starts a new conversation from here')
       default:
         return []

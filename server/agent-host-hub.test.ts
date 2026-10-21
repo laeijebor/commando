@@ -66,6 +66,16 @@ describe('AgentHostHub', () => {
     expect(hub.owns('%1')).toBe(true)
   })
 
+  it('replaces the timeline when the host starts the conversation over', async () => {
+    const { hub, broadcasts, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', 'old'), item('b', 'older')] })
+    socket.host({ type: 'items', paneId: '%1', items: [item('n', 'cleared')], replace: true })
+    await settle()
+    expect(hub.items('%1').map((entry) => entry.id)).toEqual(['n'])
+    expect(broadcasts.at(-1)).toEqual({ type: 'chat_items', paneId: '%1', items: [item('n', 'cleared')], replace: true })
+  })
+
   it('holds a session for a pane tmux has not reported yet, then shows it once the pane appears', async () => {
     let now = 0
     const panes = new Set<string>()

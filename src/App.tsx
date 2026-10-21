@@ -1577,7 +1577,7 @@ export function App() {
       case 'chat_items':
         setChats((current) => {
           const chat = current[message.paneId]
-          return chat ? { ...current, [message.paneId]: { ...chat, items: mergeChatItems(chat.items, message.items) } } : current
+          return chat ? { ...current, [message.paneId]: { ...chat, items: mergeChatItems(message.replace ? [] : chat.items, message.items) } } : current
         })
         break
       case 'chat_commands':

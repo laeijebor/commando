@@ -1229,11 +1229,16 @@ export class AgentSession implements ChatProviderSession {
       this.setSlashCommands(message.commands)
       return
     }
-    if (message.type === 'conversation_reset' && this.info.title) {
-      // /clear starts a new conversation, which gets its own title.
-      const { title: _previous, ...rest } = this.info
-      this.info = rest
-      this.emitSession()
+    if (message.type === 'conversation_reset') {
+      // /clear starts a new conversation, which gets its own title and an empty timeline.
+      if (this.info.title) {
+        const { title: _previous, ...rest } = this.info
+        this.info = rest
+        this.emitSession()
+      }
+      this.mapper.clear()
+      this.emitItems(this.mapper.handle(message), true)
+      return
     }
     if (message.type === 'system' && (message.subtype === 'init' || message.subtype === 'status')) {
       // Claude re-sends init each turn, and status when the mode changes (e.g. entering plan mode itself).
@@ -1326,8 +1331,8 @@ export class AgentSession implements ChatProviderSession {
     for (const listener of this.listeners.session) listener({ ...this.info })
   }
 
-  private emitItems(items: ChatItem[]): void {
-    if (!items.length) return
-    for (const listener of this.listeners.items) listener(items)
+  private emitItems(items: ChatItem[], replace?: true): void {
+    if (!items.length && !replace) return
+    for (const listener of this.listeners.items) listener(items, replace)
   }
 }

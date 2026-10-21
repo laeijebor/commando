@@ -16,7 +16,8 @@ import type {
 import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 
 export interface ChatProviderSessionEvents {
-  items: (items: ChatItem[]) => void
+  /** `replace`: the conversation started over (/clear), so these items are all the chat shows. */
+  items: (items: ChatItem[], replace?: true) => void
   /** Relayed to the daemon as session_update. */
   session: (info: ChatSessionInfo) => void
   commands: (commands: ChatCommand[]) => void
