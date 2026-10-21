@@ -266,6 +266,8 @@ export class AgentHostHub {
         if (startsTurn) entry.hadTurn = true
         if (entry.visible) {
           this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items, ...(message.replace ? { replace: true } : {}) })
+          // Requests in the replaced timeline can no longer be answered.
+          if (message.replace) this.closeRequests(message.paneId, entry)
           this.syncInteractions(message.paneId, entry, message.items)
           if (startsTurn) this.reportStatus(message.paneId, entry)
         }
