@@ -45,6 +45,28 @@ describe('CommanderSplit', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Next agent' }), { key: 'Escape' })
     expect(props.onClose).toHaveBeenCalledOnce()
   })
+  it('offers the session menu, runs the chosen action, and keeps the pane open when Esc closes the menu', async () => {
+    width(1200)
+    const archive = vi.fn(), remove = vi.fn()
+    const props = peek({ sessionActions: [
+      { label: 'Archive session', icon: () => null, onSelect: archive },
+      { label: 'Resume a chat…', icon: () => null, onSelect: vi.fn(), disabled: true },
+      { label: 'Delete session', icon: () => null, onSelect: remove, danger: true },
+    ] })
+    const { rerender } = render(<CommanderSplit peek={props}><p>Commander chat</p></CommanderSplit>)
+    fireEvent.click(screen.getByRole('button', { name: 'Session actions' }))
+    const menu = await screen.findByRole('menu', { name: 'Auth session actions' })
+    expect(screen.getByRole('menuitem', { name: 'Resume a chat…' })).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.keyDown(menu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(props.onClose).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Session actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive session' }))
+    expect(archive).toHaveBeenCalledOnce()
+    expect(remove).not.toHaveBeenCalled()
+    rerender(<CommanderSplit peek={peek()}><p>Commander chat</p></CommanderSplit>)
+    expect(screen.queryByRole('button', { name: 'Session actions' })).toBeNull()
+  })
   it('renders nothing extra while closed', () => {
     render(<CommanderSplit><p>Commander chat</p></CommanderSplit>)
     expect(screen.getByTestId('commander-split')).toHaveAttribute('data-mode', 'closed')
