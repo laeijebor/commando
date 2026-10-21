@@ -79,6 +79,8 @@ type HubDependencies = {
   handoffs?: Pick<ChatHandoffStore, 'save' | 'returned' | 'take' | 'discard'>
   /** A chat switched to Claude Code, or came back. */
   onHandoffsChange?: () => void
+  /** Stores the local images replies show with Markdown and attaches them (see chat-reply-images.ts). */
+  replyImages?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
 }
 
 /** A chat's unsent draft, sent with its switch to Claude Code. */
@@ -183,6 +185,17 @@ export class AgentHostHub {
     })
   }
 
+  /** Items with their replies' local images stored and attached; as they came if that fails. */
+  private async withReplyImages(items: ChatItem[], cwd: string | undefined): Promise<ChatItem[]> {
+    if (!this.dependencies.replyImages || !cwd || !items.some((item) => item.kind === 'assistant_message' && item.text.includes('!['))) return items
+    try {
+      return await this.dependencies.replyImages(items, cwd)
+    } catch (error) {
+      this.dependencies.log?.(`[agent-host] couldn't attach reply images: ${error instanceof Error ? error.message : String(error)}`)
+      return items
+    }
+  }
+
   private async handle(socket: WebSocket, message: HostToDaemonMessage): Promise<void> {
     switch (message.type) {
       case 'hello':
@@ -212,11 +225,13 @@ export class AgentHostHub {
         // A chat back from Claude Code offers its draft and queue to the composer again.
         const carried = message.session.sessionId ? this.dependencies.handoffs?.returned(message.session.sessionId) : undefined
         if (message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
+        const items = await this.withReplyImages(message.items, message.session.cwd)
+        if (socket.readyState !== socket.OPEN) return
         const state: ChatState = {
           paneId,
           ...(targetId ? { targetId } : {}),
           session: message.session,
-          items: mergeChatItems([], message.items),
+          items: mergeChatItems([], items),
           hostConnected: true,
           ...(updateAvailable ? { updateAvailable } : {}),
           // The host resends its list straight after; keep the menu meanwhile.
@@ -259,16 +274,19 @@ export class AgentHostHub {
         return
       }
       case 'items': {
+        if (!this.owned(socket, message.paneId) || (message.items.length === 0 && !message.replace)) return
+        const items = await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd)
+        // The host may have been replaced while the images were stored.
         const entry = this.owned(socket, message.paneId)
-        if (!entry || (message.items.length === 0 && !message.replace)) return
-        entry.state = { ...entry.state, items: mergeChatItems(message.replace ? [] : entry.state.items, message.items) }
-        const startsTurn = !entry.hadTurn && message.items.some((item) => item.kind === 'user_message')
+        if (!entry) return
+        entry.state = { ...entry.state, items: mergeChatItems(message.replace ? [] : entry.state.items, items) }
+        const startsTurn = !entry.hadTurn && items.some((item) => item.kind === 'user_message')
         if (startsTurn) entry.hadTurn = true
         if (entry.visible) {
-          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items, ...(message.replace ? { replace: true } : {}) })
+          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items, ...(message.replace ? { replace: true } : {}) })
           // Requests in the replaced timeline can no longer be answered.
           if (message.replace) this.closeRequests(message.paneId, entry)
-          this.syncInteractions(message.paneId, entry, message.items)
+          this.syncInteractions(message.paneId, entry, items)
           if (startsTurn) this.reportStatus(message.paneId, entry)
         }
         return
@@ -294,7 +312,8 @@ export class AgentHostHub {
       case 'subagent_transcript_result': {
         const read = this.transcripts.get(message.requestId)
         if (!read || read.socket !== socket || read.paneId !== message.paneId) return
-        this.finish(this.transcripts, message.requestId, message.error ? { items: message.items, error: message.error } : { items: message.items })
+        const items = await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd)
+        this.finish(this.transcripts, message.requestId, message.error ? { items, error: message.error } : { items })
         return
       }
       case 'mcp_result': {

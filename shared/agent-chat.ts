@@ -149,6 +149,66 @@ export function chatImageUrl(id: string): string {
   return `/chat-images/${id}`
 }
 
+/**
+ * Images an agent shows in its reply also take SVG (PR Lens diagrams, for
+ * one). They are never sent to Claude, so they stay apart from the ids above.
+ */
+const CHAT_REPLY_IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|gif|webp|svg)$/
+/** A PNG the daemon draws from a stored SVG, for clients that can't show SVG. */
+const CHAT_IMAGE_STILL_ID = /^[0-9a-f]{64}\.svg\.png$/
+
+export function isChatReplyImageId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_REPLY_IMAGE_ID.test(value)
+}
+
+export function isChatImageStillId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_IMAGE_STILL_ID.test(value)
+}
+
+/** The PNG of an SVG reply image; other images are already PNG, JPEG, GIF or WebP. */
+export function chatImageStillId(id: string): string {
+  return id.endsWith('.svg') ? `${id}.png` : id
+}
+
+/** The Content-Type a stored image is served with. */
+export function chatImageContentType(id: string): string {
+  if (id.endsWith('.svg')) return 'image/svg+xml'
+  return id.endsWith('.svg.png') ? 'image/png' : chatImageType(id)
+}
+
+/** Why a reply image isn't shown: no file there, one the daemon can't read, not an image, or the store failed. */
+export type ChatReplyImageError = 'missing' | 'unreadable' | 'unsupported' | 'too_large' | 'empty' | 'failed'
+
+/**
+ * An image an agent shows in a reply with Markdown, `![caption](/path.png)`.
+ * `src` is the address exactly as the Markdown parser reads it, so the
+ * renderer can match it; the daemon stores the file and gives it an id.
+ */
+export type ChatReplyImage = { src: string; id: string } | {
+  src: string
+  error: ChatReplyImageError
+  /** The file the daemon looked for, when `src` is relative or `~/`. */
+  path?: string
+}
+
+function decodedAddress(value: string): string {
+  try {
+    return decodeURI(value)
+  } catch {
+    return value
+  }
+}
+
+/**
+ * The reply image a rendered `<img>` means. Renderers percent-encode the
+ * address (`my shot.png` becomes `my%20shot.png`), so both sides are decoded.
+ */
+export function findChatReplyImage(images: readonly ChatReplyImage[] | undefined, src: string): ChatReplyImage | undefined {
+  if (!images?.length) return undefined
+  const wanted = decodedAddress(src)
+  return images.find((image) => image.src === src || decodedAddress(image.src) === wanted)
+}
+
 /** An image in a message or tool result, stored by the daemon or host. */
 export interface ChatImageRef {
   id: string
@@ -241,7 +301,12 @@ export type ChatItem = ChatItemBase & (
       /** Relayed through main Claude's SendMessage tool to this subagent. */
       relayTo?: { agentId: string; label: string }
     }
-  | { kind: 'assistant_message'; text: string }
+  | {
+      kind: 'assistant_message'
+      text: string
+      /** Local images the reply shows with Markdown; added by the daemon. */
+      images?: ChatReplyImage[]
+    }
   | { kind: 'reasoning'; text: string }
   | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
   | {
@@ -754,6 +819,21 @@ function optionalImages(value: unknown): ChatImageRef[] | undefined {
   return refs?.length ? refs : undefined
 }
 
+const REPLY_IMAGE_ERRORS: readonly ChatReplyImageError[] = ['missing', 'unreadable', 'unsupported', 'too_large', 'empty', 'failed']
+
+/** A reply's images; one that doesn't parse is dropped, and the reply shows its address instead. */
+function parseChatReplyImages(value: unknown): ChatReplyImage[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const images = value.slice(0, MAX_ITEM_IMAGES).flatMap((image): ChatReplyImage[] => {
+    if (!isRecord(image) || typeof image.src !== 'string' || !image.src || image.src.length > 4096) return []
+    if (isChatReplyImageId(image.id)) return [{ src: image.src, id: image.id }]
+    if (!REPLY_IMAGE_ERRORS.includes(image.error as ChatReplyImageError)) return []
+    const path = typeof image.path === 'string' && image.path && image.path.length <= 4096 && image.path !== image.src ? image.path : undefined
+    return [withOptional({ src: image.src, error: image.error as ChatReplyImageError }, { path })]
+  })
+  return images.length ? images : undefined
+}
+
 const COMMAND_NAME = /^[\w][\w:.@-]{0,127}$/
 
 function parseChatCommands(value: unknown): ChatCommand[] | null {
@@ -863,6 +943,9 @@ export function parseChatItem(value: unknown): ChatItem | null {
           })
         : null
     case 'assistant_message':
+      return typeof value.text === 'string'
+        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images) })
+        : null
     case 'reasoning':
       return typeof value.text === 'string' ? { ...base, kind: value.kind, text: value.text.slice(0, MAX_TEXT) } : null
     case 'command':

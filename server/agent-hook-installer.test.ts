@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AgentHookInstaller,
+  CHAT_IMAGE_INSTRUCTIONS,
   CLAUDE_HOOK_EVENTS,
   MUSE_HOOK_EVENTS,
   OPENCODE_HOOK_EVENTS,
@@ -283,6 +284,7 @@ describe('agent hook installer', () => {
     const run = async (event: string) => {
       const command = settings.hooks[event][0].hooks[0]
       const env: NodeJS.ProcessEnv = { ...process.env, COMMANDO_PORT: '1', TMUX_PANE: '%42' }
+      delete env.COMMANDO_CHAT_RESUME
       if (configDir) env.CLAUDE_CONFIG_DIR = configDir
       else delete env.CLAUDE_CONFIG_DIR
       const child = spawn(command.command, command.args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -294,6 +296,8 @@ describe('agent hook installer', () => {
     }
     expect(await run('SessionStart')).toContain(`Resume command for this conversation: ${launcher} --resume d227943a-841a-4dfa-94c7-afe2e0774487`)
     expect(await run('UserPromptSubmit')).not.toContain('Resume command')
+    // A terminal pane doesn't draw Markdown images.
+    expect(await run('SessionStart')).not.toContain(CHAT_IMAGE_INSTRUCTIONS)
   })
 
   it('gives a chat pane its own resume command instead of the TUI launcher', async () => {
@@ -308,6 +312,7 @@ describe('agent hook installer', () => {
     child.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'd227943a-841a-4dfa-94c7-afe2e0774487' }))
     await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject) })
     expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain('Resume command for this conversation: /c/scripts/commando-agent claude --config-dir /Users/leo/.claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487')
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(CHAT_IMAGE_INSTRUCTIONS)
   })
 
   it('emits Claude context through the installed startup/prompt command without changing permission output', async () => {

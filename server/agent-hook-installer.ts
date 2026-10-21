@@ -180,6 +180,9 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
   ].join('\n')
 }
 
+/** Told to agents in a Commando chat, which renders Markdown images; a terminal pane would not. */
+export const CHAT_IMAGE_INSTRUCTIONS = 'This is a Commando chat, which shows Markdown images inline. When you make or capture an image the user should see (a screenshot, a render, a chart, a PR Lens diagram), show it in your reply as a Markdown image with its file path, for example ![Slide preview](/absolute/path/slide.png). PNG, JPEG, GIF, WebP and SVG are shown; a path in plain text or backticks is not. Keep listing paths of other files as text.'
+
 /** Muse runs Claude Code-style hooks, so it shares the Claude bridge with a few differences. */
 type ClaudeBridgeProvider = 'claude' | 'muse'
 
@@ -520,6 +523,12 @@ function planUpdateFor(input) {
 
 // The profile launcher matches the config dir in use: ~/.claudew -> claudew, ~/.claudep -> claudep.
 // A Commando chat pane passes its own resume command, so following it reopens the chat.
+// Only a Commando chat draws Markdown images; in a terminal they would stay text.
+const CHAT_IMAGES = ${JSON.stringify(CHAT_IMAGE_INSTRUCTIONS)}
+function chatContext(inheritedChat) {
+  return process.env.COMMANDO_CHAT_RESUME || inheritedChat ? '\\n' + CHAT_IMAGES : ''
+}
+
 function resumeContext(sessionId, inheritedChat) {
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9-]{8,80}$/.test(sessionId)) return ''
   const chat = process.env.COMMANDO_CHAT_RESUME ?? inheritedChat
@@ -564,7 +573,7 @@ async function main() {
     if (event === 'SessionStart' || event === 'UserPromptSubmit') {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: {
         hookEventName: event,
-        additionalContext: ${JSON.stringify(instructions)} + (event === 'SessionStart' ? resumeContext(input.session_id, inherited.chatResume) : ''),
+        additionalContext: ${JSON.stringify(instructions)} + chatContext(inherited.chatResume) + (event === 'SessionStart' ? resumeContext(input.session_id, inherited.chatResume) : ''),
       } }) + '\\n')
     }
     const toolState = event === 'PreToolUse'

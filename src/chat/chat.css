@@ -164,6 +164,31 @@
 .chat-reply .chat-table-scroll { width: 100cqw; margin-inline: calc((100% - 100cqw) / 2); }
 .chat-reply .chat-table-frame { width: max-content; min-width: min(100%, var(--chat-content-max-width)); max-width: min(100%, var(--chat-table-max-width)); margin-inline: auto; }
 .chat-markdown hr { border: 0; border-top: 1px solid var(--border); }
+/* Images a reply shows: as wide as the text, not taller than most of a screen; a click enlarges one. */
+.chat-reply-image {
+  display: block;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: zoom-in;
+}
+.chat-reply-image img, .chat-markdown img.chat-reply-web-image { display: block; max-width: 100%; max-height: min(70vh, 640px); height: auto; object-fit: contain; }
+.chat-reply-image-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.chat-reply-image-notice code { overflow-wrap: anywhere; }
 
 @keyframes chat-pulse { 50% { opacity: 0.35; } }
 .chat-pulse { animation: chat-pulse 1.2s ease-in-out infinite; }
