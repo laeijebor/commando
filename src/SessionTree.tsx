@@ -5,7 +5,7 @@ import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, Fol
 import { type KeyboardEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
-import { isAuxiliarySession } from '../shared/auxiliary-session'
+import { auxiliarySessionIds } from '../shared/auxiliary-session'
 import { createSessionManagementApi, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import { sessionShortcutIndex } from './sessionShortcuts'
 import { DEFAULT_GROUPING_MODE, EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers, type SessionTreeContainer } from './sessionTreePreferences'
@@ -20,6 +20,7 @@ import './session-ide.css'
 import type { PrsApiClient } from './prsApi'
 import { SessionPrCount } from './SessionPrCount'
 import { paneAttention, paneAttentionLabels, sessionIndicator } from './sessionIndicator'
+import { ARCHIVE_RESTORE_NOTE } from './sessionProcesses'
 
 type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
@@ -28,15 +29,14 @@ type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateS
 /**
  * The session menu's actions, for menus outside the tree. A `confirmation` of
  * null skips the dialog; a string replaces it. Deleting a worktree always
- * confirms, with any `confirmation` leading its dialog.
+ * confirms, with any `confirmation` leading its dialog. `onError` reports
+ * failures where the caller can see them instead of in the tree.
  */
 export type SessionActions = {
-  renameSession: (sessionId: string) => Promise<void>
-  changeIdentity: (sessionId: string, reset?: boolean) => Promise<void>
-  archiveSession: (sessionId: string, confirmation?: string | null) => Promise<void>
-  deleteSession: (sessionId: string, deleteWorktree?: boolean, confirmation?: string | null) => Promise<void>
-  /** Background sessions share their worktree's lifecycle, so they are never archived or deleted with it. */
-  isAuxiliary: (sessionId: string) => boolean
+  renameSession: (sessionId: string, onError?: (message: string) => void) => Promise<void>
+  changeIdentity: (sessionId: string, reset?: boolean, onError?: (message: string) => void) => Promise<void>
+  archiveSession: (sessionId: string, confirmation?: string | null, onError?: (message: string) => void) => Promise<void>
+  deleteSession: (sessionId: string, deleteWorktree?: boolean, confirmation?: string | null, onError?: (message: string) => void) => Promise<void>
 }
 
 type Props = {
@@ -93,8 +93,6 @@ function statusLabel(status: AgentStatus, seenAt: number | undefined, pane: Tmux
 function markLabel(mark: PaneMark, pane: TmuxPane): string {
   return `${mark.label}${mark.activityCount ? `, ${mark.activityCount} ${mark.activityCount === 1 ? 'activity' : 'activities'} since mark` : ''} - ${paneLabel(pane)}`
 }
-
-export const ARCHIVE_RESTORE_NOTE = 'Restore will recreate its windows and panes as fresh shells in their saved directories; the worktree is kept.'
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
 
@@ -181,15 +179,8 @@ export function SessionTree(props: Props) {
 
   const commanderSessionId = props.commanderState?.sessionId && sessionMap.has(props.commanderState.sessionId)
     ? props.commanderState.sessionId : undefined
-  const auxiliarySessions = props.sessions.filter((session) => {
-    if (session.id === commanderSessionId) return false
-    const repo = props.panes.find((pane) => pane.sessionId === session.id && pane.repo?.worktreeRoot)?.repo
-    const root = repo?.worktreeRoot
-    return Boolean(root && isAuxiliarySession(session.name, root) &&
-      props.panes.filter((pane) => pane.sessionId === session.id).every((pane) =>
-        pane.repo?.worktreeRoot === root && (pane.path === root || pane.path.startsWith(`${root}/`))))
-  })
-  const auxiliaryIds = new Set(auxiliarySessions.map((session) => session.id))
+  const auxiliaryIds = auxiliarySessionIds(props.sessions, props.panes, commanderSessionId)
+  const auxiliarySessions = props.sessions.filter((session) => auxiliaryIds.has(session.id))
   const containers: SessionTreeContainer[] = [
     ...sessionTreeContainers(preferences, props.sessions.filter((session) => !auxiliaryIds.has(session.id) && session.id !== commanderSessionId), { mode, panes: props.panes })
       .map((container) => ({ ...container, sessionIds: container.sessionIds.filter((id) => !auxiliaryIds.has(id) && id !== commanderSessionId) })),
@@ -298,46 +289,46 @@ export function SessionTree(props: Props) {
     save({ ...preferences, groups })
   }
 
-  const renameSession = async (sessionId: string) => {
+  const renameSession = async (sessionId: string, onError: (message: string) => void = setError) => {
     const session = sessionMap.get(sessionId)
     const name = window.prompt('Rename tmux session', session?.name ?? '')?.trim()
     if (!name || name === session?.name) return
     try { await api.renameSession(sessionId, name); props.onSessionsChanged() }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to rename session') }
+    catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to rename session') }
   }
 
-  const changeIdentity = async (sessionId: string, reset = false) => {
+  const changeIdentity = async (sessionId: string, reset = false, onError: (message: string) => void = setError) => {
     const session = sessionMap.get(sessionId)
     if (!session) return
     const glyph = reset ? null : window.prompt('Choose one emoji for this session', sessionIdentityForName(preferencesRef.current.sessionIdentities ?? {}, session.name).glyph)
     if (!reset && glyph === null) return
-    if (!reset && !isSessionGlyph(glyph)) { setError('Glyph must be a single emoji'); return }
+    if (!reset && !isSessionGlyph(glyph)) { onError('Glyph must be a single emoji'); return }
     try {
       const next = await api.changeIdentity(sessionId, glyph)
       preferenceSaveVersion.current += 1
       preferencesRef.current = next
       setPreferences(next)
       props.onPreferencesChanged(next)
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to update session identity') }
+    } catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to update session identity') }
   }
 
-  const deleteSession = async (sessionId: string, deleteWorktree = false, confirmation?: string | null) => {
+  const deleteSession = async (sessionId: string, deleteWorktree = false, confirmation?: string | null, onError: (message: string) => void = setError) => {
     const session = sessionMap.get(sessionId)
     const label = session?.name ?? sessionId
     let auxiliary: { id: string; name: string }[] = []
     if (deleteWorktree) {
       try { auxiliary = (await api.previewWorktreeDeletion(sessionId)).auxiliarySessions }
-      catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to inspect sessions using this worktree'); return }
+      catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to inspect sessions using this worktree'); return }
     }
     const prompt = deleteWorktree
       ? `${confirmation ? `${confirmation}\n\n` : ''}Delete tmux session “${label}” and its linked worktree?${auxiliary.length ? `\n\nThe following background sessions using this worktree will also be closed:\n${auxiliary.map(({ name }) => `• ${name}`).join('\n')}` : ''}\n\nUncommitted changes in the worktree will be permanently deleted. The git branch will be kept.`
       : confirmation === undefined ? `Delete tmux session “${label}” and all of its windows and panes?` : confirmation
     if (prompt !== null && !window.confirm(prompt)) return
     try { await api.deleteSession(sessionId, deleteWorktree, auxiliary.map(({ id }) => id)); props.onSessionsChanged() }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to delete session') }
+    catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to delete session') }
   }
 
-  const archiveSession = async (sessionId: string, confirmation?: string | null) => {
+  const archiveSession = async (sessionId: string, confirmation?: string | null, onError: (message: string) => void = setError) => {
     const label = sessionMap.get(sessionId)?.name ?? sessionId
     const prompt = confirmation === undefined ? `Archive tmux session “${label}”? Its running processes will stop. ${ARCHIVE_RESTORE_NOTE}` : confirmation
     if (prompt !== null && !window.confirm(prompt)) return
@@ -346,13 +337,10 @@ export function SessionTree(props: Props) {
       setArchives(await api.listArchives())
       setArchivesExpanded(true)
       props.onSessionsChanged()
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to archive session') }
+    } catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to archive session') }
   }
 
-  useImperativeHandle(props.actionsRef, () => ({
-    renameSession, changeIdentity, archiveSession, deleteSession,
-    isAuxiliary: (sessionId) => auxiliaryIds.has(sessionId),
-  }))
+  useImperativeHandle(props.actionsRef, () => ({ renameSession, changeIdentity, archiveSession, deleteSession }))
 
   const restoreSession = async (archive: SessionArchiveSummary) => {
     try {

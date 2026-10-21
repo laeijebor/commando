@@ -1,5 +1,7 @@
 import type { TmuxPane } from '../shared/protocol'
 
+export const ARCHIVE_RESTORE_NOTE = 'Restore will recreate its windows and panes as fresh shells in their saved directories; the worktree is kept.'
+
 export type SessionProcess = { paneId: string; label: string; kind: 'chat' | 'terminal' }
 
 /** What a session is running: its live panes, as chats or terminals, leaving out empty launchers. */

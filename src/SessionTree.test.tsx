@@ -832,7 +832,12 @@ describe('SessionTree', () => {
       await act(() => actions.current!.deleteSession('$2', true, null))
       expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Delete tmux session “Coins everywhere” and its linked worktree\?/))
       expect(sessionApi.deleteSession).toHaveBeenCalledTimes(1)
-      expect(actions.current!.isAuxiliary('$2')).toBe(false)
+      const onError = vi.fn()
+      confirm.mockReturnValue(true)
+      sessionApi.archiveSession.mockRejectedValueOnce(new Error('Daemon said no'))
+      await act(() => actions.current!.archiveSession('$2', null, onError))
+      expect(onError).toHaveBeenCalledWith('Daemon said no')
+      expect(screen.queryByText('Daemon said no')).toBeNull()
     })
 
     it('keeps the dialog open when Escape dismisses directory suggestions, then closes on Escape', async () => {

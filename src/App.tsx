@@ -112,8 +112,9 @@ import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
-import { ARCHIVE_RESTORE_NOTE, SessionTree, type SessionActions } from './SessionTree'
-import { sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
+import { SessionTree, type SessionActions } from './SessionTree'
+import { auxiliarySessionIds } from '../shared/auxiliary-session'
+import { ARCHIVE_RESTORE_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
 import type { AgentChatRequest } from '../shared/agent-chats'
 import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
@@ -2825,29 +2826,37 @@ export function App() {
     setActiveTabs((current) => ({ ...current, [sessionId]: pane.windowId }))
     setPanePalette({ paneId: pane.id, screen: 'conversations', sessionFilter: { id: session.id, name: session.name } })
   }
-  /** The session tree's menu for a read agent's session. Archiving or deleting warns only when other processes would stop with it. */
+  /**
+   * The session tree's menu for a read agent's session, run through the tree so both share its state.
+   * Archiving or deleting warns only when other processes would stop with it; failures show here,
+   * since the tree may be hidden.
+   */
   const commanderPeekSessionActions = (sessionId: string): CommanderPeek['sessionActions'] => {
-    const session = sessionMap.get(sessionId), actions = sessionActionsRef.current
-    if (!session || !actions) return undefined
+    const session = sessionMap.get(sessionId)
+    if (!session) return undefined
     const panes = snapshot?.panes ?? []
+    const run = (action: (actions: SessionActions) => Promise<void>) => () => {
+      setPaneActionError('')
+      if (sessionActionsRef.current) void action(sessionActionsRef.current)
+    }
     const warning = () => sessionProcessesWarning(session.name, sessionProcesses(panes, sessionId, new Set(Object.keys(chats))))
-    const auxiliary = actions.isAuxiliary(sessionId)
+    const auxiliary = auxiliarySessionIds(snapshot?.sessions ?? [], panes, commanderState.sessionId).has(sessionId)
     return [
       { label: 'Open IDE', icon: Code2, onSelect: () => { void openSessionIde(sessionId) } },
-      { label: 'Change glyph…', icon: Pencil, onSelect: () => { void actions.changeIdentity(sessionId) } },
-      { label: 'Reset identity', icon: RotateCcw, onSelect: () => { void actions.changeIdentity(sessionId, true) } },
-      { label: 'Rename', icon: Pencil, onSelect: () => { void actions.renameSession(sessionId) } },
+      { label: 'Change glyph…', icon: Pencil, onSelect: run((actions) => actions.changeIdentity(sessionId, false, setPaneActionError)) },
+      { label: 'Reset identity', icon: RotateCcw, onSelect: run((actions) => actions.changeIdentity(sessionId, true, setPaneActionError)) },
+      { label: 'Rename', icon: Pencil, onSelect: run((actions) => actions.renameSession(sessionId, setPaneActionError)) },
       { label: 'Resume a chat…', icon: RotateCcw, disabled: !connected, onSelect: () => resumeSessionChat(sessionId) },
-      ...auxiliary ? [] : [{ label: 'Archive session', icon: Archive, onSelect: () => {
+      ...auxiliary ? [] : [{ label: 'Archive session', icon: Archive, onSelect: run((actions) => {
         const text = warning()
-        void actions.archiveSession(sessionId, text ? `Archive session “${session.name}”?\n\n${text}\n\n${ARCHIVE_RESTORE_NOTE}` : null)
-      } }],
-      { label: 'Delete session', icon: Trash2, danger: true, onSelect: () => {
+        return actions.archiveSession(sessionId, text ? `Archive session “${session.name}”?\n\n${text}\n\n${ARCHIVE_RESTORE_NOTE}` : null, setPaneActionError)
+      }) }],
+      { label: 'Delete session', icon: Trash2, danger: true, onSelect: run((actions) => {
         const text = warning()
-        void actions.deleteSession(sessionId, false, text ? `Delete session “${session.name}” and all of its windows and panes?\n\n${text}` : null)
-      } },
+        return actions.deleteSession(sessionId, false, text ? `Delete session “${session.name}” and all of its windows and panes?\n\n${text}` : null, setPaneActionError)
+      }) },
       ...!auxiliary && panes.some((pane) => pane.sessionId === sessionId && pane.repo?.isWorktree)
-        ? [{ label: 'Delete session and worktree', icon: FolderX, danger: true, onSelect: () => { void actions.deleteSession(sessionId, true, warning()) } }] : [],
+        ? [{ label: 'Delete session and worktree', icon: FolderX, danger: true, onSelect: run((actions) => actions.deleteSession(sessionId, true, warning(), setPaneActionError)) }] : [],
     ]
   }
   const commanderPeekView = (): CommanderPeek | undefined => {

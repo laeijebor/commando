@@ -20,7 +20,8 @@ export function MenuPopup({
 }) {
   return (
     <MenuPrimitive.Portal>
-      <MenuPrimitive.Positioner className="chat-floating z-[130]" side={side} align={align} sideOffset={sideOffset}>
+      {/* The occluder keeps native terminals and web tiles from drawing over the popup. */}
+      <MenuPrimitive.Positioner className="chat-floating z-[130]" data-native-terminal-occluder="" side={side} align={align} sideOffset={sideOffset}>
         <MenuPrimitive.Popup
           className={cn(
             'max-h-(--available-height) min-w-48 overflow-y-auto rounded-lg border border-input bg-popover p-1 text-sm text-secondary-label shadow-[0_8px_24px_rgb(0_0_0/45%)] outline-none',
