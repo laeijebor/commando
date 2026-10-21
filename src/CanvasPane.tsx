@@ -11,9 +11,10 @@ import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, 
 import { parseCanvasManifest, type CanvasAnnotation, type CanvasManifestResult } from '../shared/canvas-manifest'
 import { canvasTransform, createCanvasCameraStore, fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera, type CanvasCameraStore } from './canvasCamera'
 import { CanvasOverview } from './CanvasOverview'
+import { CanvasPageMenu, canvasPageStatus, type CanvasPageRow } from './CanvasPages'
 import { CanvasHighlights } from './CanvasHighlights'
 import { CanvasHotspots, CanvasTip } from './CanvasHotspotDots'
-import { canvasConnector, canvasLabelBounds } from './canvasGeometry'
+import { canvasConnector, canvasLabelBounds, flyToCanvasRect } from './canvasGeometry'
 import { canvasFrameUrl, useCanvasFrameBridge } from './canvasFrameBridge'
 import { useCanvasFlight } from './canvasFlight'
 import { labelKey, labelsForFrame, type CanvasLabelRef } from './canvasLabels'
@@ -75,6 +76,15 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const initialFit = useRef(false)
   const manifestRef = useRef(result.manifest)
   useLayoutEffect(() => { manifestRef.current = result.manifest })
+  // Only the open page's frames, sections and notes are drawn; the flat lists still span every page.
+  const pageKey = `commando:canvas-page:${artifactId}:${manifestPath}`
+  const [pageChoice, setPageChoice] = useState<string | null>(() => { try { return localStorage.getItem(pageKey) } catch { return null } })
+  const pageCameras = useRef(new Map<string, CanvasCamera>())
+  const { frames: allFrames, sections: allSections, annotations: allAnnotations, title, pages } = result.manifest
+  const page = pages.length ? (pages.find((p) => p.id === pageChoice) ?? pages[0]).id : undefined
+  const frames = useMemo(() => allFrames.filter((frame) => frame.page === page), [allFrames, page])
+  const sections = useMemo(() => allSections.filter((section) => section.page === page), [allSections, page])
+  const annotations = useMemo(() => allAnnotations.filter((note) => note.page === page), [allAnnotations, page])
   // Camera moves write the world transform directly instead of re-rendering.
   // `is-moving` gives the world its own compositor layer only while it moves,
   // so pans skip repainting and Chromium re-rasterises crisply once it settles.
@@ -107,11 +117,11 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const feedbackBusy = comments.busy || layout.busy
   const { flyTo, cancel: cancelFlight } = useCanvasFlight(cameraStore.get, setCamera, viewport)
   const interaction = useCanvasInteraction(result.manifest.frames, (frame) => {
-    initialFit.current = true; setSelected(null); setHovered(null); flyTo(frameBounds(frame))
+    setSelected(null); setHovered(null); showPage(frame.page, frameBounds(frame))
   })
   const live = !readOnly && !commentMode && result.manifest.frames.some((f) => f.id === interaction.state.live && f.interactive) ? interaction.state.live : null
   const frameDrag = useCanvasFrameDrag(layout.preview, layout.move, cancelFlight)
-  const { reports, hotspots, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(result.manifest.frames, baseUrl, revisions, readOnly ? undefined : comments.relay, {
+  const { reports, hotspots, register, hitTest, forwardPending, syncInteraction } = useCanvasFrameBridge(frames, baseUrl, revisions, readOnly ? undefined : comments.relay, {
     live, onInput: (frameId, input) => {
       if (input.type === 'escape') { interaction.act({ type: 'escape' }); cancelFlight() }
       else if (input.type === 'goto') interaction.act({ type: 'goto', id: input.target })
@@ -124,7 +134,7 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       }
     },
   })
-  useEffect(() => { forwardPending(readOnly ? { notes: [], knownUpTo: 0, dropped: 0 } : comments.snapshot) }, [readOnly, comments.snapshot, forwardPending, revisions, result.manifest.frames])
+  useEffect(() => { forwardPending(readOnly ? { notes: [], knownUpTo: 0, dropped: 0 } : comments.snapshot) }, [readOnly, comments.snapshot, forwardPending, revisions, frames])
   const escape = useEffectEvent((event: KeyboardEvent) => {
     if (event.key !== 'Escape' || !(event.target instanceof Node) || !pane.current?.contains(event.target)) return
     ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'escape' }); cancelFlight()
@@ -157,9 +167,29 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     const observer = new ResizeObserver(measure)
     for (const element of elements) observer.observe(element)
     return () => observer.disconnect()
-  }, [result.manifest])
+  }, [result.manifest, page])
 
-  const { frames, sections, annotations, title } = result.manifest
+  /** Opens a page, restoring where you left it; a jump lands on `target` instead. */
+  const showPage = (next: string | undefined, target?: CanvasBounds) => {
+    if (next === undefined || next === page) {
+      if (target) { initialFit.current = true; flyTo(target) }
+      return
+    }
+    if (page !== undefined) pageCameras.current.set(page, cameraStore.get())
+    cancelFlight(); setExportMenu(null); setBadgeTip(null); setSpotlightFrame(null)
+    setPageChoice(next)
+    try { localStorage.setItem(pageKey, next) } catch { /* private mode */ }
+    const node = viewport.current, saved = pageCameras.current.get(next)
+    if (target && node?.clientWidth && node.clientHeight) { initialFit.current = true; setCamera(flyToCanvasRect(target, { w: node.clientWidth, h: node.clientHeight })) }
+    else if (saved) { initialFit.current = true; setCamera(saved) }
+    else initialFit.current = false
+  }
+  const pickPage = (next: string) => {
+    if (next === page) return
+    ++hitSequence.current; comments.close(); setSelected(null); setHovered(null); interaction.act({ type: 'background' })
+    showPage(next)
+  }
+  const framePage = (frameId: string) => allFrames.find((frame) => frame.id === frameId)?.page
   const variantBounds = (frame: typeof frames[number]): CanvasBounds => ({ x: frame.x + 16, y: frame.y - 35 - (sizes[`variant:${frame.id}`]?.h || 165), w: sizes[`variant:${frame.id}`]?.w || 330, h: sizes[`variant:${frame.id}`]?.h || 165 })
   const noteBounds = (note: CanvasAnnotation): CanvasBounds => ({ x: note.x, y: note.y, w: note.w ?? 300, h: sizes[`note:${note.id}`]?.h || 120 })
   const sectionBoxes = useMemo(() => sections.map((section) => {
@@ -240,7 +270,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   }
   useEffect(() => {
     if (!spotlightTarget || !loaded) return
-    const candidates = result.manifest.frames.filter((frame) => !spotlightTarget.frame || frame.id === spotlightTarget.frame)
+    const target = spotlightTarget.frame ? allFrames.find((frame) => frame.id === spotlightTarget.frame) : undefined
+    if (target && target.page !== page) { showPage(target.page, frameBounds(target)); return }
+    const candidates = frames.filter((frame) => !spotlightTarget.frame || frame.id === spotlightTarget.frame)
     for (const frame of candidates) {
       const labels = labelsForFrame(reports, frame.id)
       const index = labels.findIndex((label) => spotlightTarget.labelId ? label.id === spotlightTarget.labelId : label.name === spotlightTarget.label)
@@ -256,9 +288,9 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
       initialFit.current = true; flyTo(frameBounds(candidates[0]))
       if (!spotlightTarget.label && !spotlightTarget.labelId) setSpotlightTarget(null)
     }
-  }, [spotlightTarget, loaded, reports, result.manifest.frames, flyTo])
+  }, [spotlightTarget, loaded, reports, frames, allFrames, page, flyTo])
   const answerable = !readOnly && !!webPaneId
-  const questions = useMemo(() => answerable ? openCanvasQuestions(annotations) : [], [answerable, annotations])
+  const questions = useMemo(() => answerable ? openCanvasQuestions(allAnnotations) : [], [answerable, allAnnotations])
   const questionState = (note: CanvasAnnotation) => {
     const question = canvasQuestion(note)
     if (!question) return null
@@ -268,6 +300,13 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     const sent = delivered?.response.answer === note.answer ? undefined : delivered
     return { question, pending, sent, state: pending ? 'queued' as const : sent ? 'sent' as const : note.answer !== undefined ? 'answered' as const : 'open' as const }
   }
+  const questionRows = answerable ? allAnnotations.flatMap((note) => { const ask = questionState(note); return ask ? [{ note, state: ask.state }] : [] }) : []
+  const openPins = readOnly ? [] : [...comments.threads.filter((thread) => thread.status === 'open').map((thread) => thread.frameId), ...comments.queued.flatMap((note) => note.canvas ? [note.canvas.frameId] : [])]
+  const pageRows: CanvasPageRow[] = pages.map((p) => ({
+    ...p, frames: allFrames.filter((frame) => frame.page === p.id).length, status: canvasPageStatus(allSections.filter((section) => section.page === p.id)),
+    questions: questionRows.filter(({ note, state }) => state === 'open' && note.page === p.id).length,
+    comments: openPins.filter((frameId) => framePage(frameId) === p.id).length,
+  }))
   const reviewListeners = useRef({ pending: new Set<(snapshot: WebPanePendingSnapshot) => void>(), questions: new Set<(page: string, snapshot: RedlinePageQuestionSnapshot) => void>() })
   const reviewState = useRef({ questions, questionsPage, sent: comments.questionSent })
   useLayoutEffect(() => { reviewState.current = { questions, questionsPage, sent: comments.questionSent } })
@@ -280,12 +319,12 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   }, [comments.snapshot, comments.questionSent])
   const reveal = useEffectEvent((selector: string) => {
     setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true
-    const note = annotations.find((n) => n.id === canvasNoteIdFromSelector(selector))
-    if (note) { setNotesVisible(true); flyTo(noteBounds(note)); return }
+    const note = allAnnotations.find((n) => n.id === canvasNoteIdFromSelector(selector))
+    if (note) { setNotesVisible(true); showPage(note.page, noteBounds(note)); return }
     const pending = comments.queued.find((n) => n.selector === selector)
-    const frame = pending?.canvas && frames.find((f) => f.id === pending.canvas!.frameId)
+    const frame = pending?.canvas && allFrames.find((f) => f.id === pending.canvas!.frameId)
     if (!pending?.canvas || !frame) return
-    flyTo({ x: frame.x + pending.canvas.point.x - 40, y: frame.y + pending.canvas.point.y - 40, w: 80, h: 80 })
+    showPage(frame.page, { x: frame.x + pending.canvas.point.x - 40, y: frame.y + pending.canvas.point.y - 40, w: 80, h: 80 })
     ++hitSequence.current; comments.open(`pending:${pending.id}`)
   })
   const reviewSurface = useMemo<TileReviewSurface>(() => ({
@@ -350,11 +389,12 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
   return <div className={`canvas-pane${readOnly ? ' is-snapshot' : ''}`} ref={pane}>
     <div className="canvas-toolbar" role="toolbar" aria-label="Canvas controls">
       <button type="button" aria-label="Toggle overview" aria-pressed={overviewVisible} onClick={() => { setExportMenu(null); setOverviewOverride(!overviewVisible); setHovered(null) }}>☰</button>
+      {pages.length > 1 && !overviewVisible && <CanvasPageMenu pages={pageRows} active={page} onSelect={pickPage} />}
       <button type="button" aria-label="Zoom out" onClick={() => zoom(0.8)}>−</button>
       <output className="canvas-zoom" aria-label="Zoom"><CanvasCameraView store={cameraStore}>{(camera) => `${Math.round(camera.scale * 100)}%`}</CanvasCameraView></output>
       <button type="button" aria-label="Zoom in" onClick={() => zoom(1.25)}>+</button>
       <button type="button" onClick={() => { initialFit.current = true; fit() }}>Fit</button>
-      <button type="button" aria-label="Play" title="Play" aria-pressed={interaction.state.playing} disabled={readOnly || !frames.some((f) => f.focus === 1 || f.interactive)} onClick={() => { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'play' }) }}>▶</button>
+      <button type="button" aria-label="Play" title="Play" aria-pressed={interaction.state.playing} disabled={readOnly || !allFrames.some((f) => f.focus === 1 || f.interactive)} onClick={() => { ++hitSequence.current; setCommentMode(false); comments.close(); interaction.act({ type: 'play' }) }}>▶</button>
       {interaction.state.playing && <button type="button" disabled={!interaction.state.history.length} onClick={() => interaction.act({ type: 'back' })}>Back</button>}
       <span className="canvas-toolbar-separator" />
       <button type="button" aria-label="Notes" title="Notes" aria-pressed={notesVisible} onClick={() => setNotesVisible((visible) => !visible)}>▤</button>
@@ -370,17 +410,18 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     <div className="canvas-body">
       {overviewVisible && <CanvasOverview key={snapshot?.id ?? 'live'} hideThreads={readOnly} frames={frames} annotations={annotations} reports={reports} selected={selected} onHover={setHovered}
         threads={readOnly ? [] : comments.threads} queued={readOnly ? [] : comments.queued}
-        questions={answerable ? annotations.flatMap((note) => { const ask = questionState(note); return ask ? [{ note, state: ask.state }] : [] }) : []} onThread={(thread) => {
-          const frame = frames.find((f) => f.id === thread.frameId)
+        pages={pageRows} page={page} onPage={pickPage} framePage={framePage}
+        questions={questionRows} onThread={(thread) => {
+          const frame = allFrames.find((f) => f.id === thread.frameId)
           if (!frame) return
-          setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true
-          flyTo({ x: frame.x + thread.point.x - 40, y: frame.y + thread.point.y - 40, w: 80, h: 80 })
+          setSpotlightFrame(null); setSelected(null); setHovered(null)
+          showPage(frame.page, { x: frame.x + thread.point.x - 40, y: frame.y + thread.point.y - 40, w: 80, h: 80 })
           ++hitSequence.current; comments.open(thread.id)
         }}
         onSelect={(instance) => { setSpotlightFrame(null); setSelected(instance); initialFit.current = true; flyTo(canvasLabelBounds(frames.find((frame) => frame.id === instance.frameId)!, instance.label.rect)) }}
         onFrame={(frame) => { setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true; flyTo(frameBounds(frame)) }}
         onExport={(frame, anchor) => setExportMenu({ frame, anchor })}
-        onNote={(note) => { setSpotlightFrame(null); setSelected(null); setHovered(null); setNotesVisible(true); initialFit.current = true; flyTo(noteBounds(note)) }} />}
+        onNote={(note) => { setSpotlightFrame(null); setSelected(null); setHovered(null); setNotesVisible(true); showPage(note.page, noteBounds(note)) }} />}
       <div className={`canvas-viewport${panning ? ' is-panning' : ''}${commentMode ? ' is-commenting' : ''}`} ref={viewport}
         onClick={(event) => {
           if (!(event.target as HTMLElement).closest('.canvas-frame, .canvas-note, .canvas-variant, .canvas-section-head, .canvas-pin, .canvas-composer, .canvas-spotlight, .canvas-hotspot')) interaction.act({ type: 'background' })

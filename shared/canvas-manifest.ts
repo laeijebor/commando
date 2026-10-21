@@ -60,13 +60,14 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
     }
     return value
   }
-  const ids = new Set<string>()
-  const id = (obj: Record<string, unknown>, path: string) => {
+  // Page ids only name pages, so they get their own namespace.
+  const ids = new Set<string>(), pageIds = new Set<string>()
+  const id = (obj: Record<string, unknown>, path: string, taken = ids) => {
     const value = string(obj, 'id', path, true)
     if (!value) return undefined
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(value)) { fail(`${path}id`, 'must match ^[A-Za-z0-9_-]{1,64}$'); return undefined }
-    if (ids.has(value)) { fail(`${path}id`, `duplicate id "${value}"`); return undefined }
-    ids.add(value); return value
+    if (taken.has(value)) { fail(`${path}id`, `duplicate id "${value}"`); return undefined }
+    taken.add(value); return value
   }
   type Entry = { value: unknown; path: string; page?: string }
   const entries: Record<'frames' | 'sections' | 'annotations', Entry[]> = { frames: [], sections: [], annotations: [] }
@@ -86,7 +87,7 @@ export function parseCanvasManifest(input: unknown): CanvasManifestResult {
     input.pages.forEach((value, index) => {
       const path = `pages[${index}].`
       if (!record(value)) { fail(path.slice(0, -1), 'must be an object'); return }
-      const pageId = id(value, path), title = string(value, 'title', path, true)
+      const pageId = id(value, path, pageIds), title = string(value, 'title', path, true)
       if (!pageId || !title) return
       manifest.pages.push({ id: pageId, title })
       list(value, 'frames', path, true, pageId); list(value, 'sections', path, false, pageId); list(value, 'annotations', path, false, pageId)

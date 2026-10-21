@@ -49,6 +49,11 @@ describe('canvas manifest', () => {
       expect(manifest.sections[1].frames).toEqual(['c1'])
       expect(manifest.annotations[1].target).toBeUndefined()
     })
+    it('gives page ids their own namespace', () => {
+      const { manifest, errors } = parseCanvasManifest({ title: 'x', pages: [{ id: 'today', title: 'Today', frames: [{ id: 'today', title: 'T', src: 't.html', x: 0, y: 0 }] }, { id: 'today', title: 'Again', frames: [] }] })
+      expect(errors).toEqual(['pages[1].id: duplicate id "today"'])
+      expect(manifest.frames.map((f) => [f.id, f.page])).toEqual([['today', 'today']])
+    })
     it('rejects mixing pages with top-level lists, and empty or malformed pages', () => {
       expect(parseCanvasManifest({ ...paged, frames: [] }).errors).toEqual(['frames: belongs inside a page; a canvas with pages keeps its frames, sections and notes in pages[]'])
       expect(parseCanvasManifest({ title: 'x', pages: [] }).errors).toEqual(['pages: must be a non-empty array of pages'])
