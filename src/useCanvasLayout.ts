@@ -1,8 +1,15 @@
 import { encodeCanvasPath } from '../shared/canvas-manifest'
 import { subscribeCanvasChanges } from './webPanesApi'
 import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { parseCanvasManifest, type CanvasFrame, type CanvasManifestResult, type CanvasMove, type CanvasSection } from '../shared/canvas-manifest'
-import { writeCanvasLayout } from './canvasWrite'
+import { parseCanvasManifest, type CanvasFrame, type CanvasManifest, type CanvasManifestResult, type CanvasMove, type CanvasSection } from '../shared/canvas-manifest'
+import { writeCanvasLayout, type CanvasLayoutChange } from './canvasWrite'
+
+/** Applies a frame or note move; a moved note is fixed unless the move says otherwise. */
+export const applyCanvasMove = (manifest: CanvasManifest, move: CanvasMove): CanvasManifest => ({
+  ...manifest,
+  frames: manifest.frames.map((f) => f.id === move.id ? { ...f, x: move.x, y: move.y } : f),
+  annotations: manifest.annotations.map((n) => n.id === move.id ? { ...n, x: move.x, y: move.y, fixed: move.fixed ?? true } : n),
+})
 
 type ManifestView = {
   baseUrl: string; readOnly: boolean; frames: CanvasFrame[]; onTitle?: (title: string) => void
@@ -43,7 +50,7 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
         if (!disposed && request === sequence && epoch === loadEpoch.current) {
           if (!readOnly) contentHash.current = response.headers?.get('ETag')?.replaceAll('"', '') ?? ''
           const move = readOnly ? null : overlay.current
-          if (move) parsed.manifest.frames = parsed.manifest.frames.map((f) => f.id === move.id ? { ...f, ...move } : f)
+          if (move) parsed.manifest = applyCanvasMove(parsed.manifest, move)
           setResult(parsed); setLoaded(true); viewRef.current?.onTitle?.(parsed.manifest.title || 'Canvas')
         }
       } catch (error) {
@@ -70,9 +77,9 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
 
   const preview = (move: CanvasMove | null) => {
     overlay.current = move
-    if (move) setResult((result) => ({ ...result, manifest: { ...result.manifest, frames: result.manifest.frames.map((f) => f.id === move.id ? { ...f, ...move } : f) } }))
+    if (move) setResult((result) => ({ ...result, manifest: applyCanvasMove(result.manifest, move) }))
   }
-  const write = async (change: Parameters<typeof writeCanvasLayout>[3], after?: () => Promise<unknown>) => {
+  const write = async (change: CanvasLayoutChange, after?: () => Promise<unknown>) => {
     if (lock.current) return
     const lifetime = generation.current
     lock.current = true; ++loadEpoch.current; setBusy(true); setError('')
@@ -95,6 +102,6 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
       }
     }
   }
-  return { hasPreview: () => overlay.current !== null, contentHash, loadEpoch, reload, writing: lock, reloadAfterWrite, overlay, busy, error, preview, move: (move: CanvasMove) => write({ moves: [move] }),
+  return { hasPreview: () => overlay.current !== null, contentHash, loadEpoch, reload, writing: lock, reloadAfterWrite, overlay, busy, error, preview, move: (move: CanvasMove) => write({ moves: [move] }), moveNote: (move: CanvasMove) => write({ notes: [move] }),
     status: (section: CanvasSection, status: CanvasSection['status'], after: () => Promise<unknown>) => write({ statuses: [{ id: section.id, status }] }, after) }
 }

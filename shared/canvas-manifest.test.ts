@@ -102,7 +102,7 @@ describe('canvas manifest', () => {
     expect(parseCanvasManifest({ ...example, sections: [{ ...example.sections[0], [key]: value }] }).errors.some((error) => error.startsWith(`sections[0].${path}:`))).toBe(true)
   })
   it.each([
-    ['id', ''], ['kind', 'bad'], ['x', '1'], ['y', NaN], ['w', 0], ['title', 4], ['text', 3], ['items', 1], ['items[0]', [null]],
+    ['id', ''], ['kind', 'bad'], ['x', '1'], ['y', NaN], ['w', 0], ['fixed', 'yes'], ['title', 4], ['text', 3], ['items', 1], ['items[0]', [null]],
     ['target', false], ['target.frame', { frame: 'absent' }], ['target.frame', {}], ['target.label', { frame: 'accounts', label: 2 }],
   ])('reports invalid annotation field %s', (path, value) => {
     const key = path.startsWith('target.') ? 'target' : path.startsWith('items[') ? 'items' : path

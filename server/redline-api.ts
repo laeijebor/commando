@@ -238,12 +238,12 @@ export class RedlineApi {
       response.end(body)
       return
     }
-    const write = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/(frames|sections)$/.exec(url.pathname)
+    const write = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/(frames|annotations|sections)$/.exec(url.pathname)
     if (write) {
       // Owner only: the agent token is deliberately not accepted for user layout edits.
       if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
       if (request.method !== 'PATCH') throw new HttpError(405, 'Method not allowed')
-      this.writeJson(response, 200, writeCanvas(this.dependencies.artifacts, write[1], await this.readJson(request), write[2] as 'frames' | 'sections'))
+      this.writeJson(response, 200, writeCanvas(this.dependencies.artifacts, write[1], await this.readJson(request), write[2] as 'frames' | 'annotations' | 'sections'))
       return
     }
     await this.authenticate(request, url)
