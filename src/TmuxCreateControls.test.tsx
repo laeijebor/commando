@@ -151,8 +151,11 @@ describe('TmuxCreateControls', () => {
     fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: prompt } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith({ name: 'work', windowName: '', cwd: '', agent: { provider: 'cursor', prompt } }))
-    expect(screen.getByLabelText('Start with')).toHaveValue('cursor')
-    expect(screen.getByLabelText(/Opening prompt/)).toHaveValue('')
+    // The launch callback resolves before React finishes restoring the controlled form after reset().
+    await waitFor(() => {
+      expect(screen.getByLabelText('Start with')).toHaveValue('cursor')
+      expect(screen.getByLabelText(/Opening prompt/)).toHaveValue('')
+    })
   })
 
   it('remembers what each repository starts with and defaults to None elsewhere', async () => {
