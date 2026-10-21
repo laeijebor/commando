@@ -17,7 +17,8 @@ async function renderTabs(webTabs: WebPane[] = [canvas]) {
   const gitApi = { summary: vi.fn(async () => ({ isRepo: true, target: 'main', files: [{ path: 'a.ts', additions: 3, deletions: 1 }] })) } as unknown as GitDiffApiClient
   const prsApi = { pane: vi.fn(async () => ({ targetId: pane.targetId, pullRequests: [pr] })) } as unknown as PrsApiClient
   const renderBuiltin = vi.fn((tab: { key: string }) => <p>Builtin {tab.key}</p>)
-  const renderTab = vi.fn((tab: WebPane) => <p>Web {tab.id}</p>)
+  // An uncontrolled draft keeps its text only while the tab stays mounted.
+  const renderTab = vi.fn((tab: WebPane) => <><p>Web {tab.id}</p><textarea aria-label={`Draft for ${tab.id}`} /></>)
   const props = { pane, chat: <p>Agent chat</p>, gitApi, prsApi, connected: true, titles: {}, simulatorNames: {}, renderBuiltin, renderTab }
   const view = await act(async () => render(<CommanderPeekTabs {...props} webTabs={webTabs} />))
   return { ...props, view, rerender: (tabs: WebPane[]) => view.rerender(<CommanderPeekTabs {...props} webTabs={tabs} />) }
@@ -44,8 +45,23 @@ describe('CommanderPeekTabs', () => {
     expect(renderTab).toHaveBeenLastCalledWith(canvas, true)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
-    expect(screen.queryByText('Web w-canvas')).toBeNull()
     expect(screen.getByText('Agent chat').closest('[role="tabpanel"]')).not.toHaveClass('hidden')
+    // Visited tabs stay mounted, hidden, so an unsent canvas comment or reply survives switching away.
+    expect(screen.getByText('Web w-canvas').closest('[role="tabpanel"]')).not.toBeVisible()
+    expect(screen.getByText('Builtin pr:acme:widgets:12').closest('[role="tabpanel"]')).not.toBeVisible()
+    expect(renderTab).toHaveBeenLastCalledWith(canvas, false)
+    fireEvent.click(screen.getByRole('tab', { name: 'Options' }))
+    expect(screen.getByRole('tabpanel', { name: 'Options' })).toBeVisible()
+    expect(screen.getByText('Builtin pr:acme:widgets:12').closest('[role="tabpanel"]')).not.toBeVisible()
+  })
+
+  it("keeps a tab's unsent draft when you switch to the chat and back", async () => {
+    await renderTabs()
+    fireEvent.click(screen.getByRole('tab', { name: 'Options' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Draft for w-canvas' }), { target: { value: 'Unsent canvas comment' } })
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Options' }))
+    expect(screen.getByRole('textbox', { name: 'Draft for w-canvas' })).toHaveValue('Unsent canvas comment')
   })
 
   it('falls back to the chat when the selected tab closes', async () => {

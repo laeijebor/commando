@@ -12,7 +12,8 @@ import { combinedPanelTabs, isBuiltinTab, type BuiltinPanelTab } from './sidePan
 /**
  * The read agent's chat with its pane's side-panel tabs (session log, changes,
  * PRs, web tiles, simulators) in a strip above it. A selected tab shows in the
- * chat's place; the chat stays mounted so its scroll and draft survive.
+ * chat's place. Like the side panel, the chat and every visited tab stay
+ * mounted while hidden, so scroll positions and unsent drafts survive.
  */
 export function CommanderPeekTabs({ pane, chat, webTabs, gitApi, prsApi, connected, sessionUnseen, sessionWarning, dismissedPrs, titles, simulatorNames, renderBuiltin, renderTab }: {
   pane: TmuxPane
@@ -35,6 +36,11 @@ export function CommanderPeekTabs({ pane, chat, webTabs, gitApi, prsApi, connect
   const prs = list?.targetId === pane.targetId ? list : null
   const tabs = combinedPanelTabs(pane.id, webTabs, summary, prs?.pullRequests ?? [], sessionUnseen, sessionWarning, dismissedPrs)
   const [selectedId, setSelectedId] = useState<string>()
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set())
+  const select = (id: string) => {
+    setSelectedId(id)
+    setVisited((current) => current.has(id) ? current : new Set([...current, id]))
+  }
   // A closed tab falls back to the chat.
   const active = tabs.find((tab) => tab.id === selectedId)
   const panelId = (key: string) => `peek-panel-${pane.id}-${key}`
@@ -50,12 +56,17 @@ export function CommanderPeekTabs({ pane, chat, webTabs, gitApi, prsApi, connect
       {tabs.map((item) => {
         const label = isBuiltinTab(item) ? item.label
           : tabLabel(item, titles[item.id], item.content?.kind === 'simulator' ? simulatorNames[item.content.udid] : undefined)
-        return tab(item.id, item.id === active?.id, label, panelTabIcon(item), () => setSelectedId(item.id), isBuiltinTab(item) ? undefined : item.url || label)
+        return tab(item.id, item.id === active?.id, label, panelTabIcon(item), () => select(item.id), isBuiltinTab(item) ? undefined : item.url || label)
       })}
     </div>
     <div id={panelId('chat')} role="tabpanel" aria-labelledby={`peek-tab-${pane.id}-chat`} className={cn('min-h-0 flex-1 flex-col', active ? 'hidden' : 'flex')}>{chat}</div>
-    {active ? <div id={panelId(active.id)} role="tabpanel" aria-labelledby={`peek-tab-${pane.id}-${active.id}`} className="side-panel-content">
-      <div className="side-panel-tab-body">{isBuiltinTab(active) ? renderBuiltin(active, true, { summary, prs }) : renderTab(active, true)}</div>
-    </div> : null}
+    <div className="side-panel-content" hidden={!active}>
+      {tabs.filter((item) => visited.has(item.id)).map((item) => {
+        const visible = item.id === active?.id
+        return <div key={item.id} id={panelId(item.id)} role="tabpanel" aria-labelledby={`peek-tab-${pane.id}-${item.id}`} className="side-panel-tab-body" hidden={!visible}>
+          {isBuiltinTab(item) ? renderBuiltin(item, visible, { summary, prs }) : renderTab(item, visible)}
+        </div>
+      })}
+    </div>
   </>
 }
