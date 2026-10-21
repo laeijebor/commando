@@ -37,8 +37,9 @@ export function CommanderPeekTabs({ pane, chat, webTabs, gitApi, prsApi, connect
   const [selectedId, setSelectedId] = useState<string>()
   // A closed tab falls back to the chat.
   const active = tabs.find((tab) => tab.id === selectedId)
+  const panelId = (key: string) => `peek-panel-${pane.id}-${key}`
   const tab = (key: string, selected: boolean, label: string, Icon: typeof MessageSquare, onSelect: () => void, title?: string) =>
-    <button key={key} type="button" role="tab" aria-selected={selected} title={title ?? label} onClick={onSelect}
+    <button key={key} id={`peek-tab-${pane.id}-${key}`} type="button" role="tab" aria-selected={selected} aria-controls={panelId(key)} title={title ?? label} onClick={onSelect}
       className={cn('flex h-6 min-w-0 max-w-48 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground [&_svg]:size-3.5 [&_svg]:shrink-0',
         selected && 'bg-accent text-foreground')}>
       <Icon aria-hidden="true" /><span className="truncate">{label}</span>
@@ -52,8 +53,8 @@ export function CommanderPeekTabs({ pane, chat, webTabs, gitApi, prsApi, connect
         return tab(item.id, item.id === active?.id, label, panelTabIcon(item), () => setSelectedId(item.id), isBuiltinTab(item) ? undefined : item.url || label)
       })}
     </div>
-    <div role="tabpanel" className={cn('min-h-0 flex-1 flex-col', active ? 'hidden' : 'flex')}>{chat}</div>
-    {active ? <div role="tabpanel" className="side-panel-content">
+    <div id={panelId('chat')} role="tabpanel" aria-labelledby={`peek-tab-${pane.id}-chat`} className={cn('min-h-0 flex-1 flex-col', active ? 'hidden' : 'flex')}>{chat}</div>
+    {active ? <div id={panelId(active.id)} role="tabpanel" aria-labelledby={`peek-tab-${pane.id}-${active.id}`} className="side-panel-content">
       <div className="side-panel-tab-body">{isBuiltinTab(active) ? renderBuiltin(active, true, { summary, prs }) : renderTab(active, true)}</div>
     </div> : null}
   </>

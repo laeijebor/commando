@@ -3654,7 +3654,10 @@ export function App() {
     )
   }
 
-  /** A web tab (browser, canvas, guide, simulator), in a window group (where it can be dragged) or Commander's reading pane. */
+  /**
+   * A web tab (browser, canvas, guide, simulator), in a window group or Commander's reading pane.
+   * Docking, maximizing and dragging rearrange the tile's own window, so only a group offers them.
+   */
   const renderWebPane = (webPane: WebPane, visible: boolean, groupId?: string) => (
     <WebPaneCard
       key={webPane.id}
@@ -3663,7 +3666,6 @@ export function App() {
       onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
       simulatorActive={activeSimulatorTileId === webPane.id}
       onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
-      onDock={() => void dockWebPane(webPane)}
       onClose={() => void closeWebPane(webPane.id)}
       onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
       wsToken={token}
@@ -3728,6 +3730,12 @@ export function App() {
         setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
       }}
       {...groupId ? {
+        onDock: () => void dockWebPane(webPane),
+        maximized: maximizedPaneId === webPane.id,
+        onMaximize: () => {
+          clearLayoutTimers()
+          setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
+        },
         onDragStart: (event: DragEvent<HTMLElement>) => {
           setDraggedPane({ kind: 'web', groupId, webPaneId: webPane.id })
           event.dataTransfer.effectAllowed = 'move'
@@ -3744,11 +3752,6 @@ export function App() {
         void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
       )}
       reloadRevision={webPaneReloads[webPane.id]}
-      maximized={maximizedPaneId === webPane.id}
-      onMaximize={() => {
-        clearLayoutTimers()
-        setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
-      }}
     />
   )
   /** A built-in panel tab (session log, changes, PR), in the side panel or Commander's reading pane. */

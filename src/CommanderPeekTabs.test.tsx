@@ -29,9 +29,10 @@ describe('CommanderPeekTabs', () => {
     expect(screen.getByRole('tablist', { name: 'Tabs for Disk cleanup' })).toBeInTheDocument()
     expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Chat', 'Session', 'Changes', '#12', 'Options'])
     expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByText('Agent chat')).toBeVisible()
+    expect(screen.getByRole('tabpanel', { name: 'Chat' })).toHaveTextContent('Agent chat')
 
     fireEvent.click(screen.getByRole('tab', { name: '#12' }))
+    expect(screen.getByRole('tabpanel', { name: '#12' })).toHaveTextContent('Builtin pr:acme:widgets:12')
     expect(screen.getByRole('tab', { name: '#12' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('Builtin pr:acme:widgets:12')).toBeInTheDocument()
     expect(renderBuiltin).toHaveBeenLastCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:12' }), true, expect.objectContaining({ prs: expect.objectContaining({ targetId: pane.targetId }) }))
