@@ -45,7 +45,7 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
   const [viewport, setViewport] = useState<Size>({ w: window.innerWidth, h: window.innerHeight })
   const [natural, setNatural] = useState<Size | null>(null)
   const [zoom, setZoom] = useState<ImageZoom>(FIT)
-  const drag = useRef<{ pointerId: number; x: number; y: number; moved: boolean } | null>(null)
+  const drag = useRef<{ pointerId: number; x: number; y: number; moved: boolean; onBackdrop: boolean } | null>(null)
   const [dragging, setDragging] = useState(false)
   const fitted = natural ? fitSize(natural, roomFor(viewport)) : null
   // The wheel listener and keys read the latest values without re-subscribing.
@@ -88,8 +88,25 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
       const factor = Math.min(STEP, Math.max(1 / STEP, Math.exp(-event.deltaY * lines * (pinch ? 0.01 : 0.002))))
       setZoom(zoomAround(current, current.scale * factor, fromCentre(event.clientX, event.clientY), size, room))
     }
+    // Safari and the desktop app's WebKit view report a trackpad pinch as gesture events, not Ctrl-scroll.
+    let pinchFrom = 1
+    const onGestureStart = (event: Event) => {
+      event.preventDefault()
+      pinchFrom = latest.current.zoom.scale
+    }
+    const onGestureChange = (event: Event) => {
+      event.preventDefault()
+      const gesture = event as Event & { scale: number; clientX: number; clientY: number }
+      zoomTo(pinchFrom * gesture.scale, fromCentre(gesture.clientX, gesture.clientY))
+    }
     element.addEventListener('wheel', onWheel, { passive: false })
-    return () => element.removeEventListener('wheel', onWheel)
+    element.addEventListener('gesturestart', onGestureStart)
+    element.addEventListener('gesturechange', onGestureChange)
+    return () => {
+      element.removeEventListener('wheel', onWheel)
+      element.removeEventListener('gesturestart', onGestureStart)
+      element.removeEventListener('gesturechange', onGestureChange)
+    }
   }, [])
 
   useEffect(() => {
@@ -107,8 +124,9 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
 
   const onPointerDown = (event: ReactPointerEvent) => {
     if (event.button !== 0) return
-    drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false }
-    if (zoom.scale > 1) event.currentTarget.setPointerCapture(event.pointerId)
+    // Where the press began: once captured, the release always lands on the viewport itself.
+    drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false, onBackdrop: event.target === event.currentTarget }
+    if (zoom.scale > 1) event.currentTarget.setPointerCapture?.(event.pointerId)
   }
   const onPointerMove = (event: ReactPointerEvent) => {
     const press = drag.current
@@ -124,10 +142,11 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
   }
   const onPointerUp = (event: ReactPointerEvent) => {
     const press = drag.current
+    if (!press || press.pointerId !== event.pointerId) return
     drag.current = null
     setDragging(false)
     // A click on the space around the image closes it, as before; a drag never does.
-    if (press && !press.moved && event.target === event.currentTarget) onClose()
+    if (!press.moved && press.onBackdrop) onClose()
   }
 
   const width = fitted ? fitted.w * zoom.scale : 0
@@ -151,7 +170,11 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
           src={image.src}
           alt={image.name}
           draggable={false}
-          onLoad={(event) => setNatural({ w: event.currentTarget.naturalWidth || 1, h: event.currentTarget.naturalHeight || 1 })}
+          // An SVG with only a viewBox may report no size: it opens filling the room instead.
+          onLoad={(event) => {
+            const { naturalWidth, naturalHeight } = event.currentTarget
+            setNatural(naturalWidth > 0 && naturalHeight > 0 ? { w: naturalWidth, h: naturalHeight } : roomFor(latest.current.viewport))
+          }}
           className={cn('absolute max-w-none rounded-md shadow-[0_8px_24px_rgb(0_0_0/45%)]', zoom.scale === 1 && 'cursor-zoom-in', !fitted && 'invisible')}
           style={fitted ? {
             width,

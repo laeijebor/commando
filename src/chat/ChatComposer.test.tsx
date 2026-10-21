@@ -546,6 +546,19 @@ describe('images in the timeline', () => {
     expect(image.style.width).not.toBe(zoomed)
     fireEvent.keyDown(window, { key: '0' })
     expect(within(viewer).getByRole('button', { name: 'Fit to screen' })).toBeDisabled()
+
+    // Zoomed in, a click on the image (or the first click of a double-click) keeps the viewer open.
+    fireEvent.keyDown(window, { key: '+' })
+    const surface = image.parentElement!
+    fireEvent.pointerDown(image, { pointerId: 1, button: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 10, clientY: 10 })
+    fireEvent.doubleClick(image)
+    expect(screen.getByRole('dialog', { name: 'wide.png' })).toBeInTheDocument()
+    expect(within(viewer).getByRole('button', { name: 'Fit to screen' })).toBeDisabled()
+    // A click on the space around it still closes it.
+    fireEvent.pointerDown(surface, { pointerId: 2, button: 0, clientX: 5, clientY: 5 })
+    fireEvent.pointerUp(surface, { pointerId: 2, clientX: 5, clientY: 5 })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'wide.png' })).toBeNull())
   })
 
   it('waits for a streaming reply to store its image instead of showing a broken one', () => {
