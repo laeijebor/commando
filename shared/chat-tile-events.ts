@@ -53,6 +53,8 @@ export type ChatAutofixEvent = {
   /** Empty when only comments triggered this round. */
   failingChecks: string[]
   comments: { author: string; body: string; url: string }[]
+  /** The base branch the PR conflicted with when the round was sent. */
+  conflictsWith?: string
 }
 
 export type ChatCardEvent = ChatTileEvent | ChatAutofixEvent
