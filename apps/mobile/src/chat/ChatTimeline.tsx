@@ -26,6 +26,7 @@ import { providerPresentation } from '../ui/providerPresentation'
 import { WorkingPulse } from '../ui/ChatIndicator'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
+import { ImageViewer, type ViewableImage } from './ImageViewer'
 import { Markdown } from './Markdown'
 import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
 
@@ -149,6 +150,12 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   )
 }
 
+/** A reply, with the local images it shows (stored by the daemon) loaded from the paired Mac. */
+function AssistantRow({ item }: { item: Extract<ChatItem, { kind: 'assistant_message' }> }) {
+  const { baseUrl } = use(TimelineContext)
+  return <View style={styles.assistant}><Markdown text={item.text} images={item.images} baseUrl={baseUrl} running={item.status === 'running'} /></View>
+}
+
 const Row = memo(function Row({ entry }: { entry: Entry }) {
   const theme = useTheme()
   switch (entry.kind) {
@@ -162,7 +169,7 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
     case 'user':
       return <UserRow item={entry.item} />
     case 'assistant':
-      return <View style={styles.assistant}><Markdown text={entry.item.text} /></View>
+      return <AssistantRow item={entry.item} />
     case 'activity':
       return <WorkGroup row={entry} />
     case 'notice':
@@ -223,17 +230,25 @@ function UserText({ text }: { text: string }): React.JSX.Element {
 export function ImageStrip({ images }: { images: readonly ChatImageRef[] }): React.JSX.Element {
   const { baseUrl } = use(TimelineContext)
   const theme = useTheme()
+  const [open, setOpen] = useState<ViewableImage | null>(null)
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.images} style={styles.imagesScroll}>
-      {images.map((image) => (
-        <Image
-          accessibilityLabel={image.name ?? 'Attached image'}
-          key={image.id}
-          source={{ uri: `${baseUrl}${chatImageUrl(image.id)}` }}
-          style={[styles.image, { borderColor: theme.border, backgroundColor: theme.surface }]}
-        />
-      ))}
-    </ScrollView>
+    <>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.images} style={styles.imagesScroll}>
+        {images.map((image, index) => {
+          const viewable = { uri: `${baseUrl}${chatImageUrl(image.id)}`, name: image.name ?? `Image ${index + 1}` }
+          return (
+            <Pressable key={image.id} onPress={() => setOpen(viewable)} accessibilityRole="imagebutton" accessibilityLabel={`Open ${viewable.name}`}>
+              <Image
+                accessibilityLabel={image.name ?? 'Attached image'}
+                source={{ uri: viewable.uri }}
+                style={[styles.image, { borderColor: theme.border, backgroundColor: theme.surface }]}
+              />
+            </Pressable>
+          )
+        })}
+      </ScrollView>
+      <ImageViewer image={open} onClose={() => setOpen(null)} />
+    </>
   )
 }
 
