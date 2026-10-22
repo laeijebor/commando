@@ -36,6 +36,7 @@ import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 import { Button } from './ui/button'
 import { latestTodos, pendingRequests, withExternalAgentRuns, type SubagentItem } from '../../shared/chat-timeline'
+import { withTileEvents, type ChatTileEvent } from '../../shared/chat-tile-events'
 import { findSubagent, implementPermissionMode, planAwaitingFollowUp, subagentLabel, switcherSubagents } from './turnFlow'
 import './chat.css'
 
@@ -59,6 +60,7 @@ export interface ChatFlowServices {
 }
 
 const EMPTY_EXTERNAL_RUNS: readonly ExternalAgentRun[] = []
+const EMPTY_TILE_EVENTS: readonly ChatTileEvent[] = []
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
 
@@ -92,6 +94,8 @@ export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
 function ChatColumn({
   chat: hostChat,
   externalRuns = EMPTY_EXTERNAL_RUNS,
+  tileEvents = EMPTY_TILE_EVENTS,
+  onOpenTile,
   paneId,
   pane,
   snapshot,
@@ -119,6 +123,10 @@ function ChatColumn({
 }: {
   chat: ChatState
   externalRuns?: readonly ExternalAgentRun[]
+  /** Redline/canvas cards for this chat, from the daemon. */
+  tileEvents?: readonly ChatTileEvent[]
+  /** Brings a tile forward in this pane's side panel; false when it is gone. */
+  onOpenTile?: (webPaneId: string) => boolean
   paneId?: string
   pane?: TmuxPane
   snapshot?: LineageSnapshot
@@ -155,6 +163,8 @@ function ChatColumn({
 }) {
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
+  // Cards only join the timeline; plan follow-ups and the opening task read the conversation itself.
+  const timelineItems = useMemo(() => tileEvents.length ? withTileEvents(chat.items, tileEvents) : chat.items, [chat.items, tileEvents])
   const openingTask = pane?.openedBy ? chat.items.find((item) => item.kind === 'user_message' && !item.parentToolUseId) : undefined
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])
@@ -349,7 +359,8 @@ function ChatColumn({
       ) : (
         <ChatTimeline
           provider={chat.session.provider}
-          items={chat.items}
+          items={timelineItems}
+          {...(onOpenTile ? { onOpenTile } : {})}
           {...(openingTask?.kind === 'user_message' && pane && snapshot ? { userMessageCard: {
             itemId: openingTask.id,
             content: <OpenedChatTask key={openingTask.id} text={stripTaskPreamble(openingTask.text)} pane={pane} snapshot={snapshot} statuses={statuses} onSelectPane={onSelectPane} />,

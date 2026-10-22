@@ -10,6 +10,7 @@ import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
 import { ReplyImage } from './ReplyImage'
 import { SubagentGroup, useNow } from './Subagents'
+import { TileEventCard } from './TileEventCard'
 import { activitySummary, deriveTimelineRows, isWork, mergeActivityRows, patchLines, shortPath, thoughtLabel, type ActivityRow, type ActivitySummary, type QuietTimelineRow, type ReasoningItem, type SubagentItem, type WorkItem } from '../../shared/chat-timeline'
 import { elapsedLabel } from './turnFlow'
 import { WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
@@ -23,7 +24,7 @@ const markdownComponents: Components = {
 }
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0, provider: 'Claude' })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean }>({ items: [], now: 0, provider: 'Claude' })
 
 /** Image addresses reach `ReplyImage` as written: it decides what loads, and a local path is never a link. */
 const keepImageSources: UrlTransform = (url, key, node) => key === 'src' && node.tagName === 'img' ? url : defaultUrlTransform(url)
@@ -288,6 +289,13 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
   const context = use(TimelineContext)
   switch (row.kind) {
     case 'user':
+      if (row.item.tileEvents?.length) {
+        return (
+          <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
+            {row.item.tileEvents.map((event) => <TileEventCard key={event.id} event={event} {...(context.onOpenTile ? { onOpenTile: context.onOpenTile } : {})} />)}
+          </div>
+        )
+      }
       return (
         <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
           {row.item.steered || row.item.relayTo ? (
@@ -322,7 +330,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -338,11 +346,13 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onSavePlan?: SavePlan
   onTask?: (action: ChatTaskAction, agent: SubagentItem) => void
   controlsDisabled?: boolean
+  /** Brings a redline/canvas card's tile forward; false when it is gone. */
+  onOpenTile?: (webPaneId: string) => boolean
 }) {
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
   const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled])
+  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
