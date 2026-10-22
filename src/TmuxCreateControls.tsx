@@ -248,7 +248,7 @@ export function TmuxCreateControls({
   const unavailable = disabled || pending || (probing && !repo)
   const notRepo = Boolean(probeRepo && workingDirectory && repoProbe && repoProbe.directory === workingDirectory && !repoProbe.info.isRepo)
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
-  const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>') : '')
+  const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>', repo.worktreesParent) : '')
   const worktreeRequested = Boolean(repo && worktreeEnabled)
   const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
 

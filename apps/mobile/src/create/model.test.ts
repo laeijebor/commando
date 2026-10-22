@@ -42,6 +42,13 @@ describe('the create form model', () => {
     expect(previewWorktreePath(null, 'x')).toBe('')
   })
 
+  it('follows the daemon worktrees parent when the probe reports one, and sends no path for that default', () => {
+    const repo = { ...REPO, worktreesParent: '/Volumes/Dev/worktrees' }
+    const preview = '/Volumes/Dev/worktrees/commando-worktrees/companion-app'
+    expect(previewWorktreePath(repo, 'companion-app')).toBe(preview)
+    expect(buildSessionRequest({ ...FORM, worktreePath: preview }, repo).worktree).toEqual({ branch: 'companion-app', prepareCommand: 'npm install' })
+  })
+
   it('names the base the branch is cut from', () => {
     expect(baseLabel(REPO)).toBe('origin/main')
     expect(baseLabel({ isRepo: true, mainRoot: '/tmp/repo' })).toBe('HEAD')

@@ -92,7 +92,7 @@ import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
 import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
-import { GitWorktreeService } from './git-worktree.js'
+import { GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
 import { prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
@@ -671,7 +671,7 @@ async function main(): Promise<void> {
   const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
   if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
   const prs = new PrService({ githubDisabledReason: githubOffReason })
-  const gitWorktrees = new GitWorktreeService()
+  const gitWorktrees = new GitWorktreeService(undefined, { worktreesParent: worktreesParentFromEnv(process.env) })
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
   const clients = new Set<ClientState>()
