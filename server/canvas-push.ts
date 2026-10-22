@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 
+import { tileEventMarker } from '../shared/chat-tile-events.js'
 import type { AgentStatus, WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
 
 export const canvasRepoRoot = fileURLToPath(new URL('../', import.meta.url))
@@ -27,6 +28,16 @@ export function canvasPushPrompt(title: string, id: string, notes: readonly WebP
   return [header, ...lines, ...(omitted ? [`… ${omitted} comment(s) omitted; collect the journal for all comments.`] : []), footer].join('\n')
 }
 
+/** Typed into an idle chat when redline answers arrive and the agent isn't polling. */
+export function redlinePushPrompt(title: string, id: string, count: number, repoRoot = canvasRepoRoot): string {
+  id = singleLine(id)
+  const feedbackScript = JSON.stringify(singleLine(resolve(repoRoot, 'scripts/commando-feedback')))
+  return [
+    `Redline feedback on "${clip(singleLine(title), 180)}" (${count} note(s)) — webPaneId ${id}.`,
+    `Run ${feedbackScript} ${id} to collect them (this also acknowledges them), then apply them.`,
+  ].join('\n')
+}
+
 type Dependencies = {
   repoRoot?: string
   pane: (id: string) => WebPane | undefined
@@ -35,11 +46,22 @@ type Dependencies = {
   sendChat: (paneId: string, text: string, requestId: string) => boolean
   status: (paneId: string) => AgentStatus | undefined
   sendTerminal: (paneId: string, text: string) => Promise<void>
+  /** Redline: the notes no poll has picked up yet; only those are pushed. */
+  undelivered?: (webPaneId: string, deliveryKeys: readonly string[]) => string[]
+  /** Redline: the chat has no turn running, so a prompt starts one instead of joining it. */
+  chatIdle?: (paneId: string) => boolean
+  /** Chat card ids for these notes; the prompt names them so the chat shows the cards. */
+  eventIds?: (webPaneId: string, deliveryKeys: readonly string[]) => string[]
+  delivered?: (eventIds: readonly string[]) => void
   /** Anchors mid-paste, shared with other pushers so two prompts never interleave. */
   sending?: Set<string>
 }
 
-/** Push is an in-memory convenience; the acknowledged journal is authoritative. */
+/**
+ * Types sent tile feedback into the owning agent's pane: canvas comments into
+ * a chat or idle terminal agent, redline notes into an idle chat when no poll
+ * picked them up. Push is an in-memory convenience; the acknowledged journal is authoritative.
+ */
 export class CanvasPush {
   private readonly pushed = new Map<string, Set<string>>()
   private readonly owed = new Map<string, Map<string, WebPaneFeedbackNote>>()
@@ -48,12 +70,14 @@ export class CanvasPush {
 
   async deliver(webPaneId: string, notes: readonly WebPaneFeedbackNote[]): Promise<void> {
     const pane = this.deps.pane(webPaneId)
-    if (pane?.content?.kind !== 'canvas') return
+    if (!pane) return
+    const canvas = pane.content?.kind === 'canvas'
+    if (!canvas && (pane.content || !this.deps.owns(pane.anchorPaneId))) return
     const pushed = this.pushed.get(webPaneId) ?? new Set<string>()
     this.pushed.set(webPaneId, pushed)
     const owed = this.owed.get(webPaneId) ?? new Map<string, WebPaneFeedbackNote>()
     this.owed.set(webPaneId, owed)
-    for (const note of notes) if (note.canvas && note.deliveryKey && !pushed.has(note.deliveryKey)) owed.set(note.deliveryKey, note)
+    for (const note of notes) if ((note.canvas || !canvas) && note.deliveryKey && !pushed.has(note.deliveryKey)) owed.set(note.deliveryKey, note)
     await this.flush(webPaneId)
   }
 
@@ -74,11 +98,23 @@ export class CanvasPush {
     if (!pane || !owed?.size) return
     const paneId = pane.anchorPaneId
     if (this.sending.has(paneId)) return
+    const canvas = pane.content?.kind === 'canvas'
     const chat = this.deps.owns(paneId)
+    if (!canvas && !chat) return
     const status = this.deps.status(paneId)
     if (!chat && (!status || status.provider === 'unknown' || status.status !== 'done')) return
+    if (!canvas) {
+      // A poll that already has these notes makes the push redundant.
+      const waiting = new Set(this.deps.undelivered?.(id, [...owed.keys()]) ?? owed.keys())
+      for (const key of [...owed.keys()]) if (!waiting.has(key)) owed.delete(key)
+      if (!owed.size || !(this.deps.chatIdle?.(paneId) ?? true)) return
+    }
     const notes = [...owed.values()], keys = [...owed.keys()]
-    const text = canvasPushPrompt(this.deps.title(pane), id, notes, this.deps.repoRoot)
+    const eventIds = this.deps.eventIds?.(id, keys) ?? []
+    const prompt = canvas
+      ? canvasPushPrompt(this.deps.title(pane), id, notes, this.deps.repoRoot)
+      : redlinePushPrompt(this.deps.title(pane), id, notes.length, this.deps.repoRoot)
+    const text = eventIds.length ? `${prompt}\n${tileEventMarker(eventIds)}` : prompt
     this.sending.add(paneId)
     let delivered = false
     try {
@@ -86,9 +122,10 @@ export class CanvasPush {
       const available = this.deps.status(paneId)
       if (this.deps.pane(id)?.anchorPaneId !== paneId || chat !== this.deps.owns(paneId) || (!chat && (!available || available.status !== 'done' || available.provider === 'unknown'))) return
       if (chat) {
-        if (!this.deps.sendChat(paneId, text, `canvas-${randomUUID()}`)) return
+        if (!this.deps.sendChat(paneId, text, `${canvas ? 'canvas' : 'redline'}-${randomUUID()}`)) return
       } else await this.deps.sendTerminal(paneId, text)
       delivered = true
+      if (eventIds.length) this.deps.delivered?.(eventIds)
       for (const key of keys) { this.pushed.get(id)?.add(key); owed.delete(key) }
       const pushed = this.pushed.get(id)
       while (pushed && pushed.size > 2_000) pushed.delete(pushed.values().next().value!)

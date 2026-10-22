@@ -59,6 +59,16 @@ describe('WebPaneFeedbackStore', () => {
     expect(store.info()['w-11111111']).toEqual({ queued: 0, lastDrainCount: 2, lastDrainAt: 42 })
   })
 
+  it('reports which notes no poll has been handed yet', async () => {
+    const { store } = makeStore()
+    store.enqueue('w-11111111', [note('a', 'k1')])
+    expect(store.undelivered('w-11111111', ['k1', 'k9'])).toEqual(['k1'])
+    await store.drain('w-11111111', 0)
+    store.enqueue('w-11111111', [note('b', 'k2')])
+    expect(store.undelivered('w-11111111', ['k1', 'k2'])).toEqual(['k2'])
+    expect(store.undelivered('w-22222222', ['k2'])).toEqual([])
+  })
+
   it('redelivers unacked notes to a retry (the lost-response case)', async () => {
     const { store } = makeStore()
     store.enqueue('w-11111111', [note('a')])

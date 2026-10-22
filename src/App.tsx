@@ -185,6 +185,7 @@ import {
   type ChatProvider,
   providerTuiLabel,
 } from '../shared/agent-chat'
+import type { ChatTileEvent } from '../shared/chat-tile-events'
 import type { ChatStashEntry } from '../shared/chat-stash'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
@@ -391,6 +392,8 @@ type TerminalPaneProps = {
   /** Set when an agent host drives this pane: the card can show a chat instead of the terminal. */
   chat?: ChatState
   externalRuns?: readonly ExternalAgentRun[]
+  tileEvents?: readonly ChatTileEvent[]
+  onOpenTile?: (webPaneId: string) => boolean
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
   onChatSend?: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
@@ -487,6 +490,8 @@ export function TerminalPaneCard({
   onAcknowledgeMark,
   chat,
   externalRuns,
+  tileEvents,
+  onOpenTile,
   chatView = 'chat',
   onChatView,
   onChatSend,
@@ -789,6 +794,8 @@ export function TerminalPaneCard({
             {...(prsApi ? { prsApi } : {})}
             chat={chat}
             externalRuns={externalRuns}
+            {...(tileEvents ? { tileEvents } : {})}
+            {...(onOpenTile ? { onOpenTile } : {})}
             connected={connected}
             focused={focused}
             onFocus={onFocus}
@@ -1133,6 +1140,7 @@ export function App() {
   const commanderStateVersion = useRef(0)
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
+  const [tileEvents, setTileEvents] = useState<Record<string, ChatTileEvent[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   /** Conversations running in Claude Code that started as a chat. */
   const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())
@@ -1571,8 +1579,12 @@ export function App() {
       case 'chat_external_runs':
         setExternalRuns((current) => ({ ...current, [message.paneId]: message.runs }))
         break
+      case 'chat_tile_events':
+        setTileEvents((current) => ({ ...current, [message.paneId]: message.events }))
+        break
       case 'chat_snapshot':
         setExternalRuns({})
+        setTileEvents({})
         setChats(Object.fromEntries(message.chats.map((chat) => [chat.paneId, chat])))
         break
       case 'chat_stash':
@@ -2227,6 +2239,16 @@ export function App() {
     })
   }
 
+  /** Brings a web tile forward beside its pane; false when the tile is gone. */
+  const revealWebPaneTab = (webPaneId: string): boolean => {
+    const tab = webPanes.find((pane) => pane.id === webPaneId)
+    if (!tab) return false
+    setFocusedPaneId(tab.anchorPaneId)
+    void selectPanelTab(tab)
+    setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
+    return true
+  }
+
   /** Selects a linked PR's side-panel tab on a sub-tab, restoring it first if it was closed. */
   const revealPrTab = (paneId: string, repo: string, number: number, subTab: PrQuickLookTab): boolean | Promise<boolean> => {
     const key = prPanelKey(repo, number)
@@ -2870,7 +2892,7 @@ export function App() {
     const view = chat
       // Not given registerFocusable: the agent's own pane keeps that.
       ? <ChatPane key={row.targetId} paneId={row.paneId} {...(pane ? { pane } : {})} snapshot={snapshot ?? undefined} statuses={agentStatuses}
-          onSelectPane={jumpToPane} prsApi={prsApi} chat={chat} externalRuns={externalRuns[row.paneId] ?? []} connected={connected}
+          onSelectPane={jumpToPane} prsApi={prsApi} chat={chat} externalRuns={externalRuns[row.paneId] ?? []} tileEvents={tileEvents[row.paneId] ?? []} onOpenTile={revealWebPaneTab} connected={connected}
           focused={false} onFocus={() => {}}
           onSend={(text, images, options) => sendChat(row.paneId, text, images, options)}
           onInterrupt={(dropQueued) => interruptChat(row.paneId, dropQueued)}
@@ -4313,6 +4335,8 @@ export function App() {
                             onRetryResume={() => retryAgentResume(pane.targetId)}
                             chat={chats[pane.id]}
                             externalRuns={externalRuns[pane.id]}
+                            {...(tileEvents[pane.id] ? { tileEvents: tileEvents[pane.id] } : {})}
+                            onOpenTile={revealWebPaneTab}
                             chatView={chatViews[pane.id] ?? 'chat'}
                             onChatView={(view) => setChatViews((current) => ({ ...current, [pane.id]: view }))}
                             onChatSend={(text, images, options) => sendChat(pane.id, text, images, options)}
