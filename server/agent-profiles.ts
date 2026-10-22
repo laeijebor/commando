@@ -22,7 +22,7 @@ const MAX_LABEL = 64
 
 type StoredPreferences = { claude: Record<string, { label?: string; hidden?: boolean }>; defaultClaudeConfigDir?: string }
 
-function validLabel(value: unknown): string {
+export function validLabel(value: unknown): string {
   const label = typeof value === 'string' ? value.trim() : ''
   if (!label || label.length > MAX_LABEL || CONTROL_CHARACTER.test(label)) throw new Error(`label must be 1-${MAX_LABEL} characters without control characters`)
   return label
@@ -180,7 +180,7 @@ export class AgentLoginProber {
   }
 
   private async limited<T>(task: () => Promise<T>): Promise<T> {
-    if (this.running >= MAX_CONCURRENT_PROBES) await new Promise<void>((ready) => this.queue.push(ready))
+    while (this.running >= MAX_CONCURRENT_PROBES) await new Promise<void>((ready) => this.queue.push(ready))
     this.running += 1
     try { return await task() } finally {
       this.running -= 1
@@ -194,6 +194,7 @@ export class AgentLoginProber {
     const result = this.limited(probe)
     const stored = { at: this.now(), ttl: LOGGED_IN_TTL_MS, result }
     this.cache.set(key, stored)
+    // Only a login is kept long: a logged-out or failed answer is asked again soon, so a fresh login shows.
     void result.then((value) => { stored.ttl = ok(value) ? LOGGED_IN_TTL_MS : FAILED_TTL_MS }, () => { stored.ttl = 0 })
     return result
   }
@@ -225,7 +226,7 @@ export class AgentLoginProber {
       } catch {
         return { state: 'unknown', error: detail(stdout) || 'claude auth status gave no answer' }
       }
-    }, (status) => status.state !== 'unknown')
+    }, (status) => status.state === 'logged-in')
   }
 
   others(refresh = false): Promise<OtherAgentProfile[]> {
@@ -234,7 +235,8 @@ export class AgentLoginProber {
       {
         provider: 'codex', label: 'Codex', configDir: this.env.CODEX_HOME ?? resolve(this.home, '.codex'),
         commands: ['codex'], args: ['login', 'status'],
-        parse: (stdout, exitCode) => /not logged in/iu.test(stdout) || exitCode !== 0 ? 'logged-out' : /logged in/iu.test(stdout) ? 'logged-in' : 'unknown',
+        // A timeout or crash (no exit code) says nothing about the login.
+        parse: (stdout, exitCode) => exitCode < 0 ? 'unknown' : /not logged in/iu.test(stdout) || exitCode !== 0 ? 'logged-out' : /logged in/iu.test(stdout) ? 'logged-in' : 'unknown',
       },
       {
         provider: 'cursor', label: 'Cursor', configDir: join(this.home, '.cursor'),
@@ -265,7 +267,7 @@ export class AgentLoginProber {
       const state = agent.parse(output, result.exitCode)
       const text = agent.provider === 'cursor' ? cursorDetail(output) : detail(output)
       return { ...base, installed: true, state, detail: text || (state === 'unknown' ? 'No status reported' : '') }
-    }, (result) => result.state !== 'unknown')))
+    }, (result) => result.state === 'logged-in')))
   }
 }
 
@@ -338,8 +340,10 @@ export async function handleAgentProfilesApi(request: IncomingMessage, response:
     if (route === AGENT_PROFILE_ROUTES.claude && request.method === 'POST') {
       const { name, label } = await body(request)
       if (typeof name !== 'string') throw new Error('name is required')
+      // Checked first, so a bad label never leaves a new folder behind.
+      const kept = label === undefined || (typeof label === 'string' && !label.trim()) ? undefined : validLabel(label)
       const configDir = await addClaudeProfile(name, home)
-      if (typeof label === 'string' && label.trim()) await deps.preferences.update({ configDir, label })
+      if (kept) await deps.preferences.update({ configDir, label: kept })
       json(response, 201, { configDir })
       return true
     }

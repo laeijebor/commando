@@ -192,6 +192,8 @@ describe('handleAgentProfilesApi', () => {
     expect(await call('POST', '/api/agent-profiles/claude', { name: 'y', label: 'Spare' })).toEqual({ code: 201, result: { configDir: join(dir, '.claudey') } })
     expect((await call('GET', '/api/agent-profiles'))?.result.claude.map((profile: { label?: string; name: string }) => profile.label ?? profile.name)).toEqual(['claudep', 'claudew', 'Spare'])
     expect((await call('POST', '/api/agent-profiles/claude', { name: 'y' }))?.code).toBe(409)
+    expect(await call('POST', '/api/agent-profiles/claude', { name: 'z', label: 'tab\there' })).toEqual({ code: 400, result: { error: 'label must be 1-64 characters without control characters' } })
+    await expect(stat(join(dir, '.claudez'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('opens a login session for a known profile under a free name and forgets its cached status', async () => {
