@@ -210,6 +210,17 @@ describe('repository sub-groups', () => {
     expect((await store.load(sessions)).repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
   })
 
+  it('accepts a reused id moved back into the group its old session was in, on the first save', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'old' }])
+    const sessions = [{ id: '$1', name: 'new' }]
+    const view = await store.load(sessions)
+    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: [] }])
+    const saved = await store.replace({ ...view, repositoryGroups: [group] }, sessions)
+    expect(saved.repositoryGroups).toEqual([group])
+    expect(saved.sessionNamesById?.$1).toBe('new')
+  })
+
   it('names a newly created group member from the client until tmux reports it', async () => {
     const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
     await store.replace({ ...base, ungroupedSessionIds: ['$3'], repositoryGroups: [{ ...group, sessionIds: [] }], sessionNamesById: { $3: 'deleted' } }, [])

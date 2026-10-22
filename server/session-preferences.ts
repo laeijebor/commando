@@ -406,7 +406,9 @@ export class SessionPreferenceStore {
       const stored = await this.readState()
       // A session newly placed in a repository group is the one the user acted on, so its
       // current name replaces any name left over from an earlier session with the same id.
-      const storedMembers = new Map((stored.repositoryGroups ?? []).map((group) => [group.id, new Set(group.sessionIds)]))
+      // Compare with the reconciled view the client was given: load() can leave stale members on disk.
+      const baseline = reconcileSessionTreePreferences(stored, currentSessions)
+      const storedMembers = new Map((baseline.repositoryGroups ?? []).map((group) => [group.id, new Set(group.sessionIds)]))
       const currentNames = new Map(currentSessions.map((session) => [session.id, session.name]))
       const assignedNames: Record<string, string> = {}
       for (const group of parsed.repositoryGroups ?? []) {
