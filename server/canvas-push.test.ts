@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
-import { CanvasPush, canvasPushPrompt, canvasRepoRoot } from './canvas-push.js'
+import { CanvasPush, canvasPushPrompt, canvasRepoRoot, redlinePushPrompt } from './canvas-push.js'
+import { parseTileEventIds } from '../shared/chat-tile-events.js'
 
 const id = 'w-12345678'
 const note = (key = 'one'): WebPaneFeedbackNote => ({ deliveryKey: key, comment: 'Fix this\nrow', selector: '#row', tag: 'button', rect: { x: 0, y: 0, width: 1, height: 1 }, pageUrl: 'http://localhost/', capturedAt: 1,
@@ -16,7 +17,7 @@ describe('CanvasPush (injected senders only)', () => {
   it('queues through hub.send even while a chat turn is working, and never duplicates a delivery', async () => {
     const f = fixture(true, 'working')
     await f.push.deliver(id, [note()]); await f.push.deliver(id, [note()]); await f.push.statusChanged('%1')
-    expect(f.sendChat).toHaveBeenCalledExactlyOnceWith('%1', canvasPushPrompt('Board', id, [note()]), expect.stringMatching(/^canvas-/))
+    expect(f.sendChat).toHaveBeenCalledExactlyOnceWith('%1', canvasPushPrompt('Board', id, [note()]), expect.stringMatching(/^canvas-/), false)
     expect(f.sendTerminal).not.toHaveBeenCalled()
   })
   it('sends to a done terminal with one literal prompt and remembers it', async () => {
@@ -117,4 +118,43 @@ it('keeps only the last 2000 pushed delivery keys', async () => {
   await f.push.deliver(id, Array.from({ length: 2001 }, (_, i) => note(String(i))))
   await f.push.deliver(id, [note('2000')]); expect(f.sendChat).toHaveBeenCalledTimes(1)
   await f.push.deliver(id, [note('0')]); expect(f.sendChat).toHaveBeenCalledTimes(2)
+})
+
+describe('redline tiles', () => {
+  const redlineNote = (key = 'one'): WebPaneFeedbackNote => ({ deliveryKey: key, comment: 'Plan?: Pro', selector: '#plan', tag: 'redline-choice', rect: { x: 0, y: 0, width: 1, height: 1 }, pageUrl: 'http://127.0.0.1:4310/redline/artifacts/a/p.html', capturedAt: 1,
+    response: { question: 'Plan?', answer: 'Pro' } })
+  function redline({ chat = true, polling = false } = {}) {
+    const sendChat = vi.fn((..._args: unknown[]) => true), sendTerminal = vi.fn(async () => {}), delivered = vi.fn()
+    const push = new CanvasPush({
+      pane: () => ({ id, anchorPaneId: '%1', url: 'http://127.0.0.1:4310/redline/artifacts/a/p.html' }) as WebPane,
+      title: () => 'Plan', owns: () => chat, sendChat, sendTerminal,
+      status: () => ({ paneId: '%1', provider: 'claude', status: 'done' }) as AgentStatus,
+      polling: () => polling, eventIds: () => ['te-1'], delivered,
+    })
+    return { push, sendChat, sendTerminal, delivered }
+  }
+  it('types a queued prompt into an idle chat, tagged with its card', async () => {
+    const f = redline()
+    await f.push.deliver(id, [redlineNote(), redlineNote('two')])
+    expect(f.sendChat).toHaveBeenCalledTimes(1)
+    const [paneId, text, requestId, queue] = f.sendChat.mock.calls[0]!
+    expect(paneId).toBe('%1')
+    expect(text).toBe(`${redlinePushPrompt('Plan', id, 2)}\ncommando-tile-event: te-1`)
+    expect(parseTileEventIds(text as string)).toEqual(['te-1'])
+    expect(requestId).toMatch(/^redline-/)
+    expect(queue).toBe(true)
+    expect(f.delivered).toHaveBeenCalledWith(['te-1'])
+  })
+  it('leaves the notes to a waiting poll', async () => {
+    const f = redline({ polling: true })
+    await f.push.deliver(id, [redlineNote()])
+    expect(f.sendChat).not.toHaveBeenCalled()
+  })
+  it('never types redline notes into a terminal agent', async () => {
+    const f = redline({ chat: false })
+    await f.push.deliver(id, [redlineNote()])
+    await f.push.statusChanged('%1')
+    expect(f.sendChat).not.toHaveBeenCalled()
+    expect(f.sendTerminal).not.toHaveBeenCalled()
+  })
 })

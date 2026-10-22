@@ -9,6 +9,7 @@ import { WebPaneError } from './web-panes.js'
 
 export const MAX_QUEUED_FEEDBACK_NOTES = 50
 export const MAX_FEEDBACK_WAIT_MS = 60_000
+const RECENT_POLL_MS = 5_000
 
 export type FeedbackDrainResult = {
   notes: WebPaneFeedbackNote[]
@@ -176,6 +177,17 @@ export class WebPaneFeedbackStore {
       this.waiters.delete(id)
       for (const waiter of list) waiter.fail(new WebPaneError(404, 'Web pane does not exist'))
     }
+  }
+
+  /**
+   * True while an agent is waiting on this tile's feedback, or was handed
+   * notes in the last few seconds (a Send that settled a waiting poll, or a
+   * poll loop between calls).
+   */
+  polling(webPaneId: string): boolean {
+    if ((this.waiters.get(webPaneId)?.length ?? 0) > 0) return true
+    const drain = this.drains.get(webPaneId)
+    return drain !== undefined && this.now() - drain.at <= RECENT_POLL_MS
   }
 
   info(): Record<string, WebPaneFeedbackInfo> {

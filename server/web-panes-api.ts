@@ -66,7 +66,8 @@ type WebPanesApiDependencies = {
   /** Guide tabs: tick state and "Update agent" delivery. */
   guides?: Guides
   spotlight?: CanvasSpotlightStore
-  onCanvasSent?: (webPaneId: string, notes: WebPaneFeedbackNote[]) => void
+  /** Fired for every Send from any tile, after its notes are queued for the agent. */
+  onFeedbackSent?: (webPaneId: string, notes: WebPaneFeedbackNote[]) => void
   /** Private bytes referenced by pending and sent review notes. */
   attachmentStore: WebPaneAttachmentStore
   /** Fired after any pending-queue mutation so tile viewers can be refreshed. */
@@ -85,6 +86,8 @@ type WebPanesApiDependencies = {
   onReload?: (pane: WebPane) => void
   /** Fired after a URL reopen so chromium tiles return to their registered URL. */
   onReopen?: (pane: WebPane) => void
+  /** Fired once when a new tile is created (not when an open URL is reused). */
+  onOpened?: (pane: WebPane) => void
   /** Agent navigate requests awaiting the owner, and agent-triggered reloads. */
   agentRequests: WebPaneAgentRequests
 }
@@ -434,6 +437,7 @@ export class WebPanesApi {
           this.dependencies.onReopen?.(pane)
         }
         this.adoptPending(pane)
+        if (!existingIds.has(pane.id)) this.dependencies.onOpened?.(pane)
         this.dependencies.onChange()
         writeJson(response, reused ? 200 : 201, {
           ok: true,
@@ -526,7 +530,7 @@ export class WebPanesApi {
           this.dependencies.onPendingChanged?.(route.id, snapshot)
           const added = snapshot.notes[snapshot.notes.length - 1]
           const next = this.dependencies.pending.send(route.id, pane.url, Date.now(),
-            (notes) => this.enqueueCanvasNotes(route.id, notes), [{ id: added.id, revision: added.revision ?? 1 }])
+            (notes) => this.enqueueSent(route.id, notes), [{ id: added.id, revision: added.revision ?? 1 }])
           this.dependencies.onPendingChanged?.(route.id, next)
           if (body.resolve) store.status(route.id, thread.id, 'resolved')
           this.dependencies.onChange()
@@ -591,7 +595,7 @@ export class WebPanesApi {
             throw new HttpError(403, 'Only the owner can submit feedback')
           }
           const notes = parseFeedbackNotes(await readJson(request))
-          this.enqueueCanvasNotes(route.id, notes)
+          this.enqueueSent(route.id, notes)
           this.dependencies.onChange()
           const queued = this.dependencies.feedback.info()[route.id]?.queued ?? 0
           writeJson(response, 200, { ok: true, webPaneId: route.id, queued })
@@ -672,7 +676,7 @@ export class WebPanesApi {
             pane.url,
             Date.now(),
             (feedbackNotes) => {
-              this.enqueueCanvasNotes(route.id, feedbackNotes)
+              this.enqueueSent(route.id, feedbackNotes)
             },
             targets,
             intent,
@@ -990,11 +994,11 @@ export class WebPanesApi {
     }
   }
 
-  private enqueueCanvasNotes(id: string, notes: WebPaneFeedbackNote[]): void {
+  private enqueueSent(id: string, notes: WebPaneFeedbackNote[]): void {
     const prepared = this.dependencies.canvasThreads?.prepare(id, notes) ?? notes
     this.dependencies.feedback.enqueue(id, prepared)
     this.dependencies.canvasThreads?.record(id, prepared)
-    this.dependencies.onCanvasSent?.(id, prepared)
+    this.dependencies.onFeedbackSent?.(id, prepared)
   }
 
   private async writeSpotlightDecision(request: IncomingMessage, response: ServerResponse, id: string, requestId: string, wait: number): Promise<void> {
