@@ -46,7 +46,7 @@ describe('routing a notification', () => {
   it('opens the answer screen for a pending request, flagged as coming from a notification', () => {
     expect(notificationRoute(parseNotificationData(NEEDS_INPUT)!, 'host-1')).toEqual({
       pathname: '/(host)/[hostId]/answer/[paneId]/[interactionId]',
-      params: { hostId: 'host-1', paneId: '%12', interactionId: 'req-1', from: 'notification' },
+      params: { hostId: 'host-1', paneId: '~12', interactionId: 'req-1', from: 'notification' },
     })
   })
 
@@ -54,7 +54,7 @@ describe('routing a notification', () => {
     const done = parseNotificationData({ paneId: '%40', kind: 'done' })!
     expect(notificationRoute(done, 'host-1')).toEqual({
       pathname: '/(host)/[hostId]/pane/[paneId]',
-      params: { hostId: 'host-1', paneId: '%40' },
+      params: { hostId: 'host-1', paneId: '~40' },
     })
   })
 
@@ -62,7 +62,7 @@ describe('routing a notification', () => {
     expect(notificationRoute(parseNotificationData(NEEDS_INPUT)!, 'host-1', PUSH_ACTIONS.openPane))
       .toEqual({
         pathname: '/(host)/[hostId]/pane/[paneId]',
-        params: { hostId: 'host-1', paneId: '%12' },
+        params: { hostId: 'host-1', paneId: '~12' },
       })
   })
 

@@ -14,6 +14,7 @@ import {
 import { useTheme } from '../theme'
 import { canStream, tileTitle } from '../tiles/list'
 import { Pill, SectionHeader, StatusDot, withAlpha } from './primitives'
+import { routeParams } from '../layout/routeParams'
 
 /**
  * Adds a window to a session, splits a window's active pane, or opens a tile.
@@ -35,7 +36,7 @@ function useTreeRoutes(): {
     }),
     newPane: (targetId) => router.push({
       pathname: '/(host)/[hostId]/new-pane',
-      params: { hostId: hostId ?? '', targetId },
+      params: routeParams({ hostId: hostId ?? '', targetId }),
     }),
     // A tile that cannot stream to the phone goes to the list, where it can be
     // confirmed or reopened as chromium.
