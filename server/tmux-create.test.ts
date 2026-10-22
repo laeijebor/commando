@@ -946,6 +946,13 @@ describe('chatProfileConfigDir', () => {
     expect(chatProfileConfigDir(undefined, profiles)).toBe('/h/.claudep')
     expect(chatProfileConfigDir('/h/.claudew', [])).toBeUndefined()
   })
+
+  it('prefers the default chosen in Settings over the most recent when nothing is remembered', () => {
+    const chosen = [{ ...profiles[0]!, isDefault: true }, profiles[1]!]
+    expect(chatProfileConfigDir(undefined, chosen)).toBe('/h/.claudew')
+    expect(chatProfileConfigDir('/h/.claudep', chosen)).toBe('/h/.claudep')
+    expect(defaultClaudeProfile(chosen)?.configDir).toBe('/h/.claudew')
+  })
 })
 
 describe('Codex chat creation', () => {
