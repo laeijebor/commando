@@ -440,6 +440,10 @@ describe('pane close and create shortcuts', () => {
   it("offers no close button on a session's only pane once it is empty", async () => {
     await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }]))
     expect(screen.queryByRole('button', { name: 'Close empty pane' })).not.toBeInTheDocument()
+    fireEvent.focus(screen.getByRole('region', { name: 'Empty pane' }))
+    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+    await act(async () => { await Promise.resolve() })
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/delete'), expect.anything())
   })
 
   it('launches a Codex chat in an empty pane with the remembered Codex permission mode', async () => {

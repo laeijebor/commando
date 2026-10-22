@@ -3201,9 +3201,12 @@ export function App() {
     }
   }
 
+  /** Closing a session's only pane leaves it empty, so an empty one has nothing to close. */
+  const canClosePane = (pane: TmuxPane) => !pane.empty || Boolean(snapshot?.panes.some((other) => other.sessionId === pane.sessionId && other.id !== pane.id))
+
   const killPane = async (paneId: string) => {
     const pane = paneMap.get(paneId)
-    if (!pane || paneActionPending) return
+    if (!pane || paneActionPending || !canClosePane(pane)) return
     const label = pane.title || pane.command || `Pane ${pane.index}`
     // An empty pane runs nothing worth confirming.
     if (!pane.empty && !window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
@@ -4259,7 +4262,7 @@ export function App() {
                             <div key={rendererIdentity} className="conversation-picker-anchor empty-pane-anchor" data-pane-id={pane.id}
                               onPointerDown={() => setFocusedPaneId(pane.id)} onFocusCapture={() => setFocusedPaneId(pane.id)}>
                               <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} focusRef={(node) => registerFocusable(pane.id, node)}
-                                onClose={connected && (snapshot?.panes.some((other) => other.sessionId === pane.sessionId && other.id !== pane.id) ?? false) ? () => { void killPane(pane.id) } : undefined}
+                                onClose={connected && canClosePane(pane) ? () => { void killPane(pane.id) } : undefined}
                                 onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
                               {palettePaneId === pane.id ? panePaletteNode : null}
                             </div>,
