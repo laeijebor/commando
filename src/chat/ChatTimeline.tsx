@@ -18,8 +18,13 @@ import { elapsedLabel } from './turnFlow'
 import { WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
+/** Inline code that is only a web address, as agents often write a URL in backticks. Fenced code ends in a newline, so it never matches. */
+const CODE_URL = /^https?:\/\/\S+$/
 const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+  code: ({ node: _node, ...props }) => typeof props.children === 'string' && CODE_URL.test(props.children)
+    ? <a href={props.children} target="_blank" rel="noreferrer"><code {...props} /></a>
+    : <code {...props} />,
   pre: MarkdownPre,
   // Wide tables scroll sideways; the frame lets a reply's table grow past the text column.
   table: ({ node: _node, ...props }) => <div className="chat-table-scroll"><div className="chat-table-frame"><table {...props} /></div></div>,

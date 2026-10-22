@@ -180,8 +180,8 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
   ].join('\n')
 }
 
-/** Told to agents in a Commando chat, which renders Markdown images; a terminal pane would not. */
-export const CHAT_IMAGE_INSTRUCTIONS = 'This is a Commando chat, which shows Markdown images inline. When you make or capture an image the user should see (a screenshot, a render, a chart, a PR Lens diagram), show it in your reply as a Markdown image with its file path, for example ![Slide preview](/absolute/path/slide.png). PNG, JPEG, GIF, WebP and SVG are shown; a path in plain text or backticks is not. Keep listing paths of other files as text.'
+/** Told to agents in a Commando chat, which renders Markdown images and links; a terminal pane would not. */
+export const CHAT_IMAGE_INSTRUCTIONS = 'This is a Commando chat, which shows Markdown images inline. When you make or capture an image the user should see (a screenshot, a render, a chart, a PR Lens diagram), show it in your reply as a Markdown image with its file path, for example ![Slide preview](/absolute/path/slide.png). PNG, JPEG, GIF, WebP and SVG are shown; a path in plain text or backticks is not. Keep listing paths of other files as text. Links are clickable: write a URL the user should open bare or as a Markdown link, for example [Preview](http://127.0.0.1:4330/page), not in backticks.'
 
 /** Muse runs Claude Code-style hooks, so it shares the Claude bridge with a few differences. */
 type ClaudeBridgeProvider = 'claude' | 'muse'
