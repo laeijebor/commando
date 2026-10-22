@@ -154,10 +154,11 @@ export class ChatTileEvents {
     for (const paneId of touched) this.publishPane(paneId, this.forPane(paneId))
   }
 
-  private trimOldest(): void {
+  /** Drops the oldest events across chats until at most `keep` remain. */
+  private trimOldest(keep = TILE_EVENTS_TOTAL): void {
     const all = this.all()
-    if (all.length <= TILE_EVENTS_TOTAL) return
-    const dropped = new Set(all.sort((a, b) => a.at - b.at).slice(0, all.length - TILE_EVENTS_TOTAL).map((event) => event.id))
+    if (all.length <= keep) return
+    const dropped = new Set(all.sort((a, b) => a.at - b.at).slice(0, all.length - keep).map((event) => event.id))
     for (const [paneId, list] of this.panes) {
       const kept = list.filter((event) => !dropped.has(event.id))
       if (kept.length) this.panes.set(paneId, kept)
@@ -179,7 +180,13 @@ export class ChatTileEvents {
     try {
       mkdirSync(dirname(this.path), { recursive: true })
       const temporary = `${this.path}.${process.pid}.tmp`
-      writeFileSync(temporary, JSON.stringify(this.all()), { mode: 0o600 })
+      // The loader ignores an oversized file, so never write one: drop the oldest tenth until it fits.
+      let json = JSON.stringify(this.all())
+      while (Buffer.byteLength(json) > TILE_EVENTS_BYTES && this.all().length > 0) {
+        this.trimOldest(Math.floor(this.all().length * 0.9))
+        json = JSON.stringify(this.all())
+      }
+      writeFileSync(temporary, json, { mode: 0o600 })
       renameSync(temporary, this.path)
     } catch (error) {
       console.warn('[commando] could not save chat tile events', error)

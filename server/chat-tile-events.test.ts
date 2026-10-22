@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
-import { ChatTileEvents, TILE_EVENTS_PER_PANE, TILE_EVENTS_TOTAL } from './chat-tile-events.js'
+import { ChatTileEvents, TILE_EVENTS_BYTES, TILE_EVENTS_PER_PANE, TILE_EVENTS_TOTAL } from './chat-tile-events.js'
 
 const pane = { id: 'w-1', anchorPaneId: '%5', url: 'http://127.0.0.1:4310/redline/artifacts/abc/settings.html', title: '' } as WebPane
 const answer = (key: string, extra: Partial<WebPaneFeedbackNote> = {}): WebPaneFeedbackNote => ({
@@ -98,5 +98,20 @@ describe('ChatTileEvents', () => {
     const total = Array.from({ length: 20 }, (_, index) => events.forPane(`%${index}`)).flat()
     expect(total).toHaveLength(TILE_EVENTS_TOTAL)
     expect(total.some((event) => event.id === 'te-1' || event.id === 'te-2')).toBe(false)
+  })
+
+  it('never writes a file larger than the loader accepts', () => {
+    const events = store()
+    const big = 'x'.repeat(1_900)
+    const notes = Array.from({ length: 50 }, (_, index) => answer(`k${index}`, { response: { question: big, answer: big, note: big } }))
+    for (let send = 0; send < 30; send += 1) {
+      clock += 1
+      events.sent(pane, 'redline', notes.map((note, index) => ({ ...note, deliveryKey: `s${send}-${index}` })))
+    }
+    expect(readFileSync(path).byteLength).toBeLessThanOrEqual(TILE_EVENTS_BYTES)
+    const reloaded = store().forPane('%5')
+    expect(reloaded.length).toBeGreaterThan(0)
+    expect(reloaded.length).toBeLessThan(30)
+    expect(reloaded.at(-1)!.at).toBe(clock)
   })
 })
