@@ -2,6 +2,7 @@ import { AgentChatsApi } from './agent-chats-api.js'
 import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
+import { AgentLoginProber, AgentProfilePreferences, handleAgentProfilesApi } from './agent-profiles.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { CanvasPush } from './canvas-push.js'
 import { ChatTileEvents, defaultChatTileEventsPath } from './chat-tile-events.js'
@@ -1973,6 +1974,8 @@ async function main(): Promise<void> {
     sending: agentPushes,
   })
   const repoPrepareCommands = new RepoPrepareCommands(defaultRepoPrepareCommandsPath(port))
+  const agentProfilePreferences = new AgentProfilePreferences()
+  const agentLoginProber = new AgentLoginProber()
   const agentChatsApi = new AgentChatsApi({
     agentToken: agentHookToken,
     ownerAuthorized: requestIsAuthorized,
@@ -2876,6 +2879,11 @@ async function main(): Promise<void> {
         if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleRepoPrepareCommands(request, response, url, repoPrepareCommands)) return
+        if (await handleAgentProfilesApi(request, response, url, {
+          preferences: agentProfilePreferences, prober: agentLoginProber, creator: tmuxCreator,
+          sessionNames: () => snapshot.sessions.map((session) => session.name),
+          refreshSnapshot: async () => { await refreshSnapshotFresh() },
+        })) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await sessionIdeApi.handle(request, response, url)) return
@@ -2897,6 +2905,7 @@ async function main(): Promise<void> {
           async () => {
             await refreshSnapshot()
           },
+          () => agentProfilePreferences.claudeProfiles({ includeHidden: false }),
         )) return
         writeJson(response, 404, { error: 'Not found' })
         return

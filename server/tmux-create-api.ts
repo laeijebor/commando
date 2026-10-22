@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { TmuxCreateResponse } from '../shared/tmux-create.js'
+import type { ClaudeProfile, TmuxCreateResponse } from '../shared/tmux-create.js'
 import { GitWorktreeError, type GitWorktreeErrorKind } from './git-worktree.js'
 import { listClaudeProfiles, TmuxCreateCommandError, TmuxCreator } from './tmux-create.js'
 
@@ -57,10 +57,12 @@ export async function handleTmuxCreateApi(
   creator: TmuxCreator,
   beforePaneCreated: (targetId: string) => Promise<void>,
   onCreated: () => Promise<void>,
+  /** The profiles pickers offer; Settings can label, default and hide them. */
+  claudeProfiles: () => Promise<ClaudeProfile[]> = listClaudeProfiles,
 ): Promise<boolean> {
   if (!url.pathname.startsWith(`${ROOT}/`)) return false
   if (url.pathname === `${ROOT}/claude-profiles` && request.method === 'GET') {
-    json(response, 200, { profiles: await listClaudeProfiles() })
+    json(response, 200, { profiles: (await claudeProfiles()).map(({ name, configDir, lastUsedAt, label, isDefault }) => ({ name, configDir, ...(lastUsedAt === undefined ? {} : { lastUsedAt }), ...(label ? { label } : {}), ...(isDefault ? { isDefault } : {}) })) })
     return true
   }
   if (request.method !== 'POST') {
