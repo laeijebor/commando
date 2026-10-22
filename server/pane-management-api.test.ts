@@ -256,6 +256,26 @@ describe('pane management API', () => {
     expect(onPanesChanged).toHaveBeenCalled()
   })
 
+  it("reports a session's last pane as emptied, respawned in its current folder", async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValueOnce({ stdout: '1 1\n', stderr: '' }).mockResolvedValue({ stdout: '', stderr: '' })
+    const api = new PaneManagementApi({
+      actions: new TmuxPaneActions(execute, {}),
+      currentPaneIds: () => ['%12'],
+      panePath: () => '/work/app',
+    })
+    const baseUrl = await startApi(api)
+
+    const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmPaneId: '%12' }),
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ ok: true, paneId: '%12', emptied: true })
+    expect(execute.mock.calls[1][1].slice(0, 6)).toEqual(['respawn-pane', '-k', '-t', '%12', '-c', '/work/app'])
+  })
+
   it('requires the exact pane confirmation id', async () => {
     const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '', stderr: '' })
     const api = new PaneManagementApi({

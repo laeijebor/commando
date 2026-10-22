@@ -220,9 +220,9 @@ export class PaneManagementApi {
         throw new HttpError(400, 'Deletion requires an exact confirmPaneId')
       }
       await this.dependencies.beforePaneDeleted?.(route.paneId)
-      await this.actions.delete(route.paneId)
+      const outcome = await this.actions.delete(route.paneId, this.dependencies.panePath(route.paneId))
       await this.dependencies.onPanesChanged?.()
-      writeJson(response, 200, { ok: true, paneId: route.paneId })
+      writeJson(response, 200, { ok: true, paneId: route.paneId, ...(outcome === 'emptied' ? { emptied: true } : {}) })
       return true
     } catch (error) {
       if (error instanceof HttpError) {
