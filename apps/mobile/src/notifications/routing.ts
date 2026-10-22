@@ -1,4 +1,5 @@
 import type { AgentInteractionAnswer } from '@commando/protocol'
+import { routeParams } from '../layout/routeParams'
 
 /**
  * The payload `server/push-notifier.ts` puts on every notification. It has no
@@ -78,15 +79,15 @@ export function notificationRoute(
   if (!wantsPane && data.kind === 'needs_input' && data.interactionId) {
     return {
       pathname: '/(host)/[hostId]/answer/[paneId]/[interactionId]',
-      params: {
+      params: routeParams({
         hostId,
         paneId: data.paneId,
         interactionId: data.interactionId,
         from: 'notification',
-      },
+      }),
     }
   }
-  return { pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId, paneId: data.paneId } }
+  return { pathname: '/(host)/[hostId]/pane/[paneId]', params: routeParams({ hostId, paneId: data.paneId }) }
 }
 
 /**

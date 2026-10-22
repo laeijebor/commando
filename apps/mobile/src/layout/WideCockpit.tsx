@@ -21,6 +21,7 @@ import { SessionsPanel, useSessionsView } from '../ui/SessionsPanel'
 import { chooseFocusedPane } from './focus'
 import { useFocusedPaneId, useFocusStore } from './focusStore'
 import { HUD_COLUMN_WIDTH, SESSIONS_COLUMN_WIDTH, type LayoutMode } from './useLayoutMode'
+import { routeParams } from './routeParams'
 
 /** The HUD column shows everything but the screenshots, which stay in the sheet. */
 const HUD_SECTIONS = ['worklog', 'changes', 'pr', 'ports'] as const
@@ -142,7 +143,7 @@ export function WideCockpit({
                 if (canStream(tile)) {
                   router.push({
                     pathname: '/(host)/[hostId]/tile/[tileId]',
-                    params: { hostId, tileId: tile.id, fromPaneId: paneId },
+                    params: routeParams({ hostId, tileId: tile.id, fromPaneId: paneId }),
                   })
                   return
                 }

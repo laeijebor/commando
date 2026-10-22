@@ -1,4 +1,5 @@
-import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
+import { useIsFocused, useRouter } from 'expo-router'
+import { useRouteParams } from '../../../../../src/layout/routeParams'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { StyleSheet } from 'react-native'
 
@@ -16,7 +17,7 @@ export default function PaneInfoScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
   const focused = useIsFocused()
-  const { hostId, paneId } = useLocalSearchParams<{ hostId: string; paneId: string }>()
+  const { hostId, paneId } = useRouteParams<{ hostId: string; paneId: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const state = useDaemonConnection(host)
 

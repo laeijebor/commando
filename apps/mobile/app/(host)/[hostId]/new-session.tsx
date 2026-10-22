@@ -39,6 +39,7 @@ import { useTheme } from '../../../src/theme'
 import { CreateSheet } from '../../../src/ui/CreateSheet'
 import { FormError, RowGroup, TextRow, ToggleRow, ValueRow } from '../../../src/ui/formPrimitives'
 import { Meta, SectionHeader } from '../../../src/ui/primitives'
+import { routeParams } from '../../../src/layout/routeParams'
 
 const REPO_PROBE_DEBOUNCE_MS = 200
 
@@ -132,7 +133,7 @@ export default function NewSessionScreen(): React.JSX.Element {
   const submit = useCallback(async () => {
     if (!host) return
     if (createdTarget.current) {
-      router.replace({ pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId: hostId ?? '', paneId: createdTarget.current.paneId } })
+      router.replace({ pathname: '/(host)/[hostId]/pane/[paneId]', params: routeParams({ hostId: hostId ?? '', paneId: createdTarget.current.paneId }) })
       return
     }
     setBusy(true)
@@ -155,7 +156,7 @@ export default function NewSessionScreen(): React.JSX.Element {
       }
       router.replace({
         pathname: '/(host)/[hostId]/pane/[paneId]',
-        params: { hostId: hostId ?? '', paneId: created.paneId },
+        params: routeParams({ hostId: hostId ?? '', paneId: created.paneId }),
       })
     } catch (createError) {
       const compatibilityError = createError instanceof TmuxAgentLaunchCompatibilityError

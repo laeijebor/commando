@@ -39,7 +39,7 @@ it('defaults to Claude chat and creates Cursor with one interactive request, nav
   expect(createTmuxSession).toHaveBeenCalledTimes(1)
   expect(createTmuxSession).toHaveBeenCalledWith(expect.any(Object), { name: 'cursor', agent: { provider: 'cursor', prompt } })
   expect(runInPane).not.toHaveBeenCalled()
-  expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId: 'host-1', paneId: '%7' } })
+  expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId: 'host-1', paneId: '~7' } })
 })
 
 it('keeps the form and shows creation errors without detached launch or navigation', async () => {
@@ -59,7 +59,7 @@ it('offers the already created pane after a preferences error without creating t
   expect(screen.getByText(/Session cursor was created, but preferences could not be saved/)).toBeTruthy()
   await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Open session' })) })
   expect(createTmuxSession).toHaveBeenCalledTimes(1)
-  expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '%7' } }))
+  expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '~7' } }))
 })
 
 it.each(['old-host', 'wrong-provider', 'api-error'])('preserves and opens the created target after %s without silently claiming launch or creating twice', async (scenario) => {
@@ -76,7 +76,7 @@ it.each(['old-host', 'wrong-provider', 'api-error'])('preserves and opens the cr
   fireEvent.changeText(screen.getByLabelText('Name'), '')
   await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Open session' })) })
   expect(createTmuxSession).toHaveBeenCalledTimes(1)
-  expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '%7' } }))
+  expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '~7' } }))
 })
 
 it.each([
@@ -90,7 +90,7 @@ it.each([
   fireEvent.changeText(screen.getByLabelText('Opening prompt'), 'Hello from the phone')
   await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Create' })) })
   expect(createTmuxSession).toHaveBeenCalledWith(expect.any(Object), { name: 'cursor', agent: { provider, permissionMode, prompt: 'Hello from the phone' } })
-  expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '%7' } }))
+  expect(mockRouter.replace).toHaveBeenCalledWith(expect.objectContaining({ params: { hostId: 'host-1', paneId: '~7' } }))
 })
 it('resets permissions when switching providers and hides the picker for CLI agents', async () => {
   await openScreen()

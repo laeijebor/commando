@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useRouter } from 'expo-router'
+import { routeParams, useRouteParams } from '../layout/routeParams'
 import {
   Platform,
   Pressable,
@@ -51,7 +52,7 @@ type AnswerParams = {
 export function AnswerScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
-  const { hostId, paneId, interactionId, from } = useLocalSearchParams<AnswerParams>()
+  const { hostId, paneId, interactionId, from } = useRouteParams<AnswerParams>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const state = useDaemonConnection(host)
 
@@ -71,7 +72,7 @@ export function AnswerScreen(): React.JSX.Element {
   const openPane = useCallback((replace: boolean): void => {
     const target = {
       pathname: '/(host)/[hostId]/pane/[paneId]' as const,
-      params: { hostId: hostId ?? '', paneId: paneId ?? '' },
+      params: routeParams({ hostId: hostId ?? '', paneId: paneId ?? '' }),
     }
     if (replace) router.replace(target)
     else router.push(target)

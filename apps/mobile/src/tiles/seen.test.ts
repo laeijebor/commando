@@ -21,6 +21,6 @@ it('resolves titles through title, URL host and native content kind', () => {
   expect(tileTitle({ ...web, url: '' })).toBe('Web')
 })
 it('returns a browser opened from a pane to that pane rather than the chat list', () => {
-  expect(tileReturnTarget('h1', '%14')).toEqual({ pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId: 'h1', paneId: '%14' } })
+  expect(tileReturnTarget('h1', '%14')).toEqual({ pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId: 'h1', paneId: '~14' } })
   expect(tileReturnTarget('h1').pathname).toBe('/(host)/[hostId]/tiles')
 })

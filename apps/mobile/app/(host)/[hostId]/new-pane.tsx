@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useRouter } from 'expo-router'
+import { routeParams, useRouteParams } from '../../../src/layout/routeParams'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 
 import type { TmuxSplitDirection, TmuxSplitPlacement } from '@commando/tmux-create'
@@ -28,7 +29,7 @@ type Target = { id: string; label: string; detail: string }
 export default function NewPaneScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
-  const { hostId, targetId: initialTargetId } = useLocalSearchParams<{
+  const { hostId, targetId: initialTargetId } = useRouteParams<{
     hostId: string
     targetId?: string
   }>()
@@ -85,7 +86,7 @@ export default function NewPaneScreen(): React.JSX.Element {
       })
       router.replace({
         pathname: '/(host)/[hostId]/pane/[paneId]',
-        params: { hostId: hostId ?? '', paneId: created.paneId },
+        params: routeParams({ hostId: hostId ?? '', paneId: created.paneId }),
       })
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Splitting the pane failed')

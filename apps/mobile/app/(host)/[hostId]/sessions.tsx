@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
+import { useIsFocused, useRouter } from 'expo-router'
+import { routeParams, useRouteParams } from '../../../src/layout/routeParams'
 import { Pressable, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
@@ -25,7 +26,7 @@ export default function SessionsScreen(): React.JSX.Element {
   const router = useRouter()
   const mode = useLayoutMode()
   const focused = useIsFocused()
-  const { hostId, focus } = useLocalSearchParams<{ hostId: string; focus?: string }>()
+  const { hostId, focus } = useRouteParams<{ hostId: string; focus?: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const refreshReachability = useHostsStore((state) => state.refreshReachability)
   const state = useDaemonConnection(host)
@@ -37,7 +38,7 @@ export default function SessionsScreen(): React.JSX.Element {
   const openPane = (paneId: string): void => {
     router.push({
       pathname: '/(host)/[hostId]/pane/[paneId]',
-      params: { hostId: hostId ?? '', paneId },
+      params: routeParams({ hostId: hostId ?? '', paneId }),
     })
   }
 
@@ -51,7 +52,7 @@ export default function SessionsScreen(): React.JSX.Element {
     }
     router.push({
       pathname: '/(host)/[hostId]/answer/[paneId]/[interactionId]',
-      params: { hostId: hostId ?? '', paneId: row.paneId, interactionId: request.id },
+      params: routeParams({ hostId: hostId ?? '', paneId: row.paneId, interactionId: request.id }),
     })
   }
 

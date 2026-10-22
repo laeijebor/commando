@@ -1,4 +1,5 @@
-import { Redirect, useLocalSearchParams } from 'expo-router'
+import { Redirect } from 'expo-router'
+import { routeParams, useRouteParams } from '../../../../../src/layout/routeParams'
 
 import { isCockpitMode, useLayoutMode } from '../../../../../src/layout/useLayoutMode'
 import { AnswerScreen } from '../../../../../src/ui/AnswerScreen'
@@ -10,14 +11,14 @@ import { AnswerScreen } from '../../../../../src/ui/AnswerScreen'
  */
 export default function AnswerRoute(): React.JSX.Element {
   const mode = useLayoutMode()
-  const { hostId, paneId } = useLocalSearchParams<{ hostId: string; paneId: string }>()
+  const { hostId, paneId } = useRouteParams<{ hostId: string; paneId: string }>()
 
   if (isCockpitMode(mode)) {
     return (
       <Redirect
         href={{
           pathname: '/(host)/[hostId]/sessions',
-          params: { hostId: hostId ?? '', focus: paneId ?? '' },
+          params: routeParams({ hostId: hostId ?? '', focus: paneId ?? '' }),
         }}
       />
     )

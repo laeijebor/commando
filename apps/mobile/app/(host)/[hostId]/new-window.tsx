@@ -9,6 +9,7 @@ import { useTheme } from '../../../src/theme'
 import { CreateSheet } from '../../../src/ui/CreateSheet'
 import { FormError, RowGroup, TextRow, ValueRow } from '../../../src/ui/formPrimitives'
 import { Meta, SectionHeader } from '../../../src/ui/primitives'
+import { routeParams } from '../../../src/layout/routeParams'
 
 /**
  * The lighter variant of screen 07 for `POST /api/tmux/windows`: which session,
@@ -49,7 +50,7 @@ export default function NewWindowScreen(): React.JSX.Element {
       })
       router.replace({
         pathname: '/(host)/[hostId]/pane/[paneId]',
-        params: { hostId: hostId ?? '', paneId: created.paneId },
+        params: routeParams({ hostId: hostId ?? '', paneId: created.paneId }),
       })
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Creating the window failed')

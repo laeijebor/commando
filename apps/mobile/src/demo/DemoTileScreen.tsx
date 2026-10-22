@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
+import { useIsFocused, useRouter } from 'expo-router'
+import { useRouteParams } from '../layout/routeParams'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
@@ -14,7 +15,7 @@ import { withAlpha } from '../ui/primitives'
 export function DemoTileScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
-  const { hostId, fromPaneId, tileId } = useLocalSearchParams<{ hostId: string; fromPaneId?: string; tileId: string }>()
+  const { hostId, fromPaneId, tileId } = useRouteParams<{ hostId: string; fromPaneId?: string; tileId: string }>()
   const host = useHostsStore((store) => store.hosts.find((entry) => entry.id === hostId))
   const foreground = useAppActive(useIsFocused())
   useEffect(() => { if (foreground && host && tileId) void markTileSeen(host, tileId).catch(() => undefined) }, [foreground, host, tileId])
