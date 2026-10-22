@@ -89,7 +89,8 @@ function CommanderSection({ commander, profiles, busy, run }: {
           {profile.label ?? profile.name}{profile.hidden ? ' (hidden)' : ''}{profile.status.state === 'logged-out' ? ' · not logged in' : ''}
         </option>)}
       </select></label>
-      <button type="button" className="settings-button" disabled={busy || choice === (commander.configDir ?? '')} onClick={switchTo}>
+      {/* With no Commander open, starting on the saved profile (or retrying a failed start) is allowed, unless its folder has gone. */}
+      <button type="button" className="settings-button" disabled={busy || (choice !== '' && !chosen) || (commander.open && choice === (commander.configDir ?? ''))} onClick={switchTo}>
         <Bot aria-hidden="true" />{commander.open ? 'Switch Commander' : 'Start Commander'}
       </button>
     </div>

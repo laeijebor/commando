@@ -147,6 +147,25 @@ describe('SettingsView', () => {
       await waitFor(() => expect(onSwitch).toHaveBeenCalledWith('/Users/leo/.claudew'))
     })
 
+    it('starts Commander on its saved profile when none is open, without choosing another', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const onSwitch = vi.fn(async () => {})
+      setup({}, { configDir: '/Users/leo/.claudew', open: false, onSwitch })
+      const start = await screen.findByRole('button', { name: 'Start Commander' })
+      expect(start).toBeEnabled()
+      fireEvent.click(start)
+      expect(window.confirm).toHaveBeenCalledWith('Start Commander on Work?')
+      await waitFor(() => expect(onSwitch).toHaveBeenCalledWith('/Users/leo/.claudew'))
+    })
+
+    it('will not start Commander on a profile whose folder has gone', async () => {
+      setup({}, { configDir: '/Users/leo/.claudegone', open: false, onSwitch: vi.fn() })
+      const start = await screen.findByRole('button', { name: 'Start Commander' })
+      expect(start).toBeDisabled()
+      fireEvent.change(screen.getByRole('combobox', { name: 'Commander profile' }), { target: { value: '' } })
+      expect(start).toBeEnabled()
+    })
+
     it('starts Commander on the default login when none is open, and shows a failure', async () => {
       vi.spyOn(window, 'confirm').mockReturnValue(true)
       const onSwitch = vi.fn(async () => { throw new Error('tmux refused') })
