@@ -404,8 +404,9 @@ export class SessionPreferenceStore {
     let validated: SessionTreePreferences
     const operation = this.writes.then(async () => {
       const stored = await this.readState()
-      // A session newly placed in a repository group is the one the user acted on, so its
-      // current name replaces any name left over from an earlier session with the same id.
+      // A session newly placed in a repository group takes its current name, replacing any name
+      // left over from an earlier session with the same id. The client sends the name it displayed
+      // for the session it moved; a stale snapshot's name won't match tmux, so it isn't accepted.
       // Compare with the reconciled view the client was given: load() can leave stale members on disk.
       const baseline = reconcileSessionTreePreferences(stored, currentSessions)
       const storedMembers = new Map((baseline.repositoryGroups ?? []).map((group) => [group.id, new Set(group.sessionIds)]))
@@ -414,8 +415,10 @@ export class SessionPreferenceStore {
       for (const group of parsed.repositoryGroups ?? []) {
         for (const sessionId of group.sessionIds) {
           if (storedMembers.get(group.id)?.has(sessionId)) continue
-          const name = currentNames.get(sessionId) ?? parsed.sessionNamesById?.[sessionId]
-          if (name) assignedNames[sessionId] = name
+          const submitted = parsed.sessionNamesById?.[sessionId]
+          const current = currentNames.get(sessionId)
+          // Not in a tmux snapshot yet (just created): trust the client's name until tmux reports it.
+          if (submitted && (current === undefined || current === submitted)) assignedNames[sessionId] = submitted
         }
       }
       validated = reconcileSessionTreePreferences({

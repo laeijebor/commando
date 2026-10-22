@@ -204,7 +204,7 @@ describe('repository sub-groups', () => {
     const sessions = [{ id: '$1', name: 'new' }, { id: '$2', name: 'other' }]
     const view = await store.load(sessions)
     expect(view.repositoryGroups?.find((item) => item.id === 'stale')?.sessionIds).toEqual([])
-    const saved = await store.replace({ ...view, repositoryGroups: view.repositoryGroups?.map((item) => item.id === 'landing' ? { ...item, sessionIds: ['$1'] } : item) }, sessions)
+    const saved = await store.replace({ ...view, repositoryGroups: view.repositoryGroups?.map((item) => item.id === 'landing' ? { ...item, sessionIds: ['$1'] } : item), sessionNamesById: { ...view.sessionNamesById, $1: 'new' } }, sessions)
     expect(saved.repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
     expect(saved.sessionNamesById?.$1).toBe('new')
     expect((await store.load(sessions)).repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
@@ -216,9 +216,19 @@ describe('repository sub-groups', () => {
     const sessions = [{ id: '$1', name: 'new' }]
     const view = await store.load(sessions)
     expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: [] }])
-    const saved = await store.replace({ ...view, repositoryGroups: [group] }, sessions)
+    const saved = await store.replace({ ...view, repositoryGroups: [group], sessionNamesById: { ...view.sessionNamesById, $1: 'new' } }, sessions)
     expect(saved.repositoryGroups).toEqual([group])
     expect(saved.sessionNamesById?.$1).toBe('new')
+  })
+
+  it('does not hand an old session\'s group to its id\'s new session when a stale snapshot is saved', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    const before = await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'old' }])
+    const sessions = [{ id: '$1', name: 'new' }]
+    expect((await store.load(sessions)).repositoryGroups).toEqual([{ ...group, sessionIds: [] }])
+    // A client still holding the pre-restart view saves an unrelated change.
+    const saved = await store.replace({ ...before, repositoryGroups: [{ ...group, collapsed: false }] }, sessions)
+    expect(saved.repositoryGroups).toEqual([{ ...group, collapsed: false, sessionIds: [] }])
   })
 
   it('names a newly created group member from the client until tmux reports it', async () => {

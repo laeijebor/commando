@@ -231,7 +231,7 @@ export function SessionTree(props: Props) {
         .find((candidate) => candidate.id === destinationId)
       if (!container) return
       const next = moveRepositoryItem(currentPreferences, container, sessionId, beforeId, repositoryGroupId)
-      if (next !== currentPreferences) save(next)
+      if (next !== currentPreferences) save(repositoryGroupId ? withDisplayedName(next, sessionId) : next)
       return
     }
     const groups = currentPreferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))
@@ -257,6 +257,12 @@ export function SessionTree(props: Props) {
     save({ ...preferences, groups: [...preferences.groups, group] })
   }
 
+  // The daemon accepts a group assignment only when this name matches the live tmux session.
+  const withDisplayedName = (preferences: SessionTreePreferences, sessionId: string): SessionTreePreferences => {
+    const name = sessionMap.get(sessionId)?.name
+    return name ? { ...preferences, sessionNamesById: { ...preferences.sessionNamesById, [sessionId]: name } } : preferences
+  }
+
   const createRepositoryGroup = (sessionId: string, container: SessionTreeContainer) => {
     const name = window.prompt('New session group name')?.trim()
     if (!name || !container.repo || !container.items) return
@@ -264,7 +270,7 @@ export function SessionTree(props: Props) {
     const group: RepositorySessionGroup = { id: crypto.randomUUID(), name, repoRoot: container.repo.root, sessionIds: [sessionId] }
     const position = container.items.find((item) => item.kind === 'session' ? item.id === sessionId : item.sessionIds.includes(sessionId))
     const containerIds = new Set([...container.items.map(repositoryItemId), ...container.sessionIds])
-    save({
+    save(withDisplayedName({
       ...current,
       repositoryGroups: [...(current.repositoryGroups ?? []).map((item) => ({ ...item, sessionIds: item.sessionIds.filter((id) => id !== sessionId) })), group],
       repositorySessionIds: [
@@ -274,7 +280,7 @@ export function SessionTree(props: Props) {
           ...(item.kind === 'session' && item.id === sessionId ? [] : [repositoryItemId(item)]),
         ]),
       ],
-    })
+    }, sessionId))
   }
 
   const removeFromRepositoryGroup = (sessionId: string, container: SessionTreeContainer) => {
