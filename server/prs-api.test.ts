@@ -244,7 +244,7 @@ describe('PR auto-fix API', () => {
       expect(await api.autofixStatus('acme/widgets', 12)).toBeNull()
       // Enabling acts on the failure already on the PR without waiting for a poll.
       expect(await api.setAutofix('acme/widgets', 12, true, '%1')).toMatchObject({ status: 'fix-requested', enabled: true, targetId: TARGET_ID, rounds: 1, lastEventAt: expect.any(Number) })
-      expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('acme/widgets#12'))
+      expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('acme/widgets#12'), expect.objectContaining({ repo: 'acme/widgets', number: 12, failingChecks: ['lint'] }))
       expect(await watcher.store.defaultChoice()).toMatchObject({ enabled: true })
       await watcher.tick()
       expect(send).toHaveBeenCalledOnce()

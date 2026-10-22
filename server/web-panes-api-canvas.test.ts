@@ -20,7 +20,7 @@ import { canvasSectionStatusNote } from '../src/canvasComments.js'
 const token = 'agent-hook-token-at-least-32-characters'
 const canvas = { frameId: 'settings', point: { x: 5, y: 7 }, label: 'Row', labelId: 'row', frameTitle: 'Settings', section: 'Accounts', ticket: 'APP-1', status: 'ready-for-dev', focus: 1, interactive: true }
 const note = { selector: '#row', tag: 'button', text: 'Row', rect: { x: 2, y: 3, width: 10, height: 20 }, comment: 'Fix row', canvas, pageUrl: 'http://localhost/Settings.html' }
-let spotlight: CanvasSpotlightStore, onCanvasSent: Mock<(id: string, notes: WebPaneFeedbackNote[]) => void>
+let spotlight: CanvasSpotlightStore, onFeedbackSent: Mock<(id: string, notes: WebPaneFeedbackNote[]) => void>
 let dir: string, service: WebPaneService, api: WebPanesApi, pending: WebPanePendingStore, feedback: WebPaneFeedbackStore, threads: CanvasThreadsStore, id: string
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'canvas-note-api-'))
@@ -29,8 +29,8 @@ beforeEach(() => {
   pending = new WebPanePendingStore(new PendingNotesJournal({ dir }))
   feedback = new WebPaneFeedbackStore(new FeedbackJournal({ dir }))
   threads = new CanvasThreadsStore(join(dir, 'threads.json'))
-  spotlight = new CanvasSpotlightStore(); onCanvasSent = vi.fn()
-  api = new WebPanesApi({ spotlight, onCanvasSent, service, agentToken: token, ownerAuthorized: async (req) => req.headers['x-owner'] === 'yes', paneForId: () => undefined, onChange: vi.fn(), onPendingChanged: vi.fn(), pending, feedback, canvasThreads: threads, attachmentStore: {} as never, agentRequests: {} as never })
+  spotlight = new CanvasSpotlightStore(); onFeedbackSent = vi.fn()
+  api = new WebPanesApi({ spotlight, onFeedbackSent, service, agentToken: token, ownerAuthorized: async (req) => req.headers['x-owner'] === 'yes', paneForId: () => undefined, onChange: vi.fn(), onPendingChanged: vi.fn(), pending, feedback, canvasThreads: threads, attachmentStore: {} as never, agentRequests: {} as never })
 })
 afterEach(async () => { await service.flush(); rmSync(dir, { recursive: true, force: true }) })
 async function request(action: string, body?: unknown, auth: 'owner' | 'agent' | 'none' = 'owner', method = body === undefined ? 'GET' : 'POST') {
@@ -47,7 +47,7 @@ describe('canvas pending/feedback/thread routes without sockets', () => {
     mkdirSync(artifact)
     writeFileSync(join(artifact, 'canvas.json'), JSON.stringify({ title: 'Board', frames: [{ id: 'settings', title: 'Settings', src: 'Settings.html', x: 0, y: 0 }] }))
     const snapshots = new CanvasSnapshotsStore({ directory: (requested) => requested === artifactId ? realpathSync(artifact) : null }, join(dir, 'snapshots'))
-    onCanvasSent.mockImplementation((paneId, notes) => { snapshots.captureSent(service.get(paneId), notes) })
+    onFeedbackSent.mockImplementation((paneId, notes) => { snapshots.captureSent(service.get(paneId), notes) })
     const round = (text: string) => writeFileSync(join(artifact, 'Settings.html'), text)
     round('batch'); await request('pending', { note }); await request('pending', { note: { ...note, comment: 'Second note' } }); await request('pending/send', {})
     expect(snapshots.list(artifactId)[0].comments).toBe(2)
@@ -57,7 +57,7 @@ describe('canvas pending/feedback/thread routes without sockets', () => {
     round('follow-up'); await request(`threads/${threadId}/replies`, { text: 'Follow-up', author: 'user' })
     round('status'); await request('pending', { note: { ...note, comment: 'Status changed', canvas: { ...canvas, status: 'shipped' } } }); await request('pending/send', {})
     expect(snapshots.list(artifactId).map((snapshot) => snapshot.comments)).toEqual([1, 1, 1, 2])
-    expect(onCanvasSent).toHaveBeenCalledTimes(4)
+    expect(onFeedbackSent).toHaveBeenCalledTimes(4)
     await request(`threads/${threadId}/replies`, { text: 'Agent reply' }, 'agent')
     expect(snapshots.list(artifactId)).toHaveLength(4)
   })
@@ -67,7 +67,7 @@ describe('canvas pending/feedback/thread routes without sockets', () => {
       { id: 'section', title: 'Accounts', ticket: 'APP-1', status: 'idea', frames: ['settings'] }, 'ready-for-review', note.pageUrl)
     const sendChat = vi.fn(() => true)
     const push = new CanvasPush({ pane: () => service.get(id), title: () => 'Board', owns: () => true, sendChat, sendTerminal: vi.fn(), status: () => undefined })
-    onCanvasSent.mockImplementation((paneId, notes) => { void push.deliver(paneId, notes) })
+    onFeedbackSent.mockImplementation((paneId, notes) => { void push.deliver(paneId, notes) })
     const queued = await request('pending', { note: statusNote })
     expect(queued.status).toBe(200)
     const item = queued.body.notes[0]
@@ -90,7 +90,7 @@ describe('canvas pending/feedback/thread routes without sockets', () => {
     const sent = await request('pending/send', { items: [{ id: 1, revision: 1 }], expectedQueueRevision: second.body.revision })
     expect(sent.status).toBe(200)
     expect(sent.body.notes.map((n: { id: number }) => n.id)).toEqual([2])
-    expect(onCanvasSent.mock.calls[0][1][0].canvas?.threadId).toBe(threads.list(id)[0].id)
+    expect(onFeedbackSent.mock.calls[0][1][0].canvas?.threadId).toBe(threads.list(id)[0].id)
     const delivered = await request('feedback', undefined, 'agent')
     expect(delivered.body.notes[0]).toMatchObject({ canvas, comment: 'Fix row', pageUrl: note.pageUrl })
     for (const auth of ['owner', 'agent'] as const) {
@@ -127,7 +127,7 @@ describe('canvas pending/feedback/thread routes without sockets', () => {
     const delivered = await feedback.drain(id, 0)
     expect(delivered.notes[0].canvas?.threadId).toBe(threadId)
     expect(delivered.notes[1]).toMatchObject({ ...note, comment: 'Follow-up', canvas: { ...canvas, threadId } })
-    expect(onCanvasSent).toHaveBeenCalledTimes(2)
+    expect(onFeedbackSent).toHaveBeenCalledTimes(2)
     expect((await request(`${route}/replies`, { text: 'Owner can act as agent' })).status).toBe(200)
     expect(threads.list(id)[0].messages.at(-1)?.author).toBe('agent')
   })

@@ -6,6 +6,7 @@
  */
 
 import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type ChatMcpResult } from './chat-mcp.js'
+import type { ChatCardEvent } from './chat-tile-events.js'
 
 export const AGENT_HOST_PROTOCOL_VERSION = 6
 /**
@@ -300,6 +301,8 @@ export type ChatItem = ChatItemBase & (
       steered?: boolean
       /** Relayed through main Claude's SendMessage tool to this subagent. */
       relayTo?: { agentId: string; label: string }
+      /** Redline, canvas and auto-fix cards shown in place of the text; added by the web app. */
+      tileEvents?: ChatCardEvent[]
     }
   | {
       kind: 'assistant_message'

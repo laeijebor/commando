@@ -4,6 +4,7 @@ import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { CanvasPush } from './canvas-push.js'
+import { ChatTileEvents, defaultChatTileEventsPath } from './chat-tile-events.js'
 import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasManifest } from '../shared/canvas-manifest.js'
@@ -42,7 +43,9 @@ import type {
   ServerMessage,
   SessionBrief,
   TmuxPane,
+  WebPane,
 } from '../shared/protocol.js'
+import { isRedlineArtifactUrl, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
@@ -559,6 +562,10 @@ async function main(): Promise<void> {
   const webPaneAgentRequests = new WebPaneAgentRequests()
   const canvasSpotlight = new CanvasSpotlightStore()
   let canvasPush: CanvasPush | undefined
+  const chatTileEvents = new ChatTileEvents({
+    path: defaultChatTileEventsPath(port),
+    publish: (paneId, events) => broadcast({ type: 'chat_tile_events', paneId, events }),
+  })
   let guides: Guides | undefined
   const feedbackJournal = new FeedbackJournal()
   const pendingJournal = new PendingNotesJournal()
@@ -579,7 +586,10 @@ async function main(): Promise<void> {
   // onDrain fires only at request time, safely after publishWebPanes exists.
   webPaneFeedback = new WebPaneFeedbackStore(
     feedbackJournal,
-    () => publishWebPanes(),
+    (id) => {
+      publishWebPanes()
+      chatTileEvents.drained(id)
+    },
     Date.now,
     releaseAttachment,
     (id, keys) => canvasPush?.acknowledge(id, keys),
@@ -598,6 +608,7 @@ async function main(): Promise<void> {
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
     onPageTitle: (webPaneId, title) => {
       if (webPanes.setTitle(webPaneId, title)) publishWebPanes()
+      chatTileEvents.retitle(webPaneId, title)
     },
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
@@ -937,6 +948,8 @@ async function main(): Promise<void> {
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
     broadcast: (message) => {
       if (message.type === 'chat_session' && (message.session.status === 'running' || message.session.status === 'waiting')) noteChatBusy?.(message.paneId)
+      // An idle chat can take the redline answers that arrived while it worked.
+      if (message.type === 'chat_session' && message.session.status === 'idle') void canvasPush?.statusChanged(message.paneId)
       broadcast(message)
     },
     verifyHost: async (paneId, hostPid) => {
@@ -969,7 +982,14 @@ async function main(): Promise<void> {
       if (!pane || !chat || chat.session.status === 'closed') return undefined
       return { paneId: pane.id, connected: chat.hostConnected, busy: chat.session.status !== 'idle' }
     },
-    send: (paneId, prompt) => agentHosts.send(paneId, prompt, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {}),
+    send: (paneId, prompt, round) => {
+      // The prompt names its card so the chat shows the card instead of the raw text.
+      const id = chatTileEvents.reserveId()
+      const sent = agentHosts.send(paneId, `${prompt}\n${tileEventMarker([id])}`, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {})
+      const sessionId = agentHosts.states().find((chat) => chat.paneId === paneId)?.session.sessionId
+      if (sent) chatTileEvents.autofix({ ...round, id, paneId, ...(sessionId ? { sessionId } : {}) })
+      return sent
+    },
     log: (error) => console.error('[commando] PR auto-fix failed', error),
   })
   const externalAgents = new ExternalAgentWatcher({
@@ -1917,19 +1937,27 @@ async function main(): Promise<void> {
   }
   // One paste at a time per agent pane, whichever tab is pushing.
   const agentPushes = new Set<string>()
+  const chatSessionFor = (paneId: string) => agentHosts.states().find((chat) => chat.paneId === paneId)?.session
+  /** A canvas's manifest title, or a page's title; undefined when neither is known yet. */
+  const tileTitle = (pane: WebPane): string | undefined => {
+    if (pane.content?.kind === 'canvas') {
+      const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
+      try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || undefined } catch { /* The journal still works without a manifest. */ }
+      return undefined
+    }
+    return pane.title?.trim() || undefined
+  }
   canvasPush = new CanvasPush({
     sending: agentPushes,
     repoRoot: fileURLToPath(new URL('../', import.meta.url)),
     pane: (id) => webPanes.get(id),
-    title: (pane) => {
-      if (pane.content?.kind === 'canvas') {
-        const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
-        try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || 'Canvas' } catch { /* The journal still works without a manifest. */ }
-      }
-      return 'Canvas'
-    },
+    title: (pane) => tileTitle(pane) ?? (pane.content?.kind === 'canvas' ? 'Canvas' : tileFileName(pane.url)),
     owns: (paneId) => agentHosts.owns(paneId),
     sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
+    undelivered: (webPaneId, keys) => webPaneFeedback.undelivered(webPaneId, keys),
+    chatIdle: (paneId) => chatSessionFor(paneId)?.status === 'idle',
+    eventIds: (webPaneId, keys) => chatTileEvents.idsFor(webPaneId, keys),
+    delivered: (ids) => chatTileEvents.delivered(ids),
     status: (paneId) => agentStatuses.get(paneId),
     sendTerminal: sendAgentTerminal,
   })
@@ -2068,10 +2096,25 @@ async function main(): Promise<void> {
     pending: webPanePending,
     canvasThreads,
     spotlight: canvasSpotlight,
-    onCanvasSent: (id, notes) => {
-      try { canvasSnapshots.captureSent(webPanes.get(id), notes) }
+    onFeedbackSent: (id, notes) => {
+      const pane = webPanes.get(id)
+      try { canvasSnapshots.captureSent(pane, notes) }
       catch (error) { console.warn('[commando] canvas snapshot failed', error) }
+      const source = tileSource(pane)
+      const session = pane ? chatSessionFor(pane.anchorPaneId) : undefined
+      if (pane && source && session && agentHosts.owns(pane.anchorPaneId)) {
+        // A waiting poll already has the notes; otherwise a redline Send waits for a busy agent to go idle.
+        const keys = notes.flatMap((note) => note.deliveryKey ? [note.deliveryKey] : [])
+        const status = keys.length && !webPaneFeedback.undelivered(id, keys).length ? 'collected'
+          : source === 'redline' && session.status !== 'idle' ? 'waiting' : 'sent'
+        chatTileEvents.sent(pane, source, notes, { title: tileTitle(pane), status, sessionId: session.sessionId })
+      }
       void canvasPush?.deliver(id, notes)
+    },
+    onOpened: (pane) => {
+      if (pane.openedBy !== 'agent' || !agentHosts.owns(pane.anchorPaneId)) return
+      const source = pane.content?.kind === 'canvas' ? 'canvas' : !pane.content && isRedlineArtifactUrl(pane.url) ? 'redline' : undefined
+      if (source) chatTileEvents.opened(pane, source, tileTitle(pane), chatSessionFor(pane.anchorPaneId)?.sessionId)
     },
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,
@@ -2680,6 +2723,7 @@ async function main(): Promise<void> {
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
     for (const { paneId, runs } of externalAgents.snapshots()) send(client, { type: 'chat_external_runs', paneId, runs })
+    for (const { paneId, events } of chatTileEvents.snapshots()) send(client, { type: 'chat_tile_events', paneId, events })
     send(client, chatHandoffsMessage())
     send(client, { type: 'chat_stash', entries: chatStash.list() })
     const replayStatuses = agentStatuses.values()

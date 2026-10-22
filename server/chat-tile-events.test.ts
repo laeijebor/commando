@@ -1,0 +1,141 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ChatTileEvent } from '../shared/chat-tile-events.js'
+import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
+import { ChatTileEvents, TILE_EVENTS_BYTES, TILE_EVENTS_PER_PANE, TILE_EVENTS_TOTAL } from './chat-tile-events.js'
+
+const pane = { id: 'w-1', anchorPaneId: '%5', url: 'http://127.0.0.1:4310/redline/artifacts/abc/settings.html', title: '' } as WebPane
+const answer = (key: string, extra: Partial<WebPaneFeedbackNote> = {}): WebPaneFeedbackNote => ({
+  deliveryKey: key, selector: '#q', tag: 'redline-choice', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'Plan?: Pro',
+  pageUrl: pane.url, capturedAt: 1, response: { question: 'Plan?', answer: 'Pro', note: 'cheaper' }, ...extra,
+})
+const comment = (key: string): WebPaneFeedbackNote => ({
+  deliveryKey: key, selector: '#save', tag: 'button', text: 'Save changes', rect: { x: 0, y: 0, width: 1, height: 1 }, comment: 'Make it sticky',
+  pageUrl: pane.url, capturedAt: 1, attachments: [{ id: 'a', name: 'x.png', contentType: 'image/png', size: 1, path: '/x' }],
+})
+
+let dir: string
+let path: string
+let clock = 1_000
+let ids = 0
+const store = (publish = vi.fn()) => new ChatTileEvents({ path, publish, now: () => clock, newId: () => `te-${++ids}` })
+
+beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'tile-events-')); path = join(dir, 'events.json'); clock = 1_000; ids = 0 })
+afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+describe('ChatTileEvents', () => {
+  it('records a Send for the tile’s chat and publishes it', () => {
+    const publish = vi.fn()
+    const events = store(publish)
+    const event = events.sent(pane, 'redline', [answer('k1'), comment('k2')])
+    expect(event).toMatchObject({
+      id: 'te-1', kind: 'sent', paneId: '%5', webPaneId: 'w-1', source: 'redline', fileName: 'settings.html', at: 1_000, status: 'sent',
+      items: [
+        { kind: 'answer', question: 'Plan?', answer: 'Pro', note: 'cheaper' },
+        { kind: 'comment', target: 'button “Save changes”', comment: 'Make it sticky', attachments: 1 },
+      ],
+    })
+    expect(event).not.toHaveProperty('deliveryKeys')
+    expect(publish).toHaveBeenCalledWith('%5', [event])
+  })
+
+  it('ignores a retried Send and marks skipped answers and build intent', () => {
+    const events = store()
+    events.sent(pane, 'redline', [answer('k1')])
+    expect(events.sent(pane, 'redline', [answer('k1')])).toBeUndefined()
+    const next = events.sent(pane, 'redline', [answer('k3', { response: { question: 'Q', answer: '(skipped)', data: { skipped: true } }, handoff: { kind: 'build', instruction: 'go' } })])
+    expect(next).toMatchObject({ build: true, items: [{ kind: 'answer', skipped: true }] })
+  })
+
+  it('moves waiting → sent → collected, and finds events by delivery key', () => {
+    const events = store()
+    const event = events.sent(pane, 'redline', [answer('k1'), answer('k2')], { status: 'waiting' })!
+    expect(event.status).toBe('waiting')
+    expect(events.idsFor('w-1', ['k2'])).toEqual([event.id])
+    events.delivered([event.id])
+    expect((events.forPane('%5')[0] as ChatTileEvent).status).toBe('sent')
+    clock = 2_000
+    events.drained('w-1')
+    expect(events.forPane('%5')[0]).toMatchObject({ status: 'collected', collectedAt: 2_000 })
+  })
+
+  it('is collected once a poll drains the tile, and keeps the chat session', () => {
+    const events = store()
+    events.sent(pane, 'redline', [answer('k1')], { status: 'waiting', sessionId: 's-1' })
+    events.drained('w-other')
+    expect(events.forPane('%5')[0]).toMatchObject({ status: 'waiting', sessionId: 's-1' })
+    clock = 3_000
+    events.drained('w-1')
+    expect(events.forPane('%5')[0]).toMatchObject({ status: 'collected', collectedAt: 3_000 })
+    expect(events.sent(pane, 'redline', [answer('k2')], { status: 'collected' })).toMatchObject({ status: 'collected', collectedAt: 3_000 })
+  })
+
+  it('fills a missing title later and survives a restart', () => {
+    const events = store()
+    events.opened(pane, 'redline')
+    events.retitle('w-1', 'Notification settings')
+    expect((events.forPane('%5')[0] as ChatTileEvent).title).toBe('Notification settings')
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toHaveLength(1)
+    expect(store().forPane('%5')).toEqual(events.forPane('%5'))
+  })
+
+  it('keeps the newest events per chat', () => {
+    const events = store()
+    for (let index = 0; index < TILE_EVENTS_PER_PANE + 5; index += 1) events.opened(pane, 'redline')
+    const kept = events.forPane('%5')
+    expect(kept).toHaveLength(TILE_EVENTS_PER_PANE)
+    expect(kept[0]!.id).toBe('te-6')
+  })
+
+  it('keeps the newest events across all chats', () => {
+    const events = store()
+    for (let index = 0; index < TILE_EVENTS_TOTAL + 2; index += 1) {
+      clock += 1
+      events.opened({ ...pane, anchorPaneId: `%${index % 20}` }, 'redline')
+    }
+    const total = Array.from({ length: 20 }, (_, index) => events.forPane(`%${index}`)).flat()
+    expect(total).toHaveLength(TILE_EVENTS_TOTAL)
+    expect(total.some((event) => event.id === 'te-1' || event.id === 'te-2')).toBe(false)
+  })
+
+  it('never writes a file larger than the loader accepts', () => {
+    const events = store()
+    const big = 'x'.repeat(1_900)
+    const notes = Array.from({ length: 50 }, (_, index) => answer(`k${index}`, { response: { question: big, answer: big, note: big } }))
+    for (let send = 0; send < 30; send += 1) {
+      clock += 1
+      events.sent(pane, 'redline', notes.map((note, index) => ({ ...note, deliveryKey: `s${send}-${index}` })))
+    }
+    expect(readFileSync(path).byteLength).toBeLessThanOrEqual(TILE_EVENTS_BYTES)
+    const reloaded = store().forPane('%5')
+    expect(reloaded.length).toBeGreaterThan(0)
+    expect(reloaded.length).toBeLessThan(30)
+    expect(reloaded.at(-1)!.at).toBe(clock)
+  })
+
+  it('records auto-fix rounds alongside tile events and reloads them', () => {
+    const events = store()
+    events.sent(pane, 'redline', [answer('k1')])
+    const id = events.reserveId()
+    const card = events.autofix({
+      id, paneId: '%5', sessionId: 's-1', repo: 'acme/widgets', number: 12, url: 'https://github.com/acme/widgets/pull/12',
+      round: 2, maxRounds: 5, headSha: 'abc1234', failingChecks: ['lint'],
+      comments: [{ author: 'reviewer', body: 'x'.repeat(5_000), url: 'https://github.com/c/1' }],
+    })
+    expect(card).toMatchObject({ id, kind: 'autofix', at: 1_000, failingChecks: ['lint'] })
+    expect(card.kind === 'autofix' && card.comments[0]!.body.length).toBe(4_000)
+    const hidden = events.autofix({
+      paneId: '%5', repo: 'acme/widgets', number: 12, url: 'u', round: 3, maxRounds: 5, failingChecks: [],
+      comments: [{ author: 'coderabbitai[bot]', body: `<!-- internal state start -->\n<!-- ${'A'.repeat(6_000)} -->\nLooks fine.`, url: 'c' }],
+    })
+    expect(hidden.kind === 'autofix' && hidden.comments[0]!.body).toBe('Looks fine.')
+    // Tile-only updates leave auto-fix cards alone.
+    events.drained('w-1')
+    events.retitle('w-1', 'Settings')
+    expect(store().forPane('%5').map((event) => event.kind)).toEqual(['sent', 'autofix', 'autofix'])
+    expect(store().forPane('%5')[1]).toEqual(card)
+  })
+})
