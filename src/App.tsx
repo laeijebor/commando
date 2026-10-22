@@ -2205,6 +2205,14 @@ export function App() {
       throw cause
     }
   }
+  /** Closes Commander and starts a fresh one on the profile, then shows it like opening Commander does. */
+  const switchCommanderProfile = async (configDir: string | null) => {
+    const version = commanderStateVersion.current
+    const state = await createCommanderApi(token).setProfile(configDir)
+    if (version === commanderStateVersion.current) dispatchCommander({ type: 'commander_state', state })
+    // Only now: earlier, the old Commander is still open and would be the one shown.
+    setCommanderOpening(true)
+  }
   // Creation may report state before its structural snapshot arrives (or vice versa).
   useEffect(() => {
     if (!commanderOpening || !commanderState.paneId) return
@@ -4505,7 +4513,8 @@ export function App() {
           ) : null}
           {area === 'settings' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening settings...</p></section>}>
-              <SettingsView api={agentProfilesApi} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }} />
+              <SettingsView api={agentProfilesApi} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
+                commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
           ) : null}
           {notesMounted ? (

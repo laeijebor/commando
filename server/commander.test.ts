@@ -99,3 +99,57 @@ it.each(['null', '{}broken', '{"permissions":null}', '{"permissions":[]}', '{"pe
   expect(log).toHaveBeenCalledTimes(2)
   expect(log.mock.calls.every(([line]) => line.includes(path))).toBe(true)
 })
+
+it('switches profile by closing the old Commander session and starting a fresh one, and keeps the profile across restarts', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'commander-profile-')); dirs.push(home)
+  const configDir = join(home, '.claudew')
+  const snapshot = { panes: [{ id: '%1', targetId: 'old', sessionId: '$1' }], sessions: [{ id: '$1', name: 'Commander' }] } as unknown as CommandoSnapshot
+  const statePath = join(home, 'commander.json'); await writeFile(statePath, JSON.stringify({ targetId: 'old' }))
+  let next = 2
+  const createSession = vi.fn(async () => {
+    const id = next++
+    snapshot.panes.push({ id: `%${id}`, targetId: `new-${id}`, sessionId: `$${id}` } as TmuxPane)
+    return { created: { paneId: `%${id}` } } as never
+  })
+  const closeSession = vi.fn(async (sessionId: string) => {
+    snapshot.panes = snapshot.panes.filter((pane) => pane.sessionId !== sessionId)
+    snapshot.sessions = snapshot.sessions.filter((session) => session.id !== sessionId)
+  })
+  const changed = vi.fn()
+  const options = { home, statePath, snapshot: () => snapshot, creator: { createSession }, refreshSnapshot: vi.fn(async () => {}), changed, closeSession }
+  const commander = new Commander(options); await commander.load()
+
+  expect(await commander.switchProfile(configDir)).toEqual({ targetId: 'new-2', paneId: '%2', sessionId: '$2', configDir })
+  expect(closeSession).toHaveBeenCalledExactlyOnceWith('$1')
+  expect(createSession).toHaveBeenCalledExactlyOnceWith({ name: 'Commander', cwd: join(home, '.commando', 'commander'), agent: { provider: 'claude-chat', permissionMode: 'default', configDir } })
+  expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ targetId: 'new-2', configDir })
+  expect(changed).toHaveBeenLastCalledWith({ targetId: 'new-2', paneId: '%2', sessionId: '$2', configDir })
+
+  // A restart keeps the profile, and a Commander recreated after its pane went away uses it.
+  snapshot.panes = []
+  const restarted = new Commander(options); await restarted.load()
+  expect(restarted.state()).toEqual({ targetId: 'new-2', configDir })
+  await restarted.ensure()
+  expect(createSession).toHaveBeenLastCalledWith(expect.objectContaining({ agent: expect.objectContaining({ configDir }) }))
+
+  // Back to the default login drops the profile.
+  expect(await restarted.switchProfile(null)).toEqual({ targetId: 'new-4', paneId: '%4', sessionId: '$4' })
+  expect(createSession).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { provider: 'claude-chat', permissionMode: 'default' } }))
+  expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ targetId: 'new-4' })
+})
+
+it('leaves Commander and its profile as they were when the old session cannot be closed, and ignores an invalid saved profile', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'commander-profile-fail-')); dirs.push(home)
+  const snapshot = { panes: [{ id: '%1', targetId: 'old', sessionId: '$1' }], sessions: [] } as unknown as CommandoSnapshot
+  const statePath = join(home, 'commander.json'); await writeFile(statePath, JSON.stringify({ targetId: 'old', configDir: '/etc' }))
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  const createSession = vi.fn()
+  const commander = new Commander({ home, statePath, snapshot: () => snapshot, creator: { createSession }, refreshSnapshot: async () => {}, changed: vi.fn(),
+    closeSession: async () => { throw new Error('tmux refused') } })
+  await commander.load()
+  expect(commander.state()).toEqual({ targetId: 'old', paneId: '%1', sessionId: '$1' })
+  await expect(commander.switchProfile(join(home, '.claudew'))).rejects.toThrow('tmux refused')
+  expect(createSession).not.toHaveBeenCalled()
+  expect(commander.state()).toEqual({ targetId: 'old', paneId: '%1', sessionId: '$1' })
+  expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ targetId: 'old', configDir: '/etc' })
+})

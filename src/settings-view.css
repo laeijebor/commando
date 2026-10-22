@@ -34,3 +34,7 @@
 .settings-add input[aria-invalid='true'] { border-color: var(--amber); }
 .settings-folder { display: inline-flex; align-items: center; gap: 2px; }
 .settings-folder input { width: 110px; }
+.settings-commander { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--text-soft); }
+.settings-commander label { display: inline-flex; align-items: center; gap: 6px; }
+.settings-commander select { padding: 4px 6px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; }
+.settings-warning { color: var(--amber); }

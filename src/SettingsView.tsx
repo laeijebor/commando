@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { LogIn, Plus, RefreshCw } from 'lucide-react'
+import { Bot, LogIn, Plus, RefreshCw } from 'lucide-react'
 import { CLAUDE_PROFILE_NAME, type AgentProfilesResponse, type ClaudeLoginStatus, type ClaudeProfileSettings } from '../shared/agent-profiles'
 import type { AgentProfilesApi } from './agentProfilesApi'
 import './settings-view.css'
@@ -48,10 +48,58 @@ function ClaudeProfileRow({ profile, busy, onChange, onLogin }: {
   </li>
 }
 
-/** Settings > Profiles: Claude profiles to label, default, hide, log in and add; other agents read-only. */
-export function SettingsView({ api, onOpenPane }: {
+export type CommanderProfileSetting = {
+  /** The profile Commander runs on; undefined is the default login. */
+  configDir?: string
+  /** Whether a Commander session is open, which switching closes. */
+  open: boolean
+  onSwitch: (configDir: string | null) => Promise<void>
+}
+
+/** Settings > Commander: which Claude profile Commander runs on. */
+function CommanderSection({ commander, profiles, busy, run }: {
+  commander: CommanderProfileSetting
+  profiles: ClaudeProfileSettings[]
+  busy: boolean
+  run: (action: () => Promise<unknown>) => Promise<void>
+}) {
+  const [choice, setChoice] = useState(commander.configDir ?? '')
+  useEffect(() => setChoice(commander.configDir ?? ''), [commander.configDir])
+  const chosen = profiles.find((profile) => profile.configDir === choice)
+  const name = chosen ? chosen.label ?? chosen.name : 'the default login'
+  const current = profiles.find((profile) => profile.configDir === commander.configDir)
+  const switchTo = () => {
+    const message = commander.open
+      ? `Switch Commander to ${name}?\n\nThis closes the current Commander session, and any other panes in it, then starts a new Commander on ${name}. The old conversation stays with its profile.`
+      : `Start Commander on ${name}?`
+    if (!window.confirm(message)) return
+    void run(() => commander.onSwitch(choice || null))
+  }
+  return <section className="settings-section" aria-labelledby="settings-commander">
+    <h3 id="settings-commander">Commander</h3>
+    <p className="settings-hint">Commander runs as a Claude chat on this profile. {commander.configDir
+      ? <>It is on <strong>{current ? current.label ?? current.name : displayPath(commander.configDir)}</strong>.</>
+      : <>It is on the default login (no profile).</>}</p>
+    <div className="settings-commander">
+      <label>Profile <select aria-label="Commander profile" value={choice} disabled={busy} onChange={(event) => setChoice(event.target.value)}>
+        <option value="">Default login (no profile)</option>
+        {profiles.map((profile) => <option key={profile.configDir} value={profile.configDir}>
+          {profile.label ?? profile.name}{profile.hidden ? ' (hidden)' : ''}{profile.status.state === 'logged-out' ? ' · not logged in' : ''}
+        </option>)}
+      </select></label>
+      <button type="button" className="settings-button" disabled={busy || choice === (commander.configDir ?? '')} onClick={switchTo}>
+        <Bot aria-hidden="true" />{commander.open ? 'Switch Commander' : 'Start Commander'}
+      </button>
+    </div>
+    {chosen?.status.state === 'logged-out' ? <p className="settings-hint settings-warning" role="status">{name} isn't logged in, so Commander would fail to reply. Log it in above first.</p> : null}
+  </section>
+}
+
+/** Settings: Claude profiles to label, default, hide, log in and add; other agents read-only; Commander's profile. */
+export function SettingsView({ api, onOpenPane, commander }: {
   api: AgentProfilesApi
   onOpenPane: (paneId: string) => void
+  commander?: CommanderProfileSetting
 }) {
   const [data, setData] = useState<AgentProfilesResponse>()
   const [loading, setLoading] = useState(false)
@@ -134,6 +182,8 @@ export function SettingsView({ api, onOpenPane }: {
         {newName !== '' && !nameValid ? <span className="settings-hint">Use letters, digits, - or _.</span> : null}
       </form>
     </section>
+
+    {commander && data ? <CommanderSection commander={commander} profiles={data.claude} busy={busy} run={act} /> : null}
 
     <section className="settings-section" aria-labelledby="settings-other-agents">
       <h3 id="settings-other-agents">Other agents</h3>

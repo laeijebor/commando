@@ -82,6 +82,7 @@ import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { TmuxSessionActions } from './tmux-session-actions.js'
 import { SessionArchives } from './session-archives.js'
 import { releaseClosedSimLease } from './sim-lease-release.js'
 import { AgentResumeService, readPaneAgentLaunch, readProcessTable } from './agent-resume.js'
@@ -1706,7 +1707,14 @@ async function main(): Promise<void> {
       })
   }
 
+  const tmuxSessionActions = new TmuxSessionActions()
+  const saveResurrectAfter = (change: string) => {
+    void resurrectSaver.save().catch((error: unknown) => {
+      console.error(`[commando] tmux Resurrect save failed after ${change}`, error)
+    })
+  }
   const sessionManagement = new SessionManagementApi({
+    actions: tmuxSessionActions,
     preferences: sessionPreferences,
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
@@ -1724,16 +1732,8 @@ async function main(): Promise<void> {
       worktreeForDirectory: (directory) => gitWorktrees.worktreeForDirectory(directory),
       removeWorktree: (worktree) => gitWorktrees.removeWorktree(worktree),
     }),
-    afterSessionDeleted: () => {
-      void resurrectSaver.save().catch((error: unknown) => {
-        console.error('[commando] tmux Resurrect save failed after session deletion', error)
-      })
-    },
-    afterSessionRestored: () => {
-      void resurrectSaver.save().catch((error: unknown) => {
-        console.error('[commando] tmux Resurrect save failed after session restore', error)
-      })
-    },
+    afterSessionDeleted: () => saveResurrectAfter('session deletion'),
+    afterSessionRestored: () => saveResurrectAfter('session restore'),
     beforeWindowDeleted: async (windowId) => {
       await tmux.releaseWindowPaneResizes(windowId)
     },
@@ -2006,6 +2006,10 @@ async function main(): Promise<void> {
     statePath: `${sessionBriefs.statePath}.commander.json`, snapshot: () => snapshot,
     creator: tmuxCreator, refreshSnapshot: refreshSnapshotFresh,
     changed: (state) => broadcast({ type: 'commander_state', state }),
+    closeSession: async (sessionId) => {
+      await tmuxSessionActions.delete(sessionId)
+      saveResurrectAfter('switching the Commander profile')
+    },
   })
   await commander.load()
   const commanderRelays = new CommanderRelays({
@@ -2050,6 +2054,7 @@ async function main(): Promise<void> {
   const codexRolloutLookups = new Map<string, ResumeRolloutLookup>()
   const commanderApi: CommanderApi = new CommanderApi({
     agentToken: agentHookToken, ownerAuthorized: requestIsAuthorized, snapshot: () => snapshot,
+    claudeProfiles: () => agentProfilePreferences.claudeProfiles({ includeHidden: true }),
     status: (id) => agentStatuses.get(id), commander, relays: commanderRelays, stalls: commanderStalls,
     brief: (target) => turnBriefs.get(target), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
     chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,

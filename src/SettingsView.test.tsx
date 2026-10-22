@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentProfilesResponse } from '../shared/agent-profiles'
 import type { AgentProfilesApi } from './agentProfilesApi'
-import { SettingsView } from './SettingsView'
+import { SettingsView, type CommanderProfileSetting } from './SettingsView'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
@@ -20,7 +20,7 @@ const response = (): AgentProfilesResponse => ({
   ],
 })
 
-function setup(overrides: Partial<AgentProfilesApi> = {}) {
+function setup(overrides: Partial<AgentProfilesApi> = {}, commander?: CommanderProfileSetting) {
   const api = {
     list: vi.fn(async () => response()),
     updateClaude: vi.fn(async () => {}),
@@ -29,7 +29,7 @@ function setup(overrides: Partial<AgentProfilesApi> = {}) {
     ...overrides,
   } as AgentProfilesApi
   const onOpenPane = vi.fn()
-  render(<SettingsView api={api} onOpenPane={onOpenPane} />)
+  render(<SettingsView api={api} onOpenPane={onOpenPane} {...(commander ? { commander } : {})} />)
   return { api, onOpenPane }
 }
 const row = (path: string) => screen.getAllByText(path).map((node) => node.closest('li')).find(Boolean) as HTMLElement
@@ -112,5 +112,39 @@ describe('SettingsView', () => {
     await screen.findByText('~/.claudew')
     fireEvent.click(screen.getByRole('button', { name: 'Check logins' }))
     await waitFor(() => expect(api.list).toHaveBeenLastCalledWith(true))
+  })
+
+  describe('Commander profile', () => {
+    it("shows Commander's profile and switches it after you confirm closing the old session", async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true)
+      const onSwitch = vi.fn(async () => {})
+      setup({}, { open: true, onSwitch })
+      expect(await screen.findByText('It is on the default login (no profile).', { exact: false })).toBeInTheDocument()
+      const select = screen.getByRole('combobox', { name: 'Commander profile' })
+      expect(select).toHaveValue('')
+      expect([...(select as HTMLSelectElement).options].map((option) => option.textContent)).toEqual(['Default login (no profile)', 'claude (hidden) · not logged in', 'Work', 'claudep'])
+      const button = screen.getByRole('button', { name: 'Switch Commander' })
+      expect(button).toBeDisabled()
+      fireEvent.change(select, { target: { value: '/Users/leo/.claude' } })
+      expect(screen.getByText("claude isn't logged in, so Commander would fail to reply. Log it in above first.")).toBeInTheDocument()
+      fireEvent.change(select, { target: { value: '/Users/leo/.claudew' } })
+      fireEvent.click(button)
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('This closes the current Commander session, and any other panes in it, then starts a new Commander on Work.'))
+      expect(onSwitch).not.toHaveBeenCalled()
+      fireEvent.click(button)
+      await waitFor(() => expect(onSwitch).toHaveBeenCalledWith('/Users/leo/.claudew'))
+    })
+
+    it('starts Commander on the default login when none is open, and shows a failure', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const onSwitch = vi.fn(async () => { throw new Error('tmux refused') })
+      setup({}, { configDir: '/Users/leo/.claudew', open: false, onSwitch })
+      expect(await screen.findByText('Work', { selector: 'strong' })).toBeInTheDocument()
+      fireEvent.change(screen.getByRole('combobox', { name: 'Commander profile' }), { target: { value: '' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Start Commander' }))
+      expect(window.confirm).toHaveBeenCalledWith('Start Commander on the default login?')
+      await waitFor(() => expect(onSwitch).toHaveBeenCalledWith(null))
+      expect(await screen.findByRole('alert')).toHaveTextContent('tmux refused')
+    })
   })
 })
