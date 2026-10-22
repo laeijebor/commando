@@ -37,7 +37,7 @@ describe('AutofixCard', () => {
   })
 
   it('drops HTML comment markers from bot comments', () => {
-    expect(readableComment('<!-- a -->\n<!-- b\nc -->\n\n\n\nHello')).toBe('Hello')
+    expect(readableComment('<!-- a -->\n<!-- b\nc -->\n\n\n\n## Hello\nworld #1')).toBe('Hello\nworld #1')
   })
 })
 

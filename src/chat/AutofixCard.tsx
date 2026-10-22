@@ -8,9 +8,9 @@ import { cn } from './cn'
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
 
-/** Bot comments carry HTML-comment state markers; they mean nothing to a reader. */
+/** Bot comments carry HTML-comment state markers and Markdown heading marks; neither helps in plain text. */
 export function readableComment(body: string): string {
-  return body.replace(/<!--[\s\S]*?-->/g, '').replace(/\n{3,}/g, '\n\n').trim()
+  return body.replace(/<!--[\s\S]*?-->/g, '').replace(/^#{1,6}\s+/gm, '').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 export function autofixSummary(event: Pick<ChatAutofixEvent, 'failingChecks' | 'comments'>): string {
@@ -62,7 +62,7 @@ export function AutofixCard({ event, onOpenPr }: { event: ChatAutofixEvent; onOp
           {event.failingChecks.length ? (
             <div className="py-1.5">
               <div className="text-xs text-muted-foreground">Failing checks{event.headSha ? <> on <span className="font-mono text-2xs">{event.headSha.slice(0, 7)}</span></> : null}</div>
-              <ul className="mt-1 space-y-0.5">
+              <ul className="mt-1 list-none space-y-0.5 pl-0">
                 {event.failingChecks.map((name) => (
                   <li key={name} className="flex items-center gap-1.5 text-xs text-foreground">
                     <CircleX className="size-3 shrink-0 text-destructive" aria-hidden="true" />
