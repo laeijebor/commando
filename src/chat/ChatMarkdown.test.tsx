@@ -17,6 +17,13 @@ describe('chat Markdown links', () => {
     expect(code.querySelector('code')).toHaveTextContent('http://127.0.0.1:4330/c')
   })
 
+  it('keeps an explicit link whose label is a code-formatted URL', () => {
+    render(<Markdown text={'See [`https://example.com`](https://example.com/docs).'} />)
+    const links = screen.getAllByRole('link')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toHaveAttribute('href', 'https://example.com/docs')
+  })
+
   it('leaves other inline code and fenced URLs as plain code', () => {
     render(<Markdown text={'Run `npm run dev`, not `javascript:alert(1)` or `see https://x.dev`.\n\n```\nhttps://example.com\n```\n'} />)
     expect(screen.queryAllByRole('link')).toHaveLength(0)
