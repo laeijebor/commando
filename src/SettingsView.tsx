@@ -75,8 +75,22 @@ export function SettingsView({ api, onOpenPane }: {
     try { await action() } catch (cause) { setError(cause instanceof Error ? cause.message : 'Something went wrong') }
     finally { setBusy(false) }
   }
-  const change = (configDir: string, change: { label?: string | null; hidden?: boolean; isDefault?: boolean }) =>
-    act(async () => { await api.updateClaude({ configDir, ...change }); await load() })
+  const change = (configDir: string, change: { label?: string | null; hidden?: boolean; isDefault?: boolean }) => {
+    // Shown at once; the reload afterwards restores the daemon's view if it refused.
+    setData((current) => current && { ...current, claude: current.claude.map((profile) => {
+      const next = { ...profile }
+      if (profile.configDir === configDir) {
+        if (change.label === null) delete next.label
+        else if (change.label !== undefined) next.label = change.label
+        if (change.hidden !== undefined) next.hidden = change.hidden
+        if (change.isDefault !== undefined) next.isDefault = change.isDefault
+      } else if (change.isDefault) delete next.isDefault
+      return next
+    }) })
+    return act(async () => {
+      try { await api.updateClaude({ configDir, ...change }) } finally { await load() }
+    })
+  }
   const login = (configDir: string) => act(async () => { onOpenPane((await api.loginClaude(configDir)).created.paneId) })
   const nameValid = CLAUDE_PROFILE_NAME.test(newName)
   const add = (event: FormEvent) => {

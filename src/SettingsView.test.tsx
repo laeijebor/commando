@@ -70,6 +70,18 @@ describe('SettingsView', () => {
     await waitFor(() => expect(api.updateClaude).toHaveBeenCalledWith({ configDir: '/Users/leo/.claude', hidden: false }))
   })
 
+  it("shows a change at once and puts it back when the daemon refuses it", async () => {
+    let refuse!: (error: Error) => void
+    const { api } = setup({ updateClaude: vi.fn(() => new Promise<void>((_resolve, reject) => { refuse = reject })) })
+    const show = within(await screen.findByText('~/.claudep').then(() => row('~/.claudep'))).getByRole('checkbox', { name: 'Show in pickers' })
+    fireEvent.click(show)
+    expect(show).not.toBeChecked()
+    refuse(new Error('At least one profile must stay in the pickers'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('At least one profile must stay in the pickers')
+    await waitFor(() => expect(within(row('~/.claudep')).getByRole('checkbox', { name: 'Show in pickers' })).toBeChecked())
+    expect(api.list).toHaveBeenCalledTimes(2)
+  })
+
   it('opens a login terminal and jumps to it', async () => {
     const { api, onOpenPane } = setup()
     fireEvent.click(await screen.findByRole('button', { name: 'Log in to claudep' }))

@@ -133,13 +133,13 @@ export function claudeLoginCommand(claude: string, configDir: string): string {
   ].join('; ')
 }
 
-type Exec = (file: string, args: readonly string[], options: { env: NodeJS.ProcessEnv; timeout: number }) => Promise<{ stdout: string; exitCode: number }>
+type Exec = (file: string, args: readonly string[], options: { env: NodeJS.ProcessEnv; timeout: number }) => Promise<{ stdout: string; stderr?: string; exitCode: number }>
 
 const defaultExec: Exec = (file, args, options) => new Promise((done) => {
-  execFile(file, args, { ...options, maxBuffer: 64 * 1024, shell: false }, (error, stdout) => {
+  execFile(file, args, { ...options, maxBuffer: 64 * 1024, shell: false }, (error, stdout, stderr) => {
     // A non-zero exit still reports its status on stdout.
     const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : -1) : 0
-    done({ stdout: String(stdout ?? ''), exitCode: code })
+    done({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), exitCode: code })
   })
 })
 
@@ -259,9 +259,11 @@ export class AgentLoginProber {
         try { executable = await this.resolve(command); break } catch { /* Try the next name. */ }
       }
       if (!executable) return { ...base, installed: false, state: 'unknown', detail: 'Not installed on the daemon PATH' }
-      const { stdout, exitCode } = await this.run(executable, agent.args, this.env)
-      const state = agent.parse(stdout, exitCode)
-      const text = agent.provider === 'cursor' ? cursorDetail(stdout) : detail(stdout)
+      const result = await this.run(executable, agent.args, this.env)
+      // Codex reports its login on stderr.
+      const output = agent.provider === 'cursor' ? result.stdout : [result.stdout, result.stderr ?? ''].join('\n')
+      const state = agent.parse(output, result.exitCode)
+      const text = agent.provider === 'cursor' ? cursorDetail(output) : detail(output)
       return { ...base, installed: true, state, detail: text || (state === 'unknown' ? 'No status reported' : '') }
     }, (result) => result.state !== 'unknown')))
   }
@@ -269,8 +271,8 @@ export class AgentLoginProber {
 
 function cursorDetail(stdout: string): string {
   try {
-    const value = JSON.parse(stdout) as { isAuthenticated?: unknown; email?: unknown; user?: { email?: unknown } }
-    const email = typeof value.email === 'string' ? value.email : typeof value.user?.email === 'string' ? value.user.email : undefined
+    const value = JSON.parse(stdout) as { isAuthenticated?: unknown; userInfo?: { email?: unknown } }
+    const email = typeof value.userInfo?.email === 'string' ? value.userInfo.email : undefined
     return value.isAuthenticated === true ? `Logged in${email ? ` as ${email}` : ''}` : 'Not logged in'
   } catch { return detail(stdout) }
 }

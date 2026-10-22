@@ -87,13 +87,13 @@ describe('AgentLoginProber', () => {
     '/h/.claude': { loggedIn: false },
   } as Record<string, unknown>
   const prober = (overrides: Partial<ConstructorParameters<typeof AgentLoginProber>[0]> = {}) => {
-    const exec = vi.fn(async (file: string, args: readonly string[], options: { env: NodeJS.ProcessEnv }) => {
+    const exec = vi.fn(async (file: string, _args: readonly string[], options: { env: NodeJS.ProcessEnv }) => {
       if (file.endsWith('claude')) {
         const status = statuses[options.env.CLAUDE_CONFIG_DIR ?? '']
         return { stdout: status ? JSON.stringify(status) : 'Error: keychain locked', exitCode: status ? 0 : 1 }
       }
-      if (file.endsWith('codex')) return { stdout: 'Logged in using ChatGPT\n', exitCode: 0 }
-      if (file.endsWith('agent')) return { stdout: JSON.stringify({ isAuthenticated: true, email: 'leo@cursor.test' }), exitCode: 0 }
+      if (file.endsWith('codex')) return { stdout: '', stderr: 'Logged in using ChatGPT\n', exitCode: 0 }
+      if (file.endsWith('agent')) return { stdout: JSON.stringify({ isAuthenticated: true, userInfo: { email: 'leo@cursor.test' } }), exitCode: 0 }
       return { stdout: '\u001b[0m┌  Credentials ~/.local/share/opencode/auth.json\n│\n└  0 credentials\n', exitCode: 0 }
     })
     const resolveExecutable = vi.fn(async (command: string) => {
