@@ -37,7 +37,7 @@ export function TileEventCard({ event, onOpenTile }: { event: ChatTileEvent; onO
 
   const items = event.items ?? []
   return (
-    <div className="w-full max-w-[85%] rounded-lg border border-border bg-card text-sm text-secondary-label" data-testid="tile-event-card">
+    <div className="@container w-full max-w-[85%] rounded-lg border border-border bg-card text-sm text-secondary-label" data-testid="tile-event-card">
       <button
         type="button"
         className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left hover:bg-popover"
@@ -46,7 +46,8 @@ export function TileEventCard({ event, onOpenTile }: { event: ChatTileEvent; onO
       >
         <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <span className="min-w-0 truncate">{source} on <span className="font-medium text-foreground">{title}</span></span>
-        <span className="shrink-0 whitespace-nowrap text-muted-foreground">· {tileEventSummary(items)}{event.build ? ' · build' : ''}</span>
+        {/* Narrow chats drop the summary rather than squeeze the title; expanding shows it all. */}
+        <span className="hidden min-w-0 shrink-[4] truncate text-muted-foreground @[400px]:inline">· {tileEventSummary(items)}{event.build ? ' · build' : ''}</span>
         <span className="ml-auto shrink-0 pl-1"><Status event={event} /></span>
         <ChevronRight className={cn('size-3 shrink-0 text-icon-muted transition-transform', open && 'rotate-90')} aria-hidden="true" />
       </button>
