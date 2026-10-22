@@ -1,5 +1,6 @@
 import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 
 /** A PR a pane is known to have created, so it stays listed when GitHub's search misses it. */
@@ -10,6 +11,10 @@ type StoredRef = PanePrRef & { at: number }
 const MAX_PER_TARGET = 20
 const MAX_TARGETS = 500
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/
+
+export function defaultPanePrRecordsPath(port: number): string {
+  return process.env.COMMANDO_PANE_PRS_PATH ?? join(homedir(), '.commando', `pane-prs-${port}.json`)
+}
 
 function sameRef(left: PanePrRef, right: PanePrRef): boolean {
   return left.number === right.number && left.repo.toLowerCase() === right.repo.toLowerCase()

@@ -883,6 +883,53 @@ describe('agent hook installer', () => {
     }
   })
 
+  it('reports PRs the agent just created from its own tool output', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const received: Array<Record<string, unknown>> = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        received.push(JSON.parse(body) as Record<string, unknown>)
+        response.writeHead(200)
+        response.end()
+      })()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    try {
+      const send = async (input: Record<string, unknown>) => {
+        const child = spawn(process.execPath, [paths.claudeBridgePath], {
+          env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%42' },
+          stdio: ['pipe', 'ignore', 'inherit'],
+        })
+        child.stdin.end(JSON.stringify({ session_id: 'claude-session', hook_event_name: 'PostToolUse', ...input }))
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject)
+          child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Bridge exited ${code}`)))
+        })
+      }
+      await send({ tool_name: 'Bash', tool_input: { command: 'gh pr create --title x --body-file /tmp/b.md' },
+        tool_response: { stdout: 'https://github.com/acme/widgets/pull/42\nhttps://github.com/acme/widgets/pull/42\n', stderr: '' } })
+      await send({ tool_name: 'mcp__github__create_pull_request', tool_input: {},
+        tool_response: [{ type: 'text', text: '{"html_url":"https://github.com/acme/gadgets/pull/7"}' }] })
+      await send({ tool_name: 'Bash', tool_input: { command: 'gh pr view 9' },
+        tool_response: { stdout: 'https://github.com/acme/widgets/pull/9', stderr: '' } })
+      await send({ tool_name: 'Read', tool_input: { file_path: '/repo/notes.md' }, tool_response: 'https://github.com/acme/widgets/pull/8' })
+
+      expect(received.map((body) => body.createdPullRequests)).toEqual([
+        [{ repo: 'acme/widgets', number: 42 }],
+        [{ repo: 'acme/gadgets', number: 7 }],
+        undefined,
+        undefined,
+      ])
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
   it('returns Claude question answers through PermissionRequest hook output', async () => {
     const home = await temporaryHome()
     const paths = await new AgentHookInstaller({ home }).install()
