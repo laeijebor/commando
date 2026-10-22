@@ -4,6 +4,8 @@ import {
   type TmuxProcessExecutor,
   type TmuxSocketEnvironment,
 } from './tmux-session-actions.js'
+import { emptyPaneCommand } from './tmux-create.js'
+import { EMPTY_PANE_OPTION } from '../shared/tmux-create.js'
 
 const PANE_ID = /^%\d+$/
 const ACTION_TIMEOUT_MS = 3_000
@@ -72,18 +74,36 @@ export class TmuxPaneActions {
     await this.run(['select-pane', '-t', target, '-T', validatedTitle])
   }
 
-  async delete(paneId: string): Promise<void> {
+  /**
+   * Closes a pane. tmux ends a session with its last pane, so a session's only pane is
+   * emptied instead: it idles in `cwd` as a fresh pane until something is launched into it.
+   */
+  async delete(paneId: string, cwd?: string): Promise<'killed' | 'emptied'> {
     const target = validateTmuxPaneId(paneId)
-    await this.run(['kill-pane', '-t', target])
+    const counts = (await this.run(['display-message', '-p', '-t', target, '#{session_windows} #{window_panes}'])).trim()
+    if (counts !== '1 1') {
+      await this.run(['kill-pane', '-t', target])
+      return 'killed'
+    }
+    // One tmux command list, so the pane is never left running the idle process unmarked.
+    // Dropping its target identity and chat lineage makes it a new pane, as after a close.
+    await this.run([
+      'respawn-pane', '-k', '-t', target, ...(cwd ? ['-c', cwd] : []), emptyPaneCommand(),
+      ';', 'set-option', '-p', '-F', '-t', target, EMPTY_PANE_OPTION, '#{pane_pid}',
+      ...['@commando_target', '@commando_opened_by', '@commando_chat_title'].flatMap((option) => [';', 'set-option', '-p', '-u', '-t', target, option]),
+      ';', 'select-pane', '-t', target, '-T', '',
+    ])
+    return 'emptied'
   }
 
-  private async run(args: readonly string[]): Promise<void> {
-    await this.execute('tmux', [...this.socketArgs, ...args], {
+  private async run(args: readonly string[]): Promise<string> {
+    const { stdout } = await this.execute('tmux', [...this.socketArgs, ...args], {
       encoding: 'utf8',
       maxBuffer: ACTION_BUFFER_BYTES,
       shell: false,
       timeout: ACTION_TIMEOUT_MS,
       windowsHide: true,
     })
+    return stdout
   }
 }
