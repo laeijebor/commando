@@ -183,7 +183,7 @@ import {
   type ChatProvider,
   providerTuiLabel,
 } from '../shared/agent-chat'
-import type { ChatTileEvent } from '../shared/chat-tile-events'
+import type { ChatCardEvent } from '../shared/chat-tile-events'
 import type { ChatStashEntry } from '../shared/chat-stash'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
@@ -390,7 +390,7 @@ type TerminalPaneProps = {
   /** Set when an agent host drives this pane: the card can show a chat instead of the terminal. */
   chat?: ChatState
   externalRuns?: readonly ExternalAgentRun[]
-  tileEvents?: readonly ChatTileEvent[]
+  tileEvents?: readonly ChatCardEvent[]
   onOpenTile?: (webPaneId: string) => boolean
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
@@ -1137,7 +1137,7 @@ export function App() {
   const commanderStateVersion = useRef(0)
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
-  const [tileEvents, setTileEvents] = useState<Record<string, ChatTileEvent[]>>({})
+  const [tileEvents, setTileEvents] = useState<Record<string, ChatCardEvent[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   /** Conversations running in Claude Code that started as a chat. */
   const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())

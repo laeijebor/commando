@@ -45,7 +45,7 @@ import type {
   TmuxPane,
   WebPane,
 } from '../shared/protocol.js'
-import { isRedlineArtifactUrl, tileFileName, tileSource } from '../shared/chat-tile-events.js'
+import { isRedlineArtifactUrl, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
@@ -981,7 +981,14 @@ async function main(): Promise<void> {
       if (!pane || !chat || chat.session.status === 'closed') return undefined
       return { paneId: pane.id, connected: chat.hostConnected, busy: chat.session.status !== 'idle' }
     },
-    send: (paneId, prompt) => agentHosts.send(paneId, prompt, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {}),
+    send: (paneId, prompt, round) => {
+      // The prompt names its card so the chat shows the card instead of the raw text.
+      const id = chatTileEvents.reserveId()
+      const sent = agentHosts.send(paneId, `${prompt}\n${tileEventMarker([id])}`, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {})
+      const sessionId = agentHosts.states().find((chat) => chat.paneId === paneId)?.session.sessionId
+      if (sent) chatTileEvents.autofix({ ...round, id, paneId, ...(sessionId ? { sessionId } : {}) })
+      return sent
+    },
     log: (error) => console.error('[commando] PR auto-fix failed', error),
   })
   const externalAgents = new ExternalAgentWatcher({

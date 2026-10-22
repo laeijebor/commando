@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'no
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { tileEventItems, tileFileName, type ChatTileEvent, type ChatTileSource } from '../shared/chat-tile-events.js'
+import { tileEventItems, tileFileName, type ChatAutofixEvent, type ChatCardEvent, type ChatTileEvent, type ChatTileSource } from '../shared/chat-tile-events.js'
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
 
 export const TILE_EVENTS_PER_PANE = 100
@@ -15,33 +15,50 @@ export function defaultChatTileEventsPath(port = 4310): string {
   return join(homedir(), '.commando', `chat-tile-events-${port}.json`)
 }
 
-/** The server's copy also keeps which feedback notes a Send carried. */
-type StoredEvent = ChatTileEvent & { deliveryKeys?: string[] }
+/** The server's copy of a tile event also keeps which feedback notes a Send carried. */
+type StoredTileEvent = ChatTileEvent & { deliveryKeys?: string[] }
+type StoredEvent = StoredTileEvent | ChatAutofixEvent
+
+export const MAX_AUTOFIX_COMMENTS = 50
+const MAX_AUTOFIX_TEXT = 4_000
+
+const ofTile = (event: StoredEvent, webPaneId: string): event is StoredTileEvent => event.kind !== 'autofix' && event.webPaneId === webPaneId
 
 type Options = {
   path?: string
-  publish?: (paneId: string, events: ChatTileEvent[]) => void
+  publish?: (paneId: string, events: ChatCardEvent[]) => void
   now?: () => number
   newId?: () => string
 }
 
 const isEvent = (value: unknown): value is StoredEvent => {
-  const event = value as StoredEvent | null
-  return Boolean(event) && typeof event!.id === 'string' && (event!.kind === 'opened' || event!.kind === 'sent') &&
-    typeof event!.paneId === 'string' && typeof event!.webPaneId === 'string' &&
-    (event!.source === 'redline' || event!.source === 'canvas') && typeof event!.fileName === 'string' && Number.isFinite(event!.at)
+  const event = value as Record<string, unknown> | null
+  if (!event || typeof event.id !== 'string' || typeof event.paneId !== 'string' || !Number.isFinite(event.at)) return false
+  if (event.kind === 'autofix') {
+    return typeof event.repo === 'string' && Number.isInteger(event.number) && typeof event.url === 'string' &&
+      Array.isArray(event.failingChecks) && Array.isArray(event.comments)
+  }
+  return (event.kind === 'opened' || event.kind === 'sent') && typeof event.webPaneId === 'string' &&
+    (event.source === 'redline' || event.source === 'canvas') && typeof event.fileName === 'string'
 }
 
-const forClient = ({ deliveryKeys: _keys, ...event }: StoredEvent): ChatTileEvent => event
+const forClient = (event: StoredEvent): ChatCardEvent => {
+  if (event.kind === 'autofix') return event
+  const { deliveryKeys: _keys, ...rest } = event
+  return rest
+}
+
+const clipText = (text: string) => text.length <= MAX_AUTOFIX_TEXT ? text : `${text.slice(0, MAX_AUTOFIX_TEXT - 1)}…`
 
 /**
- * Redline/canvas moments shown as cards in a Commando chat: an agent opened a
- * tile, or the user sent answers from one. Display only — the feedback journal
- * stays the source of truth for delivery.
+ * Moments shown as cards in a Commando chat: an agent opened a redline or
+ * canvas tile, the user sent answers from one, or PR auto-fix asked the agent
+ * for a fix round. Display only — the feedback journal and auto-fix store stay
+ * the source of truth.
  */
 export class ChatTileEvents {
   private readonly path: string
-  private readonly publishPane: (paneId: string, events: ChatTileEvent[]) => void
+  private readonly publishPane: (paneId: string, events: ChatCardEvent[]) => void
   private readonly now: () => number
   private readonly newId: () => string
   private readonly panes = new Map<string, StoredEvent[]>()
@@ -58,16 +75,34 @@ export class ChatTileEvents {
     } catch { /* A missing or corrupt store starts empty. */ }
   }
 
-  forPane(paneId: string): ChatTileEvent[] {
+  forPane(paneId: string): ChatCardEvent[] {
     return (this.panes.get(paneId) ?? []).map(forClient)
   }
 
-  snapshots(): { paneId: string; events: ChatTileEvent[] }[] {
+  snapshots(): { paneId: string; events: ChatCardEvent[] }[] {
     return [...this.panes.keys()].map((paneId) => ({ paneId, events: this.forPane(paneId) }))
   }
 
+  /** An id for an event recorded later, so a prompt can name its card before it is sent. */
+  reserveId(): string {
+    return this.newId()
+  }
+
+  /** A PR auto-fix prompt reached the chat. */
+  autofix(input: Omit<ChatAutofixEvent, 'kind' | 'at' | 'id'> & { id?: string }): ChatCardEvent {
+    const { id, ...rest } = input
+    return this.add({
+      ...rest,
+      id: id ?? this.newId(),
+      kind: 'autofix',
+      at: this.now(),
+      failingChecks: rest.failingChecks.slice(0, MAX_AUTOFIX_COMMENTS).map(clipText),
+      comments: rest.comments.slice(0, MAX_AUTOFIX_COMMENTS).map((comment) => ({ ...comment, body: clipText(comment.body) })),
+    })
+  }
+
   opened(pane: WebPane, source: ChatTileSource, title?: string, sessionId?: string): ChatTileEvent {
-    return this.add({ ...this.base(pane, source, title, sessionId), kind: 'opened' })
+    return this.add({ ...this.base(pane, source, title, sessionId), kind: 'opened' }) as ChatTileEvent
   }
 
   /**
@@ -75,7 +110,7 @@ export class ChatTileEvents {
    * returns undefined when nothing new was sent.
    */
   sent(pane: WebPane, source: ChatTileSource, notes: readonly WebPaneFeedbackNote[], options: { title?: string; status?: 'sent' | 'waiting' | 'collected'; sessionId?: string } = {}): ChatTileEvent | undefined {
-    const known = new Set(this.list(pane.anchorPaneId).filter((event) => event.webPaneId === pane.id).flatMap((event) => event.deliveryKeys ?? []))
+    const known = new Set(this.list(pane.anchorPaneId).filter((event) => ofTile(event, pane.id)).flatMap((event) => event.deliveryKeys ?? []))
     const fresh = notes.filter((note) => !note.deliveryKey || !known.has(note.deliveryKey))
     if (!fresh.length) return undefined
     const keys = fresh.flatMap((note) => note.deliveryKey ? [note.deliveryKey] : [])
@@ -87,25 +122,25 @@ export class ChatTileEvents {
       status: options.status ?? 'sent',
       ...(options.status === 'collected' ? { collectedAt: this.now() } : {}),
       ...(keys.length ? { deliveryKeys: keys } : {}),
-    })
+    }) as ChatTileEvent
   }
 
   /** Ids of the Sends that carried these notes, oldest first. */
   idsFor(webPaneId: string, deliveryKeys: readonly string[]): string[] {
     const wanted = new Set(deliveryKeys)
-    return this.all().filter((event) => event.webPaneId === webPaneId && event.deliveryKeys?.some((key) => wanted.has(key))).map((event) => event.id)
+    return this.all().filter((event) => ofTile(event, webPaneId) && event.deliveryKeys?.some((key) => wanted.has(key))).map((event) => event.id)
   }
 
   /** A pushed prompt reached the agent: no longer waiting. */
   delivered(ids: readonly string[]): void {
     const wanted = new Set(ids)
-    this.update((event) => wanted.has(event.id) && event.status === 'waiting' ? { ...event, status: 'sent' } : undefined)
+    this.update((event) => wanted.has(event.id) && event.kind !== 'autofix' && event.status === 'waiting' ? { ...event, status: 'sent' } : undefined)
   }
 
   /** A poll was handed the tile's whole backlog: the agent has everything sent from it. */
   drained(webPaneId: string): void {
     const at = this.now()
-    this.update((event) => event.webPaneId === webPaneId && event.kind === 'sent' && event.status !== 'collected'
+    this.update((event) => ofTile(event, webPaneId) && event.kind === 'sent' && event.status !== 'collected'
       ? { ...event, status: 'collected', collectedAt: at }
       : undefined)
   }
@@ -114,7 +149,7 @@ export class ChatTileEvents {
   retitle(webPaneId: string, title: string): void {
     const trimmed = title.trim()
     if (!trimmed) return
-    this.update((event) => event.webPaneId === webPaneId && !event.title ? { ...event, title: trimmed } : undefined)
+    this.update((event) => ofTile(event, webPaneId) && !event.title ? { ...event, title: trimmed } : undefined)
   }
 
   private base(pane: WebPane, source: ChatTileSource, title?: string, sessionId?: string) {
@@ -131,7 +166,7 @@ export class ChatTileEvents {
     }
   }
 
-  private add(event: StoredEvent): ChatTileEvent {
+  private add(event: StoredEvent): ChatCardEvent {
     const list = this.list(event.paneId)
     list.push(event)
     if (list.length > TILE_EVENTS_PER_PANE) list.splice(0, list.length - TILE_EVENTS_PER_PANE)

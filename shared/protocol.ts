@@ -3,7 +3,7 @@ import type { AgentChatRequest } from './agent-chats.js'
 import type { ExternalAgentRun, ChatAnswer, ChatCommand, ChatFileSearchResult, ChatHandoffInfo, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 import type { ChatStashEntry } from './chat-stash.js'
 import type { ChatMcpRequest, ChatMcpResult } from './chat-mcp.js'
-import type { ChatTileEvent } from './chat-tile-events.js'
+import type { ChatCardEvent } from './chat-tile-events.js'
 
 export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'muse' | 'unknown'
 
@@ -786,7 +786,7 @@ export type ServerMessage =
   | { type: 'chat_snapshot'; chats: ChatState[] }
   /** External runs for one pane, replacing its previous snapshot. */
   | { type: 'chat_external_runs'; paneId: string; runs: ExternalAgentRun[] }
-  | { type: 'chat_tile_events'; paneId: string; events: ChatTileEvent[] }
+  | { type: 'chat_tile_events'; paneId: string; events: ChatCardEvent[] }
   /** The composer stash, newest first: on connect and after every change. */
   | { type: 'chat_stash'; entries: ChatStashEntry[] }
   /** A chat pane's whole state: sent when its host connects or reconnects. */

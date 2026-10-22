@@ -2,9 +2,10 @@ import type { ChatItem } from './agent-chat.js'
 import type { WebPaneFeedbackNote } from './protocol.js'
 
 /**
- * Chat cards for redline and canvas tiles: an agent opened one, or the user
- * sent answers from one. The daemon records them; the chat shows them on the
- * user's side of the timeline.
+ * Chat cards for messages Commando sends on the user's behalf: an agent opened
+ * a redline or canvas tile, the user sent answers from one, or PR auto-fix
+ * asked the agent to fix CI and comments. The daemon records them; the chat
+ * shows them on the user's side of the timeline.
  */
 export type ChatTileSource = 'redline' | 'canvas'
 
@@ -34,6 +35,27 @@ export type ChatTileEvent = {
   status?: 'sent' | 'waiting' | 'collected'
   collectedAt?: number
 }
+
+/** PR auto-fix asked the agent to fix failing checks and answer new comments. */
+export type ChatAutofixEvent = {
+  id: string
+  kind: 'autofix'
+  paneId: string
+  sessionId?: string
+  at: number
+  /** owner/name */
+  repo: string
+  number: number
+  url: string
+  round: number
+  maxRounds: number
+  headSha?: string
+  /** Empty when only comments triggered this round. */
+  failingChecks: string[]
+  comments: { author: string; body: string; url: string }[]
+}
+
+export type ChatCardEvent = ChatTileEvent | ChatAutofixEvent
 
 export const MAX_TILE_EVENT_ITEMS = 50
 const MAX_TEXT = 2_000
@@ -117,7 +139,7 @@ type UserMessage = Extract<ChatItem, { kind: 'user_message' }>
  * daemon pushed for some events becomes their card; the rest are placed by
  * time among the main conversation's items.
  */
-export function withTileEvents(items: readonly ChatItem[], events: readonly ChatTileEvent[], sessionId?: string): ChatItem[] {
+export function withTileEvents(items: readonly ChatItem[], events: readonly ChatCardEvent[], sessionId?: string): ChatItem[] {
   // A chat shows its own conversation's cards; one with no id yet shows none of another's.
   events = events.filter((event) => !event.sessionId || event.sessionId === sessionId)
   if (!events.length) return [...items]
@@ -137,7 +159,7 @@ export function withTileEvents(items: readonly ChatItem[], events: readonly Chat
   if (!rest.length) return merged
   const out: ChatItem[] = []
   let next = 0
-  const synthetic = (event: ChatTileEvent, turnId: string): UserMessage => ({
+  const synthetic = (event: ChatCardEvent, turnId: string): UserMessage => ({
     id: `tile-event-${event.id}`, kind: 'user_message', text: '', turnId,
     status: 'completed', createdAt: event.at, updatedAt: event.at, tileEvents: [event],
   })

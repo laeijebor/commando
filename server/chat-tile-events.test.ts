@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ChatTileEvent } from '../shared/chat-tile-events.js'
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
 import { ChatTileEvents, TILE_EVENTS_BYTES, TILE_EVENTS_PER_PANE, TILE_EVENTS_TOTAL } from './chat-tile-events.js'
 
@@ -55,7 +56,7 @@ describe('ChatTileEvents', () => {
     expect(event.status).toBe('waiting')
     expect(events.idsFor('w-1', ['k2'])).toEqual([event.id])
     events.delivered([event.id])
-    expect(events.forPane('%5')[0]!.status).toBe('sent')
+    expect((events.forPane('%5')[0] as ChatTileEvent).status).toBe('sent')
     clock = 2_000
     events.drained('w-1')
     expect(events.forPane('%5')[0]).toMatchObject({ status: 'collected', collectedAt: 2_000 })
@@ -76,7 +77,7 @@ describe('ChatTileEvents', () => {
     const events = store()
     events.opened(pane, 'redline')
     events.retitle('w-1', 'Notification settings')
-    expect(events.forPane('%5')[0]!.title).toBe('Notification settings')
+    expect((events.forPane('%5')[0] as ChatTileEvent).title).toBe('Notification settings')
     expect(JSON.parse(readFileSync(path, 'utf8'))).toHaveLength(1)
     expect(store().forPane('%5')).toEqual(events.forPane('%5'))
   })
@@ -113,5 +114,23 @@ describe('ChatTileEvents', () => {
     expect(reloaded.length).toBeGreaterThan(0)
     expect(reloaded.length).toBeLessThan(30)
     expect(reloaded.at(-1)!.at).toBe(clock)
+  })
+
+  it('records auto-fix rounds alongside tile events and reloads them', () => {
+    const events = store()
+    events.sent(pane, 'redline', [answer('k1')])
+    const id = events.reserveId()
+    const card = events.autofix({
+      id, paneId: '%5', sessionId: 's-1', repo: 'acme/widgets', number: 12, url: 'https://github.com/acme/widgets/pull/12',
+      round: 2, maxRounds: 5, headSha: 'abc1234', failingChecks: ['lint'],
+      comments: [{ author: 'reviewer', body: 'x'.repeat(5_000), url: 'https://github.com/c/1' }],
+    })
+    expect(card).toMatchObject({ id, kind: 'autofix', at: 1_000, failingChecks: ['lint'] })
+    expect(card.kind === 'autofix' && card.comments[0]!.body.length).toBe(4_000)
+    // Tile-only updates leave auto-fix cards alone.
+    events.drained('w-1')
+    events.retitle('w-1', 'Settings')
+    expect(store().forPane('%5').map((event) => event.kind)).toEqual(['sent', 'autofix'])
+    expect(store().forPane('%5')[1]).toEqual(card)
   })
 })
