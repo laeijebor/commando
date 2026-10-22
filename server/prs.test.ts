@@ -453,6 +453,21 @@ describe('recorded pane PRs', () => {
     expect(lookups[0][0].find((arg) => arg.startsWith('query='))).not.toContain('pullRequest(number: 1)')
   })
 
+  it('flags only the pane whose lookup failed as incomplete in a shared search', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const runner = vi.fn(async (args: string[]) => isLookup(args)
+      ? JSON.stringify({ data: { viewer: { login: 'leo' }, r0: null, r1: { pullRequest: marked(2, `<!-- commando:v1 target=${other} relation=created -->`) } },
+        errors: [{ type: 'INTERNAL', path: ['r0'], message: 'Something went wrong' }] })
+      : search())
+    const service = new PrService({ runner, now: () => 1 })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 1 }])
+    await service.recordPanePullRequests(other, [{ repo: 'acme/widgets', number: 2 }])
+    const [mine, theirs] = await Promise.all([service.listPanePullRequests(targetId), service.listPanePullRequests(other)])
+    expect(mine).toMatchObject({ truncated: true, pullRequests: [] })
+    expect(theirs.truncated).toBe(false)
+    expect(theirs.pullRequests.map((pr) => pr.number)).toEqual([2])
+  })
+
   it('splits a large lookup into queries of 15', async () => {
     const runner = vi.fn(async (args: string[]) => {
       if (!isLookup(args)) return search()
@@ -622,9 +637,13 @@ describe('pane PR status', () => {
     expect(runner).toHaveBeenCalledOnce()
   })
 
-  it('does not mistake truncated pane membership for a missing PR', async () => {
-    const { service } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 101, nodes: [] } } }))
-    await expect(service.autofixSnapshot('acme/widgets', 12, targetId)).rejects.toMatchObject({ code: 'pr_list_truncated' })
+  it('checks a PR missing from a truncated pane page directly instead of calling it missing', async () => {
+    const runner = vi.fn(async (args: string[]) => args.some((arg) => arg.startsWith('query=query { viewer'))
+      ? JSON.stringify({ data: { viewer: { login: 'leo' }, r0: { pullRequest: pullRequestNode({ state: 'MERGED',
+        body: `<!-- commando:v1 target=${targetId} relation=created -->`, repository: { nameWithOwner: 'acme/widgets' } }) } } })
+      : JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 101, nodes: [] } } }))
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    expect((await service.autofixSnapshot('acme/widgets', 12, targetId)).state).toBe('merged')
   })
 
   it('finds an older open PR that fell off the truncated pane page', async () => {

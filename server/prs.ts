@@ -65,8 +65,8 @@ const RECORD_GRACE_MS = 10 * 60_000
 const RECORDED_LOOKUP_BATCH_SIZE = 15
 
 type RecordedRef = PanePrRecord & { targetId: string }
-/** Recorded PRs found by number, per pane; `incomplete` when one couldn't be checked. */
-type RecordedLookup = { byTarget: Map<string, PanePrSummary[]>; incomplete: boolean }
+/** Recorded PRs found by number, per pane, and the panes with a PR that couldn't be checked. */
+type RecordedLookup = { byTarget: Map<string, PanePrSummary[]>; incomplete: Set<string> }
 const PR_CONVERSATION_TTL_MS = 60_000
 const PR_CHECKS_TTL_MS = 30_000
 
@@ -1064,7 +1064,7 @@ export class PrService {
    * Throws when GitHub can't be read, like a failed search would.
    */
   private async lookUpRecordedPullRequests(refs: readonly RecordedRef[], viewer: string): Promise<RecordedLookup> {
-    const lookup: RecordedLookup = { byTarget: new Map(), incomplete: false }
+    const lookup: RecordedLookup = { byTarget: new Map(), incomplete: new Set() }
     const batches: RecordedRef[][] = []
     for (let start = 0; start < refs.length; start += RECORDED_LOOKUP_BATCH_SIZE) batches.push(refs.slice(start, start + RECORDED_LOOKUP_BATCH_SIZE))
     const payloads = await Promise.all(batches.map((batch) => this.ghRead(['api', 'graphql', '-f', `query=${recordedPullRequestsQuery(batch)}`])
@@ -1092,7 +1092,7 @@ export class PrService {
       batch.forEach((ref, index) => {
         const alias = `r${index}`
         // Other errors on one lookup say nothing about the PR; skip it this time.
-        if (failed.has(alias)) { lookup.incomplete = true; return }
+        if (failed.has(alias)) { lookup.incomplete.add(ref.targetId); return }
         const repository = gone.has(alias) ? null : optionalObject(data, alias)
         const node = repository && optionalObject(repository, 'pullRequest')
         // The PR body stays the source of truth: a removed or moved marker drops the
@@ -1157,7 +1157,7 @@ export class PrService {
       totalCount: shared ? pullRequests.length : result.linked.totalCount + recorded.length,
       pullRequests,
       // A recorded PR that couldn't be checked may still belong here.
-      truncated: result.linked.truncated || lookup?.incomplete === true,
+      truncated: result.linked.truncated || lookup?.incomplete.has(targetId) === true,
       fetchedAt: result.fetchedAt,
     }
     this.invalidateChangedReferences(list)
@@ -1356,11 +1356,10 @@ export class PrService {
       // Search can miss a PR it found a moment ago; ask GitHub directly before calling it gone.
       const lookup = await this.lookUpRecordedPullRequests([{ repo, number, at: this.now(), targetId }], list.viewer ?? '')
       pr = lookup.byTarget.get(targetId)?.[0]
-      if (lookup.incomplete) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR could not be checked')
+      if (lookup.incomplete.size) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR could not be checked')
     }
     if (!pr) {
-      // Search truncation is not evidence that the linked PR disappeared.
-      if (list.truncated) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR list is incomplete')
+      // The direct lookup above is authoritative, even when the search list was truncated.
       return { state: 'missing', url: `https://github.com/${repo}/pull/${number}`, headSha: '', failingChecks: [], conflicting: false, baseRefName: '', comments: [], viewer: list.viewer ?? '' }
     }
     if (pr.state !== 'open') return { state: pr.state, url: pr.url, headSha: '', failingChecks: [], conflicting: false, baseRefName: '', comments: [], viewer: list.viewer ?? '' }
