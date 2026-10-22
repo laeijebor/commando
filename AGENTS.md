@@ -14,26 +14,41 @@
 
 - **Use the default Commando vault for planning.** Treat the relevant Markdown note in `~/.commando/notes-vaults/default` as the source of truth for plans and task status. Update its checklist as work progresses, and mark items complete only after verification.
 
-- **Merge only when the feature is finished and tested.** Before merging back into `main`:
+- **Integrate into `next`, not `main`.** Every merge into local `main` restarts the user's running daemon (`tsx watch`) and interrupts their work. Finished work therefore collects on a local `next` branch, and the user moves `next` into `main` in one go when a few items are ready.
+
+  Before integrating into `next`:
   1. `npm run typecheck` passes
   2. `npm test` passes (vitest)
   3. You have exercised the feature end-to-end where practical (e.g. `npm run dev` and drive the affected flow, or the relevant Playwright test)
 
-  **Local merge is the default, with standing user authorization.** Commando is a single-user development app: once the checks above pass, merge completed work into local `main` so the user can use it in their running checkout. Do not stop at opening a PR or ask for routine local-merge approval. An explicit request to leave work unmerged or await review takes precedence.
+  **Integrating into `next` is the default, with standing user authorization.** Once the checks above pass, integrate the branch into `next` without asking. Do not stop at opening a PR. An explicit request to leave work unintegrated or await review takes precedence.
 
-  **Preserve the active session.** Inspect the main checkout for concurrent changes before merging. Preserve unrelated commits and untracked files; never reset, stash, or overwrite another agent's work. If main has diverged, prepare and test the combined result in your worktree, then fast-forward the main checkout after confirming it has not moved. Ask first if applying the change could interrupt the active session, requires restarting/reconfiguring the shared daemon or tmux server, or requires a migration or destructive operation. A verified local Git merge does not authorize restarting shared services.
+  **Never merge into local `main` yourself.** Only the user decides when `next` reaches `main`, or asks you to do it. The one exception is a change that cannot interrupt the running session, such as a docs-only change to this file that agents need to see; that may go straight to `main`.
 
-  **Remote merging is separate.** Opening a PR does not block safe local integration. Merge on GitHub / `origin/main` only when the user requests it, after any required review is complete. Do not push unrelated local-only commits as part of merging a PR remotely.
-
-  Then merge the branch into local `main` and clean up only your own finished worktree:
+  `next` is a local branch, like local `main`: never push it and never check it out (keeping it unchecked-out is what lets `git fetch . HEAD:next` update it). Integrate through a short-lived worktree so your feature branch stays clean for its PR:
 
   ```sh
-  git -C <main-checkout> merge <feature>
-  git worktree remove ../commando-<feature>
-  git branch -d <feature>
+  MAIN=<main-checkout>
+  git -C "$MAIN" branch next main 2>/dev/null || true       # first time only: start next from local main
+  git -C "$MAIN" worktree add ../commando-integrate-<feature> -b integrate-<feature> next
+  cd ../commando-integrate-<feature>
+  git merge main                                            # keep next level with main
+  git merge <feature>                                       # resolve any conflicts here
+  # If either merge needed conflict resolution, run typecheck and tests in this worktree.
+  git fetch . HEAD:next                                     # fast-forward only; if next moved, merge next and retry
+  cd - && git -C "$MAIN" worktree remove ../commando-integrate-<feature>
+  git -C "$MAIN" branch -D integrate-<feature>
   ```
 
-  If any check fails, do not merge — fix it in the worktree first, or leave the branch unmerged and report what's failing.
+  **Preserve the active session.** Preserve unrelated commits and untracked files; never reset, stash, or overwrite another agent's work, including what is already on `next`. Ask first if applying the change would require restarting/reconfiguring the shared daemon or tmux server, or a migration or destructive operation.
+
+  **Moving `next` into `main` (only when the user asks).** Confirm the main checkout is clean, then `git -C "$MAIN" merge --ff-only next`. If `main` has moved on, merge `main` into `next` through an integration worktree as above, test, and retry.
+
+  **Remote merging is separate.** Opening a PR does not block integrating into `next`. Merge on GitHub / `origin/main` only when the user requests it, after any required review is complete. Do not push unrelated local-only commits as part of merging a PR remotely.
+
+  After integrating, remove only your own finished worktree (`git -C "$MAIN" worktree remove ../commando-<feature>`). Keep the feature branch while its PR is open; once the PR is merged or closed, delete it if `git -C "$MAIN" merge-base --is-ancestor <feature> next` succeeds (`git branch -d` refuses, because it checks against the checked-out `main`).
+
+  If any check fails, do not integrate — fix it in the worktree first, or leave the branch unintegrated and report what's failing.
 
 ## Session Isolation
 
