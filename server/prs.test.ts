@@ -399,6 +399,26 @@ describe('pane PR status', () => {
     expect(autofix.comments.every((comment) => comment.body.length === 500)).toBe(true)
   })
 
+  it('drops hidden bot state from auto-fix comments before shortening them', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      if (args.includes('graphql')) return linkedPayload()
+      if (args[1].endsWith('/pulls/12')) return JSON.stringify({ head: { sha: '2'.repeat(40) } })
+      if (args[1].includes('/check-runs')) return JSON.stringify([{ check_runs: [] }])
+      if (args[1].includes('/statuses')) return JSON.stringify([[]])
+      return JSON.stringify([[
+        { id: 1, state: 'CHANGES_REQUESTED', body: `<!-- state ${'s'.repeat(900)} -->\n\nVisible feedback`, user: { login: 'coderabbitai[bot]' } },
+        { id: 2, state: 'COMMENTED', body: '<!-- only hidden state -->', user: { login: 'coderabbitai[bot]' } },
+        { id: 3, state: 'COMMENTED', body: 'Escape the `<!--` in header.html', user: { login: 'reviewer' } },
+      ]])
+    })
+    const service = new PrService({ runner })
+    const autofix = await service.autofixSnapshot('acme/widgets', 12, targetId)
+    const bodies = (kind: number) => autofix.comments.filter((comment) => comment.id.startsWith(`${kind}:`)).map((comment) => comment.body)
+    // Issue comments: hidden state stripped before the cut, a hidden-only comment skipped, an unclosed marker kept.
+    expect(bodies(0)).toEqual(['Visible feedback', 'Escape the `<!--` in header.html'])
+    expect(bodies(1)).toEqual(['Visible feedback'])
+  })
+
   it('invalidates long-lived metadata when pane discovery reports a new head', async () => {
     let currentHead = '2'.repeat(40)
     const runner = vi.fn(async (args: string[]) => {
