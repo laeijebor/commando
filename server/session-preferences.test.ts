@@ -169,6 +169,32 @@ describe('repository sub-groups', () => {
     })
   })
 
+  it.each([['$5', '$6', '$7', '$9'], ['$5']].map((sessionIds) => ({ sessionIds })))('drops a deleted repository member when its id is reused, keeping other members and empty groups ($sessionIds)', ({ sessionIds }) => {
+    const manualGroup = { id: 'manual', name: 'Manual', sessionIds: ['$5'] }
+    const preferences = {
+      ...base,
+      groups: [manualGroup],
+      repositoryGroups: [{ ...group, sessionIds }],
+      repositorySessionIds: ['group:landing'],
+      sessionNamesById: { $5: 'foo', $6: 'kept', $9: 'absent' },
+    }
+    const reconciled = reconcileSessionTreePreferences(preferences, [
+      { id: '$5', name: 'bar' }, { id: '$6', name: 'kept' }, { id: '$7', name: 'no stored name' },
+    ])
+    expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: sessionIds.filter((id) => id !== '$5') }])
+    expect(reconciled.repositorySessionIds).toEqual(['group:landing'])
+    expect(reconciled.groups).toEqual([manualGroup])
+  })
+
+  it('uses the member name after remapping even when the destination id has a different stored name', () => {
+    const reconciled = reconcileSessionTreePreferences({
+      ...base,
+      repositoryGroups: [group],
+      sessionNamesById: { $1: 'work', $8: 'deleted' },
+    }, [{ id: '$8', name: 'work' }, { id: '$1', name: 'scratch' }])
+    expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: ['$8'] }])
+  })
+
   it('round-trips groups through replace, load and read-only loads without changing manual groups', async () => {
     const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
     const preferences = { ...base, groups: [{ id: 'manual', name: 'Manual', sessionIds: ['$1'] }], ungroupedSessionIds: [], repositoryGroups: [group, { ...group, id: 'empty', sessionIds: [] }], repositorySessionIds: ['group:landing', 'group:empty'] }

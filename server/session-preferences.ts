@@ -230,7 +230,15 @@ export function reconcileSessionTreePreferences(
     })()
     : undefined
   const repositoryClaimed = new Set<string>()
-  const repositoryGroups = parsed.repositoryGroups?.map((group) => ({ ...group, sessionIds: reconcileIds(group.sessionIds, repositoryClaimed) }))
+  const repositoryGroups = parsed.repositoryGroups?.map((group) => ({
+    ...group,
+    sessionIds: reconcileIds(group.sessionIds, repositoryClaimed).filter((sessionId) => {
+      // reconcileIds carries the stored name to the remapped id in claimedNames.
+      const storedName = claimedNames.get(sessionId)
+      const current = currentById.get(sessionId)
+      return !storedName || !current || current.name === storedName || currentByName.has(storedName)
+    }),
+  }))
   for (const session of currentSessions) {
     if (!claimed.has(session.id)) {
       claimed.add(session.id)
