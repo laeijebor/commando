@@ -164,7 +164,7 @@ function ChatColumn({
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
   // Cards only join the timeline; plan follow-ups and the opening task read the conversation itself.
-  const timelineItems = useMemo(() => tileEvents.length ? withTileEvents(chat.items, tileEvents) : chat.items, [chat.items, tileEvents])
+  const timelineItems = useMemo(() => tileEvents.length ? withTileEvents(chat.items, tileEvents, chat.session.sessionId) : chat.items, [chat.items, tileEvents, chat.session.sessionId])
   const openingTask = pane?.openedBy ? chat.items.find((item) => item.kind === 'user_message' && !item.parentToolUseId) : undefined
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])

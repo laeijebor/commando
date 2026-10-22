@@ -43,12 +43,13 @@ type Dependencies = {
   pane: (id: string) => WebPane | undefined
   title: (pane: WebPane) => string
   owns: (paneId: string) => boolean
-  /** `queue`: wait for a running turn to end instead of joining it. */
-  sendChat: (paneId: string, text: string, requestId: string, queue: boolean) => boolean
+  sendChat: (paneId: string, text: string, requestId: string) => boolean
   status: (paneId: string) => AgentStatus | undefined
   sendTerminal: (paneId: string, text: string) => Promise<void>
-  /** A redline tile whose agent is already waiting on a poll needs no push. */
-  polling?: (webPaneId: string) => boolean
+  /** Redline: the notes no poll has picked up yet; only those are pushed. */
+  undelivered?: (webPaneId: string, deliveryKeys: readonly string[]) => string[]
+  /** Redline: the chat has no turn running, so a prompt starts one instead of joining it. */
+  chatIdle?: (paneId: string) => boolean
   /** Chat card ids for these notes; the prompt names them so the chat shows the cards. */
   eventIds?: (webPaneId: string, deliveryKeys: readonly string[]) => string[]
   delivered?: (eventIds: readonly string[]) => void
@@ -58,8 +59,8 @@ type Dependencies = {
 
 /**
  * Types sent tile feedback into the owning agent's pane: canvas comments into
- * an idle chat or terminal agent, redline notes into a chat whose agent isn't
- * polling. Push is an in-memory convenience; the acknowledged journal is authoritative.
+ * a chat or idle terminal agent, redline notes into an idle chat when no poll
+ * picked them up. Push is an in-memory convenience; the acknowledged journal is authoritative.
  */
 export class CanvasPush {
   private readonly pushed = new Map<string, Set<string>>()
@@ -71,7 +72,7 @@ export class CanvasPush {
     const pane = this.deps.pane(webPaneId)
     if (!pane) return
     const canvas = pane.content?.kind === 'canvas'
-    if (!canvas && (pane.content || !this.deps.owns(pane.anchorPaneId) || this.deps.polling?.(webPaneId))) return
+    if (!canvas && (pane.content || !this.deps.owns(pane.anchorPaneId))) return
     const pushed = this.pushed.get(webPaneId) ?? new Set<string>()
     this.pushed.set(webPaneId, pushed)
     const owed = this.owed.get(webPaneId) ?? new Map<string, WebPaneFeedbackNote>()
@@ -102,6 +103,12 @@ export class CanvasPush {
     if (!canvas && !chat) return
     const status = this.deps.status(paneId)
     if (!chat && (!status || status.provider === 'unknown' || status.status !== 'done')) return
+    if (!canvas) {
+      // A poll that already has these notes makes the push redundant.
+      const waiting = new Set(this.deps.undelivered?.(id, [...owed.keys()]) ?? owed.keys())
+      for (const key of [...owed.keys()]) if (!waiting.has(key)) owed.delete(key)
+      if (!owed.size || !(this.deps.chatIdle?.(paneId) ?? true)) return
+    }
     const notes = [...owed.values()], keys = [...owed.keys()]
     const eventIds = this.deps.eventIds?.(id, keys) ?? []
     const prompt = canvas
@@ -115,7 +122,7 @@ export class CanvasPush {
       const available = this.deps.status(paneId)
       if (this.deps.pane(id)?.anchorPaneId !== paneId || chat !== this.deps.owns(paneId) || (!chat && (!available || available.status !== 'done' || available.provider === 'unknown'))) return
       if (chat) {
-        if (!this.deps.sendChat(paneId, text, `${canvas ? 'canvas' : 'redline'}-${randomUUID()}`, !canvas)) return
+        if (!this.deps.sendChat(paneId, text, `${canvas ? 'canvas' : 'redline'}-${randomUUID()}`)) return
       } else await this.deps.sendTerminal(paneId, text)
       delivered = true
       if (eventIds.length) this.deps.delivered?.(eventIds)

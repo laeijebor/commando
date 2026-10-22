@@ -17,6 +17,8 @@ export type ChatTileEvent = {
   kind: 'opened' | 'sent'
   /** The chat pane the tile belonged to when this happened. */
   paneId: string
+  /** That chat's conversation; tmux pane ids are reused, so cards only show in it. */
+  sessionId?: string
   webPaneId: string
   source: ChatTileSource
   /** Page or canvas title, when known. */
@@ -115,7 +117,8 @@ type UserMessage = Extract<ChatItem, { kind: 'user_message' }>
  * daemon pushed for some events becomes their card; the rest are placed by
  * time among the main conversation's items.
  */
-export function withTileEvents(items: readonly ChatItem[], events: readonly ChatTileEvent[]): ChatItem[] {
+export function withTileEvents(items: readonly ChatItem[], events: readonly ChatTileEvent[], sessionId?: string): ChatItem[] {
+  events = events.filter((event) => !event.sessionId || !sessionId || event.sessionId === sessionId)
   if (!events.length) return [...items]
   const byId = new Map(events.map((event) => [event.id, event]))
   const placed = new Set<string>()
@@ -127,7 +130,9 @@ export function withTileEvents(items: readonly ChatItem[], events: readonly Chat
     for (const id of ids) placed.add(id)
     return { ...item, tileEvents: attached }
   })
-  const rest = events.filter((event) => !placed.has(event.id)).sort((a, b) => a.at - b.at)
+  // Events from before the earliest item kept belong to history the chat no longer shows.
+  const first = items.find((item) => !item.parentToolUseId)?.createdAt ?? -Infinity
+  const rest = events.filter((event) => !placed.has(event.id) && event.at >= first).sort((a, b) => a.at - b.at)
   if (!rest.length) return merged
   const out: ChatItem[] = []
   let next = 0

@@ -64,21 +64,21 @@ export class ChatTileEvents {
     return [...this.panes.keys()].map((paneId) => ({ paneId, events: this.forPane(paneId) }))
   }
 
-  opened(pane: WebPane, source: ChatTileSource, title?: string): ChatTileEvent {
-    return this.add({ ...this.base(pane, source, title), kind: 'opened' })
+  opened(pane: WebPane, source: ChatTileSource, title?: string, sessionId?: string): ChatTileEvent {
+    return this.add({ ...this.base(pane, source, title, sessionId), kind: 'opened' })
   }
 
   /**
    * Records one Send. Notes already on record (a retried Send) are left out;
    * returns undefined when nothing new was sent.
    */
-  sent(pane: WebPane, source: ChatTileSource, notes: readonly WebPaneFeedbackNote[], options: { title?: string; waiting?: boolean } = {}): ChatTileEvent | undefined {
+  sent(pane: WebPane, source: ChatTileSource, notes: readonly WebPaneFeedbackNote[], options: { title?: string; waiting?: boolean; sessionId?: string } = {}): ChatTileEvent | undefined {
     const known = new Set(this.list(pane.anchorPaneId).filter((event) => event.webPaneId === pane.id).flatMap((event) => event.deliveryKeys ?? []))
     const fresh = notes.filter((note) => !note.deliveryKey || !known.has(note.deliveryKey))
     if (!fresh.length) return undefined
     const keys = fresh.flatMap((note) => note.deliveryKey ? [note.deliveryKey] : [])
     return this.add({
-      ...this.base(pane, source, options.title),
+      ...this.base(pane, source, options.title, options.sessionId),
       kind: 'sent',
       items: tileEventItems(fresh),
       ...(fresh.some((note) => note.handoff?.kind === 'build') ? { build: true } : {}),
@@ -109,6 +109,11 @@ export class ChatTileEvents {
     this.update((event) => wanted.has(event.id) && event.status === 'waiting' ? { ...event, status: 'sent' } : undefined)
   }
 
+  /** A poll was handed the tile's whole backlog, so nothing sent from it is waiting any more. */
+  drained(webPaneId: string): void {
+    this.update((event) => event.webPaneId === webPaneId && event.status === 'waiting' ? { ...event, status: 'sent' } : undefined)
+  }
+
   /** Fills in titles that were not known when the event was recorded. */
   retitle(webPaneId: string, title: string): void {
     const trimmed = title.trim()
@@ -116,11 +121,12 @@ export class ChatTileEvents {
     this.update((event) => event.webPaneId === webPaneId && !event.title ? { ...event, title: trimmed } : undefined)
   }
 
-  private base(pane: WebPane, source: ChatTileSource, title?: string) {
+  private base(pane: WebPane, source: ChatTileSource, title?: string, sessionId?: string) {
     const trimmed = title?.trim()
     return {
       id: this.newId(),
       paneId: pane.anchorPaneId,
+      ...(sessionId ? { sessionId } : {}),
       webPaneId: pane.id,
       source,
       ...(trimmed ? { title: trimmed.slice(0, 300) } : {}),

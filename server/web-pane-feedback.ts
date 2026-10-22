@@ -9,7 +9,6 @@ import { WebPaneError } from './web-panes.js'
 
 export const MAX_QUEUED_FEEDBACK_NOTES = 50
 export const MAX_FEEDBACK_WAIT_MS = 60_000
-const RECENT_POLL_MS = 5_000
 
 export type FeedbackDrainResult = {
   notes: WebPaneFeedbackNote[]
@@ -179,15 +178,12 @@ export class WebPaneFeedbackStore {
     }
   }
 
-  /**
-   * True while an agent is waiting on this tile's feedback, or was handed
-   * notes in the last few seconds (a Send that settled a waiting poll, or a
-   * poll loop between calls).
-   */
-  polling(webPaneId: string): boolean {
-    if ((this.waiters.get(webPaneId)?.length ?? 0) > 0) return true
-    const drain = this.drains.get(webPaneId)
-    return drain !== undefined && this.now() - drain.at <= RECENT_POLL_MS
+  /** The delivery keys among these that no poll has been handed yet. */
+  undelivered(webPaneId: string, deliveryKeys: readonly string[]): string[] {
+    const state = this.panes.get(webPaneId)
+    if (!state) return []
+    const wanted = new Set(deliveryKeys)
+    return state.notes.flatMap((entry) => entry.id > state.deliveredUpTo && entry.note.deliveryKey && wanted.has(entry.note.deliveryKey) ? [entry.note.deliveryKey] : [])
   }
 
   info(): Record<string, WebPaneFeedbackInfo> {

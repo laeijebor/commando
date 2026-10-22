@@ -371,7 +371,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
     return () => element.removeEventListener('scroll', onScroll)
   }, [])
 
-  const last = rows.at(-1)
+  // A card the user sent after the latest activity doesn't end that activity.
+  const last = [...rows].reverse().find((row) => !(row.kind === 'user' && row.item.tileEvents?.length))
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
   const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   return (

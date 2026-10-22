@@ -585,7 +585,10 @@ async function main(): Promise<void> {
   // onDrain fires only at request time, safely after publishWebPanes exists.
   webPaneFeedback = new WebPaneFeedbackStore(
     feedbackJournal,
-    () => publishWebPanes(),
+    (id) => {
+      publishWebPanes()
+      chatTileEvents.drained(id)
+    },
     Date.now,
     releaseAttachment,
     (id, keys) => {
@@ -947,6 +950,8 @@ async function main(): Promise<void> {
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
     broadcast: (message) => {
       if (message.type === 'chat_session' && (message.session.status === 'running' || message.session.status === 'waiting')) noteChatBusy?.(message.paneId)
+      // An idle chat can take the redline answers that arrived while it worked.
+      if (message.type === 'chat_session' && message.session.status === 'idle') void canvasPush?.statusChanged(message.paneId)
       broadcast(message)
     },
     verifyHost: async (paneId, hostPid) => {
@@ -1919,6 +1924,7 @@ async function main(): Promise<void> {
   }
   // One paste at a time per agent pane, whichever tab is pushing.
   const agentPushes = new Set<string>()
+  const chatSessionFor = (paneId: string) => agentHosts.states().find((chat) => chat.paneId === paneId)?.session
   /** A canvas's manifest title, or a page's title; undefined when neither is known yet. */
   const tileTitle = (pane: WebPane): string | undefined => {
     if (pane.content?.kind === 'canvas') {
@@ -1934,8 +1940,9 @@ async function main(): Promise<void> {
     pane: (id) => webPanes.get(id),
     title: (pane) => tileTitle(pane) ?? (pane.content?.kind === 'canvas' ? 'Canvas' : tileFileName(pane.url)),
     owns: (paneId) => agentHosts.owns(paneId),
-    sendChat: (paneId, text, requestId, queue) => agentHosts.send(paneId, text, requestId, [], queue && agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {}),
-    polling: (webPaneId) => webPaneFeedback.polling(webPaneId),
+    sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
+    undelivered: (webPaneId, keys) => webPaneFeedback.undelivered(webPaneId, keys),
+    chatIdle: (paneId) => chatSessionFor(paneId)?.status === 'idle',
     eventIds: (webPaneId, keys) => chatTileEvents.idsFor(webPaneId, keys),
     delivered: (ids) => chatTileEvents.delivered(ids),
     status: (paneId) => agentStatuses.get(paneId),
@@ -2081,18 +2088,19 @@ async function main(): Promise<void> {
       try { canvasSnapshots.captureSent(pane, notes) }
       catch (error) { console.warn('[commando] canvas snapshot failed', error) }
       const source = tileSource(pane)
-      if (pane && source && agentHosts.owns(pane.anchorPaneId)) {
-        const running = agentHosts.states().find((chat) => chat.paneId === pane.anchorPaneId)?.session.status === 'running'
-        // A redline Send to a busy agent that isn't polling waits in the chat's queue.
-        const waiting = source === 'redline' && running && !webPaneFeedback.polling(id)
-        chatTileEvents.sent(pane, source, notes, { title: tileTitle(pane), waiting })
+      const session = pane ? chatSessionFor(pane.anchorPaneId) : undefined
+      if (pane && source && session && agentHosts.owns(pane.anchorPaneId)) {
+        // A redline Send no poll picked up waits for the busy agent to go idle.
+        const keys = notes.flatMap((note) => note.deliveryKey ? [note.deliveryKey] : [])
+        const waiting = source === 'redline' && session.status !== 'idle' && webPaneFeedback.undelivered(id, keys).length > 0
+        chatTileEvents.sent(pane, source, notes, { title: tileTitle(pane), waiting, sessionId: session.sessionId })
       }
       void canvasPush?.deliver(id, notes)
     },
     onOpened: (pane) => {
       if (pane.openedBy !== 'agent' || !agentHosts.owns(pane.anchorPaneId)) return
       const source = pane.content?.kind === 'canvas' ? 'canvas' : !pane.content && isRedlineArtifactUrl(pane.url) ? 'redline' : undefined
-      if (source) chatTileEvents.opened(pane, source, tileTitle(pane))
+      if (source) chatTileEvents.opened(pane, source, tileTitle(pane), chatSessionFor(pane.anchorPaneId)?.sessionId)
     },
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,

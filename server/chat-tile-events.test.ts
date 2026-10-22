@@ -61,6 +61,15 @@ describe('ChatTileEvents', () => {
     expect(events.forPane('%5')[0]).toMatchObject({ status: 'collected', collectedAt: 2_000 })
   })
 
+  it('stops waiting once a poll drains the tile, and keeps the chat session', () => {
+    const events = store()
+    events.sent(pane, 'redline', [answer('k1')], { waiting: true, sessionId: 's-1' })
+    events.drained('w-other')
+    expect(events.forPane('%5')[0]).toMatchObject({ status: 'waiting', sessionId: 's-1' })
+    events.drained('w-1')
+    expect(events.forPane('%5')[0]!.status).toBe('sent')
+  })
+
   it('fills a missing title later and survives a restart', () => {
     const events = store()
     events.opened(pane, 'redline')

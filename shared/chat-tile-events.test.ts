@@ -35,7 +35,15 @@ describe('withTileEvents', () => {
 
   it('leaves a pushed prompt as text when its events are gone', () => {
     const pushed = user('u2', `Redline feedback…\n${tileEventMarker(['te-9'])}`, 500)
-    expect(withTileEvents([pushed], [event('te-1', 10)])[1]).toBe(pushed)
+    expect(withTileEvents([pushed], [event('te-1', 600)])[0]).toBe(pushed)
+  })
+
+  it('shows only this conversation’s cards, and none from before its earliest item', () => {
+    const items = [user('u1', 'hi', 100)]
+    const merged = withTileEvents(items, [
+      { ...event('te-old', 50) }, { ...event('te-other', 200), sessionId: 'other' }, { ...event('te-mine', 300), sessionId: 'mine' },
+    ], 'mine')
+    expect(merged.map((item) => item.id)).toEqual(['u1', 'tile-event-te-mine'])
   })
 })
 
