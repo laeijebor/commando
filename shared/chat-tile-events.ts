@@ -118,7 +118,8 @@ type UserMessage = Extract<ChatItem, { kind: 'user_message' }>
  * time among the main conversation's items.
  */
 export function withTileEvents(items: readonly ChatItem[], events: readonly ChatTileEvent[], sessionId?: string): ChatItem[] {
-  events = events.filter((event) => !event.sessionId || !sessionId || event.sessionId === sessionId)
+  // A chat shows its own conversation's cards; one with no id yet shows none of another's.
+  events = events.filter((event) => !event.sessionId || event.sessionId === sessionId)
   if (!events.length) return [...items]
   const byId = new Map(events.map((event) => [event.id, event]))
   const placed = new Set<string>()
@@ -130,9 +131,9 @@ export function withTileEvents(items: readonly ChatItem[], events: readonly Chat
     for (const id of ids) placed.add(id)
     return { ...item, tileEvents: attached }
   })
-  // Events from before the earliest item kept belong to history the chat no longer shows.
-  const first = items.find((item) => !item.parentToolUseId)?.createdAt ?? -Infinity
-  const rest = events.filter((event) => !placed.has(event.id) && event.at >= first).sort((a, b) => a.at - b.at)
+  // Events without a conversation id can't be scoped, so keep only those within the chat's items.
+  const first = items.find((item) => !item.parentToolUseId)?.createdAt ?? Infinity
+  const rest = events.filter((event) => !placed.has(event.id) && (event.sessionId || event.at >= first)).sort((a, b) => a.at - b.at)
   if (!rest.length) return merged
   const out: ChatItem[] = []
   let next = 0

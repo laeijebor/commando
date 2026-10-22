@@ -38,12 +38,16 @@ describe('withTileEvents', () => {
     expect(withTileEvents([pushed], [event('te-1', 600)])[0]).toBe(pushed)
   })
 
-  it('shows only this conversation’s cards, and none from before its earliest item', () => {
+  it('shows only this conversation’s cards, and unscoped ones only within its items', () => {
     const items = [user('u1', 'hi', 100)]
-    const merged = withTileEvents(items, [
-      { ...event('te-old', 50) }, { ...event('te-other', 200), sessionId: 'other' }, { ...event('te-mine', 300), sessionId: 'mine' },
-    ], 'mine')
-    expect(merged.map((item) => item.id)).toEqual(['u1', 'tile-event-te-mine'])
+    const events = [
+      event('te-old', 50), { ...event('te-other', 200), sessionId: 'other' },
+      { ...event('te-early', 40), sessionId: 'mine' }, { ...event('te-mine', 300), sessionId: 'mine' },
+    ]
+    // A resumed chat restamps its items, so a scoped card older than them still shows.
+    expect(withTileEvents(items, events, 'mine').map((item) => item.id)).toEqual(['tile-event-te-early', 'u1', 'tile-event-te-mine'])
+    // A new chat in a reused pane has no id yet and an empty timeline: no old cards.
+    expect(withTileEvents([], events, undefined)).toEqual([])
   })
 })
 

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
-import { ChatTileEvents, TILE_EVENTS_PER_PANE } from './chat-tile-events.js'
+import { ChatTileEvents, TILE_EVENTS_PER_PANE, TILE_EVENTS_TOTAL } from './chat-tile-events.js'
 
 const pane = { id: 'w-1', anchorPaneId: '%5', url: 'http://127.0.0.1:4310/redline/artifacts/abc/settings.html', title: '' } as WebPane
 const answer = (key: string, extra: Partial<WebPaneFeedbackNote> = {}): WebPaneFeedbackNote => ({
@@ -87,5 +87,16 @@ describe('ChatTileEvents', () => {
     const kept = events.forPane('%5')
     expect(kept).toHaveLength(TILE_EVENTS_PER_PANE)
     expect(kept[0]!.id).toBe('te-6')
+  })
+
+  it('keeps the newest events across all chats', () => {
+    const events = store()
+    for (let index = 0; index < TILE_EVENTS_TOTAL + 2; index += 1) {
+      clock += 1
+      events.opened({ ...pane, anchorPaneId: `%${index % 20}` }, 'redline')
+    }
+    const total = Array.from({ length: 20 }, (_, index) => events.forPane(`%${index}`)).flat()
+    expect(total).toHaveLength(TILE_EVENTS_TOTAL)
+    expect(total.some((event) => event.id === 'te-1' || event.id === 'te-2')).toBe(false)
   })
 })

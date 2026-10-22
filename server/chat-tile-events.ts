@@ -7,6 +7,8 @@ import { tileEventItems, tileFileName, type ChatTileEvent, type ChatTileSource }
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
 
 export const TILE_EVENTS_PER_PANE = 100
+/** Across all panes, so the file stays far below the size the loader accepts. */
+export const TILE_EVENTS_TOTAL = 1_000
 export const TILE_EVENTS_BYTES = 8 * 1024 * 1024
 
 export function defaultChatTileEventsPath(port = 4310): string {
@@ -133,6 +135,7 @@ export class ChatTileEvents {
     const list = this.list(event.paneId)
     list.push(event)
     if (list.length > TILE_EVENTS_PER_PANE) list.splice(0, list.length - TILE_EVENTS_PER_PANE)
+    this.trimOldest()
     this.save()
     this.publishPane(event.paneId, this.forPane(event.paneId))
     return forClient(event)
@@ -149,6 +152,17 @@ export class ChatTileEvents {
     if (!touched.size) return
     this.save()
     for (const paneId of touched) this.publishPane(paneId, this.forPane(paneId))
+  }
+
+  private trimOldest(): void {
+    const all = this.all()
+    if (all.length <= TILE_EVENTS_TOTAL) return
+    const dropped = new Set(all.sort((a, b) => a.at - b.at).slice(0, all.length - TILE_EVENTS_TOTAL).map((event) => event.id))
+    for (const [paneId, list] of this.panes) {
+      const kept = list.filter((event) => !dropped.has(event.id))
+      if (kept.length) this.panes.set(paneId, kept)
+      else this.panes.delete(paneId)
+    }
   }
 
   private list(paneId: string): StoredEvent[] {
