@@ -1493,6 +1493,13 @@ async function main(): Promise<void> {
           { serverId: snapshotServerId, sessions: snapshot.sessions },
           { serverId: nextServerId, sessions: nextSnapshot.sessions },
         )
+        // Record tmux-side renames before publishing the snapshot, so a grouping save
+        // reconciled against the new names keeps repository-group membership.
+        for (const { sessionId, previousName, name } of sessionRenames) {
+          await sessionPreferences.recordSessionRename(sessionId, previousName, name).catch((error: unknown) => {
+            console.warn('[commando] Session name update failed after tmux rename', error)
+          })
+        }
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
@@ -1522,10 +1529,6 @@ async function main(): Promise<void> {
         let briefsChanged = false
         for (const { sessionId, previousName, name } of sessionRenames) {
           briefsChanged = await sessionBriefs.renameSession(sessionId, previousName, name) || briefsChanged
-          // Renames made in tmux directly: keep repository-group membership by tracking the new name.
-          await sessionPreferences.recordSessionRename(sessionId, previousName, name).catch((error: unknown) => {
-            console.warn('[commando] Session name update failed after tmux rename', error)
-          })
         }
         briefsChanged = await sessionBriefs.reconcilePanes(
           snapshot.panes.map((pane) => ({

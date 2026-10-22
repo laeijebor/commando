@@ -196,6 +196,16 @@ describe('repository sub-groups', () => {
     expect((await store.load([{ id: '$1', name: 'renamed' }])).sessionNamesById).toEqual({ $1: 'renamed' })
   })
 
+  it('keeps a recorded rename when a stale client snapshot is saved afterwards', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'work' }])
+    const clientView = await store.load([{ id: '$1', name: 'work' }])
+    await store.recordSessionRename('$1', 'work', 'renamed')
+    const saved = await store.replace(clientView, [{ id: '$1', name: 'renamed' }])
+    expect(saved.repositoryGroups).toEqual([group])
+    expect(saved.sessionNamesById).toEqual({ $1: 'renamed' })
+  })
+
   it('uses the member name after remapping even when the destination id has a different stored name', () => {
     const reconciled = reconcileSessionTreePreferences({
       ...base,

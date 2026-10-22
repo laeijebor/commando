@@ -408,9 +408,10 @@ export class SessionPreferenceStore {
         ...parsed,
         // Identity changes use dedicated queued mutations; grouping snapshots may be stale.
         ...(parsed.sessionIdentities || stored.sessionIdentities ? { sessionIdentities: stored.sessionIdentities ?? parsed.sessionIdentities } : {}),
+        // Renames are recorded server-side, so stored names win over a client's possibly stale copy.
         sessionNamesById: {
-          ...stored.sessionNamesById,
           ...parsed.sessionNamesById,
+          ...stored.sessionNamesById,
         },
       }, currentSessions)
       await this.writeState(validated)
