@@ -396,14 +396,16 @@ describe('recorded pane PRs', () => {
     const other = '550e8400-e29b-41d4-a716-446655440000'
     let now = 1_000
     // gh exits non-zero on any GraphQL error but still prints the lookups that worked.
-    const partial = Object.assign(new PrServiceError(502, 'github_failed', 'GitHub request failed: Could not resolve'), {
-      output: JSON.stringify({ data: { viewer: { login: 'leo' }, r0: { pullRequest: marked(1, 'No marker any more') },
-        r1: { pullRequest: marked(2, `<!-- commando:v1 target=${other} relation=created -->`) }, r2: { pullRequest: null }, r3: { pullRequest: marked(4) } },
-      errors: [{ type: 'NOT_FOUND', path: ['r2', 'pullRequest'], message: 'Could not resolve' }] }),
-    })
     const runner = vi.fn(async (args: string[]) => {
-      if (isLookup(args)) throw partial
-      return search()
+      if (!isLookup(args)) return search()
+      // Answer each alias for the PR number it asks about, wherever it sits in the query.
+      const numbers = [...args.find((arg) => arg.startsWith('query='))!.matchAll(/pullRequest\(number: (\d+)\)/g)].map((match) => Number(match[1]))
+      const answers: Record<number, Record<string, unknown> | null> = {
+        1: marked(1, 'No marker any more'), 2: marked(2, `<!-- commando:v1 target=${other} relation=created -->`), 3: null, 4: marked(4) }
+      throw Object.assign(new PrServiceError(502, 'github_failed', 'GitHub request failed: Could not resolve'), {
+        output: JSON.stringify({ data: { viewer: { login: 'leo' }, ...Object.fromEntries(numbers.map((number, index) => [`r${index}`, { pullRequest: answers[number] }])) },
+          errors: numbers.flatMap((number, index) => number === 3 ? [{ type: 'NOT_FOUND', path: [`r${index}`, 'pullRequest'], message: 'Could not resolve' }] : []) }),
+      })
     })
     const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => now })
     await service.recordPanePullRequests(targetId, [1, 2, 3, 4].map((number) => ({ repo: 'acme/widgets', number })))
@@ -466,6 +468,17 @@ describe('recorded pane PRs', () => {
     expect(mine).toMatchObject({ truncated: true, pullRequests: [] })
     expect(theirs.truncated).toBe(false)
     expect(theirs.pullRequests.map((pr) => pr.number)).toEqual([2])
+  })
+
+  it('stops looking up an old PR on a truncated page once it learns its creation date', async () => {
+    const page = JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 25, nodes: [marked(30)] } } })
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup({ ...marked(3), createdAt: '2026-01-01T00:00:00Z' }) : page)
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => Date.parse('2026-10-01T00:00:00Z') })
+    // An agent reported an old PR, e.g. from gh stack output.
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 3 }])
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([30])
+    await service.listPanePullRequests(targetId)
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(1)
   })
 
   it('splits a large lookup into queries of 15', async () => {

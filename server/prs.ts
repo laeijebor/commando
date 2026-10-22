@@ -7,7 +7,7 @@ import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
 import { PrReadCache } from './pr-read-cache.js'
-import { PanePrRecords, isPanePrRef, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
+import { PanePrRecords, isPanePrRef, recordRecency, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
 import { stripHtmlComments } from '../shared/chat-tile-events.js'
@@ -1029,25 +1029,25 @@ export class PrService {
    */
   private async recordedPullRequests(targetIds: string[], result: Awaited<ReturnType<PrService['searchPanes']>>): Promise<RecordedLookup> {
     const found = new Set<string>()
-    const hits = new Map<string, PanePrRef[]>()
+    const hits = new Map<string, Array<PanePrRef & { createdAt: number }>>()
     for (const node of result.linked.nodes) {
       const targetId = parseCommandoPrMarker(typeof node.body === 'string' ? node.body : '')?.targetId
       const ref = { repo: optionalObject(node, 'repository')?.nameWithOwner, number: node.number }
       if (!isPanePrRef(ref)) continue
       found.add(prKey(ref))
-      if (targetId && targetIds.includes(targetId)) hits.set(targetId, [...hits.get(targetId) ?? [], { repo: ref.repo, number: ref.number }])
+      const createdAt = Date.parse(typeof node.createdAt === 'string' ? node.createdAt : '')
+      if (targetId && targetIds.includes(targetId)) hits.set(targetId, [...hits.get(targetId) ?? [], { repo: ref.repo, number: ref.number, createdAt }])
     }
-    // Newest first, as the search returns them, so the cap keeps the newest.
     for (const [targetId, refs] of hits) await this.panePrRecords.add(targetId, refs)
-    // A truncated page leaves older PRs out on purpose; only a PR recorded after
-    // the page's oldest one was created can be missing from it.
+    // A truncated page leaves older PRs out on purpose; only a PR newer than the
+    // page's oldest one (or not yet seen by GitHub) can be missing from it.
     const oldest = result.linked.truncated
       ? Math.min(...result.linked.nodes.map((node) => Date.parse(typeof node.createdAt === 'string' ? node.createdAt : '')).filter(Number.isFinite))
       : -Infinity
     const missing: RecordedRef[] = []
     for (const targetId of targetIds) {
       for (const ref of await this.panePrRecords.list(targetId)) {
-        if (!found.has(prKey(ref)) && ref.at > oldest) missing.push({ ...ref, targetId })
+        if (!found.has(prKey(ref)) && recordRecency(ref) > oldest) missing.push({ ...ref, targetId })
       }
     }
     const lookup = await this.lookUpRecordedPullRequests(missing, result.viewer)
@@ -1075,7 +1075,7 @@ export class PrService {
       })
       .then(parseGhObject)))
     const stale: RecordedRef[] = []
-    const renamed: RecordedRef[] = []
+    const seen: RecordedRef[] = []
     batches.forEach((batch, batchIndex) => {
       const payload = payloads[batchIndex]
       const gone = new Set<unknown>()
@@ -1105,15 +1105,16 @@ export class PrService {
         // GitHub follows renamed and transferred repos; keep the record under the current name.
         if (pullRequest.repo.toLowerCase() !== ref.repo.toLowerCase()) {
           stale.push(ref)
-          renamed.push({ repo: pullRequest.repo, number: pullRequest.number, at: ref.at, targetId: ref.targetId })
         }
+        // Also learns when the PR was created, so an old one stops counting as new.
+        seen.push({ repo: pullRequest.repo, number: pullRequest.number, at: ref.at, createdAt: Date.parse(pullRequest.createdAt), targetId: ref.targetId })
         const prs = lookup.byTarget.get(ref.targetId) ?? []
         if (!prs.some((known) => prKey(known) === prKey(pullRequest))) lookup.byTarget.set(ref.targetId, [...prs, pullRequest])
       })
     })
-    for (const targetId of new Set([...stale, ...renamed].map((ref) => ref.targetId))) {
+    for (const targetId of new Set([...stale, ...seen].map((ref) => ref.targetId))) {
       await this.panePrRecords.remove(targetId, stale.filter((ref) => ref.targetId === targetId))
-      await this.panePrRecords.add(targetId, renamed.filter((ref) => ref.targetId === targetId))
+      await this.panePrRecords.add(targetId, seen.filter((ref) => ref.targetId === targetId))
     }
     return lookup
   }
