@@ -1243,8 +1243,11 @@ export class PrService {
         if (kind === 1 && entry.state !== 'CHANGES_REQUESTED') continue
         const author = optionalObject(entry, 'user')
         if (typeof author?.login !== 'string') continue
-        comments.push({ id: `${kind}:${entry.id}`, author: author.login,
-          body: typeof entry.body === 'string' ? stripCommandoPrMarkers(entry.body).slice(0, 500) : '',
+        // Hidden bot state (closed <!-- … --> blocks) goes before the cut, so the 500 characters kept are ones a reader sees.
+        const body = typeof entry.body === 'string' ? stripCommandoPrMarkers(entry.body).replace(/<!--[\s\S]*?-->/g, '').trim() : ''
+        // A comment with nothing visible left asks for nothing; an empty review still means changes requested.
+        if (!body && kind !== 1) continue
+        comments.push({ id: `${kind}:${entry.id}`, author: author.login, body: body.slice(0, 500),
           url: typeof entry.html_url === 'string' ? entry.html_url : '' })
       }
     }
