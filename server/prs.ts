@@ -7,6 +7,7 @@ import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
 import { PrReadCache } from './pr-read-cache.js'
+import { PanePrRecords, isPanePrRef, type PanePrRef } from './pane-pr-records.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
 import { stripHtmlComments } from '../shared/chat-tile-events.js'
@@ -97,25 +98,33 @@ const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: In
     }
   }
 }`
+const PANE_PR_FIELDS = `
+  number title url state isDraft body createdAt updatedAt
+  author { login }
+  changedFiles headRefName baseRefName headRefOid baseRefOid mergeStateStatus
+  reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
+  latestReviews(first: 10) { nodes { author { login } state } }
+  ${PR_STATUS_FIELDS}
+  repository { nameWithOwner }
+`
 const PANE_PULL_REQUESTS_QUERY = `
 query($targetQuery: String!, $first: Int!) {
   viewer { login }
   ${RATE_LIMIT_FIELD}
   linked: search(query: $targetQuery, type: ISSUE, first: $first) {
     issueCount
-    nodes {
-      ... on PullRequest {
-        number title url state isDraft body createdAt updatedAt
-        author { login }
-        changedFiles headRefName baseRefName headRefOid baseRefOid mergeStateStatus
-        reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
-        latestReviews(first: 10) { nodes { author { login } state } }
-        ${PR_STATUS_FIELDS}
-        repository { nameWithOwner }
-      }
-    }
+    nodes { ... on PullRequest { ${PANE_PR_FIELDS} } }
   }
 }`.trim()
+
+/** Looks recorded PRs up by number, which unlike search never misses one. Repos are validated before use. */
+function recordedPullRequestsQuery(refs: readonly PanePrRef[]): string {
+  const lookups = refs.map((ref, index) => {
+    const [owner, name] = ref.repo.split('/', 2)
+    return `r${index}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { pullRequest(number: ${ref.number}) { ${PANE_PR_FIELDS} } }`
+  })
+  return `query { viewer { login } ${RATE_LIMIT_FIELD} ${lookups.join(' ')} }`
+}
 const MAX_PINNED_REPOS = 30
 const MAX_RECENT_REPOS = 20
 const MAX_LIST_CACHE_ENTRIES = 100
@@ -711,6 +720,7 @@ export class PrService {
   /** PR count of each repo list's last fetch, to pick single or batched reads. */
   private readonly listSizes = new Map<string, number>()
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
+  private readonly panePrRecords: PanePrRecords
   private readonly metadataCache: PrReadCache<JsonRecord>
   private readonly commentPagesCache: PrReadCache<JsonRecord[]>
   private readonly reviewThreadsCache: PrReadCache<Map<number, PrReviewThread>>
@@ -738,6 +748,8 @@ export class PrService {
     githubDisabledReason?: string
     /** 0 disables batching of concurrent pane reads. */
     paneBatchWindowMs?: number
+    /** Where each pane's known PRs are kept across restarts; memory only when unset. */
+    panePrRecordsPath?: string
   }) {
     this.paneBatchWindowMs = options?.paneBatchWindowMs ?? PANE_BATCH_WINDOW_MS
     const disabledReason = options?.githubDisabledReason
@@ -756,6 +768,7 @@ export class PrService {
     this.reposTtlMs = options?.reposTtlMs ?? REPOS_CACHE_TTL_MS
     this.repoContextTtlMs = options?.repoContextTtlMs ?? REPO_CONTEXT_CACHE_TTL_MS
     this.now = options?.now ?? Date.now
+    this.panePrRecords = new PanePrRecords(options?.panePrRecordsPath, this.now)
     this.metadataCache = new PrReadCache(PR_METADATA_TTL_MS, this.now)
     this.commentPagesCache = new PrReadCache(PR_CONVERSATION_TTL_MS, this.now, 300)
     this.reviewThreadsCache = new PrReadCache(PR_CONVERSATION_TTL_MS, this.now)
@@ -970,15 +983,78 @@ export class PrService {
 
   /** One search for several panes; falls back to one search each if GitHub truncates it. */
   private fetchPaneGroup(targetIds: string[]): Promise<PanePrList>[] {
-    const group = this.searchPanes(targetIds, PANE_BATCH_PAGE_SIZE).then((result) => result.linked.truncated ? null : result)
-    return targetIds.map((targetId) => group.then((result) => result
-      ? this.paneListFrom(result, targetId, false, true)
+    const group = this.searchPanes(targetIds, PANE_BATCH_PAGE_SIZE).then(async (result) => result.linked.truncated ? null
+      : { result, recorded: await this.recordedPullRequests(targetIds, result) })
+    return targetIds.map((targetId) => group.then((found) => found
+      ? this.paneListFrom(found.result, targetId, false, true, found.recorded.get(targetId))
       : this.fetchPanePullRequests(targetId)))
   }
 
   /** `openOnly` reads are partial, so they never replace the pane's shared entities. */
   private async fetchPanePullRequests(targetId: string, openOnly = false): Promise<PanePrList> {
-    return this.paneListFrom(await this.searchPanes([targetId], PANE_PULL_REQUEST_PAGE_SIZE, openOnly), targetId, openOnly)
+    const result = await this.searchPanes([targetId], PANE_PULL_REQUEST_PAGE_SIZE, openOnly)
+    const recorded = await this.recordedPullRequests([targetId], result, openOnly)
+    return this.paneListFrom(result, targetId, openOnly, false, recorded.get(targetId))
+  }
+
+  /** Records a pane's new PRs (reported by its agent or created here) so they show before search indexes them. */
+  async recordPanePullRequests(targetIdInput: unknown, refs: readonly PanePrRef[]): Promise<void> {
+    const targetId = validatePaneTargetId(targetIdInput)
+    if (await this.panePrRecords.add(targetId, refs)) this.paneListCache.delete(targetId)
+  }
+
+  /**
+   * GitHub's search sometimes returns nothing for a marker it matched a moment
+   * ago. Remember every PR it finds, then look up any it misses by number.
+   */
+  private async recordedPullRequests(targetIds: string[], result: Awaited<ReturnType<PrService['searchPanes']>>, openOnly = false): Promise<Map<string, PanePrSummary[]>> {
+    const found: Array<PanePrRef & { targetId: string }> = []
+    for (const node of result.linked.nodes) {
+      const targetId = parseCommandoPrMarker(typeof node.body === 'string' ? node.body : '')?.targetId
+      const repository = optionalObject(node, 'repository')
+      const ref = { repo: repository?.nameWithOwner, number: node.number }
+      if (targetId && targetIds.includes(targetId) && isPanePrRef(ref)) found.push({ ...ref, targetId })
+    }
+    for (const targetId of targetIds) {
+      const refs = found.filter((ref) => ref.targetId === targetId)
+      if (refs.length) await this.panePrRecords.add(targetId, refs)
+    }
+    const missing: Array<PanePrRef & { targetId: string }> = []
+    for (const targetId of targetIds) {
+      for (const ref of await this.panePrRecords.list(targetId)) {
+        if (!found.some((hit) => hit.number === ref.number && hit.repo.toLowerCase() === ref.repo.toLowerCase())) missing.push({ ...ref, targetId })
+      }
+    }
+    const recorded = new Map<string, PanePrSummary[]>()
+    if (!missing.length) return recorded
+    const payload = parseGhObject(await this.ghRead(['api', 'graphql', '-f', `query=${recordedPullRequestsQuery(missing)}`]))
+    // A deleted PR or a repo we lost access to drops that record; any other error fails the read.
+    const gone = new Set<unknown>()
+    for (const error of Array.isArray(payload.errors) ? payload.errors : []) {
+      const alias = isRecord(error) && Array.isArray(error.path) ? error.path[0] : undefined
+      if (!isRecord(error) || (error.type !== 'NOT_FOUND' && error.type !== 'FORBIDDEN') || alias === undefined) {
+        throw new PrServiceError(502, 'github_failed', 'GitHub returned errors for the recorded pull request query')
+      }
+      gone.add(alias)
+    }
+    const data = objectField(payload, 'data')
+    const login = optionalObject(data, 'viewer')?.login
+    const viewer = result.viewer || (typeof login === 'string' ? login : '')
+    const stale: Array<PanePrRef & { targetId: string }> = []
+    missing.forEach((ref, index) => {
+      const repository = gone.has(`r${index}`) ? null : optionalObject(data, `r${index}`)
+      const node = repository && optionalObject(repository, 'pullRequest')
+      // The PR body stays the source of truth: a removed or moved marker drops the record.
+      const pullRequest = node ? parsePanePullRequest(node, ref.targetId, viewer) : null
+      if (!pullRequest) { stale.push(ref); return }
+      if (openOnly && pullRequest.state !== 'open') return
+      recorded.set(ref.targetId, [...recorded.get(ref.targetId) ?? [], pullRequest])
+    })
+    for (const targetId of targetIds) {
+      const refs = stale.filter((ref) => ref.targetId === targetId)
+      if (refs.length) await this.panePrRecords.remove(targetId, refs)
+    }
+    return recorded
   }
 
   private async searchPanes(targetIds: string[], first: number, openOnly = false) {
@@ -1005,16 +1081,18 @@ export class PrService {
     return { order, fetchedAt, viewer: typeof viewer?.login === 'string' ? viewer.login : '', linked: searchConnection(data, 'linked') }
   }
 
-  private paneListFrom(result: Awaited<ReturnType<PrService['searchPanes']>>, targetId: string, openOnly: boolean, shared = false): PanePrList {
+  private paneListFrom(result: Awaited<ReturnType<PrService['searchPanes']>>, targetId: string, openOnly: boolean, shared = false, recorded: PanePrSummary[] = []): PanePrList {
     const pullRequests = result.linked.nodes
       .map((node) => parsePanePullRequest(node, targetId, result.viewer))
       .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
+      .concat(recorded)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     const list: PanePrList = {
       targetId,
       viewer: result.viewer,
       // A shared search's count spans every pane in it, and is only used untruncated.
-      totalCount: shared ? pullRequests.length : result.linked.totalCount,
+      // Recorded PRs are by definition ones the search did not count.
+      totalCount: shared ? pullRequests.length : result.linked.totalCount + recorded.length,
       pullRequests,
       truncated: result.linked.truncated,
       fetchedAt: result.fetchedAt,
