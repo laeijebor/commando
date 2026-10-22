@@ -4,19 +4,18 @@ import { router, useLocalSearchParams } from 'expo-router'
 
 import { routeParams, useRouteParams } from './routeParams'
 
-function Raw(): React.JSX.Element {
-  const { paneId } = useLocalSearchParams<{ paneId: string }>()
-  return <Text testID="raw">{JSON.stringify(paneId)}</Text>
-}
-function Fixed(): React.JSX.Element {
-  const { paneId } = useRouteParams<{ paneId: string }>()
-  return <Text testID="fixed">{JSON.stringify(paneId)}</Text>
+function Pane(): React.JSX.Element {
+  const raw = useLocalSearchParams<{ paneId: string }>().paneId
+  const read = useRouteParams<{ paneId: string }>().paneId
+  return <Text testID="pane">{JSON.stringify({ raw, read })}</Text>
 }
 
+const pane = (): { raw: string; read: string } => JSON.parse(screen.getByTestId('pane').props.children)
+
 it('garbles a raw tmux pane id and keeps a routeParams one', () => {
-  renderRouter({ index: () => null, 'raw/[paneId]': Raw, 'fixed/[paneId]': Fixed }, { initialUrl: '/' })
-  act(() => router.push({ pathname: '/raw/[paneId]', params: { paneId: '%139' } }))
-  expect(screen.getByTestId('raw').props.children).not.toBe('"%139"')
-  act(() => router.push({ pathname: '/fixed/[paneId]', params: routeParams({ paneId: '%139' }) }))
-  expect(screen.getByTestId('fixed').props.children).toBe('"%139"')
+  renderRouter({ index: () => null, '(host)/[hostId]/pane/[paneId]': Pane }, { initialUrl: '/' })
+  act(() => router.push({ pathname: '/(host)/[hostId]/pane/[paneId]', params: { hostId: 'h', paneId: '%139' } }))
+  expect(pane().raw).not.toBe('%139')
+  act(() => router.push({ pathname: '/(host)/[hostId]/pane/[paneId]', params: routeParams({ hostId: 'h', paneId: '%122' }) }))
+  expect(pane().read).toBe('%122')
 })
