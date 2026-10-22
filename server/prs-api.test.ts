@@ -71,6 +71,7 @@ describe('PR pane repository API', () => {
     const get = vi.spyOn(service.stacks, 'get').mockResolvedValue(stack)
     const link = vi.spyOn(service.stacks, 'link').mockResolvedValue(stack)
     const create = vi.spyOn(service.stacks, 'create').mockResolvedValue({ pullRequest: { number: 20, url: 'https://github.com/acme/widgets/pull/20' }, stack })
+    const record = vi.spyOn(service, 'recordPanePullRequests')
     const base = await startApi(() => '/workspace', (pane) => pane === '%1' ? TARGET_ID : undefined, service)
     expect((await fetch(`${base}/api/prs/stack?repo=acme%2Fwidgets&number=7`)).status).toBe(200)
     expect(get).toHaveBeenCalledWith('acme/widgets', '7')
@@ -80,6 +81,7 @@ describe('PR pane repository API', () => {
     const body = { repo: 'acme/widgets', parentNumber: 10, head: 'api', title: 'API', body: '', draft: true, paneId: '%1' }
     expect((await write('stacked-pr', body)).status).toBe(201)
     expect(create).toHaveBeenCalledWith('acme/widgets', 10, body, TARGET_ID)
+    expect(record).toHaveBeenCalledExactlyOnceWith(TARGET_ID, [{ repo: 'acme/widgets', number: 20 }])
     expect((await write('stacked-pr', { ...body, paneId: '%999' })).status).toBe(404)
     expect(create).toHaveBeenCalledTimes(1)
     expect((await fetch(`${base}/api/prs/stacked-pr`)).status).toBe(405)

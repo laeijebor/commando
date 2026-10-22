@@ -11,9 +11,11 @@ let baseUrl: string
 let changes: AgentStatusChange[]
 let interactions: AgentInteractionBroker
 let registry: AgentStatusRegistry
+let createdPullRequests: Array<{ paneId: string; refs: unknown }>
 
 beforeEach(async () => {
   changes = []
+  createdPullRequests = []
   interactions = new AgentInteractionBroker()
   registry = new AgentStatusRegistry()
   const api = new AgentStatusHookApi({
@@ -24,6 +26,7 @@ beforeEach(async () => {
     paneExists: (paneId) => paneId === '%1',
     paneCommand: () => 'opencode',
     onChange: (change) => changes.push(change),
+    onPullRequestsCreated: (paneId, refs) => createdPullRequests.push({ paneId, refs }),
     interactions,
     now: () => 123,
   })
@@ -75,6 +78,20 @@ describe('AgentStatusHookApi', () => {
       updatedAt: 123,
     })
     expect(changes).toHaveLength(1)
+  })
+
+  it('passes on valid PRs a Claude hook reports as created', async () => {
+    const response = await post('/api/agent-status/hooks/claude', {
+      hook_event_name: 'PostToolUse',
+      session_id: 'claude-session',
+      tool_name: 'Bash',
+      createdPullRequests: [{ repo: 'acme/widgets', number: 42, extra: 'dropped' }, { repo: 'not a repo', number: 1 }, { repo: 'acme/widgets', number: -3 }],
+    })
+    expect(response.status).toBe(200)
+    expect(createdPullRequests).toEqual([{ paneId: '%1', refs: [{ repo: 'acme/widgets', number: 42 }] }])
+
+    await post('/api/agent-status/hooks/claude', { hook_event_name: 'PostToolUse', session_id: 'claude-session', createdPullRequests: 'nope' })
+    expect(createdPullRequests).toHaveLength(1)
   })
 
   it('records Muse hooks, which use the Claude hook format, under Muse', async () => {

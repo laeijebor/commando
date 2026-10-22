@@ -521,6 +521,28 @@ function planUpdateFor(input) {
   return {}
 }
 
+// A PR the agent just created, read from the tool's own output, so Commando
+// lists it before GitHub's search indexes its marker. The daemon checks the
+// marker before showing it, so an unrelated URL in the output costs one lookup.
+function createdPullRequestsFor(input) {
+  if (input.hook_event_name !== 'PostToolUse') return undefined
+  const tool = typeof input.tool_name === 'string' ? input.tool_name : ''
+  const command = asObject(input.tool_input).command
+  const creates = tool === 'Bash'
+    ? typeof command === 'string' && /\\bgh\\s+(?:pr\\s+create|stack)\\b/.test(command)
+    : /create_pull_request$/i.test(tool)
+  if (!creates) return undefined
+  const response = input.tool_response ?? input.tool_result
+  const output = (typeof response === 'string' ? response : JSON.stringify(response ?? '')).slice(0, 200000)
+  const created = []
+  for (const match of output.matchAll(/https:\\/\\/github\\.com\\/([A-Za-z0-9][A-Za-z0-9-]{0,38}\\/[A-Za-z0-9._-]{1,100})\\/pull\\/(\\d{1,9})\\b/g)) {
+    const pr = { repo: match[1], number: Number(match[2]) }
+    if (!created.some((known) => known.repo === pr.repo && known.number === pr.number)) created.push(pr)
+    if (created.length === 10) break
+  }
+  return created.length ? created : undefined
+}
+
 // The profile launcher matches the config dir in use: ~/.claudew -> claudew, ~/.claudep -> claudep.
 // A Commando chat pane passes its own resume command, so following it reopens the chat.
 // Only a Commando chat draws Markdown images; in a terminal they would stay text.
@@ -614,6 +636,7 @@ async function main() {
       task: taskFor(input),
       taskPatch: planUpdate.taskPatch,
       taskSnapshot: planUpdate.taskSnapshot,
+      createdPullRequests: createdPullRequestsFor(input),
       filePath: tool.filePath,
       check: tool.check,
       finalMessage,
