@@ -1,5 +1,5 @@
 import type { PaneRepo, TmuxPane, TmuxSession } from '../shared/protocol'
-import { repositoryContainers } from '../shared/session-repositories'
+import { repositoryContainers, type RepositorySessionItem } from '../shared/session-repositories'
 import type { SessionGroupingMode, SessionTreePreferences } from './sessionManagementApi'
 
 export { sessionRepo } from '../shared/session-repositories'
@@ -19,6 +19,8 @@ export type SessionTreeContainer = {
   kind: SessionTreeContainerKind
   name: string
   sessionIds: string[]
+  /** Mixed loose sessions and sub-groups in repository mode. */
+  items?: RepositorySessionItem[]
   group: SessionTreePreferences['groups'][number] | null
   /** Repository behind a `repository` container. */
   repo?: Pick<PaneRepo, 'root' | 'name' | 'defaultBranch'>

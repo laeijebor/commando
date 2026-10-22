@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseSessionTreePreferences, SessionPreferenceStore } from './session-preferences.js'
+import { parseSessionTreePreferences, reconcileSessionTreePreferences, SessionPreferenceStore, visibleSessionTreePreferences } from './session-preferences.js'
 
 let folder: string
 beforeEach(async () => { folder = await mkdtemp(join(tmpdir(), 'commando-preferences-')) })
@@ -112,4 +112,72 @@ it('normalizes an optional identity map without rejecting legacy preferences', (
   expect(parseSessionTreePreferences(base)).toEqual(base)
   expect(parseSessionTreePreferences({ ...base, sessionIdentities: { unknown: { glyph: 'x' } } })).toEqual({ ...base, sessionIdentities: {} })
   expect(parseSessionTreePreferences({ ...base, sessionIdentities: null })).toEqual({ ...base, sessionIdentities: {} })
+})
+
+describe('repository sub-groups', () => {
+  const group = { id: 'landing', name: 'Landing', repoRoot: '/workspace/vivifit', sessionIds: ['$1'], collapsed: true }
+  const base = { version: 1 as const, groups: [], ungroupedSessionIds: ['$1'] }
+
+  it('accepts repository groups independently of manual membership and mixed order tokens', () => {
+    const preferences = { ...base, repositoryGroups: [group], repositorySessionIds: ['$2', 'group:landing'] }
+    expect(parseSessionTreePreferences(preferences)).toEqual(preferences)
+    expect(parseSessionTreePreferences({ ...base, repositoryGroups: [] })?.repositoryGroups).toEqual([])
+    expect(parseSessionTreePreferences({ ...base, repositoryGroups: [{ ...group, sessionIds: [], collapsed: false }] })?.repositoryGroups?.[0].collapsed).toBe(false)
+  })
+
+  it.each([
+    null,
+    [{}],
+    [{ ...group, id: 'bad:id' }],
+    [group, group],
+    [{ ...group, name: '' }],
+    [{ ...group, name: ' Landing' }],
+    [{ ...group, name: 'x'.repeat(129) }],
+    [{ ...group, name: 'bad\nname' }],
+    [{ ...group, repoRoot: 'relative/repo' }],
+    [{ ...group, repoRoot: '/' + 'x'.repeat(4096) }],
+    [{ ...group, repoRoot: '/bad\u007froot' }],
+    [{ ...group, repoRoot: null }],
+    [{ ...group, sessionIds: ['$1', '$1'] }],
+    [{ ...group, sessionIds: ['%1'] }],
+    [{ ...group, sessionIds: null }],
+    [group, { ...group, id: 'other', repoRoot: '/elsewhere' }],
+    [{ ...group, collapsed: 'yes' }],
+    Array.from({ length: 129 }, (_, index) => ({ ...group, id: 'g' + index, sessionIds: [] })),
+    [{ ...group, sessionIds: Array.from({ length: 4097 }, (_, index) => '$' + index) }],
+  ].map((repositoryGroups) => ({ repositoryGroups })))('rejects invalid groups', ({ repositoryGroups }) => {
+    expect(parseSessionTreePreferences({ ...base, repositoryGroups })).toBeNull()
+  })
+
+  it.each([['group:'], ['group:bad:id'], ['group:landing', 'group:landing'], ['$1', '$1'], ['%1'], ['group:' + 'x'.repeat(65)], Array.from({ length: 4097 }, (_, index) => '$' + index)].map((repositorySessionIds) => ({ repositorySessionIds })))('rejects invalid repository order', ({ repositorySessionIds }) => {
+    expect(parseSessionTreePreferences({ ...base, repositorySessionIds })).toBeNull()
+  })
+
+  it('remaps member ids on reuse with separate claims and preserves group tokens and names of absent members', () => {
+    const preferences = { ...base, repositoryGroups: [group, { ...group, id: 'later', sessionIds: ['$9'] }], repositorySessionIds: ['group:landing', '$1'], sessionNamesById: { $1: 'work', $9: 'returning' } }
+    const reconciled = reconcileSessionTreePreferences(preferences, [{ id: '$8', name: 'work' }, { id: '$1', name: 'scratch' }])
+    expect(reconciled.repositorySessionIds).toEqual(['group:landing', '$8'])
+    expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: ['$8'] }, { ...group, id: 'later', sessionIds: ['$9'] }])
+    expect(reconciled.ungroupedSessionIds).toEqual(['$8', '$1'])
+    expect(reconciled.sessionNamesById).toEqual({ $8: 'work', $1: 'scratch', $9: 'returning' })
+  })
+
+  it('keeps empty groups and order tokens in visible preferences', () => {
+    const preferences = { ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing', '$1', '$2'] }
+    expect(visibleSessionTreePreferences(preferences, [{ id: '$2', name: 'live' }])).toMatchObject({
+      repositoryGroups: [{ ...group, sessionIds: [] }], repositorySessionIds: ['group:landing', '$2'],
+    })
+  })
+
+  it('round-trips groups through replace, load and read-only loads without changing manual groups', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    const preferences = { ...base, groups: [{ id: 'manual', name: 'Manual', sessionIds: ['$1'] }], ungroupedSessionIds: [], repositoryGroups: [group, { ...group, id: 'empty', sessionIds: [] }], repositorySessionIds: ['group:landing', 'group:empty'] }
+    await store.replace(preferences, [{ id: '$1', name: 'work' }])
+    const sessions = [{ id: '$8', name: 'work' }]
+    const restored = await store.loadReadOnly(sessions)
+    expect(restored.repositoryGroups?.[0]).toEqual({ ...group, sessionIds: ['$8'] })
+    expect(restored.groups).toEqual([{ id: 'manual', name: 'Manual', sessionIds: ['$8'] }])
+    expect(await store.load(sessions)).toEqual(restored)
+    expect(await new SessionPreferenceStore(store.statePath).loadReadOnly(sessions)).toEqual(restored)
+  })
 })
