@@ -346,6 +346,210 @@ describe('pane pull request history', () => {
   })
 })
 
+describe('recorded pane PRs', () => {
+  const targetId = '123e4567-e89b-42d3-a456-426614174000'
+  const marked = (number: number, body = `<!-- commando:v1 target=${targetId} relation=created -->`) =>
+    pullRequestNode({ number, body, url: `https://github.com/acme/widgets/pull/${number}`, repository: { nameWithOwner: 'acme/widgets' } })
+  const search = (...nodes: Array<Record<string, unknown>>) =>
+    JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: nodes.length, nodes } } })
+  const lookup = (...results: Array<Record<string, unknown> | null>) =>
+    JSON.stringify({ data: { viewer: { login: 'leo' }, ...Object.fromEntries(results.map((node, index) => [`r${index}`, { pullRequest: node }])) } })
+  const isLookup = (args: string[]) => args.some((arg) => arg.startsWith('query=query { viewer'))
+
+  it('keeps showing a PR when the search later misses it, looking it up by number', async () => {
+    let searchResult = search(marked(12))
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup(marked(12)) : searchResult)
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([12])
+    expect(runner).toHaveBeenCalledOnce()
+
+    searchResult = search()
+    const list = await service.listPanePullRequests(targetId)
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([12])
+    expect(list.totalCount).toBe(1)
+    expect(runner).toHaveBeenCalledTimes(3)
+    expect(runner.mock.calls[2][0].find((arg) => arg.startsWith('query='))).toContain(
+      'r0: repository(owner: "acme", name: "widgets") { pullRequest(number: 12) {')
+  })
+
+  it('records search hits newest first, so the cap keeps the newest', async () => {
+    let searchResult = search(marked(3), marked(2), marked(1))
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup(marked(3), marked(2), marked(1)) : searchResult)
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.listPanePullRequests(targetId)
+    searchResult = search()
+    await service.listPanePullRequests(targetId)
+    const query = runner.mock.calls.find(([args]) => isLookup(args))![0].find((arg) => arg.startsWith('query='))!
+    expect([...query.matchAll(/pullRequest\(number: (\d+)\)/g)].map((match) => Number(match[1]))).toEqual([3, 2, 1])
+  })
+
+  it('shows a PR its agent reported before the search finds it', async () => {
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup(marked(30)) : search())
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    expect((await service.listPanePullRequests(targetId)).pullRequests).toEqual([])
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 30 }])
+    // Recording drops the cached empty list instead of waiting out its TTL.
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([30])
+  })
+
+  it('drops a record whose PR lost the marker, was moved, or no longer exists, after a grace period', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    let now = 1_000
+    // gh exits non-zero on any GraphQL error but still prints the lookups that worked.
+    const runner = vi.fn(async (args: string[]) => {
+      if (!isLookup(args)) return search()
+      // Answer each alias for the PR number it asks about, wherever it sits in the query.
+      const numbers = [...args.find((arg) => arg.startsWith('query='))!.matchAll(/pullRequest\(number: (\d+)\)/g)].map((match) => Number(match[1]))
+      const answers: Record<number, Record<string, unknown> | null> = {
+        1: marked(1, 'No marker any more'), 2: marked(2, `<!-- commando:v1 target=${other} relation=created -->`), 3: null, 4: marked(4) }
+      throw Object.assign(new PrServiceError(502, 'github_failed', 'GitHub request failed: Could not resolve'), {
+        output: JSON.stringify({ data: { viewer: { login: 'leo' }, ...Object.fromEntries(numbers.map((number, index) => [`r${index}`, { pullRequest: answers[number] }])) },
+          errors: numbers.flatMap((number, index) => number === 3 ? [{ type: 'NOT_FOUND', path: [`r${index}`, 'pullRequest'], message: 'Could not resolve' }] : []) }),
+      })
+    })
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => now })
+    await service.recordPanePullRequests(targetId, [1, 2, 3, 4].map((number) => ({ repo: 'acme/widgets', number })))
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([4])
+    now += 10 * 60_000 + 1
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([4])
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(2)
+    expect(runner.mock.calls.at(-1)![0].find((arg) => arg.startsWith('query='))).toContain('pullRequest(number: 4)')
+    await service.listPanePullRequests(targetId)
+    const last = runner.mock.calls.at(-1)![0].find((arg) => arg.startsWith('query='))!
+    expect(last).toContain('pullRequest(number: 4)')
+    expect(last).not.toMatch(/number: [123]\)/)
+  })
+
+  it('fails the read when the lookup cannot reach GitHub, and flags a list it could not fully check', async () => {
+    let lookupResult: () => Promise<string> = async () => { throw new PrServiceError(502, 'github_failed', 'GitHub request failed') }
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookupResult() : search(marked(9)))
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 5 }])
+    await expect(service.listPanePullRequests(targetId)).rejects.toMatchObject({ code: 'github_failed' })
+    lookupResult = async () => JSON.stringify({ data: { viewer: { login: 'leo' }, r0: null },
+      errors: [{ type: 'INTERNAL', path: ['r0'], message: 'Something went wrong' }] })
+    const list = await service.listPanePullRequests(targetId)
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([9])
+    expect(list.truncated).toBe(true)
+    // Not evidence the PR is gone, so its record stays.
+    lookupResult = async () => lookup(marked(5))
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([9, 5])
+  })
+
+  it('on a truncated page, looks up only PRs recorded after the page begins', async () => {
+    let now = Date.parse('2026-07-01T00:00:00Z')
+    const page = JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 25, nodes: [marked(30)] } } })
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup({ ...marked(40), createdAt: '2026-09-01T00:00:00Z' }) : page)
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => now })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 1 }])
+    expect(await service.listPanePullRequests(targetId)).toMatchObject({ totalCount: 25, truncated: true })
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(0)
+
+    now = Date.parse('2026-09-01T00:00:00Z')
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 40 }])
+    const list = await service.listPanePullRequests(targetId)
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([40, 30])
+    expect(list.totalCount).toBe(26)
+    const lookups = runner.mock.calls.filter(([args]) => isLookup(args))
+    expect(lookups).toHaveLength(1)
+    expect(lookups[0][0].find((arg) => arg.startsWith('query='))).not.toContain('pullRequest(number: 1)')
+  })
+
+  it('flags only the pane whose lookup failed as incomplete in a shared search', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const runner = vi.fn(async (args: string[]) => isLookup(args)
+      ? JSON.stringify({ data: { viewer: { login: 'leo' }, r0: null, r1: { pullRequest: marked(2, `<!-- commando:v1 target=${other} relation=created -->`) } },
+        errors: [{ type: 'INTERNAL', path: ['r0'], message: 'Something went wrong' }] })
+      : search())
+    const service = new PrService({ runner, now: () => 1 })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 1 }])
+    await service.recordPanePullRequests(other, [{ repo: 'acme/widgets', number: 2 }])
+    const [mine, theirs] = await Promise.all([service.listPanePullRequests(targetId), service.listPanePullRequests(other)])
+    expect(mine).toMatchObject({ truncated: true, pullRequests: [] })
+    expect(theirs.truncated).toBe(false)
+    expect(theirs.pullRequests.map((pr) => pr.number)).toEqual([2])
+  })
+
+  it('stops looking up an old PR on a truncated page once it learns its creation date', async () => {
+    const page = JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 25, nodes: [marked(30)] } } })
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup({ ...marked(3), createdAt: '2026-01-01T00:00:00Z' }) : page)
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => Date.parse('2026-10-01T00:00:00Z') })
+    // An agent reported an old PR, e.g. from gh stack output.
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 3 }])
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([30])
+    await service.listPanePullRequests(targetId)
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(1)
+  })
+
+  it('splits a large lookup into queries of 15', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      if (!isLookup(args)) return search()
+      const numbers = [...args.find((arg) => arg.startsWith('query='))!.matchAll(/pullRequest\(number: (\d+)\)/g)].map((match) => Number(match[1]))
+      return lookup(...numbers.map((number) => marked(number)))
+    })
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    await service.recordPanePullRequests(targetId, Array.from({ length: 20 }, (_, index) => ({ repo: 'acme/widgets', number: index + 1 })))
+    expect((await service.listPanePullRequests(targetId)).pullRequests).toHaveLength(20)
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(2)
+  })
+
+  it('lets auto-fix check its PR directly when the search misses it', async () => {
+    const runner = vi.fn(async (args: string[]) => {
+      if (isLookup(args)) return lookup(marked(12))
+      if (args.some((arg) => arg.startsWith('targetQuery='))) return search()
+      return '[[]]'
+    })
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    expect(await service.autofixSnapshot('acme/widgets', 12, targetId)).toMatchObject({ state: 'open', headSha: '2222222222222222222222222222222222222222' })
+  })
+
+  it('tells auto-fix a PR is missing only once GitHub confirms it', async () => {
+    const runner = vi.fn(async (args: string[]) => isLookup(args)
+      ? JSON.stringify({ data: { viewer: { login: 'leo' }, r0: { pullRequest: null } }, errors: [{ type: 'NOT_FOUND', path: ['r0', 'pullRequest'], message: 'Could not resolve' }] })
+      : search())
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    expect(await service.autofixSnapshot('acme/widgets', 12, targetId)).toMatchObject({ state: 'missing' })
+  })
+
+  it('follows a renamed repo without listing its PR twice', async () => {
+    const renamed = { ...marked(12), url: 'https://github.com/acme/gizmos/pull/12', repository: { nameWithOwner: 'acme/gizmos' } }
+    let searchResult = search()
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup(renamed) : searchResult)
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 12 }])
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => `${pr.repo}#${pr.number}`)).toEqual(['acme/gizmos#12'])
+    searchResult = search(renamed)
+    const list = await service.listPanePullRequests(targetId)
+    expect(list.pullRequests.map((pr) => `${pr.repo}#${pr.number}`)).toEqual(['acme/gizmos#12'])
+    expect(list.totalCount).toBe(1)
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(1)
+  })
+
+  it('looks recorded PRs up for every pane of a shared search in one query', async () => {
+    const other = '550e8400-e29b-41d4-a716-446655440000'
+    const runner = vi.fn(async (args: string[]) => isLookup(args)
+      ? lookup(marked(1), marked(2, `<!-- commando:v1 target=${other} relation=created -->`))
+      : search())
+    const service = new PrService({ runner, now: () => 1 })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 1 }])
+    await service.recordPanePullRequests(other, [{ repo: 'acme/widgets', number: 2 }])
+    const [mine, theirs] = await Promise.all([service.listPanePullRequests(targetId), service.listPanePullRequests(other)])
+    expect(mine.pullRequests.map((pr) => pr.number)).toEqual([1])
+    expect(theirs.pullRequests.map((pr) => pr.number)).toEqual([2])
+    expect(runner).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps recorded PRs across daemon restarts', async () => {
+    const path = await temporaryPrefsPath()
+    const first = new PrService({ runner: vi.fn(async () => search(marked(12))), paneBatchWindowMs: 0, panePrRecordsPath: path })
+    await first.listPanePullRequests(targetId)
+    await vi.waitFor(async () => expect(await readFile(path, 'utf8')).toContain('"number":12'))
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup(marked(12)) : search())
+    const second = new PrService({ runner, paneBatchWindowMs: 0, panePrRecordsPath: path })
+    expect((await second.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([12])
+  })
+})
+
 describe('pane PR status', () => {
   const targetId = '123e4567-e89b-42d3-a456-426614174000'
   function linkedPayload(overrides: Record<string, unknown> = {}): string {
@@ -446,9 +650,13 @@ describe('pane PR status', () => {
     expect(runner).toHaveBeenCalledOnce()
   })
 
-  it('does not mistake truncated pane membership for a missing PR', async () => {
-    const { service } = serviceWith(JSON.stringify({ data: { linked: { issueCount: 101, nodes: [] } } }))
-    await expect(service.autofixSnapshot('acme/widgets', 12, targetId)).rejects.toMatchObject({ code: 'pr_list_truncated' })
+  it('checks a PR missing from a truncated pane page directly instead of calling it missing', async () => {
+    const runner = vi.fn(async (args: string[]) => args.some((arg) => arg.startsWith('query=query { viewer'))
+      ? JSON.stringify({ data: { viewer: { login: 'leo' }, r0: { pullRequest: pullRequestNode({ state: 'MERGED',
+        body: `<!-- commando:v1 target=${targetId} relation=created -->`, repository: { nameWithOwner: 'acme/widgets' } }) } } })
+      : JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 101, nodes: [] } } }))
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    expect((await service.autofixSnapshot('acme/widgets', 12, targetId)).state).toBe('merged')
   })
 
   it('finds an older open PR that fell off the truncated pane page', async () => {

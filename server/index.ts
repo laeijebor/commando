@@ -76,6 +76,7 @@ import { handleLinearApi } from './linear-api.js'
 import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
+import { defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
@@ -671,7 +672,7 @@ async function main(): Promise<void> {
   const linear = new LinearService()
   const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
   if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
-  const prs = new PrService({ githubDisabledReason: githubOffReason })
+  const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
   const gitWorktrees = new GitWorktreeService()
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
@@ -1863,6 +1864,10 @@ async function main(): Promise<void> {
     paneExists,
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
+    onPullRequestsCreated: (paneId, refs) => {
+      const targetId = paneForId(paneId)?.targetId
+      if (targetId) void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
+    },
     interactions,
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,

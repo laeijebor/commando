@@ -140,7 +140,9 @@ export async function handlePrsApi(
         targetId = dependencies.paneTargetId(paneId)
         if (!targetId) throw new PrServiceError(404, 'pane_not_found', 'The creating pane no longer exists')
       }
-      json(response, 201, await service.stacks.create(body.repo, body.parentNumber, body, targetId))
+      const created = await service.stacks.create(body.repo, body.parentNumber, body, targetId)
+      if (targetId) await service.recordPanePullRequests(targetId, [{ repo: validateRepo(body.repo), number: created.pullRequest.number }])
+      json(response, 201, created)
       return true
     }
     if (path.length === 0) {
