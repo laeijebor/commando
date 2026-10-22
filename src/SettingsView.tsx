@@ -83,6 +83,8 @@ function CommanderSection({ commander, profiles, busy, run }: {
     <div className="settings-commander">
       <label>Profile <select aria-label="Commander profile" value={choice} disabled={busy} onChange={(event) => setChoice(event.target.value)}>
         <option value="">Default login (no profile)</option>
+        {/* A profile folder that has gone still has to show, or Default could not be chosen. */}
+        {commander.configDir && !current ? <option value={commander.configDir} disabled>{displayPath(commander.configDir)} (missing)</option> : null}
         {profiles.map((profile) => <option key={profile.configDir} value={profile.configDir}>
           {profile.label ?? profile.name}{profile.hidden ? ' (hidden)' : ''}{profile.status.state === 'logged-out' ? ' · not logged in' : ''}
         </option>)}

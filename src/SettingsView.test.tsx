@@ -115,6 +115,18 @@ describe('SettingsView', () => {
   })
 
   describe('Commander profile', () => {
+    it("shows a vanished profile so Commander can still go back to the default login", async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      const onSwitch = vi.fn(async () => {})
+      setup({}, { configDir: '/Users/leo/.claudegone', open: true, onSwitch })
+      const select = await screen.findByRole('combobox', { name: 'Commander profile' })
+      expect(select).toHaveValue('/Users/leo/.claudegone')
+      expect(screen.getByRole('option', { name: '~/.claudegone (missing)' })).toBeDisabled()
+      fireEvent.change(select, { target: { value: '' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Switch Commander' }))
+      await waitFor(() => expect(onSwitch).toHaveBeenCalledWith(null))
+    })
+
     it("shows Commander's profile and switches it after you confirm closing the old session", async () => {
       const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true)
       const onSwitch = vi.fn(async () => {})
