@@ -187,6 +187,8 @@ export type CreateTmuxPaneRequest = {
   worktree?: CreateTmuxSessionWorktree
   /** Started interactively inside the new pane. */
   agent?: SessionAgentLaunch
+  /** Start with nothing running, as an empty session does. */
+  empty?: boolean
 }
 
 export type TmuxCreatedTarget = {

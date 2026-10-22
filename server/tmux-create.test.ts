@@ -507,6 +507,37 @@ describe('empty sessions', () => {
   })
 })
 
+describe('empty panes', () => {
+  it('splits an idle pane and marks it empty', async () => {
+    const run = runner(output({ paneId: '%13' }))
+    const result = await new TmuxCreator(run, ['-L', 'test']).createPane({ targetId: '%12', direction: 'vertical', placement: 'before', cwd: '/tmp', empty: true })
+    expect(result.agentLaunch).toBeUndefined()
+    expect(run.mock.calls.map(([args]) => args)).toEqual([
+      ['-L', 'test', 'split-window', '-d', '-v', '-b', '-P', '-F', expect.any(String), '-t', '%12', '-c', '/tmp', emptyPaneCommand()],
+      ['-L', 'test', 'set-option', '-p', '-F', '-t', '%13', '@commando_empty', '#{pane_pid}'],
+    ])
+  })
+
+  it('hands back a shell pane when the new pane cannot be marked', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const run = vi.fn(async (args: readonly string[]): Promise<string> => {
+      if (args.includes('set-option')) throw new Error('tmux create command timed out')
+      return output()
+    })
+    const result = await new TmuxCreator(run, []).createPane({ targetId: '%1', direction: 'horizontal', empty: true })
+    expect(result.paneId).toBe('%12')
+    expect(run.mock.calls.at(-1)?.[0]).toEqual(['respawn-pane', '-k', '-t', '%12', 'exec "${SHELL:-/bin/sh}" -l'])
+  })
+
+  it('rejects an empty pane that also starts an agent', async () => {
+    const run = runner()
+    const creator = new TmuxCreator(run, [])
+    await expect(creator.createPane({ targetId: '%1', direction: 'horizontal', empty: true, agent: { provider: 'codex' } })).rejects.toThrow('cannot also start')
+    await expect(creator.createPane({ targetId: '%1', direction: 'horizontal', empty: 1 } as never)).rejects.toThrow('boolean')
+    expect(run).not.toHaveBeenCalled()
+  })
+})
+
 describe('switching a chat pane to another conversation', () => {
   it('respawns the pane in the conversation folder with a chat resuming it', async () => {
     const run = vi.fn(async (_args: readonly string[]): Promise<string> => '')
