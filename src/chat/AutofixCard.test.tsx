@@ -38,8 +38,8 @@ describe('AutofixCard', () => {
 
   it('drops HTML comment markers from bot comments', () => {
     expect(readableComment('<!-- a -->\n<!-- b\nc -->\n\n\n\n## Hello\nworld #1')).toBe('Hello\nworld #1')
-    // A comment cut inside a hidden block leaves it unclosed.
-    expect(readableComment('Summary\n<!-- AAAA')).toBe('Summary')
+    // A lone delimiter in real feedback is text, not hidden state.
+    expect(readableComment('Escape the `<!--` in header.html')).toBe('Escape the `<!--` in header.html')
   })
 })
 

@@ -57,9 +57,13 @@ export type ChatAutofixEvent = {
 
 export type ChatCardEvent = ChatTileEvent | ChatAutofixEvent
 
-/** Bot comments carry hidden HTML-comment state, often long; an unclosed one runs to the end. */
+/**
+ * Bot comments carry hidden HTML-comment state. Only closed blocks are removed:
+ * a lone `<!--` is usually literal text in real feedback, and comments are
+ * stripped before any cut, so a block is never left half-open.
+ */
 export function stripHtmlComments(text: string): string {
-  return text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+  return text.replace(/<!--[\s\S]*?-->/g, '')
 }
 
 export const MAX_TILE_EVENT_ITEMS = 50
