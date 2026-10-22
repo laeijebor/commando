@@ -151,6 +151,7 @@
   border-radius: 8px;
   background: var(--surface);
 }
+.chat-markdown a > code { color: var(--accent); }
 .chat-markdown pre code { padding: 0; border: 0; background: none; font-size: 12.5px; }
 .chat-markdown blockquote { padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--muted); }
 /* Tables scroll sideways rather than squeeze their columns. Cells wrap only between words, and
