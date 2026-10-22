@@ -8,6 +8,14 @@ export type SessionPreferenceGroup = {
 
 export type SessionGroupingMode = 'repository' | 'manual'
 
+export type RepositorySessionGroup = {
+  id: string
+  name: string
+  repoRoot: string
+  sessionIds: string[]
+  collapsed?: boolean
+}
+
 export type SessionTreePreferences = {
   version: 1
   groups: SessionPreferenceGroup[]
@@ -16,8 +24,9 @@ export type SessionTreePreferences = {
   sessionIdentities?: SessionIdentities
   /** How the sidebar groups sessions; defaults to `repository` when absent. */
   groupingMode?: SessionGroupingMode
-  /** Saved order within repository groups, independent of manual grouping. */
+  /** Top-level repository order: loose session ids and `group:<groupId>` tokens, independent of manual grouping. */
   repositorySessionIds?: string[]
+  repositoryGroups?: RepositorySessionGroup[]
 }
 
 export interface SessionManagementApiClient {
