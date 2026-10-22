@@ -46,6 +46,39 @@ describe('pane PR records', () => {
     expect(listed[0]).toMatchObject({ repo: 'acme/widgets', number: 99 })
   })
 
+  it('keeps the 20 newest by creation time when the same long page is recorded again', async () => {
+    const records = new PanePrRecords()
+    const page = Array.from({ length: 30 }, (_, index) => ({ repo: 'acme/widgets', number: 30 - index, createdAt: (30 - index) * 1_000 }))
+    expect(await records.add(target, page)).toBe(true)
+    expect(await records.add(target, page)).toBe(false)
+    expect((await records.list(target)).map((ref) => ref.number)).toEqual(Array.from({ length: 20 }, (_, index) => 30 - index))
+  })
+
+  it('does not rewrite its file when a long page brings nothing new', async () => {
+    const path = await temporaryPath()
+    const records = new PanePrRecords(path)
+    const page = Array.from({ length: 30 }, (_, index) => ({ repo: 'acme/widgets', number: 30 - index, createdAt: (30 - index) * 1_000 }))
+    await records.add(target, page)
+    await records.flushed()
+    await writeFile(path, 'sentinel')
+    await records.add(target, page)
+    await records.flushed()
+    expect(await readFile(path, 'utf8')).toBe('sentinel')
+  })
+
+  it('reorders a PR once its creation time is known', async () => {
+    let now = 50_000
+    const records = new PanePrRecords(undefined, () => now)
+    await records.add(target, [{ repo: 'acme/widgets', number: 5, createdAt: 40_000 }])
+    now = 60_000
+    // Reported by a hook: creation time unknown, so it counts as new.
+    expect(await records.add(target, [{ repo: 'acme/widgets', number: 2 }])).toBe(true)
+    expect((await records.list(target)).map((ref) => ref.number)).toEqual([2, 5])
+    // A lookup shows it is an old PR.
+    expect(await records.add(target, [{ repo: 'acme/widgets', number: 2, createdAt: 1_000 }])).toBe(false)
+    expect((await records.list(target)).map((ref) => ref.number)).toEqual([5, 2])
+  })
+
   it('removes records and forgets a pane with none left', async () => {
     const records = new PanePrRecords()
     await records.add(target, [{ repo: 'acme/widgets', number: 1 }, { repo: 'acme/widgets', number: 2 }])

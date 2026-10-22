@@ -5,8 +5,13 @@ import { isCommandoTargetId } from '../shared/pane-target.js'
 
 /** A PR a pane is known to have created, so it stays listed when GitHub's search misses it. */
 export type PanePrRef = { repo: string; number: number }
-/** `at` is when the PR was first recorded. */
-export type PanePrRecord = PanePrRef & { at: number }
+/** `at` is when the PR was first recorded; `createdAt` when GitHub says it was created, once known. */
+export type PanePrRecord = PanePrRef & { at: number; createdAt?: number }
+
+/** How new a record's PR is: its creation time, or for a PR GitHub hasn't shown us yet, when it was recorded. */
+export function recordRecency(record: PanePrRecord): number {
+  return record.createdAt ?? record.at
+}
 
 // The pane search shows 20 PRs, so older records would never be shown anyway.
 const MAX_PER_TARGET = 20
@@ -48,23 +53,38 @@ export class PanePrRecords {
     return (this.targets.get(targetId) ?? []).map((ref) => ({ ...ref }))
   }
 
-  /** Returns whether anything new was recorded. */
-  async add(targetId: string, refs: readonly PanePrRef[]): Promise<boolean> {
+  /** Records PRs, or learns when known ones were created. Returns whether a new PR was recorded. */
+  async add(targetId: string, refs: readonly (PanePrRef & { createdAt?: number })[]): Promise<boolean> {
     await this.loaded
     if (!isCommandoTargetId(targetId)) return false
-    const current = this.targets.get(targetId) ?? []
-    const added = refs.filter((ref, index) => isPanePrRef(ref)
-      && !current.some((known) => sameRef(known, ref))
-      && refs.findIndex((other) => sameRef(other, ref)) === index)
-    if (!added.length) return false
     const at = this.now()
-    const next = [...added.map(({ repo, number }) => ({ repo, number, at })), ...current].slice(0, MAX_PER_TARGET)
+    const known = [...this.targets.get(targetId) ?? []]
+    const fresh: PanePrRecord[] = []
+    let learned = false
+    for (const ref of refs) {
+      if (!isPanePrRef(ref)) continue
+      const createdAt = typeof ref.createdAt === 'number' && Number.isFinite(ref.createdAt) ? ref.createdAt : undefined
+      const index = known.findIndex((record) => sameRef(record, ref))
+      if (index === -1) {
+        if (fresh.some((record) => sameRef(record, ref))) continue
+        fresh.push({ repo: ref.repo, number: ref.number, at, ...(createdAt === undefined ? {} : { createdAt }) })
+      } else if (createdAt !== undefined && known[index].createdAt !== createdAt) {
+        known[index] = { ...known[index], createdAt }
+        learned = true
+      }
+    }
+    // Keep the newest PRs, like the pane's search page, however hits arrive.
+    // The sort is stable, so on a tie the PR recorded just now comes first.
+    const next = [...fresh, ...known].sort((left, right) => recordRecency(right) - recordRecency(left)).slice(0, MAX_PER_TARGET)
+    // Older hits past the cap come back every poll; they change nothing.
+    const kept = fresh.some((record) => next.includes(record))
+    if (!kept && !learned) return false
     this.targets.delete(targetId)
     this.targets.set(targetId, next)
     // Map order is least recently changed first.
     while (this.targets.size > MAX_TARGETS) this.targets.delete(this.targets.keys().next().value!)
     this.persist()
-    return true
+    return kept
   }
 
   async remove(targetId: string, refs: readonly PanePrRef[]): Promise<void> {
@@ -90,7 +110,9 @@ export class PanePrRecords {
       if (typeof targets !== 'object' || targets === null) return
       for (const [targetId, refs] of Object.entries(targets)) {
         if (!isCommandoTargetId(targetId) || !Array.isArray(refs)) continue
-        const valid = refs.filter((ref): ref is PanePrRecord => isPanePrRef(ref) && typeof (ref as PanePrRecord).at === 'number')
+        const valid = refs.filter((ref): ref is PanePrRecord => isPanePrRef(ref) && typeof (ref as PanePrRecord).at === 'number'
+          && ((ref as PanePrRecord).createdAt === undefined || typeof (ref as PanePrRecord).createdAt === 'number'))
+          .sort((left, right) => recordRecency(right) - recordRecency(left))
           .slice(0, MAX_PER_TARGET)
         if (valid.length) this.targets.set(targetId, valid)
       }
