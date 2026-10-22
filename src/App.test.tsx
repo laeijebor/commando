@@ -116,6 +116,7 @@ vi.mock('./PaneGitStats', () => ({
 }))
 vi.mock('./SessionTree', () => ({ SessionTree: (props: unknown) => { appMocks.sessionTree(props); return null } }))
 vi.mock('./PortsSection', () => ({ PortsSection: () => null }))
+vi.mock('./SettingsView', () => ({ SettingsView: ({ onOpenPane }: { onOpenPane: (paneId: string) => void }) => <section aria-label="Settings"><button type="button" onClick={() => onOpenPane('%2')}>Open login pane</button></section> }))
 
 let daemonMessage: ((message: ServerMessage) => void) | undefined
 let daemonConnection: ConnectionState = {
@@ -358,6 +359,17 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
   else await screen.findByTestId(`renderer-${snapshot.panes[0]!.id}`)
   return view
 }
+
+describe('Settings area', () => {
+  it('opens Settings from the nav and jumps to a pane it opens', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    fireEvent.click(screen.getByRole('button', { name: 'Open login pane' }))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Settings' })).toBeNull())
+  })
+})
 
 describe('pane close and create shortcuts', () => {
   const deleteUrl = (id: string) => `/api/pane-management/panes/${encodeURIComponent(id)}/delete`

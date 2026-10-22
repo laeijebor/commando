@@ -86,14 +86,27 @@ export function chatPermissionModes(provider: ChatLaunchProvider): readonly { va
 }
 
 /** A Claude config dir the daemon found in the home folder. */
-export type ClaudeProfile = { name: string; configDir: string; /** Last session activity, ms. */ lastUsedAt?: number }
-
-/** The profile to offer when none is remembered: the one used most recently. */
-export function defaultClaudeProfile(profiles: readonly ClaudeProfile[]): ClaudeProfile | undefined {
-  return [...profiles].sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0]
+export type ClaudeProfile = {
+  name: string
+  configDir: string
+  /** Last session activity, ms. */
+  lastUsedAt?: number
+  /** The name chosen in Settings, shown in place of `name`. */
+  label?: string
+  /** Chosen in Settings as the profile for new chats. */
+  isDefault?: boolean
 }
 
-/** The remembered profile while it still exists, else the most recently used one. */
+export function claudeProfileLabel(profile: ClaudeProfile): string {
+  return profile.label ?? profile.name
+}
+
+/** The profile to offer when none is remembered: the one chosen in Settings, else the one used most recently. */
+export function defaultClaudeProfile(profiles: readonly ClaudeProfile[]): ClaudeProfile | undefined {
+  return profiles.find((profile) => profile.isDefault) ?? [...profiles].sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0]
+}
+
+/** The remembered profile while it still exists, else the default one. */
 export function chatProfileConfigDir(remembered: string | undefined, profiles: readonly ClaudeProfile[]): string | undefined {
   return remembered && profiles.some((profile) => profile.configDir === remembered)
     ? remembered

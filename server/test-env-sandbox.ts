@@ -11,6 +11,8 @@ export const SANDBOXED_AGENT_PROFILE_ENV = [
   'CURSOR_CONFIG_DIR',
   'XDG_CONFIG_HOME',
   'COMMANDO_AGENT_HOOK_TOKEN_PATH',
+  // Settings' labels, default and hidden profiles.
+  'COMMANDO_AGENT_PROFILES_PATH',
   // Chat hosts and the daemon share this image folder.
   'COMMANDO_CHAT_IMAGES_DIR',
   // Set inside a Commando chat; it would replace every resume command a bridge reports.
