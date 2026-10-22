@@ -127,10 +127,15 @@ describe('ChatTileEvents', () => {
     })
     expect(card).toMatchObject({ id, kind: 'autofix', at: 1_000, failingChecks: ['lint'] })
     expect(card.kind === 'autofix' && card.comments[0]!.body.length).toBe(4_000)
+    const hidden = events.autofix({
+      paneId: '%5', repo: 'acme/widgets', number: 12, url: 'u', round: 3, maxRounds: 5, failingChecks: [],
+      comments: [{ author: 'coderabbitai[bot]', body: `<!-- internal state start -->\n<!-- ${'A'.repeat(6_000)} -->\nLooks fine.`, url: 'c' }],
+    })
+    expect(hidden.kind === 'autofix' && hidden.comments[0]!.body).toBe('Looks fine.')
     // Tile-only updates leave auto-fix cards alone.
     events.drained('w-1')
     events.retitle('w-1', 'Settings')
-    expect(store().forPane('%5').map((event) => event.kind)).toEqual(['sent', 'autofix'])
+    expect(store().forPane('%5').map((event) => event.kind)).toEqual(['sent', 'autofix', 'autofix'])
     expect(store().forPane('%5')[1]).toEqual(card)
   })
 })

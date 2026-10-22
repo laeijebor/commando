@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'no
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { tileEventItems, tileFileName, type ChatAutofixEvent, type ChatCardEvent, type ChatTileEvent, type ChatTileSource } from '../shared/chat-tile-events.js'
+import { stripHtmlComments, tileEventItems, tileFileName, type ChatAutofixEvent, type ChatCardEvent, type ChatTileEvent, type ChatTileSource } from '../shared/chat-tile-events.js'
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
 
 export const TILE_EVENTS_PER_PANE = 100
@@ -97,7 +97,8 @@ export class ChatTileEvents {
       kind: 'autofix',
       at: this.now(),
       failingChecks: rest.failingChecks.slice(0, MAX_AUTOFIX_COMMENTS).map(clipText),
-      comments: rest.comments.slice(0, MAX_AUTOFIX_COMMENTS).map((comment) => ({ ...comment, body: clipText(comment.body) })),
+      // Strip hidden state first, so the length limit keeps visible text.
+      comments: rest.comments.slice(0, MAX_AUTOFIX_COMMENTS).map((comment) => ({ ...comment, body: clipText(stripHtmlComments(comment.body).trim()) })),
     })
   }
 

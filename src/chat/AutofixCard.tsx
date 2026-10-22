@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronRight, CircleX, Wrench } from 'lucide-react'
 
-import type { ChatAutofixEvent } from '../../shared/chat-tile-events'
+import { stripHtmlComments, type ChatAutofixEvent } from '../../shared/chat-tile-events'
 import type { PrQuickLookTab } from '../PrQuickLook'
 import { cn } from './cn'
 
@@ -10,7 +10,7 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 
 /** Bot comments carry HTML-comment state markers and Markdown heading marks; neither helps in plain text. */
 export function readableComment(body: string): string {
-  return body.replace(/<!--[\s\S]*?-->/g, '').replace(/^#{1,6}\s+/gm, '').replace(/\n{3,}/g, '\n\n').trim()
+  return stripHtmlComments(body).replace(/^#{1,6}\s+/gm, '').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 export function autofixSummary(event: Pick<ChatAutofixEvent, 'failingChecks' | 'comments'>): string {

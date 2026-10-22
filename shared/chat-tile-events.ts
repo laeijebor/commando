@@ -57,6 +57,11 @@ export type ChatAutofixEvent = {
 
 export type ChatCardEvent = ChatTileEvent | ChatAutofixEvent
 
+/** Bot comments carry hidden HTML-comment state, often long; an unclosed one runs to the end. */
+export function stripHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+}
+
 export const MAX_TILE_EVENT_ITEMS = 50
 const MAX_TEXT = 2_000
 
