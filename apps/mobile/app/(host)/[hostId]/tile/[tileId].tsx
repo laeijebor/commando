@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
+import { useIsFocused, useRouter } from 'expo-router'
+import { useRouteParams } from '../../../../src/layout/routeParams'
 import {
   Alert,
   Modal,
@@ -61,7 +62,7 @@ import { Button, EmptyState, Pill, withAlpha } from '../../../../src/ui/primitiv
 const PIN_SETTLE_MS = 350
 
 export default function TileScreen(): React.JSX.Element {
-  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  const { hostId } = useRouteParams<{ hostId: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   if (__DEV__ && host && isDemoHost(host)) {
     const { DemoTileScreen } = require('../../../../src/demo/DemoTileScreen') as typeof import('../../../../src/demo/DemoTileScreen')
@@ -73,7 +74,7 @@ export default function TileScreen(): React.JSX.Element {
 function LiveTileScreen(): React.JSX.Element {
   const theme = useTheme()
   const router = useRouter()
-  const { hostId, tileId, fromPaneId } = useLocalSearchParams<{ hostId: string; tileId: string; fromPaneId?: string }>()
+  const { hostId, tileId, fromPaneId } = useRouteParams<{ hostId: string; tileId: string; fromPaneId?: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
   const daemon = useDaemonConnection(host)
   const tile = daemon.webPanes.find((candidate) => candidate.id === tileId)

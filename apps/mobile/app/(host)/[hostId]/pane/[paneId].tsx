@@ -1,4 +1,5 @@
-import { Redirect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router'
+import { Redirect, useIsFocused, useRouter } from 'expo-router'
+import { routeParams, useRouteParams } from '../../../../src/layout/routeParams'
 import { StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 
@@ -22,7 +23,7 @@ export default function PaneScreen(): React.JSX.Element {
   const router = useRouter()
   const focused = useIsFocused()
   const mode = useLayoutMode()
-  const { hostId, paneId } = useLocalSearchParams<{ hostId: string; paneId: string }>()
+  const { hostId, paneId } = useRouteParams<{ hostId: string; paneId: string }>()
   const host = useHostsStore((state) => state.hosts.find((candidate) => candidate.id === hostId))
 
   if (isCockpitMode(mode)) {
@@ -30,7 +31,7 @@ export default function PaneScreen(): React.JSX.Element {
       <Redirect
         href={{
           pathname: '/(host)/[hostId]/sessions',
-          params: { hostId: hostId ?? '', focus: paneId ?? '' },
+          params: routeParams({ hostId: hostId ?? '', focus: paneId ?? '' }),
         }}
       />
     )
@@ -44,7 +45,7 @@ export default function PaneScreen(): React.JSX.Element {
         onBack={() => router.back()}
         onInfo={() => router.push({
           pathname: '/(host)/[hostId]/pane/[paneId]/info',
-          params: { hostId: hostId ?? '', paneId: paneId ?? '' },
+          params: routeParams({ hostId: hostId ?? '', paneId: paneId ?? '' }),
         })}
         onOpenTile={(tile) => {
           // A tile that cannot stream here is handled on the list, which is
@@ -52,7 +53,7 @@ export default function PaneScreen(): React.JSX.Element {
           if (canStream(tile)) {
             router.push({
               pathname: '/(host)/[hostId]/tile/[tileId]',
-              params: { hostId: hostId ?? '', tileId: tile.id, fromPaneId: paneId },
+              params: routeParams({ hostId: hostId ?? '', tileId: tile.id, fromPaneId: paneId }),
             })
             return
           }
@@ -62,7 +63,7 @@ export default function PaneScreen(): React.JSX.Element {
           if (!chip.targetPaneId || chip.targetPaneId === paneId) return
           router.replace({
             pathname: '/(host)/[hostId]/pane/[paneId]',
-            params: { hostId: hostId ?? '', paneId: chip.targetPaneId },
+            params: routeParams({ hostId: hostId ?? '', paneId: chip.targetPaneId }),
           })
         }}
         paneId={paneId}
