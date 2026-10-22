@@ -541,6 +541,7 @@ async function main(): Promise<void> {
   })
   const workspaces = new WorkspaceStore()
   const sessionBriefs = new SessionBriefStore()
+  const sessionPreferences = new SessionPreferenceStore()
   const paneScreenshots = new PaneScreenshotRegistry({ statePath: defaultPaneScreenshotStatePath(port) })
   await sessionBriefs.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted session briefs', error)
@@ -1492,6 +1493,13 @@ async function main(): Promise<void> {
           { serverId: snapshotServerId, sessions: snapshot.sessions },
           { serverId: nextServerId, sessions: nextSnapshot.sessions },
         )
+        // Record tmux-side renames before publishing the snapshot, so a grouping save
+        // reconciled against the new names keeps repository-group membership.
+        for (const { sessionId, previousName, name } of sessionRenames) {
+          await sessionPreferences.recordSessionRename(sessionId, previousName, name).catch((error: unknown) => {
+            console.warn('[commando] Session name update failed after tmux rename', error)
+          })
+        }
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
@@ -1678,6 +1686,7 @@ async function main(): Promise<void> {
   }
 
   const sessionManagement = new SessionManagementApi({
+    preferences: sessionPreferences,
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
@@ -2038,7 +2047,7 @@ async function main(): Promise<void> {
     index: chatConversations,
     resumes: agentResume,
     briefs: sessionBriefs,
-    sessionPreferences: new SessionPreferenceStore(),
+    sessionPreferences,
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),

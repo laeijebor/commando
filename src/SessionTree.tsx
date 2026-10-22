@@ -1,12 +1,13 @@
 import type { CommanderState } from '../shared/commander'
 import { isSessionGlyph, sessionIdentityForName } from '../shared/session-identity'
 import { SessionAvatar } from './SessionAvatar'
-import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, Trash2 } from 'lucide-react'
+import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
-import { createSessionManagementApi, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
+import { createSessionManagementApi, type RepositorySessionGroup, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
+import { moveRepositoryItem, repositoryContainers, repositoryItemId, ungroupRepositoryItem } from '../shared/session-repositories'
 import { sessionShortcutIndex } from './sessionShortcuts'
 import { DEFAULT_GROUPING_MODE, EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers, type SessionTreeContainer } from './sessionTreePreferences'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
@@ -116,8 +117,9 @@ export function SessionTree(props: Props) {
   const api = useRef(createSessionManagementApi(props.token)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const preferencesRef = useRef(preferences)
-  const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null)
+  const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number; groupsExpanded?: boolean } | null>(null)
   const [draggedSessionId, setDraggedSessionId] = useState<string | null>(null)
+  const [dropGroupId, setDropGroupId] = useState<string | null>(null)
   const [collapsedContainerIds, setCollapsedContainerIds] = useState<Set<string>>(() => new Set(['auxiliary']))
   const [sessionCreateRequest, setSessionCreateRequest] = useState<SessionCreateRequest | null>(null)
   const [error, setError] = useState('')
@@ -188,7 +190,7 @@ export function SessionTree(props: Props) {
   ]
   const shortcutSessionIds = containers
     .filter((container) => container.kind !== 'auxiliary')
-    .flatMap((container) => container.sessionIds)
+    .flatMap((container) => container.items ? container.items.flatMap((item) => item.kind === 'session' ? [item.id] : item.group.collapsed ? [] : item.sessionIds) : container.sessionIds)
     .filter((sessionId) => sessionMap.has(sessionId) && sessionId !== commanderSessionId)
 
   useEffect(() => {
@@ -213,26 +215,23 @@ export function SessionTree(props: Props) {
     }
   }, [props.onSelectSession, shortcutSessionIds])
 
+  const endDrag = () => { setDraggedSessionId(null); setDropGroupId(null) }
+
   const setGroupingMode = (groupingMode: SessionGroupingMode) => {
     if (groupingMode === mode) return
-    setDraggedSessionId(null)
+    endDrag()
     save({ ...preferencesRef.current, groupingMode })
   }
 
-  const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string) => {
+  const moveToContainer = (sessionId: string, destinationId: string, beforeId?: string, repositoryGroupId?: string) => {
     const currentPreferences = preferencesRef.current
     if (beforeId === sessionId) return
     if (!manual) {
-      const container = sessionTreeContainers(currentPreferences, props.sessions, { mode, panes: props.panes })
+      const container = repositoryContainers(currentPreferences, props.sessions.filter((session) => !auxiliaryIds.has(session.id) && session.id !== commanderSessionId), props.panes)
         .find((candidate) => candidate.id === destinationId)
-      if (!container?.sessionIds.includes(sessionId) || (beforeId && !container.sessionIds.includes(beforeId))) return
-      const sessionIds = container.sessionIds.filter((id) => id !== sessionId)
-      const index = beforeId ? sessionIds.indexOf(beforeId) : sessionIds.length
-      sessionIds.splice(index, 0, sessionId)
-      if (sessionIds.every((id, position) => id === container.sessionIds[position])) return
-      const otherSessionIds = (currentPreferences.repositorySessionIds ?? [])
-        .filter((id) => !container.sessionIds.includes(id))
-      save({ ...currentPreferences, repositorySessionIds: [...otherSessionIds, ...sessionIds] })
+      if (!container) return
+      const next = moveRepositoryItem(currentPreferences, container, sessionId, beforeId, repositoryGroupId)
+      if (next !== currentPreferences) save(repositoryGroupId ? withDisplayedName(next, sessionId) : next)
       return
     }
     const groups = currentPreferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))
@@ -258,14 +257,47 @@ export function SessionTree(props: Props) {
     save({ ...preferences, groups: [...preferences.groups, group] })
   }
 
-  const createSessionInContainer = (container: SessionTreeContainer, trigger: HTMLElement) => {
+  // The daemon accepts a group assignment only when this name matches the live tmux session.
+  const withDisplayedName = (preferences: SessionTreePreferences, sessionId: string): SessionTreePreferences => {
+    const name = sessionMap.get(sessionId)?.name
+    return name ? { ...preferences, sessionNamesById: { ...preferences.sessionNamesById, [sessionId]: name } } : preferences
+  }
+
+  const createRepositoryGroup = (sessionId: string, container: SessionTreeContainer) => {
+    const name = window.prompt('New session group name')?.trim()
+    if (!name || !container.repo || !container.items) return
+    const current = preferencesRef.current
+    const group: RepositorySessionGroup = { id: crypto.randomUUID(), name, repoRoot: container.repo.root, sessionIds: [sessionId] }
+    const position = container.items.find((item) => item.kind === 'session' ? item.id === sessionId : item.sessionIds.includes(sessionId))
+    const containerIds = new Set([...container.items.map(repositoryItemId), ...container.sessionIds])
+    save(withDisplayedName({
+      ...current,
+      repositoryGroups: [...(current.repositoryGroups ?? []).map((item) => ({ ...item, sessionIds: item.sessionIds.filter((id) => id !== sessionId) })), group],
+      repositorySessionIds: [
+        ...(current.repositorySessionIds ?? []).filter((id) => !containerIds.has(id)),
+        ...container.items.flatMap((item) => [
+          ...(item === position ? [`group:${group.id}`] : []),
+          ...(item.kind === 'session' && item.id === sessionId ? [] : [repositoryItemId(item)]),
+        ]),
+      ],
+    }, sessionId))
+  }
+
+  const removeFromRepositoryGroup = (sessionId: string, container: SessionTreeContainer) => {
+    const index = container.items?.findIndex((item) => item.kind === 'group' && item.sessionIds.includes(sessionId)) ?? -1
+    if (index < 0) return
+    const following = container.items?.[index + 1]
+    moveToContainer(sessionId, container.id, following ? repositoryItemId(following) : undefined)
+  }
+
+  const createSessionInContainer = (container: SessionTreeContainer, trigger: HTMLElement, repositoryGroup?: RepositorySessionGroup) => {
     sessionCreateRequestId.current += 1
     sessionCreateTrigger.current = trigger
     const directories = suggestedDirectories(container.sessionIds, props.panes)
     setSessionCreateRequest({
       id: sessionCreateRequestId.current,
-      groupId: container.id,
-      groupName: container.name,
+      groupId: repositoryGroup ? `group:${repositoryGroup.id}` : container.id,
+      groupName: repositoryGroup?.name ?? container.name,
       suggestedDirectories: container.repo
         ? [container.repo.root, ...directories.filter((directory) => directory !== container.repo?.root)]
         : directories,
@@ -351,7 +383,17 @@ export function SessionTree(props: Props) {
   }
 
   const finishCreated = (created: TmuxCreatedTarget, sessionGroupId: string | undefined, worktree: TmuxCreatedWorktree | undefined) => {
-    if (created.kind === 'session' && manual && sessionGroupId && sessionGroupId !== 'ungrouped') {
+    if (created.kind === 'session' && sessionGroupId?.startsWith('group:')) {
+      // The new session may not be present in the next tmux snapshot yet.
+      const current = preferencesRef.current
+      const groupId = sessionGroupId.slice(6)
+      if (current.repositoryGroups?.some((group) => group.id === groupId)) save({
+        ...current,
+        repositoryGroups: current.repositoryGroups.map((group) => ({ ...group, sessionIds: [...group.sessionIds.filter((id) => id !== created.sessionId), ...(group.id === groupId ? [created.sessionId] : [])] })),
+        // Lets the daemon name a session it hasn't seen in a tmux snapshot yet.
+        sessionNamesById: { ...current.sessionNamesById, [created.sessionId]: created.sessionName },
+      })
+    } else if (created.kind === 'session' && manual && sessionGroupId && sessionGroupId !== 'ungrouped') {
       moveToContainer(created.sessionId, sessionGroupId)
     }
     if (worktree) props.creation?.onCreated?.(created, worktree)
@@ -366,6 +408,10 @@ export function SessionTree(props: Props) {
       openMenu(sessionId, bounds.left + 28, bounds.bottom)
     }
   }
+
+  const menuContainer = !manual && menu && !auxiliaryIds.has(menu.sessionId)
+    ? containers.find((container) => container.kind === 'repository' && container.sessionIds.includes(menu.sessionId)) : undefined
+  const menuGroup = menuContainer?.items?.find((item) => item.kind === 'group' && item.sessionIds.includes(menu?.sessionId ?? ''))
 
   return (
     <div className="managed-session-tree">
@@ -397,13 +443,69 @@ export function SessionTree(props: Props) {
         const collapsed = collapsedContainerIds.has(container.id)
         const groupBodyId = `session-group-${container.id.replace(/[^A-Za-z0-9_-]/gu, '_')}`
         const sessionCount = container.sessionIds.filter((id) => sessionMap.has(id)).length
-        const droppable = container.kind !== 'auxiliary' && Boolean(draggedSessionId && (manual || container.sessionIds.includes(draggedSessionId)))
+        const droppable = container.kind !== 'auxiliary' && Boolean(draggedSessionId && (manual || container.sessionIds.includes(draggedSessionId) || container.items?.some((item) => repositoryItemId(item) === draggedSessionId)))
+        const renderSession = (sessionId: string, repositoryGroupId?: string) => {
+          const session = sessionMap.get(sessionId)
+          if (!session) return null
+          const selected = session.id === props.selectedSessionId
+          const ide = props.ides?.find((item) => item.sessionIds.includes(session.id))
+          const identity = sessionIdentityForName(preferences.sessionIdentities ?? {}, session.name)
+          const branch = container.sessionBranches?.[session.id]
+          const sessionPanes = props.panes
+            .filter((pane) => pane.sessionId === session.id)
+            .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
+          const indicator = sessionIndicator(sessionPanes, props.statuses, marks, seen)
+          const indicatorLabel = sessionPanes.flatMap((pane) => {
+            const status = props.statuses[pane.id]
+            const mark = marks[pane.targetId]
+            return [...(status ? [statusLabel(status, seen[pane.id], pane)] : []), ...(mark ? [markLabel(mark, pane)] : [])]
+          }).join('; ')
+          const simulatorPane = sessionPanes.find((pane) => props.simulators?.[pane.id])
+          const simulator = simulatorPane && props.simulators?.[simulatorPane.id]
+          return <article
+            className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`}
+            draggable={container.kind !== 'auxiliary'}
+            onDragStart={(event) => {
+              event.dataTransfer?.setData('text/plain', session.id)
+              if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+              setDraggedSessionId(session.id)
+            }}
+            onDragEnd={endDrag}
+            onDragOver={droppable ? (event) => { event.stopPropagation(); if (!(repositoryGroupId && draggedSessionId?.startsWith('group:'))) event.preventDefault() } : undefined}
+            onDrop={droppable ? (event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              if (draggedSessionId && !(repositoryGroupId && draggedSessionId.startsWith('group:'))) moveToContainer(draggedSessionId, container.id, session.id, repositoryGroupId)
+              endDrag()
+            } : undefined}
+            key={session.id}
+          >
+            <div className="managed-session-row">
+              {indicator ? <button
+                type="button"
+                className={`session-indicator ${indicator.kind === 'status' ? indicator.status : `mark tone-${indicator.mark.tone}${indicator.mark.activityCount ? ' has-activity' : ''}`}`}
+                onClick={() => props.onSelectPane(indicator.paneId)}
+                aria-label={indicatorLabel}
+                title={indicatorLabel}
+              /> : <span className="session-indicator" aria-hidden="true" />}
+              <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={[`${session.name} — ${identity.codename}`, branch, `${plural(session.windowIds.length, 'window')} / ${plural(sessionPanes.length, 'pane')}`].filter(Boolean).join(' · ')}><SessionAvatar identity={identity} /><span className="session-identity-name">{session.name}</span></button>
+              <span className="session-row-meta">
+                {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} previewApi={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
+                {ide ? <button type="button" className={`session-ide-glyph state-${ide.state}`} aria-pressed={props.ideSessionId === session.id} aria-label={`Open attached IDE for ${session.name}`} title={`${ide.state === 'ready' ? 'IDE attached' : ide.state === 'starting' ? 'IDE starting' : 'IDE failed'} · ${ide.workspacePath}`} onClick={() => props.onOpenIde?.(session.id)}><Code2 /></button> : null}
+                {Object.values(props.agentChatRequests ?? {}).filter((request) => sessionPanes.some((pane) => pane.id === request.callerPaneId && pane.targetId === request.callerTargetId)).map((request) => <AgentChatRequestBadge key={request.id} request={request} onSelect={props.onSelectPane} />)}
+                {sessionPanes[0] ? <OpenedByMarker pane={sessionPanes[0]} snapshot={lineageSnapshot} statuses={props.statuses} onSelect={props.onSelectPane} /> : null}
+                {simulator && simulatorPane ? <button type="button" className={`session-sim-glyph${simulator.idle ? ' idle' : ''}`} aria-label={`Show leased simulator for ${session.name}`} title={`Simulator · ${simulator.label}${simulator.task ? ` · ${simulator.task}` : ''}`} onClick={() => props.onShowSimulator?.(simulator.udid, simulatorPane.id)}><Smartphone /></button> : null}
+              </span>
+              <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
+            </div>
+          </article>
+        }
         return (
         <section
           className={`session-pref-group kind-${container.kind}`}
           key={container.id}
           onDragOver={droppable ? (event) => { if (draggedSessionId) event.preventDefault() } : undefined}
-          onDrop={droppable ? (event) => { event.preventDefault(); if (draggedSessionId) moveToContainer(draggedSessionId, container.id); setDraggedSessionId(null) } : undefined}
+          onDrop={droppable ? (event) => { event.preventDefault(); if (draggedSessionId) moveToContainer(draggedSessionId, container.id); endDrag() } : undefined}
         >
           <header>
             <button
@@ -428,62 +530,55 @@ export function SessionTree(props: Props) {
             {container.group ? <><button type="button" onClick={() => moveGroup(container.id, -1)} disabled={groupIndex === 0} aria-label={`Move ${container.name} up`}><ArrowUp /></button><button type="button" onClick={() => moveGroup(container.id, 1)} disabled={groupIndex === preferences.groups.length - 1} aria-label={`Move ${container.name} down`}><ArrowDown /></button><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
           </header>
           <div id={groupBodyId} hidden={collapsed}>
-            {container.sessionIds.flatMap((sessionId) => {
-              const session = sessionMap.get(sessionId)
-              if (!session) return []
-              const selected = session.id === props.selectedSessionId
-              const ide = props.ides?.find((item) => item.sessionIds.includes(session.id))
-              const identity = sessionIdentityForName(preferences.sessionIdentities ?? {}, session.name)
-              const branch = container.sessionBranches?.[session.id]
-              const sessionPanes = props.panes
-                .filter((pane) => pane.sessionId === session.id)
-                .sort((left, right) => (displayedPaneOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (displayedPaneOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER))
-              const indicator = sessionIndicator(sessionPanes, props.statuses, marks, seen)
-              const indicatorLabel = sessionPanes.flatMap((pane) => {
+            {container.items ? container.items.map((item) => {
+              if (item.kind === 'session') return renderSession(item.id)
+              const group = item.group
+              const bodyId = `repository-group-${group.id}`
+              const groupPanes = item.sessionIds.flatMap((id) => props.panes.filter((pane) => pane.sessionId === id))
+              const indicator = group.collapsed ? sessionIndicator(groupPanes, props.statuses, marks, seen) : null
+              const indicatorLabel = groupPanes.flatMap((pane) => {
                 const status = props.statuses[pane.id]
                 const mark = marks[pane.targetId]
                 return [...(status ? [statusLabel(status, seen[pane.id], pane)] : []), ...(mark ? [markLabel(mark, pane)] : [])]
               }).join('; ')
-              const simulatorPane = sessionPanes.find((pane) => props.simulators?.[pane.id])
-              const simulator = simulatorPane && props.simulators?.[simulatorPane.id]
-              return [<article
-                className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`}
-                draggable={container.kind !== 'auxiliary'}
-                onDragStart={(event) => {
-                  event.dataTransfer?.setData('text/plain', session.id)
-                  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
-                  setDraggedSessionId(session.id)
-                }}
-                onDragEnd={() => setDraggedSessionId(null)}
-                onDragOver={droppable ? (event) => event.preventDefault() : undefined}
-                onDrop={droppable ? (event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  if (draggedSessionId) moveToContainer(draggedSessionId, container.id, session.id)
-                  setDraggedSessionId(null)
-                } : undefined}
-                key={session.id}
-              >
-                <div className="managed-session-row">
-                  {indicator ? <button
-                    type="button"
-                    className={`session-indicator ${indicator.kind === 'status' ? indicator.status : `mark tone-${indicator.mark.tone}${indicator.mark.activityCount ? ' has-activity' : ''}`}`}
-                    onClick={() => props.onSelectPane(indicator.paneId)}
-                    aria-label={indicatorLabel}
-                    title={indicatorLabel}
-                  /> : <span className="session-indicator" aria-hidden="true" />}
-                  <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={[`${session.name} — ${identity.codename}`, branch, `${plural(session.windowIds.length, 'window')} / ${plural(sessionPanes.length, 'pane')}`].filter(Boolean).join(' · ')}><SessionAvatar identity={identity} /><span className="session-identity-name">{session.name}</span></button>
-                  <span className="session-row-meta">
-                    {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} previewApi={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
-                    {ide ? <button type="button" className={`session-ide-glyph state-${ide.state}`} aria-pressed={props.ideSessionId === session.id} aria-label={`Open attached IDE for ${session.name}`} title={`${ide.state === 'ready' ? 'IDE attached' : ide.state === 'starting' ? 'IDE starting' : 'IDE failed'} · ${ide.workspacePath}`} onClick={() => props.onOpenIde?.(session.id)}><Code2 /></button> : null}
-                    {Object.values(props.agentChatRequests ?? {}).filter((request) => sessionPanes.some((pane) => pane.id === request.callerPaneId && pane.targetId === request.callerTargetId)).map((request) => <AgentChatRequestBadge key={request.id} request={request} onSelect={props.onSelectPane} />)}
-                    {sessionPanes[0] ? <OpenedByMarker pane={sessionPanes[0]} snapshot={lineageSnapshot} statuses={props.statuses} onSelect={props.onSelectPane} /> : null}
-                    {simulator && simulatorPane ? <button type="button" className={`session-sim-glyph${simulator.idle ? ' idle' : ''}`} aria-label={`Show leased simulator for ${session.name}`} title={`Simulator · ${simulator.label}${simulator.task ? ` · ${simulator.task}` : ''}`} onClick={() => props.onShowSimulator?.(simulator.udid, simulatorPane.id)}><Smartphone /></button> : null}
-                  </span>
-                  <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
+              const updateGroup = (change: Partial<RepositorySessionGroup>) => {
+                const current = preferencesRef.current
+                save({ ...current, repositoryGroups: current.repositoryGroups?.map((candidate) => candidate.id === group.id ? { ...candidate, ...change } : candidate) })
+              }
+              return <div className="repository-session-group" key={`group:${group.id}`}>
+                <header
+                  className={`${dropGroupId === group.id ? 'drop-target' : ''}${draggedSessionId === `group:${group.id}` ? ' dragging' : ''}`}
+                  draggable
+                  onDragStart={(event) => { event.stopPropagation(); event.dataTransfer?.setData('text/plain', `group:${group.id}`); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; setDraggedSessionId(`group:${group.id}`) }}
+                  onDragEnd={endDrag}
+                  onDragOver={droppable ? (event) => { event.preventDefault(); event.stopPropagation(); setDropGroupId(group.id) } : undefined}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropGroupId(null) }}
+                  onDrop={droppable ? (event) => {
+                    event.preventDefault(); event.stopPropagation()
+                    if (draggedSessionId) moveToContainer(draggedSessionId, container.id, draggedSessionId.startsWith('group:') ? `group:${group.id}` : undefined, draggedSessionId.startsWith('group:') ? undefined : group.id)
+                    endDrag()
+                  } : undefined}
+                >
+                  {indicator ? <button type="button" className={`session-indicator ${indicator.kind === 'status' ? indicator.status : `mark tone-${indicator.mark.tone}${indicator.mark.activityCount ? ' has-activity' : ''}`}`} onClick={() => props.onSelectPane(indicator.paneId)} aria-label={indicatorLabel} title={indicatorLabel} /> : <span className="session-indicator" aria-hidden="true" />}
+                  <button type="button" className="repository-group-toggle" aria-label={`${group.collapsed ? 'Expand' : 'Collapse'} ${group.name}`} aria-expanded={!group.collapsed} aria-controls={bodyId} onClick={() => updateGroup({ collapsed: !group.collapsed })}>{group.collapsed ? <ChevronRight /> : <ChevronDown />}<strong>{group.name}</strong><small>{item.sessionIds.length}</small></button>
+                  {props.creation ? <button type="button" aria-label={`New session in ${group.name}`} title={`Create a new session in ${group.name}`} onClick={(event) => createSessionInContainer(container, event.currentTarget, group)}><Plus /></button> : null}
+                  <button type="button" aria-label={`Rename ${group.name}`} onClick={() => { const name = window.prompt('Rename group', group.name)?.trim(); if (name) updateGroup({ name }) }}><Pencil /></button>
+                  <button type="button" aria-label={`Ungroup ${group.name}`} onClick={() => {
+                    const current = preferencesRef.current
+                    const repository = repositoryContainers(current, props.sessions.filter((session) => !auxiliaryIds.has(session.id) && session.id !== commanderSessionId), props.panes).find((candidate) => candidate.id === container.id)
+                    if (repository) save(ungroupRepositoryItem(current, repository, group.id))
+                  }}><X /></button>
+                </header>
+                <div id={bodyId} className="repository-group-members" hidden={group.collapsed}
+                  onDragOver={droppable ? (event) => { event.stopPropagation(); if (!draggedSessionId?.startsWith('group:')) { event.preventDefault(); setDropGroupId(group.id) } } : undefined}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropGroupId(null) }}
+                  onDrop={droppable ? (event) => { event.preventDefault(); event.stopPropagation(); if (draggedSessionId && !draggedSessionId.startsWith('group:')) moveToContainer(draggedSessionId, container.id, undefined, group.id); endDrag() } : undefined}
+                >
+                  {item.sessionIds.map((id) => renderSession(id, group.id))}
+                  {!item.sessionIds.length ? <p className="session-pref-empty">Drop a session here.</p> : null}
                 </div>
-              </article>]
-            })}
+              </div>
+            }) : container.sessionIds.map((id) => renderSession(id))}
             {manual && !container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}
           </div>
         </section>
@@ -516,7 +611,19 @@ export function SessionTree(props: Props) {
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}
-      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()}>{props.onOpenIde ? <button type="button" role="menuitem" onClick={() => { props.onOpenIde?.(menu.sessionId); setMenu(null) }}><Code2 /> Open IDE</button> : null}<button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId); setMenu(null) }}><Pencil /> Change glyph…</button><button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId, true); setMenu(null) }}><RotateCcw /> Reset identity</button><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>{props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}</div> : null}
+      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setMenu(null) }}>
+        {props.onOpenIde ? <button type="button" role="menuitem" onClick={() => { props.onOpenIde?.(menu.sessionId); setMenu(null) }}><Code2 /> Open IDE</button> : null}<button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId); setMenu(null) }}><Pencil /> Change glyph…</button><button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId, true); setMenu(null) }}><RotateCcw /> Reset identity</button><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>
+        {menuContainer ? <>
+          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={Boolean(menu.groupsExpanded)} aria-controls="repository-move-menu" onClick={() => setMenu({ ...menu, groupsExpanded: !menu.groupsExpanded })}><FolderPlus /> Move to group{menu.groupsExpanded ? <ChevronDown /> : <ChevronRight />}</button>
+          {menu.groupsExpanded ? <div className="session-context-submenu" id="repository-move-menu" role="menu" aria-label="Move to group">
+            {menuContainer.items?.flatMap((item) => item.kind === 'group' ? [<button type="button" role="menuitem" key={item.group.id} aria-label={`${item.group.name}, ${plural(item.sessionIds.length, 'session')}`} onClick={() => { moveToContainer(menu.sessionId, menuContainer.id, undefined, item.group.id); setMenu(null) }}>{item.group.name}<small>{item.sessionIds.length}</small></button>] : [])}
+            <hr role="separator" />
+            <button type="button" role="menuitem" onClick={() => { createRepositoryGroup(menu.sessionId, menuContainer); setMenu(null) }}><Plus /> New group…</button>
+          </div> : null}
+          {menuGroup ? <button type="button" role="menuitem" onClick={() => { removeFromRepositoryGroup(menu.sessionId, menuContainer); setMenu(null) }}><X /> Remove from group</button> : null}
+        </> : null}
+        {props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}
+      </div> : null}
     </div>
   )
 }

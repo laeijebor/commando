@@ -9,6 +9,7 @@ import { deriveSessionIdentity } from '../shared/session-identity'
 import { SessionTree, type SessionActions } from './SessionTree'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import type { PrsApiClient, PanePrSummary } from './prsApi'
+import type { SessionTreePreferences } from './sessionManagementApi'
 
 const sessionApi = vi.hoisted(() => ({
   loadPreferences: vi.fn(),
@@ -1018,5 +1019,229 @@ describe('Commander session', () => {
   it('prevents duplicate creation while waiting for the live pane', () => {
     render(<SessionTree {...baseProps} sessions={[sessions[0]]} commanderOpening onCreateCommander={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Opening…' })).toBeDisabled()
+  })
+})
+
+describe('repository sub-groups', () => {
+  const repo: PaneRepo = { root: '/work/vivifit', name: 'vivifit', branch: 'main', defaultBranch: 'main', isWorktree: false }
+  const sessions = ['one', 'two', 'three', 'four', 'elsewhere', 'scratch'].map((name, index) => ({ id: '$' + (index + 1), name, attached: false, activeWindowId: '@1', windowIds: ['@1'] }))
+  const panes = sessions.map((session, index) => ({ ...pane('%' + (index + 1), 0, session.name), sessionId: session.id, path: repo.root, repo: index === 5 ? undefined : index === 4 ? { ...repo, root: '/other', name: 'other' } : repo }))
+  const landing = { id: 'landing', name: 'Landing', repoRoot: repo.root, sessionIds: ['$2', '$3'] }
+  const initial: SessionTreePreferences = { version: 1, groupingMode: 'repository', groups: [{ id: 'manual', name: 'Manual', sessionIds: ['$3', '$1'] }], ungroupedSessionIds: ['$2', '$4', '$5', '$6'], repositoryGroups: [landing], repositorySessionIds: ['$1', 'group:landing', '$4'] }
+  const setup = (overrides: Partial<Parameters<typeof SessionTree>[0]> = {}, preferences = initial) => {
+    sessionApi.loadPreferences.mockResolvedValue(preferences)
+    return render(<SessionTree token="token" sessions={sessions} panes={panes} displayedPaneIds={[]} statuses={{}}
+      selectedSessionId={null} onSelectSession={vi.fn()} onSelectPane={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} {...overrides} />)
+  }
+  const row = (name: string) => screen.getByRole('button', { name: 'Actions for ' + name }).closest('article')!
+  const header = (name = 'Landing') => screen.getByRole('button', { name: 'Collapse ' + name }).closest('header')!
+  const order = () => [...header().closest('section')!.querySelectorAll('.managed-session-main')].map((item) => item.textContent)
+  const saved = () => sessionApi.savePreferences.mock.lastCall![0] as SessionTreePreferences
+  const actions = (name: string) => fireEvent.click(screen.getByRole('button', { name: 'Actions for ' + name }))
+
+  it('renders members at the group position and follows group order for shortcuts', async () => {
+    const onSelectSession = vi.fn()
+    setup({ onSelectSession })
+    const toggle = await screen.findByRole('button', { name: 'Collapse Landing' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)).toHaveClass('repository-group-members')
+    expect(row('two').closest('.repository-session-group')).toContainElement(toggle)
+    expect(order()).toEqual(['one', 'two', 'three', 'four'])
+    expect(within(toggle).getByText('2')).toBeInTheDocument()
+    for (const key of ['2', '3', '4', '5']) fireEvent.keyDown(window, { key, metaKey: true })
+    // The alphabetically earlier "other" repository owns shortcut 1.
+    expect(onSelectSession.mock.calls.map(([id]) => id)).toEqual(['$1', '$2', '$3', '$4'])
+    expect(header().querySelector('button.session-indicator')).toBeNull()
+  })
+
+  it('persists collapse, rolls up all member panes, selects the urgent pane, and skips hidden members', async () => {
+    const onSelectPane = vi.fn()
+    const onSelectSession = vi.fn()
+    const extra = { ...panes[2], id: '%30', title: 'Blocked pane', index: 1 }
+    const props = { onSelectPane, onSelectSession, panes: [...panes, extra], statuses: { '%2': agentStatus('%2', 'claude', 'working'), '%30': agentStatus('%30', 'codex', 'needs_input') } }
+    const mounted = setup(props)
+    fireEvent.click(await screen.findByRole('button', { name: 'Collapse Landing' }))
+    await waitFor(() => expect(saved().repositoryGroups?.[0].collapsed).toBe(true))
+    const closedHeader = screen.getByRole('button', { name: 'Expand Landing' }).closest('header')!
+    const indicator = within(closedHeader).getByRole('button', { name: /Codex: blocked on you - Blocked pane/ })
+    expect(indicator).toHaveClass('needs_input')
+    expect(screen.getByText('two')).not.toBeVisible()
+    fireEvent.click(indicator)
+    expect(onSelectPane).toHaveBeenLastCalledWith('%30')
+    fireEvent.keyDown(window, { key: '3', metaKey: true })
+    fireEvent(window, new CustomEvent(NATIVE_TERMINAL_SHORTCUT_EVENT, { detail: { key: '3' } }))
+    expect(onSelectSession.mock.calls.map(([id]) => id)).toEqual(['$4', '$4'])
+    const persisted = saved()
+    mounted.unmount()
+    setup(props, persisted)
+    expect(await screen.findByRole('button', { name: 'Expand Landing' })).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Landing' }))
+    expect(screen.getByText('two')).toBeVisible()
+    expect(header().querySelector('button.session-indicator')).toBeNull()
+  })
+
+  it('creates a group at the selected loose session position from its menu', async () => {
+    vi.spyOn(window, 'prompt').mockReturnValue(' Launch ')
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    actions('four')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to group' }))
+    expect(screen.getByRole('menu', { name: 'Move to group' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Landing, 2 sessions' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New group…' }))
+    await screen.findByRole('button', { name: 'Collapse Launch' })
+    const group = saved().repositoryGroups!.find((group) => group.name === 'Launch')!
+    expect(group).toMatchObject({ repoRoot: repo.root, sessionIds: ['$4'] })
+    expect(saved().sessionNamesById?.$4).toBe('four')
+    expect(saved().repositorySessionIds).toEqual(['$1', 'group:landing', 'group:' + group.id])
+    expect(saved().groups).toEqual(initial.groups)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('moves through the menu and removes members directly after the group', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    actions('four')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to group' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Landing, 2 sessions' }))
+    await waitFor(() => expect(saved().repositoryGroups?.[0].sessionIds).toEqual(['$2', '$3', '$4']))
+    expect(saved().sessionNamesById?.$4).toBe('four')
+    expect(row('four').closest('.repository-session-group')).toBeTruthy()
+    actions('two')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove from group' }))
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['$1', 'group:landing', '$2']))
+    expect(row('two').closest('.repository-session-group')).toBeNull()
+    expect(order()).toEqual(['one', 'three', 'four', 'two'])
+  })
+
+  it('places a removed member before the following top-level item', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    actions('two')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove from group' }))
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['$1', 'group:landing', '$2', '$4']))
+  })
+
+  it('highlights a header drop and appends the dragged session to the group', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    fireEvent.dragStart(row('four'))
+    fireEvent.dragOver(header())
+    expect(header()).toHaveClass('drop-target')
+    fireEvent.drop(header())
+    await waitFor(() => expect(saved().repositoryGroups?.[0].sessionIds).toEqual(['$2', '$3', '$4']))
+    expect(saved().repositorySessionIds).toEqual(['$1', 'group:landing'])
+    expect(header()).not.toHaveClass('drop-target')
+    expect(row('four').closest('.repository-session-group')).toBeTruthy()
+  })
+
+  it('inserts before a member and makes a member loose when dropped on a loose row', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    fireEvent.dragStart(row('four'))
+    fireEvent.drop(row('three'))
+    await waitFor(() => expect(saved().repositoryGroups?.[0].sessionIds).toEqual(['$2', '$4', '$3']))
+    fireEvent.dragStart(row('two'))
+    fireEvent.drop(row('one'))
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['$2', '$1', 'group:landing']))
+    expect(saved().repositoryGroups?.[0].sessionIds).toEqual(['$4', '$3'])
+    expect(order()).toEqual(['two', 'one', 'four', 'three'])
+  })
+
+  it('drags group headers before loose sessions and other groups', async () => {
+    const empty = { id: 'empty', name: 'Empty', repoRoot: repo.root, sessionIds: [] }
+    setup({}, { ...initial, repositoryGroups: [landing, empty], repositorySessionIds: ['$1', 'group:landing', '$4', 'group:empty'] })
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    fireEvent.dragStart(header())
+    fireEvent.drop(row('one'))
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['group:landing', '$1', '$4', 'group:empty']))
+    fireEvent.dragStart(header('Empty'))
+    fireEvent.drop(header())
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['group:empty', 'group:landing', '$1', '$4']))
+    expect(saved().repositoryGroups).toEqual([landing, empty])
+  })
+
+  it('rejects session and group drags across repositories', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    fireEvent.dragStart(row('elsewhere'))
+    expect(fireEvent.dragOver(header())).toBe(true)
+    fireEvent.drop(header())
+    fireEvent.dragStart(header())
+    fireEvent.drop(row('elsewhere'))
+    expect(sessionApi.savePreferences).not.toHaveBeenCalled()
+  })
+
+  it('ungroups members at the group position and preserves manual preferences', async () => {
+    setup()
+    fireEvent.click(await screen.findByRole('button', { name: 'Ungroup Landing' }))
+    await waitFor(() => expect(saved().repositoryGroups).toEqual([]))
+    expect(saved().repositorySessionIds).toEqual(['$1', '$2', '$3', '$4'])
+    expect(saved().groups).toEqual(initial.groups)
+    expect(saved().ungroupedSessionIds).toEqual(initial.ungroupedSessionIds)
+    expect(orderWithoutGroup()).toEqual(['one', 'two', 'three', 'four'])
+    function orderWithoutGroup() {
+      return [...screen.getByRole('button', { name: 'Collapse vivifit' }).closest('section')!.querySelectorAll('.managed-session-main')].map((item) => item.textContent)
+    }
+  })
+
+  it('keeps empty groups, displays the drop hint, and renames with a prompt', async () => {
+    vi.spyOn(window, 'prompt').mockReturnValue('Website')
+    setup({}, { ...initial, repositoryGroups: [{ ...landing, sessionIds: [] }] })
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    expect(screen.getByText('Drop a session here.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Landing' }))
+    expect(await screen.findByRole('button', { name: 'Collapse Website' })).toBeInTheDocument()
+    expect(saved().repositoryGroups?.[0]).toMatchObject({ name: 'Website', sessionIds: [] })
+  })
+
+  it('keeps the group after its last member leaves and accepts drops on its empty hint', async () => {
+    setup({}, { ...initial, repositoryGroups: [{ ...landing, sessionIds: ['$2'] }] })
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    actions('two')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove from group' }))
+    await waitFor(() => expect(saved().repositoryGroups).toEqual([{ ...landing, sessionIds: [] }]))
+    const hint = screen.getByText('Drop a session here.')
+    fireEvent.dragStart(row('four'))
+    fireEvent.dragOver(hint)
+    expect(header()).toHaveClass('drop-target')
+    fireEvent.drop(hint)
+    await waitFor(() => expect(saved().repositoryGroups?.[0].sessionIds).toEqual(['$4']))
+    expect(row('four').closest('.repository-session-group')).toBeTruthy()
+  })
+
+  it('creates in a repository group before a tmux snapshot arrives and preserves pending group changes', async () => {
+    let resolveCreate: ((response: { created: TmuxCreatedTarget }) => void) | undefined
+    const onCreateSession = vi.fn(() => new Promise<{ created: TmuxCreatedTarget }>((resolve) => { resolveCreate = resolve }))
+    const onCreated = vi.fn()
+    vi.spyOn(window, 'prompt').mockReturnValue('Website')
+    setup({ creation: { onCreateSession, onCreated } })
+    fireEvent.click(await screen.findByRole('button', { name: 'New session in Landing' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New session' })
+    expect(within(dialog).getByRole('combobox', { name: /Working directory/ })).toHaveValue(repo.root)
+    fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'new-work' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Landing' }))
+    const created: TmuxCreatedTarget = { kind: 'session', sessionId: '$9', sessionName: 'new-work', windowId: '@9', windowIndex: 0, windowName: 'shell', paneId: '%9', paneIndex: 0, panePath: repo.root }
+    await act(async () => { resolveCreate!({ created }) })
+    await waitFor(() => expect(saved().repositoryGroups?.[0]).toMatchObject({ name: 'Website', sessionIds: ['$2', '$3', '$9'] }))
+    expect(onCreated).toHaveBeenCalledWith(created)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New session in Website' })).toHaveFocus()
+  })
+
+  it('offers group movement only in repository containers and keeps manual mode unchanged', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    actions('scratch')
+    expect(screen.queryByRole('menuitem', { name: 'Move to group' })).not.toBeInTheDocument()
+    fireEvent.pointerDown(window)
+    fireEvent.click(screen.getByRole('button', { name: 'Group sessions manually' }))
+    expect(await screen.findByRole('button', { name: 'Collapse Manual' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Collapse Landing' })).not.toBeInTheDocument()
+    actions('one')
+    expect(screen.queryByRole('menuitem', { name: 'Move to group' })).not.toBeInTheDocument()
+    expect(saved().groups).toEqual(initial.groups)
+    expect(saved().repositoryGroups).toEqual(initial.repositoryGroups)
   })
 })

@@ -16,6 +16,9 @@
 .session-context-menu button:hover { background: var(--border); }
 .session-context-menu button.danger { color: #eb6f92; }
 .session-context-menu svg { width: 14px; height: 14px; }
+.session-context-submenu { margin-left: 8px; padding-left: 4px; border-left: 1px solid var(--border-strong); }
+.session-context-submenu small { margin-left: auto; color: var(--text-faint); font: 8px var(--mono); }
+.session-context-submenu hr { margin: 4px; border: 0; border-top: 1px solid var(--border-strong); }
 .managed-session-tree > .tmux-create { margin-top: 2px; }
 .managed-session-tree .tmux-create__submit { border: 1px solid #9ccfd8; background: #3e8fb0; color: var(--surface-soft); }
 
@@ -58,6 +61,19 @@
 .managed-session:hover { background: var(--surface-hover); }
 .managed-session.selected { background: var(--surface-soft); }
 .managed-session.dragging { opacity: .45; }
+.repository-session-group > header { display: flex; align-items: center; gap: 2px; padding: 0 2px; border-radius: 4px; }
+.repository-session-group > header.drop-target { outline: 1px dashed var(--accent); }
+.repository-session-group > header.dragging { opacity: .45; }
+.repository-session-group > header svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.repository-group-toggle { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; padding: 6px 4px; text-align: left; color: var(--text-soft) !important; }
+.repository-group-toggle strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 600; }
+.repository-group-toggle small { flex: 0 0 auto; color: var(--text-faint); font: 8px var(--mono); }
+.repository-group-toggle:focus-visible { outline: 1px solid var(--accent); border-radius: 4px; }
+.repository-session-group > header > button:not(.repository-group-toggle):not(.session-indicator) { width: 0; height: 20px; flex: 0 0 auto; padding: 0; display: grid; place-items: center; overflow: hidden; border-radius: 4px; color: var(--text-faint); opacity: 0; }
+.repository-session-group > header:hover > button:not(.repository-group-toggle):not(.session-indicator), .repository-session-group > header:focus-within > button:not(.repository-group-toggle):not(.session-indicator) { width: 20px; opacity: 1; }
+.repository-session-group > header > button:not(.repository-group-toggle):not(.session-indicator):hover { color: var(--text); background: var(--surface-hover); }
+.repository-session-group > header > button[title^='Create a new session']:hover { color: var(--accent); }
+.repository-group-members { margin-left: 11px; padding-left: 4px; border-left: 1px solid var(--border-strong); }
 .managed-session-row { display: flex; align-items: center; gap: 2px; padding: 0 2px 0 2px; }
 .managed-session-main { min-width: 0; flex: 1; padding: 7px 4px; overflow: hidden; color: var(--text-soft) !important; text-align: left; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 500; }
 .managed-session.selected .managed-session-main { color: var(--text) !important; }
