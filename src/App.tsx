@@ -41,6 +41,7 @@ import {
   Server,
   ShieldCheck,
   SidebarOpen,
+  Settings,
   Smartphone,
   Terminal,
   UserRound,
@@ -112,6 +113,7 @@ import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
+import { createAgentProfilesApi } from './agentProfilesApi'
 import { SessionTree, type SessionActions } from './SessionTree'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
 import { ARCHIVE_RESTORE_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
@@ -225,6 +227,7 @@ export const PR_PANE_LOOKUP_TIMEOUT_MS = 5_000
 
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
 const SimsView = lazy(() => import('./SimsView').then((module) => ({ default: module.SimsView })))
+const SettingsView = lazy(() => import('./SettingsView').then((module) => ({ default: module.SettingsView })))
 
 const PRESETS: Array<{
   id: GroupLayoutPreset
@@ -964,7 +967,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims'
+type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'settings'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -2660,6 +2663,7 @@ export function App() {
   const gitDiffApi = useMemo(() => createGitDiffApi(token), [token])
   const simsApi = useMemo(() => createSimsApi(token), [token])
   const prsApi = useMemo(() => createPrsApi(token), [token])
+  const agentProfilesApi = useMemo(() => createAgentProfilesApi(token), [token])
   /**
    * "Implement in a new chat pane": splits the chat's pane and starts a fresh
    * chat with the same profile and folder, in the mode the chat had before plan
@@ -3981,6 +3985,10 @@ export function App() {
               <Smartphone aria-hidden="true" />
               <span>Simulators</span>
             </button>
+            <button type="button" className={area === 'settings' ? 'active' : ''} aria-current={area === 'settings' ? 'page' : undefined} onClick={() => { setArea('settings'); setLeftPanelOpen(false) }}>
+              <Settings aria-hidden="true" />
+              <span>Settings</span>
+            </button>
           </nav>
 
           <div className="tree-heading">
@@ -4493,6 +4501,11 @@ export function App() {
           {area === 'sims' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening simulators...</p></section>}>
               <SimsView token={token} />
+            </Suspense>
+          ) : null}
+          {area === 'settings' ? (
+            <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening settings...</p></section>}>
+              <SettingsView api={agentProfilesApi} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }} />
             </Suspense>
           ) : null}
           {notesMounted ? (
