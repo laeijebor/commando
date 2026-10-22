@@ -368,6 +368,15 @@ export class SessionPreferenceStore {
     })
   }
 
+  /** Follow a rename seen on the same tmux server, so reconcile doesn't mistake the session for a reused id. */
+  recordSessionRename(sessionId: string, previousName: string, name: string): Promise<SessionTreePreferences> {
+    return this.update((stored) => {
+      if (stored.sessionNamesById?.[sessionId] !== previousName) return { state: stored, result: stored }
+      const state = { ...stored, sessionNamesById: { ...stored.sessionNamesById, [sessionId]: name } }
+      return { state, result: state }
+    })
+  }
+
   renameIdentity(oldName: string, newName: string, sessionId: string): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       const identities = new Map(Object.entries(stored.sessionIdentities ?? {}))
@@ -395,13 +404,32 @@ export class SessionPreferenceStore {
     let validated: SessionTreePreferences
     const operation = this.writes.then(async () => {
       const stored = await this.readState()
+      // A session newly placed in a repository group takes its current name, replacing any name
+      // left over from an earlier session with the same id. The client sends the name it displayed
+      // for the session it moved; a stale snapshot's name won't match tmux, so it isn't accepted.
+      // Compare with the reconciled view the client was given: load() can leave stale members on disk.
+      const baseline = reconcileSessionTreePreferences(stored, currentSessions)
+      const storedMembers = new Map((baseline.repositoryGroups ?? []).map((group) => [group.id, new Set(group.sessionIds)]))
+      const currentNames = new Map(currentSessions.map((session) => [session.id, session.name]))
+      const assignedNames: Record<string, string> = {}
+      for (const group of parsed.repositoryGroups ?? []) {
+        for (const sessionId of group.sessionIds) {
+          if (storedMembers.get(group.id)?.has(sessionId)) continue
+          const submitted = parsed.sessionNamesById?.[sessionId]
+          const current = currentNames.get(sessionId)
+          // Not in a tmux snapshot yet (just created): trust the client's name until tmux reports it.
+          if (submitted && (current === undefined || current === submitted)) assignedNames[sessionId] = submitted
+        }
+      }
       validated = reconcileSessionTreePreferences({
         ...parsed,
         // Identity changes use dedicated queued mutations; grouping snapshots may be stale.
         ...(parsed.sessionIdentities || stored.sessionIdentities ? { sessionIdentities: stored.sessionIdentities ?? parsed.sessionIdentities } : {}),
+        // Renames are recorded server-side, so stored names win over a client's possibly stale copy.
         sessionNamesById: {
-          ...stored.sessionNamesById,
           ...parsed.sessionNamesById,
+          ...stored.sessionNamesById,
+          ...assignedNames,
         },
       }, currentSessions)
       await this.writeState(validated)

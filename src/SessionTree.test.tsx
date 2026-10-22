@@ -1092,6 +1092,7 @@ describe('repository sub-groups', () => {
     await screen.findByRole('button', { name: 'Collapse Launch' })
     const group = saved().repositoryGroups!.find((group) => group.name === 'Launch')!
     expect(group).toMatchObject({ repoRoot: repo.root, sessionIds: ['$4'] })
+    expect(saved().sessionNamesById?.$4).toBe('four')
     expect(saved().repositorySessionIds).toEqual(['$1', 'group:landing', 'group:' + group.id])
     expect(saved().groups).toEqual(initial.groups)
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
@@ -1104,6 +1105,7 @@ describe('repository sub-groups', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to group' }))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Landing, 2 sessions' }))
     await waitFor(() => expect(saved().repositoryGroups?.[0].sessionIds).toEqual(['$2', '$3', '$4']))
+    expect(saved().sessionNamesById?.$4).toBe('four')
     expect(row('four').closest('.repository-session-group')).toBeTruthy()
     actions('two')
     fireEvent.click(screen.getByRole('menuitem', { name: 'Remove from group' }))
