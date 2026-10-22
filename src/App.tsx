@@ -4258,7 +4258,9 @@ export function App() {
                             pane.id,
                             <div key={rendererIdentity} className="conversation-picker-anchor" data-pane-id={pane.id}
                               onPointerDown={() => setFocusedPaneId(pane.id)} onFocusCapture={() => setFocusedPaneId(pane.id)}>
-                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} focusRef={(node) => registerFocusable(pane.id, node)} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
+                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} focusRef={(node) => registerFocusable(pane.id, node)}
+                                onClose={connected && (snapshot?.panes.some((other) => other.sessionId === pane.sessionId && other.id !== pane.id) ?? false) ? () => { void killPane(pane.id) } : undefined}
+                                onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
                               {palettePaneId === pane.id ? panePaletteNode : null}
                             </div>,
                           ] as const

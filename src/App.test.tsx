@@ -432,10 +432,14 @@ describe('pane close and create shortcuts', () => {
     vi.stubGlobal('confirm', vi.fn(() => true))
     await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }, adjacentPane]))
     vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true,"emptied":true}', { status: 200 }))
-    fireEvent.focus(screen.getByRole('region', { name: 'Empty pane' }))
-    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Close empty pane' }))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(deleteUrl(pane.id), expect.objectContaining({ method: 'DELETE' })))
     expect(confirm).not.toHaveBeenCalled()
+  })
+
+  it("offers no close button on a session's only pane once it is empty", async () => {
+    await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }]))
+    expect(screen.queryByRole('button', { name: 'Close empty pane' })).not.toBeInTheDocument()
   })
 
   it('launches a Codex chat in an empty pane with the remembered Codex permission mode', async () => {

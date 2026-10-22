@@ -17,6 +17,9 @@
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .empty-pane__mark {
