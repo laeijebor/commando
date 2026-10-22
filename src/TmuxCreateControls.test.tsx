@@ -641,6 +641,16 @@ describe('Claude chat launches', () => {
     await waitFor(() => expect(screen.getByLabelText('Profile')).toHaveValue('/Users/dev/.claudew'))
     expect(screen.getByLabelText('Permissions')).toHaveValue('acceptEdits')
   })
+
+  it('names profiles by their Settings label and starts on the chosen default', async () => {
+    const labelled = [profiles[0]!, { ...profiles[1]!, label: 'Personal' }, { ...profiles[2]!, label: 'Work', isDefault: true }]
+    render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} probeRepo={probeFor({ [MAIN]: repo })} loadClaudeProfiles={async () => labelled} />)
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
+    const profile = await screen.findByLabelText('Profile') as HTMLSelectElement
+    await waitFor(() => expect(profile).toHaveValue('/Users/dev/.claudew'))
+    expect([...profile.options].map((option) => option.textContent)).toEqual(['claude', 'Personal', 'Work'])
+  })
 })
 
 describe('Claude chat profile loading', () => {

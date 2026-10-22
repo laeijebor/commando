@@ -66,6 +66,8 @@ export type CommanderState = {
   /** Its current tmux pane and session, when the target is live. */
   paneId?: string
   sessionId?: string
+  /** The Claude profile Commander runs on; absent runs on the daemon's default login. */
+  configDir?: string
 }
 
 /** One agent as Commander's `list` reports it (also the inbox row model on the daemon side). */

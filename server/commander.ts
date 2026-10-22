@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import type { CommanderState } from '../shared/commander.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
 import { defaultSessionBriefStatePath } from './session-briefs.js'
-import type { TmuxCreator } from './tmux-create.js'
+import { validClaudeConfigDir, type TmuxCreator } from './tmux-create.js'
 import { commanderToolRules } from './commander-tools.js'
 
 export function defaultCommanderStatePath(): string { return `${defaultSessionBriefStatePath()}.commander.json` }
@@ -32,9 +32,13 @@ type Options = {
   statePath?: string; home?: string; cliPath?: string; snapshot: () => CommandoSnapshot
   creator: Pick<TmuxCreator, 'createSession'>; refreshSnapshot: () => Promise<unknown>
   changed: (state: CommanderState) => void
+  /** Closes a tmux session; switching profile closes the old Commander's. */
+  closeSession?: (sessionId: string) => Promise<void>
 }
 export class Commander {
   private targetId: string | null = null
+  /** The Claude profile Commander runs on; unset runs on the daemon's default login. */
+  private configDir: string | undefined
   private lastState = ''
   private operations: Promise<unknown> = Promise.resolve()
   private readonly statePath: string
@@ -45,13 +49,17 @@ export class Commander {
   }
   state(): CommanderState {
     const pane = this.options.snapshot().panes.find((p) => p.targetId === this.targetId && !p.dead)
-    return { targetId: this.targetId, ...(pane ? { paneId: pane.id, sessionId: pane.sessionId } : {}) }
+    return { targetId: this.targetId, ...(pane ? { paneId: pane.id, sessionId: pane.sessionId } : {}), ...(this.configDir ? { configDir: this.configDir } : {}) }
   }
   async load(): Promise<void> {
     try {
       const value = JSON.parse(await readFile(this.statePath, 'utf8'))
       if (!value || Array.isArray(value) || (value.targetId !== null && (typeof value.targetId !== 'string' || !value.targetId))) throw new Error('Invalid Commander state')
       this.targetId = value.targetId
+      if (value.configDir !== undefined) {
+        if (typeof value.configDir === 'string' && validClaudeConfigDir(value.configDir, this.options.home ?? homedir())) this.configDir = value.configDir
+        else console.error(`[commando] Ignored an invalid Commander profile in ${this.statePath}`)
+      }
       if (this.targetId) await this.writeInstructions()
     } catch (error) {
       this.targetId = null
@@ -66,29 +74,48 @@ export class Commander {
   ensure(): Promise<CommanderState> { return this.serial(async () => {
     await this.options.refreshSnapshot()
     if (this.state().paneId) return this.state()
+    return this.create()
+  }) }
+  /**
+   * Moves Commander to another Claude profile (or the default login with null). Its history
+   * lives in the profile, so this closes the old Commander's session and starts a fresh one.
+   */
+  switchProfile(configDir: string | null): Promise<CommanderState> { return this.serial(async () => {
+    await this.options.refreshSnapshot()
+    const { sessionId } = this.state()
+    if (sessionId) {
+      if (!this.options.closeSession) throw new Error('Commander cannot close its session here')
+      await this.options.closeSession(sessionId)
+    }
+    await this.persist(null, configDir ?? undefined)
+    await this.options.refreshSnapshot()
+    return this.create()
+  }) }
+  forget(): Promise<void> { return this.serial(() => this.persist(null, this.configDir)) }
+  private async create(): Promise<CommanderState> {
     await this.writeInstructions()
     const names = new Set(this.options.snapshot().sessions.map((s) => s.name))
     let name = 'Commander', suffix = 2
     while (names.has(name)) name = `Commander-${suffix++}`
-    const result = await this.options.creator.createSession({ name, cwd: this.cwd, agent: { provider: 'claude-chat', permissionMode: 'default' } })
+    const result = await this.options.creator.createSession({ name, cwd: this.cwd, agent: { provider: 'claude-chat', permissionMode: 'default', ...(this.configDir ? { configDir: this.configDir } : {}) } })
     await this.options.refreshSnapshot()
     const pane = this.options.snapshot().panes.find((p) => p.id === result.created.paneId)
     if (!pane) throw new Error('Commander pane was created but is not visible in the snapshot')
-    await this.persist(pane.targetId)
+    await this.persist(pane.targetId, this.configDir)
     return this.state()
-  }) }
-  forget(): Promise<void> { return this.serial(() => this.persist(null)) }
+  }
   private serial<T>(action: () => Promise<T>): Promise<T> {
     const operation = this.operations.then(action)
     this.operations = operation.catch(() => {})
     return operation
   }
-  private async persist(targetId: string | null): Promise<void> {
+  private async persist(targetId: string | null, configDir: string | undefined): Promise<void> {
     await mkdir(dirname(this.statePath), { recursive: true, mode: 0o700 })
     const tmp = `${this.statePath}.${randomUUID()}.tmp`
-    try { await writeFile(tmp, JSON.stringify({ targetId }), { mode: 0o600, flag: 'wx' }); await rename(tmp, this.statePath) }
+    try { await writeFile(tmp, JSON.stringify({ targetId, ...(configDir ? { configDir } : {}) }), { mode: 0o600, flag: 'wx' }); await rename(tmp, this.statePath) }
     finally { await rm(tmp, { force: true }) }
     this.targetId = targetId
+    this.configDir = configDir
     this.reconcile()
   }
   private async writeToolPermissions(cliPath: string): Promise<void> {

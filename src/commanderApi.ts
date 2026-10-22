@@ -13,6 +13,12 @@ export function createCommanderApi(token: string, fetcher: typeof fetch = fetch)
       if (!result?.ok || !result.state) throw new Error(result?.error ?? 'Unable to open Commander')
       return result.state
     },
+    /** Closes the current Commander and starts a fresh one on the profile; null is the default login. */
+    async setProfile(configDir: string | null): Promise<CommanderState> {
+      const result = await request('/api/commander/profile', { method: 'PUT', body: JSON.stringify({ configDir }) }) as { ok?: boolean; state?: CommanderState; error?: string } | null
+      if (!result?.ok || !result.state) throw new Error(result?.error ?? 'Unable to switch the Commander profile')
+      return result.state
+    },
     async transcript(paneId: string): Promise<CommanderTranscript> {
       const result = await request(`/api/commander/transcript?pane=${encodeURIComponent(paneId)}`, { method: 'GET' }) as ({ ok?: boolean; error?: string } & Partial<CommanderTranscript>) | null
       if (!result?.ok || !result.source) throw new Error(result?.error ?? 'Unable to read the transcript')
