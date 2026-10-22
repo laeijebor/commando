@@ -1214,14 +1214,14 @@ export class PrService {
     if (!pr) {
       // Search truncation is not evidence that the linked PR disappeared.
       if (list.truncated) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR list is incomplete')
-      return { state: 'missing', url: `https://github.com/${repo}/pull/${number}`, headSha: '', failingChecks: [], comments: [], viewer: list.viewer ?? '' }
+      return { state: 'missing', url: `https://github.com/${repo}/pull/${number}`, headSha: '', failingChecks: [], conflicting: false, baseRefName: '', comments: [], viewer: list.viewer ?? '' }
     }
-    if (pr.state !== 'open') return { state: pr.state, url: pr.url, headSha: '', failingChecks: [], comments: [], viewer: list.viewer ?? '' }
+    if (pr.state !== 'open') return { state: pr.state, url: pr.url, headSha: '', failingChecks: [], conflicting: false, baseRefName: '', comments: [], viewer: list.viewer ?? '' }
     if (!pr.preview?.headRefOid || !list.viewer) throw invalidUpstream()
     const comments = await this.fetchAutofixComments(repo, number)
     return { state: pr.state, url: pr.url, headSha: pr.preview.headRefOid,
       failingChecks: pr.checks?.runs.filter((run) => run.state === 'fail').map((run) => run.name) ?? [],
-      comments, viewer: list.viewer }
+      conflicting: pr.conflicting, baseRefName: pr.preview.baseRefName, comments, viewer: list.viewer }
   }
 
   private async commentPages(repo: string, number: number, kind: number, refresh = false) {

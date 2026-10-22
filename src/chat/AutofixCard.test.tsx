@@ -36,6 +36,14 @@ describe('AutofixCard', () => {
     expect(onOpenPr).toHaveBeenCalledWith('Save-All/Save-All', 28072, 'Checks')
   })
 
+  it('shows merge conflicts the round told the agent about', () => {
+    render(<AutofixCard event={{ ...event, comments: [], conflictsWith: 'feat/layer-1' }} />)
+    const toggle = screen.getByRole('button', { name: /Auto-fix/ })
+    expect(toggle).toHaveTextContent('1 failing check, merge conflicts')
+    fireEvent.click(toggle)
+    expect(screen.getByText('feat/layer-1')).toBeInTheDocument()
+  })
+
   it('drops HTML comment markers from bot comments', () => {
     expect(readableComment('<!-- a -->\n<!-- b\nc -->\n\n\n\n## Hello\nworld #1')).toBe('Hello\nworld #1')
     // A lone delimiter in real feedback is text, not hidden state.

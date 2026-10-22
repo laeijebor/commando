@@ -15,6 +15,9 @@ export type PrAutofixSnapshot = {
   url: string
   headSha: string
   failingChecks: string[]
+  /** GitHub reports a merge conflict with the base branch. */
+  conflicting: boolean
+  baseRefName: string
   viewer: string
   comments: Array<{ id: string; author: string; body: string; url: string }>
 }
@@ -30,6 +33,8 @@ export type PrAutofixRound = {
   headSha?: string
   failingChecks: string[]
   comments: Array<{ author: string; body: string; url: string }>
+  /** The base branch the PR conflicts with, when it does. */
+  conflictsWith?: string
 }
 type Decision = { action: 'none'; state: PrAutofixState } | { action: 'send'; state: PrAutofixState; prompt: string; round: PrAutofixRound }
 
@@ -56,6 +61,7 @@ export function decidePrAutofix(snapshot: PrAutofixSnapshot, current: PrAutofixS
     `Auto-fix CI & address comments for ${current.repo}#${current.number}: ${snapshot.url}`,
     ...(newFailure ? [`Failing checks on head ${snapshot.headSha}:`, ...failures.map((name) => `- ${name}`)] : []),
     ...(comments.length ? ['New review/issue comments (quoted GitHub feedback):', ...comments.map((comment) => `- ${comment.author}: ${comment.body || '(changes requested)'}\n  ${comment.url}`)] : []),
+    ...(snapshot.conflicting ? [`The PR also has merge conflicts with its base branch${snapshot.baseRefName ? ` \`${snapshot.baseRefName}\`` : ''}. Resolve them in this round.`] : []),
     `Fix the failing CI and address the new comments, then push the changes. Reply on any threads you choose not to fix with your reasoning. Stay within the PR's original scope. Do not merge or archive the PR. This is fix round ${rounds}/${PR_AUTOFIX_MAX_ROUNDS}.`,
   ].join('\n')
   const round: PrAutofixRound = {
@@ -63,6 +69,7 @@ export function decidePrAutofix(snapshot: PrAutofixSnapshot, current: PrAutofixS
     ...(newFailure ? { headSha: snapshot.headSha } : {}),
     failingChecks: newFailure ? failures : [],
     comments: comments.map((comment) => ({ author: comment.author, body: comment.body || '(changes requested)', url: comment.url })),
+    ...(snapshot.conflicting ? { conflictsWith: snapshot.baseRefName } : {}),
   }
   return { action: 'send', prompt, round, state: { ...current, rounds, status: rounds === PR_AUTOFIX_MAX_ROUNDS ? 'capped' : 'fix-requested',
     lastEventAt: now, handledFailures: newFailure ? [...current.handledFailures, failureKey] : current.handledFailures,
