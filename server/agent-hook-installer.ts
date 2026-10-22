@@ -1163,21 +1163,23 @@ async function runPoolCommand(args, request, run) {
   return { members: added }
 }
 
-// Slim boots disable assistantd, so UIKit's dictation-availability checks loop on the main thread once an app uses the keyboard.
+// Slim boots disable Siri's speech services, so UIKit's dictation-availability checks loop on the main thread once an app uses the keyboard.
 const disableDictation = (run, udid) =>
   run('xcrun', ['simctl', 'spawn', udid, 'defaults', 'write', 'com.apple.assistant.support', 'Dictation Enabled', '-bool', 'false'])
 
 // Slim boots keep liveactivitiesd: without it every ActivityKit call fails, and concurrent failures corrupt the heap in
 // SessionFoundation, crashing apps that observe Live Activities at launch. It costs about 11 MB per simulator.
-const slimKeptDaemons = ['com.apple.liveactivitiesd']
+// They also keep assistantd, which saves the Siri session language on first boot. On a device created slim it is never
+// saved and Spotlight logs "No language code saved" in a loop; one such Spotlight was found using 129 GB. It costs about 21 MB.
+const slimKeptDaemons = ['com.apple.liveactivitiesd', 'com.apple.assistantd']
 const slimKeepArgs = ['--keep', slimKeptDaemons.join(',')]
 
 export function verifySlim(output, udid) {
   const line = output.split(/\r?\n/).find((entry) => entry.trim().split(/\s+/)[0]?.toUpperCase() === udid.toUpperCase())
   const match = line && /\bbooted\s*·\s*(\d+)\/(\d+)\s+slim\s*$/.exec(line)
   const [disabled, managed] = match ? [Number(match[1]), Number(match[2])] : [0, 0]
-  // Devices slimmed before the keep list stay fully slim until a later lease re-slims them.
-  if (disabled === 0 || (disabled !== managed && disabled + slimKeptDaemons.length !== managed)) {
+  // Devices slimmed with an older, shorter keep list stay that way until a later lease re-slims them.
+  if (disabled === 0 || disabled > managed || disabled + slimKeptDaemons.length < managed) {
     throw new Error('Simulator ' + udid + ' is not booted and fully slim; no new lease recorded. Check simslim list --booted.')
   }
 }

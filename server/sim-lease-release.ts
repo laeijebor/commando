@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import type { EndedSimLease } from './sim-leases.js'
 
 export type SimReleaseRunner = (command: string, args: string[], cwd?: string) => Promise<string>
-const run: SimReleaseRunner = (command, args, cwd) => new Promise((resolve, reject) => {
+export const runSimTool: SimReleaseRunner = (command, args, cwd) => new Promise((resolve, reject) => {
   execFile(command, args, { cwd, timeout: 120_000, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024 },
     (error, stdout, stderr) => error ? reject(Object.assign(error, { stdout, stderr })) : resolve(stdout))
 })
@@ -12,7 +12,7 @@ const UNCLAIMED = /\b(?:not (?:currently )?claimed|unclaimed|nothing (?:is )?cla
  * Returns a closed pane's simulator the way `commando-sim.mjs release` does:
  * restores its name, shuts it down unless it was adopted, and drops a simfleet claim.
  */
-export async function releaseClosedSimLease(lease: EndedSimLease, runner: SimReleaseRunner = run): Promise<void> {
+export async function releaseClosedSimLease(lease: EndedSimLease, runner: SimReleaseRunner = runSimTool): Promise<void> {
   const listing = JSON.parse(await runner('xcrun', ['simctl', 'list', 'devices', '--json'])) as { devices?: Record<string, Array<{ udid: string; state: string }>> }
   const device = Object.values(listing.devices ?? {}).flat().find((entry) => entry.udid.toUpperCase() === lease.udid)
   if (device) {
