@@ -405,7 +405,7 @@ describe('pane close and create shortcuts', () => {
     })))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes', expect.objectContaining({
       method: 'POST', body: JSON.stringify({
-        targetId: pane.id, direction: 'horizontal', placement: 'after', cwd: pane.path,
+        targetId: pane.id, direction: 'horizontal', placement: 'after', cwd: pane.path, empty: true,
       }),
     })))
   })
@@ -426,6 +426,24 @@ describe('pane close and create shortcuts', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes/launch', expect.objectContaining({
       body: JSON.stringify({ paneId: adjacentPane.id }),
     })))
+  })
+
+  it('closes an empty pane without asking for confirmation', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }, adjacentPane]))
+    vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true,"emptied":true}', { status: 200 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close empty pane' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(deleteUrl(pane.id), expect.objectContaining({ method: 'DELETE' })))
+    expect(confirm).not.toHaveBeenCalled()
+  })
+
+  it("offers no close button on a session's only pane once it is empty", async () => {
+    await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }]))
+    expect(screen.queryByRole('button', { name: 'Close empty pane' })).not.toBeInTheDocument()
+    fireEvent.focus(screen.getByRole('region', { name: 'Empty pane' }))
+    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+    await act(async () => { await Promise.resolve() })
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/delete'), expect.anything())
   })
 
   it('launches a Codex chat in an empty pane with the remembered Codex permission mode', async () => {

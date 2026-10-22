@@ -3211,7 +3211,8 @@ export function App() {
         direction: direction === 'left' || direction === 'right' ? 'horizontal' : 'vertical',
         placement: before ? 'before' : 'after',
         cwd: pane.path,
-        ...(agent ? { agent } : {}),
+        // A plain new pane starts empty, offering the same choices as an empty session.
+        ...(agent ? { agent } : { empty: true }),
       })
       setMaximizedPaneId(null)
       setPendingPaneFocus({ paneId: created.paneId })
@@ -3222,11 +3223,15 @@ export function App() {
     }
   }
 
+  /** Closing a session's only pane leaves it empty, so an empty one has nothing to close. */
+  const canClosePane = (pane: TmuxPane) => !pane.empty || Boolean(snapshot?.panes.some((other) => other.sessionId === pane.sessionId && other.id !== pane.id))
+
   const killPane = async (paneId: string) => {
     const pane = paneMap.get(paneId)
-    if (!pane || paneActionPending) return
+    if (!pane || paneActionPending || !canClosePane(pane)) return
     const label = pane.title || pane.command || `Pane ${pane.index}`
-    if (!window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
+    // An empty pane runs nothing worth confirming.
+    if (!pane.empty && !window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
     setPaneActionPending(true)
     setPaneActionError('')
     clearLayoutTimers()
@@ -4276,9 +4281,11 @@ export function App() {
                         if (pane.empty) {
                           return [
                             pane.id,
-                            <div key={rendererIdentity} className="conversation-picker-anchor" data-pane-id={pane.id}
+                            <div key={rendererIdentity} className="conversation-picker-anchor empty-pane-anchor" data-pane-id={pane.id}
                               onPointerDown={() => setFocusedPaneId(pane.id)} onFocusCapture={() => setFocusedPaneId(pane.id)}>
-                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
+                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} focusRef={(node) => registerFocusable(pane.id, node)}
+                                onClose={connected && canClosePane(pane) ? () => { void killPane(pane.id) } : undefined}
+                                onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
                               {palettePaneId === pane.id ? panePaletteNode : null}
                             </div>,
                           ] as const
