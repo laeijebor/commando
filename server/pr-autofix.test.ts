@@ -48,6 +48,14 @@ describe('PR auto-fix decisions', () => {
     expect(first.prompt).toContain('Handle the empty input')
     expect(first.prompt).toContain('Reply on any threads you choose not to fix')
     expect(first.prompt).not.toContain('My own note')
+    // The chat card gets the same round, structured.
+    expect(first.round).toEqual({
+      repo, number: 12, url: expect.any(String), round: 1, maxRounds: 5, failingChecks: ['lint', 'test'], headSha: 'sha1',
+      comments: [
+        { author: 'reviewer', body: 'Handle the empty input', url: 'https://github.com/comment/1' },
+        { author: 'coderabbitai[bot]', body: 'Changes requested', url: 'https://github.com/review/1' },
+      ],
+    })
     expect(decidePrAutofix(snapshot({ comments }), first.state, false, 11).action).toBe('none')
     expect(decidePrAutofix(snapshot({ comments: [...comments, { ...comments[0], id: '0:2' }] }), first.state, false, 12).action).toBe('send')
   })
@@ -167,7 +175,7 @@ describe('PR auto-fix persistence and delivery', () => {
     const send = vi.fn(() => true)
     const watcher = new PrAutofixWatcher(persisted, { snapshot: async () => snapshot(), linkedPrs: noLinkedPrs, target: () => ({ paneId: '%1', busy: false, connected: true }), send })
     await watcher.check(repo, 12)
-    expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('- lint'))
+    expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('- lint'), expect.objectContaining({ failingChecks: ['lint', 'test'], round: 1 }))
     await watcher.check('acme/other', 1)
     expect(send).toHaveBeenCalledOnce()
     await writeFile(join(persisted.directory, 'watches.json'), JSON.stringify({ version: 1, watches: [], default: { enabled: 'yes', at: 1 } }))
