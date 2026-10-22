@@ -72,7 +72,7 @@ export class ChatTileEvents {
    * Records one Send. Notes already on record (a retried Send) are left out;
    * returns undefined when nothing new was sent.
    */
-  sent(pane: WebPane, source: ChatTileSource, notes: readonly WebPaneFeedbackNote[], options: { title?: string; waiting?: boolean; sessionId?: string } = {}): ChatTileEvent | undefined {
+  sent(pane: WebPane, source: ChatTileSource, notes: readonly WebPaneFeedbackNote[], options: { title?: string; status?: 'sent' | 'waiting' | 'collected'; sessionId?: string } = {}): ChatTileEvent | undefined {
     const known = new Set(this.list(pane.anchorPaneId).filter((event) => event.webPaneId === pane.id).flatMap((event) => event.deliveryKeys ?? []))
     const fresh = notes.filter((note) => !note.deliveryKey || !known.has(note.deliveryKey))
     if (!fresh.length) return undefined
@@ -82,7 +82,8 @@ export class ChatTileEvents {
       kind: 'sent',
       items: tileEventItems(fresh),
       ...(fresh.some((note) => note.handoff?.kind === 'build') ? { build: true } : {}),
-      status: options.waiting ? 'waiting' : 'sent',
+      status: options.status ?? 'sent',
+      ...(options.status === 'collected' ? { collectedAt: this.now() } : {}),
       ...(keys.length ? { deliveryKeys: keys } : {}),
     })
   }
@@ -93,25 +94,18 @@ export class ChatTileEvents {
     return this.all().filter((event) => event.webPaneId === webPaneId && event.deliveryKeys?.some((key) => wanted.has(key))).map((event) => event.id)
   }
 
-  /** The agent acknowledged these notes. */
-  collected(webPaneId: string, deliveryKeys: readonly string[]): void {
-    if (!deliveryKeys.length) return
-    const wanted = new Set(deliveryKeys)
-    const at = this.now()
-    this.update((event) => event.webPaneId === webPaneId && event.status !== 'collected' && Boolean(event.deliveryKeys?.some((key) => wanted.has(key)))
-      ? { ...event, status: 'collected', collectedAt: at }
-      : undefined)
-  }
-
   /** A pushed prompt reached the agent: no longer waiting. */
   delivered(ids: readonly string[]): void {
     const wanted = new Set(ids)
     this.update((event) => wanted.has(event.id) && event.status === 'waiting' ? { ...event, status: 'sent' } : undefined)
   }
 
-  /** A poll was handed the tile's whole backlog, so nothing sent from it is waiting any more. */
+  /** A poll was handed the tile's whole backlog: the agent has everything sent from it. */
   drained(webPaneId: string): void {
-    this.update((event) => event.webPaneId === webPaneId && event.status === 'waiting' ? { ...event, status: 'sent' } : undefined)
+    const at = this.now()
+    this.update((event) => event.webPaneId === webPaneId && event.kind === 'sent' && event.status !== 'collected'
+      ? { ...event, status: 'collected', collectedAt: at }
+      : undefined)
   }
 
   /** Fills in titles that were not known when the event was recorded. */

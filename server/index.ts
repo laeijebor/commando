@@ -591,10 +591,7 @@ async function main(): Promise<void> {
     },
     Date.now,
     releaseAttachment,
-    (id, keys) => {
-      canvasPush?.acknowledge(id, keys)
-      chatTileEvents.collected(id, keys)
-    },
+    (id, keys) => canvasPush?.acknowledge(id, keys),
   )
   webPanePending = new WebPanePendingStore(
     pendingJournal,
@@ -2090,10 +2087,11 @@ async function main(): Promise<void> {
       const source = tileSource(pane)
       const session = pane ? chatSessionFor(pane.anchorPaneId) : undefined
       if (pane && source && session && agentHosts.owns(pane.anchorPaneId)) {
-        // A redline Send no poll picked up waits for the busy agent to go idle.
+        // A waiting poll already has the notes; otherwise a redline Send waits for a busy agent to go idle.
         const keys = notes.flatMap((note) => note.deliveryKey ? [note.deliveryKey] : [])
-        const waiting = source === 'redline' && session.status !== 'idle' && webPaneFeedback.undelivered(id, keys).length > 0
-        chatTileEvents.sent(pane, source, notes, { title: tileTitle(pane), waiting, sessionId: session.sessionId })
+        const status = keys.length && !webPaneFeedback.undelivered(id, keys).length ? 'collected'
+          : source === 'redline' && session.status !== 'idle' ? 'waiting' : 'sent'
+        chatTileEvents.sent(pane, source, notes, { title: tileTitle(pane), status, sessionId: session.sessionId })
       }
       void canvasPush?.deliver(id, notes)
     },

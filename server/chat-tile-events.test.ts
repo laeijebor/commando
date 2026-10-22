@@ -51,23 +51,25 @@ describe('ChatTileEvents', () => {
 
   it('moves waiting → sent → collected, and finds events by delivery key', () => {
     const events = store()
-    const event = events.sent(pane, 'redline', [answer('k1'), answer('k2')], { waiting: true })!
+    const event = events.sent(pane, 'redline', [answer('k1'), answer('k2')], { status: 'waiting' })!
     expect(event.status).toBe('waiting')
     expect(events.idsFor('w-1', ['k2'])).toEqual([event.id])
     events.delivered([event.id])
     expect(events.forPane('%5')[0]!.status).toBe('sent')
     clock = 2_000
-    events.collected('w-1', ['k1'])
+    events.drained('w-1')
     expect(events.forPane('%5')[0]).toMatchObject({ status: 'collected', collectedAt: 2_000 })
   })
 
-  it('stops waiting once a poll drains the tile, and keeps the chat session', () => {
+  it('is collected once a poll drains the tile, and keeps the chat session', () => {
     const events = store()
-    events.sent(pane, 'redline', [answer('k1')], { waiting: true, sessionId: 's-1' })
+    events.sent(pane, 'redline', [answer('k1')], { status: 'waiting', sessionId: 's-1' })
     events.drained('w-other')
     expect(events.forPane('%5')[0]).toMatchObject({ status: 'waiting', sessionId: 's-1' })
+    clock = 3_000
     events.drained('w-1')
-    expect(events.forPane('%5')[0]!.status).toBe('sent')
+    expect(events.forPane('%5')[0]).toMatchObject({ status: 'collected', collectedAt: 3_000 })
+    expect(events.sent(pane, 'redline', [answer('k2')], { status: 'collected' })).toMatchObject({ status: 'collected', collectedAt: 3_000 })
   })
 
   it('fills a missing title later and survives a restart', () => {
