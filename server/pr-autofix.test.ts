@@ -11,7 +11,7 @@ const repo = 'acme/widgets'
 const targetId = '123e4567-e89b-42d3-a456-426614174000'
 const initial = () => setAutofixEnabled(null, repo, 12, targetId, true)
 const snapshot = (overrides: Partial<PrAutofixSnapshot> = {}): PrAutofixSnapshot => ({
-  state: 'open', url: `https://github.com/${repo}/pull/12`, headSha: 'sha1', failingChecks: ['lint', 'test'], viewer: 'leo', comments: [], ...overrides,
+  state: 'open', url: `https://github.com/${repo}/pull/12`, headSha: 'sha1', failingChecks: ['lint', 'test'], conflicting: false, baseRefName: 'main', viewer: 'leo', comments: [], ...overrides,
 })
 const noLinkedPrs = async () => []
 const directories: string[] = []
@@ -31,6 +31,19 @@ describe('PR auto-fix decisions', () => {
     expect(decidePrAutofix(snapshot({ headSha: 'sha2' }), first.state, false, 12).action).toBe('send')
     expect(decidePrAutofix(snapshot({ failingChecks: ['build'] }), first.state, false, 13).action).toBe('send')
     expect(decidePrAutofix(snapshot({ headSha: '' }), initial(), false, 14).action).toBe('none')
+  })
+
+  it('tells the agent about merge conflicts in a round sent for checks or comments', () => {
+    const conflicted = decidePrAutofix(snapshot({ conflicting: true, baseRefName: 'feat/layer-1' }), initial(), false, 10)
+    if (conflicted.action !== 'send') throw new Error('Expected prompt')
+    expect(conflicted.prompt).toContain('merge conflicts with its base branch `feat/layer-1`')
+    expect(conflicted.round.conflictsWith).toBe('feat/layer-1')
+    const clean = decidePrAutofix(snapshot(), initial(), false, 10)
+    if (clean.action !== 'send') throw new Error('Expected prompt')
+    expect(clean.prompt).not.toContain('merge conflicts')
+    expect(clean.round).not.toHaveProperty('conflictsWith')
+    // Conflicts alone do not start a round.
+    expect(decidePrAutofix(snapshot({ conflicting: true }), conflicted.state, false, 11).action).toBe('none')
   })
 
   it('dedupes comment ids, excludes viewer comments, and combines comments and CI in one round', () => {

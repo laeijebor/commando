@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight, CircleX, Wrench } from 'lucide-react'
+import { ChevronRight, CircleX, GitMerge, Wrench } from 'lucide-react'
 
 import { stripHtmlComments, type ChatAutofixEvent } from '../../shared/chat-tile-events'
 import type { PrQuickLookTab } from '../PrQuickLook'
@@ -13,10 +13,11 @@ export function readableComment(body: string): string {
   return stripHtmlComments(body).replace(/^#{1,6}\s+/gm, '').replace(/\n{3,}/g, '\n\n').trim()
 }
 
-export function autofixSummary(event: Pick<ChatAutofixEvent, 'failingChecks' | 'comments'>): string {
+export function autofixSummary(event: Pick<ChatAutofixEvent, 'failingChecks' | 'comments' | 'conflictsWith'>): string {
   return [
     ...(event.failingChecks.length ? [plural(event.failingChecks.length, 'failing check', 'failing checks')] : []),
     ...(event.comments.length ? [plural(event.comments.length, 'comment', 'comments')] : []),
+    ...(event.conflictsWith !== undefined ? ['merge conflicts'] : []),
   ].join(', ')
 }
 
@@ -76,6 +77,12 @@ export function AutofixCard({ event, onOpenPr }: { event: ChatAutofixEvent; onOp
             <div className={cn('py-1', event.failingChecks.length && 'border-t border-border')}>
               <div className="pt-0.5 text-xs text-muted-foreground">New comments</div>
               {event.comments.map((comment, index) => <Comment key={`${comment.url}-${index}`} {...comment} />)}
+            </div>
+          ) : null}
+          {event.conflictsWith !== undefined ? (
+            <div className={cn('flex items-center gap-1.5 py-1.5 text-xs text-foreground', (event.failingChecks.length || event.comments.length) && 'border-t border-border')}>
+              <GitMerge className="size-3 shrink-0 text-destructive" aria-hidden="true" />
+              <span className="min-w-0 truncate">Merge conflicts{event.conflictsWith ? <> with <span className="font-mono text-2xs">{event.conflictsWith}</span></> : null}</span>
             </div>
           ) : null}
           <div className="flex items-center gap-3 pt-2 text-xs">

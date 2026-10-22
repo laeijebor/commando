@@ -237,7 +237,7 @@ describe('PR auto-fix API', () => {
       const send = vi.fn(() => true)
       const watcher = new PrAutofixWatcher(new PrAutofixStore(directory), {
         target: (id) => id === TARGET_ID ? { paneId: '%1', busy: false, connected: true } : undefined,
-        snapshot: async () => ({ state: 'open', url: 'https://github.com/acme/widgets/pull/12', headSha: 'abc', failingChecks: ['lint'], viewer: 'leo', comments: [] }), send,
+        snapshot: async () => ({ state: 'open', url: 'https://github.com/acme/widgets/pull/12', headSha: 'abc', failingChecks: ['lint'], conflicting: false, baseRefName: 'main', viewer: 'leo', comments: [] }), send,
         linkedPrs: async () => [],
       })
       const api = createPrsApi('', autofixFetch(service, watcher))
