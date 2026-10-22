@@ -7,14 +7,16 @@ import './empty-pane.css'
 export type EmptyPaneChoice = SessionAgentProvider | 'shell'
 
 /** Stands in for a pane that a session started with nothing running, and launches into it. */
-export function EmptyPane({ pane, pending, panelTrigger, onLaunch }: {
+export function EmptyPane({ pane, pending, panelTrigger, focusRef, onLaunch }: {
   pane: TmuxPane
   pending: boolean
   panelTrigger?: ReactNode
+  /** Lets a new empty pane take focus like a terminal pane. */
+  focusRef?: (node: HTMLElement | null) => void
   onLaunch: (choice: EmptyPaneChoice) => void
 }) {
   return (
-    <section className="empty-pane" aria-label="Empty pane" data-pane-id={pane.id}>
+    <section ref={focusRef} tabIndex={-1} className="empty-pane" aria-label="Empty pane" data-pane-id={pane.id}>
       {panelTrigger && <header className="empty-pane__head">{panelTrigger}</header>}
       <SquareTerminal className="empty-pane__mark" aria-hidden="true" />
       <h2>Nothing running yet</h2>

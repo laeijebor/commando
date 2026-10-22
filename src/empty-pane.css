@@ -80,3 +80,7 @@
   width: 14px;
   height: 14px;
 }
+
+.empty-pane:focus {
+  outline: none;
+}

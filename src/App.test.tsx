@@ -405,7 +405,7 @@ describe('pane close and create shortcuts', () => {
     })))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes', expect.objectContaining({
       method: 'POST', body: JSON.stringify({
-        targetId: pane.id, direction: 'horizontal', placement: 'after', cwd: pane.path,
+        targetId: pane.id, direction: 'horizontal', placement: 'after', cwd: pane.path, empty: true,
       }),
     })))
   })
@@ -426,6 +426,16 @@ describe('pane close and create shortcuts', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes/launch', expect.objectContaining({
       body: JSON.stringify({ paneId: adjacentPane.id }),
     })))
+  })
+
+  it('closes an empty pane without asking for confirmation', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }, adjacentPane]))
+    vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true,"emptied":true}', { status: 200 }))
+    fireEvent.focus(screen.getByRole('region', { name: 'Empty pane' }))
+    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(deleteUrl(pane.id), expect.objectContaining({ method: 'DELETE' })))
+    expect(confirm).not.toHaveBeenCalled()
   })
 
   it('launches a Codex chat in an empty pane with the remembered Codex permission mode', async () => {

@@ -3189,7 +3189,8 @@ export function App() {
         direction: direction === 'left' || direction === 'right' ? 'horizontal' : 'vertical',
         placement: before ? 'before' : 'after',
         cwd: pane.path,
-        ...(agent ? { agent } : {}),
+        // A plain new pane starts empty, offering the same choices as an empty session.
+        ...(agent ? { agent } : { empty: true }),
       })
       setMaximizedPaneId(null)
       setPendingPaneFocus({ paneId: created.paneId })
@@ -3204,7 +3205,8 @@ export function App() {
     const pane = paneMap.get(paneId)
     if (!pane || paneActionPending) return
     const label = pane.title || pane.command || `Pane ${pane.index}`
-    if (!window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
+    // An empty pane runs nothing worth confirming.
+    if (!pane.empty && !window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
     setPaneActionPending(true)
     setPaneActionError('')
     clearLayoutTimers()
@@ -4256,7 +4258,7 @@ export function App() {
                             pane.id,
                             <div key={rendererIdentity} className="conversation-picker-anchor" data-pane-id={pane.id}
                               onPointerDown={() => setFocusedPaneId(pane.id)} onFocusCapture={() => setFocusedPaneId(pane.id)}>
-                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
+                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} focusRef={(node) => registerFocusable(pane.id, node)} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
                               {palettePaneId === pane.id ? panePaletteNode : null}
                             </div>,
                           ] as const
