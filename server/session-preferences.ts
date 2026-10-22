@@ -368,6 +368,15 @@ export class SessionPreferenceStore {
     })
   }
 
+  /** Follow a rename seen on the same tmux server, so reconcile doesn't mistake the session for a reused id. */
+  recordSessionRename(sessionId: string, previousName: string, name: string): Promise<SessionTreePreferences> {
+    return this.update((stored) => {
+      if (stored.sessionNamesById?.[sessionId] !== previousName) return { state: stored, result: stored }
+      const state = { ...stored, sessionNamesById: { ...stored.sessionNamesById, [sessionId]: name } }
+      return { state, result: state }
+    })
+  }
+
   renameIdentity(oldName: string, newName: string, sessionId: string): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       const identities = new Map(Object.entries(stored.sessionIdentities ?? {}))

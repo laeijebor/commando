@@ -186,6 +186,16 @@ describe('repository sub-groups', () => {
     expect(reconciled.groups).toEqual([manualGroup])
   })
 
+  it('keeps a member renamed in tmux once the rename is recorded, and ignores stale rename events', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'work' }])
+    await store.recordSessionRename('$1', 'work', 'renamed')
+    expect((await store.load([{ id: '$1', name: 'renamed' }])).repositoryGroups).toEqual([group])
+    // A rename already recorded (e.g. by the HTTP rename route) is not overwritten by a late event.
+    await store.recordSessionRename('$1', 'work', 'other')
+    expect((await store.load([{ id: '$1', name: 'renamed' }])).sessionNamesById).toEqual({ $1: 'renamed' })
+  })
+
   it('uses the member name after remapping even when the destination id has a different stored name', () => {
     const reconciled = reconcileSessionTreePreferences({
       ...base,

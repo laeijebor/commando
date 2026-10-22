@@ -541,6 +541,7 @@ async function main(): Promise<void> {
   })
   const workspaces = new WorkspaceStore()
   const sessionBriefs = new SessionBriefStore()
+  const sessionPreferences = new SessionPreferenceStore()
   const paneScreenshots = new PaneScreenshotRegistry({ statePath: defaultPaneScreenshotStatePath(port) })
   await sessionBriefs.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted session briefs', error)
@@ -1521,6 +1522,10 @@ async function main(): Promise<void> {
         let briefsChanged = false
         for (const { sessionId, previousName, name } of sessionRenames) {
           briefsChanged = await sessionBriefs.renameSession(sessionId, previousName, name) || briefsChanged
+          // Renames made in tmux directly: keep repository-group membership by tracking the new name.
+          await sessionPreferences.recordSessionRename(sessionId, previousName, name).catch((error: unknown) => {
+            console.warn('[commando] Session name update failed after tmux rename', error)
+          })
         }
         briefsChanged = await sessionBriefs.reconcilePanes(
           snapshot.panes.map((pane) => ({
@@ -1678,6 +1683,7 @@ async function main(): Promise<void> {
   }
 
   const sessionManagement = new SessionManagementApi({
+    preferences: sessionPreferences,
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
@@ -2038,7 +2044,7 @@ async function main(): Promise<void> {
     index: chatConversations,
     resumes: agentResume,
     briefs: sessionBriefs,
-    sessionPreferences: new SessionPreferenceStore(),
+    sessionPreferences,
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
