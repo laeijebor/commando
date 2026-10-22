@@ -384,6 +384,8 @@ export function SessionTree(props: Props) {
       if (current.repositoryGroups?.some((group) => group.id === groupId)) save({
         ...current,
         repositoryGroups: current.repositoryGroups.map((group) => ({ ...group, sessionIds: [...group.sessionIds.filter((id) => id !== created.sessionId), ...(group.id === groupId ? [created.sessionId] : [])] })),
+        // Lets the daemon name a session it hasn't seen in a tmux snapshot yet.
+        sessionNamesById: { ...current.sessionNamesById, [created.sessionId]: created.sessionName },
       })
     } else if (created.kind === 'session' && manual && sessionGroupId && sessionGroupId !== 'ungrouped') {
       moveToContainer(created.sessionId, sessionGroupId)

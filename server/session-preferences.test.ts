@@ -196,6 +196,29 @@ describe('repository sub-groups', () => {
     expect((await store.load([{ id: '$1', name: 'renamed' }])).sessionNamesById).toEqual({ $1: 'renamed' })
   })
 
+  it('accepts a deliberate group assignment for a reused id, but still drops stale membership', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    const empty = { ...group, sessionIds: [] }
+    await store.replace({ ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, id: 'stale', sessionIds: ['$2'] }, empty], repositorySessionIds: ['group:stale', 'group:landing'] }, [{ id: '$1', name: 'old' }, { id: '$2', name: 'gone' }])
+    // After a tmux restart, $1 and $2 belong to new sessions; the old names are not live.
+    const sessions = [{ id: '$1', name: 'new' }, { id: '$2', name: 'other' }]
+    const view = await store.load(sessions)
+    expect(view.repositoryGroups?.find((item) => item.id === 'stale')?.sessionIds).toEqual([])
+    const saved = await store.replace({ ...view, repositoryGroups: view.repositoryGroups?.map((item) => item.id === 'landing' ? { ...item, sessionIds: ['$1'] } : item) }, sessions)
+    expect(saved.repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
+    expect(saved.sessionNamesById?.$1).toBe('new')
+    expect((await store.load(sessions)).repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
+  })
+
+  it('names a newly created group member from the client until tmux reports it', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, ungroupedSessionIds: ['$3'], repositoryGroups: [{ ...group, sessionIds: [] }], sessionNamesById: { $3: 'deleted' } }, [])
+    const view = await store.load([])
+    expect(view.sessionNamesById?.$3).toBe('deleted')
+    await store.replace({ ...view, repositoryGroups: [{ ...group, sessionIds: ['$3'] }], sessionNamesById: { ...view.sessionNamesById, $3: 'fresh' } }, [])
+    expect((await store.load([{ id: '$3', name: 'fresh' }])).repositoryGroups).toEqual([{ ...group, sessionIds: ['$3'] }])
+  })
+
   it('keeps a recorded rename when a stale client snapshot is saved afterwards', async () => {
     const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
     await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'work' }])

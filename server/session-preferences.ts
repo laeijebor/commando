@@ -404,6 +404,18 @@ export class SessionPreferenceStore {
     let validated: SessionTreePreferences
     const operation = this.writes.then(async () => {
       const stored = await this.readState()
+      // A session newly placed in a repository group is the one the user acted on, so its
+      // current name replaces any name left over from an earlier session with the same id.
+      const storedMembers = new Map((stored.repositoryGroups ?? []).map((group) => [group.id, new Set(group.sessionIds)]))
+      const currentNames = new Map(currentSessions.map((session) => [session.id, session.name]))
+      const assignedNames: Record<string, string> = {}
+      for (const group of parsed.repositoryGroups ?? []) {
+        for (const sessionId of group.sessionIds) {
+          if (storedMembers.get(group.id)?.has(sessionId)) continue
+          const name = currentNames.get(sessionId) ?? parsed.sessionNamesById?.[sessionId]
+          if (name) assignedNames[sessionId] = name
+        }
+      }
       validated = reconcileSessionTreePreferences({
         ...parsed,
         // Identity changes use dedicated queued mutations; grouping snapshots may be stale.
@@ -412,6 +424,7 @@ export class SessionPreferenceStore {
         sessionNamesById: {
           ...parsed.sessionNamesById,
           ...stored.sessionNamesById,
+          ...assignedNames,
         },
       }, currentSessions)
       await this.writeState(validated)
