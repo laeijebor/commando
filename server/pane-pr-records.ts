@@ -5,11 +5,14 @@ import { isCommandoTargetId } from '../shared/pane-target.js'
 
 /** A PR a pane is known to have created, so it stays listed when GitHub's search misses it. */
 export type PanePrRef = { repo: string; number: number }
-type StoredRef = PanePrRef & { at: number }
+/** `at` is when the PR was first recorded. */
+export type PanePrRecord = PanePrRef & { at: number }
 
 // The pane search shows 20 PRs, so older records would never be shown anyway.
 const MAX_PER_TARGET = 20
 const MAX_TARGETS = 500
+// GraphQL's Int is 32-bit; a larger number would fail the whole lookup query.
+const MAX_PR_NUMBER = 2_147_483_647
 const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})?\/[A-Za-z0-9._-]{1,100}$/
 
 export function defaultPanePrRecordsPath(port: number): string {
@@ -24,7 +27,7 @@ export function isPanePrRef(value: unknown): value is PanePrRef {
   if (typeof value !== 'object' || value === null) return false
   const { repo, number } = value as Record<string, unknown>
   return typeof repo === 'string' && REPO_PATTERN.test(repo)
-    && typeof number === 'number' && Number.isInteger(number) && number > 0
+    && typeof number === 'number' && Number.isInteger(number) && number > 0 && number <= MAX_PR_NUMBER
 }
 
 /**
@@ -32,7 +35,7 @@ export function isPanePrRef(value: unknown): value is PanePrRef {
  * in memory; with one it survives daemon restarts.
  */
 export class PanePrRecords {
-  private readonly targets = new Map<string, StoredRef[]>()
+  private readonly targets = new Map<string, PanePrRecord[]>()
   private readonly loaded: Promise<void>
   private writes: Promise<void> = Promise.resolve()
 
@@ -40,9 +43,9 @@ export class PanePrRecords {
     this.loaded = path ? this.load(path) : Promise.resolve()
   }
 
-  async list(targetId: string): Promise<PanePrRef[]> {
+  async list(targetId: string): Promise<PanePrRecord[]> {
     await this.loaded
-    return (this.targets.get(targetId) ?? []).map(({ repo, number }) => ({ repo, number }))
+    return (this.targets.get(targetId) ?? []).map((ref) => ({ ...ref }))
   }
 
   /** Returns whether anything new was recorded. */
@@ -87,7 +90,7 @@ export class PanePrRecords {
       if (typeof targets !== 'object' || targets === null) return
       for (const [targetId, refs] of Object.entries(targets)) {
         if (!isCommandoTargetId(targetId) || !Array.isArray(refs)) continue
-        const valid = refs.filter((ref): ref is StoredRef => isPanePrRef(ref) && typeof (ref as StoredRef).at === 'number')
+        const valid = refs.filter((ref): ref is PanePrRecord => isPanePrRef(ref) && typeof (ref as PanePrRecord).at === 'number')
           .slice(0, MAX_PER_TARGET)
         if (valid.length) this.targets.set(targetId, valid)
       }

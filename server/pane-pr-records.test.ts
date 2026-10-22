@@ -29,10 +29,11 @@ describe('pane PR records', () => {
       { repo: 'acme/widgets', number: 2 },
       { repo: 'not a repo', number: 3 },
       { repo: 'acme/widgets', number: 0 },
+      { repo: 'acme/widgets', number: 2 ** 31 },
     ])).toBe(true)
     expect(await records.add(target, [{ repo: 'acme/widgets', number: 2 }])).toBe(false)
     expect(await records.add('not-a-target', [{ repo: 'acme/widgets', number: 4 }])).toBe(false)
-    expect(await records.list(target)).toEqual([{ repo: 'acme/widgets', number: 2 }, { repo: 'acme/widgets', number: 1 }])
+    expect((await records.list(target)).map(({ repo, number }) => `${repo}#${number}`)).toEqual(['acme/widgets#2', 'acme/widgets#1'])
     expect(await records.list(other)).toEqual([])
   })
 
@@ -42,14 +43,14 @@ describe('pane PR records', () => {
     await records.add(target, [{ repo: 'acme/widgets', number: 99 }])
     const listed = await records.list(target)
     expect(listed).toHaveLength(20)
-    expect(listed[0]).toEqual({ repo: 'acme/widgets', number: 99 })
+    expect(listed[0]).toMatchObject({ repo: 'acme/widgets', number: 99 })
   })
 
   it('removes records and forgets a pane with none left', async () => {
     const records = new PanePrRecords()
     await records.add(target, [{ repo: 'acme/widgets', number: 1 }, { repo: 'acme/widgets', number: 2 }])
     await records.remove(target, [{ repo: 'Acme/Widgets', number: 1 }])
-    expect(await records.list(target)).toEqual([{ repo: 'acme/widgets', number: 2 }])
+    expect(await records.list(target)).toMatchObject([{ repo: 'acme/widgets', number: 2 }])
     await records.remove(target, [{ repo: 'acme/widgets', number: 2 }])
     expect(await records.list(target)).toEqual([])
   })
@@ -60,7 +61,7 @@ describe('pane PR records', () => {
     await first.add(target, [{ repo: 'acme/widgets', number: 7 }])
     await first.flushed()
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ version: 1, targets: { [target]: [{ repo: 'acme/widgets', number: 7, at: 5 }] } })
-    expect(await new PanePrRecords(path).list(target)).toEqual([{ repo: 'acme/widgets', number: 7 }])
+    expect(await new PanePrRecords(path).list(target)).toEqual([{ repo: 'acme/widgets', number: 7, at: 5 }])
   })
 
   it('starts empty from an unreadable file and drops invalid entries', async () => {
@@ -73,6 +74,6 @@ describe('pane PR records', () => {
       [target]: [{ repo: 'acme/widgets', number: 1, at: 1 }, { repo: 'bad', number: 2, at: 1 }],
       'not-a-target': [{ repo: 'acme/widgets', number: 3, at: 1 }],
     } }))
-    expect(await new PanePrRecords(mixed).list(target)).toEqual([{ repo: 'acme/widgets', number: 1 }])
+    expect(await new PanePrRecords(mixed).list(target)).toEqual([{ repo: 'acme/widgets', number: 1, at: 1 }])
   })
 })

@@ -7,7 +7,7 @@ import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
 import { PrReadCache } from './pr-read-cache.js'
-import { PanePrRecords, isPanePrRef, type PanePrRef } from './pane-pr-records.js'
+import { PanePrRecords, isPanePrRef, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
 import { stripHtmlComments } from '../shared/chat-tile-events.js'
@@ -58,6 +58,9 @@ const PR_METADATA_TTL_MS = 5 * 60_000
 // load can reuse any pane list fetched within that window instead of
 // searching GitHub once per pane.
 const PANE_BACKGROUND_TTL_MS = 5 * 60_000
+// A recorded PR whose marker is missing keeps its record this long, for tools
+// that add the marker after creating the PR.
+const RECORD_GRACE_MS = 10 * 60_000
 const PR_CONVERSATION_TTL_MS = 60_000
 const PR_CHECKS_TTL_MS = 30_000
 
@@ -168,6 +171,9 @@ export class PrServiceError extends Error {
     super(message)
     this.name = 'PrServiceError'
   }
+
+  /** What gh printed before failing; GraphQL partial errors still carry the other results. */
+  output?: string
 }
 
 const defaultRunner: GhRunner = (args) =>
@@ -182,7 +188,9 @@ const defaultRunner: GhRunner = (args) =>
       },
       (error, stdout, stderr) => {
         if (error) {
-          reject(classifyGhFailure(error, stderr ?? ''))
+          const failure = classifyGhFailure(error, stderr ?? '')
+          if (stdout) failure.output = stdout
+          reject(failure)
           return
         }
         resolve(stdout)
@@ -420,6 +428,10 @@ function searchStateQualifier(filter: PrStateFilter): string {
 
 function scopedSearchQuery(repo: string, qualifier: 'author' | 'review-requested', filter: PrStateFilter): string {
   return `repo:${repo} is:pr ${qualifier}:@me${searchStateQualifier(filter)}`
+}
+
+function prKey(ref: PanePrRef): string {
+  return `${ref.repo.toLowerCase()}#${ref.number}`
 }
 
 function paneTargetSearchQuery(targetIds: readonly string[], openOnly = false): string {
@@ -1008,51 +1020,71 @@ export class PrService {
    * ago. Remember every PR it finds, then look up any it misses by number.
    */
   private async recordedPullRequests(targetIds: string[], result: Awaited<ReturnType<PrService['searchPanes']>>, openOnly = false): Promise<Map<string, PanePrSummary[]>> {
-    const found: Array<PanePrRef & { targetId: string }> = []
+    const found = new Set<string>()
     for (const node of result.linked.nodes) {
       const targetId = parseCommandoPrMarker(typeof node.body === 'string' ? node.body : '')?.targetId
-      const repository = optionalObject(node, 'repository')
-      const ref = { repo: repository?.nameWithOwner, number: node.number }
-      if (targetId && targetIds.includes(targetId) && isPanePrRef(ref)) found.push({ ...ref, targetId })
-    }
-    for (const targetId of targetIds) {
-      const refs = found.filter((ref) => ref.targetId === targetId)
-      if (refs.length) await this.panePrRecords.add(targetId, refs)
-    }
-    const missing: Array<PanePrRef & { targetId: string }> = []
-    for (const targetId of targetIds) {
-      for (const ref of await this.panePrRecords.list(targetId)) {
-        if (!found.some((hit) => hit.number === ref.number && hit.repo.toLowerCase() === ref.repo.toLowerCase())) missing.push({ ...ref, targetId })
-      }
+      const ref = { repo: optionalObject(node, 'repository')?.nameWithOwner, number: node.number }
+      if (!isPanePrRef(ref)) continue
+      found.add(prKey(ref))
+      // An open-only read reaches past the newest page; keep records to what a pane shows.
+      if (!openOnly && targetId && targetIds.includes(targetId)) await this.panePrRecords.add(targetId, [ref])
     }
     const recorded = new Map<string, PanePrSummary[]>()
+    // A truncated page leaves older PRs out on purpose, so a missing record proves nothing.
+    if (result.linked.truncated) return recorded
+    const missing: Array<PanePrRecord & { targetId: string }> = []
+    for (const targetId of targetIds) {
+      for (const ref of await this.panePrRecords.list(targetId)) if (!found.has(prKey(ref))) missing.push({ ...ref, targetId })
+    }
     if (!missing.length) return recorded
-    const payload = parseGhObject(await this.ghRead(['api', 'graphql', '-f', `query=${recordedPullRequestsQuery(missing)}`]))
-    // A deleted PR or a repo we lost access to drops that record; any other error fails the read.
+    let payload: JsonRecord
+    try {
+      payload = parseGhObject(await this.ghRead(['api', 'graphql', '-f', `query=${recordedPullRequestsQuery(missing)}`]).catch((error: unknown) => {
+        // gh exits non-zero when one lookup fails, but still prints the others.
+        if (error instanceof PrServiceError && error.code !== 'rate_limited' && error.output) return error.output
+        throw error
+      }))
+    } catch (error) {
+      // Records only add PRs back, so a failed lookup leaves the search's list as it was.
+      console.warn('[commando] could not look up recorded pane PRs', error instanceof Error ? error.message : error)
+      return recorded
+    }
+    // A deleted PR or a repo we lost access to fails only its own lookup.
     const gone = new Set<unknown>()
     for (const error of Array.isArray(payload.errors) ? payload.errors : []) {
-      const alias = isRecord(error) && Array.isArray(error.path) ? error.path[0] : undefined
-      if (!isRecord(error) || (error.type !== 'NOT_FOUND' && error.type !== 'FORBIDDEN') || alias === undefined) {
-        throw new PrServiceError(502, 'github_failed', 'GitHub returned errors for the recorded pull request query')
-      }
-      gone.add(alias)
+      if (isRecord(error) && (error.type === 'NOT_FOUND' || error.type === 'FORBIDDEN') && Array.isArray(error.path)) gone.add(error.path[0])
+      else return recorded
     }
-    const data = objectField(payload, 'data')
+    const data = optionalObject(payload, 'data')
+    if (!data) return recorded
     const login = optionalObject(data, 'viewer')?.login
     const viewer = result.viewer || (typeof login === 'string' ? login : '')
     const stale: Array<PanePrRef & { targetId: string }> = []
+    const renamed: Array<PanePrRef & { targetId: string }> = []
     missing.forEach((ref, index) => {
       const repository = gone.has(`r${index}`) ? null : optionalObject(data, `r${index}`)
       const node = repository && optionalObject(repository, 'pullRequest')
-      // The PR body stays the source of truth: a removed or moved marker drops the record.
+      // The PR body stays the source of truth: a removed or moved marker drops the
+      // record, after a grace period for tools that add the marker after creating it.
       const pullRequest = node ? parsePanePullRequest(node, ref.targetId, viewer) : null
-      if (!pullRequest) { stale.push(ref); return }
-      if (openOnly && pullRequest.state !== 'open') return
+      if (!pullRequest) {
+        if (this.now() - ref.at > RECORD_GRACE_MS) stale.push(ref)
+        return
+      }
+      // GitHub follows renamed and transferred repos; keep the record under the current name.
+      if (pullRequest.repo.toLowerCase() !== ref.repo.toLowerCase()) {
+        stale.push(ref)
+        renamed.push({ repo: pullRequest.repo, number: pullRequest.number, targetId: ref.targetId })
+      }
+      if (found.has(prKey(pullRequest)) || (openOnly && pullRequest.state !== 'open')) return
+      found.add(prKey(pullRequest))
       recorded.set(ref.targetId, [...recorded.get(ref.targetId) ?? [], pullRequest])
     })
     for (const targetId of targetIds) {
-      const refs = stale.filter((ref) => ref.targetId === targetId)
-      if (refs.length) await this.panePrRecords.remove(targetId, refs)
+      const drop = stale.filter((ref) => ref.targetId === targetId)
+      if (drop.length) await this.panePrRecords.remove(targetId, drop)
+      const add = renamed.filter((ref) => ref.targetId === targetId)
+      if (add.length) await this.panePrRecords.add(targetId, add)
     }
     return recorded
   }

@@ -381,27 +381,64 @@ describe('recorded pane PRs', () => {
     expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([30])
   })
 
-  it('drops a record whose PR lost the marker, was moved, or no longer exists', async () => {
+  it('drops a record whose PR lost the marker, was moved, or no longer exists, after a grace period', async () => {
     const other = '550e8400-e29b-41d4-a716-446655440000'
-    const runner = vi.fn(async (args: string[]) => isLookup(args)
-      ? JSON.stringify({ data: { viewer: { login: 'leo' }, r0: { pullRequest: marked(1, 'No marker any more') },
-        r1: { pullRequest: marked(2, `<!-- commando:v1 target=${other} relation=created -->`) }, r2: { pullRequest: null } },
-      errors: [{ type: 'NOT_FOUND', path: ['r2', 'pullRequest'], message: 'Could not resolve' }] })
-      : search())
-    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
-    await service.recordPanePullRequests(targetId, [3, 2, 1].map((number) => ({ repo: 'acme/widgets', number })))
-    expect((await service.listPanePullRequests(targetId)).pullRequests).toEqual([])
+    let now = 1_000
+    // gh exits non-zero on any GraphQL error but still prints the lookups that worked.
+    const partial = Object.assign(new PrServiceError(502, 'github_failed', 'GitHub request failed: Could not resolve'), {
+      output: JSON.stringify({ data: { viewer: { login: 'leo' }, r0: { pullRequest: marked(1, 'No marker any more') },
+        r1: { pullRequest: marked(2, `<!-- commando:v1 target=${other} relation=created -->`) }, r2: { pullRequest: null }, r3: { pullRequest: marked(4) } },
+      errors: [{ type: 'NOT_FOUND', path: ['r2', 'pullRequest'], message: 'Could not resolve' }] }),
+    })
+    const runner = vi.fn(async (args: string[]) => {
+      if (isLookup(args)) throw partial
+      return search()
+    })
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => now })
+    await service.recordPanePullRequests(targetId, [1, 2, 3, 4].map((number) => ({ repo: 'acme/widgets', number })))
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([4])
+    now += 10 * 60_000 + 1
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([4])
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(2)
+    expect(runner.mock.calls.at(-1)![0].find((arg) => arg.startsWith('query='))).toContain('pullRequest(number: 4)')
     await service.listPanePullRequests(targetId)
-    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(1)
+    const last = runner.mock.calls.at(-1)![0].find((arg) => arg.startsWith('query='))!
+    expect(last).toContain('pullRequest(number: 4)')
+    expect(last).not.toMatch(/number: [123]\)/)
   })
 
-  it('fails the read on a lookup error not tied to one PR', async () => {
-    const runner = vi.fn(async (args: string[]) => isLookup(args)
-      ? JSON.stringify({ data: null, errors: [{ type: 'INTERNAL', message: 'Something went wrong' }] })
-      : search())
-    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+  it('falls back to the search list when the lookup fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let lookup: () => Promise<string> = async () => { throw new PrServiceError(502, 'github_failed', 'GitHub request failed') }
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup() : search(marked(9)))
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
     await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 5 }])
-    await expect(service.listPanePullRequests(targetId)).rejects.toMatchObject({ code: 'github_failed' })
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([9])
+    lookup = async () => JSON.stringify({ data: null, errors: [{ type: 'INTERNAL', message: 'Something went wrong' }] })
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => pr.number)).toEqual([9])
+  })
+
+  it('skips lookups when the search page is truncated, since older PRs are left out on purpose', async () => {
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup(marked(1))
+      : JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: 25, nodes: [marked(30)] } } }))
+    const service = new PrService({ runner, paneBatchWindowMs: 0 })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 1 }])
+    expect(await service.listPanePullRequests(targetId)).toMatchObject({ totalCount: 25, truncated: true })
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(0)
+  })
+
+  it('follows a renamed repo without listing its PR twice', async () => {
+    const renamed = { ...marked(12), url: 'https://github.com/acme/gizmos/pull/12', repository: { nameWithOwner: 'acme/gizmos' } }
+    let searchResult = search()
+    const runner = vi.fn(async (args: string[]) => isLookup(args) ? lookup(renamed) : searchResult)
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 12 }])
+    expect((await service.listPanePullRequests(targetId)).pullRequests.map((pr) => `${pr.repo}#${pr.number}`)).toEqual(['acme/gizmos#12'])
+    searchResult = search(renamed)
+    const list = await service.listPanePullRequests(targetId)
+    expect(list.pullRequests.map((pr) => `${pr.repo}#${pr.number}`)).toEqual(['acme/gizmos#12'])
+    expect(list.totalCount).toBe(1)
+    expect(runner.mock.calls.filter(([args]) => isLookup(args))).toHaveLength(1)
   })
 
   it('looks recorded PRs up for every pane of a shared search in one query', async () => {
