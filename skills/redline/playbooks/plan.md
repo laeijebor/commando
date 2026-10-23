@@ -61,14 +61,22 @@ corresponding `<redline-code-diff>` (see `playbooks/code.md`). Use
 </redline-file-tree>
 ```
 
-For milestones, evidence, scenarios, and risks, the SDK badges items marked
-`data-milestone`, `data-evidence`, `data-step`, or `data-risk`; optional
-`data-status` adds a status badge. Write the acceptance criteria, source,
-given/when/then conditions, and mitigation in the item's own text. A label
-or status alone cannot establish any of these. Evidence should identify a
-real observation/source or state that a check is still proposed. The example
-is illustrative: replace the observed claim with your own verified source
-before publishing it as actual evidence.
+For milestones, scenarios, and risks, the SDK badges items marked
+`data-milestone`, `data-step`, or `data-risk`; optional `data-status` adds a
+status badge. Write acceptance criteria, given/when/then conditions, and
+mitigation in the item's own text. A label or status alone cannot establish
+any of these.
+
+For evidence, use `data-evidence` as a short topic label. Open each fact with
+a one-line takeaway in `<p data-takeaway>`, then 1–2 sentences of detail with
+few inline code spans. Put the source in `data-source`, not the prose; state
+when a check is still proposed. Mark facts that threaten the plan with
+`data-impact="high"` and group direct-child items by what they mean for the
+plan using `data-group`. Don't rely on a repeated status: the SDK shows a
+shared `data-status` once in the summary. Missing sources are flagged only
+when some item uses `data-source`. The example is illustrative: replace the
+observed claim with your own verified source before publishing it as actual
+evidence.
 
 ```html
 <redline-milestones id="delivery" heading="Milestones">
@@ -76,8 +84,14 @@ before publishing it as actual evidence.
   <div id="rollback" data-milestone="Rollback" data-depends-on="Persist" data-status="proposed">Rehearse rollback by restoring the old read path without deleting session rows.</div>
 </redline-milestones>
 <redline-evidence id="proof" heading="Evidence">
-  <div id="current-proof" data-evidence="Actual" data-status="observed">Observed: session disappears after restart (source: local restart test, run 2026-09-24).</div>
-  <div id="future-proof" data-evidence="Proposed" data-status="pending">After implementation, rerun restart test and record its result.</div>
+  <div id="current-proof" data-evidence="Session storage" data-status="observed" data-source="Local restart test, run 2026-09-24" data-impact="high" data-group="Risks and surprises">
+    <p data-takeaway>Restart loses the user's session.</p>
+    <p>The current process keeps sessions in memory. Persistence must survive a service restart.</p>
+  </div>
+  <div id="future-proof" data-evidence="Restart check" data-status="pending" data-group="Checks before rollout">
+    <p data-takeaway>Session recovery still needs verification.</p>
+    <p>After implementation, rerun the restart test and record its result.</p>
+  </div>
 </redline-evidence>
 <redline-scenario id="restart-scenario" heading="Restart scenario">
   <div id="given-session" data-step="Given">A user has a valid session stored before restart.</div>
