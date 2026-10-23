@@ -202,6 +202,46 @@ describe('plan presentation components', () => {
     expect(host.querySelectorAll('#database > .redline-evidence-body')).toHaveLength(1)
   })
 
+  it('keeps introductory and closing siblings around the grouped evidence block', () => {
+    loadSdk()
+    const host = document.createElement('redline-evidence')
+    host.innerHTML = `
+      <p id="intro">What we found</p>
+      <article data-evidence="Database" data-group="Risks">One instance</article>
+      <article data-evidence="DNS" data-group="Inputs">Route 53</article>
+      <p id="outro">These facts inform the plan.</p>`
+    const intro = host.querySelector('#intro')!
+    const outro = host.querySelector('#outro')!
+    document.body.append(host)
+    const groups = [...host.querySelectorAll(':scope > .redline-evidence-group')]
+    expect(groups).toHaveLength(2)
+    expect(intro.nextElementSibling).toBe(groups[0])
+    expect(groups[0].nextElementSibling).toBe(groups[1])
+    expect(groups[1].nextElementSibling).toBe(outro)
+    expect(host.lastElementChild).toBe(outro)
+    expect(document.getElementById('intro')).toBe(intro)
+    expect(document.getElementById('outro')).toBe(outro)
+  })
+
+  it('appends ungrouped items after authored members of a single explicit Other group', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-evidence>
+        <article id="ungrouped-first" data-evidence="Monitoring">Four monitors</article>
+        <article id="explicit-first" data-evidence="Memory" data-group="Other" data-impact="high">Memory peak</article>
+        <article id="risk-fact" data-evidence="Database" data-group="Risks" data-impact="high">One instance</article>
+        <article id="explicit-last" data-evidence="Region" data-group="Other" data-impact="high">Amsterdam</article>
+        <article id="ungrouped-last" data-evidence="Old box">Probably gone</article>
+      </redline-evidence>`
+    const groups = [...document.querySelectorAll('redline-evidence > .redline-evidence-group')]
+    expect(groups.map((group) => group.querySelector('h4')?.textContent)).toEqual(['Other 4', 'Risks 1'])
+    expect(groups[0].querySelector('.redline-evidence-group-count')?.textContent).toBe('4')
+    expect([...groups[0].querySelectorAll(':scope > [data-evidence]')].map((item) => item.id)).toEqual([
+      'explicit-first', 'explicit-last', 'ungrouped-first', 'ungrouped-last',
+    ])
+    expect(groups[0].hasAttribute('data-impact')).toBe(false)
+  })
+
   it('summarizes file changes and provenance, keeps directory links/IDs, and opens a diff anchor', () => {
     loadSdk()
     document.body.innerHTML = `

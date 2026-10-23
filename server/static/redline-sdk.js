@@ -2580,6 +2580,9 @@
 
       // Only direct items participate in grouping; move the authored nodes intact.
       if (directItems.some((item) => item.getAttribute('data-group')?.trim())) {
+        const anchor = document.createComment('redline-evidence-groups')
+        directItems[0].before(anchor)
+        const fragment = document.createDocumentFragment()
         const groups = new Map()
         const other = []
         for (const item of directItems) {
@@ -2588,9 +2591,11 @@
           if (!groups.has(name)) groups.set(name, [])
           groups.get(name).push(item)
         }
-        const orderedGroups = [...groups]
-        if (other.length) orderedGroups.push(['Other', other])
-        for (const [name, members] of orderedGroups) {
+        if (other.length) {
+          if (!groups.has('Other')) groups.set('Other', [])
+          groups.get('Other').push(...other)
+        }
+        for (const [name, members] of groups) {
           const group = document.createElement('section')
           group.className = 'redline-evidence-group'
           if (members.every((item) => item.getAttribute('data-impact') === 'high')) group.dataset.impact = 'high'
@@ -2598,8 +2603,9 @@
           title.className = 'redline-evidence-group-heading'
           title.append(`${name} `, badge(String(members.length), 'redline-evidence-group-count'))
           group.append(title, ...members)
-          this.append(group)
+          fragment.append(group)
         }
+        anchor.replaceWith(fragment)
       }
     }
   }
