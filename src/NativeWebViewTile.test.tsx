@@ -9,6 +9,7 @@ import type {
   NativeWebViewTileEvent,
 } from './nativeWebViewBridge'
 import { NativeWebViewTile } from './NativeWebViewTile'
+import { ImageViewer } from './chat/ChatImages'
 import type { PendingQueueApi } from './pendingQueueApi'
 
 class FakeWebSocket {
@@ -508,6 +509,28 @@ describe('native panel tab visibility', () => {
       expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false }))
       expect(attachment.detach).not.toHaveBeenCalled()
       expect(bridge.attach).toHaveBeenCalledTimes(1)
+    } finally { rect.mockRestore() }
+  })
+
+  it('hides beneath an enlarged chat image and comes back when the viewer closes', async () => {
+    class Observer { observe() {} disconnect() {} }
+    vi.stubGlobal('ResizeObserver', Observer)
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 0, y: 0, left: 0, top: 0, width: 600, height: 300, right: 600, bottom: 300, toJSON: () => ({}),
+    }))
+    const { bridge } = nativeHarness()
+    const element = (image: boolean) => <>
+      <NativeWebViewTile bridge={bridge} webPane={webPane} reloadKey={0} visible onFallback={() => undefined} />
+      <ImageViewer image={image ? { src: '/shot.png', name: 'shot.png' } : null} onClose={() => undefined} />
+    </>
+    try {
+      const view = render(element(false))
+      await waitFor(() => expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: true })))
+      view.rerender(element(true))
+      await screen.findByRole('dialog', { name: 'shot.png' })
+      await waitFor(() => expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: false, visibleRegions: [] })))
+      view.rerender(element(false))
+      await waitFor(() => expect(bridge.frame).toHaveBeenLastCalledWith('page:1', expect.objectContaining({ visible: true })))
     } finally { rect.mockRestore() }
   })
 

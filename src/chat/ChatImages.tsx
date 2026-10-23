@@ -17,7 +17,8 @@ export function ImageViewer({ image, onClose }: { image: ViewableImage | null; o
   return (
     <Dialog.Root open={image !== null} onOpenChange={(open) => { if (!open) onClose() }}>
       <Dialog.Portal>
-        <Dialog.Backdrop className="chat-floating fixed inset-0 z-[140] bg-black/70" />
+        {/* Terminals and web tiles are native views above the page; the marker makes them hide under the viewer. */}
+        <Dialog.Backdrop className="chat-floating fixed inset-0 z-[140] bg-black/70" data-native-terminal-occluder="" />
         <Dialog.Popup className="chat-floating fixed inset-0 z-[141] outline-none" aria-label={image?.name ?? 'Image'}>
           {image ? <ZoomableImage key={image.src} image={image} onClose={onClose} /> : null}
           <Dialog.Close className="absolute top-3 right-3 flex size-8 cursor-pointer items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80" aria-label="Close image">
