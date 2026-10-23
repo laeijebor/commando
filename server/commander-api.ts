@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from 'node:util'
 import type { ChatItem, ChatSessionInfo } from '../shared/agent-chat.js'
 import { NUDGE_TAG, RELAY_MAX_CHARS, RELAY_TAG, type CommanderAgent, type TurnBrief } from '../shared/commander.js'
 import type { AgentStatus, CommandoSnapshot, SessionBrief, TmuxPane } from '../shared/protocol.js'
+import type { ClaudeProfile } from '../shared/tmux-create.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
 import type { Commander } from './commander.js'
 import type { CommanderRelays } from './commander-relays.js'
@@ -100,7 +101,7 @@ export async function claudeTranscriptTurns(path: string): Promise<CommanderTurn
 type Dependencies = {
   agentToken: string; ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>
   snapshot: () => CommandoSnapshot; status: (id: string) => AgentStatus | undefined
-  commander: Pick<Commander, 'state' | 'ensure' | 'forget'>; relays: Pick<CommanderRelays, 'enqueue' | 'cancel' | 'values'>
+  commander: Pick<Commander, 'state' | 'ensure' | 'forget' | 'switchProfile'>; relays: Pick<CommanderRelays, 'enqueue' | 'cancel' | 'values'>
   stalls: Pick<CommanderStalls, 'stalled' | 'check' | 'takeNudge' | 'releaseNudge'>
   brief: (targetId: string) => TurnBrief | undefined; sessionBrief: (paneId: string) => SessionBrief | undefined
   chatSession: (paneId: string) => ChatSessionInfo | undefined; owns: (id: string) => boolean; items: (id: string) => ChatItem[]
@@ -108,6 +109,8 @@ type Dependencies = {
   screen: (pane: TmuxPane) => Promise<string>; now?: () => number
   /** Path of a Codex rollout by session id. */
   codexRollout?: (sessionId: string) => Promise<string | undefined>
+  /** Every Claude profile, hidden ones included, that Commander may switch to. */
+  claudeProfiles?: () => Promise<readonly ClaudeProfile[]>
 }
 export type CommanderTranscript = { source: 'transcript' | 'screen'; items: ChatItem[]; screen?: string }
 export class CommanderApi {
@@ -192,6 +195,12 @@ export class CommanderApi {
         json(response, 200, { ok: true, relay })
       } else if (path === ROOT && request.method === 'POST') json(response, 200, { ok: true, state: await d.commander.ensure() })
       else if (path === ROOT && request.method === 'DELETE') { await d.commander.forget(); json(response, 200, { ok: true, state: d.commander.state() }) }
+      else if (path === `${ROOT}/profile` && request.method === 'PUT') {
+        const { configDir } = await body(request)
+        if (configDir !== null && typeof configDir !== 'string') throw new HttpError(400, 'configDir must be a profile folder or null')
+        if (configDir !== null && !(await d.claudeProfiles?.() ?? []).some((profile) => profile.configDir === configDir)) throw new HttpError(400, 'Unknown Claude profile')
+        json(response, 200, { ok: true, state: await d.commander.switchProfile(configDir) })
+      }
       else if (path === `${ROOT}/transcript` && request.method === 'GET') json(response, 200, { ok: true, ...await this.transcript(this.target(url.searchParams.get('pane'))) })
       else if (path === `${AGENT}/list` && request.method === 'GET') { await d.stalls.check(); json(response, 200, this.agents()) }
       else if (path === `${AGENT}/relays` && request.method === 'GET') {

@@ -23,11 +23,12 @@ function setup() {
   let chat = false, stalled = false, nudge = true, worklog: SessionBrief | undefined, brief: TurnBrief | undefined
   const enqueue = vi.fn(async (input) => ({ id: 'abc', ...input, status: 'queued' } as never)), cancel = vi.fn(async () => ({ id: 'abc' } as never))
   const screen = vi.fn(async () => '\x1b[31mRendered output\x1b[0m'), items: ChatItem[] = []
-  const ensure = vi.fn(async () => commander), forget = vi.fn(async () => {}), configDir = vi.fn(async (): Promise<string | undefined> => undefined)
+  const ensure = vi.fn(async () => commander), forget = vi.fn(async () => {}), switchProfile = vi.fn(async (configDir: string | null) => ({ ...commander, ...(configDir ? { configDir } : {}) })), configDir = vi.fn(async (): Promise<string | undefined> => undefined)
   const releaseNudge = vi.fn(), codexRollout = vi.fn(async (_id: string): Promise<string | undefined> => undefined)
   const api = new CommanderApi({
     agentToken: TOKEN, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', snapshot: () => snapshot,
-    status: (id) => statuses.get(id), commander: { state: () => commander, ensure, forget },
+    status: (id) => statuses.get(id), commander: { state: () => commander, ensure, forget, switchProfile },
+    claudeProfiles: async () => [{ name: 'claudew', configDir: '/h/.claudew' }],
     relays: { enqueue, cancel, values: () => [] }, stalls: { stalled: () => stalled, check: async () => {}, takeNudge: () => nudge, releaseNudge },
     brief: () => brief, sessionBrief: () => worklog, chatSession: () => chat ? { title: 'Session title', provider: 'claude' } as ChatSessionInfo : undefined,
     owns: () => chat, items: () => items, seen: () => ({ '%1': 50 }), configDir, screen, codexRollout,
@@ -43,7 +44,7 @@ function setup() {
     const handled = await api.handle(request, response, new URL(`http://localhost/api/commander${path}`))
     return { status, result, handled }
   }
-  return { releaseNudge, codexRollout, api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, configDir,
+  return { releaseNudge, codexRollout, api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, switchProfile, configDir,
     chat: () => { chat = true }, stalled: (v: boolean) => { stalled = v }, nudge: (v: boolean) => { nudge = v },
     worklog: (v: SessionBrief) => { worklog = v }, brief: (v: TurnBrief) => { brief = v } }
 }
@@ -58,6 +59,16 @@ describe('CommanderApi', () => {
     expect((await s.call('POST', '', undefined, 'owner')).result).toMatchObject({ ok: true, state: { targetId: 'commander' } })
     expect((await s.call('DELETE', '', undefined, 'owner')).status).toBe(200)
     expect(s.forget).toHaveBeenCalledOnce()
+  })
+  it('switches the owner\'s Commander to a known Claude profile or the default login, and nothing else', async () => {
+    const s = setup()
+    expect((await s.call('PUT', '/profile', { configDir: '/h/.claudew' }, TOKEN)).status).toBe(401)
+    expect(await s.call('PUT', '/profile', { configDir: '/etc' }, 'owner')).toMatchObject({ status: 400, result: { error: 'Unknown Claude profile' } })
+    expect((await s.call('PUT', '/profile', { configDir: 7 }, 'owner')).status).toBe(400)
+    expect(s.switchProfile).not.toHaveBeenCalled()
+    expect((await s.call('PUT', '/profile', { configDir: '/h/.claudew' }, 'owner')).result).toEqual({ ok: true, state: { targetId: 'commander', paneId: '%9', configDir: '/h/.claudew' } })
+    expect((await s.call('PUT', '/profile', { configDir: null }, 'owner')).status).toBe(200)
+    expect(s.switchProfile.mock.calls).toEqual([['/h/.claudew'], [null]])
   })
   it('lists every agent excluding Commander, derives needs-you/unread and respects title precedence', async () => {
     const s = setup()

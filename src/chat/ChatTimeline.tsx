@@ -1,5 +1,5 @@
 import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
 import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatTaskAction } from '../../shared/agent-chat'
@@ -18,6 +18,22 @@ import { elapsedLabel } from './turnFlow'
 import { WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
+const CODE_URL = /^https?:\/\/\S+$/
+type HastParent = Pick<NonNullable<ExtraProps['node']>, 'children'>
+
+/** Links inline code that is only a web address, as agents often write a URL in backticks. Code already in a link or a code block is left alone. */
+function linkCodeUrls(parent: HastParent) {
+  parent.children = parent.children.map((child) => {
+    if (child.type !== 'element' || child.tagName === 'a' || child.tagName === 'pre') return child
+    const [text] = child.children
+    if (child.tagName === 'code' && child.children.length === 1 && text.type === 'text' && CODE_URL.test(text.value)) {
+      return { type: 'element', tagName: 'a', properties: { href: text.value }, children: [child] }
+    }
+    linkCodeUrls(child)
+    return child
+  })
+}
+const rehypePlugins = [() => linkCodeUrls]
 const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
   pre: MarkdownPre,
@@ -47,7 +63,7 @@ export const Markdown = memo(function Markdown({ text, images, running }: { text
   return (
     <ReplyImagesContext value={reply}>
       <div className="chat-markdown">
-        <ReactMarkdown remarkPlugins={markdownPlugins} components={replyComponents} urlTransform={keepImageSources}>
+        <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={rehypePlugins} components={replyComponents} urlTransform={keepImageSources}>
           {text}
         </ReactMarkdown>
       </div>

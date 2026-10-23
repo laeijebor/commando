@@ -2,6 +2,7 @@ import { AgentChatsApi } from './agent-chats-api.js'
 import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
+import { AgentLoginProber, AgentProfilePreferences, handleAgentProfilesApi } from './agent-profiles.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { CanvasPush } from './canvas-push.js'
 import { ChatTileEvents, defaultChatTileEventsPath } from './chat-tile-events.js'
@@ -76,11 +77,13 @@ import { handleLinearApi } from './linear-api.js'
 import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
+import { defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { TmuxSessionActions } from './tmux-session-actions.js'
 import { SessionArchives } from './session-archives.js'
 import { releaseClosedSimLease, runSimTool } from './sim-lease-release.js'
 import { POOL_REAP_INTERVAL_MS, SimPoolReaper, leasedUdidsInSiblingFiles, simPoolReaperEnabled } from './sim-pool-reaper.js'
@@ -662,7 +665,7 @@ async function main(): Promise<void> {
   const linear = new LinearService()
   const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
   if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
-  const prs = new PrService({ githubDisabledReason: githubOffReason })
+  const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
   const gitWorktrees = new GitWorktreeService(undefined, { worktreesParent: worktreesParentFromEnv(process.env) })
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
@@ -1717,7 +1720,14 @@ async function main(): Promise<void> {
       })
   }
 
+  const tmuxSessionActions = new TmuxSessionActions()
+  const saveResurrectAfter = (change: string) => {
+    void resurrectSaver.save().catch((error: unknown) => {
+      console.error(`[commando] tmux Resurrect save failed after ${change}`, error)
+    })
+  }
   const sessionManagement = new SessionManagementApi({
+    actions: tmuxSessionActions,
     preferences: sessionPreferences,
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
@@ -1735,16 +1745,8 @@ async function main(): Promise<void> {
       worktreeForDirectory: (directory) => gitWorktrees.worktreeForDirectory(directory),
       removeWorktree: (worktree) => gitWorktrees.removeWorktree(worktree),
     }),
-    afterSessionDeleted: () => {
-      void resurrectSaver.save().catch((error: unknown) => {
-        console.error('[commando] tmux Resurrect save failed after session deletion', error)
-      })
-    },
-    afterSessionRestored: () => {
-      void resurrectSaver.save().catch((error: unknown) => {
-        console.error('[commando] tmux Resurrect save failed after session restore', error)
-      })
-    },
+    afterSessionDeleted: () => saveResurrectAfter('session deletion'),
+    afterSessionRestored: () => saveResurrectAfter('session restore'),
     beforeWindowDeleted: async (windowId) => {
       await tmux.releaseWindowPaneResizes(windowId)
     },
@@ -1870,6 +1872,10 @@ async function main(): Promise<void> {
     paneExists,
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
+    onPullRequestsCreated: (paneId, refs) => {
+      const targetId = paneForId(paneId)?.targetId
+      if (targetId) void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
+    },
     interactions,
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,
@@ -1989,6 +1995,8 @@ async function main(): Promise<void> {
     sending: agentPushes,
   })
   const repoPrepareCommands = new RepoPrepareCommands(defaultRepoPrepareCommandsPath(port))
+  const agentProfilePreferences = new AgentProfilePreferences()
+  const agentLoginProber = new AgentLoginProber()
   const agentChatsApi = new AgentChatsApi({
     agentToken: agentHookToken,
     ownerAuthorized: requestIsAuthorized,
@@ -2019,6 +2027,10 @@ async function main(): Promise<void> {
     statePath: `${sessionBriefs.statePath}.commander.json`, snapshot: () => snapshot,
     creator: tmuxCreator, refreshSnapshot: refreshSnapshotFresh,
     changed: (state) => broadcast({ type: 'commander_state', state }),
+    closeSession: async (sessionId) => {
+      await tmuxSessionActions.delete(sessionId)
+      saveResurrectAfter('switching the Commander profile')
+    },
   })
   await commander.load()
   const commanderRelays = new CommanderRelays({
@@ -2063,6 +2075,7 @@ async function main(): Promise<void> {
   const codexRolloutLookups = new Map<string, ResumeRolloutLookup>()
   const commanderApi: CommanderApi = new CommanderApi({
     agentToken: agentHookToken, ownerAuthorized: requestIsAuthorized, snapshot: () => snapshot,
+    claudeProfiles: () => agentProfilePreferences.claudeProfiles({ includeHidden: true }),
     status: (id) => agentStatuses.get(id), commander, relays: commanderRelays, stalls: commanderStalls,
     brief: (target) => turnBriefs.get(target), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
     chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
@@ -2899,6 +2912,11 @@ async function main(): Promise<void> {
         if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleRepoPrepareCommands(request, response, url, repoPrepareCommands)) return
+        if (await handleAgentProfilesApi(request, response, url, {
+          preferences: agentProfilePreferences, prober: agentLoginProber, creator: tmuxCreator,
+          sessionNames: () => snapshot.sessions.map((session) => session.name),
+          refreshSnapshot: async () => { await refreshSnapshotFresh() },
+        })) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await sessionIdeApi.handle(request, response, url)) return
@@ -2920,6 +2938,7 @@ async function main(): Promise<void> {
           async () => {
             await refreshSnapshot()
           },
+          () => agentProfilePreferences.claudeProfiles({ includeHidden: false }),
         )) return
         writeJson(response, 404, { error: 'Not found' })
         return

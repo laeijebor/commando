@@ -3,6 +3,7 @@ import {
   chatPermissionModes,
   isChatLaunchProvider,
   chatProfileConfigDir,
+  claudeProfileLabel,
   defaultWorktreePath,
   sanitizeBranchName,
   SESSION_AGENT_CHOICES,
@@ -720,7 +721,7 @@ export function TmuxCreateControls({
               >
                 {claudeProfiles === null ? <option value="">Loading…</option> : null}
                 {claudeProfiles?.length === 0 ? <option value="">Default Claude login</option> : null}
-                {claudeProfiles?.map((profile) => <option key={profile.configDir} value={profile.configDir}>{profile.name}</option>)}
+                {claudeProfiles?.map((profile) => <option key={profile.configDir} value={profile.configDir}>{claudeProfileLabel(profile)}</option>)}
               </select>
             </label> : null}
             <label>
