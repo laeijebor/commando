@@ -677,10 +677,66 @@
 :where(redline-file-tree summary) { cursor: pointer; }
 :where(.redline-file-summary) { margin: .5rem 0; opacity: .8; font-size: .86rem; }
 :where(.redline-diff-meta) { margin: 0 0 .6rem; opacity: .8; font-size: .86rem; overflow-wrap: anywhere; }
-:where(redline-milestones [data-milestone], redline-evidence [data-evidence],
+:where(redline-milestones [data-milestone],
   redline-scenario [data-step], redline-risk [data-risk]) {
   margin: .6rem 0; padding: .65rem .8rem;
   border-left: 3px solid var(--_ac); background: color-mix(in oklab, currentColor 4%, transparent);
+}
+:where(redline-evidence) { container-type: inline-size; max-width: 100%; }
+:where(redline-evidence > .redline-plan-heading) { margin-bottom: 6px; font-size: var(--redline-evidence-heading-size, 1.1rem); }
+:where(.redline-evidence-summary) {
+  max-width: none; margin: 0; padding-bottom: 12px; font-size: 13px;
+  color: var(--redline-evidence-summary, var(--redline-evidence-muted, color-mix(in oklab, currentColor 70%, transparent)));
+  border-bottom: 1px solid var(--redline-evidence-summary-border, color-mix(in oklab, currentColor 18%, transparent));
+}
+:where(.redline-evidence-count) { color: var(--redline-evidence-count, var(--_ac)); font-weight: 600; }
+:where(.redline-evidence-count[data-status="verified"]) { color: var(--redline-evidence-verified, var(--redline-evidence-count, var(--_ac))); }
+:where(.redline-evidence-item) {
+  display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); gap: 4px 20px;
+  min-width: 0; padding: 14px 0;
+  border-bottom: 1px solid var(--redline-evidence-divider, color-mix(in oklab, currentColor 14%, transparent));
+}
+:where(.redline-evidence-item:last-child) { border-bottom: 0; }
+:where(.redline-evidence-meta) { min-width: 0; padding-top: 2px; }
+:where(.redline-evidence-topic) { color: var(--redline-evidence-topic, inherit); font-size: 13px; font-weight: 600; line-height: 1.45; }
+:where(.redline-evidence-meta > .redline-plan-status) {
+  display: table; margin: 6px 0 0; border: var(--redline-evidence-status-border, 0);
+  color: var(--redline-evidence-status, inherit); font-family: var(--redline-evidence-status-font, inherit);
+  letter-spacing: var(--redline-evidence-status-tracking, normal); line-height: var(--redline-evidence-status-line-height, inherit);
+}
+:where(.redline-evidence-item[data-status="verified"] > .redline-evidence-meta > .redline-plan-status) {
+  color: var(--redline-evidence-verified, var(--redline-evidence-status, inherit));
+  border-color: var(--redline-evidence-verified, var(--redline-evidence-status, currentColor));
+}
+:where(.redline-evidence-item[data-impact="high"] > .redline-evidence-meta > .redline-evidence-topic) { color: var(--redline-evidence-impact, var(--_ac)); }
+:where(.redline-evidence-item[data-impact="high"] > .redline-evidence-meta > .redline-evidence-topic)::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 7px 1px 0;
+  border-radius: 50%; background: currentColor;
+}
+:where(.redline-evidence-body) { min-width: 0; max-width: 70ch; overflow-wrap: anywhere; }
+:where(.redline-evidence-body p) { margin: 0; color: var(--redline-evidence-body, inherit); font-size: 15px; line-height: 1.6; }
+:where(.redline-evidence-body p + p) { margin-top: 3px; }
+:where(.redline-evidence-body strong) { color: var(--redline-evidence-takeaway, inherit); font-weight: var(--redline-evidence-strong-weight, bold); }
+:where(.redline-evidence-body [data-takeaway]) { color: var(--redline-evidence-takeaway, inherit); font-weight: 600; font-size: 15.5px; }
+:where(.redline-evidence-body .redline-evidence-source) {
+  max-width: none; margin-top: 6px; font-size: 12.5px;
+  color: var(--redline-evidence-source, var(--redline-evidence-muted, color-mix(in oklab, currentColor 70%, transparent)));
+}
+:where(.redline-evidence-source[data-missing]) { color: var(--redline-evidence-missing-source, var(--_ac)); }
+:where(redline-evidence code:not(pre code)) {
+  padding: 0; border: 0; background: none; color: var(--redline-evidence-code, var(--_ac));
+  font-family: var(--redline-evidence-code-font, ui-monospace, SFMono-Regular, monospace); font-size: .9em;
+}
+:where(.redline-evidence-group) { margin: 22px 0 0; }
+:where(.redline-evidence-group-heading) {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 2px;
+  color: var(--redline-evidence-group-heading, var(--redline-evidence-muted, color-mix(in oklab, currentColor 70%, transparent)));
+  font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase;
+}
+:where(.redline-evidence-group-heading > span) { color: var(--redline-evidence-group-count, inherit); letter-spacing: 0; }
+:where(.redline-evidence-group[data-impact="high"] > .redline-evidence-group-heading) { color: var(--redline-evidence-impact, var(--_ac)); }
+@container (max-width: 560px) {
+  :where(.redline-evidence-item) { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
 :where(redline-code-diff .redline-diff-controls) { display: flex; gap: .5rem; margin: .5rem 0; }
 :where(redline-code-diff button, redline-scope button, redline-decision button) {
@@ -2478,7 +2534,74 @@
     }
   }
   class RedlineEvidence extends RedlinePlanElement {
-    render() { super.render(); labelItems(this, '[data-evidence]', 'data-evidence') }
+    render() {
+      super.render()
+      const directItems = directChildren(this, '[data-evidence]')
+      const items = [...this.querySelectorAll('[data-evidence]')]
+        .filter((item) => item.closest('redline-evidence') === this)
+      if (!items.length) return
+      const sharedStatus = items[0].getAttribute('data-status')?.trim()
+      const hoistStatus = sharedStatus && items.every((item) => item.getAttribute('data-status')?.trim() === sharedStatus)
+      const hasSources = items.some((item) => item.hasAttribute('data-source'))
+      const highImpact = items.filter((item) => item.getAttribute('data-impact') === 'high').length
+      const missingSources = hasSources ? items.filter((item) => !item.getAttribute('data-source')?.trim()).length : 0
+
+      const summary = document.createElement('p')
+      summary.className = 'redline-evidence-summary'
+      const count = badge(hoistStatus ? `${items.length} ${sharedStatus}` : `${items.length} ${items.length === 1 ? 'item' : 'items'}`, 'redline-evidence-count')
+      if (hoistStatus) count.dataset.status = sharedStatus
+      summary.append(count)
+      if (highImpact) summary.append(` · ${highImpact} high impact`)
+      if (missingSources) summary.append(` · ${missingSources} without a source`)
+      const heading = this.querySelector(':scope > .redline-plan-heading')
+      if (heading) heading.after(summary)
+      else this.prepend(summary)
+
+      for (const item of items) {
+        item.classList.add('redline-evidence-item')
+        const body = document.createElement('div')
+        body.className = 'redline-evidence-body'
+        body.append(...item.childNodes)
+        const meta = document.createElement('div')
+        meta.className = 'redline-evidence-meta'
+        meta.append(badge(item.getAttribute('data-evidence'), 'redline-evidence-topic'))
+        const status = item.getAttribute('data-status')?.trim()
+        if (!hoistStatus && status) meta.append(badge(status, 'redline-plan-status'))
+        if (hasSources) {
+          const source = document.createElement('p')
+          source.className = 'redline-evidence-source'
+          const value = item.getAttribute('data-source')?.trim()
+          source.textContent = value ? `Source: ${value}` : 'No source recorded'
+          if (!value) source.setAttribute('data-missing', '')
+          body.append(source)
+        }
+        item.append(meta, body)
+      }
+
+      // Only direct items participate in grouping; move the authored nodes intact.
+      if (directItems.some((item) => item.getAttribute('data-group')?.trim())) {
+        const groups = new Map()
+        const other = []
+        for (const item of directItems) {
+          const name = item.getAttribute('data-group')?.trim()
+          if (!name) { other.push(item); continue }
+          if (!groups.has(name)) groups.set(name, [])
+          groups.get(name).push(item)
+        }
+        const orderedGroups = [...groups]
+        if (other.length) orderedGroups.push(['Other', other])
+        for (const [name, members] of orderedGroups) {
+          const group = document.createElement('section')
+          group.className = 'redline-evidence-group'
+          if (members.every((item) => item.getAttribute('data-impact') === 'high')) group.dataset.impact = 'high'
+          const title = document.createElement('h4')
+          title.className = 'redline-evidence-group-heading'
+          title.append(`${name} `, badge(String(members.length), 'redline-evidence-group-count'))
+          group.append(title, ...members)
+          this.append(group)
+        }
+      }
+    }
   }
   class RedlineScenario extends RedlinePlanElement {
     render() { super.render(); labelItems(this, '[data-step]', 'data-step') }
