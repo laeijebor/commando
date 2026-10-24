@@ -58,6 +58,7 @@
       "^@commando/agent-chat$": "<rootDir>/../../shared/agent-chat.ts",
       "^@commando/chat-timeline$": "<rootDir>/../../shared/chat-timeline.ts",
       "^@commando/chat-composer$": "<rootDir>/../../shared/chat-composer.ts",
+      "^@commando/chat-subagents$": "<rootDir>/../../shared/chat-subagents.ts",
       "^\\./agent-chat\\.js$": "<rootDir>/../../shared/agent-chat.ts",
       "^\\./chat-mcp\\.js$": "<rootDir>/../../shared/chat-mcp.ts",
       "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",

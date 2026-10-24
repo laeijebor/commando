@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-import { mergeChatItems, type ChatState } from '@commando/agent-chat'
+import { mergeChatItems, type ChatState, type ExternalAgentRun } from '@commando/agent-chat'
 import type { ServerMessage } from '@commando/protocol'
 
 /** One host's chat panes by pane id, as the daemon relays them. */
@@ -41,8 +41,34 @@ export function applyChatMessage(chats: HostChats, message: ServerMessage): Host
   }
 }
 
+/** One host's external agent runs (`codex exec`, `claude -p`, …) by the chat pane that launched them. */
+export type HostExternalRuns = Record<string, ExternalAgentRun[]>
+
+const NO_RUNS: HostExternalRuns = {}
+const EMPTY_RUNS: readonly ExternalAgentRun[] = []
+
+/** Folds `chat_external_runs` (the daemon's whole list for a pane) into a host's runs. */
+export function applyExternalRunsMessage(runs: HostExternalRuns, message: ServerMessage): HostExternalRuns {
+  if (message.type === 'chat_external_runs') {
+    if (!message.runs.length && !(message.paneId in runs)) return runs
+    if (!message.runs.length) {
+      const next = { ...runs }
+      delete next[message.paneId]
+      return next
+    }
+    return { ...runs, [message.paneId]: message.runs }
+  }
+  if (message.type === 'chat_removed' && message.paneId in runs) {
+    const next = { ...runs }
+    delete next[message.paneId]
+    return next
+  }
+  return runs
+}
+
 type ChatStoreState = {
   byHost: Record<string, HostChats>
+  externalRuns: Record<string, HostExternalRuns>
   ingest: (hostId: string, message: ServerMessage) => void
 }
 
@@ -52,7 +78,11 @@ type ChatStoreState = {
  */
 export const useChatStore = create<ChatStoreState>((set, get) => ({
   byHost: {},
+  externalRuns: {},
   ingest: (hostId, message) => {
+    const currentRuns = get().externalRuns[hostId] ?? NO_RUNS
+    const nextRuns = applyExternalRunsMessage(currentRuns, message)
+    if (nextRuns !== currentRuns) set({ externalRuns: { ...get().externalRuns, [hostId]: nextRuns } })
     const current = get().byHost[hostId] ?? EMPTY
     const next = applyChatMessage(current, message)
     if (next === current) return
@@ -63,4 +93,9 @@ export const useChatStore = create<ChatStoreState>((set, get) => ({
 /** The chat a pane hosts, or undefined for a terminal pane (or one handed to Claude Code). */
 export function useChat(hostId: string | undefined, paneId: string | undefined): ChatState | undefined {
   return useChatStore((state) => (hostId && paneId ? state.byHost[hostId]?.[paneId] : undefined))
+}
+
+/** The external runs a chat pane launched, as the daemon last listed them. */
+export function useExternalRuns(hostId: string | undefined, paneId: string | undefined): readonly ExternalAgentRun[] {
+  return useChatStore((state) => (hostId && paneId ? state.externalRuns[hostId]?.[paneId] : undefined) ?? EMPTY_RUNS)
 }

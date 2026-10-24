@@ -34,6 +34,7 @@ import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
 import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pickImages, prepareImage, uploadChatImage } from './images'
+import { RelayChip } from './Subagents'
 
 type Attachment = { key: string; name: string; uri: string; ref?: ChatImageRef }
 
@@ -113,8 +114,11 @@ function menuFor(
  * queue while Claude works), Steer and Stop, the queue, images, the `/` and
  * `@` menus and the settings pills. Open requests sit above it.
  */
-export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend }: {
+export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay }: {
   onSend?: () => void
+  /** Messages go to this subagent, relayed through main Claude's SendMessage. */
+  relayTarget?: { agentId: string; label: string } | undefined
+  onClearRelay?: (() => void) | undefined
   host: Host
   session: ChatSessionInfo
   /** The phone is connected to the daemon, and the daemon to the chat's host. */
@@ -282,12 +286,14 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carried?.id, attachments.length, switching])
 
-  /** Enter (the send button) queues while Claude works; Steer sends now. */
+  /** While relaying, nothing queues or steers: main Claude forwards it now. */
+  const queueing = running && turnFlow && !relayTarget
+  /** Enter (the send button) queues while Claude works; Steer sends now. A relay always goes now. */
   const submit = (steer = false) => {
     if (!canSend) return
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
-    const options: ChatSendOptions = running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
+    const options: ChatSendOptions = relayTarget ? { relayTo: relayTarget } : queueing ? { delivery: steer ? 'steer' : 'queue' } : {}
     const sent = text.trim()
     const requestId = channel.send(sent, images, options)
     onSend?.()
@@ -332,11 +338,14 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       ? 'Switching to Claude Code…'
       : closed
         ? 'This session has ended'
-        : running ? 'Queue a message…' : `Ask ${providerPresentation(session.provider).name}… / for commands, @ for files`
+        : relayTarget
+          ? `Message @${relayTarget.label} through main ${providerPresentation(session.provider).name}…`
+          : running ? 'Queue a message…' : `Ask ${providerPresentation(session.provider).name}… / for commands, @ for files`
 
   return (
     <View style={styles.wrap}>
       <View style={[styles.box, { backgroundColor: theme.surface, borderColor: theme.borderMid }]} testID="chat-composer">
+        {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} provider={providerPresentation(session.provider).name} /> : null}
         {queue.length ? (
           <QueueList provider={session.provider}
             disabled={!hostConnected}
@@ -427,7 +436,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
               <View style={[styles.stopGlyph, { backgroundColor: theme.red }]} />
             </Pressable>
           ) : null}
-          {running && turnFlow ? (
+          {queueing ? (
             <Pressable
               accessibilityLabel="Steer now"
               accessibilityHint={`Ends ${providerPresentation(session.provider).name}'s turn at its next safe point and sends this`}
@@ -441,7 +450,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             </Pressable>
           ) : null}
           <Pressable
-            accessibilityLabel={running && turnFlow ? 'Queue' : 'Send'}
+            accessibilityLabel={queueing ? 'Queue' : 'Send'}
             accessibilityRole="button"
             accessibilityState={{ disabled: !canSend }}
             disabled={!canSend}

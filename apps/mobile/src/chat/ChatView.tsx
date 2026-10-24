@@ -1,19 +1,26 @@
-import { Component, useMemo, useState, type ReactNode } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
-import type { ChatSessionStatus, ChatState } from '@commando/agent-chat'
-import { pendingRequests } from '@commando/chat-timeline'
+import { hostTakesTurnFlow, type ChatItem, type ChatSessionStatus, type ChatState, type ChatSubagentTranscript, type ChatTaskAction } from '@commando/agent-chat'
+import { findSubagent, subagentLabel, subagentLive, switcherSubagents } from '@commando/chat-subagents'
+import { pendingRequests, withExternalAgentRuns, type SubagentItem } from '@commando/chat-timeline'
 
 import type { DaemonClient } from '../daemon/client'
 import type { ConnectionPhase } from '../daemon/state'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
+import { providerPresentation } from '../ui/providerPresentation'
 import { withAlpha } from '../ui/primitives'
-import { useChatChannel } from './channel'
+import { useChatChannel, type ChatChannel } from './channel'
 import { ChatComposer } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
+import { Markdown } from './Markdown'
 import { RequestCard } from './RequestCard'
+import { useExternalRuns } from './store'
+import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
+
+type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
 
 /** The nav subtitle's word for where the chat is. */
 export function chatStatusWord(status: ChatSessionStatus): string {
@@ -41,10 +48,16 @@ export function ChatView({ host, chat, client, phase }: {
   const theme = useTheme()
   const [sendVersion, setSendVersion] = useState(0)
   const { channel, sendError, dismissSendError, actionError, dismissActionError } = useChatChannel(client, chat.paneId)
+  const externalRuns = useExternalRuns(host.id, chat.paneId)
+  // External runs (`codex exec`, `claude -p`) join the turn that launched them, as on the web.
+  const items = useMemo(() => (externalRuns.length ? withExternalAgentRuns(chat.items, externalRuns) : chat.items), [chat.items, externalRuns])
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const connected = phase === 'live'
   const hostConnected = connected && chat.hostConnected
   const working = chat.session.status === 'running'
+  const provider = providerPresentation(chat.session.provider).name
+  const view = useSubagentView(items, channel, hostTakesTurnFlow(chat.session))
+  const { agent, agents, relay } = view
   const request = requests[0]
   const banner = !connected
     ? 'Reconnecting to Commando… The agent keeps working in its pane.'
@@ -56,7 +69,56 @@ export function ChatView({ host, chat, client, phase }: {
     <View style={styles.root} testID="chat-view">
       {banner ? <Banner icon="wifi-off" text={banner} tone="amber" /> : null}
       {chat.session.status === 'error' && chat.session.error ? <Banner icon="alert-circle" text={chat.session.error} tone="red" /> : null}
-      <ChatTimeline sendVersion={sendVersion} baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} provider={chat.session.provider} />
+      {agent ? (
+        <>
+          <SubagentHeader
+            agent={agent}
+            disabled={!hostConnected}
+            items={items}
+            now={view.now}
+            onBack={() => view.select(undefined)}
+            onMessage={() => agent.agentId && view.setRelay({ agentId: agent.agentId, label: subagentLabel(agent) })}
+            onTask={view.task}
+            provider={provider}
+          />
+          <SubagentTimeline
+            agent={agent}
+            baseUrl={host.baseUrl}
+            cwd={chat.session.cwd}
+            items={items}
+            key={agent.id}
+            onOpenSubagent={view.select}
+            onRetry={view.retryTranscript}
+            provider={chat.session.provider}
+            transcript={agent.agentId ? view.transcripts[agent.agentId] : undefined}
+          />
+        </>
+      ) : (
+        <ChatTimeline
+          baseUrl={host.baseUrl}
+          controlsDisabled={!connected}
+          cwd={chat.session.cwd}
+          items={items}
+          onOpenSubagent={view.turnFlow ? view.select : undefined}
+          onTask={view.task}
+          provider={chat.session.provider}
+          sendVersion={sendVersion}
+          working={working}
+        />
+      )}
+      {agents.length ? (
+        <AgentSwitcher
+          agents={agents}
+          disabled={!hostConnected}
+          externalDisabled={!connected}
+          items={items}
+          now={view.now}
+          onSelect={view.select}
+          onTask={view.task}
+          provider={provider}
+          viewing={view.viewing}
+        />
+      ) : null}
       {chat.session.claudeCodeSwitch ? (
         <Banner
           icon="terminal"
@@ -86,6 +148,7 @@ export function ChatView({ host, chat, client, phase }: {
           onSend={() => setSendVersion((version) => version + 1)}
           onDismissActionError={dismissActionError}
           onDismissSendError={dismissSendError}
+          {...(relay ? { relayTarget: relay, onClearRelay: () => view.setRelay(undefined) } : {})}
           sendError={sendError}
           session={chat.session}
         /></View>
@@ -93,6 +156,133 @@ export function ChatView({ host, chat, client, phase }: {
         <Text style={[styles.waiting, { color: theme.muted }]}>Connecting…</Text>
       )}
     </View>
+  )
+}
+
+/**
+ * Which agent the chat shows (main, or one subagent by its Agent call's id),
+ * the transcripts read for subagents with no live items, and the relay
+ * target, as the web's ChatPane keeps them.
+ */
+function useSubagentView(items: readonly ChatItem[], channel: ChatChannel | null, turnFlowHost: boolean) {
+  const [viewing, setViewing] = useState<string | undefined>()
+  const [relay, setRelay] = useState<{ agentId: string; label: string } | undefined>()
+  const [transcripts, setTranscripts] = useState<Record<string, TranscriptState>>({})
+  const turnFlow = turnFlowHost && Boolean(channel)
+  const agent = viewing ? findSubagent(items, viewing) : undefined
+  const agents = useMemo(() => (channel ? switcherSubagents(items, viewing).filter((entry) => turnFlow || entry.runtime) : []), [channel, items, viewing, turnFlow])
+  const now = useNow(agents.some(subagentLive) || Boolean(agent && subagentLive(agent)))
+
+  // A subagent with no live items (after a resume, or from before this chat opened) is read from its saved transcript.
+  const agentId = agent?.agentId
+  const hasOwnItems = useMemo(() => Boolean(agent && items.some((item) => item.parentToolUseId === agent.id)), [agent, items])
+  const needsTranscript = Boolean(agent && agentId && !hasOwnItems && channel && !transcripts[agentId])
+  useEffect(() => {
+    if (!needsTranscript || !agentId || !channel) return
+    // Not cancelled when the effect re-runs: marking it loading is what re-runs it.
+    setTranscripts((entries) => ({ ...entries, [agentId]: { loading: true } }))
+    void channel.subagentTranscript(agentId).then((result) => {
+      setTranscripts((entries) => ({ ...entries, [agentId]: { loading: false, ...result } }))
+    })
+  }, [needsTranscript, agentId, channel])
+
+  // A subagent that left the item window can't be shown; go back to main.
+  useEffect(() => {
+    if (viewing && !agent) setViewing(undefined)
+  }, [viewing, agent])
+
+  const forget = (id: string) => setTranscripts((entries) => {
+    if (!entries[id]) return entries
+    const next = { ...entries }
+    delete next[id]
+    return next
+  })
+  const select = useCallback((toolUseId: string | undefined) => {
+    const target = toolUseId ? findSubagent(items, toolUseId) : undefined
+    if (target?.runtime) return
+    setViewing(toolUseId)
+    setRelay(undefined)
+    // Reopening a finished subagent reads its transcript afresh (it may have been resumed).
+    const id = target?.agentId
+    if (id) setTranscripts((entries) => {
+      const entry = entries[id]
+      if (!entry || entry.loading) return entries
+      const next = { ...entries }
+      delete next[id]
+      return next
+    })
+  }, [items])
+  const task = useCallback((action: ChatTaskAction, target: SubagentItem) => {
+    if (!channel) return
+    if (target.runtime) {
+      if (action === 'stop') channel.stopExternal(target.id)
+      return
+    }
+    if (target.agentId) channel.task(action, target.agentId, target.toolUseId)
+  }, [channel])
+  return { viewing, agent, agents, now, relay, setRelay, transcripts, select, task, turnFlow, retryTranscript: () => agentId && forget(agentId) }
+}
+
+/**
+ * One subagent's own turns: live from items tagged with its Agent call, or
+ * from its saved transcript when none are in the chat (after a resume).
+ */
+function SubagentTimeline({ agent, items, transcript, provider, cwd, baseUrl, onOpenSubagent, onRetry }: {
+  agent: SubagentItem
+  items: readonly ChatItem[]
+  transcript: TranscriptState | undefined
+  provider: ChatState['session']['provider']
+  cwd: string
+  baseUrl: string
+  onOpenSubagent: (toolUseId: string) => void
+  onRetry: () => void
+}): React.JSX.Element {
+  const theme = useTheme()
+  const ownItems = useMemo(() => items.filter((item) => item.parentToolUseId === agent.id), [items, agent.id])
+  const live = ownItems.length > 0
+  const shown = live ? items : transcript && !transcript.loading ? transcript.items : []
+  const saidSomething = (live ? ownItems : shown).some((item) => item.kind === 'assistant_message')
+  const report = agent.state !== 'running' && !saidSomething ? agent.output || agent.summary : undefined
+  const loading = !live && transcript?.loading === true
+  const error = !live && transcript && !transcript.loading ? transcript.error : undefined
+  const showTask = Boolean(agent.prompt) && (live || !transcript || transcript.loading || Boolean(transcript.error) || !transcript.items.length)
+  const header = showTask ? (
+    <View style={[styles.task, { backgroundColor: theme.surface, borderColor: theme.border }]} testID="subagent-task">
+      <View style={styles.taskHead}>
+        <Feather color={theme.muted} name="cpu" size={11} />
+        <Text style={[styles.taskLabel, { color: theme.muted }]}>TASK FROM MAIN {providerPresentation(provider).name.toUpperCase()}</Text>
+      </View>
+      <Text selectable style={[styles.taskText, { color: theme.textSoft }]}>{agent.prompt}</Text>
+    </View>
+  ) : null
+  const footer = loading && header
+    ? <Text accessibilityLiveRegion="polite" style={[styles.footerNote, { color: theme.muted }]}>Loading the subagent's transcript…</Text>
+    : error || report ? (
+      <>
+        {error ? (
+          <View accessibilityRole="alert" style={styles.footerError}>
+            <Text style={[styles.footerErrorText, { color: theme.red }]}>{error}</Text>
+            <Pressable accessibilityRole="button" onPress={onRetry} style={[styles.retry, { borderColor: theme.borderMid }]}>
+              <Text style={[styles.retryText, { color: theme.textSoft }]}>Retry</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {report ? <View style={styles.report}><Markdown text={report} /></View> : null}
+      </>
+    ) : null
+  return (
+    <ChatTimeline
+      baseUrl={baseUrl}
+      cwd={cwd}
+      emptyText={error ? '' : loading ? "Loading the subagent's transcript…" : agent.state === 'running' ? 'The subagent is starting…' : 'This subagent left no transcript.'}
+      footer={footer}
+      header={header}
+      items={shown}
+      onOpenSubagent={onOpenSubagent}
+      provider={provider}
+      scope={live ? agent.id : undefined}
+      working={agent.state === 'running'}
+    />
   )
 }
 
@@ -126,4 +316,14 @@ const styles = StyleSheet.create({
   banner: { flexShrink: 0, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginTop: 6, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
   bannerText: { flex: 1, fontSize: 12.5, lineHeight: 17 },
   waiting: { fontSize: 13, textAlign: 'center', padding: 12 },
+  task: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16, gap: 4 },
+  taskHead: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  taskLabel: { fontSize: 10.5, fontWeight: '700', letterSpacing: 0.6 },
+  taskText: { fontSize: 13.5, lineHeight: 19 },
+  footerNote: { fontSize: 12.5, paddingBottom: 12 },
+  footerError: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 12 },
+  footerErrorText: { flex: 1, fontSize: 12.5 },
+  retry: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  retryText: { fontSize: 12.5, fontWeight: '600' },
+  report: { paddingBottom: 12 },
 })

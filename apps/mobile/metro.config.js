@@ -31,6 +31,7 @@ config.resolver.extraNodeModules = {
   '@commando/agent-chat': path.join(repoRoot, 'shared', 'agent-chat.ts'),
   '@commando/chat-timeline': path.join(repoRoot, 'shared', 'chat-timeline.ts'),
   '@commando/chat-composer': path.join(repoRoot, 'shared', 'chat-composer.ts'),
+  '@commando/chat-subagents': path.join(repoRoot, 'shared', 'chat-subagents.ts'),
 }
 
 // The shared files import each other as `./agent-chat.js` (the daemon runs them
