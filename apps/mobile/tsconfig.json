@@ -34,6 +34,9 @@
       ],
       "@commando/pairing": [
         "../../shared/pairing.ts"
+      ],
+      "@commando/guide-types": [
+        "../../shared/guide-types.ts"
       ]
     }
   },

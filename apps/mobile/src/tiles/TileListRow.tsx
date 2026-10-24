@@ -63,6 +63,7 @@ export function TileListRow({
   )
 
   const streamable = canStream(row.tile)
+  const guide = row.tile.content?.kind === 'guide'
   const reason = unstreamableReason(row.tile)
 
   return (
@@ -86,8 +87,8 @@ export function TileListRow({
       <Animated.View style={{ transform: [{ translateX: offset }] }} {...panResponder.panHandlers}>
         <Pressable
           accessibilityRole="button"
-          accessibilityHint={streamable ? 'Opens the tile stream' : undefined}
-          disabled={!streamable || busy}
+          accessibilityHint={streamable ? 'Opens the tile stream' : guide ? 'Opens the guide' : undefined}
+          disabled={!(streamable || guide) || busy}
           onLongPress={() => settle(-CLOSE_TRAVEL)}
           onPress={onOpen}
         >
@@ -134,6 +135,8 @@ export function TileListRow({
                   />
                 </View>
               </View>
+            ) : guide ? (
+              <Text style={[styles.confirmBody, { color: theme.muted }]}>Tap to follow the guide: tick steps, add notes and update the agent.</Text>
             ) : row.tile.content ? (
               <Text style={[styles.confirmBody, { color: theme.muted }]}>{reason}. Follow its agent here; this native view remains on the Mac.</Text>
             ) : row.engine === 'webkit' ? (

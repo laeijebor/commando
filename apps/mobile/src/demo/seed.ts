@@ -3,6 +3,7 @@ import type { ChatProvider, ChatState } from '@commando/agent-chat'
 import { deriveSessionIdentity } from '@commando/session-identity'
 import { SNAPSHOT, NEEDS_INPUT_STATUS, WORKING_STATUS, BRIEFS } from '../testing/fixtures'
 import { chatState, item, session } from '../chat/testing'
+import { DEMO_GUIDE } from './guide'
 
 export function demoMessages(now = Date.now()): ServerMessage[] {
   if (!__DEV__) throw new Error('Demo is only available in development')
@@ -52,7 +53,7 @@ export function demoMessages(now = Date.now()): ServerMessage[] {
     { id: 'demo-browser', title: 'Companion preview', url: 'http://localhost:5273', sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 1, unseen: true, engine: 'chromium', openedBy: 'agent', status: 'open', createdAt: now - 60_000 },
     { id: 'demo-simulator', title: 'iPhone preview', url: '', content: { kind: 'simulator', udid: 'demo-iphone' }, sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 2, engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: now - 50_000 },
     { id: 'demo-canvas', title: 'Layout study', url: '', content: { kind: 'canvas', artifactId: 'demo', manifest: 'canvas.json' }, sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 3, engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: now - 40_000 },
-    { id: 'demo-guide', title: 'Review checklist', url: '', content: { kind: 'guide', artifactId: 'demo', file: 'review.md' }, sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 4, engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: now - 30_000 },
+    { id: DEMO_GUIDE.id, title: 'Review checklist', url: '', content: { kind: 'guide', artifactId: DEMO_GUIDE.artifactId, file: DEMO_GUIDE.file }, sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 4, engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: now - 30_000 },
   ]
   return [{ type: 'snapshot', snapshot }, { type: 'agent_status_snapshot', statuses }, { type: 'session_brief_snapshot', briefs }, { type: 'chat_snapshot', chats }, { type: 'web_panes', webPanes }]
 }

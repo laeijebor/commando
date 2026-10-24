@@ -6,8 +6,9 @@ import type {
 
 export function tileTitle(tile: Pick<WebPane, 'title' | 'url' | 'content'>): string {
   if (tile.title?.trim()) return tile.title.trim()
-  try { const host = new URL(tile.url).host; if (host) return host } catch { /* Native content has no URL. */ }
   const kind = tile.content?.kind
+  // A canvas or guide URL is only the artifact folder, so its host names nothing.
+  if (!kind || kind === 'simulator') try { const host = new URL(tile.url).host; if (host) return host } catch { /* Native content has no URL. */ }
   return kind === 'simulator' ? 'Simulator' : kind === 'canvas' ? 'Canvas' : kind === 'guide' ? 'Guide' : 'Web'
 }
 
