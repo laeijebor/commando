@@ -8,6 +8,7 @@ import {
   matchSteps,
   outlineGuide,
   stripStepId,
+  unwrapSoftBreaks,
   withOptimisticTick,
   type GuideBlock,
   type GuideSnapshot,
@@ -154,6 +155,10 @@ describe('helpers', () => {
 
   it('builds the artifact path the daemon serves', () => {
     expect(guideFilePath({ artifactId: '0123456789abcdef', file: 'a b/run.md' })).toBe('/redline/artifacts/0123456789abcdef/a%20b/run.md')
+  })
+
+  it('reflows soft line breaks and keeps hard ones', () => {
+    expect(unwrapSoftBreaks('one\ntwo  \nthree\\\nfour\n\nfive')).toBe('one two  \nthree\\\nfour\n\nfive')
   })
 
   it('strips ids and inline HTML outside code spans only', () => {

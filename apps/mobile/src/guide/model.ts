@@ -121,6 +121,15 @@ export function stripStepId(text: string): string {
   return text.replace(/\s*\{#[A-Za-z0-9][A-Za-z0-9_-]{0,63}\}(?=\s*$)/, '').replace(/\s+$/, '')
 }
 
+/**
+ * A paragraph's single line breaks are soft in Markdown (the desktop reflows
+ * them); native text would keep them, so they become spaces. A hard break
+ * (two trailing spaces or a backslash) stays.
+ */
+export function unwrapSoftBreaks(text: string): string {
+  return text.replace(/([^\n])(?<!  |\\)\n(?=[^\n])/g, '$1 ')
+}
+
 /** Inline HTML the guide format allows, made readable without a DOM: `<kbd>` reads as code, other tags drop out. */
 export function cleanInlineHtml(text: string): string {
   return text.split(/(`+[^`]*`+)/).map((part, index) => index % 2 ? part : part
@@ -256,6 +265,10 @@ function walk(tokens: readonly Token[], key: string, builder: Builder): GuideBlo
         if (text) blocks.push({ kind: 'markdown', key: id, text })
         break
       }
+      case 'paragraph':
+      case 'text':
+        blocks.push(...prose(unwrapSoftBreaks(token.raw), id, builder))
+        break
       default:
         blocks.push(...prose(token.raw, id, builder))
     }
