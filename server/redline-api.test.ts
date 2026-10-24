@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { isRedlinePath, RedlineApi } from './redline-api.js'
+import { isRedlinePath, RedlineApi, rewriteDaemonLoopbackUrls } from './redline-api.js'
 import { RedlineArtifactRegistry } from './redline-artifacts.js'
 
 const AGENT_TOKEN = 'agent-hook-token-with-at-least-32-characters'
@@ -178,9 +178,45 @@ describe('RedlineApi artifact routes', () => {
     expect(badToken.status).toBe(401)
   })
 
+  it('makes daemon loopback URLs root-relative only for a reader on another host name', async () => {
+    const { baseUrl, artifacts } = await startApi()
+    const dir = await artifactDir()
+    const page = '<script src="http://127.0.0.1:4310/redline/sdk.js"></script><p>http://127.0.0.1:4310/</p>'
+    await writeFile(join(dir, 'page.html'), page)
+    const { id } = artifacts.register(dir)
+    const read = (host: string) => new Promise<string>((resolve, reject) => {
+      const target = new URL(`${baseUrl}/redline/artifacts/${id}/page.html`)
+      const request = httpRequest({ hostname: target.hostname, port: target.port, path: target.pathname, headers: { host } }, (response) => {
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', (chunk: string) => { body += chunk })
+        response.on('end', () => resolve(body))
+      })
+      request.on('error', reject)
+      request.end()
+    })
+    expect(await read('127.0.0.1:4310')).toBe(page)
+    expect(await read('studio.tail-1a2b.ts.net:4310'))
+      .toBe('<script src="/redline/sdk.js"></script><p>http://127.0.0.1:4310/</p>')
+  })
+
   it('rejects a non-absolute dir', async () => {
     const { baseUrl } = await startApi()
     const response = await post(baseUrl, '/api/redline/artifacts', { dir: 'relative' }, agentAuth)
     expect(response.status).toBe(400)
+  })
+})
+
+describe('rewriteDaemonLoopbackUrls', () => {
+  it('rewrites src and href attributes that point at this daemon on any loopback name', () => {
+    expect(rewriteDaemonLoopbackUrls(
+      `<link href='http://localhost:4310/redline/design/x.css'><img SRC = "http://[::1]:4310/a.png">`,
+      'http://127.0.0.1:4310',
+    )).toBe(`<link href='/redline/design/x.css'><img SRC = "/a.png">`)
+  })
+
+  it('leaves other ports, other hosts and plain text alone', () => {
+    const html = '<script src="http://127.0.0.1:5173/x.js"></script><a href="https://example.com/">x</a> http://127.0.0.1:4310/y'
+    expect(rewriteDaemonLoopbackUrls(html, 'http://127.0.0.1:4310')).toBe(html)
   })
 })

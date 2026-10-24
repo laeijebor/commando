@@ -11,7 +11,7 @@ import { useDaemonConnection } from '../daemon/useDaemonConnection'
 import { useHostsStore } from '../hosts/store'
 import type { Host } from '../hosts/types'
 import { PaneView } from '../terminal/PaneView'
-import { canStream } from '../tiles/list'
+import { canOpenOnPhone } from '../tiles/list'
 import { relativeTime } from '../time'
 import { useTheme } from '../theme'
 import { AnswerCards } from '../ui/AnswerScreen'
@@ -138,9 +138,9 @@ export function WideCockpit({
               active={screenFocused}
               host={host}
               onOpenTile={(tile) => {
-                // Same rule as the phone: a streaming tile opens itself, and
+                // Same rule as the phone: a tile it can show opens itself, and
                 // anything else goes to the list that can act on it.
-                if (canStream(tile)) {
+                if (canOpenOnPhone(tile)) {
                   router.push({
                     pathname: '/(host)/[hostId]/tile/[tileId]',
                     params: routeParams({ hostId, tileId: tile.id, fromPaneId: paneId }),
