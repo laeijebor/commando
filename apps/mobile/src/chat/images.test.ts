@@ -1,4 +1,7 @@
-import { pickImages, prepareImage, REBUILD_FOR_IMAGES, uploadChatImage } from './images'
+import { isChatImageId } from '@commando/agent-chat'
+
+import { DEMO_ORIGIN, demoHost } from '../demo/flags'
+import { chatImageUri, pickImages, prepareImage, REBUILD_FOR_IMAGES, uploadChatImage } from './images'
 
 const mockOptionalNative = jest.fn((_name: string): unknown => null)
 
@@ -42,5 +45,14 @@ describe('chat images', () => {
         : new Response(JSON.stringify({ error: 'Only PNG, JPEG, GIF and WebP images can be attached' }), { status: 415 })
     )) as unknown as typeof fetch
     await expect(uploadChatImage(HOST, { uri: 'file:///a.png', name: 'a.png', type: 'image/png' }, fetcher)).rejects.toThrow('Only PNG')
+  })
+
+  it('keeps demo uploads on the phone, and loads them from there', async () => {
+    const fetcher = jest.fn() as unknown as typeof fetch
+    const ref = await uploadChatImage(demoHost(), { uri: 'data:image/png;base64,AAAA', name: 'pasted.png', type: 'image/png' }, fetcher)
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(isChatImageId(ref.id)).toBe(true)
+    expect(chatImageUri(DEMO_ORIGIN, ref.id)).toBe('data:image/png;base64,AAAA')
+    expect(chatImageUri('http://studio:4310', ref.id)).toBe(`http://studio:4310/chat-images/${ref.id}`)
   })
 })
