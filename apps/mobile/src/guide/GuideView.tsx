@@ -15,7 +15,7 @@ type StepContext = {
   steps: ReadonlyMap<string, GuideStepState>
   busy: ReadonlySet<string>
   toggle: (step: GuideStepState) => void
-  saveNote: (step: GuideStepState, note: string) => void
+  saveNote: (step: GuideStepState, note: string) => Promise<boolean>
 }
 const GuideSteps = createContext<StepContext | null>(null)
 
@@ -234,7 +234,7 @@ function StepRow({ item }: { item: GuideListItem }): React.JSX.Element {
       <Checkbox checked={checked} busy={busy} disabled={!step || !context || busy} label={step?.label ?? 'Step'} onPress={() => { if (step) context?.toggle(step) }} />
       <View style={[styles.stepBody, checked && styles.done]}>
         <Blocks blocks={item.body} />
-        {step ? <StepMeta step={step} /> : null}
+        {step ? <StepMeta key={step.id} step={step} /> : null}
       </View>
     </View>
   )
@@ -254,7 +254,7 @@ function CheckpointRow({ block }: { block: Extract<GuideBlock, { kind: 'checkpoi
           <Text style={[styles.checkpointKind, { color: checked ? theme.green : theme.accent }]}>{checked ? 'CHECKPOINT REACHED' : 'CHECKPOINT'}</Text>
         </View>
         <Markdown text={block.label} />
-        {step ? <StepMeta step={step} /> : null}
+        {step ? <StepMeta key={step.id} step={step} /> : null}
       </View>
     </View>
   )
@@ -269,7 +269,10 @@ function StepMeta({ step }: { step: GuideStepState }): React.JSX.Element {
   useEffect(() => { if (!editing) setDraft(step.note ?? '') }, [editing, step.note])
   const save = () => {
     setEditing(false)
-    if (draft.trim() !== (step.note ?? '')) context?.saveNote(step, draft)
+    if (draft.trim() === (step.note ?? '') || !context) return
+    // A note that did not save reopens with the draft, so nothing typed is lost.
+    const typed = draft
+    void context.saveNote(step, typed).then((saved) => { if (!saved) { setEditing(true); setDraft(typed) } })
   }
   const byAgent = step.checked && !step.byUser && step.sourceChecked
   // The actions sit above the field: iOS scrolls the caret into view, and the keyboard would cover anything below it.

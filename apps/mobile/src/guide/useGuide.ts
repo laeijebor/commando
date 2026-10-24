@@ -6,7 +6,8 @@ import type { Host } from '../hosts/types'
 import { cancelGuideUpdate, fetchGuide, fetchGuideMarkdown, markGuideStep, requestGuideUpdate, resetGuide } from './api'
 import { guideEventScope, withOptimisticTick, type GuideContent, type GuideSnapshot } from './model'
 
-export type GuideNotice = { kind: 'sent' | 'queued' | 'cancelled'; at: number }
+/** `baseline` is the snapshot's deliveredAt when the update was queued, so the host's clock is the only one compared. */
+export type GuideNotice = { kind: 'sent' | 'queued' | 'cancelled'; baseline?: number }
 
 export type GuideController = {
   markdown: string | null
@@ -22,7 +23,8 @@ export type GuideController = {
   live: boolean
   reload: () => void
   toggle: (id: string, checked: boolean) => void
-  saveNote: (id: string, note: string) => void
+  /** Resolves false when the note was not saved, so the editor can keep the draft. */
+  saveNote: (id: string, note: string) => Promise<boolean>
   update: () => Promise<void>
   reset: () => Promise<void>
 }
@@ -101,13 +103,19 @@ export function useGuide(host: Host | undefined, webPaneId: string, content: Gui
     })
   }, [client, artifactId, file, reload, loadState])
 
-  const run = useCallback(async (id: string, change: () => Promise<GuideSnapshot>) => {
+  /** Applies one change; false when the daemon refused it or could not be reached. */
+  const run = useCallback(async (id: string, change: () => Promise<GuideSnapshot>, rollback?: () => void): Promise<boolean> => {
     setBusy((current) => new Set(current).add(id))
-    try { accept(await change()) } catch (reason) {
-      if (!mounted.current) return
+    try {
+      accept(await change())
+      return true
+    } catch (reason) {
+      if (!mounted.current) return false
       setError(message(reason))
-      // The optimistic tick may be wrong now; the daemon's state is the truth.
+      // Undo the optimistic tick (a reload may fail too, offline), then ask for the daemon's truth.
+      rollback?.()
       void loadState()
+      return false
     } finally {
       if (mounted.current) setBusy((current) => { const next = new Set(current); next.delete(id); return next })
     }
@@ -116,12 +124,14 @@ export function useGuide(host: Host | undefined, webPaneId: string, content: Gui
   const toggle = useCallback((id: string, checked: boolean) => {
     if (!host) return
     setSnapshot((current) => current && withOptimisticTick(current, id, checked))
-    void run(id, () => markGuideStep(host, webPaneId, { id, checked }))
+    void run(id, () => markGuideStep(host, webPaneId, { id, checked }), () => {
+      setSnapshot((current) => current && withOptimisticTick(current, id, !checked))
+    })
   }, [host, run, webPaneId])
 
-  const saveNote = useCallback((id: string, note: string) => {
-    if (!host) return
-    void run(id, () => markGuideStep(host, webPaneId, { id, note }))
+  const saveNote = useCallback(async (id: string, note: string): Promise<boolean> => {
+    if (!host) return false
+    return run(id, () => markGuideStep(host, webPaneId, { id, note }))
   }, [host, run, webPaneId])
 
   const update = useCallback(async () => {
@@ -129,9 +139,10 @@ export function useGuide(host: Host | undefined, webPaneId: string, content: Gui
     const cancelling = snapshot.waiting
     setSending(true); setNotice(null)
     try {
+      const baseline = snapshot.deliveredAt
       const next = await (cancelling ? cancelGuideUpdate(host, webPaneId) : requestGuideUpdate(host, webPaneId))
       accept(next)
-      if (mounted.current) setNotice({ kind: cancelling ? 'cancelled' : next.waiting ? 'queued' : 'sent', at: Date.now() })
+      if (mounted.current) setNotice(cancelling ? { kind: 'cancelled' } : next.waiting ? { kind: 'queued', ...(baseline ? { baseline } : {}) } : { kind: 'sent' })
     } catch (reason) {
       if (mounted.current) setError(message(reason))
     } finally {
@@ -144,9 +155,12 @@ export function useGuide(host: Host | undefined, webPaneId: string, content: Gui
     try { accept(await resetGuide(host, webPaneId)) } catch (reason) { if (mounted.current) setError(message(reason)) }
   }, [accept, host, webPaneId])
 
-  // A queued update that the daemon later delivers turns the banner into "sent".
+  // A queued update turns into "sent" when the daemon delivers it, and goes away if the wait ends
+  // without a delivery (cancelled elsewhere, or the changes were undone). New changes retire "sent".
   useEffect(() => {
-    if (notice?.kind === 'queued' && snapshot && !snapshot.waiting && snapshot.deliveredAt && snapshot.deliveredAt >= notice.at) setNotice({ kind: 'sent', at: snapshot.deliveredAt })
+    if (!notice || !snapshot) return
+    if (notice.kind === 'queued' && !snapshot.waiting) setNotice(snapshot.deliveredAt !== undefined && snapshot.deliveredAt !== notice.baseline ? { kind: 'sent' } : null)
+    else if (notice.kind !== 'queued' && snapshot.changes.length) setNotice(null)
   }, [notice, snapshot])
 
   return { markdown, snapshot, loadError, error, busy, sending, notice, live, reload, toggle, saveNote, update, reset }
