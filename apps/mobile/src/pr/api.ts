@@ -65,9 +65,13 @@ export async function fetchPrDetails(host: Host, repo: string, number: number, o
   return body.details
 }
 
-/** `GET /api/prs/diff` — the files the PR changes against the repository's remote main, with GitHub's patches. */
+/**
+ * `GET /api/prs/diff?base=pr` — GitHub's "Files changed": the PR against its
+ * own base, with GitHub's patches. (Without `base=pr` the daemon compares with
+ * the remote main, which is empty once a PR has merged.)
+ */
 export async function fetchPrDiff(host: Host, repo: string, number: number): Promise<PrRemoteDiff> {
-  const body = await readJson<{ diff: PrRemoteDiff }>(host, `/api/prs/diff${prQuery(repo, number)}`, 'PR diff failed', 30_000)
+  const body = await readJson<{ diff: PrRemoteDiff }>(host, `/api/prs/diff${prQuery(repo, number, '&base=pr')}`, 'PR diff failed', 30_000)
   return body.diff
 }
 

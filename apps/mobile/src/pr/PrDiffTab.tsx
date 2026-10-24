@@ -37,11 +37,8 @@ export function PrDiffTab({ diff, error, loading, onRefresh, url, baseRefName }:
       {diff ? (
         <Text style={[styles.headline, { color: theme.textSoft }]}>
           {totals.files} {totals.files === 1 ? 'file' : 'files'} · <Text style={{ color: theme.green }}>+{totals.additions}</Text> <Text style={{ color: theme.red }}>−{totals.deletions}</Text>
-          <Text style={{ color: theme.muted }}> · against main</Text>
+          <Text style={{ color: theme.muted }}> · against {baseRefName ?? 'its base'}</Text>
         </Text>
-      ) : null}
-      {baseRefName && baseRefName !== 'main' ? (
-        <Text style={[styles.note, { color: theme.amber }]}>This PR merges into {baseRefName}; like the desktop quick look, the diff compares it with main.</Text>
       ) : null}
       {error ? <Text accessibilityRole="alert" style={[styles.note, { color: theme.red }]}>{error}</Text> : null}
       {!diff && !error ? <Meta>Reading the changed files…</Meta> : null}
@@ -53,7 +50,7 @@ export function PrDiffTab({ diff, error, loading, onRefresh, url, baseRefName }:
       keyExtractor={(row) => row.path}
       extraData={open}
       ListHeaderComponent={header}
-      ListFooterComponent={diff?.truncated ? <Text style={[styles.note, styles.footer, { color: theme.muted }]} onPress={() => void Linking.openURL(`${url}/files`)}>GitHub lists at most 300 files. Open the rest on GitHub.</Text> : null}
+      ListFooterComponent={diff?.truncated ? <Text style={[styles.note, styles.footer, { color: theme.muted }]} onPress={() => void Linking.openURL(`${url}/files`)}>GitHub lists at most 3,000 files. Open the rest on GitHub.</Text> : null}
       renderItem={({ item }) => <FileRow row={item} open={open.has(item.path)} onToggle={toggle} url={url} />}
       contentContainerStyle={styles.list}
       initialNumToRender={16}
