@@ -95,7 +95,8 @@ query($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }`.trim()
-const REVIEW_THREAD_FIELDS = 'id isResolved viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
+const DIFF_HUNK_CONTEXT_LINES = 8
+const REVIEW_THREAD_FIELDS = 'id isResolved isOutdated viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
 const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   ${RATE_LIMIT_FIELD}
   repository(owner: $owner, name: $name) {
@@ -300,6 +301,12 @@ function requiredNumber(record: JsonRecord, key: string): number {
   const value = record[key]
   if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidUpstream()
   return value
+}
+
+/** GitHub's review-comment hunk runs from the hunk header to the commented line; the last few lines are the context. */
+export function diffHunkTail(hunk: string, lines = DIFF_HUNK_CONTEXT_LINES): string {
+  const rows = hunk.split('\n')
+  return rows.length <= lines ? hunk : rows.slice(-lines).join('\n')
 }
 
 function requiredBoolean(record: JsonRecord, key: string): boolean {
@@ -1468,6 +1475,10 @@ export class PrService {
           kind: kind === 1 && typeof entry.state === 'string' ? entry.state.toLowerCase().replaceAll('_', ' ') : kind === 2 ? 'inline comment' : 'comment',
           ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
           ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
+          // An outdated comment has no current line; keep where it was written.
+          ...(kind === 2 && typeof entry.line !== 'number' && typeof entry.original_line === 'number' ? { originalLine: entry.original_line } : {}),
+          // Only a thread's first comment carries code context; replies share it.
+          ...(kind === 2 && typeof entry.in_reply_to_id !== 'number' && typeof entry.diff_hunk === 'string' ? { diffHunk: diffHunkTail(entry.diff_hunk) } : {}),
           ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
           ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
           ...(kind === 2 && reviewThreads.has(Number(entry.id)) ? { thread: reviewThreads.get(Number(entry.id)) } : {}),
@@ -1543,6 +1554,7 @@ export class PrService {
           id: requiredString(node, 'id'), commentId: requiredNumber(root, 'databaseId'),
           isResolved: requiredBoolean(node, 'isResolved'), viewerCanReply: requiredBoolean(node, 'viewerCanReply'),
           viewerCanResolve: requiredBoolean(node, 'viewerCanResolve'), viewerCanUnresolve: requiredBoolean(node, 'viewerCanUnresolve'),
+          ...(typeof node.isOutdated === 'boolean' ? { isOutdated: node.isOutdated } : {}),
         }
         result.set(thread.commentId, thread)
       }

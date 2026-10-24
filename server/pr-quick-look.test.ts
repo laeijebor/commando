@@ -32,6 +32,30 @@ describe('PR quick look data', () => {
     expect(details.unresolvedThreads).toBe(1)
   })
 
+  it('marks outdated threads and keeps the code context of each thread root', async () => {
+    const hunk = ['@@ -1,10 +1,10 @@', ...Array.from({ length: 10 }, (_, index) => ` line ${index}`)].join('\n')
+    const runner = vi.fn(async (args: string[]) => {
+      const endpoint = args[1]
+      if (endpoint === 'graphql') return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ id: 'PRRT_10', isResolved: false, isOutdated: true, viewerCanReply: true, viewerCanResolve: true, viewerCanUnresolve: false,
+          comments: { nodes: [{ databaseId: 10 }] } }],
+      } } } } })
+      if (endpoint.endsWith('/pulls/12')) return JSON.stringify({ head: { sha: head } })
+      if (endpoint.includes('/check-runs')) return JSON.stringify([{ check_runs: [] }])
+      if (endpoint.includes('/pulls/12/comments')) return JSON.stringify([[
+        { id: 10, path: 'a.ts', line: null, original_line: 7, diff_hunk: hunk, created_at: '2026-01-01' },
+        { id: 11, path: 'a.ts', line: null, original_line: 7, diff_hunk: hunk, in_reply_to_id: 10, created_at: '2026-01-02' },
+      ]])
+      return JSON.stringify([[]])
+    })
+    const details = await new PrService({ runner }).pullRequestDetails('acme/widgets', 12)
+    expect(details.conversation[0]).toMatchObject({ originalLine: 7, thread: { isOutdated: true } })
+    expect(details.conversation[0].line).toBeUndefined()
+    expect(details.conversation[0].diffHunk?.split('\n')).toEqual(Array.from({ length: 8 }, (_, index) => ` line ${index + 2}`))
+    expect(details.conversation[1].diffHunk).toBeUndefined()
+  })
+
   it('loads every conversation page and full bodies, sorting reviews and replies chronologically', async () => {
     const runner = vi.fn(async (args: string[]) => {
       const endpoint = args[1]
