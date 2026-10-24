@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 
@@ -51,6 +51,7 @@ export function useClipboardImage(enabled: boolean): { available: boolean; reche
   const [dismissed, setDismissed] = useState(false)
   const [checks, setChecks] = useState(0)
   const recheck = useCallback(() => setChecks((count) => count + 1), [])
+  const lastState = useRef(AppState.currentState)
 
   useEffect(() => {
     if (!enabled) return
@@ -61,10 +62,17 @@ export function useClipboardImage(enabled: boolean): { available: boolean; reche
 
   useEffect(() => {
     if (!enabled) return
-    // A copy made elsewhere is a new clipboard: offer it again.
-    const fresh = () => { setDismissed(false); recheck() }
-    const appState = AppState.addEventListener('change', (state) => { if (state === 'active') fresh() })
-    const clipboard = Clipboard.addClipboardListener(fresh)
+    // A copy made elsewhere is a new clipboard: offer it again. Only a return
+    // from the background can bring one; Control Center or a banner only
+    // makes the app inactive for a moment.
+    const appState = AppState.addEventListener('change', (state) => {
+      const from = lastState.current
+      lastState.current = state
+      if (state !== 'active') return
+      if (from === 'background') setDismissed(false)
+      recheck()
+    })
+    const clipboard = Clipboard.addClipboardListener(() => { setDismissed(false); recheck() })
     return () => {
       appState.remove()
       clipboard.remove()
@@ -75,7 +83,9 @@ export function useClipboardImage(enabled: boolean): { available: boolean; reche
 }
 
 /** iOS 16's paste control reads the clipboard without the "Allow Paste" prompt. */
-export const pasteButtonAvailable = Clipboard.isPasteButtonAvailable
+export function pasteButtonAvailable(): boolean {
+  return Clipboard.isPasteButtonAvailable
+}
 
 /** The fallback for older iOS: reading the image asks the user for permission first. */
 export async function readClipboardImage(): Promise<ClipboardImageData | null> {

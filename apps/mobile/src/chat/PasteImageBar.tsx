@@ -31,7 +31,7 @@ export function PasteImageBar({ onImage, onError, onDismiss }: {
     <View style={[styles.bar, { borderColor: theme.border }]} testID="chat-paste-image">
       <Feather color={theme.muted} name="image" size={14} />
       <Text numberOfLines={1} style={[styles.label, { color: theme.textSoft }]}>Copied image</Text>
-      {pasteButtonAvailable ? (
+      {pasteButtonAvailable() ? (
         <ClipboardPasteButton
           accessibilityLabel="Paste image"
           acceptedContentTypes={['image']}
@@ -41,8 +41,8 @@ export function PasteImageBar({ onImage, onError, onDismiss }: {
           foregroundColor={theme.accentInk}
           imageOptions={{ format: 'png' }}
           onPress={(data) => {
+            // Only images are accepted; a stray text item from a mixed copy is ignored.
             if (data.type === 'image') onImage(data)
-            else onError('The clipboard no longer holds an image')
           }}
           style={styles.control}
         />

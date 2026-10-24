@@ -221,7 +221,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           if (!prepared.ok) return drop(prepared.error)
           const ref = await uploadChatImage(host, prepared.image)
           if (!mounted.current) return
-          setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: prepared.image.name, ref } : attachment)))
+          setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: prepared.image.name, uri: prepared.image.uri, ref } : attachment)))
         } catch (error) {
           drop(`${image.name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -246,8 +246,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   // The clipboard's image is offered while it holds one; a paste uses it up until the clipboard changes.
   const clipboardImage = useClipboardImage(richInput && !disabled)
   const pasteImage = (data: ClipboardImageData) => {
-    clipboardImage.dismiss()
+    // Kept on offer when there's no room, so it can come in once an image is removed.
     if (!roomForImages()) return
+    clipboardImage.dismiss()
     const image = pastedImage(data)
     if (!image) {
       setAttachError('The clipboard image is in a format that can\'t be attached')
