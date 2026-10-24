@@ -129,11 +129,14 @@ function Thread({ item, url }: { item: Extract<PrTimelineItem, { type: 'thread' 
   return (
     <View accessibilityLabel={`Review thread on ${location}${item.resolved ? ', resolved' : ''}${item.outdated ? ', outdated' : ''}`}
       style={[styles.card, styles.thread, { borderColor: item.resolved ? theme.border : withAlpha(theme.amber, 0.35), backgroundColor: theme.surface }]}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpanded((value) => !value)} style={styles.threadHead}>
-        <Feather name="file-text" size={13} color={theme.muted} />
-        <Text numberOfLines={1} ellipsizeMode="head" style={[styles.location, { color: theme.textSoft }]}>{location}</Text>
-        {item.outdated ? <Pill label="Outdated" tone="warn" /> : null}
-        <Pill label={item.resolved ? 'Resolved' : 'Open'} tone={item.resolved ? 'ok' : 'mute'} />
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpanded((value) => !value)} style={styles.threadToggle}>
+        <View style={styles.threadHead}>
+          <Feather name="file-text" size={13} color={theme.muted} />
+          <Text numberOfLines={1} ellipsizeMode="head" style={[styles.location, { color: theme.textSoft }]}>{location}</Text>
+          {item.outdated ? <Pill label="Outdated" tone="warn" /> : null}
+          <Pill label={item.resolved ? 'Resolved' : 'Open'} tone={item.resolved ? 'ok' : 'mute'} />
+        </View>
+        {expanded ? null : <Text style={[styles.note, { color: theme.muted }]}>{item.entry.author} · {count} {count === 1 ? 'comment' : 'comments'} · tap to show</Text>}
       </Pressable>
       {expanded ? (
         <>
@@ -149,9 +152,7 @@ function Thread({ item, url }: { item: Extract<PrTimelineItem, { type: 'thread' 
             </View>
           ))}
         </>
-      ) : (
-        <Text style={[styles.note, { color: theme.muted }]}>{item.entry.author} · {count} {count === 1 ? 'comment' : 'comments'} · tap to show</Text>
-      )}
+      ) : null}
     </View>
   )
 }
@@ -171,6 +172,7 @@ const styles = StyleSheet.create({
   time: { fontSize: 12 },
   reviewHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   flex: { flex: 1, minWidth: 0 },
+  threadToggle: { gap: 8 },
   threadHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   location: { flex: 1, fontFamily: MONO, fontSize: 12 },
   threadComment: { gap: 6 },
