@@ -111,13 +111,13 @@ export function fetchFileDiff(host: Host, paneId: string, file: string): Promise
   )
 }
 
-/** `GET /api/git/repo?path=…` — whether a directory is a checkout, and which one. */
 /** `GET /api/tmux/claude-profiles` — the Claude profiles (config folders) a chat can start with. */
 export async function fetchClaudeProfiles(host: Host): Promise<ClaudeProfile[]> {
   const body = await json<{ profiles: ClaudeProfile[] }>(host, TMUX_CREATE_ROUTES.claudeProfiles, 'Profile lookup failed')
   return body.profiles
 }
 
+/** `GET /api/git/repo?path=…` — whether a directory is a checkout, and which one. */
 export function fetchRepoInfo(host: Host, directory: string): Promise<GitRepoInfo> {
   return json<GitRepoInfo>(host, `/api/git/repo${query({ path: directory })}`, 'Repository probe failed')
 }
