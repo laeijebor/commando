@@ -49,6 +49,22 @@ describe('bounded chat replay', () => {
     expect(windowed.omittedItems).toBe(8)
   })
 
+  it('keeps an older item the host is still updating, so its updates land in place', () => {
+    const subagent: ChatItem = { id: 'sub', turnId: 't', status: 'running', createdAt: 1, updatedAt: 1, kind: 'tool', toolUseId: 'a1', toolName: 'Task', title: 'Explore' }
+    const items = [command('old'), subagent, ...Array.from({ length: 10 }, () => command('x'.repeat(1_000)))]
+    const windowed = windowChatState(chat(items), 2_500)
+    expect(windowed.items.map((item) => item.id)).toEqual(['sub', ...items.slice(-2).map((item) => item.id)])
+  })
+
+  it('leaves the chats a client fetched in full whole', () => {
+    const items = Array.from({ length: 10 }, () => command('x'.repeat(1_000)))
+    const message = { type: 'chat_state' as const, chat: chat(items) }
+    const whole = chatMessageForClient(message, 2_400, new Set(['%1']))
+    expect(whole.type === 'chat_state' && whole.chat).toBe(message.chat)
+    const other = chatMessageForClient(message, 2_400, new Set(['%2']))
+    expect(other.type === 'chat_state' && other.chat.items).toHaveLength(2)
+  })
+
   it('bounds chat snapshots and states for a budgeted client only', () => {
     const items = Array.from({ length: 10 }, () => command('x'.repeat(1_000)))
     const snapshot = { type: 'chat_snapshot' as const, chats: [chat(items)] }

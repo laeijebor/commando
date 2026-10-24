@@ -19,14 +19,19 @@ export function chatHistoryBudget(url: URL): number | undefined {
   return Math.min(MAX_CHAT_HISTORY_BYTES, Math.max(MIN_CHAT_HISTORY_BYTES, Number(raw)))
 }
 
-function isOpenRequest(item: ChatItem): boolean {
-  return item.kind === 'request' && item.status === 'running' && !item.answer
+/**
+ * Items the host may still update, however old: a waiting request, a running
+ * subagent or command. Left out, a later update to one would land at the end
+ * of the client's timeline instead of in its place.
+ */
+function isLive(item: ChatItem): boolean {
+  return item.status === 'running'
 }
 
 /**
  * The newest items that fit in `budget` bytes of JSON (at least the newest
- * one), plus any request still waiting for an answer however old, in their
- * original order. `omittedItems` counts what was left on the daemon.
+ * one), plus any older item still running, in their original order.
+ * `omittedItems` counts what was left on the daemon.
  */
 export function windowChatState(state: ChatState, budget: number): ChatState {
   const { items } = state
@@ -39,14 +44,18 @@ export function windowChatState(state: ChatState, budget: number): ChatState {
     start -= 1
   }
   if (start === 0) return state.omittedItems ? { ...state, omittedItems: 0 } : state
-  const kept = [...items.slice(0, start).filter(isOpenRequest), ...items.slice(start)]
+  const kept = [...items.slice(0, start).filter(isLive), ...items.slice(start)]
   return { ...state, items: kept, omittedItems: items.length - kept.length }
 }
 
-/** What one client is sent: the message itself, or its chats bounded to the client's budget. */
-export function chatMessageForClient(message: ServerMessage, budget: number | undefined): ServerMessage {
+/**
+ * What one client is sent: the message itself, or its chats bounded to the
+ * client's budget, except the chats it has fetched in full.
+ */
+export function chatMessageForClient(message: ServerMessage, budget: number | undefined, full: ReadonlySet<string> = new Set()): ServerMessage {
   if (budget === undefined) return message
-  if (message.type === 'chat_snapshot') return { ...message, chats: message.chats.map((chat) => windowChatState(chat, budget)) }
-  if (message.type === 'chat_state') return { ...message, chat: windowChatState(message.chat, budget) }
+  const bound = (chat: ChatState): ChatState => (full.has(chat.paneId) ? chat : windowChatState(chat, budget))
+  if (message.type === 'chat_snapshot') return { ...message, chats: message.chats.map(bound) }
+  if (message.type === 'chat_state') return { ...message, chat: bound(message.chat) }
   return message
 }

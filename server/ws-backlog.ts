@@ -13,16 +13,23 @@
 export const WS_BACKLOG_SOFT_BYTES = 32 * 1024 * 1024
 export const WS_BACKLOG_HARD_BYTES = 256 * 1024 * 1024
 export const WS_BACKLOG_STALL_MS = 30_000
+/**
+ * Node only lowers a socket's queued length when a whole write completes, so
+ * one 30 MB frame would look stalled until its last byte left. Larger messages
+ * go out as fragments of this size, each its own write.
+ */
+export const WS_FRAGMENT_BYTES = 1024 * 1024
 
 export type WsBacklogLimits = { softBytes: number; hardBytes: number; stallMs: number }
 
-/** The bytes `ws` queues for one unmasked server frame: its payload plus the header. */
-export function wsFrameBytes(payloadBytes: number): number {
-  return payloadBytes + (payloadBytes < 126 ? 2 : payloadBytes < 65_536 ? 4 : 10)
+/** The part of a `ws` socket the backlog needs. */
+export type WsSendTarget = {
+  readonly bufferedAmount: number
+  send(data: string | Buffer, options?: { binary?: boolean; fin?: boolean }): void
 }
 
 export class WsBacklog {
-  /** Everything queued on the socket so far, in the same units as `bufferedAmount`. */
+  /** Everything queued on the socket so far, in `bufferedAmount`'s own units. */
   private queued = 0
   /** Set while over the soft limit: how much had drained, and since when it has not grown. */
   private stall: { drained: number; since: number } | null = null
@@ -51,8 +58,27 @@ export class WsBacklog {
     return now - this.stall.since >= this.limits.stallMs ? 'Client is not consuming output' : null
   }
 
-  /** Records a frame handed to the socket. */
-  sent(payloadBytes: number): void {
-    this.queued += wsFrameBytes(payloadBytes)
+  /** Records what a send added to `bufferedAmount`. */
+  sent(units: number): void {
+    this.queued += units
+  }
+
+  /**
+   * Sends one text message, fragmenting a large one so its progress shows in
+   * `bufferedAmount`, and records what it queued as the socket measures it
+   * (UTF-16 units for a string, bytes for a buffer, headers included).
+   */
+  write(socket: WsSendTarget, serialized: string): void {
+    const before = socket.bufferedAmount
+    if (serialized.length <= WS_FRAGMENT_BYTES) {
+      socket.send(serialized)
+    } else {
+      const data = Buffer.from(serialized)
+      for (let offset = 0; offset < data.length; offset += WS_FRAGMENT_BYTES) {
+        const end = Math.min(offset + WS_FRAGMENT_BYTES, data.length)
+        socket.send(data.subarray(offset, end), { binary: false, fin: end === data.length })
+      }
+    }
+    this.sent(Math.max(0, socket.bufferedAmount - before))
   }
 }
