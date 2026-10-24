@@ -35,3 +35,14 @@ it('follows open/send and pinned streaming, preserves a reader above the end, an
   act(() => jest.advanceTimersByTime(30))
   expect(scroll).toHaveBeenCalled()
 })
+it('ignores the momentum end of its own scrollToEnd, so following never loops', async () => {
+  const scroll = jest.spyOn(FlatList.prototype, 'scrollToEnd').mockImplementation(() => undefined)
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" items={[item('user_message', { text: 'Hi' })]} working={false} /></ThemeProvider>)
+  await act(async () => undefined)
+  act(() => jest.advanceTimersByTime(30))
+  scroll.mockClear()
+  // iOS reports a momentum end for the programmatic scroll, with no begin.
+  fireEvent(screen.getByTestId('chat-timeline'), 'momentumScrollEnd', scrollEvent(1000))
+  act(() => jest.advanceTimersByTime(30))
+  expect(scroll).not.toHaveBeenCalled()
+})

@@ -77,4 +77,40 @@ describe('the chat channel', () => {
     jest.advanceTimersByTime(15_000)
     await expect(slow).resolves.toMatchObject({ error: 'The file search timed out' })
   })
+
+  it('stops and backgrounds subagents with the messages the web sends', () => {
+    const { client, channel, actionRefused } = setup()
+    channel.task('stop', 'agent-1', 'tool-1')
+    channel.task('background', 'agent-1', 'tool-1')
+    channel.stopExternal('run-1')
+    expect(client.sent.map(({ requestId: _id, ...message }) => message)).toEqual([
+      { type: 'chat_task', paneId: '%7', action: 'stop', agentId: 'agent-1', toolUseId: 'tool-1' },
+      { type: 'chat_task', paneId: '%7', action: 'background', agentId: 'agent-1', toolUseId: 'tool-1' },
+      { type: 'chat_external_stop', paneId: '%7', runId: 'run-1' },
+    ])
+    client.emit({ type: 'error', code: 'chat_task_failed', message: 'That subagent already finished', requestId: client.sent[0]!.requestId })
+    expect(actionRefused).toHaveBeenCalledWith('That subagent already finished')
+  })
+
+  it('reads a subagent transcript by request id, and resolves on refusal, timeout or no socket', async () => {
+    jest.useFakeTimers()
+    const { client, channel } = setup()
+    const read = channel.subagentTranscript('agent-1')
+    const request = client.last('chat_subagent_transcript')!
+    expect(request).toMatchObject({ paneId: '%7', agentId: 'agent-1' })
+    client.emit({ type: 'chat_subagent_transcript_result', paneId: '%7', requestId: 'someone-else', items: [] })
+    client.emit({ type: 'chat_subagent_transcript_result', paneId: '%7', requestId: request.requestId, items: [], error: 'gone' })
+    await expect(read).resolves.toEqual({ items: [], error: 'gone' })
+
+    const refused = channel.subagentTranscript('agent-2')
+    client.emit({ type: 'error', code: 'chat_not_found', message: 'No such pane', requestId: client.last('chat_subagent_transcript')!.requestId })
+    await expect(refused).resolves.toEqual({ items: [], error: 'No such pane' })
+
+    const slow = channel.subagentTranscript('agent-3')
+    jest.advanceTimersByTime(25_000)
+    await expect(slow).resolves.toEqual({ items: [], error: 'Reading the transcript timed out' })
+
+    client.connected = false
+    await expect(channel.subagentTranscript('agent-4')).resolves.toEqual({ items: [], error: 'Not connected to Commando' })
+  })
 })

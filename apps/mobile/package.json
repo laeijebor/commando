@@ -61,6 +61,7 @@
       "^@commando/chat-composer$": "<rootDir>/../../shared/chat-composer.ts",
       "^@commando/redline-response$": "<rootDir>/../../shared/redline-response.ts",
       "^@commando/canvas-manifest$": "<rootDir>/../../shared/canvas-manifest.ts",
+      "^@commando/chat-subagents$": "<rootDir>/../../shared/chat-subagents.ts",
       "^\\./agent-chat\\.js$": "<rootDir>/../../shared/agent-chat.ts",
       "^\\./chat-mcp\\.js$": "<rootDir>/../../shared/chat-mcp.ts",
       "^\\./tile-inspect\\.js$": "<rootDir>/../../shared/tile-inspect.ts",

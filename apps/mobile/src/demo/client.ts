@@ -4,6 +4,7 @@ import { useDaemonStore } from '../daemon/store'
 import { useChatStore } from '../chat/store'
 import { item } from '../chat/testing'
 import { demoMessages } from './seed'
+import { demoSubagentTranscript } from './subagents'
 
 /** Uses the real reducers/channel; no socket or HTTP server exists for this host. */
 export class DemoDaemonClient extends DaemonClient {
@@ -49,16 +50,30 @@ export class DemoDaemonClient extends DaemonClient {
     const chat = 'paneId' in message ? useChatStore.getState().byHost[this.hostId]?.[message.paneId] : undefined
     if (!chat) return requestId
     if (message.type === 'chat_send') {
-      this.emit({ type: 'chat_items', paneId: chat.paneId, items: [item('user_message', { text: message.text, images: message.images })] })
+      this.emit({ type: 'chat_items', paneId: chat.paneId, items: [item('user_message', { text: message.text, images: message.images, ...(message.relayTo ? { relayTo: message.relayTo } : {}) })] })
       this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'running' }, hostConnected: true })
       const reply = item('assistant_message', { text: 'I’m on it.', status: 'running' })
-      const chunks = ['I’m on it.', 'I’m on it. The next pass keeps the desktop hierarchy', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout easier to scan.']
+      const chunks = message.relayTo
+        ? ['Passing that on', `Passing that on to @${message.relayTo.label} with SendMessage.`]
+        : ['I’m on it.', 'I’m on it. The next pass keeps the desktop hierarchy', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout easier to scan.']
       chunks.forEach((text, index) => this.later(() => {
         if (reply.kind !== 'assistant_message') return
         const done = index === chunks.length - 1
         this.emit({ type: 'chat_items', paneId: chat.paneId, items: [{ ...reply, text, status: done ? 'completed' : 'running', updatedAt: Date.now() }] })
         if (done) this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'idle' }, hostConnected: true })
       }, 250 + index * 450))
+    } else if (message.type === 'chat_task') {
+      const agent = chat.items.find((entry) => entry.kind === 'subagent' && entry.agentId === message.agentId)
+      if (agent?.kind === 'subagent') {
+        const stopped = message.action === 'stop'
+        this.later(() => this.emit({ type: 'chat_items', paneId: chat.paneId, items: [{ ...agent, ...(stopped ? { state: 'stopped' as const, status: 'interrupted' as const, summary: 'Stopped from the phone.' } : { background: true }), updatedAt: Date.now() }] }), 150)
+      }
+    } else if (message.type === 'chat_external_stop') {
+      const now = Date.now()
+      const runs = (useChatStore.getState().externalRuns[this.hostId]?.[chat.paneId] ?? []).map((run) => (run.id === message.runId ? { ...run, state: 'stopped' as const, finishedAt: now, updatedAt: now, summary: 'Stopped from the phone.' } : run))
+      this.later(() => this.emit({ type: 'chat_external_runs', paneId: chat.paneId, runs }), 150)
+    } else if (message.type === 'chat_subagent_transcript') {
+      this.later(() => this.emit({ type: 'chat_subagent_transcript_result', paneId: chat.paneId, requestId, ...demoSubagentTranscript(message.agentId) }), 600)
     } else if (message.type === 'chat_interrupt') {
       this.timers.forEach(clearTimeout); this.timers.clear()
       this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'idle' }, hostConnected: true })

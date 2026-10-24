@@ -1,6 +1,6 @@
 import type { ChatItem, ChatSessionInfo, ChatSessionPermissionMode } from '../../shared/agent-chat'
 import type { ChatPermissionMode } from '../../shared/tmux-create'
-import type { PlanItem, SubagentItem } from '../../shared/chat-timeline'
+import type { PlanItem } from '../../shared/chat-timeline'
 
 // ---- plans (after t3code's proposedPlan.ts) ----
 
@@ -40,77 +40,13 @@ export function implementPlanFilePrompt(path: string): string {
 
 // ---- subagents ----
 
-/** "12s", "3m 05s", "1h 02m". */
-export function elapsedLabel(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
-  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
-}
-
-/**
- * Tool count, elapsed time and the latest thing a subagent did, from its task
- * events or its own items. Counts are null when nothing reported them (a
- * resumed background subagent), rather than a misleading zero.
- */
-export function subagentActivity(agent: SubagentItem, items: readonly ChatItem[], now: number): { toolUses: number | null; elapsedMs: number | null; lastAction: string | null } {
-  const own = items.filter((item) => item.parentToolUseId === agent.id)
-  const work = own.filter((item) => item.kind === 'command' || item.kind === 'file_change' || item.kind === 'tool' || item.kind === 'subagent')
-  const last = work.at(-1)
-  const lastWork = last
-    ? last.kind === 'command' ? `$ ${last.command}` : last.kind === 'file_change' ? `Edited ${last.path}` : last.kind === 'subagent' ? `Subagent: ${last.description}` : last.title
-    : null
-  const running = agent.state === 'running' || agent.state === 'quiet'
-  const spanMs = agent.updatedAt - agent.createdAt
-  return {
-    toolUses: agent.toolUses !== undefined || work.length ? Math.max(agent.toolUses ?? 0, work.length) : null,
-    // Live elapsed time ticks from when Claude started it. Afterwards, Claude's own
-    // total; a stopped subagent's last progress report undercounts, so never less than it ran.
-    elapsedMs: running ? now - agent.createdAt : agent.durationMs !== undefined || spanMs >= 1000 ? Math.max(agent.durationMs ?? 0, spanMs) : null,
-    lastAction: agent.runtime ? (running ? agent.lastAction ?? agent.summary : agent.summary ?? agent.lastAction) ?? null : running ? agent.summary ?? lastWork ?? (agent.lastToolName ? `Using ${agent.lastToolName}` : null) : agent.summary ?? lastWork,
-  }
-}
-
-/** The subagent a view is open on, by its Agent call's id. */
-export function findSubagent(items: readonly ChatItem[], toolUseId: string): SubagentItem | undefined {
-  const item = items.find((candidate) => candidate.id === toolUseId)
-  return item?.kind === 'subagent' ? item : undefined
-}
-
-/**
- * The agents the switcher lists (after the Claude Code TUI's agent list):
- * every running subagent, the subagents of the latest turn that started any,
- * and the one being viewed, oldest first.
- */
-export function switcherSubagents(items: readonly ChatItem[], viewing?: string): SubagentItem[] {
-  const subagents = items.filter((item): item is SubagentItem => item.kind === 'subagent' && !item.parentToolUseId)
-  const latestTurn = subagents.at(-1)?.turnId
-  return subagents.filter((item) => item.state === 'running' || item.state === 'quiet' || item.turnId === latestTurn || item.id === viewing)
-}
-
-/** Runtime, model and effort occupy the SDK subagent type slot. */
-export function subagentTypeLabel(agent: SubagentItem): string {
-  if (!agent.runtime) return agent.subagentType ?? ''
-  const names = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode', cursor: 'Cursor' }
-  const model = [agent.model, agent.effort].filter(Boolean).join(' ')
-  return `${names[agent.runtime]}${model ? ` · ${model}` : ''}`
-}
-
-/** A short name for a subagent in labels: its description, else its type. */
-export function subagentLabel(agent: SubagentItem): string {
-  return agent.description || agent.subagentType || 'Subagent'
-}
-
-/**
- * Whether "Message @agent" can reach it now. Main Claude relays with
- * SendMessage, which a background subagent reads at its next tool round and
- * which resumes a finished one. A foreground subagent holds main Claude in
- * its Agent call, so the relay would only arrive after it ends.
- */
-export function relayAvailability(agent: SubagentItem): { ok: true } | { ok: false; reason: string } {
-  if (agent.runtime) return { ok: false, reason: 'External runs have no message relay or transcript' }
-  if (!agent.agentId) return { ok: false, reason: "Claude hasn't reported this subagent's id yet" }
-  if (agent.state === 'running' && !agent.background) return { ok: false, reason: 'Background this subagent to message it while it runs' }
-  return { ok: true }
-}
+// Shared with the companion app; re-exported so the web's imports stay put.
+export {
+  elapsedLabel,
+  findSubagent,
+  relayAvailability,
+  subagentActivity,
+  subagentLabel,
+  subagentTypeLabel,
+  switcherSubagents,
+} from '../../shared/chat-subagents'
