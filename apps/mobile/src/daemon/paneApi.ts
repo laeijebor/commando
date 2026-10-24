@@ -9,6 +9,7 @@ import type {
 import { TMUX_CREATE_ROUTES, parseTmuxCreateResponse, requireSessionAgentLaunch } from '@commando/tmux-create'
 
 import type { PrDetail } from '../pane/prs'
+import type { PrPreview } from '../pr/api'
 import { authHeaders, daemonFetch, DaemonHttpError } from '../hosts/api'
 import type { Host } from '../hosts/types'
 
@@ -51,6 +52,8 @@ export type PanePrSummary = {
   isDraft: boolean
   createdAt: string
   updatedAt: string
+  /** The PR's full summary; daemons since pane PR previews send it. */
+  preview?: PrPreview
 }
 
 export type PanePrList = {
