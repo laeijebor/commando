@@ -31,6 +31,9 @@
       ],
       "@commando/session-identity": [
         "../../shared/session-identity.ts"
+      ],
+      "@commando/guide-types": [
+        "../../shared/guide-types.ts"
       ]
     }
   },

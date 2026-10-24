@@ -62,7 +62,8 @@
       "^\\./chat-mcp\\.js$": "<rootDir>/../../shared/chat-mcp.ts",
       "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",
       "^@/(.*)$": "<rootDir>/src/$1",
-      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts"
+      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts",
+      "^@commando/guide-types$": "<rootDir>/../../shared/guide-types.ts"
     },
     "testPathIgnorePatterns": [
       "/node_modules/",
