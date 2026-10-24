@@ -251,6 +251,19 @@ describe('chat PR strip', () => {
     expect(JSON.parse(window.localStorage.getItem(MINIMISED_PR_STRIPS_STORAGE_KEY) ?? '[]')).toEqual([])
   })
 
+  it('keeps changes another strip saved after this one mounted', async () => {
+    setup([pr(12), pr(13)])
+    const toggle = await screen.findByRole('button', { name: /^2 PRs/ })
+    // Another chat pane's strip saves its own state while this one is on screen.
+    window.localStorage.setItem(MINIMISED_PR_STRIPS_STORAGE_KEY, JSON.stringify(['other-pane']))
+    window.localStorage.setItem(DISMISSED_PRS_STORAGE_KEY, JSON.stringify(['other-pane:acme/widgets#1']))
+    fireEvent.click(toggle)
+    expect(JSON.parse(window.localStorage.getItem(MINIMISED_PR_STRIPS_STORAGE_KEY) ?? '[]')).toEqual(['other-pane', targetId])
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss PR #12' }))
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual(['other-pane:acme/widgets#1', `${targetId}:acme/widgets#12`])
+  })
+
   it('skips the minimise header for a single PR', async () => {
     setup([pr(12)])
     await screen.findByRole('link', { name: 'Open PR #12 on GitHub' })

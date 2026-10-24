@@ -16,12 +16,12 @@ export const DISMISSED_PRS_STORAGE_KEY = 'commando.chat.dismissed-prs'
 export const MINIMISED_PR_STRIPS_STORAGE_KEY = 'commando.chat.minimised-pr-strips'
 const MAX_STORED_KEYS = 200
 
-function storedKeys(storageKey: string): string[] {
+function storedKeys(storageKey: string, fallback: string[] = []): string[] {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]')
     return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string').slice(-MAX_STORED_KEYS) : []
   } catch {
-    return []
+    return fallback
   }
 }
 
@@ -31,6 +31,14 @@ function storeKeys(storageKey: string, keys: string[]): void {
   } catch {
     // The strip still works in memory when storage is unavailable.
   }
+}
+
+// Re-reads storage first so strips mounted side by side don't overwrite each other's changes.
+function setStoredKey(storageKey: string, current: string[], key: string, present: boolean): string[] {
+  const keys = storedKeys(storageKey, current).filter((stored) => stored !== key)
+  const next = present ? [...keys, key] : keys
+  storeKeys(storageKey, next)
+  return next
 }
 
 function stripSummary(prs: PanePrSummary[]): string {
@@ -168,20 +176,16 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
   }
   // Keyed by the pane's stable target so a reused tmux pane id starts clean.
   const dismissKey = (pr: PanePrSummary) => `${list.targetId}:${pr.repo}#${pr.number}`
-  const updateDismissed = (keys: string[]) => { setDismissed(keys); storeKeys(DISMISSED_PRS_STORAGE_KEY, keys) }
+  const setDismissedPr = (pr: PanePrSummary, isDismissed: boolean) => setDismissed(setStoredKey(DISMISSED_PRS_STORAGE_KEY, dismissed, dismissKey(pr), isDismissed))
   const prs = [...list.pullRequests].sort((left, right) => Number(right.state === 'open') - Number(left.state === 'open'))
   // A single PR is already one line, so only longer lists get the minimise header.
   const minimisable = prs.length > 1
   const minimised = minimisable && minimisedStrips.includes(list.targetId)
-  const toggleMinimised = () => {
-    const keys = minimised ? minimisedStrips.filter((key) => key !== list.targetId) : [...minimisedStrips, list.targetId]
-    setMinimisedStrips(keys)
-    storeKeys(MINIMISED_PR_STRIPS_STORAGE_KEY, keys)
-  }
+  const toggleMinimised = () => setMinimisedStrips(setStoredKey(MINIMISED_PR_STRIPS_STORAGE_KEY, minimisedStrips, list.targetId, !minimised))
   const shown = prs.filter((pr) => !dismissed.includes(dismissKey(pr)))
   const hidden = prs.filter((pr) => dismissed.includes(dismissKey(pr)))
   const restore = (pr: PanePrSummary) => {
-    updateDismissed(dismissed.filter((key) => key !== dismissKey(pr)))
+    setDismissedPr(pr, false)
     if (hidden.length === 1) setExpanded(false)
   }
   return (
@@ -217,7 +221,7 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
               </>}
               {isDismissed
                 ? <button type="button" className="chat-pr-dismiss" aria-label={`Restore PR #${pr.number}`} title="Restore" onClick={() => restore(pr)}><Undo2 className="size-3.5" /></button>
-                : <button type="button" className="chat-pr-dismiss" aria-label={`Dismiss PR #${pr.number}`} title="Dismiss" onClick={() => updateDismissed([...dismissed, dismissKey(pr)])}><X className="size-3.5" /></button>}
+                : <button type="button" className="chat-pr-dismiss" aria-label={`Dismiss PR #${pr.number}`} title="Dismiss" onClick={() => setDismissedPr(pr, true)}><X className="size-3.5" /></button>}
             </div>
           )
         })}
