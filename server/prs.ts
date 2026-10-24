@@ -303,6 +303,20 @@ function requiredNumber(record: JsonRecord, key: string): number {
   return value
 }
 
+/** GitHub lists at most this many files for a pull request. */
+const PR_FILES_LIMIT = 3_000
+
+function remoteDiffFile(file: unknown): import('../shared/pr-quick-look.js').PrRemoteDiff['files'][number] {
+  if (!isRecord(file)) throw invalidUpstream()
+  return {
+    path: requiredString(file, 'filename'),
+    status: requiredString(file, 'status'),
+    additions: typeof file.additions === 'number' ? file.additions : 0,
+    deletions: typeof file.deletions === 'number' ? file.deletions : 0,
+    patch: typeof file.patch === 'string' ? file.patch : null,
+  }
+}
+
 /** GitHub's review-comment hunk runs from the hunk header to the commented line; the last few lines are the context. */
 export function diffHunkTail(hunk: string, lines = DIFF_HUNK_CONTEXT_LINES): string {
   const rows = hunk.split('\n')
@@ -1649,28 +1663,27 @@ export class PrService {
     return this.conflictInspector.inspect({ ...refs, repo, number })
   }
 
-  async pullRequestDiff(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {
+  async pullRequestDiff(repoInput: unknown, numberInput: unknown, against: 'main' | 'pr' = 'main'): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
     const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
     const head = requiredString(objectField(pr, 'head'), 'sha')
     if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
+    if (against === 'pr') {
+      // GitHub's "Files changed": the PR against its own base, which still means something once it has merged.
+      const base = requiredString(objectField(pr, 'base'), 'sha')
+      const pages: unknown = JSON.parse(await this.ghRead(['api', `repos/${repo}/pulls/${number}/files?per_page=100`, '--paginate', '--slurp']))
+      if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw invalidUpstream()
+      const files = pages.flat().map(remoteDiffFile)
+      return { base, head, files, truncated: files.length >= PR_FILES_LIMIT }
+    }
     // GitHub's main is the remote origin/main, independent of local worktree state.
     const main = parseGhObject(await this.ghRead(['api', `repos/${repo}/commits/main`]))
     const base = requiredString(main, 'sha')
     if (!/^[a-f0-9]{40}$/i.test(base)) throw invalidUpstream()
     const comparison = parseGhObject(await this.ghRead(['api', `repos/${repo}/compare/${base}...${head}`]))
     if (!Array.isArray(comparison.files)) throw invalidUpstream()
-    const files = comparison.files.map((file: unknown) => {
-      if (!isRecord(file)) throw invalidUpstream()
-      return {
-        path: requiredString(file, 'filename'),
-        status: requiredString(file, 'status'),
-        additions: typeof file.additions === 'number' ? file.additions : 0,
-        deletions: typeof file.deletions === 'number' ? file.deletions : 0,
-        patch: typeof file.patch === 'string' ? file.patch : null,
-      }
-    })
+    const files = comparison.files.map(remoteDiffFile)
     return { base, head, files, truncated: files.length >= 300 }
   }
 

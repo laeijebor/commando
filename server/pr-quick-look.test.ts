@@ -123,6 +123,20 @@ describe('PR quick look data', () => {
     expect(result.files[1].patch).toBeNull()
   })
 
+  it('lists the PR\'s own files against its base when asked, so a merged PR still has a diff', async () => {
+    const runner = vi
+      .fn()
+      .mockResolvedValueOnce(JSON.stringify({ head: { sha: head }, base: { ref: 'main', sha: main } }))
+      .mockResolvedValueOnce(JSON.stringify([
+        [{ filename: 'a.ts', status: 'modified', additions: 1, deletions: 1, patch: '@@\n-old\n+new' }],
+        [{ filename: 'b.png', status: 'added', additions: 0, deletions: 0 }],
+      ]))
+    const result = await new PrService({ runner }).pullRequestDiff('acme/widgets', 12, 'pr')
+    expect(runner).toHaveBeenNthCalledWith(2, ['api', 'repos/acme/widgets/pulls/12/files?per_page=100', '--paginate', '--slurp'])
+    expect(result).toMatchObject({ base: main, head, truncated: false })
+    expect(result.files.map((file) => [file.path, file.patch])).toEqual([['a.ts', '@@\n-old\n+new'], ['b.png', null]])
+  })
+
   it('rejects invalid input before sending requests', async () => {
     const runner = vi.fn()
     const service = new PrService({ runner })
