@@ -21,7 +21,11 @@ only. Bundle id `com.commando.companion`.
   providers, with session identity headers, right-aligned user bubbles, flat
   Markdown replies, foldable tool/thinking activity and scrollable code/diffs.
   Sending, queueing, steering, stopping, attachments and command/file menus use
-  the existing chat channel. Terminal-only panes retain xterm, fit, keys and paste.
+  the existing chat channel. While the clipboard holds an image (a screenshot,
+  an image copied in Photos or Safari, or one from the Mac over Universal
+  Clipboard) the composer offers it above the field; iOS's paste control reads
+  it without the "Allow Paste" prompt, and it uploads like a picked photo. Text
+  still pastes through the field's own menu. Terminal-only panes retain xterm, fit, keys and paste.
 - **Pane tabs** — Chat/Terminal, Worklog, Changes, linked PRs and attached web
   tabs in desktop order. Switching keeps the conversation mounted. Chromium
   opens the existing full-screen tile route with its interaction/review controls;
