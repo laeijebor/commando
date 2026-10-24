@@ -148,6 +148,39 @@ then `expo start` against it:
 npx eas build --profile development --platform ios
 ```
 
+## Over-the-air updates
+
+The app is linked to the EAS project `@laeijebor/commando-companion` and
+checks the `production` channel on every launch. A new update downloads in the
+background and runs from the next cold start, so after publishing, open the
+app, swipe it away, and open it again.
+
+Publish JavaScript and asset changes from `apps/mobile`:
+
+```sh
+npx eas-cli update --channel production --platform ios --message "what changed"
+```
+
+An update only reaches builds with the same runtime version, which follows the
+app version (`expo.version` in `app.json`). Adding, removing or upgrading a
+native module needs a new build: bump `expo.version`, rebuild, and install it.
+A phone build signed with the team's development profile can be shared without
+a cable through EAS internal distribution:
+
+```sh
+npx expo prebuild -p ios --clean
+xcodebuild -workspace ios/Commando.xcworkspace -scheme Commando -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath /tmp/Commando.xcarchive \
+  -allowProvisioningUpdates archive
+xcodebuild -exportArchive -archivePath /tmp/Commando.xcarchive \
+  -exportOptionsPlist scripts/ExportOptions.development.plist -exportPath /tmp/Commando-ipa \
+  -allowProvisioningUpdates
+npx eas-cli upload --platform ios --build-path /tmp/Commando-ipa/Commando.ipa
+```
+
+Only devices in that profile can install it. Builds made before EAS Update was
+added never check for updates and must be replaced once.
+
 ## Pointing at a daemon over Tailscale
 
 Start the daemon on the Mac with Tailscale binding enabled:
