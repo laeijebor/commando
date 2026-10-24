@@ -20,8 +20,11 @@ type StepContext = {
 const GuideSteps = createContext<StepContext | null>(null)
 
 /** A guide tab drawn natively: its Markdown with every step a large checkbox, notes, and "Update agent". */
-export function GuideView({ host, tile, active = true }: { host: Host; tile: GuideTile; active?: boolean }): React.JSX.Element {
+export function GuideView({ host, tile, active = true, onTitle }: { host: Host; tile: GuideTile; active?: boolean; onTitle?: (title: string) => void }): React.JSX.Element {
   const guide = useGuide(host, tile.id, tile.content, active)
+  // The first H1 names the guide, as the desktop titles its tab.
+  const title = guide.snapshot?.title
+  useEffect(() => { if (title) onTitle?.(title) }, [title, onTitle])
   return <GuideBody guide={guide} />
 }
 

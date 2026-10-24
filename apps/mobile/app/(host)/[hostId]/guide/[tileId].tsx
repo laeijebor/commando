@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useIsFocused, useRouter } from 'expo-router'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -23,6 +24,7 @@ export default function GuideScreen(): React.JSX.Element {
   const daemon = useDaemonConnection(host)
   const tile = daemon.webPanes.find((candidate) => candidate.id === tileId)
   const active = useAppActive(useIsFocused())
+  const [title, setTitle] = useState('')
   const anchor = tile && daemon.snapshot?.panes.find((pane) => pane.id === tile.anchorPaneId)
   return (
     <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={[styles.screen, { backgroundColor: theme.bg }]}>
@@ -31,13 +33,13 @@ export default function GuideScreen(): React.JSX.Element {
           <Feather name="chevron-left" size={25} color={theme.accent} />
         </Pressable>
         <View style={styles.navText}>
-          <Text numberOfLines={1} style={[styles.name, { color: theme.text }]}>{tile ? tileTitle(tile) : 'Guide'}</Text>
+          <Text numberOfLines={1} style={[styles.name, { color: theme.text }]}>{title || (tile ? tileTitle(tile) : 'Guide')}</Text>
           <Text numberOfLines={1} style={[styles.meta, { color: theme.muted }]}>Guide{anchor ? ` · beside ${anchor.title || anchor.command}` : ''}</Text>
         </View>
         <Feather name="book-open" size={18} color={theme.muted} />
       </View>
       {host && isGuideTile(tile)
-        ? <GuideView key={`${tile.id}:${tile.content.artifactId}/${tile.content.file}`} active={active} host={host} tile={tile} />
+        ? <GuideView key={`${tile.id}:${tile.content.artifactId}/${tile.content.file}`} active={active} host={host} onTitle={setTitle} tile={tile} />
         : <View style={styles.missing}><EmptyState title="This guide is closed" body="The agent closed the tab, or it was opened on another host." /></View>}
     </SafeAreaView>
   )
