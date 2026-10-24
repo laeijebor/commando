@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { ChatItem } from './agent-chat'
-import type { SubagentItem } from './chat-timeline'
-import { subagentControls, subagentMetrics } from './chat-subagents'
+import type { ChatItem } from './agent-chat.js'
+import type { SubagentItem } from './chat-timeline.js'
+import { subagentControls, subagentMetrics } from './chat-subagents.js'
 
 const base = { turnId: 't1', status: 'completed' as const, createdAt: 1_000, updatedAt: 1_000 }
 const agent = (overrides: Partial<SubagentItem> = {}): SubagentItem => ({
