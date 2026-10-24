@@ -91,9 +91,11 @@ function LiveTileScreen(): React.JSX.Element {
   const [chosenMode, setChosenMode] = useState<TileMode | null>(null)
   const [nativeFailure, setNativeFailure] = useState<string | null>(null)
   const [nativeAttempt, setNativeAttempt] = useState(0)
+  const [nativePage, setNativePage] = useState<string | null>(null)
   useEffect(() => {
     setChosenMode(null)
     setNativeFailure(null)
+    setNativePage(null)
   }, [tileId])
   const mode: TileMode = !tile ? 'stream' : source.kind === 'none' ? 'stream' : !streamable ? 'native' : chosenMode ?? initialTileMode(tile, source)
   const onNativeLoadFailed = useCallback((detail: string) => {
@@ -294,7 +296,6 @@ function LiveTileScreen(): React.JSX.Element {
     (note) => note.id === selectedNoteId,
   )
 
-  const [nativePage, setNativePage] = useState<string | null>(null)
   const { path: urlPath } = describeTileUrl(mode === 'native' && nativePage ? nativePage : tile?.url ?? '')
   const chromium = tile?.engine === 'chromium'
   const canToggle = streamable && source.kind !== 'none'

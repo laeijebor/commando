@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
 import type { WebPane } from '@commando/protocol'
@@ -119,7 +119,7 @@ export function CanvasView({ host, tile, source, active }: {
     manifest?.frames.find((candidate) => candidate.id === id)?.title
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.root}>
+    <View style={styles.root}>
       <View style={styles.toolbar}>
         <Segmented
           onChange={setView}
@@ -130,7 +130,7 @@ export function CanvasView({ host, tile, source, active }: {
           value={view}
         />
       </View>
-      <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
+      <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={styles.list} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
         {error ? <Text accessibilityRole="alert" style={[styles.error, { color: theme.red }]}>{error}</Text> : null}
         {!manifest ? (
           <EmptyState title="Reading the canvas…" />
@@ -186,7 +186,7 @@ export function CanvasView({ host, tile, source, active }: {
       <View style={styles.queue}>
         <QueueChrome onSelectNote={setSelectedNoteId} pending={pending} queue={queue} selectedNoteId={selectedNoteId} />
       </View>
-    </KeyboardAvoidingView>
+    </View>
   )
 }
 

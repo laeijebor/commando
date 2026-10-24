@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
@@ -19,6 +19,7 @@ import { addPendingNote, addPendingResponse } from '../api'
 import { CommentCard } from '../CommentCard'
 import type { TileInspectSuccess } from '../protocol'
 import { useQueueActions } from '../useQueueActions'
+import { KeyboardAware } from './KeyboardAware'
 import { pinsForPage, type NativeTileEvent } from './bridge'
 import { NativeWebTile, type NativeWebTileHandle } from './NativeWebTile'
 import { QuestionCard } from './QuestionCard'
@@ -160,7 +161,7 @@ export function NativePageView({
         </Pressable>
       </View>
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.body}>
+      <KeyboardAware style={styles.body}>
         <View style={styles.page}>
           <NativeWebTile
             expectedOrigin={source.phoneOrigin}
@@ -180,7 +181,7 @@ export function NativePageView({
           ) : null}
         </View>
         <QueueChrome onSelectNote={setSelectedNoteId} pending={pending} queue={queue} selectedNoteId={selectedNoteId} />
-      </KeyboardAvoidingView>
+      </KeyboardAware>
 
       <Modal animationType="slide" onRequestClose={() => setQuestionsOpen(false)} presentationStyle="pageSheet" visible={questionsOpen}>
         <View style={[styles.sheet, { backgroundColor: theme.bg }]}>
@@ -191,7 +192,7 @@ export function NativePageView({
             <Text style={[styles.sheetTitle, { color: theme.text }]}>Questions on this page</Text>
             <View style={styles.sheetSpacer} />
           </View>
-          <ScrollView contentContainerStyle={styles.sheetBody} keyboardShouldPersistTaps="handled">
+          <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={styles.sheetBody} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
             {openQuestions.length === 0 ? (
               <EmptyState title="No open questions" body="The page has no redline questions waiting for an answer." />
             ) : openQuestions.map((question) => (
