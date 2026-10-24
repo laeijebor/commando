@@ -443,6 +443,8 @@ export class TmuxCreator {
     private readonly worktrees?: TmuxWorktreeProvider,
     private readonly resolveExecutable: AgentExecutableResolver = resolveAgentExecutable,
     private readonly launchEnv: LaunchEnvironment = process.env,
+    /** The profile a Claude chat starts with when its launch names none (a phone or API caller). */
+    private readonly defaultClaudeConfigDir: () => Promise<string | undefined> = async () => undefined,
   ) {}
 
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */
@@ -537,7 +539,9 @@ export class TmuxCreator {
   }
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
-    const argv = sessionAgentArgv(agent)
+    // Without a profile, Claude would sign in with the bare ~/.claude login, which may not be the one in use.
+    const configDir = agent.provider === 'claude-chat' && !agent.configDir ? await this.defaultClaudeConfigDir().catch(() => undefined) : undefined
+    const argv = sessionAgentArgv(configDir ? { ...agent, configDir } : agent)
     argv[0] = isChatLaunchProvider(agent.provider)
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
