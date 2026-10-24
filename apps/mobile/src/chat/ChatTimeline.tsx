@@ -126,6 +126,9 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
     if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null }
   }
   const endUserScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    // iOS also ends a programmatic scrollToEnd with onMomentumScrollEnd; following it
+    // would scroll again every frame and swallow taps on the rows.
+    if (!userScrolling.current) return
     trackPosition(event)
     userScrolling.current = false
     follow('content')
