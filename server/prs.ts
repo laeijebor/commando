@@ -95,7 +95,8 @@ query($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }`.trim()
-const REVIEW_THREAD_FIELDS = 'id isResolved viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
+const DIFF_HUNK_CONTEXT_LINES = 8
+const REVIEW_THREAD_FIELDS = 'id isResolved isOutdated viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
 const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   ${RATE_LIMIT_FIELD}
   repository(owner: $owner, name: $name) {
@@ -300,6 +301,32 @@ function requiredNumber(record: JsonRecord, key: string): number {
   const value = record[key]
   if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidUpstream()
   return value
+}
+
+/** GitHub lists at most this many files for a pull request. */
+const PR_FILES_LIMIT = 3_000
+
+function remoteDiffFile(file: unknown): import('../shared/pr-quick-look.js').PrRemoteDiff['files'][number] {
+  if (!isRecord(file)) throw invalidUpstream()
+  return {
+    path: requiredString(file, 'filename'),
+    status: requiredString(file, 'status'),
+    additions: typeof file.additions === 'number' ? file.additions : 0,
+    deletions: typeof file.deletions === 'number' ? file.deletions : 0,
+    patch: typeof file.patch === 'string' ? file.patch : null,
+  }
+}
+
+/**
+ * GitHub's review-comment hunk runs from the hunk header to the commented line;
+ * the last few lines are the context. The header stays on top so a reader can
+ * still tell added from removed lines and see the enclosing function.
+ */
+export function diffHunkTail(hunk: string, lines = DIFF_HUNK_CONTEXT_LINES): string {
+  const rows = hunk.split('\n')
+  if (rows.length <= lines + 1) return hunk
+  const tail = rows.slice(-lines)
+  return (rows[0]?.startsWith('@@') ? [rows[0], ...tail] : tail).join('\n')
 }
 
 function requiredBoolean(record: JsonRecord, key: string): boolean {
@@ -1468,6 +1495,10 @@ export class PrService {
           kind: kind === 1 && typeof entry.state === 'string' ? entry.state.toLowerCase().replaceAll('_', ' ') : kind === 2 ? 'inline comment' : 'comment',
           ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
           ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
+          // An outdated comment has no current line; keep where it was written.
+          ...(kind === 2 && typeof entry.line !== 'number' && typeof entry.original_line === 'number' ? { originalLine: entry.original_line } : {}),
+          // Only a thread's first comment carries code context; replies share it.
+          ...(kind === 2 && typeof entry.in_reply_to_id !== 'number' && typeof entry.diff_hunk === 'string' ? { diffHunk: diffHunkTail(entry.diff_hunk) } : {}),
           ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
           ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
           ...(kind === 2 && reviewThreads.has(Number(entry.id)) ? { thread: reviewThreads.get(Number(entry.id)) } : {}),
@@ -1543,6 +1574,7 @@ export class PrService {
           id: requiredString(node, 'id'), commentId: requiredNumber(root, 'databaseId'),
           isResolved: requiredBoolean(node, 'isResolved'), viewerCanReply: requiredBoolean(node, 'viewerCanReply'),
           viewerCanResolve: requiredBoolean(node, 'viewerCanResolve'), viewerCanUnresolve: requiredBoolean(node, 'viewerCanUnresolve'),
+          ...(typeof node.isOutdated === 'boolean' ? { isOutdated: node.isOutdated } : {}),
         }
         result.set(thread.commentId, thread)
       }
@@ -1637,28 +1669,27 @@ export class PrService {
     return this.conflictInspector.inspect({ ...refs, repo, number })
   }
 
-  async pullRequestDiff(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {
+  async pullRequestDiff(repoInput: unknown, numberInput: unknown, against: 'main' | 'pr' = 'main'): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
     const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
     const head = requiredString(objectField(pr, 'head'), 'sha')
     if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
+    if (against === 'pr') {
+      // GitHub's "Files changed": the PR against its own base, which still means something once it has merged.
+      const base = requiredString(objectField(pr, 'base'), 'sha')
+      const pages: unknown = JSON.parse(await this.ghRead(['api', `repos/${repo}/pulls/${number}/files?per_page=100`, '--paginate', '--slurp']))
+      if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw invalidUpstream()
+      const files = pages.flat().map(remoteDiffFile)
+      return { base, head, files, truncated: files.length >= PR_FILES_LIMIT }
+    }
     // GitHub's main is the remote origin/main, independent of local worktree state.
     const main = parseGhObject(await this.ghRead(['api', `repos/${repo}/commits/main`]))
     const base = requiredString(main, 'sha')
     if (!/^[a-f0-9]{40}$/i.test(base)) throw invalidUpstream()
     const comparison = parseGhObject(await this.ghRead(['api', `repos/${repo}/compare/${base}...${head}`]))
     if (!Array.isArray(comparison.files)) throw invalidUpstream()
-    const files = comparison.files.map((file: unknown) => {
-      if (!isRecord(file)) throw invalidUpstream()
-      return {
-        path: requiredString(file, 'filename'),
-        status: requiredString(file, 'status'),
-        additions: typeof file.additions === 'number' ? file.additions : 0,
-        deletions: typeof file.deletions === 'number' ? file.deletions : 0,
-        patch: typeof file.patch === 'string' ? file.patch : null,
-      }
-    })
+    const files = comparison.files.map(remoteDiffFile)
     return { base, head, files, truncated: files.length >= 300 }
   }
 

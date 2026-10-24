@@ -63,6 +63,7 @@ export default function HostTabsLayout(): React.JSX.Element {
       <Tabs.Screen name="pane/[paneId]" options={{ href: null }} />
       <Tabs.Screen name="pane/[paneId]/info" options={{ href: null }} />
       <Tabs.Screen name="tile/[tileId]" options={{ href: null }} />
+      <Tabs.Screen name="pr/[number]" options={{ href: null }} />
       <Tabs.Screen name="answer/[paneId]/[interactionId]" options={{ href: null }} />
       <Tabs.Screen name="index" options={{ href: null }} />
     </Tabs>
