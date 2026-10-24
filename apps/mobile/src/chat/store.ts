@@ -49,6 +49,8 @@ const EMPTY_RUNS: readonly ExternalAgentRun[] = []
 
 /** Folds `chat_external_runs` (the daemon's whole list for a pane) into a host's runs. */
 export function applyExternalRunsMessage(runs: HostExternalRuns, message: ServerMessage): HostExternalRuns {
+  // As on the web: a snapshot starts afresh, and the daemon re-sends the runs it still tracks right after it.
+  if (message.type === 'chat_snapshot') return Object.keys(runs).length ? NO_RUNS : runs
   if (message.type === 'chat_external_runs') {
     if (!message.runs.length && !(message.paneId in runs)) return runs
     if (!message.runs.length) {

@@ -47,6 +47,8 @@ describe('the chat store', () => {
     expect(applyExternalRunsMessage(runs, { type: 'chat_external_runs', paneId: '%8', runs: [] })).toBe(runs)
     runs = applyExternalRunsMessage({ '%7': [run] }, { type: 'chat_removed', paneId: '%7' })
     expect(runs).toEqual({})
+    // A reconnect's snapshot drops runs the daemon no longer tracks; it re-sends the rest.
+    expect(applyExternalRunsMessage({ '%7': [run] }, { type: 'chat_snapshot', chats: [] })).toEqual({})
     useChatStore.getState().ingest('h', { type: 'chat_external_runs', paneId: '%7', runs: [run] })
     expect(useChatStore.getState().externalRuns.h).toEqual({ '%7': [run] })
   })
