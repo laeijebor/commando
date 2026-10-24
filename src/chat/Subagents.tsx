@@ -3,7 +3,8 @@ import { ArrowLeft, Bot, ChevronDown, CircleAlert, CircleCheck, CircleSlash, Cir
 import type { ChatItem, ChatTaskAction } from '../../shared/agent-chat'
 import { cn } from './cn'
 import type { SubagentItem, TimelineRow } from '../../shared/chat-timeline'
-import { elapsedLabel, relayAvailability, subagentActivity, subagentLabel, subagentTypeLabel } from './turnFlow'
+import { subagentMetrics, type SubagentMetrics } from '../../shared/chat-subagents'
+import { relayAvailability, subagentLabel, subagentTypeLabel } from './turnFlow'
 import { Button } from './ui/button'
 
 /** A clock that ticks once a second while something live is on screen. */
@@ -29,28 +30,9 @@ export function SubagentStateIcon({ agent, className }: { agent: SubagentItem; c
   }
 }
 
-const STATE_LABELS: Record<SubagentItem['state'], string> = { quiet: 'quiet', running: 'running', completed: 'done', failed: 'failed', stopped: 'stopped' }
+const metrics = subagentMetrics
 
-function metrics(agent: SubagentItem, items: readonly ChatItem[], now: number): { line: string; lastAction: string | null; quiet?: string } {
-  const activity = subagentActivity(agent, items, now)
-  const parts = [
-    ...(!agent.runtime ? [agent.background && (agent.state === 'running' || agent.state === 'quiet') ? 'background' : STATE_LABELS[agent.state]] : []),
-    ...(activity.toolUses !== null ? [`${activity.toolUses} ${activity.toolUses === 1 ? 'tool' : 'tools'}`] : []),
-    ...(activity.elapsedMs !== null ? [elapsedLabel(activity.elapsedMs)] : []),
-  ]
-  if (agent.runtime && agent.state === 'quiet') return {
-    line: parts.join(' · '),
-    quiet: `quiet for ${Math.floor(Math.max(0, now - (agent.lastEventAt ?? agent.createdAt)) / 60_000)}m`,
-    lastAction: activity.lastAction ? `last: ${activity.lastAction}` : null,
-  }
-  if (agent.runtime && agent.runningCommand) {
-    parts.push(`running ${agent.runningCommand.command} (${elapsedLabel(now - agent.runningCommand.startedAt)})`)
-    return { line: parts.join(' · '), lastAction: null }
-  }
-  return { line: parts.join(' · '), lastAction: activity.lastAction }
-}
-
-function MetricsLine({ info, showLastAction = true }: { info: ReturnType<typeof metrics>; showLastAction?: boolean }) {
+function MetricsLine({ info, showLastAction = true }: { info: SubagentMetrics; showLastAction?: boolean }) {
   return (
     <>
       <span className="tabular-nums">{info.line}</span>
