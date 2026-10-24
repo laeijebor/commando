@@ -1,6 +1,7 @@
 import { useIsFocused, useRouter } from 'expo-router'
 
-import { useRouteParams } from '../../../../src/layout/routeParams'
+import { routeParams, useRouteParams } from '../../../../src/layout/routeParams'
+import { isCockpitMode, useLayoutMode } from '../../../../src/layout/useLayoutMode'
 import { PrScreen } from '../../../../src/pr/PrScreen'
 
 /**
@@ -11,9 +12,12 @@ import { PrScreen } from '../../../../src/pr/PrScreen'
 export default function PullRequestRoute(): React.JSX.Element {
   const router = useRouter()
   const focused = useIsFocused()
+  const cockpit = isCockpitMode(useLayoutMode())
   const { hostId, number, repo, paneId } = useRouteParams<{ hostId: string; number: string; repo?: string; paneId?: string }>()
   const close = (): void => {
-    if (router.canGoBack()) router.back()
+    // The host tabs navigator goes "back" to its first tab, so on a phone return to the pane's Info sheet explicitly.
+    if (paneId && hostId && !cockpit) router.navigate({ pathname: '/(host)/[hostId]/pane/[paneId]/info', params: routeParams({ hostId, paneId }) })
+    else if (router.canGoBack()) router.back()
     else router.replace({ pathname: '/(host)/[hostId]/sessions', params: { hostId: hostId ?? '' } })
   }
   return <PrScreen hostId={hostId} repo={repo} number={Number(number)} paneId={paneId} active={focused} onClose={close} />
