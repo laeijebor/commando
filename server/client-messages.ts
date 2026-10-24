@@ -647,6 +647,12 @@ export function parseClientMessage(value: unknown): ParseResult {
         ? { ok: true, message: { type: 'chat_carry_taken', paneId: value.paneId, carryId, ...(images === undefined ? {} : { images }), requestId: id } }
         : { ok: false, error: 'Invalid carried draft', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
     }
+    case 'chat_history': {
+      const id = requestId(value.requestId)
+      return id && isPaneId(value.paneId)
+        ? { ok: true, message: { type: 'chat_history', paneId: value.paneId, requestId: id } }
+        : { ok: false, error: 'Invalid chat history request', requestId: typeof value.requestId === 'string' ? value.requestId : undefined }
+    }
     default:
       return { ok: false, error: 'Unsupported message type' }
   }

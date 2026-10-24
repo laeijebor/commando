@@ -24,7 +24,13 @@ export function applyChatMessage(chats: HostChats, message: ServerMessage): Host
     }
     case 'chat_items': {
       const chat = chats[message.paneId]
-      return chat ? { ...chats, [message.paneId]: { ...chat, items: mergeChatItems(message.replace ? [] : chat.items, message.items) } } : chats
+      if (!chat) return chats
+      // A replaced timeline (after /clear) starts afresh: nothing older is left out of it.
+      if (message.replace) {
+        const { omittedItems: _omitted, ...rest } = chat
+        return { ...chats, [message.paneId]: { ...rest, items: mergeChatItems([], message.items) } }
+      }
+      return { ...chats, [message.paneId]: { ...chat, items: mergeChatItems(chat.items, message.items) } }
     }
     case 'chat_commands': {
       const chat = chats[message.paneId]

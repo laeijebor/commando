@@ -414,7 +414,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
         <TextInput
           accessibilityLabel={`Message ${providerPresentation(session.provider).name}`}
           autoCapitalize="sentences"
-          editable={!disabled}
+          // A dropped connection only stops sending: making the field read-only
+          // would resign it, so a reconnect would close the keyboard mid-sentence.
+          editable={!closed && !switching}
           multiline
           onChangeText={setText}
           onFocus={clipboardImage.recheck}

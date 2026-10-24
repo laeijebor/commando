@@ -927,3 +927,5 @@ export type ClientMessage =
   | { type: 'chat_return'; paneId: string; requestId: string }
   /** The composer took what the chat carried across Claude Code: its text and the first `images` images (all when omitted). */
   | { type: 'chat_carry_taken'; paneId: string; carryId: string; images?: number; requestId: string }
+  /** The whole history of one chat, for a client whose copy is bounded; answered with its `chat_state`. */
+  | { type: 'chat_history'; paneId: string; requestId: string }

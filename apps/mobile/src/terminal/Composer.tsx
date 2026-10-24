@@ -96,7 +96,8 @@ export function Composer({
           accessibilityLabel={raw ? 'Raw keystrokes' : 'Message the agent'}
           autoCapitalize="none"
           autoCorrect={false}
-          editable={!disabled}
+          // Disconnected only disables sending: a read-only field would drop
+          // focus and the keyboard on every reconnect.
           multiline={!raw}
           onChangeText={handleChange}
           onKeyPress={handleKeyPress}

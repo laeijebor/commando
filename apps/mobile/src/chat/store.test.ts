@@ -29,6 +29,15 @@ describe('the chat store', () => {
     expect(chats).toEqual({})
   })
 
+  it('keeps a bounded chat bounded as items arrive, and forgets the gap when the timeline is replaced', () => {
+    let chats = applyChatMessage({}, { type: 'chat_snapshot', chats: [chatState({ omittedItems: 40, items: [item('user_message', { id: 'u', text: 'hi' })] })] })
+    chats = applyChatMessage(chats, { type: 'chat_items', paneId: '%7', items: [item('notice', { id: 'n', level: 'info', text: 'done' })] })
+    expect(chats['%7']!.omittedItems).toBe(40)
+    chats = applyChatMessage(chats, { type: 'chat_items', paneId: '%7', items: [item('notice', { id: 'm', level: 'info', text: 'cleared' })], replace: true })
+    expect(chats['%7']!.omittedItems).toBeUndefined()
+    expect(chats['%7']!.items.map((entry) => entry.id)).toEqual(['m'])
+  })
+
   it('keeps chats per host and leaves the state alone for other messages', () => {
     useChatStore.getState().ingest('a', { type: 'chat_snapshot', chats: [chatState()] })
     const before = useChatStore.getState().byHost

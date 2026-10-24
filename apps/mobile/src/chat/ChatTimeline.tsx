@@ -44,8 +44,11 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
  * follows the newest turn on open/send and while already near the bottom.
  * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0 }: {
+export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier }: {
   sendVersion?: number
+  /** Older items the daemon left on the Mac (a bounded replay), and how to fetch them. */
+  omittedItems?: number
+  onLoadEarlier?: () => void
   provider?: string
   items: readonly ChatItem[]
   cwd: string
@@ -118,6 +121,19 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           keyExtractor={(entry) => entry.id}
+          ListHeaderComponent={omittedItems > 0 && onLoadEarlier ? (
+            <Pressable
+              accessibilityLabel={`Load ${omittedItems} earlier ${omittedItems === 1 ? 'item' : 'items'}`}
+              accessibilityRole="button"
+              onPress={onLoadEarlier}
+              style={[styles.earlier, { borderColor: theme.border }]}
+              testID="chat-load-earlier"
+            >
+              <Text style={[styles.earlierLabel, { color: theme.muted }]}>
+                {omittedItems} earlier {omittedItems === 1 ? 'item is' : 'items are'} on your Mac · <Text style={{ color: theme.accent }}>Load</Text>
+              </Text>
+            </Pressable>
+          ) : null}
           ListEmptyComponent={(
             <View style={styles.empty}>
               <Text style={[styles.emptyText, { color: theme.muted }]}>Ask {context.provider} anything about this folder.</Text>
@@ -511,6 +527,8 @@ const styles = StyleSheet.create({
   list: { flex: 1, height: 0, minHeight: 0 },
   jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   jumpLabel: { fontSize: 12.5, fontWeight: '700' },
+  earlier: { alignSelf: 'center', borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 12 },
+  earlierLabel: { fontSize: 12.5 },
   content: { paddingHorizontal: 20, paddingVertical: 24, width: '100%', maxWidth: 776, alignSelf: 'center' },
   emptyContent: { flexGrow: 1 },
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },

@@ -50,7 +50,7 @@ const originalWebSocket = globalThis.WebSocket
 globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const { connectHost, DaemonClient, disconnectHost } = require('./client') as typeof import('./client')
+const { CHAT_HISTORY_BYTES, connectHost, DaemonClient, disconnectHost } = require('./client') as typeof import('./client')
 const { useDaemonStore } = require('./store') as typeof import('./store')
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -208,7 +208,7 @@ function subscribedPanes(socket: FakeSocket): string[][] {
 
 it('uses an Authorization header without query tokens or explicit cookies on native sockets', () => {
   const { client, socket } = connect()
-  expect(socket.url).toBe(`${HOST.baseUrl.replace('http:', 'ws:')}/ws`)
+  expect(socket.url).toBe(`${HOST.baseUrl.replace('http:', 'ws:')}/ws?chatHistory=${CHAT_HISTORY_BYTES}`)
   expect(socket.options?.headers).toEqual({ Authorization: 'Bearer secret' })
   client.stop()
 })

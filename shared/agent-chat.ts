@@ -552,6 +552,8 @@ export interface ChatState {
   commands?: ChatCommand[]
   /** The draft and queue the chat had when it switched to Claude Code, until a composer takes them. */
   carried?: ChatCarriedDraft
+  /** Older items left out of a client's bounded copy (`/ws?chatHistory=`); `chat_history` fetches them. */
+  omittedItems?: number
 }
 
 // ---- host ⇄ daemon ----
