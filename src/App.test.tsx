@@ -980,7 +980,7 @@ describe('HUD tabs', () => {
       act(() => daemonMessage?.({ type: 'chat_state', chat: { paneId: adjacentPane.id, hostConnected: true, items: [],
         session: { paneId: adjacentPane.id, provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 1 } } }))
       const strip = await screen.findByRole('region', { name: 'Linked pull requests' })
-      fireEvent.click(within(strip).getByRole('link', { name: /^#12 / }))
+      fireEvent.click(within(strip).getByRole('link', { name: 'feat: pane diff' }))
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
       const panel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
       await waitFor(() => expect(within(panel).getByRole('tab', { name: /Description/ })).toHaveAttribute('aria-selected', 'true'))
