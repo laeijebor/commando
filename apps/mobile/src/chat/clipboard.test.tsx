@@ -71,13 +71,13 @@ describe('pasting an image into the phone composer', () => {
   it('offers the clipboard image, attaches it like a picked one and sends it', async () => {
     const client = renderChat()
     await settle()
-    expect(screen.getByText('Image on the clipboard')).toBeTruthy()
+    expect(screen.getByText('Copied image')).toBeTruthy()
 
     fireEvent.press(screen.getByLabelText('Paste image'))
     await settle()
     await settle()
     // The offer is used up; the image waits in the draft, removable.
-    expect(screen.queryByText('Image on the clipboard')).toBeNull()
+    expect(screen.queryByText('Copied image')).toBeNull()
     expect(screen.getByLabelText(/^Remove pasted-\d{8}-\d{6}\.png$/)).toBeTruthy()
     expect(globalThis.fetch).toHaveBeenCalledWith('http://studio:4310/api/chat/images', expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ 'Content-Type': 'image/png' }) }))
 
@@ -90,7 +90,7 @@ describe('pasting an image into the phone composer', () => {
     renderChat()
     await settle()
     fireEvent.press(screen.getByLabelText('Hide paste image'))
-    expect(screen.queryByText('Image on the clipboard')).toBeNull()
+    expect(screen.queryByText('Copied image')).toBeNull()
   })
 
   it('says so when the image is gone by the time it is pasted', async () => {
@@ -106,6 +106,6 @@ describe('pasting an image into the phone composer', () => {
     mockClipboard.hasImageAsync.mockResolvedValue(false)
     renderChat()
     await settle()
-    expect(screen.queryByText('Image on the clipboard')).toBeNull()
+    expect(screen.queryByText('Copied image')).toBeNull()
   })
 })

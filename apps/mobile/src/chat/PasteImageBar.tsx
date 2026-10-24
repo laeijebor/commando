@@ -30,7 +30,7 @@ export function PasteImageBar({ onImage, onError, onDismiss }: {
   return (
     <View style={[styles.bar, { borderColor: theme.border }]} testID="chat-paste-image">
       <Feather color={theme.muted} name="image" size={14} />
-      <Text numberOfLines={1} style={[styles.label, { color: theme.textSoft }]}>Image on the clipboard</Text>
+      <Text numberOfLines={1} style={[styles.label, { color: theme.textSoft }]}>Copied image</Text>
       {pasteButtonAvailable ? (
         <ClipboardPasteButton
           accessibilityLabel="Paste image"
@@ -65,7 +65,7 @@ export function PasteImageBar({ onImage, onError, onDismiss }: {
 const styles = StyleSheet.create({
   bar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 10, marginTop: 8, paddingLeft: 10, paddingVertical: 4, paddingRight: 2, borderWidth: 1, borderRadius: 14 },
   label: { flex: 1, fontSize: 13 },
-  control: { width: 92, height: 30 },
+  control: { width: 120, height: 40 },
   fallback: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 15 },
   fallbackText: { fontSize: 13, fontWeight: '600' },
 })
