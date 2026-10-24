@@ -24,6 +24,9 @@
             }
           }
         }
+      },
+      "runtimeVersion": {
+        "policy": "appVersion"
       }
     },
     "plugins": [
@@ -57,6 +60,18 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "owner": "laeijebor",
+    "extra": {
+      "eas": {
+        "projectId": "04c2e655-ec00-46a7-a3e4-01f6e5acb574"
+      }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/04c2e655-ec00-46a7-a3e4-01f6e5acb574",
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
     }
   }
 }
