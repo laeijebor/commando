@@ -10,6 +10,7 @@ it('turns uploaded images, links and folds into Markdown', () => {
 })
 
 it('keeps inline text together and leaves fenced code untouched', () => {
+  expect(githubMarkdown('| Status |\n| --- |\n| Done <relative-time datetime="x">today</relative-time> |')).toBe('| Status |\n| --- |\n| Done today |')
   const body = 'Press <kbd>Enter</kbd><br>then wait\n\n```html\n<!-- keep -->\n<details>raw</details>\n\n\n```\nafter'
   expect(githubMarkdown(body)).toBe('Press Enter\nthen wait\n\n```html\n<!-- keep -->\n<details>raw</details>\n\n\n```\nafter')
 })

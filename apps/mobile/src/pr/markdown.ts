@@ -11,7 +11,7 @@ const FENCE = /^\s{0,3}(`{3,}|~{3,})/u
 
 /** Tags dropped once their useful parts are converted; their text stays, on its own line for a block tag. */
 const BLOCK_TAGS = /<\/?(?:p|div|details|picture|source|center|table|thead|tbody|tfoot|tr|td|th|ul|ol|li|blockquote|hr)\b[^>]*>/giu
-const INLINE_TAGS = /<\/?(?:span|sub|sup|small|kbd|ins|g-emoji)\b[^>]*>/giu
+const INLINE_TAGS = /<\/?(?:span|sub|sup|small|kbd|ins|g-emoji|relative-time)\b[^>]*>/giu
 
 function attribute(tag: string, name: string): string | undefined {
   const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'iu').exec(tag)

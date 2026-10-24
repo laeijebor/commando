@@ -35,7 +35,7 @@ export function PrScreen({ hostId, repo, number, paneId, active, onClose }: {
           <Text numberOfLines={1} style={[styles.subtitle, { color: theme.muted }]}>{repo ?? ''} · #{number}</Text>
         </View>
       </View>
-      {host && source ? <PrView host={host} source={source} active={foreground} /> : (
+      {host && source ? <PrView key={`${source.repo}#${source.number}`} host={host} source={source} active={foreground} /> : (
         <EmptyState title="That pull request is not available" body="Open it again from the pane's Info sheet." />
       )}
     </SafeAreaView>
