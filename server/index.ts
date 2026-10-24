@@ -102,6 +102,7 @@ import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { SessionPreferenceStore } from './session-preferences.js'
@@ -677,7 +678,9 @@ async function main(): Promise<void> {
   const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
   const gitWorktrees = new GitWorktreeService()
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
-  const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
+  // The profile store is set up further down; this only runs when a pane starts.
+  const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees, undefined, undefined,
+    async () => defaultClaudeProfile(await agentProfilePreferences.claudeProfiles({ includeHidden: false }))?.configDir)
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
