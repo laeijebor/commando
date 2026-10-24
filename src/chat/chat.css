@@ -214,6 +214,8 @@
 .commando-chat .chat-pr-link a:hover { text-decoration: underline; }
 .commando-chat .chat-pr-diff { flex-shrink: 0; font-family: var(--mono); white-space: nowrap; padding: 2px 5px; border-radius: 4px; background: var(--surface-deep); }
 .commando-chat .chat-pr-ci { display: flex; align-items: center; gap: 5px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.commando-chat .chat-pr-toggle { display: flex; align-items: center; gap: 4px; color: var(--muted); cursor: pointer; padding: 2px 4px 4px; border-radius: 4px; }
+.commando-chat .chat-pr-toggle:hover { color: var(--text-soft); }
 .commando-chat .chat-pr-more { display: block; text-align: left; color: var(--muted); cursor: pointer; padding: 2px 8px 5px; }
 .chat-floating .chat-pr-autofix-toggle { appearance: auto; width: 14px; height: 14px; accent-color: var(--accent); flex-shrink: 0; }
 
