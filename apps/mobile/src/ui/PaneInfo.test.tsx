@@ -1,5 +1,5 @@
 import type { AgentProvider } from '@commando/protocol'
-import { act, cleanup, render, screen } from '@testing-library/react-native'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react-native'
 
 import type { Host } from '../hosts/types'
 import {
@@ -11,6 +11,9 @@ import {
 } from '../testing/fixtures'
 import { ThemeProvider } from '../theme'
 import { PaneInfo } from './PaneInfo'
+
+const mockPush = jest.fn()
+jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }))
 
 const HOST: Host = {
   id: 'h1',
@@ -111,6 +114,15 @@ describe('the pane Info sheet', () => {
     expect(screen.getByText('feat: owner-auth companion channel')).toBeTruthy()
     expect(screen.getByText(':4310')).toBeTruthy()
     expect(screen.getByText('Open as tile')).toBeTruthy()
+  })
+
+  it('opens a linked pull request in the native PR view', async () => {
+    await renderSheet()
+    fireEvent.press(screen.getByLabelText('Open pull request leo/commando #142'))
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/(host)/[hostId]/pr/[number]',
+      params: { hostId: HOST.id, number: '142', repo: 'leo/commando', paneId: '~14' },
+    })
   })
 
   it('shows the screenshot folder from the brief', async () => {

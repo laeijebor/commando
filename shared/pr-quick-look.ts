@@ -2,6 +2,8 @@ export type PrReviewThread = {
   id: string
   commentId: number
   isResolved: boolean
+  /** The code under the thread changed since it was written. Absent from older daemons. */
+  isOutdated?: boolean
   viewerCanReply: boolean
   viewerCanResolve: boolean
   viewerCanUnresolve: boolean
@@ -16,6 +18,10 @@ export type PrConversationEntry = {
   kind: string
   path?: string
   line?: number
+  /** Where an outdated inline comment was written, when it no longer has a current line. */
+  originalLine?: number
+  /** The last lines of the diff hunk a thread's first inline comment was left on. */
+  diffHunk?: string
   replyTo?: number
   commentId?: number
   reviewId?: number

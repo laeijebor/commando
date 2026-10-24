@@ -34,11 +34,24 @@ only. Bundle id `com.commando.companion`.
   `EXPO_PUBLIC_COMMANDO_DEMO=1` to add it and select it on a fresh install.
   Tap the Chats header’s host name to return to Hosts and add a real daemon. The in-memory
   host seeds four repos, eight sessions, four providers, questions, rich turns,
-  worklogs, changes, PRs and browser/simulator/canvas/guide tabs. Sending produces
+  worklogs, changes, a PR with its description, diff and review conversation,
+  and browser/simulator/canvas/guide tabs. Sending produces
   a short streamed reply. Unsupported actions fail locally. Production builds
   exclude the fake transport; saved demo hosts are filtered out.
 - **Theme** — the five desktop themes, ported token for token from
   `src/styles.css`, with the choice persisted.
+- **Pull requests** — a linked PR's pane tab, and every PR row in the Info
+  sheet, open a native PR view over the desktop panel's own routes:
+  **Description** (title, state, branch → base, author, checks and review
+  readiness, and the body as Markdown with GitHub's HTML — hidden markers,
+  `<details>`, `<img>` — turned into native Markdown), **Diff** (GitHub's
+  "Files changed" from `GET /api/prs/diff?base=pr`: a virtualised file list,
+  each file's numbered unified diff drawn only when opened and in 300-line
+  chunks) and **Conversation** (`GET /api/prs/details`: comments, reviews
+  with their verdicts, and review threads with file, line, code, replies and
+  resolved/outdated state; resolved threads fold away). Details load when the
+  view shows and the diff when its tab is first opened; nothing polls, and
+  pull to refresh asks the daemon to bypass its GitHub cache.
 - **Info sheet** — pushed over a pane: the worklog (headline, recap, Next, plan
   checklist and activity timeline from `session_brief`), the HUD details when a
   pane has no brief, the diff from `GET /api/git/summary` polled every 15s with

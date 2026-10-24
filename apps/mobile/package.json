@@ -65,7 +65,9 @@
       "^@/(.*)$": "<rootDir>/src/$1",
       "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts",
       "^@commando/pairing$": "<rootDir>/../../shared/pairing.ts",
-      "^@commando/guide-types$": "<rootDir>/../../shared/guide-types.ts"
+      "^@commando/guide-types$": "<rootDir>/../../shared/guide-types.ts",
+      "^@commando/pr-quick-look$": "<rootDir>/../../shared/pr-quick-look.ts",
+      "^@commando/pr-conversation$": "<rootDir>/../../shared/pr-conversation.ts"
     },
     "testPathIgnorePatterns": [
       "/node_modules/",

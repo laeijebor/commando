@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
+import { useRouter } from 'expo-router'
 
 import type {
   AgentStatus,
@@ -43,6 +44,7 @@ import {
   type TimelineEntry,
 } from '../pane/worklog'
 import { openTile } from '../tiles/api'
+import { routeParams } from '../layout/routeParams'
 import { relativeTime } from '../time'
 import { statusLabel, useTheme, type Theme } from '../theme'
 import {
@@ -143,6 +145,11 @@ export function PaneInfoSections({
     }, () => undefined)
     return () => { cancelled = true }
   }, [host, foreground, prs, sections.includes('pr')])
+
+  const router = useRouter()
+  const openPr = useCallback((repo: string, number: number) => {
+    router.push({ pathname: '/(host)/[hostId]/pr/[number]', params: routeParams({ hostId: host.id, number: String(number), repo, paneId }) })
+  }, [router, host.id, paneId])
 
   const openDiff = useCallback(async (file: string) => {
     setDiffError(null)
@@ -361,10 +368,10 @@ export function PaneInfoSections({
           {prs?.pullRequests.length ? (
             prs.pullRequests.filter((pr) => !prFilter || (pr.repo === prFilter.repo && pr.number === prFilter.number)).map((pullRequest) => (
               <Pressable
-                accessibilityRole="link"
+                accessibilityRole="button"
                 accessibilityLabel={`Open pull request ${pullRequest.repo} #${pullRequest.number}`}
                 key={pullRequest.url}
-                onPress={() => void Linking.openURL(pullRequest.url)}
+                onPress={() => openPr(pullRequest.repo, pullRequest.number)}
               >
                 <Card style={styles.prCard}>
                   <View style={styles.prHead}>
@@ -391,7 +398,12 @@ export function PaneInfoSections({
           ) : changes?.pullRequest ? (
             <Pressable
               accessibilityRole="link"
-              onPress={() => void Linking.openURL(changes.pullRequest?.url ?? '')}
+              onPress={() => {
+                const pr = changes.pullRequest
+                const repo = pr ? /github\.com\/([^/]+\/[^/]+)\/pull\//u.exec(pr.url)?.[1] : undefined
+                if (pr && repo) openPr(repo, pr.number)
+                else void Linking.openURL(pr?.url ?? '')
+              }}
             >
               <Card style={styles.prCard}>
                 <View style={styles.prHead}>
