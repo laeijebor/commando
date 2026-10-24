@@ -21,15 +21,7 @@ import { useDaemonConnection } from '../../../../src/daemon/useDaemonConnection'
 import { isDemoHost } from '../../../../src/demo/flags'
 import { useHostsStore } from '../../../../src/hosts/store'
 import { useTheme } from '../../../../src/theme'
-import {
-  addPendingNote,
-  markTileSeen,
-  dismissDroppedAnswers,
-  removePendingNote,
-  sendPendingNotes,
-  sendPendingNotesAndBuild,
-  updatePendingNote,
-} from '../../../../src/tiles/api'
+import { addPendingNote, markTileSeen } from '../../../../src/tiles/api'
 import { CommentCard } from '../../../../src/tiles/CommentCard'
 import { PendingEditorCard } from '../../../../src/tiles/PendingEditorCard'
 import { PendingStrip } from '../../../../src/tiles/PendingStrip'
@@ -56,6 +48,16 @@ import {
   type TileSelectorAnchor,
 } from '../../../../src/tiles/protocol'
 import { useTileRelay } from '../../../../src/tiles/useTileRelay'
+import { useQueueActions } from '../../../../src/tiles/useQueueActions'
+import { CanvasView } from '../../../../src/tiles/native/CanvasView'
+import { NativeLoadFailed, NativePageView } from '../../../../src/tiles/native/NativePageView'
+import {
+  canStreamTile,
+  initialTileMode,
+  nativeTileSource,
+  type NativeTileSource,
+  type TileMode,
+} from '../../../../src/tiles/native/target'
 import { Button, EmptyState, Pill, withAlpha } from '../../../../src/ui/primitives'
 
 /** Pins drift as the page scrolls, so they are re-resolved after a pan settles. */
@@ -79,8 +81,29 @@ function LiveTileScreen(): React.JSX.Element {
   const daemon = useDaemonConnection(host)
   const tile = daemon.webPanes.find((candidate) => candidate.id === tileId)
   const foreground = useAppActive(useIsFocused())
-  const { state, client } = useTileRelay(host, tileId, { enabled: foreground })
-  const hasFrame = Boolean(state.frame)
+  // Daemon-served pages and canvases render in the phone's own WebView; the
+  // screencast stays for everything else and as the fallback.
+  const source: NativeTileSource = useMemo(
+    () => (tile && host ? nativeTileSource(tile, host.baseUrl) : { kind: 'none', reason: '' }),
+    [tile, host?.baseUrl],
+  )
+  const streamable = tile ? canStreamTile(tile) : false
+  const [chosenMode, setChosenMode] = useState<TileMode | null>(null)
+  const [nativeFailure, setNativeFailure] = useState<string | null>(null)
+  const [nativeAttempt, setNativeAttempt] = useState(0)
+  useEffect(() => {
+    setChosenMode(null)
+    setNativeFailure(null)
+  }, [tileId])
+  const mode: TileMode = !tile ? 'stream' : source.kind === 'none' ? 'stream' : !streamable ? 'native' : chosenMode ?? initialTileMode(tile, source)
+  const onNativeLoadFailed = useCallback((detail: string) => {
+    setNativeFailure(detail)
+    // A chromium tile still has its screencast: fall back to it on its own.
+    if (streamable) setChosenMode('stream')
+  }, [streamable])
+
+  const { state, client } = useTileRelay(host, tileId, { enabled: foreground && mode === 'stream' && streamable })
+  const hasFrame = Boolean(state.frame) || mode === 'native'
   useEffect(() => {
     if (host && tile && tileWasViewed(tile, foreground, hasFrame)) void markTileSeen(host, tile.id).catch(() => undefined)
   }, [foreground, host, tile?.id, tile?.unseen, tile?.status, hasFrame])
@@ -92,8 +115,6 @@ function LiveTileScreen(): React.JSX.Element {
   const [anchors, setAnchors] = useState<TileSelectorAnchor[]>([])
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [busyNoteId, setBusyNoteId] = useState<number | null>(null)
   const [pinTick, setPinTick] = useState(0)
   const panSettle = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -126,21 +147,8 @@ function LiveTileScreen(): React.JSX.Element {
     Alert.alert(title, error instanceof Error ? error.message : 'The daemon refused the request.')
   }, [])
 
-  const run = useCallback(
-    async (action: () => Promise<void>, failure: string, noteId?: number): Promise<void> => {
-      setBusy(true)
-      setBusyNoteId(noteId ?? null)
-      try {
-        await action()
-      } catch (error) {
-        report(failure, error)
-      } finally {
-        setBusy(false)
-        setBusyNoteId(null)
-      }
-    },
-    [report],
-  )
+  const queue = useQueueActions({ host, webPaneId: tile?.id, pending: state.pending })
+  const { busy, busyNoteId, run } = queue
 
   // Pins come from the live page, not from the stored rects: an element moves
   // when the page reflows for the phone's viewport, so the selectors are
@@ -255,81 +263,41 @@ function LiveTileScreen(): React.JSX.Element {
     [host, run, target, tile],
   )
 
-  const queueRevision = state.pending.revision
+  const sendAll = useCallback((intent: 'send' | 'build'): void => {
+    void queue.sendAll(intent).then((sent) => {
+      if (!sent) return
+      setDrawerOpen(false)
+      setSelectedNoteId(null)
+    })
+  }, [queue.sendAll])
 
-  const requireRevision = useCallback((): number | null => {
-    if (typeof queueRevision === 'number') return queueRevision
-    Alert.alert(
-      'This daemon is too old',
-      'It does not report a queue revision, so a send cannot be made safe against answers arriving underneath it. Update Commando on the host.',
-    )
-    return null
-  }, [queueRevision])
-
-  const sendAll = useCallback(
-    (intent: 'send' | 'build'): void => {
-      if (!host || !tile) return
-      const revision = requireRevision()
-      if (revision === null) return
-      void Haptics.selectionAsync()
-      void run(async () => {
-        if (intent === 'build') {
-          await sendPendingNotesAndBuild(host, tile.id, { expectedQueueRevision: revision })
-        } else {
-          await sendPendingNotes(host, tile.id, { expectedQueueRevision: revision })
-        }
-        setDrawerOpen(false)
-        setSelectedNoteId(null)
-      }, intent === 'build' ? 'Could not send and build' : 'Could not send the queue')
-    },
-    [host, requireRevision, run, tile],
-  )
-
-  const sendOne = useCallback(
-    (noteId: number, revision: number): void => {
-      if (!host || !tile) return
-      const queue = requireRevision()
-      if (queue === null) return
-      void run(async () => {
-        await sendPendingNotes(host, tile.id, {
-          targets: [{ id: noteId, revision }],
-          expectedQueueRevision: queue,
-        })
-        setSelectedNoteId(null)
-      }, 'Could not send this item', noteId)
-    },
-    [host, requireRevision, run, tile],
-  )
+  const sendOne = useCallback((noteId: number, revision: number): void => {
+    void queue.sendOne(noteId, revision).then((sent) => {
+      if (sent) setSelectedNoteId(null)
+    })
+  }, [queue.sendOne])
 
   const saveNote = useCallback(
     (noteId: number, change: { answer: string; note: string }, expectedRevision: number): void => {
-      if (!host || !tile) return
-      void run(
-        () => updatePendingNote(host, tile.id, noteId, expectedRevision, change).then(() => undefined),
-        'Could not save this item',
-        noteId,
-      )
+      void queue.saveNote(noteId, change, expectedRevision)
     },
-    [host, run, tile],
+    [queue.saveNote],
   )
 
-  const removeNote = useCallback(
-    (noteId: number): void => {
-      if (!host || !tile) return
-      void run(async () => {
-        await removePendingNote(host, tile.id, noteId)
-        setSelectedNoteId((current) => (current === noteId ? null : current))
-      }, 'Could not remove this item', noteId)
-    },
-    [host, run, tile],
-  )
+  const removeNote = useCallback((noteId: number): void => {
+    void queue.removeNote(noteId).then((removed) => {
+      if (removed) setSelectedNoteId((current) => (current === noteId ? null : current))
+    })
+  }, [queue.removeNote])
 
   const selectedNote: WebPanePendingNote | undefined = state.pending.notes.find(
     (note) => note.id === selectedNoteId,
   )
 
-  const { path: urlPath } = describeTileUrl(tile?.url ?? '')
+  const [nativePage, setNativePage] = useState<string | null>(null)
+  const { path: urlPath } = describeTileUrl(mode === 'native' && nativePage ? nativePage : tile?.url ?? '')
   const chromium = tile?.engine === 'chromium'
+  const canToggle = streamable && source.kind !== 'none'
 
   return (
     <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: theme.bg }]}>
@@ -342,7 +310,21 @@ function LiveTileScreen(): React.JSX.Element {
           <Text numberOfLines={1} style={[styles.navTitleText, { color: theme.text }]}>{tile ? tileTitle(tile) : 'Tile'}</Text>
           <Text numberOfLines={1} style={[styles.navSubtitle, { color: theme.muted }]}>{urlPath}</Text>
         </View>
-        <Pill label={tile?.engine ?? 'tile'} tone={chromium ? 'claude' : 'mute'} />
+        {canToggle ? (
+          <ModeToggle
+            mode={mode}
+            onChange={(next) => {
+              setChosenMode(next)
+              if (next === 'native') {
+                setNativeFailure(null)
+                setNativeAttempt((attempt) => attempt + 1)
+              }
+              void Haptics.selectionAsync()
+            }}
+          />
+        ) : (
+          <Pill label={mode === 'native' && source.kind !== 'none' ? 'native' : tile?.engine ?? 'tile'} tone={chromium || mode === 'native' ? 'claude' : 'mute'} />
+        )}
       </View>
 
       {!tile ? (
@@ -358,15 +340,46 @@ function LiveTileScreen(): React.JSX.Element {
             <EmptyState body={daemon.detail} title="Waiting for the host" />
           )}
         </View>
-      ) : !chromium ? (
+      ) : mode === 'native' && host && source.kind !== 'none' ? (
+        nativeFailure && !streamable ? (
+          <View style={styles.body}>
+            <NativeLoadFailed
+              detail={nativeFailure}
+              onRetry={() => {
+                setNativeFailure(null)
+                setNativeAttempt((attempt) => attempt + 1)
+              }}
+            />
+          </View>
+        ) : source.kind === 'canvas' ? (
+          <CanvasView active={foreground} host={host} key={nativeAttempt} source={source} tile={tile} />
+        ) : (
+          <NativePageView
+            active={foreground}
+            host={host}
+            key={nativeAttempt}
+            onLoadFailed={onNativeLoadFailed}
+            onPageUrl={setNativePage}
+            source={source}
+            tile={tile}
+          />
+        )
+      ) : !streamable ? (
         <View style={styles.body}>
           <EmptyState
-            body="Webkit tiles render inside the host's own WebView against its localhost, which this phone cannot reach. Reopen it as a chromium tile from the list and it streams here."
+            body={source.kind === 'none' && source.reason
+              ? `${source.reason} Webkit tiles render inside the host's own WebView, so reopen it as a chromium tile from the list to stream it here.`
+              : "Webkit tiles render inside the host's own WebView against its localhost, which this phone cannot reach. Reopen it as a chromium tile from the list and it streams here."}
             title="This tile does not stream"
           />
         </View>
       ) : (
         <>
+          {nativeFailure ? (
+            <Text style={[styles.fallbackNote, { color: theme.amber }]}>
+              Streaming from the Mac: the phone could not load this page itself. {nativeFailure}
+            </Text>
+          ) : null}
           <View style={styles.chips}>
             <Pressable
               accessibilityRole="tab"
@@ -470,13 +483,7 @@ function LiveTileScreen(): React.JSX.Element {
 
             <PendingStrip
               busy={busy}
-              onDismissDropped={() => {
-                if (!host || !tile) return
-                void run(
-                  () => dismissDroppedAnswers(host, tile.id).then(() => undefined),
-                  'Could not dismiss the warning',
-                )
-              }}
+              onDismissDropped={() => void queue.dismissDropped()}
               onOpenQueue={() => setDrawerOpen(true)}
               onSendAll={() => sendAll('send')}
               onSendAndBuild={() => sendAll('build')}
@@ -566,4 +573,34 @@ const styles = StyleSheet.create({
   },
   sheetSpacer: { width: 44 },
   sheetBody: { padding: 16, gap: 12 },
+  fallbackNote: { fontSize: 12, lineHeight: 17, paddingHorizontal: 12, paddingBottom: 8 },
+  toggle: { flexDirection: 'row', borderWidth: 1, borderRadius: 10, padding: 2 },
+  toggleOption: { borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5 },
+  toggleLabel: { fontSize: 12, fontWeight: '700' },
 })
+
+/** Native WebView or the daemon's screencast, for tiles that can do both. */
+function ModeToggle({ mode, onChange }: { mode: TileMode; onChange: (mode: TileMode) => void }): React.JSX.Element {
+  const theme = useTheme()
+  return (
+    <View accessibilityRole="tablist" style={[styles.toggle, { borderColor: theme.border, backgroundColor: theme.surfaceRaised }]}>
+      {(['native', 'stream'] as const).map((option) => {
+        const selected = option === mode
+        return (
+          <Pressable
+            accessibilityLabel={option === 'native' ? 'Render on the phone' : 'Stream from the Mac'}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+            key={option}
+            onPress={() => { if (!selected) onChange(option) }}
+            style={[styles.toggleOption, selected ? { backgroundColor: theme.surfaceSoft } : null]}
+          >
+            <Text style={[styles.toggleLabel, { color: selected ? theme.text : theme.muted }]}>
+              {option === 'native' ? 'Native' : 'Stream'}
+            </Text>
+          </Pressable>
+        )
+      })}
+    </View>
+  )
+}

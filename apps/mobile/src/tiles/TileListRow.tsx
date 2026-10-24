@@ -11,7 +11,7 @@ import Feather from '@expo/vector-icons/Feather'
 
 import { useTheme } from '../theme'
 import { Button, Card, Pill, withAlpha } from '../ui/primitives'
-import { canStream, tileSubtitle, tileTitle, unstreamableReason, type TileRow } from './list'
+import { canOpenOnPhone, tileSubtitle, tileTitle, unstreamableReason, type TileRow } from './list'
 
 const CLOSE_TRAVEL = 96
 
@@ -62,7 +62,7 @@ export function TileListRow({
     [offset],
   )
 
-  const streamable = canStream(row.tile)
+  const streamable = canOpenOnPhone(row.tile)
   const reason = unstreamableReason(row.tile)
 
   return (
@@ -86,7 +86,7 @@ export function TileListRow({
       <Animated.View style={{ transform: [{ translateX: offset }] }} {...panResponder.panHandlers}>
         <Pressable
           accessibilityRole="button"
-          accessibilityHint={streamable ? 'Opens the tile stream' : undefined}
+          accessibilityHint={streamable ? 'Opens the tile' : undefined}
           disabled={!streamable || busy}
           onLongPress={() => settle(-CLOSE_TRAVEL)}
           onPress={onOpen}
@@ -134,7 +134,7 @@ export function TileListRow({
                   />
                 </View>
               </View>
-            ) : row.tile.content ? (
+            ) : streamable ? null : row.tile.content ? (
               <Text style={[styles.confirmBody, { color: theme.muted }]}>{reason}. Follow its agent here; this native view remains on the Mac.</Text>
             ) : row.engine === 'webkit' ? (
               <View style={[styles.confirm, { borderColor: theme.borderMid }]}>

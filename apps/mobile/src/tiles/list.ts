@@ -1,3 +1,4 @@
+import { canLoadNatively } from './native/target'
 import type {
   CommandoSnapshot,
   WebPane,
@@ -124,6 +125,15 @@ export function groupTileRows(
  */
 export function canStream(tile: WebPane): boolean {
   return !tile.content && tile.engine === 'chromium' && tile.status === 'open'
+}
+
+/**
+ * Whether the tile screen can show this tile at all: by streaming it, or by
+ * loading it in the phone's own WebView (daemon-served pages, public pages
+ * and canvases — see `native/target.ts`).
+ */
+export function canOpenOnPhone(tile: WebPane): boolean {
+  return canStream(tile) || canLoadNatively(tile)
 }
 
 /** Why a tile cannot be opened, in the words the row shows. */

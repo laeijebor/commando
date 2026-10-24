@@ -12,7 +12,7 @@ import {
   type TreeWindowNode,
 } from '../agents/selectors'
 import { useTheme } from '../theme'
-import { canStream, tileTitle } from '../tiles/list'
+import { canOpenOnPhone, tileTitle } from '../tiles/list'
 import { Pill, SectionHeader, StatusDot, withAlpha } from './primitives'
 import { routeParams } from '../layout/routeParams'
 
@@ -38,9 +38,9 @@ function useTreeRoutes(): {
       pathname: '/(host)/[hostId]/new-pane',
       params: routeParams({ hostId: hostId ?? '', targetId }),
     }),
-    // A tile that cannot stream to the phone goes to the list, where it can be
+    // A tile the phone cannot show goes to the list, where it can be
     // confirmed or reopened as chromium.
-    openTile: (tile) => (canStream(tile)
+    openTile: (tile) => (canOpenOnPhone(tile)
       ? router.push({
           pathname: '/(host)/[hostId]/tile/[tileId]',
           params: { hostId: hostId ?? '', tileId: tile.id },
