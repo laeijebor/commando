@@ -135,12 +135,14 @@ export function cleanInlineHtml(text: string): string {
   return text.split(/(`+[^`]*`+)/).map((part, index) => index % 2 ? part : part
     .replace(/<kbd>([\s\S]*?)<\/kbd>/gi, (_match, inner: string) => `\`${inner}\``)
     .replace(/<br\s*\/?>/gi, '  \n')
-    .replace(/<\/?(?:b|i|em|strong|span|sup|sub|u|mark|small|abbr|summary|details)\b[^>]*>/gi, ''),
+    .replace(/<\/?(?:b|i|em|strong|span|sup|sub|u|mark|small|abbr|summary|details|callout)\b[^>]*>/gi, ''),
   ).join('')
 }
 
 function plainText(tokens: readonly Token[] | undefined): string {
   return (tokens ?? []).map((token) => {
+    // The daemon's label leaves image alt text out.
+    if (token.type === 'image') return ''
     if (token.type === 'text' || token.type === 'codespan' || token.type === 'escape') {
       const nested = (token as Tokens.Text).tokens
       return nested ? plainText(nested) : decode((token as Tokens.Text).text)
@@ -161,14 +163,16 @@ type Builder = { found: FoundStep[]; slots: Array<{ assign: (id: string) => void
 
 /** Split prose holding `<checkpoint>` tags into its text runs and its checkpoint rows. */
 function splitCheckpoints(raw: string, key: string, builder: Builder): GuideBlock[] | null {
-  if (!/<checkpoint\b/i.test(raw)) return null
+  // A `<checkpoint>` inside a code span is an example, not a step (remark sees it as code too).
+  const masked = raw.replace(/(`+)[\s\S]*?\1/g, (span) => ' '.repeat(span.length))
+  if (!/<checkpoint\b/i.test(masked)) return null
   const blocks: GuideBlock[] = []
   let index = 0
-  for (const match of raw.matchAll(CHECKPOINT_PAIR)) {
+  for (const match of masked.matchAll(CHECKPOINT_PAIR)) {
     const before = raw.slice(index, match.index)
     if (before.trim()) blocks.push({ kind: 'markdown', key: `${key}.${blocks.length}`, text: cleanInlineHtml(before.trim()) })
     const attributes = match[1] ?? ''
-    const label = squash(stripTags(match[2] ?? ''))
+    const label = squash(stripTags(raw.slice((match.index ?? 0) + match[0].indexOf('>') + 1, (match.index ?? 0) + match[0].length).replace(/<\/checkpoint\s*>$/i, '')))
     const explicit = attribute(attributes, 'id')
     const sourceChecked = /(?:^|\s)done(?=[\s=/]|$)/i.test(attributes)
     const block: Extract<GuideBlock, { kind: 'checkpoint' }> = { kind: 'checkpoint', key: `${key}.${blocks.length}`, label, sourceChecked }
@@ -236,6 +240,7 @@ function walk(tokens: readonly Token[], key: string, builder: Builder): GuideBlo
           const close = callout ? CALLOUT_CLOSE : DETAILS_CLOSE
           const opening = (callout ?? details)![0]
           let inner: GuideBlock[]
+          let tail: GuideBlock[] = []
           if (close.test(raw)) {
             // Opened and closed in one HTML block: the agent left out the blank lines, so the inside is text.
             const body = raw.slice(raw.indexOf(opening) + opening.length).replace(close, '').replace(/[\s\S]*?<\/summary\s*>/i, '')
@@ -245,8 +250,17 @@ function walk(tokens: readonly Token[], key: string, builder: Builder): GuideBlo
             let end = index + 1
             while (end < tokens.length && !(tokens[end]!.type === 'html' && close.test(tokens[end]!.raw))) end++
             const rest = raw.slice(raw.indexOf(opening) + opening.length).replace(/[\s\S]*?<\/summary\s*>/i, '')
-            inner = [...prose(rest.trim(), `${id}.head`, builder), ...walk(tokens.slice(index + 1, end), id, builder)]
-            index = end
+            inner = prose(rest.trim(), `${id}.head`, builder)
+            // Without a close tag of its own (it ended up inside a paragraph), the box holds only its opening block.
+            if (end < tokens.length) {
+              inner.push(...walk(tokens.slice(index + 1, end), id, builder))
+              const closing = tokens[end]!.raw
+              const before = closing.slice(0, closing.search(close))
+              const after = closing.slice(closing.search(close)).replace(close, '')
+              inner.push(...prose(before.trim(), `${id}.tail`, builder))
+              tail = prose(after.trim(), `${id}.after`, builder)
+              index = end
+            }
           }
           if (callout) {
             const attributes = callout[1] ?? ''
@@ -257,6 +271,7 @@ function walk(tokens: readonly Token[], key: string, builder: Builder): GuideBlo
             const summary = /<summary\b[^>]*>([\s\S]*?)<\/summary\s*>/i.exec(raw)?.[1]
             blocks.push({ kind: 'details', key: id, summary: squash(stripTags(summary ?? '')) || 'Details', body: inner })
           }
+          blocks.push(...tail)
           break
         }
         const split = splitCheckpoints(raw, id, builder)
@@ -299,25 +314,36 @@ function listItem(item: Tokens.ListItem, key: string, builder: Builder): GuideLi
 
 /**
  * Pair each step found in the Markdown with one of the daemon's steps: by
- * explicit `{#id}`, then by label, then by position among steps of its kind
- * (task items and checkpoints are numbered separately, as on the desktop).
- * A step that matches nothing renders with its source tick and cannot be
- * ticked — the daemon would reject an id it does not know.
+ * explicit `{#id}` first, then by label, and only then by position — and by
+ * position only when both parsers count the same number of steps of that kind
+ * (task items and checkpoints are numbered separately, as on the desktop). A
+ * step that matches nothing renders with its source tick and cannot be ticked:
+ * leaving it inert is better than ticking a neighbour.
  */
 export function matchSteps(found: readonly FoundStep[], steps: readonly Pick<GuideStepState, 'id' | 'label' | 'checkpoint'>[]): Array<string | undefined> {
+  const result: Array<string | undefined> = found.map(() => undefined)
   const used = new Set<string>()
-  const ordinal = { task: 0, checkpoint: 0 }
-  const ofKind = (checkpoint: boolean) => steps.filter((step) => step.checkpoint === checkpoint)
-  return found.map((entry) => {
-    const kind = ofKind(entry.checkpoint)
-    const position = entry.checkpoint ? ordinal.checkpoint++ : ordinal.task++
-    const byId = entry.explicitId ? kind.find((step) => step.id === entry.explicitId && !used.has(step.id)) : undefined
-    const byLabel = byId ?? kind.find((step) => !used.has(step.id) && squash(step.label) === entry.label)
-    const byPosition = byLabel ?? (kind[position] && !used.has(kind[position].id) ? kind[position] : undefined)
-    if (!byPosition) return undefined
-    used.add(byPosition.id)
-    return byPosition.id
+  const claim = (index: number, id: string) => { result[index] = id; used.add(id) }
+  const free = (entry: FoundStep, test: (step: Pick<GuideStepState, 'id' | 'label'>) => boolean) =>
+    steps.find((step) => step.checkpoint === entry.checkpoint && !used.has(step.id) && test(step))
+  found.forEach((entry, index) => {
+    const step = entry.explicitId ? free(entry, (candidate) => candidate.id === entry.explicitId) : undefined
+    if (step) claim(index, step.id)
   })
+  found.forEach((entry, index) => {
+    const step = result[index] === undefined ? free(entry, (candidate) => squash(candidate.label) === entry.label) : undefined
+    if (step) claim(index, step.id)
+  })
+  for (const checkpoint of [false, true]) {
+    const mine = found.flatMap((entry, index) => entry.checkpoint === checkpoint ? [index] : [])
+    const theirs = steps.filter((step) => step.checkpoint === checkpoint)
+    if (mine.length !== theirs.length) continue
+    mine.forEach((index, position) => {
+      const step = theirs[position]!
+      if (result[index] === undefined && !used.has(step.id)) claim(index, step.id)
+    })
+  }
+  return result
 }
 
 export type GuideDocument = { blocks: GuideBlock[]; found: FoundStep[] }

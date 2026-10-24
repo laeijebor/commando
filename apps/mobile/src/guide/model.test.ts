@@ -88,12 +88,37 @@ describe('matchSteps', () => {
       { checkpoint: false, label: 'Reworded first', explicitId: 'a', sourceChecked: false },
     ], steps)).toEqual(['b', 'cp', 'a'])
   })
+  it('leaves steps inert rather than shifting them when the two parsers disagree on the count', () => {
+    expect(matchSteps([
+      { checkpoint: true, label: 'Example', sourceChecked: false },
+      { checkpoint: true, label: 'Deploy green reworded', sourceChecked: false },
+      { checkpoint: true, label: 'Smoke passed', sourceChecked: false },
+    ], [{ id: 'deploy', label: 'Deploy green', checkpoint: true }, { id: 'smoke', label: 'Smoke passed', checkpoint: true }])).toEqual([undefined, undefined, 'smoke'])
+  })
   it('never hands one id to two steps', () => {
     expect(matchSteps([
       { checkpoint: false, label: 'First', sourceChecked: false },
       { checkpoint: false, label: 'First', sourceChecked: false },
       { checkpoint: false, label: 'First', sourceChecked: false },
-    ], steps)).toEqual(['a', 'b', undefined])
+    ], steps)).toEqual(['a', undefined, undefined])
+  })
+})
+
+describe('guide edge cases', () => {
+  const checkpoints = (markdown: string) => collect(buildGuideDocument(markdown, []).blocks).filter((block) => block.kind === 'checkpoint')
+
+  it('ignores a checkpoint written inside a code span', () => {
+    expect(checkpoints('Use `<checkpoint>Example</checkpoint>` syntax.\n\n<checkpoint>Deploy green</checkpoint>\n')).toMatchObject([{ label: 'Deploy green' }])
+  })
+
+  it('keeps the rest of the guide outside a callout whose close tag sits in a paragraph', () => {
+    const blocks = buildGuideDocument('<callout tone="warn">\n\nCareful.\n</callout>\n\n- [ ] Next step\n', []).blocks
+    expect(blocks[0]).toMatchObject({ kind: 'callout' })
+    expect(blocks.some((block) => block.kind === 'list')).toBe(true)
+  })
+
+  it('keeps a checkpoint that follows a close tag in the same HTML block', () => {
+    expect(checkpoints('<callout>\n\nNote.\n\n</callout>\n<checkpoint id="after">After</checkpoint>\n')).toMatchObject([{ label: 'After' }])
   })
 })
 
