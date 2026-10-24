@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, St
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
-import { PLAN_IMPLEMENTATION_PREFIX, chatImageUrl, chatPlanTitle, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
 import {
   canCollapsePlan,
   collapsedPlanPreview,
@@ -27,6 +27,7 @@ import { WorkingPulse } from '../ui/ChatIndicator'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { ImageViewer, type ViewableImage } from './ImageViewer'
+import { chatImageUri } from './images'
 import { Markdown } from './Markdown'
 import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
 
@@ -235,7 +236,7 @@ export function ImageStrip({ images }: { images: readonly ChatImageRef[] }): Rea
     <>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.images} style={styles.imagesScroll}>
         {images.map((image, index) => {
-          const viewable = { uri: `${baseUrl}${chatImageUrl(image.id)}`, name: image.name ?? `Image ${index + 1}` }
+          const viewable = { uri: chatImageUri(baseUrl, image.id), name: image.name ?? `Image ${index + 1}` }
           return (
             <Pressable key={image.id} onPress={() => setOpen(viewable)} accessibilityRole="imagebutton" accessibilityLabel={`Open ${viewable.name}`}>
               <Image

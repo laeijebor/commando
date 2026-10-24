@@ -5,7 +5,6 @@ import * as Haptics from 'expo-haptics'
 
 import {
   MAX_CHAT_IMAGES,
-  chatImageUrl,
   hostTakesInput,
   hostTakesSettings,
   hostTakesTurnFlow,
@@ -33,7 +32,9 @@ import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
 import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
-import { pickImages, prepareImage, uploadChatImage } from './images'
+import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
+import { chatImageUri, pickImages, prepareImage, uploadChatImage, type PickedImage } from './images'
+import { PasteImageBar } from './PasteImageBar'
 
 type Attachment = { key: string; name: string; uri: string; ref?: ChatImageRef }
 
@@ -53,7 +54,7 @@ function attachmentKey(prefix: string): string {
 }
 
 function restored(refs: readonly ChatImageRef[], baseUrl: string, prefix: string): Attachment[] {
-  return refs.map((ref) => ({ key: attachmentKey(prefix), name: ref.name ?? 'image', uri: `${baseUrl}${chatImageUrl(ref.id)}`, ref }))
+  return refs.map((ref) => ({ key: attachmentKey(prefix), name: ref.name ?? 'image', uri: chatImageUri(baseUrl, ref.id), ref }))
 }
 
 /** `@` results for the trigger's query; stale answers are dropped. */
@@ -192,26 +193,21 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     }
   }
 
-  const attach = async () => {
+  /** Room for more images, or why there is none (the error is shown). */
+  const roomForImages = (): number => {
     setAttachError(null)
     if (!richInput) {
       setAttachError('Restart this chat to attach images')
-      return
+      return 0
     }
     const room = MAX_CHAT_IMAGES - attachments.length
-    if (room <= 0) {
-      setAttachError(`A message can carry at most ${MAX_CHAT_IMAGES} images`)
-      return
-    }
-    let picked
-    try {
-      picked = await pickImages(room)
-    } catch (error) {
-      setAttachError(error instanceof Error ? error.message : String(error))
-      return
-    }
-    if (!picked?.length || !mounted.current) return
-    for (const image of picked) {
+    if (room <= 0) setAttachError(`A message can carry at most ${MAX_CHAT_IMAGES} images`)
+    return Math.max(0, room)
+  }
+
+  /** Picked or pasted images join the draft at once, then shrink and upload behind a spinner. */
+  const addImages = (images: readonly PickedImage[]) => {
+    for (const image of images) {
       const key = attachmentKey('picked')
       setAttachments((current) => [...current, { key, name: image.name, uri: image.uri }])
       const drop = (error: string) => {
@@ -231,6 +227,34 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
         }
       })()
     }
+  }
+
+  const attach = async () => {
+    const room = roomForImages()
+    if (!room) return
+    let picked
+    try {
+      picked = await pickImages(room)
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    if (!picked?.length || !mounted.current) return
+    addImages(picked)
+  }
+
+  // The clipboard's image is offered while it holds one; a paste uses it up until the clipboard changes.
+  const clipboardImage = useClipboardImage(richInput && !disabled)
+  const pasteImage = (data: ClipboardImageData) => {
+    clipboardImage.dismiss()
+    if (!roomForImages()) return
+    const image = pastedImage(data)
+    if (!image) {
+      setAttachError('The clipboard image is in a format that can\'t be attached')
+      return
+    }
+    void Haptics.selectionAsync()
+    addImages([image])
   }
 
   const clearDraft = () => {
@@ -383,12 +407,16 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             <IconButton icon="x" label="Dismiss" onPress={dismissError} />
           </View>
         ) : null}
+        {clipboardImage.available ? (
+          <PasteImageBar onDismiss={clipboardImage.dismiss} onError={setAttachError} onImage={pasteImage} />
+        ) : null}
         <TextInput
           accessibilityLabel={`Message ${providerPresentation(session.provider).name}`}
           autoCapitalize="sentences"
           editable={!disabled}
           multiline
           onChangeText={setText}
+          onFocus={clipboardImage.recheck}
           onSelectionChange={(event) => {
             setSelection(event.nativeEvent.selection)
             if (forcedSelection) setForcedSelection(undefined)

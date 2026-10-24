@@ -2,6 +2,7 @@ import { requireOptionalNativeModule } from 'expo'
 
 import {
   CHAT_IMAGE_MAX_DIMENSION,
+  chatImageUrl,
   CHAT_IMAGE_TYPES,
   MAX_CHAT_IMAGE_BYTES,
   isChatImageId,
@@ -9,6 +10,7 @@ import {
   type ChatImageType,
 } from '@commando/agent-chat'
 
+import { DEMO_ORIGIN, isDemoHost } from '../demo/flags'
 import { authHeaders } from '../hosts/api'
 import type { Host } from '../hosts/types'
 
@@ -118,6 +120,7 @@ const UPLOAD_TIMEOUT_MS = 60_000
 
 /** Uploads one image the way the web composer does; the message then names it by id. */
 export async function uploadChatImage(host: Host, image: PreparedImage, fetcher: typeof fetch = fetch): Promise<ChatImageRef> {
+  if (__DEV__ && isDemoHost(host)) return (require('../demo/images') as typeof import('../demo/images')).demoUploadImage(image)
   let blob: Blob
   try {
     blob = await (await fetcher(image.uri)).blob()
@@ -143,4 +146,13 @@ export async function uploadChatImage(host: Host, image: PreparedImage, fetcher:
   const result = await response.json().catch(() => ({})) as { image?: { id?: unknown }; error?: string }
   if (!response.ok || !isChatImageId(result.image?.id)) throw new Error(result.error ?? `Upload failed (${response.status})`)
   return { id: result.image.id, name: image.name }
+}
+
+/** Where a stored chat image loads from: the daemon, or the phone itself for the demo host. */
+export function chatImageUri(baseUrl: string, id: string): string {
+  if (__DEV__ && baseUrl === DEMO_ORIGIN) {
+    const local = (require('../demo/images') as typeof import('../demo/images')).demoImageUri(id)
+    if (local) return local
+  }
+  return `${baseUrl}${chatImageUrl(id)}`
 }
