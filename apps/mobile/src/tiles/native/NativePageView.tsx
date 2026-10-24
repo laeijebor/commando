@@ -63,7 +63,10 @@ export function NativePageView({
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null)
   const [questionsOpen, setQuestionsOpen] = useState(false)
 
-  const { pending, apply } = usePendingQueue(host, tile, canonicalPage, active)
+  const { pending, apply } = usePendingQueue(host, tile, redlinePageKey(canonicalPage), active)
+  const reviewRef = useRef(reviewMode)
+  reviewRef.current = reviewMode
+  const [pageError, setPageError] = useState<string | null>(null)
   const queue = useQueueActions({ host, webPaneId: tile.id, pending, onSnapshot: apply })
 
   useEffect(() => { onPageUrl?.(canonicalPage) }, [canonicalPage, onPageUrl])
@@ -97,6 +100,36 @@ export function NativePageView({
     }, 'Could not queue the answer')
   }, [apply, host, queue.run, tile.id])
 
+  // What the page queues on its own is page-controlled: send one at a time,
+  // keep only the latest answer per question, and report failures inline
+  // rather than as alerts a page could stack up.
+  const pageQueue = useRef(new Map<string, { pageUrl: string; response: RedlinePageResponse }>())
+  const draining = useRef(false)
+  const drainPageResponses = useCallback(async () => {
+    if (draining.current) return
+    draining.current = true
+    try {
+      for (let next = pageQueue.current.entries().next(); !next.done; next = pageQueue.current.entries().next()) {
+        const [key, item] = next.value
+        pageQueue.current.delete(key)
+        try {
+          apply(await addPendingResponse(host, tile.id, item.pageUrl, item.response))
+          setPageError(null)
+        } catch (error) {
+          setPageError(error instanceof Error ? error.message : 'The daemon refused the answer.')
+        }
+      }
+    } finally {
+      draining.current = false
+    }
+  }, [apply, host, tile.id])
+  const queuePageResponse = useCallback((pageUrl: string, response: RedlinePageResponse) => {
+    const key = response.queueKey ? `key:${response.queueKey}` : `selector:${response.selector ?? response.question}`
+    pageQueue.current.delete(key)
+    pageQueue.current.set(key, { pageUrl, response })
+    void drainPageResponses()
+  }, [drainPageResponses])
+
   const onEvent = useCallback((event: NativeTileEvent) => {
     switch (event.type) {
       case 'ready':
@@ -106,9 +139,11 @@ export function NativePageView({
         setQuestions({ page: redlinePageKey(toCanonicalUrl(source, event.url)), snapshot: event.snapshot })
         return
       case 'response':
-        queueResponse(toCanonicalUrl(source, event.url), event.response)
+        queuePageResponse(toCanonicalUrl(source, event.url), event.response)
         return
       case 'inspect':
+        // Only a tap the owner made in Review names an element.
+        if (!reviewRef.current) return
         void Haptics.selectionAsync()
         setTarget(event.result)
         return
@@ -116,7 +151,7 @@ export function NativePageView({
         setSelectedNoteId(event.noteId)
         return
     }
-  }, [queueResponse, source])
+  }, [queuePageResponse, source])
 
   const queueNote = useCallback((comment: string) => {
     if (!target) return
@@ -180,6 +215,11 @@ export function NativePageView({
             <CommentCard busy={queue.busy} onCancel={() => setTarget(null)} onSubmit={queueNote} target={target} />
           ) : null}
         </View>
+        {pageError ? (
+          <Text accessibilityRole="alert" numberOfLines={2} style={[styles.pageError, { color: theme.red }]}>
+            An answer from the page was not queued: {pageError}
+          </Text>
+        ) : null}
         <QueueChrome onSelectNote={setSelectedNoteId} pending={pending} queue={queue} selectedNoteId={selectedNoteId} />
       </KeyboardAware>
 
@@ -282,6 +322,7 @@ const styles = StyleSheet.create({
   sheetTitle: { fontSize: 16, fontWeight: '700' },
   sheetSpacer: { width: 44 },
   sheetBody: { padding: 16, gap: 12 },
+  pageError: { fontSize: 12, lineHeight: 17 },
   failed: { flex: 1, borderWidth: 1, borderRadius: 14, padding: 20, gap: 10, justifyContent: 'center' },
   failedTitle: { fontSize: 16, fontWeight: '700' },
   failedBody: { fontSize: 13, lineHeight: 19 },

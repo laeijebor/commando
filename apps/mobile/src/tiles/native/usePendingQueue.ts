@@ -35,7 +35,8 @@ export function mergePendingSnapshot(
  * chromium tile has a push channel without the screencast (`?mode=review`);
  * webkit tiles and canvases have none on the relay, so they poll while the
  * screen is up. Every push or poll re-reads `GET …/pending?sentPage=` for the
- * page on screen.
+ * page on screen; `sentPage` should be a page key (origin + path), so in-page
+ * navigation does not churn the connection.
  */
 export function usePendingQueue(
   host: Host | undefined,
@@ -45,35 +46,44 @@ export function usePendingQueue(
 ): { pending: WebPanePendingSnapshot; apply: (snapshot: WebPanePendingSnapshot) => void; reload: () => void } {
   const cookie = useHostsStore((store) => (host ? store.cookies[host.id] : undefined))
   const [pending, setPending] = useState<WebPanePendingSnapshot>(EMPTY_PENDING)
-  const generation = useRef(0)
   const tileId = tile?.id
   const chromium = tile?.engine === 'chromium' && !tile.content
 
+  // Only the newest read may land: an older `sentPage` reply arriving late
+  // would put another page's sent answers on this one.
+  const latestRequest = useRef(0)
   const reload = useCallback(() => {
     if (!host || !tileId) return
-    const request = generation.current
+    const request = ++latestRequest.current
     void fetchPendingNotes(host, tileId, sentPage ?? undefined)
       .then((snapshot) => {
-        if (request !== generation.current) return
+        if (request !== latestRequest.current) return
         setPending((current) => mergePendingSnapshot(current, snapshot, { keepSent: false }))
       })
       .catch(() => undefined)
   }, [host, tileId, sentPage])
+  const reloadRef = useRef(reload)
+  reloadRef.current = reload
 
   const apply = useCallback((snapshot: WebPanePendingSnapshot) => {
     setPending((current) => mergePendingSnapshot(current, snapshot, { keepSent: true }))
     // The reply's sent answers may belong to another page; read ours again.
-    reload()
-  }, [reload])
+    reloadRef.current()
+  }, [])
 
   useEffect(() => {
-    generation.current += 1
+    latestRequest.current += 1
     setPending(EMPTY_PENDING)
   }, [host?.id, tileId])
 
+  // A new page (origin + path) needs its own sent answers.
+  useEffect(() => {
+    if (enabled) reload()
+  }, [enabled, reload])
+
+  // The push channel or the poll lives as long as the tile, not the page.
   useEffect(() => {
     if (!enabled || !host || !tileId) return
-    reload()
     if (chromium) {
       const client = new TileRelayClient({ host, webPaneId: tileId, cookie: cookie ?? null, mode: 'review' })
       let lastRevision: number | undefined
@@ -83,7 +93,7 @@ export function usePendingQueue(
         if (revision === lastRevision && notes.length === lastCount) return
         lastRevision = revision
         lastCount = notes.length
-        reload()
+        reloadRef.current()
       })
       client.start()
       return () => {
@@ -91,9 +101,9 @@ export function usePendingQueue(
         client.stop()
       }
     }
-    const timer = setInterval(reload, POLL_MS)
+    const timer = setInterval(() => reloadRef.current(), POLL_MS)
     return () => clearInterval(timer)
-  }, [enabled, host, tileId, chromium, cookie, reload])
+  }, [enabled, host, tileId, chromium, cookie])
 
   return { pending, apply, reload }
 }

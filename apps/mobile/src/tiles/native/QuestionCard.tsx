@@ -65,6 +65,10 @@ export function QuestionCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingIdentity])
 
+  // A new send settles the card again, even one reopened with Change.
+  const sentAt = sent?.sentAt
+  useEffect(() => { if (sentAt !== undefined) setReopened(false) }, [sentAt])
+
   const dirty = !same(draft, base)
   const options = questionOptions(question)
   const queue = (next: QuestionDraft): void => {

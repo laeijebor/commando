@@ -37,6 +37,10 @@ export const NativeWebTile = forwardRef<NativeWebTileHandle, {
   const webView = useRef<WebView>(null)
   const [loading, setLoading] = useState(true)
   const currentUrl = useRef(url)
+  // Only the tile's own first document decides whether the phone can show it;
+  // a broken link followed later is the page's business.
+  const settled = useRef(false)
+  const failed = useRef(false)
 
   useImperativeHandle(ref, () => ({
     send: (command) => webView.current?.injectJavaScript(encodeNativeTileCommand(command)),
@@ -58,10 +62,14 @@ export const NativeWebTile = forwardRef<NativeWebTileHandle, {
   const handleHttpError = useCallback((event: WebViewHttpErrorEvent) => {
     const { statusCode, url: failedUrl } = event.nativeEvent
     // Only the document itself counts; a missing image is the page's business.
-    if (failedUrl === currentUrl.current || failedUrl === url) onLoadFailed(`The page answered HTTP ${statusCode}.`)
+    if (settled.current || (failedUrl !== currentUrl.current && failedUrl !== url)) return
+    failed.current = true
+    onLoadFailed(`The page answered HTTP ${statusCode}.`)
   }, [onLoadFailed, url])
 
   const handleError = useCallback((event: WebViewErrorEvent) => {
+    if (settled.current) return
+    failed.current = true
     onLoadFailed(event.nativeEvent.description || 'The page could not be loaded.')
   }, [onLoadFailed])
 
@@ -79,7 +87,10 @@ export const NativeWebTile = forwardRef<NativeWebTileHandle, {
         injectedJavaScriptBeforeContentLoadedForMainFrameOnly
         onError={handleError}
         onHttpError={handleHttpError}
-        onLoadEnd={() => setLoading(false)}
+        onLoadEnd={() => {
+          setLoading(false)
+          if (!failed.current) settled.current = true
+        }}
         onLoadStart={() => setLoading(true)}
         onMessage={handleMessage}
         onNavigationStateChange={handleNavigation}

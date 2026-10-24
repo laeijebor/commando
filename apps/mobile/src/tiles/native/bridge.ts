@@ -32,7 +32,10 @@ import { parseTileInspectResult, type TileInspectSuccess } from '../protocol'
 
 export const NATIVE_TILE_MESSAGE_SOURCE = 'commando-native-tile'
 
-const MAX_MESSAGE_BYTES = Math.max(MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES) + 4_096
+const MAX_PAYLOAD_BYTES = Math.max(MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES)
+// The payload travels JSON-escaped inside the envelope, so every quote costs
+// two bytes; the exact limit is checked on the payload once it is out.
+const MAX_MESSAGE_BYTES = MAX_PAYLOAD_BYTES * 2 + 4_096
 const MAX_URL_LENGTH = 2_048
 
 /**
@@ -45,7 +48,7 @@ export const NATIVE_TILE_PAGE_SCRIPT = `(function () {
   'use strict';
   if (window.__commandoMobileTile) return;
   var SOURCE = ${JSON.stringify(NATIVE_TILE_MESSAGE_SOURCE)};
-  var MAX_PAYLOAD = ${MAX_MESSAGE_BYTES - 4_096};
+  var MAX_PAYLOAD = ${MAX_PAYLOAD_BYTES};
   var post = function (message) {
     message.source = SOURCE;
     message.url = String(location.href).slice(0, ${MAX_URL_LENGTH});
@@ -315,7 +318,7 @@ export function parseNativeTileMessage(data: unknown, reportedUrl: string): Nati
       const payload = record.payload
       if (typeof payload !== 'string') return null
       const bytes = utf8Bytes(payload)
-      if (bytes > Math.max(MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES)) return null
+      if (bytes > MAX_PAYLOAD_BYTES) return null
       let value: unknown
       try {
         value = JSON.parse(payload)

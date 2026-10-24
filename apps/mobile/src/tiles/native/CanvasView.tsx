@@ -91,11 +91,12 @@ export function CanvasView({ host, tile, source, active }: {
     const path = encodeCanvasPath(frame.src)
     return (
       <View style={styles.root}>
-        <Pressable accessibilityRole="button" onPress={() => setFrameId(null)} style={styles.backRow}>
+        <Pressable accessibilityRole="button" onPress={() => { setFrameId(null); setError(null) }} style={styles.backRow}>
           <Feather color={theme.accent} name="chevron-left" size={18} />
           <Text style={[styles.backLabel, { color: theme.accent }]}>Canvas</Text>
           <Text numberOfLines={1} style={[styles.frameTitle, { color: theme.text }]}>{frame.title}</Text>
         </Pressable>
+        {error ? <Text accessibilityRole="alert" style={[styles.error, styles.frameError, { color: theme.red }]}>{error}</Text> : null}
         <NativePageView
           active={active}
           host={host}
@@ -195,6 +196,7 @@ const styles = StyleSheet.create({
   toolbar: { paddingHorizontal: 12, paddingBottom: 8 },
   list: { padding: 12, gap: 12 },
   error: { fontSize: 13 },
+  frameError: { paddingHorizontal: 12, paddingBottom: 8 },
   group: { gap: 8 },
   frameRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderRadius: 12, padding: 12 },
   frameText: { flex: 1, minWidth: 0, gap: 2 },
