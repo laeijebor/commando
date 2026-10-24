@@ -35,10 +35,17 @@ export class PrResourceCache {
 
   /** Reads `key` unless a fresh copy is held or a read is already running; a forced read waits for any running one first. */
   async load<T>(key: string, fetcher: () => Promise<T>, options: { ttlMs: number; force?: boolean }): Promise<void> {
-    const running = this.loading.get(key)
-    if (running) {
+    let running = this.loading.get(key)
+    while (running) {
       await running
       if (!options.force) return
+      // Another forced read may have started while this one waited; share it rather than racing it.
+      const next = this.loading.get(key)
+      if (next && next !== running) {
+        await next
+        return
+      }
+      running = next
     }
     const current = this.entries.get(key)
     if (!options.force && current && current.value !== undefined && Date.now() - current.at < options.ttlMs) return
@@ -50,7 +57,7 @@ export class PrResourceCache {
         // Keep the last good copy on screen beside the error.
         this.set(key, { value: this.entries.get(key)?.value, error, at: Date.now(), loading: false })
       },
-    ).finally(() => { this.loading.delete(key) })
+    ).finally(() => { if (this.loading.get(key) === read) this.loading.delete(key) })
     this.loading.set(key, read)
     await read
   }
@@ -60,10 +67,10 @@ export class PrResourceCache {
   private set(key: string, entry: PrResource<unknown>): void {
     this.entries.delete(key)
     this.entries.set(key, entry)
-    while (this.entries.size > this.maxEntries) {
-      const oldest = this.entries.keys().next().value!
-      if (this.listeners.has(oldest) || this.loading.has(oldest)) break
-      this.entries.delete(oldest)
+    // Oldest first, skipping anything a screen still shows or is still reading.
+    for (const candidate of [...this.entries.keys()]) {
+      if (this.entries.size <= this.maxEntries) break
+      if (!this.listeners.has(candidate) && !this.loading.has(candidate)) this.entries.delete(candidate)
     }
     this.listeners.get(key)?.forEach((notify) => notify())
   }

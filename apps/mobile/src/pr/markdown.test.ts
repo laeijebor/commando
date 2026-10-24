@@ -14,3 +14,11 @@ it('keeps inline text together and leaves fenced code untouched', () => {
   const body = 'Press <kbd>Enter</kbd><br>then wait\n\n```html\n<!-- keep -->\n<details>raw</details>\n\n\n```\nafter'
   expect(githubMarkdown(body)).toBe('Press Enter\nthen wait\n\n```html\n<!-- keep -->\n<details>raw</details>\n\n\n```\nafter')
 })
+
+it('leaves tags inside inline code alone', () => {
+  expect(githubMarkdown('Replace the `<br>` and `<details>` tags; keep ``<!-- marker -->`` and <b>x</b>')).toBe('Replace the `<br>` and `<details>` tags; keep ``<!-- marker -->`` and **x**')
+})
+
+it('keeps a table row on one line when a cell has a line break', () => {
+  expect(githubMarkdown('| File | Change |\n| --- | --- |\n| a.ts | one<br>two |')).toBe('| File | Change |\n| --- | --- |\n| a.ts | one · two |')
+})

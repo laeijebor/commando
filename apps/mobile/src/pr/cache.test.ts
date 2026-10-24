@@ -14,14 +14,28 @@ it('shares one in-flight read, serves fresh copies and keeps the last value besi
   expect(cache.peek('k')).toMatchObject({ value: 1, error: 'rate limited', loading: false })
 })
 
-it('evicts the oldest unwatched entries past its bound', async () => {
+it('evicts the oldest unwatched entries past its bound, past a watched one', async () => {
   const cache = new PrResourceCache(2)
   const stop = cache.subscribe('a', () => undefined)
-  for (const key of ['a', 'b', 'c']) await cache.load(key, async () => key, { ttlMs: 1 })
-  expect(cache.peek('a')?.value).toBe('a')
-  stop()
-  await cache.load('d', async () => 'd', { ttlMs: 1 })
+  for (const key of ['a', 'b', 'c', 'd']) await cache.load(key, async () => key, { ttlMs: 1 })
   expect(cache.size).toBe(2)
+  expect(cache.peek('a')?.value).toBe('a')
+  expect(cache.peek('d')?.value).toBe('d')
+  stop()
+})
+
+it('shares one forced read between refreshes that arrive while a read is running', async () => {
+  const cache = new PrResourceCache()
+  let release!: () => void
+  const gate = new Promise<string>((resolve) => { release = () => resolve('first') })
+  const first = jest.fn(() => gate)
+  const forced = jest.fn(async () => 'forced')
+  const reading = cache.load('k', first, { ttlMs: 60_000 })
+  const refreshes = [cache.load('k', forced, { ttlMs: 60_000, force: true }), cache.load('k', forced, { ttlMs: 60_000, force: true })]
+  release()
+  await Promise.all([reading, ...refreshes])
+  expect(forced).toHaveBeenCalledTimes(1)
+  expect(cache.peek('k')?.value).toBe('forced')
 })
 
 it('reads only while enabled and forces a read on refresh', async () => {

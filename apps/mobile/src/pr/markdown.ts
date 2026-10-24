@@ -18,8 +18,20 @@ function attribute(tag: string, name: string): string | undefined {
   return match ? (match[1] ?? match[2] ?? match[3]) : undefined
 }
 
+const CODE_SPAN = /(`+)[\s\S]*?\1/gu
+const PLACEHOLDER = /\u0000(\d+)\u0000/gu
+
+/** Inline code keeps its tags as written: they are set aside before converting and put back after. */
 function convert(text: string): string {
+  const spans: string[] = []
+  const protectedText = text.replace(CODE_SPAN, (span) => `\u0000${spans.push(span) - 1}\u0000`)
+  return convertHtml(protectedText).replace(PLACEHOLDER, (_whole, index: string) => spans[Number(index)] ?? '')
+}
+
+function convertHtml(text: string): string {
   return text
+    // A line break inside a table row would split the row, so it becomes a separator there.
+    .replace(/^(\s*\|.*)$/gmu, (row) => row.replace(/<br\s*\/?>/giu, ' · '))
     .replace(/<!--[\s\S]*?-->/gu, '')
     .replace(/<img\b[^>]*>/giu, (tag) => {
       const src = attribute(tag, 'src')

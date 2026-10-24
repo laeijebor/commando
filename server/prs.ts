@@ -317,10 +317,16 @@ function remoteDiffFile(file: unknown): import('../shared/pr-quick-look.js').PrR
   }
 }
 
-/** GitHub's review-comment hunk runs from the hunk header to the commented line; the last few lines are the context. */
+/**
+ * GitHub's review-comment hunk runs from the hunk header to the commented line;
+ * the last few lines are the context. The header stays on top so a reader can
+ * still tell added from removed lines and see the enclosing function.
+ */
 export function diffHunkTail(hunk: string, lines = DIFF_HUNK_CONTEXT_LINES): string {
   const rows = hunk.split('\n')
-  return rows.length <= lines ? hunk : rows.slice(-lines).join('\n')
+  if (rows.length <= lines + 1) return hunk
+  const tail = rows.slice(-lines)
+  return (rows[0]?.startsWith('@@') ? [rows[0], ...tail] : tail).join('\n')
 }
 
 function requiredBoolean(record: JsonRecord, key: string): boolean {

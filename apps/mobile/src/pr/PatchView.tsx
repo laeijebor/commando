@@ -15,7 +15,8 @@ const LINE_HEIGHT = 18
  */
 export const PatchView = memo(function PatchView({ patch, numbers = true, chunk = PATCH_CHUNK }: { patch: string; numbers?: boolean; chunk?: number }) {
   const theme = useTheme()
-  const lines = useMemo(() => parsePatch(patch), [patch])
+  // Without line numbers this is an excerpt (a thread's code context), which may have lost its hunk header.
+  const lines = useMemo(() => parsePatch(patch, { headerless: !numbers && !patch.startsWith('@@') }), [patch, numbers])
   const [shown, setShown] = useState(chunk)
   const visible = lines.length > shown ? lines.slice(0, shown) : lines
   const width = String(lines.reduce((max, line) => Math.max(max, line.oldLine ?? 0, line.newLine ?? 0), 0)).length

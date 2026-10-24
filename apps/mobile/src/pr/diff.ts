@@ -65,13 +65,14 @@ const HUNK = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 /**
  * A unified patch as numbered lines. GitHub's patches start at the first hunk
  * header; anything before one (a `diff --git` preamble) is kept as a note so a
- * hand-written patch still draws.
+ * hand-written patch still draws. A `headerless` excerpt (a review thread's
+ * code context from an older daemon) is read as hunk lines from the start.
  */
-export function parsePatch(patch: string): PatchLine[] {
+export function parsePatch(patch: string, { headerless = false }: { headerless?: boolean } = {}): PatchLine[] {
   const lines: PatchLine[] = []
-  let oldLine = 0
-  let newLine = 0
-  let inHunk = false
+  let oldLine = headerless ? 1 : 0
+  let newLine = headerless ? 1 : 0
+  let inHunk = headerless
   const rows = patch.split(/\r?\n/u)
   // A patch's trailing newline is not a line of its own.
   if (rows.length > 1 && rows.at(-1) === '') rows.pop()

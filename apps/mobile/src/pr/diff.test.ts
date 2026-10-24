@@ -44,3 +44,8 @@ it('keeps a preamble before the first hunk as notes and expands tabs', () => {
   expect(lines[0]).toEqual({ kind: 'note', text: 'diff --git a/x b/x', oldLine: null, newLine: null })
   expect(lines[2]?.text).toBe('+  indented')
 })
+
+it('reads a headerless excerpt as diff lines', () => {
+  expect(parsePatch(' a\n-b\n+c', { headerless: true }).map((line) => line.kind)).toEqual(['context', 'del', 'add'])
+  expect(parsePatch(' a\n-b').map((line) => line.kind)).toEqual(['note', 'note'])
+})

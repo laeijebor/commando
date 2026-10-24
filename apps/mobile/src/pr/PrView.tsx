@@ -48,7 +48,8 @@ export function PrView({ host, source, active = true, initialTab = 'description'
   const fallback = usePrResource<PrPreview>(`preview:${scope}`, () => fetchPrPreview(host, repo, number), { enabled: active && !source.preview, ttlMs: PREVIEW_TTL_MS })
   const details = usePrResource<PrDetails>(`details:${scope}`, (refresh) => fetchPrDetails(host, repo, number, { refresh }), { enabled: active, ttlMs: DETAILS_TTL_MS })
   const preview = source.preview ?? fallback.data
-  const head = preview?.headRefOid ?? details.data?.headOid
+  // Details are re-read every minute while shown; a fallback preview is not, so the details' head wins.
+  const head = details.data?.headOid ?? preview?.headRefOid
   // A diff is pinned to the head it was read at, so it is kept until the PR moves.
   const diff = usePrResource(`diff:${scope}:${head ?? 'head'}`, () => fetchPrDiff(host, repo, number), { enabled: active && tab === 'diff', ttlMs: head ? Number.POSITIVE_INFINITY : PREVIEW_TTL_MS })
 

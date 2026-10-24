@@ -52,7 +52,7 @@ describe('PR quick look data', () => {
     const details = await new PrService({ runner }).pullRequestDetails('acme/widgets', 12)
     expect(details.conversation[0]).toMatchObject({ originalLine: 7, thread: { isOutdated: true } })
     expect(details.conversation[0].line).toBeUndefined()
-    expect(details.conversation[0].diffHunk?.split('\n')).toEqual(Array.from({ length: 8 }, (_, index) => ` line ${index + 2}`))
+    expect(details.conversation[0].diffHunk?.split('\n')).toEqual(['@@ -1,10 +1,10 @@', ...Array.from({ length: 8 }, (_, index) => ` line ${index + 2}`)])
     expect(details.conversation[1].diffHunk).toBeUndefined()
   })
 
