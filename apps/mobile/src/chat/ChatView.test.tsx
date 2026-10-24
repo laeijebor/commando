@@ -208,3 +208,55 @@ it('bounds the list viewport and keeps the composer dock below it in the same fl
   expect(timelineIndex).toBeGreaterThanOrEqual(0)
   expect(dockIndex).toBeGreaterThan(timelineIndex)
 })
+
+describe('a reconnect under a draft', () => {
+  function renderPhase(chat: ChatState, phase: 'live' | 'reconnecting') {
+    return <ThemeProvider><ChatView chat={chat} client={fakeClient()} host={HOST} phase={phase} /></ThemeProvider>
+  }
+
+  it('keeps the same editable field and the draft, and stays quiet when it is quick', async () => {
+    const client = fakeClient()
+    const view = render(<ThemeProvider><ChatView chat={chatState()} client={client} host={HOST} phase="live" /></ThemeProvider>)
+    await settle()
+    const field = screen.getByTestId('chat-input')
+    fireEvent.changeText(field, 'Half a thought about the')
+
+    jest.useFakeTimers()
+    try {
+      // The socket drops; the daemon's reconnect snapshot then replaces the chat object.
+      view.rerender(<ThemeProvider><ChatView chat={chatState()} client={client} host={HOST} phase="reconnecting" /></ThemeProvider>)
+      expect(screen.getByTestId('chat-input')).toBe(field)
+      expect(field.props.editable).not.toBe(false)
+      expect(screen.queryByText(/Reconnecting to Commando/)).toBeNull()
+      act(() => { jest.advanceTimersByTime(1_000) })
+      view.rerender(<ThemeProvider><ChatView chat={chatState()} client={client} host={HOST} phase="live" /></ThemeProvider>)
+    } finally {
+      jest.useRealTimers()
+    }
+
+    // Same host instance: the field was never unmounted or remounted, so iOS
+    // never resigned it, and it was never read-only, so the keyboard stayed up.
+    expect(screen.getByTestId('chat-input')).toBe(field)
+    expect(field.props.editable).not.toBe(false)
+    expect(field.props.value).toBe('Half a thought about the')
+    expect(screen.queryByText(/Reconnecting to Commando/)).toBeNull()
+  })
+
+  it('says it is reconnecting after a grace period, still taking typing but not sends', async () => {
+    jest.useFakeTimers()
+    try {
+      const view = render(renderPhase(chatState(), 'live'))
+      fireEvent.changeText(screen.getByTestId('chat-input'), 'Draft')
+      view.rerender(renderPhase(chatState(), 'reconnecting'))
+      act(() => { jest.advanceTimersByTime(2_000) })
+      expect(screen.getByText(/Reconnecting to Commando/)).toBeTruthy()
+      const field = screen.getByTestId('chat-input')
+      expect(field.props.editable).not.toBe(false)
+      fireEvent.changeText(field, 'Draft, still typing')
+      expect(screen.getByTestId('chat-input').props.value).toBe('Draft, still typing')
+      expect(screen.getByLabelText('Send')).toBeDisabled()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+})
