@@ -269,8 +269,14 @@ function StepMeta({ step }: { step: GuideStepState }): React.JSX.Element {
     if (draft.trim() !== (step.note ?? '')) context?.saveNote(step, draft)
   }
   const byAgent = step.checked && !step.byUser && step.sourceChecked
+  // The actions sit above the field: iOS scrolls the caret into view, and the keyboard would cover anything below it.
   if (editing) return (
     <View style={styles.noteEditor}>
+      <View style={styles.noteActions}>
+        <Text style={[styles.noteHeading, { color: theme.muted }]}>Note</Text>
+        <Button label="Cancel" onPress={() => { setDraft(step.note ?? ''); setEditing(false) }} />
+        <Button label="Save note" onPress={save} variant="primary" />
+      </View>
       <TextInput
         accessibilityLabel={`Note for ${step.label}`}
         autoFocus
@@ -282,10 +288,6 @@ function StepMeta({ step }: { step: GuideStepState }): React.JSX.Element {
         style={[styles.noteInput, { color: theme.text, borderColor: theme.borderStrong, backgroundColor: theme.surfaceSoft }]}
         value={draft}
       />
-      <View style={styles.noteActions}>
-        <Button label="Cancel" onPress={() => { setDraft(step.note ?? ''); setEditing(false) }} />
-        <Button label="Save note" onPress={save} variant="primary" />
-      </View>
     </View>
   )
   return (
@@ -365,7 +367,8 @@ const styles = StyleSheet.create({
   noteText: { flex: 1, fontSize: 14, lineHeight: 20 },
   noteEditor: { gap: 8 },
   noteInput: { minHeight: 76, borderWidth: 1, borderRadius: 10, paddingHorizontal: 11, paddingTop: 9, paddingBottom: 9, fontSize: 15, lineHeight: 20, textAlignVertical: 'top' },
-  noteActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  noteActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  noteHeading: { flex: 1, fontSize: 12, fontWeight: '700', letterSpacing: 0.6 },
   callout: { borderLeftWidth: 3, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, gap: 6 },
   calloutTitle: { fontSize: 14, fontWeight: '700' },
   details: { borderWidth: 1, borderRadius: 10 },
