@@ -156,6 +156,7 @@ import { detectSessionRenames } from './session-renames.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
 import { WsBacklog } from './ws-backlog.js'
+import { chatHistoryBudget, chatMessageForClient } from './chat-replay.js'
 import {
   AgentStatusRegistry,
   type AgentStatusChange,
@@ -198,6 +199,8 @@ type ClientState = {
   releaseUsage: (() => void) | undefined
   /** Judges a growing outgoing queue by whether it drains, not by its size alone. */
   backlog: WsBacklog
+  /** Per-chat byte budget the client asked for (the phone); undefined for full chats. */
+  chatHistoryBytes: number | undefined
 }
 
 type PaneStreamState = {
@@ -293,7 +296,7 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
   response.end(body)
 }
 
-function send(client: ClientState, message: ServerMessage): boolean {
+function send(client: ClientState, message: ServerMessage, options: { fullChats?: boolean } = {}): boolean {
   if (client.socket.readyState !== WebSocket.OPEN) return false
   // Judge the backlog already queued, not the message itself, and by whether
   // it drains: a phone still downloading the connect burst is keeping up.
@@ -302,7 +305,7 @@ function send(client: ClientState, message: ServerMessage): boolean {
     client.socket.close(1013, stalled)
     return false
   }
-  const serialized = JSON.stringify(message)
+  const serialized = JSON.stringify(options.fullChats ? message : chatMessageForClient(message, client.chatHistoryBytes))
   client.socket.send(serialized)
   client.backlog.sent(Buffer.byteLength(serialized))
   return true
@@ -2606,6 +2609,16 @@ async function main(): Promise<void> {
       case 'chat_carry_taken':
         agentHosts.takeCarried(message.paneId, message.carryId, message.images)
         return
+      case 'chat_history': {
+        const chat = agentHosts.states().find((state) => state.paneId === message.paneId)
+        if (!chat) {
+          sendError(client, 'chat_unavailable', 'No chat is running in this pane', message.requestId)
+          return
+        }
+        // Unbounded, for this client only: it asked for the whole conversation.
+        send(client, { type: 'chat_state', chat }, { fullChats: true })
+        return
+      }
       case 'chat_return': {
         const pane = paneForId(message.paneId)
         if (!pane) {
@@ -2713,7 +2726,8 @@ async function main(): Promise<void> {
   })
   agentHostWebSocketServer.on('connection', (socket) => agentHosts.connect(socket))
 
-  webSocketServer.on('connection', (socket) => {
+  webSocketServer.on('connection', (socket, request: IncomingMessage) => {
+    const connectUrl = requestUrl(request)
     const client: ClientState = {
       id: randomUUID(),
       socket,
@@ -2729,6 +2743,7 @@ async function main(): Promise<void> {
       answeredRequestIds: new IdempotencyKeyMemory(),
       releaseUsage: undefined,
       backlog: new WsBacklog(),
+      chatHistoryBytes: connectUrl ? chatHistoryBudget(connectUrl) : undefined,
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
