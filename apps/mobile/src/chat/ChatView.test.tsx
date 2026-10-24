@@ -259,4 +259,12 @@ describe('a reconnect under a draft', () => {
       jest.useRealTimers()
     }
   })
+
+  it('offers the history the daemon left out, and asks for it', async () => {
+    const client = fakeClient()
+    render(<ThemeProvider><ChatView chat={chatState({ omittedItems: 120, items: [item('user_message', { text: 'Latest' })] })} client={client} host={HOST} phase="live" /></ThemeProvider>)
+    await settle()
+    fireEvent.press(screen.getByLabelText('Load 120 earlier items'))
+    expect(client.last('chat_history')).toMatchObject({ type: 'chat_history', paneId: '%7' })
+  })
 })
