@@ -66,6 +66,36 @@ function bearerToken(request: IncomingMessage): string | null {
   return /^Bearer\s+([^\s]+)$/i.exec(authorization)?.[1] ?? null
 }
 
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]'])
+
+function requestIsLoopback(request: IncomingMessage): boolean {
+  try {
+    return LOOPBACK_HOSTNAMES.has(new URL(`http://${request.headers.host ?? ''}`).hostname.toLowerCase())
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Artifacts load the SDK and design assets by absolute loopback URL
+ * (`http://127.0.0.1:4310/redline/sdk.js`), which names the reader's own
+ * machine. A client reaching the daemon by another name — the companion app's
+ * WebView over Tailscale — gets those attribute URLs root-relative instead, so
+ * they resolve against the daemon it is actually talking to. Loopback readers
+ * get the file byte for byte.
+ */
+export function rewriteDaemonLoopbackUrls(html: string, daemonBaseUrl: string): string {
+  let port: string
+  try {
+    port = new URL(daemonBaseUrl).port
+  } catch {
+    return html
+  }
+  if (!port) return html
+  const pattern = new RegExp(`(\\s(?:src|href)\\s*=\\s*["'])https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\]):${port}/`, 'gi')
+  return html.replace(pattern, '$1/')
+}
+
 export function isRedlinePath(pathname: string): boolean {
   return pathname === '/redline' || pathname.startsWith('/redline/') ||
     pathname === '/api/redline' || pathname.startsWith('/api/redline/')
@@ -106,7 +136,7 @@ export class RedlineApi {
         await this.handleApi(request, response, url)
         return true
       }
-      this.handleStatic(request, response, url)
+      this.handleStatic(request, response, url, !requestIsLoopback(request))
       return true
     } catch (error) {
       if (error instanceof HttpError || error instanceof RedlineArtifactError || error instanceof WebPaneError) {
@@ -122,7 +152,7 @@ export class RedlineApi {
     }
   }
 
-  private handleStatic(request: IncomingMessage, response: ServerResponse, url: URL): void {
+  private handleStatic(request: IncomingMessage, response: ServerResponse, url: URL, remoteReader = false): void {
     const { pathname } = url
     if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
     if (pathname === '/redline/sdk.js') {
@@ -159,7 +189,7 @@ export class RedlineApi {
       // Artifacts change during a review loop — never cache them.
       const frameId = url.searchParams.get('canvas-frame')
       if (frameId !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(frameId)) throw new HttpError(400, 'Invalid canvas frame id')
-      this.serveFile(response, file, { cache: 'no-store', cached: false, frameId: frameId ?? undefined })
+      this.serveFile(response, file, { cache: 'no-store', cached: false, frameId: frameId ?? undefined, rewriteLoopback: remoteReader })
       return
     }
     throw new HttpError(404, 'Not found')
@@ -191,7 +221,7 @@ export class RedlineApi {
   private serveFile(
     response: ServerResponse,
     filePath: string,
-    options: { cache?: string; cached?: boolean; frameId?: string } = {},
+    options: { cache?: string; cached?: boolean; frameId?: string; rewriteLoopback?: boolean } = {},
   ): void {
     const cached = options.cached ?? true
     let body = cached ? this.fileCache.get(filePath) : undefined
@@ -208,6 +238,9 @@ export class RedlineApi {
       const html = body.toString('utf8')
       const end = [...html.matchAll(/<\/body\s*>/gi)].at(-1)
       body = Buffer.from(end ? html.slice(0, end.index) + script + html.slice(end.index) : html + script)
+    }
+    if (options.rewriteLoopback && extname(filePath).toLowerCase() === '.html') {
+      body = Buffer.from(rewriteDaemonLoopbackUrls(body.toString('utf8'), this.dependencies.baseUrl))
     }
     response.writeHead(200, {
       'Access-Control-Allow-Origin': '*',

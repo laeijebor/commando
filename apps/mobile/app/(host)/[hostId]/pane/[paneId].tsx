@@ -4,7 +4,7 @@ import { StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 
 import { useHostsStore } from '../../../../src/hosts/store'
-import { canStream } from '../../../../src/tiles/list'
+import { canOpenOnPhone } from '../../../../src/tiles/list'
 import { isCockpitMode, useLayoutMode } from '../../../../src/layout/useLayoutMode'
 import { useTheme } from '../../../../src/theme'
 import { PaneView } from '../../../../src/terminal/PaneView'
@@ -50,7 +50,7 @@ export default function PaneScreen(): React.JSX.Element {
         onOpenTile={(tile) => {
           // A tile that cannot stream here is handled on the list, which is
           // where the confirm and "Reopen as chromium" affordances live.
-          if (canStream(tile)) {
+          if (canOpenOnPhone(tile)) {
             router.push({
               pathname: '/(host)/[hostId]/tile/[tileId]',
               params: routeParams({ hostId: hostId ?? '', tileId: tile.id, fromPaneId: paneId }),

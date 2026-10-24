@@ -1,3 +1,4 @@
+import { canLoadNatively } from './native/target'
 import type {
   CommandoSnapshot,
   WebPane,
@@ -6,9 +7,11 @@ import type {
 
 export function tileTitle(tile: Pick<WebPane, 'title' | 'url' | 'content'>): string {
   if (tile.title?.trim()) return tile.title.trim()
-  try { const host = new URL(tile.url).host; if (host) return host } catch { /* Native content has no URL. */ }
   const kind = tile.content?.kind
-  return kind === 'simulator' ? 'Simulator' : kind === 'canvas' ? 'Canvas' : kind === 'guide' ? 'Guide' : 'Web'
+  // A canvas tab's URL is its artifact folder, which names nothing.
+  if (kind === 'canvas') return 'Canvas'
+  try { const host = new URL(tile.url).host; if (host) return host } catch { /* Native content has no URL. */ }
+  return kind === 'simulator' ? 'Simulator' : kind === 'guide' ? 'Guide' : 'Web'
 }
 
 /** A tile as the list renders it: everything resolved against the snapshot. */
@@ -124,6 +127,15 @@ export function groupTileRows(
  */
 export function canStream(tile: WebPane): boolean {
   return !tile.content && tile.engine === 'chromium' && tile.status === 'open'
+}
+
+/**
+ * Whether the tile screen can show this tile at all: by streaming it, or by
+ * loading it in the phone's own WebView (daemon-served pages, public pages
+ * and canvases — see `native/target.ts`).
+ */
+export function canOpenOnPhone(tile: WebPane): boolean {
+  return canStream(tile) || canLoadNatively(tile)
 }
 
 /** Why a tile cannot be opened, in the words the row shows. */

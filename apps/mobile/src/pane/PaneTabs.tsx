@@ -15,6 +15,7 @@ import { Button } from '../ui/primitives'
 import { openTile, closeTile, confirmTile, markTileSeen } from '../tiles/api'
 import { paneTabs, type PaneTab } from './tabs'
 import { tileWasViewed } from '../tiles/seen'
+import { canOpenOnPhone } from '../tiles/list'
 import { selectedTabOffset, type TabLayout } from './tabScroll'
 
 export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, active = true }: { host?: Host; paneId?: string; active?: boolean; chat: boolean; header: ReactNode; children: ReactNode; onOpenTile: (tile: WebPane) => void }): React.JSX.Element {
@@ -73,7 +74,7 @@ function WebTabCard({ host, tab, onOpenTile }: { host: Host; tab: Extract<PaneTa
   const theme = useTheme()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const streamable = !tab.tile.content && tab.tile.engine === 'chromium' && tab.tile.status === 'open'
+  const streamable = canOpenOnPhone(tab.tile)
   const action = async () => {
     setBusy(true); setError(null)
     try {
@@ -82,7 +83,7 @@ function WebTabCard({ host, tab, onOpenTile }: { host: Host; tab: Extract<PaneTa
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not open this tab') }
     finally { setBusy(false) }
   }
-  const detail = tab.tile.content ? `${tab.label} is a ${tab.content} on your Mac. You can follow its agent here; its native view stays on the host.` : tab.tile.status === 'pending' ? 'This page is waiting for your confirmation before it opens.' : streamable ? 'Open the live page to interact, type and leave review notes with the full tile controls.' : 'This page uses the Mac’s WebKit view. Reopen it as chromium to stream it to your phone.'
+  const detail = tab.tile.content && !streamable ? `${tab.label} is a ${tab.content} on your Mac. You can follow its agent here; its native view stays on the host.` : tab.tile.status === 'pending' ? 'This page is waiting for your confirmation before it opens.' : streamable ? tab.content === 'canvas' ? 'Open the canvas to answer its questions and view each frame on your phone.' : 'Open the live page to interact, type and leave review notes with the full tile controls.' : 'This page uses the Mac’s WebKit view. Reopen it as chromium to stream it to your phone.'
   return <View style={styles.webBody}><View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
     <Feather name={tabIcon(tab)} color={theme.accent} size={28} /><Text style={[styles.title, { color: theme.text }]}>{tab.label}</Text><Text style={[styles.description, { color: theme.muted }]}>{detail}</Text>
     {!tab.tile.content ? <Text numberOfLines={2} style={[styles.url, { color: theme.textDim }]}>{tab.tile.url}</Text> : null}

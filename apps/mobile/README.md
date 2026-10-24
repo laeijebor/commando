@@ -68,6 +68,23 @@ only. Bundle id `com.commando.companion`.
   Send all and Send + Build. The redline controls inside the page keep working
   through the screencast, because the queue binding lives in the daemon's
   Chromium.
+- **Native tiles** — pages the phone can load itself skip the screencast and
+  render in a `react-native-webview` (`src/tiles/native/`): native scrolling,
+  text selection, pinch zoom, crisp text and no PNG traffic. Daemon-served
+  pages (`/redline/…`: artifacts, the SDK, show-me pages) are loaded from the
+  phone's daemon address and open natively, webkit tiles included; a public
+  page on a chromium tile streams by default (the host's Chromium holds its
+  logins) and the header's **Native / Stream** toggle switches; a page on the
+  Mac's own localhost (a dev server) only streams. If the WebView cannot load
+  the page, a chromium tile falls back to the stream on its own. An injected
+  bridge (`bridge.ts`) installs the same `__commandoRedlineQueue` binding the
+  desktop WebView and Chromium provide, so the SDK's controls queue answers
+  and publish their open questions, which the **Questions** sheet answers
+  natively; Review taps name an element and pin queued notes on the page. All
+  of it uses the daemon's pending-queue routes under the tile's canonical
+  (`127.0.0.1`) URL, so the desktop sees the same queue and sent answers.
+  **Canvas** tabs read `canvas.json`: question notes are answered natively into
+  the canvas's answer queue, and each frame opens as a native page.
 - **Settings** — the notification rules, muted sessions and quiet hours; the
   push registration and a test notification; the five themes; and the terminal
   defaults ("Fit pane to phone" and the font size) a newly opened pane starts

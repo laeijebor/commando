@@ -31,6 +31,12 @@
       ],
       "@commando/session-identity": [
         "../../shared/session-identity.ts"
+      ],
+      "@commando/redline-response": [
+        "../../shared/redline-response.ts"
+      ],
+      "@commando/canvas-manifest": [
+        "../../shared/canvas-manifest.ts"
       ]
     }
   },
@@ -43,7 +49,9 @@
     "../../shared/tmux-create.ts",
     "../../shared/agent-chat.ts",
     "../../shared/chat-timeline.ts",
-    "../../shared/chat-composer.ts"
+    "../../shared/chat-composer.ts",
+    "../../shared/redline-response.ts",
+    "../../shared/canvas-manifest.ts"
   ],
   "exclude": [
     "node_modules"

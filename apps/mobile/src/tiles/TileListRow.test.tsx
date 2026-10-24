@@ -92,8 +92,15 @@ describe('a tile row', () => {
     expect(handlers.onOpen).not.toHaveBeenCalled()
   })
 
-  it('offers to reopen a webkit tile as chromium', async () => {
-    const handlers = await renderRow(tile({ id: 'w-00000002', engine: 'webkit' }))
+  it('opens a webkit tile the phone can load itself', async () => {
+    const handlers = await renderRow(tile({ id: 'w-00000004', engine: 'webkit' }))
+    expect(screen.queryByText('Reopen as chromium')).toBeNull()
+    fireEvent.press(screen.getByText('127.0.0.1:4310'))
+    expect(handlers.onOpen).toHaveBeenCalled()
+  })
+
+  it('offers to reopen a localhost webkit tile as chromium', async () => {
+    const handlers = await renderRow(tile({ id: 'w-00000002', engine: 'webkit', url: 'http://localhost:5173/app' }))
     expect(screen.getByText('webkit')).toBeTruthy()
     fireEvent.press(screen.getByText('Reopen as chromium'))
     expect(handlers.onReopenAsChromium).toHaveBeenCalled()
