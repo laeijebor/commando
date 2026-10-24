@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import type { PrAutofixStatus, PrSummary } from '../../shared/pr-types'
-import { DISMISSED_PRS_STORAGE_KEY, PrStrip } from './PrStrip'
+import { DISMISSED_PRS_STORAGE_KEY, MINIMISED_PR_STRIPS_STORAGE_KEY, PrStrip } from './PrStrip'
 
 const targetId = '123e4567-e89b-42d3-a456-426614174000'
 function pr(number: number, state: PanePrSummary['state'] = 'open'): PanePrSummary {
@@ -225,6 +225,36 @@ describe('chat PR strip', () => {
     await openCi()
     fireEvent.click(screen.getByRole('button', { name: 'Merge PR' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('The PR has new commits. Resync and try again.')
+  })
+
+  it('minimises the whole list to a summary line and remembers it per pane', async () => {
+    const failing = pr(13)
+    const passing = { ...pr(14), checks: { state: 'pass' as const, total: 1, failed: 0, pending: 0, runs: [], truncated: false } }
+    const { view } = setup([pr(10, 'merged'), pr(11, 'closed'), failing, passing])
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss PR #10' }))
+    const toggle = screen.getByRole('button', { name: '4 PRs · 2 open · 1 merged · 1 closed · 1 failing' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(toggle)
+    const section = screen.getByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).queryAllByRole('link')).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: /Show \d+ more/ })).not.toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(JSON.parse(window.localStorage.getItem(MINIMISED_PR_STRIPS_STORAGE_KEY) ?? '[]')).toEqual([targetId])
+
+    view.unmount()
+    setup([pr(10, 'merged'), pr(11, 'closed'), failing, passing])
+    fireEvent.click(await screen.findByRole('button', { name: /^4 PRs/ }))
+    expect(screen.getByRole('link', { name: 'Open PR #13 on GitHub' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open PR #10 on GitHub' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show 1 more' })).toBeInTheDocument()
+    expect(JSON.parse(window.localStorage.getItem(MINIMISED_PR_STRIPS_STORAGE_KEY) ?? '[]')).toEqual([])
+  })
+
+  it('skips the minimise header for a single PR', async () => {
+    setup([pr(12)])
+    await screen.findByRole('link', { name: 'Open PR #12 on GitHub' })
+    expect(screen.queryByRole('button', { name: /PRs/ })).not.toBeInTheDocument()
   })
 
   it('renders nothing when no PRs are linked', async () => {

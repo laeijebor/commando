@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
-import { CheckCircle2, ChevronDown, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, Undo2, X, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, Undo2, X, XCircle } from 'lucide-react'
 import type { PrAutofixStatus } from '../../shared/pr-types'
 import { prMergeDisabledReason } from '../../shared/pr-merge'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
@@ -13,23 +13,34 @@ import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 type StripApi = Pick<PrsApiClient, 'pane' | 'list' | 'merge' | 'autofixStatus' | 'setAutofix'> & Partial<Pick<PrsApiClient, 'storeKey'>>
 
 export const DISMISSED_PRS_STORAGE_KEY = 'commando.chat.dismissed-prs'
-const MAX_DISMISSED_PRS = 200
+export const MINIMISED_PR_STRIPS_STORAGE_KEY = 'commando.chat.minimised-pr-strips'
+const MAX_STORED_KEYS = 200
 
-function storedDismissedPrs(): string[] {
+function storedKeys(storageKey: string): string[] {
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')
-    return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string').slice(-MAX_DISMISSED_PRS) : []
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string').slice(-MAX_STORED_KEYS) : []
   } catch {
     return []
   }
 }
 
-function storeDismissedPrs(keys: string[]): void {
+function storeKeys(storageKey: string, keys: string[]): void {
   try {
-    window.localStorage.setItem(DISMISSED_PRS_STORAGE_KEY, JSON.stringify(keys.slice(-MAX_DISMISSED_PRS)))
+    window.localStorage.setItem(storageKey, JSON.stringify(keys.slice(-MAX_STORED_KEYS)))
   } catch {
-    // Dismissal still works in memory when storage is unavailable.
+    // The strip still works in memory when storage is unavailable.
   }
+}
+
+function stripSummary(prs: PanePrSummary[]): string {
+  const count = (state: PanePrSummary['state']) => prs.filter((pr) => pr.state === state).length
+  const failing = prs.filter((pr) => pr.state === 'open' && pr.checks?.state === 'fail').length
+  return [
+    `${prs.length} PRs`,
+    ...(['open', 'merged', 'closed'] as const).flatMap((state) => count(state) ? [`${count(state)} ${state}`] : []),
+    ...(failing ? [`${failing} failing`] : []),
+  ].join(' · ')
 }
 
 export function autofixStatusText(status: PrAutofixStatus | null): string {
@@ -146,7 +157,8 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
 export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; api: StripApi; connected: boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void }) {
   const list = usePanePullRequests(paneId, api, connected)
   const [expanded, setExpanded] = useState(false)
-  const [dismissed, setDismissed] = useState(storedDismissedPrs)
+  const [dismissed, setDismissed] = useState(() => storedKeys(DISMISSED_PRS_STORAGE_KEY))
+  const [minimisedStrips, setMinimisedStrips] = useState(() => storedKeys(MINIMISED_PR_STRIPS_STORAGE_KEY))
   if (!list?.pullRequests.length) return null
   const openInPanel = (event: MouseEvent<HTMLAnchorElement>, pr: PanePrSummary, tab: PrQuickLookTab) => {
     // Modified clicks keep the browser's open-in-new-tab behaviour.
@@ -156,8 +168,16 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
   }
   // Keyed by the pane's stable target so a reused tmux pane id starts clean.
   const dismissKey = (pr: PanePrSummary) => `${list.targetId}:${pr.repo}#${pr.number}`
-  const updateDismissed = (keys: string[]) => { setDismissed(keys); storeDismissedPrs(keys) }
+  const updateDismissed = (keys: string[]) => { setDismissed(keys); storeKeys(DISMISSED_PRS_STORAGE_KEY, keys) }
   const prs = [...list.pullRequests].sort((left, right) => Number(right.state === 'open') - Number(left.state === 'open'))
+  // A single PR is already one line, so only longer lists get the minimise header.
+  const minimisable = prs.length > 1
+  const minimised = minimisable && minimisedStrips.includes(list.targetId)
+  const toggleMinimised = () => {
+    const keys = minimised ? minimisedStrips.filter((key) => key !== list.targetId) : [...minimisedStrips, list.targetId]
+    setMinimisedStrips(keys)
+    storeKeys(MINIMISED_PR_STRIPS_STORAGE_KEY, keys)
+  }
   const shown = prs.filter((pr) => !dismissed.includes(dismissKey(pr)))
   const hidden = prs.filter((pr) => dismissed.includes(dismissKey(pr)))
   const restore = (pr: PanePrSummary) => {
@@ -166,35 +186,43 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
   }
   return (
     <section className="chat-pr-strip" aria-label="Linked pull requests">
-      {(expanded ? [...shown, ...hidden] : shown).map((pr) => {
-        const Icon = pr.state === 'merged' ? GitMerge : GitPullRequest
-        const isDismissed = hidden.includes(pr)
-        return (
-          <div key={`${pr.repo}#${pr.number}`} className={`chat-pr-row ${pr.state}${isDismissed ? ' dismissed' : ''}`}>
-            <Icon className="size-4 shrink-0" />
-            <span className="chat-pr-link" title={`${pr.repo}#${pr.number}: ${pr.title}`}>
-              <a className="font-mono shrink-0" href={pr.url} target="_blank" rel="noopener noreferrer"
-                aria-label={`Open PR #${pr.number} on GitHub`}>#{pr.number}</a>
-              <a className="truncate" href={pr.url} target="_blank" rel="noopener noreferrer"
-                onClick={(event) => openInPanel(event, pr, 'Description')}>{pr.title}</a>
-            </span>
-            {pr.state === 'open' ? <>
-              {/* The same shared PR status the HUD shows, updated as any view refreshes it. */}
-              <span className="chat-pr-badges">
-                <PrBadges pr={pr} number={pr.number} {...(onOpenPr ? { links: { url: pr.url, onClick: (tab, event) => openInPanel(event, pr, tab) } } : {})} />
-                <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} />
+      {minimisable ? (
+        <button type="button" className="chat-pr-toggle" aria-expanded={!minimised} title={minimised ? 'Show pull requests' : 'Minimise pull requests'} onClick={toggleMinimised}>
+          {minimised ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          <span>{stripSummary(prs)}</span>
+        </button>
+      ) : null}
+      {minimised ? null : <>
+        {(expanded ? [...shown, ...hidden] : shown).map((pr) => {
+          const Icon = pr.state === 'merged' ? GitMerge : GitPullRequest
+          const isDismissed = hidden.includes(pr)
+          return (
+            <div key={`${pr.repo}#${pr.number}`} className={`chat-pr-row ${pr.state}${isDismissed ? ' dismissed' : ''}`}>
+              <Icon className="size-4 shrink-0" />
+              <span className="chat-pr-link" title={`${pr.repo}#${pr.number}: ${pr.title}`}>
+                <a className="font-mono shrink-0" href={pr.url} target="_blank" rel="noopener noreferrer"
+                  aria-label={`Open PR #${pr.number} on GitHub`}>#{pr.number}</a>
+                <a className="truncate" href={pr.url} target="_blank" rel="noopener noreferrer"
+                  onClick={(event) => openInPanel(event, pr, 'Description')}>{pr.title}</a>
               </span>
-            </> : <>
-              <span className="chat-pr-diff"><span className="text-success">+{pr.additions.toLocaleString('en-US')}</span> <span className="text-destructive">−{pr.deletions.toLocaleString('en-US')}</span></span>
-              <span className="shrink-0">{pr.state === 'merged' ? 'Merged' : 'Closed'}</span>
-            </>}
-            {isDismissed
-              ? <button type="button" className="chat-pr-dismiss" aria-label={`Restore PR #${pr.number}`} title="Restore" onClick={() => restore(pr)}><Undo2 className="size-3.5" /></button>
-              : <button type="button" className="chat-pr-dismiss" aria-label={`Dismiss PR #${pr.number}`} title="Dismiss" onClick={() => updateDismissed([...dismissed, dismissKey(pr)])}><X className="size-3.5" /></button>}
-          </div>
-        )
-      })}
-      {hidden.length ? <button type="button" className="chat-pr-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : `Show ${hidden.length} more`}</button> : null}
+              {pr.state === 'open' ? <>
+                {/* The same shared PR status the HUD shows, updated as any view refreshes it. */}
+                <span className="chat-pr-badges">
+                  <PrBadges pr={pr} number={pr.number} {...(onOpenPr ? { links: { url: pr.url, onClick: (tab, event) => openInPanel(event, pr, tab) } } : {})} />
+                  <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} />
+                </span>
+              </> : <>
+                <span className="chat-pr-diff"><span className="text-success">+{pr.additions.toLocaleString('en-US')}</span> <span className="text-destructive">−{pr.deletions.toLocaleString('en-US')}</span></span>
+                <span className="shrink-0">{pr.state === 'merged' ? 'Merged' : 'Closed'}</span>
+              </>}
+              {isDismissed
+                ? <button type="button" className="chat-pr-dismiss" aria-label={`Restore PR #${pr.number}`} title="Restore" onClick={() => restore(pr)}><Undo2 className="size-3.5" /></button>
+                : <button type="button" className="chat-pr-dismiss" aria-label={`Dismiss PR #${pr.number}`} title="Dismiss" onClick={() => updateDismissed([...dismissed, dismissKey(pr)])}><X className="size-3.5" /></button>}
+            </div>
+          )
+        })}
+        {hidden.length ? <button type="button" className="chat-pr-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? 'Show less' : `Show ${hidden.length} more`}</button> : null}
+      </>}
     </section>
   )
 }
