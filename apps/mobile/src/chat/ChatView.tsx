@@ -1,4 +1,4 @@
-import { Component, useMemo, useState, type ReactNode } from 'react'
+import { Component, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
@@ -46,7 +46,9 @@ export function ChatView({ host, chat, client, phase }: {
   const hostConnected = connected && chat.hostConnected
   const working = chat.session.status === 'running'
   const request = requests[0]
-  const banner = !connected
+  // A reconnect that finishes within the grace period changes nothing on screen.
+  const reconnecting = useLingering(!connected, RECONNECT_BANNER_DELAY_MS)
+  const banner = reconnecting
     ? 'Reconnecting to Commando… The agent keeps working in its pane.'
     : !chat.hostConnected
       ? 'The agent host is disconnected. It keeps working in its pane and will reconnect.'
@@ -56,7 +58,7 @@ export function ChatView({ host, chat, client, phase }: {
     <View style={styles.root} testID="chat-view">
       {banner ? <Banner icon="wifi-off" text={banner} tone="amber" /> : null}
       {chat.session.status === 'error' && chat.session.error ? <Banner icon="alert-circle" text={chat.session.error} tone="red" /> : null}
-      <ChatTimeline sendVersion={sendVersion} baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} provider={chat.session.provider} />
+      <ChatTimeline sendVersion={sendVersion} omittedItems={chat.omittedItems} onLoadEarlier={channel ? () => channel.loadHistory() : undefined} baseUrl={host.baseUrl} cwd={chat.session.cwd} items={chat.items} working={working} provider={chat.session.provider} />
       {chat.session.claudeCodeSwitch ? (
         <Banner
           icon="terminal"
@@ -94,6 +96,23 @@ export function ChatView({ host, chat, client, phase }: {
       )}
     </View>
   )
+}
+
+/** How long the socket may be down before the chat says it is reconnecting. */
+export const RECONNECT_BANNER_DELAY_MS = 2_000
+
+/** True once `value` has held for `delayMs`; false again as soon as it stops. */
+function useLingering(value: boolean, delayMs: number): boolean {
+  const [held, setHeld] = useState(false)
+  useEffect(() => {
+    if (!value) {
+      setHeld(false)
+      return
+    }
+    const timer = setTimeout(() => setHeld(true), delayMs)
+    return () => clearTimeout(timer)
+  }, [value, delayMs])
+  return value && held
 }
 
 function Banner({ icon, text, tone }: { icon: React.ComponentProps<typeof Feather>['name']; text: string; tone: 'amber' | 'red' | 'accent' }): React.JSX.Element {
