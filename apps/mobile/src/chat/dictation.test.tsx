@@ -5,13 +5,14 @@ import type { ChatState } from '@commando/agent-chat'
 import type { Host } from '../hosts/types'
 import { ThemeProvider } from '../theme'
 import { ChatView } from './ChatView'
-import { DICTATION_DENIED, DICTATION_HINT_HOLD, dictationError, spliceDictation } from './dictation'
+import { DICTATION_DENIED, DICTATION_HINT_HOLD, dictationError, pickSpeechLocale, spliceDictation } from './dictation'
 import type { SpeechEvents } from './speech'
-import { chatState, fakeClient } from './testing'
+import { chatState, fakeClient, session } from './testing'
 
 type MockPermission = { granted: boolean; canAskAgain: boolean; status: string; expires: string }
 
-// The recogniser is native: tests drive this double and assert on what the composer asked of it.
+// The recogniser is native: tests drive this double, emitting its events in
+// the order the real one does, and assert on what the composer asked of it.
 jest.mock('./speech', () => {
   const listeners = new Map<string, Set<(event: unknown) => void>>()
   const state: { permission: MockPermission } = { permission: { granted: true, canAskAgain: true, status: 'granted', expires: 'never' } }
@@ -23,6 +24,7 @@ jest.mock('./speech', () => {
     abort: jest.fn(),
     getPermissionsAsync: jest.fn(async (): Promise<MockPermission> => state.permission),
     requestPermissionsAsync: jest.fn(async (): Promise<MockPermission> => state.permission),
+    getSupportedLocales: jest.fn(async () => ({ locales: ['en-GB', 'en-US', 'fr-FR'], installedLocales: [] })),
     addListener: jest.fn((event: string, listener: (event: unknown) => void) => {
       if (!listeners.has(event)) listeners.set(event, new Set())
       listeners.get(event)!.add(listener)
@@ -48,23 +50,29 @@ const fake = (jest.requireMock('./speech') as { speech: FakeSpeech }).speech
 
 const HOST: Host = { id: 'host-1', name: 'studio', baseUrl: 'http://studio:4310', auth: { kind: 'token', token: 'secret' } }
 
+let pane = 0
 function renderChat(chat: ChatState = chatState()) {
-  return render(
-    <ThemeProvider>
-      <ChatView chat={chat} client={fakeClient()} host={HOST} phase="live" />
-    </ThemeProvider>,
-  )
+  // A fresh pane each time, so no test inherits another's kept draft.
+  pane += 1
+  const id = `%d${pane}`
+  const paneChat = (next: ChatState): ChatState => ({ ...next, paneId: id, session: { ...next.session, paneId: id } })
+  const client = fakeClient()
+  const view = render(<ThemeProvider><ChatView chat={paneChat(chat)} client={client} host={HOST} phase="live" /></ThemeProvider>)
+  return { rerender: (next: ChatState) => view.rerender(<ThemeProvider><ChatView chat={paneChat(next)} client={client} host={HOST} phase="live" /></ThemeProvider>) }
 }
 
 async function settle(): Promise<void> {
   await act(async () => undefined)
 }
 
-function said(transcript: string, isFinal = false) {
-  act(() => fake.emit('result', { isFinal, results: [{ transcript, confidence: 1, segments: [] }] }))
-}
-
+const said = (transcript: string, isFinal = false) => act(() => fake.emit('result', { isFinal, results: [{ transcript, confidence: 1, segments: [] }] }))
+const native = (event: 'start' | 'end') => act(() => fake.emit(event))
 const input = () => screen.getByTestId('chat-input')
+const press = async () => {
+  fireEvent(screen.getByTestId('chat-dictate'), 'pressIn')
+  await settle()
+}
+const release = () => fireEvent(screen.getByTestId('chat-dictate'), 'pressOut')
 
 beforeEach(() => {
   jest.clearAllMocks()
@@ -93,6 +101,25 @@ describe('dictationError', () => {
   })
 })
 
+describe('pickSpeechLocale', () => {
+  const supported = ['de-DE', 'de-AT', 'en-AU', 'en-GB', 'en-US', 'fr-CA', 'fr-FR', 'pt-BR']
+  it('takes the phone locale when Apple has a recogniser for it', () => {
+    expect(pickSpeechLocale('en-GB', supported)).toBe('en-GB')
+    expect(pickSpeechLocale('de_AT', supported)).toBe('de-AT')
+  })
+
+  it("falls back to the language's home region, then any region of it", () => {
+    expect(pickSpeechLocale('en-DE', supported)).toBe('en-US')
+    expect(pickSpeechLocale('fr-GB', supported)).toBe('fr-FR')
+    expect(pickSpeechLocale('pt-PT', supported)).toBe('pt-BR')
+  })
+
+  it('leaves the recogniser on its default when the language has none', () => {
+    expect(pickSpeechLocale('ja-JP', supported)).toBeUndefined()
+    expect(pickSpeechLocale(undefined, supported)).toBeUndefined()
+  })
+})
+
 describe('hold to dictate in the composer', () => {
   it('streams what is said into the draft at the caret and stops on release', async () => {
     renderChat()
@@ -100,10 +127,10 @@ describe('hold to dictate in the composer', () => {
     fireEvent.changeText(input(), 'Please')
     fireEvent(input(), 'selectionChange', { nativeEvent: { selection: { start: 6, end: 6 } } })
 
-    fireEvent(screen.getByLabelText('Dictate'), 'pressIn')
-    await settle()
+    await press()
     expect(fake.start).toHaveBeenCalledWith(expect.objectContaining({ interimResults: true, continuous: true, addsPunctuation: true }))
     expect(screen.getByLabelText('Listening')).toBeTruthy()
+    native('start')
 
     said('add a')
     expect(input().props.value).toBe('Please add a')
@@ -111,12 +138,59 @@ describe('hold to dictate in the composer', () => {
     said(' Then test it')
     expect(input().props.value).toBe('Please add a mic button. Then test it')
 
-    fireEvent(screen.getByLabelText('Listening'), 'pressOut')
-    expect(fake.stop).toHaveBeenCalled()
+    release()
+    expect(fake.stop).toHaveBeenCalledTimes(1)
     said(' Then test it.', true)
-    act(() => fake.emit('end'))
+    native('end')
     expect(input().props.value).toBe('Please add a mic button. Then test it.')
     expect(screen.getByLabelText('Dictate')).toBeTruthy()
+  })
+
+  it('holds a release back until the recogniser has started, so the stop reaches it', async () => {
+    renderChat()
+    await settle()
+    await press()
+    expect(fake.start).toHaveBeenCalled()
+    release()
+    expect(fake.stop).not.toHaveBeenCalled()
+    native('start')
+    expect(fake.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts a press made while the last take finishes once it ends, without repeating its words', async () => {
+    renderChat()
+    await settle()
+    await press()
+    native('start')
+    said('First thought')
+    release()
+
+    await press()
+    expect(fake.start).toHaveBeenCalledTimes(1)
+    said('First thought.', true)
+    native('end')
+    await settle()
+    expect(input().props.value).toBe('First thought.')
+    expect(fake.start).toHaveBeenCalledTimes(2)
+    expect(screen.getByLabelText('Listening')).toBeTruthy()
+
+    native('start')
+    said('Second one')
+    expect(input().props.value).toBe('First thought. Second one')
+  })
+
+  it('aborts when the session ends mid-hold and ignores what arrives after', async () => {
+    const { rerender } = renderChat()
+    await settle()
+    await press()
+    native('start')
+    said('half a')
+    rerender(chatState({ session: session({ status: 'closed' }) }))
+    expect(fake.abort).toHaveBeenCalledTimes(1)
+    said('half a sentence')
+    native('end')
+    expect(input().props.value).toBe('half a')
+    expect(screen.queryByTestId('chat-dictate')).toBeNull()
   })
 
   it('asks for permission first and says to hold again, since the prompt ends the press', async () => {
@@ -127,9 +201,8 @@ describe('hold to dictate in the composer', () => {
     })
     renderChat()
     await settle()
-    const mic = screen.getByLabelText('Dictate')
-    fireEvent(mic, 'pressIn')
-    fireEvent(mic, 'pressOut')
+    fireEvent(screen.getByTestId('chat-dictate'), 'pressIn')
+    release()
     await settle()
     expect(fake.requestPermissionsAsync).toHaveBeenCalled()
     expect(fake.start).not.toHaveBeenCalled()
@@ -140,8 +213,7 @@ describe('hold to dictate in the composer', () => {
     fake.permission = { granted: false, canAskAgain: false, status: 'denied', expires: 'never' }
     renderChat()
     await settle()
-    fireEvent(screen.getByLabelText('Dictate'), 'pressIn')
-    await settle()
+    await press()
     expect(fake.requestPermissionsAsync).not.toHaveBeenCalled()
     expect(fake.start).not.toHaveBeenCalled()
     expect(screen.getByText(DICTATION_DENIED)).toBeTruthy()
@@ -150,27 +222,20 @@ describe('hold to dictate in the composer', () => {
   it('says to hold the mic after a quick tap that heard nothing', async () => {
     renderChat()
     await settle()
-    fireEvent(screen.getByLabelText('Dictate'), 'pressIn')
-    await settle()
-    fireEvent(screen.getByLabelText('Listening'), 'pressOut')
+    await press()
+    native('start')
+    release()
     act(() => fake.emit('error', { error: 'no-speech', message: 'No speech' }))
-    act(() => fake.emit('end'))
+    native('end')
     expect(screen.getByText(DICTATION_HINT_HOLD)).toBeTruthy()
   })
 
   it('shows a recogniser failure as the composer error', async () => {
     renderChat()
     await settle()
-    fireEvent(screen.getByLabelText('Dictate'), 'pressIn')
-    await settle()
+    await press()
     act(() => fake.emit('error', { error: 'network', message: 'offline' }))
-    act(() => fake.emit('end'))
+    native('end')
     expect(screen.getByText('Dictation needs a connection to Apple and lost it')).toBeTruthy()
-  })
-
-  it('has no mic once the session has ended', async () => {
-    renderChat(chatState({ session: { ...chatState().session, status: 'closed' } }))
-    await settle()
-    expect(screen.queryByLabelText('Dictate')).toBeNull()
   })
 })

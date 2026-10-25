@@ -20,6 +20,7 @@ export interface SpeechModule {
   abort(): void
   getPermissionsAsync(): Promise<PermissionResponse>
   requestPermissionsAsync(): Promise<PermissionResponse>
+  getSupportedLocales(options: Record<string, never>): Promise<{ locales: string[]; installedLocales: string[] }>
   addListener<K extends keyof SpeechEvents>(event: K, listener: SpeechEvents[K]): { remove(): void }
 }
 

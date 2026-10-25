@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Haptics from 'expo-haptics'
 import type { ExpoSpeechRecognitionErrorEvent } from 'expo-speech-recognition'
 
-import { speech } from './speech'
+import { speech, type SpeechModule } from './speech'
 
 /** A press shorter than this that heard nothing was a tap, so the mic says to hold it. */
 export const DICTATION_TAP_MS = 400
@@ -45,8 +45,25 @@ export function dictationError(event: Pick<ExpoSpeechRecognitionErrorEvent, 'err
   }
 }
 
-/** The phone's own language, which the recogniser defaults to US English without. */
-function deviceLanguage(): string | undefined {
+/**
+ * The recogniser locale for the phone's locale. The phone's can mix a
+ * language with another region (en-DE, fr-GB) that Apple has no recogniser
+ * for, so it falls back to the language's home region, then any region of
+ * the language; undefined leaves the recogniser on its US English default.
+ */
+export function pickSpeechLocale(device: string | undefined, supported: readonly string[]): string | undefined {
+  if (!device) return undefined
+  const wanted = device.replace(/_/g, '-')
+  const byKey = new Map(supported.map((locale) => [locale.replace(/_/g, '-').toLowerCase(), locale]))
+  const exact = byKey.get(wanted.toLowerCase())
+  if (exact) return exact
+  const language = wanted.split('-')[0]!.toLowerCase()
+  const home = byKey.get(`${language}-${language === 'en' ? 'us' : language}`)
+  if (home) return home
+  return [...byKey.entries()].filter(([key]) => key.split('-')[0] === language).sort(([a], [b]) => a.localeCompare(b))[0]?.[1]
+}
+
+function deviceLocale(): string | undefined {
   try {
     return Intl.DateTimeFormat().resolvedOptions().locale || undefined
   } catch {
@@ -54,111 +71,172 @@ function deviceLanguage(): string | undefined {
   }
 }
 
-type Take = { finished: string; heard: boolean; pressedAt: number; started: boolean }
+let speechLocale: Promise<string | undefined> | null = null
+function speechLanguage(module: SpeechModule): Promise<string | undefined> {
+  speechLocale ??= module.getSupportedLocales({})
+    .then(({ locales }) => pickSpeechLocale(deviceLocale(), locales))
+    .catch(() => undefined)
+  return speechLocale
+}
 
-/**
- * Press-and-hold dictation through Apple's speech recogniser. `begin` on
- * press, `end` on release; the transcript so far streams to `onTranscript`
- * as words are recognised, and the final words arrive just after release.
- */
-export function useDictation(handlers: {
+type Take = {
+  /** The transcript of the phrases the recogniser has closed. */
+  finished: string
+  heard: boolean
+  pressedAt: number
+  releasedAt: number | null
+  /** `start` was called on the recogniser. */
+  started: boolean
+  /** The recogniser said it started; until then a stop has to wait, or it misses the task. */
+  live: boolean
+  waiting: 'stop' | 'abort' | null
+  cancelled: boolean
+}
+
+type Handlers = {
+  /** A take is starting: what is said replaces the composer's selection as it is now. */
+  onBegin: () => void
   onTranscript: (text: string) => void
   onError: (message: string) => void
   onHint: (message: string) => void
-}): { available: boolean; listening: boolean; begin: () => void; end: () => void } {
+}
+
+/**
+ * Press-and-hold dictation through Apple's speech recogniser. `begin` on
+ * press, `end` on release, `cancel` when the mic goes away mid-hold. The
+ * transcript so far streams to `onTranscript` as words are recognised, and
+ * the final words arrive just after release.
+ */
+export function useDictation(handlers: Handlers): { available: boolean; listening: boolean; begin: () => void; end: () => void; cancel: () => void } {
   const [listening, setListening] = useState(false)
-  const take = useRef<Take | null>(null)
-  const held = useRef(false)
   const latest = useRef(handlers)
   latest.current = handlers
 
-  const finish = (hint?: string) => {
-    const done = take.current
-    take.current = null
-    setListening(false)
-    if (!done) return
-    if (hint) latest.current.onHint(hint)
-    else if (!done.heard) latest.current.onHint(Date.now() - done.pressedAt < DICTATION_TAP_MS ? DICTATION_HINT_HOLD : DICTATION_HINT_SILENT)
-  }
+  // Everything below reads refs, so it is made once and the listeners never go stale.
+  const dictation = useMemo(() => {
+    let take: Take | null = null
+    let held = false
+    /** Pressed again while the last take was still finishing: this take starts when that one ends. */
+    let pressedAgain = false
+
+    const finish = (hint?: string) => {
+      const done = take
+      take = null
+      if (done && !done.cancelled && pressedAgain && held) {
+        pressedAgain = false
+        open()
+        return
+      }
+      pressedAgain = false
+      setListening(false)
+      if (!done || done.cancelled) return
+      if (hint) latest.current.onHint(hint)
+      else if (!done.heard) {
+        const quick = done.releasedAt !== null && done.releasedAt - done.pressedAt < DICTATION_TAP_MS
+        latest.current.onHint(quick ? DICTATION_HINT_HOLD : DICTATION_HINT_SILENT)
+      }
+    }
+
+    const fail = (current: Take, message: string) => {
+      latest.current.onError(message)
+      current.heard = true
+      finish()
+    }
+
+    const open = () => {
+      if (!speech) return
+      const module = speech
+      const current: Take = { finished: '', heard: false, pressedAt: Date.now(), releasedAt: null, started: false, live: false, waiting: null, cancelled: false }
+      take = current
+      setListening(true)
+      latest.current.onBegin()
+      void (async () => {
+        try {
+          let permission = await module.getPermissionsAsync()
+          // The first time, iOS asks; the prompt ends the press, so the owner holds again after.
+          if (!permission.granted && permission.canAskAgain) permission = await module.requestPermissionsAsync()
+          if (take !== current) return
+          if (!permission.granted) return fail(current, DICTATION_DENIED)
+          const lang = current.releasedAt === null ? await speechLanguage(module) : undefined
+          if (take !== current) return
+          // Let go (or cancelled) before the recogniser was asked to start: nothing to stop.
+          if (current.releasedAt !== null) return finish(DICTATION_HINT_HOLD)
+          module.start({ lang, interimResults: true, continuous: true, addsPunctuation: true, iosTaskHint: 'dictation' })
+          current.started = true
+        } catch (error) {
+          if (take === current) fail(current, `Dictation didn't start: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })()
+    }
+
+    const release = (how: 'stop' | 'abort') => {
+      held = false
+      pressedAgain = false
+      const current = take
+      if (!current) return
+      // A cancel also cuts short a take that is already finishing.
+      if (how === 'abort') current.cancelled = true
+      else if (current.releasedAt !== null) return
+      current.releasedAt ??= Date.now()
+      if (current.live) speech?.[how]()
+      else if (current.started) current.waiting = how
+      // Not started yet: open() sees the release and stops there.
+    }
+
+    return {
+      begin: () => {
+        if (!speech) return
+        held = true
+        if (take) pressedAgain = true
+        else open()
+      },
+      end: () => release('stop'),
+      cancel: () => release('abort'),
+      listen: (module: SpeechModule) => [
+        module.addListener('start', () => {
+          if (!take) return
+          take.live = true
+          if (take.waiting) module[take.waiting]()
+          else void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+        }),
+        module.addListener('result', (event) => {
+          const current = take
+          if (!current || current.cancelled) return
+          // Each final result closes a phrase; what follows is the next phrase's partial.
+          const said = current.finished + (event.results[0]?.transcript ?? '')
+          if (event.isFinal) current.finished = said
+          if (!said.trim()) return
+          current.heard = true
+          latest.current.onTranscript(said)
+        }),
+        module.addListener('error', (event) => {
+          if (!take || take.cancelled) return
+          const message = dictationError(event)
+          if (!message) return
+          latest.current.onError(message)
+          take.heard = true
+        }),
+        module.addListener('end', () => {
+          if (!take) return
+          if (!take.cancelled) void Haptics.selectionAsync()
+          finish()
+        }),
+      ],
+      unmount: () => {
+        if (take?.started) speech?.abort()
+        take = null
+      },
+    }
+  }, [])
 
   useEffect(() => {
     if (!speech) return
-    const subscriptions = [
-      speech.addListener('start', () => {
-        if (take.current) void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-      }),
-      speech.addListener('result', (event) => {
-        const current = take.current
-        if (!current) return
-        // Each final result closes a phrase; what follows is the next phrase's partial.
-        const said = current.finished + (event.results[0]?.transcript ?? '')
-        if (event.isFinal) current.finished = said
-        if (!said.trim()) return
-        current.heard = true
-        latest.current.onTranscript(said)
-      }),
-      speech.addListener('error', (event) => {
-        if (!take.current) return
-        const message = dictationError(event)
-        if (message) {
-          latest.current.onError(message)
-          // The error is the message; no hint on top of it.
-          take.current.heard = true
-        }
-      }),
-      speech.addListener('end', () => {
-        if (!take.current) return
-        void Haptics.selectionAsync()
-        finish()
-      }),
-    ]
+    const subscriptions = dictation.listen(speech)
     return () => {
       for (const subscription of subscriptions) subscription.remove()
-      if (take.current?.started) speech?.abort()
-      take.current = null
+      dictation.unmount()
     }
-    // The listeners read the latest handlers through a ref.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [dictation])
 
-  const begin = () => {
-    if (!speech || take.current) return
-    const current: Take = { finished: '', heard: false, pressedAt: Date.now(), started: false }
-    take.current = current
-    held.current = true
-    setListening(true)
-    void (async () => {
-      try {
-        let permission = await speech.getPermissionsAsync()
-        // The first time, iOS asks; the prompt ends the press, so the owner holds again after.
-        if (!permission.granted && permission.canAskAgain) permission = await speech.requestPermissionsAsync()
-        if (take.current !== current) return
-        if (!permission.granted) {
-          latest.current.onError(DICTATION_DENIED)
-          current.heard = true
-          finish()
-          return
-        }
-        if (!held.current) {
-          finish(DICTATION_HINT_HOLD)
-          return
-        }
-        speech.start({ lang: deviceLanguage(), interimResults: true, continuous: true, addsPunctuation: true, iosTaskHint: 'dictation' })
-        current.started = true
-      } catch (error) {
-        if (take.current !== current) return
-        latest.current.onError(`Dictation didn't start: ${error instanceof Error ? error.message : String(error)}`)
-        current.heard = true
-        finish()
-      }
-    })()
-  }
-
-  const end = () => {
-    held.current = false
-    // Not started yet: begin sees the release and stops there. Started: the last words arrive, then `end`.
-    if (take.current?.started) speech?.stop()
-  }
-
-  return { available: Boolean(speech), listening, begin, end }
+  return { available: Boolean(speech), listening, begin: dictation.begin, end: dictation.end, cancel: dictation.cancel }
 }

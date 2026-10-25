@@ -169,7 +169,12 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const files = useFileSearch(trigger?.kind === 'mention' ? trigger.query : null, channel)
   const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files) : null), [trigger, session, commands, files])
 
+  // The draft as of the latest change, ahead of the render it causes (a dictation can start in between).
+  const draftNow = useRef({ text, selection })
+  draftNow.current = { text, selection }
+
   const applyText = (next: { text: string; cursor: number }) => {
+    draftNow.current = { text: next.text, selection: { start: next.cursor, end: next.cursor } }
     setText(next.text)
     setSelection({ start: next.cursor, end: next.cursor })
     setForcedSelection({ start: next.cursor, end: next.cursor })
@@ -263,6 +268,11 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const [dictationHint, setDictationHint] = useState<string | null>(null)
   const dictationBase = useRef({ text: '', selection: { start: 0, end: 0 } })
   const dictation = useDictation({
+    onBegin: () => {
+      dictationBase.current = draftNow.current
+      setDictationHint(null)
+      setAttachError(null)
+    },
     onTranscript: (spoken) => applyText(spliceDictation(dictationBase.current.text, dictationBase.current.selection, spoken)),
     onError: setAttachError,
     onHint: setDictationHint,
@@ -272,13 +282,11 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     const timer = setTimeout(() => setDictationHint(null), 2500)
     return () => clearTimeout(timer)
   }, [dictationHint])
-  const startDictation = () => {
-    dictationBase.current = { text, selection }
-    setDictationHint(null)
-    setAttachError(null)
-    dictation.begin()
-  }
   const canDictate = dictation.available && !closed && !switching
+  // The mic leaves mid-hold when the session ends or switches; its release would never come.
+  useEffect(() => {
+    if (!canDictate) dictation.cancel()
+  }, [canDictate, dictation.cancel])
 
   const clearDraft = () => {
     setAttachments([])
@@ -502,7 +510,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
               accessibilityLabel={dictation.listening ? 'Listening' : 'Dictate'}
               accessibilityRole="button"
               accessibilityState={{ busy: dictation.listening }}
-              onPressIn={startDictation}
+              onPressIn={dictation.begin}
               onPressOut={dictation.end}
               style={[styles.round, styles.stop, dictation.listening
                 ? { backgroundColor: withAlpha(theme.red, 0.18), borderColor: theme.red }
