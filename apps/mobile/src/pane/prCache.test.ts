@@ -77,3 +77,14 @@ it('re-reads only the watched lists on one host, in the foreground, when asked',
   expect(fetchPanePrs).toHaveBeenLastCalledWith(host, '%14', { background: false })
   stops.forEach((stop) => stop())
 })
+
+it('keeps the last lists when a forced re-read fails', async () => {
+  ;(fetchPanePrs as jest.Mock).mockResolvedValueOnce(PANE_PRS).mockRejectedValueOnce(new Error('GitHub is rate limited'))
+  const cache = new PanePrCache()
+  const listener = jest.fn()
+  const stop = cache.subscribe(host, '%14', listener)
+  await flush()
+  await cache.refreshHost(host)
+  expect(listener).toHaveBeenLastCalledWith({ data: PANE_PRS, error: 'GitHub is rate limited' })
+  stop()
+})

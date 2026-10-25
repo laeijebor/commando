@@ -32,15 +32,14 @@ export class PanePrCache {
     await Promise.all([...this.watchers.keys()].filter((key) => key.startsWith(prefix)).map(async (key) => {
       // Let a read already in flight finish, then read again: it may predate the change.
       await this.loading.get(key)
-      this.cache.delete(key)
-      await this.load(key, false)
+      await this.load(key, { background: false, force: true })
     }))
   }
-  private async load(key: string, background = true): Promise<void> {
+  private async load(key: string, { background = true, force = false } = {}): Promise<void> {
     const watcher = this.watchers.get(key)
     if (!watcher || this.loading.has(key)) return
     const cached = this.cache.get(key)
-    if (cached && Date.now() - cached.at < PERIOD) return
+    if (!force && cached && Date.now() - cached.at < PERIOD) return
     // Register before invoking the fetch, so even synchronous fake transports deduplicate.
     const load = Promise.resolve().then(async () => {
       try {
