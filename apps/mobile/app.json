@@ -3,7 +3,7 @@
     "name": "Commando",
     "slug": "commando-companion",
     "scheme": "commando",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -41,6 +41,13 @@
           "backgroundColor": "#0c0a14",
           "image": "./assets/splash-icon.png",
           "imageWidth": 160
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat.",
+          "speechRecognitionPermission": "Commando turns what you say into text for your chat message."
         }
       ]
     ],
