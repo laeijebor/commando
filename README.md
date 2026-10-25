@@ -571,3 +571,22 @@ For automated or destructive testing, use a dedicated tmux socket:
 tmux -L commando-qa -f /dev/null new-session -d -s qa
 COMMANDO_TMUX_SOCKET_NAME=commando-qa COMMANDO_TOKEN=qa-token npm run dev
 ```
+
+### Pair the iOS companion
+
+In the web or desktop sidebar, choose **Pair a phone** beside **Machine / Local
+sessions**. Scan the QR with the iPhone Camera or **Hosts → Scan QR code** in the
+companion, then confirm the machine. Each code lasts two minutes and works once;
+**New code** invalidates the previous code. The phone receives its own token,
+stored in its keychain. View last-seen devices and **Revoke** access in the same
+modal; revocation also disconnects live sockets.
+
+For a physical phone, run the daemon with `COMMANDO_TAILSCALE=true` and enable
+Tailscale on both devices. The QR advertises resolvable Tailscale MagicDNS and
+IPv4 addresses. MagicDNS still needs the existing `COMMANDO_TRUSTED_ORIGINS`
+configuration; otherwise pairing falls back to the IPv4 address. Without
+Tailscale binding, the QR uses loopback for a simulator. Pairing does not change
+network access rules. Device-token hashes and metadata live in
+`~/.commando/paired-devices-<port>.json` (0600); codes live only in memory. Device tokens
+have the existing automation bearer’s access, except pairing management, which
+requires the owner session or `COMMANDO_TOKEN`.

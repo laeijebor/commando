@@ -16,7 +16,13 @@
       "requireFullScreen": false,
       "infoPlist": {
         "NSAppTransportSecurity": {
-          "NSAllowsLocalNetworking": true
+          "NSAllowsArbitraryLoads": true,
+          "NSExceptionDomains": {
+            "ts.net": {
+              "NSIncludesSubdomains": true,
+              "NSExceptionAllowsInsecureHTTPLoads": true
+            }
+          }
         }
       },
       "runtimeVersion": {
@@ -28,10 +34,18 @@
       "expo-secure-store",
       "expo-notifications",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac, and to take photos you attach to a chat message.",
+          "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Commando attaches the photos you pick to a chat message.",
-          "cameraPermission": "Commando uses the camera to take a photo you attach to a chat message.",
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac, and to take photos you attach to a chat message.",
           "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat."
         }
       ],

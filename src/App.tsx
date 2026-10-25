@@ -1,3 +1,4 @@
+import { PairPhoneDialog } from './PairPhoneDialog'
 import { commanderInbox } from './commanderInbox'
 import { GROUP_ORDER } from './chat/AgentsInbox'
 import { CommanderTranscriptView, type CommanderPeek } from './chat/CommanderReadingPane'
@@ -1123,6 +1124,7 @@ export function App() {
   useEffect(() => { setOpenDrawers({}) }, [narrowPanel])
   const nativeWindowBridge = getNativeWindowBridge()
   const detachedWebPaneIds = useDetachedWebPaneIds()
+  const [pairPhoneOpen, setPairPhoneOpen] = useState(false)
   const [token, setToken] = useState(getInitialToken)
   const [authBootstrap, setAuthBootstrap] = useState<AuthBootstrap | null>(null)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
@@ -3967,11 +3969,13 @@ export function App() {
               storeLeftPanelWidth(LEFT_PANEL_DEFAULT_WIDTH)
             }}
           />
+          {pairPhoneOpen ? <PairPhoneDialog token={token} onClose={() => setPairPhoneOpen(false)} /> : null}
           <div className="sidebar-header">
             <div>
               <span className="section-kicker">Machine</span>
               <strong>Local sessions</strong>
             </div>
+            <button type="button" className="icon-button" aria-label="Pair a phone" title="Pair a phone" onClick={() => setPairPhoneOpen(true)}><Smartphone aria-hidden="true" /></button>
             <button
               type="button"
               className="icon-button panel-close"

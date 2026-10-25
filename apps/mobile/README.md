@@ -244,6 +244,23 @@ check on its own; the trusted-origins list only matters for browser clients on
 the same name. Token-only daemons work too — switch the sign-in sheet to "Use
 automation token" and paste `COMMANDO_TOKEN`.
 
+### iOS HTTP transport and token isolation
+
+Tailscale's `100.64.0.0/10` addresses need `NSAllowsArbitraryLoads: true` in
+`NSAppTransportSecurity`. `NSAllowsLocalNetworking` must be absent: on iOS 10+
+its presence overrides the arbitrary-load setting. A `ts.net` exception also
+allows insecure HTTP for MagicDNS subdomains. Tailscale encrypts this traffic
+with WireGuard. Rebuild the iOS app after changing these settings; an ATS -1022
+probe error names this requirement rather than suggesting Tailscale is off.
+
+Token-host fetches (including images and tiles) omit credentials. Native sockets
+send bearer headers without putting tokens in URLs or explicitly forwarding
+cookies. **Remaining native limitation:** RN 0.86's iOS `RCTWebSocketModule`
+always merges `sharedHTTPCookieStorage` into handshakes before adding supplied
+headers. Its JavaScript API cannot suppress those cookies. Full socket cookie
+isolation needs a native implementation change; avoid pairing an untrusted
+service on a hostname where you have an owner session until that is available.
+
 ## Agent setup on the host
 
 Install and authenticate each CLI on the daemon/tmux host, under the account
@@ -337,3 +354,25 @@ npx expo config --type public
 The root `npm run typecheck` and `npm test` deliberately skip this directory:
 `tsc -b` excludes it and Vitest's `exclude` list does too, because React Native
 sources need Metro's transformer, not Vite's.
+
+## Pair by QR code
+
+Choose **Pair a phone** beside **Machine / Local sessions** in the Mac's web or
+desktop app. Use the iPhone Camera (opens `commando://pair?...`) or the companion's
+**Hosts → Scan QR code** action, also available in **Add host**. Confirm the
+machine name and addresses; Commando probes them in parallel, briefly preferring
+earlier addresses, then opens Chats after saving this phone's token in SecureStore.
+Re-pairing a known machine updates its existing host row and keeps its preferences. Manual add-host and sign-in
+continue to work.
+
+Codes expire after two minutes, work once, and are replaced by **New code**. If
+one expires or was used, ask the Mac for a new code. If unreachable, check
+Tailscale on both devices and `COMMANDO_TAILSCALE=true` on the daemon. The Mac's
+pairing modal lists devices and revokes access immediately, including live
+connections. A denied camera permission can be enabled through **Open Settings**;
+the iPhone Camera deep link also works without granting Commando camera access.
+
+The `expo-camera` permission plugin requires a rebuilt iOS development client.
+A simulator can use the QR's loopback URL when the daemon does not bind Tailscale;
+physical camera scanning needs a real iPhone. The pairing types are shared through
+`@commando/pairing` in TypeScript, Metro and Jest.

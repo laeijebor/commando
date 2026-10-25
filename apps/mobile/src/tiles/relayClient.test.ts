@@ -1,3 +1,4 @@
+import { waitFor } from '@testing-library/react-native'
 import type { Host } from '../hosts/types'
 import { TileRelayClient, type TileRelayState } from './relay'
 
@@ -79,10 +80,10 @@ afterEach(() => {
 })
 
 describe('the tile socket URL', () => {
-  it('carries an automation token as a query parameter', () => {
+  it('keeps tokens out of the socket URL', () => {
     const client = new TileRelayClient({ host: TOKEN_HOST, webPaneId: 'w-0badcafe' })
     expect(client.url).toBe(
-      'ws://studio.tail-1a2b.ts.net:4310/ws/web-tiles/w-0badcafe?token=secret%2Ftoken',
+      'ws://studio.tail-1a2b.ts.net:4310/ws/web-tiles/w-0badcafe',
     )
   })
 
@@ -106,7 +107,7 @@ describe('the tile socket URL', () => {
 
   it('sends no cookie header for a token host', () => {
     const { socket } = connect()
-    expect(socket.headers).toBeUndefined()
+    expect(socket.headers).toEqual({ Authorization: 'Bearer secret/token' })
   })
 })
 
@@ -253,11 +254,11 @@ describe('stream state', () => {
     client.stop()
   })
 
-  it('schedules a reconnect for any other close', () => {
+  it('schedules a reconnect for any other close', async () => {
     const { client, socket, states } = connect()
     socket.shutdown(1006, 'socket hang up')
     expect(states[states.length - 1]).toMatchObject({ phase: 'closed' })
-    expect(client.getState().detail).toContain('retrying in')
+    await waitFor(() => expect(client.getState().detail).toContain('retrying in'))
     client.stop()
   })
 })

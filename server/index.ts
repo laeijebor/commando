@@ -150,6 +150,9 @@ import { ProviderUsageService } from './provider-usage.js'
 import { handleUsageApi } from './usage-api.js'
 import { ExpoPushSender } from './expo-push.js'
 import { PushApi } from './push-api.js'
+import { PairingApi } from './pairing-api.js'
+import { authorizeBearerOrSession, PairingRequestAuth, requestSuppliesBearer } from './pairing-auth.js'
+import { PairingRegistry, defaultPairingDevicesPath, pairingAddresses, requestMatchesBearer } from './pairing.js'
 import { PushDeviceRegistry } from './push-devices.js'
 import { PushNotifier } from './push-notifier.js'
 import { snapshotsHaveSameState } from './snapshot-state.js'
@@ -262,20 +265,7 @@ function requestHasValidToken(
   url: URL,
   digest: Buffer,
 ): boolean {
-  if (matchesToken(url.searchParams.get('token'), digest)) return true
-  // Browser WebSockets cannot set Authorization; simulator tiles carry the same
-  // bearer token in a subprotocol so it never becomes a persisted URL.
-  const protocols = request.headers['sec-websocket-protocol']
-  if (typeof protocols === 'string') {
-    for (const protocol of protocols.split(',').map((entry) => entry.trim())) {
-      if (!protocol.startsWith('commando-auth.')) continue
-      try { if (matchesToken(decodeURIComponent(protocol.slice(14)), digest)) return true } catch { /* malformed token */ }
-    }
-  }
-  const authorization = request.headers.authorization
-  if (!authorization) return false
-  const match = /^Bearer\s+([^\s]+)$/i.exec(authorization)
-  return matchesToken(match?.[1] ?? null, digest)
+  return requestMatchesBearer(request, url, (candidate) => matchesToken(candidate, digest))
 }
 
 function requestUrl(request: IncomingMessage): URL | null {
@@ -526,6 +516,7 @@ async function main(): Promise<void> {
   process.env.ARGENT_SIMULATOR_NO_WINDOW ??= '1'
   const port = configuredPort()
   const networkAccess = createNetworkAccess(port)
+  void pairingAddresses(port, networkAccess.listeners) // Warm optional DNS discovery without blocking startup.
   const token = authToken()
   const digest = tokenDigest(token)
   const agentHookToken = await loadOrCreateAgentHookToken()
@@ -778,12 +769,23 @@ async function main(): Promise<void> {
   let lastTmuxError = ''
   let structuralRefreshTimer: NodeJS.Timeout | undefined
 
-  const requestIsAuthorized = async (
-    request: IncomingMessage,
-    url: URL,
-  ): Promise<boolean> => (
-    requestHasValidToken(request, url, digest) || (await auth?.hasSession(request)) === true
+  const pairing = new PairingRegistry(defaultPairingDevicesPath(port))
+  const pairingAuth = new PairingRequestAuth(pairing)
+  await pairing.load()
+  // Management remains owner-only. Devices inherit exactly the existing bearer scope.
+  const requestIsOwnerAuthorized = (request: IncomingMessage, url: URL): Promise<boolean> => authorizeBearerOrSession(
+    request, url,
+    () => requestHasValidToken(request, url, digest),
+    async () => (await auth?.hasSession(request)) === true,
   )
+  const requestIsAuthorized = (request: IncomingMessage, url: URL): Promise<boolean> => authorizeBearerOrSession(
+    request, url,
+    () => requestHasValidToken(request, url, digest) || pairingAuth.authorize(request, url),
+    async () => (await auth?.hasSession(request)) === true,
+  )
+  const pairingApi = new PairingApi(pairing, requestIsOwnerAuthorized, () => pairingAddresses(port, networkAccess.listeners), (request, url) => (
+    requestHasValidToken(request, url, digest) || (typeof request.headers.origin === 'string' && networkAccess.trustedOrigins.includes(request.headers.origin))
+  ))
 
   const broadcast = (message: ServerMessage): void => {
     for (const client of clients) send(client, message)
@@ -1698,6 +1700,7 @@ async function main(): Promise<void> {
     },
   })
   const sessionIdeApi = new SessionIdeApi({
+    isDeviceRequest: (request) => pairingAuth.deviceId(request) !== undefined,
     service: sessionIdes,
     currentSessionIds: () => snapshot.sessions.map((session) => session.id),
     currentPanes: () => snapshot.panes,
@@ -1821,6 +1824,7 @@ async function main(): Promise<void> {
   })
   const notifier = new PushNotifier({
     registry: pushDevices,
+    principalActive: (id) => pairing.isActive(id),
     sender: expoPush,
     paneContext: (paneId) => {
       const pane = paneForId(paneId)
@@ -1829,7 +1833,10 @@ async function main(): Promise<void> {
     },
   })
   pushNotifier = notifier
+  pairing.onRevoke((id) => pushDevices.removeByPrincipal(id))
   const pushApi = new PushApi({
+    devicePrincipal: (request) => pairingAuth.deviceId(request),
+    principalActive: (id) => pairing.isActive(id),
     registry: pushDevices,
     sendTest: (device) => notifier.sendTest(device),
   })
@@ -2824,6 +2831,7 @@ async function main(): Promise<void> {
   })
 
   const requestListener = (request: IncomingMessage, response: ServerResponse): void => {
+    pairingAuth.trackResponse(request, response)
     void (async () => {
       if (!networkAccess.validRequest(request)) {
         writeJson(response, 403, { error: 'Invalid host or origin' })
@@ -2838,6 +2846,10 @@ async function main(): Promise<void> {
 
       const ideId = idePathId(url.pathname)
       if (ideId) {
+        if (requestSuppliesBearer(request, url) && !(await requestIsAuthorized(request, url))) {
+          writeJson(response, 401, { error: 'Unauthorized' })
+          return
+        }
         if (!sessionIdes.authorized(ideId, request.headers.cookie)) {
           writeJson(response, 401, { error: 'Open the IDE from the session menu to authorize this browser' })
           return
@@ -2845,6 +2857,8 @@ async function main(): Promise<void> {
         sessionIdeApi.proxy(request, response, url, ideId)
         return
       }
+
+      if (await pairingApi.handle(request, response, url)) return
 
       if (url.pathname === '/api/auth/bootstrap') {
         if (request.method !== 'GET') {
@@ -2987,6 +3001,10 @@ async function main(): Promise<void> {
         const url = requestUrl(request)
         const ideId = url ? idePathId(url.pathname) : null
         if (url && ideId) {
+          if (requestSuppliesBearer(request, url) && !(await requestIsAuthorized(request, url))) {
+            rejectUpgrade(socket, 401, 'Unauthorized')
+            return
+          }
           if (!sessionIdes.authorized(ideId, request.headers.cookie)) {
             rejectUpgrade(socket, 401, 'Unauthorized')
             return

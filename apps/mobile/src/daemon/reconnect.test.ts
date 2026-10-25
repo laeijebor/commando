@@ -22,6 +22,8 @@ globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { CHAT_HISTORY_BYTES, DaemonClient, STABLE_CONNECTION_MS } = require('./client') as typeof import('./client')
 const HOST = { id: 'h1', name: 'studio', baseUrl: 'http://studio:4310', auth: { kind: 'token' as const, token: 'secret' } }
+// A token host probes its access over HTTP after every close; a session host keeps the backoff timing synchronous.
+const SESSION_HOST = { ...HOST, auth: { kind: 'session' as const } }
 
 beforeEach(() => {
   FakeSocket.all = []
@@ -48,13 +50,13 @@ function nextOpenAfter(): number {
 }
 
 describe('reconnecting to the daemon', () => {
-  it('asks for a bounded chat replay', () => {
+  it('asks for a bounded chat replay, keeping the token out of the URL', () => {
     const client = new DaemonClient({ host: HOST })
-    expect(client.url).toBe(`ws://studio:4310/ws?chatHistory=${CHAT_HISTORY_BYTES}&token=secret`)
+    expect(client.url).toBe(`ws://studio:4310/ws?chatHistory=${CHAT_HISTORY_BYTES}`)
   })
 
   it('backs off when sockets keep dying right after they open, and resets after a stable one', () => {
-    const client = new DaemonClient({ host: HOST })
+    const client = new DaemonClient({ host: SESSION_HOST })
     client.start()
     const delays: number[] = []
     for (let round = 0; round < 4; round += 1) {

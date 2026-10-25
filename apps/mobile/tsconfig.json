@@ -32,6 +32,9 @@
       "@commando/session-identity": [
         "../../shared/session-identity.ts"
       ],
+      "@commando/pairing": [
+        "../../shared/pairing.ts"
+      ],
       "@commando/guide-types": [
         "../../shared/guide-types.ts"
       ],
@@ -62,6 +65,7 @@
     "../../shared/agent-chat.ts",
     "../../shared/chat-timeline.ts",
     "../../shared/chat-composer.ts",
+    "../../shared/pairing.ts",
     "../../shared/pr-quick-look.ts",
     "../../shared/pr-conversation.ts",
     "../../shared/redline-response.ts",
