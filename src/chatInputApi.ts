@@ -1,4 +1,4 @@
-import { isChatImageId, type ChatImageRef } from '../shared/agent-chat'
+import { isChatImageId, isChatVideoId, type ChatImageRef } from '../shared/agent-chat'
 import type { PreparedImage } from './chat/attachImages'
 import type { PullRequestOption } from './chat/composerTriggers'
 import type { PrsApiClient } from './prsApi'
@@ -14,6 +14,19 @@ export async function uploadChatImage(token: string, image: PreparedImage, fetch
   const result = await response.json().catch(() => ({})) as { image?: { id?: unknown }; error?: string }
   if (!response.ok || !isChatImageId(result.image?.id)) throw new Error(result.error ?? `Upload failed (${response.status})`)
   return { id: result.image.id, name: image.name }
+}
+
+/** Uploads a composer video as it is, streamed from disk; the daemon checks its type. */
+export async function uploadChatVideo(token: string, file: File, fetcher: typeof fetch = fetch): Promise<ChatImageRef> {
+  const response = await fetcher('/api/chat/videos', {
+    method: 'POST',
+    body: file,
+    credentials: 'same-origin',
+    headers: { 'Content-Type': file.type || 'application/octet-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  })
+  const result = await response.json().catch(() => ({})) as { video?: { id?: unknown }; error?: string }
+  if (!response.ok || !isChatVideoId(result.video?.id)) throw new Error(result.error ?? `Upload failed (${response.status})`)
+  return { id: result.video.id, name: file.name || 'video' }
 }
 
 /** The open pull requests of the repository a chat pane works in, from Commando's PR tracking. */

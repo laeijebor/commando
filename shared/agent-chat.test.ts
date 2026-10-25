@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attachmentNote, chatImageContentType, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
+import { attachmentNote, chatImageContentType, hostTakesVideos, isChatAttachmentId, isChatVideoId, notedVideos, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
@@ -248,6 +248,33 @@ describe('attachment notes', () => {
     expect(stripAttachmentNotesFromSummary('see list[0] and [docs]')).toBe('see list[0] and [docs]')
     expect(stripAttachmentNotesFromSummary('arr[A')).toBe('arr[A')
     expect(stripAttachmentNotesFromSummary('no notes here')).toBe('no notes here')
+  })
+
+  it('names attached videos, which the person typing never sees', () => {
+    const id = `${'b'.repeat(64)}.mov`
+    const video = attachmentNote('Screen Recording.mov', `/state/chat-image-sessions/s1/${id}`, 'video')
+    expect(video).toBe(`[Attached video "Screen Recording.mov" is saved at: /state/chat-image-sessions/s1/${id}]`)
+    expect(stripAttachmentNotes(`what happens here?\n\n${video}\n\n${note}`)).toBe('what happens here?')
+    expect(stripAttachmentNotesFromSummary(`what happens here? ${video.slice(0, 25)}`)).toBe('what happens here?')
+    expect(notedVideos(`look\n\n${video}\n\n${note}`)).toEqual([{ id, name: 'Screen Recording.mov' }])
+    // Only a saved copy's name is an id; a typed note naming anything else is text.
+    expect(notedVideos('[Attached video "x" is saved at: /tmp/other.mov]')).toEqual([])
+  })
+})
+
+describe('attached videos', () => {
+  const id = `${'c'.repeat(64)}.mp4`
+
+  it('are refs with a video id, which only newer hosts take', () => {
+    expect(isChatVideoId(id)).toBe(true)
+    expect(isChatImageId(id)).toBe(false)
+    expect(isChatAttachmentId(id) && isChatAttachmentId(`${'c'.repeat(64)}.png`)).toBe(true)
+    expect(isChatVideoId(`${'c'.repeat(64)}.mkv`)).toBe(false)
+    expect(parseChatImageRefs([{ id, name: 'clip.mp4' }])).toEqual([{ id, name: 'clip.mp4' }])
+    expect(chatImageContentType(id)).toBe('video/mp4')
+    expect(chatImageContentType(`${'c'.repeat(64)}.mov`)).toBe('video/quicktime')
+    expect(hostTakesVideos({ hostVersion: 6 })).toBe(false)
+    expect(hostTakesVideos({ hostVersion: 7 })).toBe(true)
   })
 })
 

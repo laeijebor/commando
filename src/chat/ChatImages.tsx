@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Dialog } from '@base-ui/react/dialog'
-import { ImageOff, LoaderCircle, X, ZoomIn, ZoomOut } from 'lucide-react'
-import { chatImageUrl, type ChatImageRef } from '../../shared/agent-chat'
+import { Film, ImageOff, LoaderCircle, Play, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { chatImageUrl, isChatVideoId, type ChatImageRef } from '../../shared/agent-chat'
 import { cn } from './cn'
 import { FIT, MAX_ZOOM, fitSize, panBy, zoomAround, type ImageZoom, type Size } from './imageZoom'
 
@@ -10,9 +10,11 @@ import { FIT, MAX_ZOOM, fitSize, panBy, zoomAround, type ImageZoom, type Size } 
 export interface ViewableImage {
   src: string
   name: string
+  /** A video plays in the viewer instead of zooming. */
+  video?: boolean
 }
 
-/** The full-size image over the app; Esc or a click outside closes it. It zooms and pans. */
+/** The full-size image over the app; Esc or a click outside closes it. It zooms and pans, or plays a video. */
 export function ImageViewer({ image, onClose }: { image: ViewableImage | null; onClose: () => void }) {
   return (
     <Dialog.Root open={image !== null} onOpenChange={(open) => { if (!open) onClose() }}>
@@ -20,13 +22,23 @@ export function ImageViewer({ image, onClose }: { image: ViewableImage | null; o
         {/* Terminals and web tiles are native views above the page; the marker makes them hide under the viewer. */}
         <Dialog.Backdrop className="chat-floating fixed inset-0 z-[140] bg-black/70" data-native-terminal-occluder="" />
         <Dialog.Popup className="chat-floating fixed inset-0 z-[141] outline-none" aria-label={image?.name ?? 'Image'}>
-          {image ? <ZoomableImage key={image.src} image={image} onClose={onClose} /> : null}
-          <Dialog.Close className="absolute top-3 right-3 flex size-8 cursor-pointer items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80" aria-label="Close image">
+          {image?.video ? <VideoPlayer key={image.src} video={image} onClose={onClose} /> : image ? <ZoomableImage key={image.src} image={image} onClose={onClose} /> : null}
+          <Dialog.Close className="absolute top-3 right-3 flex size-8 cursor-pointer items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80" aria-label={image?.video ? 'Close video' : 'Close image'}>
             <X className="size-4" aria-hidden="true" />
           </Dialog.Close>
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+/** A video with the browser's own controls; a click beside it closes the viewer. */
+function VideoPlayer({ video, onClose }: { video: ViewableImage; onClose: () => void }) {
+  return (
+    <div className="flex size-full flex-col items-center justify-center gap-2 p-6" onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <video src={video.src} controls autoPlay playsInline className="max-h-[85vh] max-w-[92vw] rounded-md bg-black" aria-label={video.name} />
+      <p className="max-w-[92vw] truncate text-xs text-white/80">{video.name}</p>
+    </div>
   )
 }
 
@@ -205,19 +217,23 @@ function ZoomableImage({ image, onClose }: { image: ViewableImage; onClose: () =
   )
 }
 
-export function Thumbnail({ src, name, onOpen, onRemove, busy, size = 'md' }: {
+export function Thumbnail({ src, name, onOpen, onRemove, busy, video, size = 'md' }: {
   src: string
   name: string
   onOpen: () => void
   onRemove?: () => void
   busy?: boolean
+  /** Shows the video's first frame with a play mark. */
+  video?: boolean
   size?: 'sm' | 'md'
 }) {
   // Pruned after 30 days, or never stored: say so instead of showing a broken image.
   const [missing, setMissing] = useState(false)
+  // A video this browser can't decode (HEVC in Chromium, say) fails the same way as a pruned one, so it keeps a plain tile.
+  const [noFrame, setNoFrame] = useState(false)
   return (
     <span className={cn('relative inline-flex shrink-0', size === 'sm' ? 'size-12' : 'size-16')}>
-      {missing ? (
+      {missing && !video ? (
         <span className="flex size-full items-center justify-center rounded-md border border-dashed border-border text-icon-muted" role="img" aria-label={`${name} is no longer available`} title={`${name} is no longer available`}>
           <ImageOff className="size-4" aria-hidden="true" />
         </span>
@@ -225,11 +241,27 @@ export function Thumbnail({ src, name, onOpen, onRemove, busy, size = 'md' }: {
         <button
           type="button"
           onClick={onOpen}
-          className="size-full cursor-zoom-in overflow-hidden rounded-md border border-border bg-background"
-          aria-label={`Open ${name}`}
+          className={cn('relative size-full overflow-hidden rounded-md border border-border bg-background', video ? 'cursor-pointer bg-black' : 'cursor-zoom-in')}
+          aria-label={`${video ? 'Play' : 'Open'} ${name}`}
           title={name}
         >
-          <img src={src} alt={name} className={cn('size-full object-cover', busy && 'opacity-50')} draggable={false} onError={() => setMissing(true)} />
+          {video ? (
+            <>
+              {/* `#t=0.1` makes WebKit draw a first frame instead of a blank box. */}
+              {noFrame ? (
+                <Film className="absolute inset-0 m-auto size-5 text-white/70" aria-hidden="true" />
+              ) : (
+                <video src={`${src}#t=0.1`} muted playsInline preload="metadata" className={cn('pointer-events-none size-full object-cover', busy && 'opacity-50')} onError={() => setNoFrame(true)} />
+              )}
+              {busy || noFrame ? null : (
+                <span className="pointer-events-none absolute inset-0 m-auto flex size-6 items-center justify-center rounded-full bg-black/60 text-white">
+                  <Play className="size-3 fill-current" aria-hidden="true" />
+                </span>
+              )}
+            </>
+          ) : (
+            <img src={src} alt={name} className={cn('size-full object-cover', busy && 'opacity-50')} draggable={false} onError={() => setMissing(true)} />
+          )}
         </button>
       )}
       {busy ? <LoaderCircle className="pointer-events-none absolute inset-0 m-auto size-4 animate-spin text-primary" aria-label="Uploading" /> : null}
@@ -254,7 +286,8 @@ export function ImageStrip({ images, className, size }: { images: readonly ChatI
     <>
       <div className={cn('flex flex-wrap gap-1.5', className)}>
         {images.map((image, index) => {
-          const viewable = { src: chatImageUrl(image.id), name: image.name ?? `Image ${index + 1}` }
+          const video = isChatVideoId(image.id)
+          const viewable = { src: chatImageUrl(image.id), name: image.name ?? `${video ? 'Video' : 'Image'} ${index + 1}`, video }
           return <Thumbnail key={`${image.id}:${index}`} {...viewable} size={size} onOpen={() => setOpen(viewable)} />
         })}
       </div>

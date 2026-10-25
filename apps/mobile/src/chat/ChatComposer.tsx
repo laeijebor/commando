@@ -8,6 +8,7 @@ import {
   hostTakesInput,
   hostTakesSettings,
   hostTakesTurnFlow,
+  isChatVideoId,
   type ChatCarriedDraft,
   type ChatCommand,
   type ChatFileSearchResult,
@@ -34,6 +35,7 @@ import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './ch
 import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
 import { spliceDictation, useDictation } from './dictation'
+import { VideoTile } from './VideoTile'
 import { chatImageUri, pickImages, prepareImage, uploadChatImage, type PickedImage } from './images'
 import { PasteImageBar } from './PasteImageBar'
 import { RelayChip } from './Subagents'
@@ -436,7 +438,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachments} keyboardShouldPersistTaps="always">
             {attachments.map((attachment) => (
               <View key={attachment.key} style={styles.thumb}>
-                <Image accessibilityLabel={attachment.name} source={{ uri: attachment.uri }} style={[styles.thumbImage, { borderColor: theme.border }]} />
+                {attachment.ref && isChatVideoId(attachment.ref.id)
+                  ? <VideoTile name={attachment.name} style={styles.thumbImage} />
+                  : <Image accessibilityLabel={attachment.name} source={{ uri: attachment.uri }} style={[styles.thumbImage, { borderColor: theme.border }]} />}
                 {attachment.ref ? null : (
                   <View style={[styles.thumbBusy, { backgroundColor: withAlpha(theme.bg, 0.55) }]}>
                     <ActivityIndicator color={theme.text} size="small" />

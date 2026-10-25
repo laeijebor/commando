@@ -162,7 +162,7 @@ import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
-import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
+import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
@@ -2729,6 +2729,7 @@ export function App() {
         }),
         pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, paneId),
         uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image),
+        uploadVideo: (file) => uploadChatVideo(latestChatDeps.current.token, file),
       }
       chatServiceCache.current.set(paneId, services)
     }

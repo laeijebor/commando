@@ -581,6 +581,20 @@ describe('CursorChatSession', () => {
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Message not sent: Too many images' })
     session.close()
   })
+  it('sends a video as a note after the text, without reading it as an image', async () => {
+    const video = `${'e'.repeat(64)}.mov`
+    const read = vi.fn()
+    const stage = vi.fn(async (id: string, folder: string) => `/sessions/${folder}/${id}`)
+    const { session, sdk } = await running({ images: { read, stage } as unknown as AgentSessionSpec['images'] })
+    sdk.runs[0].finish(); await tick()
+    session.send('Watch', [{ id: video, name: 'clip.mov' }]); await tick()
+    expect(read).not.toHaveBeenCalled()
+    const message = sdk.sends.at(-1)!.message
+    expect(message.images).toBeUndefined()
+    expect(message.text).toMatch(new RegExp(`^Watch\\n\\n\\[Attached video "clip\\.mov" is saved at: /sessions/[0-9a-f-]{36}/${video}\\]$`))
+    expect(session.snapshot().items.findLast((item) => item.kind === 'user_message')).toMatchObject({ text: 'Watch', images: [{ id: video, name: 'clip.mov' }] })
+    session.close()
+  })
   it('closes once after cancellation, rejects unsupported controls and never answers', async () => {
     const { session, sdk } = await running()
     expect(session.answer('x', { kind: 'approval', decision: 'allow' })).toBe(false)

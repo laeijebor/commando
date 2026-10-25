@@ -135,6 +135,18 @@ describe('MuseChatSession', () => {
     expect(client.sent('turn/start')[0]).toMatchObject({ input: [{ type: 'text', text: 'Look' }, { type: 'image', mediaType: 'image/png', base64Data: png.toString('base64') }], displayText: 'Look' })
   })
 
+  it('sends a video as a note after the text, showing only what was typed', async () => {
+    const video = `${'e'.repeat(64)}.mov`
+    const read = vi.fn()
+    const stage = vi.fn(async (id: string, sessionId: string) => `/sessions/${sessionId}/${id}`)
+    const { session, client } = harness({ images: { read, stage } as never })
+    await session.start()
+    session.send('Watch', [{ id: video, name: 'clip.mov' }])
+    await tick()
+    expect(read).not.toHaveBeenCalled()
+    expect(client.sent('turn/start')[0]).toMatchObject({ input: [{ type: 'text', text: 'Watch' }, { type: 'text', text: `[Attached video "clip.mov" is saved at: /sessions/${SESSION}/${video}]` }], displayText: 'Watch' })
+  })
+
   it('interrupts the running turn and treats an already-finished turn as done', async () => {
     const { session, client, turnId } = await running()
     await session.interrupt()

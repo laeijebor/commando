@@ -321,6 +321,18 @@ describe('CodexChatSession', () => {
     expect(session.snapshot().items[0]).toMatchObject({ images: [{ id: 'image' }] })
     session.close()
   })
+  it('sends a video as a note after the text, and shows it on the message without the note', async () => {
+    const video = `${'e'.repeat(64)}.mov`
+    const images = { stage: vi.fn(async (id: string) => `/sessions/${thread.id}/${id}`), stagedImage: () => null } as unknown as NonNullable<AgentSessionSpec['images']>
+    const { session, client } = harness({ images })
+    await session.start()
+    session.send('Watch this', [{ id: video, name: 'clip.mov' }])
+    await tick()
+    const note = `[Attached video "clip.mov" is saved at: /sessions/${thread.id}/${video}]`
+    expect(client.requests.at(-1)).toMatchObject({ params: { input: [{ type: 'text', text: `Watch this\n\n${note}`, text_elements: [] }] } })
+    expect(session.snapshot().items[0]).toMatchObject({ kind: 'user_message', text: 'Watch this', images: [{ id: video, name: 'clip.mov' }] })
+    session.close()
+  })
   it('ignores foreign thread events, clears externally resolved requests, and reports child failure', async () => {
     const { session, client } = await running()
     client.notify('thread/name/updated', { threadId: 'child', threadName: 'Wrong' })

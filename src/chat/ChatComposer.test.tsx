@@ -346,7 +346,7 @@ describe('@ and # mentions', () => {
     const { type } = renderComposer({ session: { ...session, hostVersion: 2 } })
     type('@src')
     expect(screen.queryByTestId('composer-menu')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Attach images' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Attach images or videos' })).toBeNull()
   })
 })
 
@@ -393,6 +393,55 @@ describe('image attachments', () => {
     paste(input, Array.from({ length: 11 }, (_, index) => png(`p${index}.png`)))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('A message can carry at most 10 images'))
     expect(screen.getAllByRole('button', { name: /^Open p\d+\.png$/ })).toHaveLength(10)
+  })
+
+  describe('videos', () => {
+    const videoId = `${'e'.repeat(64)}.mov`
+    const videoSession = { ...session, hostVersion: 7 }
+    const mov = (name = 'Screen Recording.mov', type = 'video/quicktime') => new File([new Uint8Array(100)], name, { type })
+
+    it('uploads a pasted video as it is and sends it with the text', async () => {
+      const upload = services({ uploadVideo: vi.fn(async (file: File) => ({ id: videoId, name: file.name })) })
+      const { input, type, onSend } = renderComposer({ session: videoSession, services: upload })
+      paste(input, [mov()])
+      expect(screen.getByRole('button', { name: 'Play Screen Recording.mov' })).toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByLabelText('Uploading')).toBeNull())
+      expect(upload.uploadImage).not.toHaveBeenCalled()
+      type('what goes wrong here?')
+      fireEvent.keyDown(input, { key: 'Enter' })
+      expect(onSend).toHaveBeenCalledWith('what goes wrong here?', [{ id: videoId, name: 'Screen Recording.mov' }])
+    })
+
+    it('knows a video by its name when the clipboard gives no type', async () => {
+      const uploadVideo = vi.fn(async (file: File) => ({ id: videoId, name: file.name }))
+      const { input } = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      paste(input, [mov('clip.MOV', '')])
+      await waitFor(() => expect(uploadVideo).toHaveBeenCalledOnce())
+    })
+
+    it('refuses a video for a chat whose host predates them, and one over 500 MB', async () => {
+      const uploadVideo = vi.fn(async (file: File) => ({ id: videoId, name: file.name }))
+      const { input } = renderComposer({ services: services({ uploadVideo }) })
+      paste(input, [mov(), png()])
+      expect(await screen.findByRole('alert')).toHaveTextContent('Restart this chat to attach videos')
+      // The image beside it still attaches.
+      expect(screen.getByRole('button', { name: 'Open shot.png' })).toBeInTheDocument()
+      cleanup()
+      const fresh = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      const huge = mov('long.mov')
+      Object.defineProperty(huge, 'size', { value: 501 * 1024 * 1024 })
+      paste(fresh.input, [huge])
+      expect(await screen.findByRole('alert')).toHaveTextContent('Videos must be 500 MB or smaller')
+      expect(uploadVideo).not.toHaveBeenCalled()
+    })
+
+    it('reports a video that did not upload', async () => {
+      const uploadVideo = vi.fn(async () => { throw new Error('Only MP4, QuickTime (.mov) and WebM videos can be attached') })
+      const { input } = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      paste(input, [mov('clip.mkv', 'video/x-matroska')])
+      expect(await screen.findByRole('alert')).toHaveTextContent("clip.mkv didn't upload: Only MP4, QuickTime (.mov) and WebM videos can be attached")
+      expect(screen.queryByRole('button', { name: 'Play clip.mkv' })).toBeNull()
+    })
   })
 
   it('holds Send while an upload runs and reports a failed upload', async () => {

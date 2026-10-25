@@ -2,12 +2,16 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Rabbit } from 'lucide-react'
 import {
   CHAT_IMAGE_TYPES,
+  CHAT_VIDEO_TYPES,
+  MAX_CHAT_VIDEO_BYTES,
   MAX_CHAT_IMAGES,
   chatImageUrl,
   chatPlanTitle,
   hostTakesInput,
   hostTakesSettings,
   hostTakesTurnFlow,
+  hostTakesVideos,
+  isChatVideoId,
   type ChatAnswer,
   type ChatCarriedDraft,
   type ChatCommand,
@@ -57,6 +61,8 @@ export interface ChatInputServices {
   /** Open pull requests in the chat's repository. */
   pullRequests: () => Promise<PullRequestOption[]>
   uploadImage: (image: PreparedImage) => Promise<ChatImageRef>
+  /** Uploads a video as it is; absent where the app can't. */
+  uploadVideo?: (file: File) => Promise<ChatImageRef>
 }
 
 /** Sends the daemon refused, named by the request ids `onSend` returned. */
@@ -186,7 +192,12 @@ function TodoChip({ todos }: { todos: TodoItem }) {
   )
 }
 
-type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef }
+/** A file the composer attaches as a video: by type, or by name when Finder gives none. */
+const isVideoFile = (file: File) => file.type.startsWith('video/') || /\.(mov|mp4|m4v|webm)$/i.test(file.name)
+
+type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef; video?: boolean }
+
+const isVideoAttachment = (attachment: Attachment) => attachment.video ?? (attachment.ref ? isChatVideoId(attachment.ref.id) : false)
 
 const uploadedRefs = (attachments: Attachment[]) => attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
 
@@ -504,20 +515,26 @@ export function ChatComposer({
     }
   }
 
-  const addImages = (incoming: File[]) => {
-    if (!incoming.length) return
+  const addImages = (files: File[]) => {
+    if (!files.length) return
     if (!richInput || !services) {
       setAttachError('Restart this chat to attach images')
       return
     }
+    const videos = files.filter(isVideoFile)
+    let refused: string | null = null
+    if (videos.length && (!services.uploadVideo || !hostTakesVideos(session))) refused = 'Restart this chat to attach videos'
+    else if (videos.some((file) => file.size > MAX_CHAT_VIDEO_BYTES)) refused = `Videos must be ${MAX_CHAT_VIDEO_BYTES / 1024 / 1024} MB or smaller`
+    const incoming = files.filter((file) => !isVideoFile(file) || (!refused && file.size <= MAX_CHAT_VIDEO_BYTES))
     const fit = fitAttachments(attachments.length, incoming.length)
-    setAttachError(fit.error ?? null)
+    setAttachError(refused ?? fit.error ?? null)
     for (const file of incoming.slice(0, fit.accepted)) {
       const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`
       const previewUrl = URL.createObjectURL(file)
       previews.current.add(previewUrl)
-      const name = file.name || 'pasted image'
-      setAttachments((current) => [...current, { key, name, previewUrl }])
+      const video = isVideoFile(file)
+      const name = file.name || (video ? 'pasted video' : 'pasted image')
+      setAttachments((current) => [...current, { key, name, previewUrl, ...(video ? { video } : {}) }])
       const drop = (error: string) => {
         setAttachments((current) => current.filter((attachment) => {
           if (attachment.key === key) release(attachment)
@@ -526,6 +543,15 @@ export function ChatComposer({
         setAttachError(error)
       }
       void (async () => {
+        if (video) {
+          try {
+            const ref = await services.uploadVideo!(file)
+            setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, ref } : attachment)))
+          } catch (error) {
+            drop(`${name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
+          }
+          return
+        }
         const prepared = await prepareImage(file)
         if (!prepared.ok) return drop(prepared.error)
         try {
@@ -776,10 +802,10 @@ export function ChatComposer({
   }
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'))
-    if (!images.length) return
+    const files = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/') || isVideoFile(file))
+    if (!files.length) return
     event.preventDefault()
-    addImages(images)
+    addImages(files)
   }
 
   const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes('Files')
@@ -860,14 +886,15 @@ export function ChatComposer({
         {attachments.length || shownError ? (
           <div className="flex flex-col gap-1.5 px-3 pt-2.5">
             {attachments.length ? (
-              <div className="flex flex-wrap gap-2" aria-label="Attached images">
+              <div className="flex flex-wrap gap-2" aria-label="Attachments">
                 {attachments.map((attachment) => (
                   <Thumbnail
                     key={attachment.key}
                     src={attachment.previewUrl}
                     name={attachment.name}
                     busy={!attachment.ref}
-                    onOpen={() => setViewing({ src: attachment.previewUrl, name: attachment.name })}
+                    video={isVideoAttachment(attachment)}
+                    onOpen={() => setViewing({ src: attachment.previewUrl, name: attachment.name, video: isVideoAttachment(attachment) })}
                     onRemove={() => removeAttachment(attachment.key)}
                   />
                 ))}
@@ -922,13 +949,13 @@ export function ChatComposer({
           <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
             {richInput ? (
               <>
-                <Button size="icon-sm" variant="ghost-muted" aria-label="Attach images" title="Attach images (or paste / drop them)" disabled={disabled} onClick={() => fileInput.current?.click()}>
+                <Button size="icon-sm" variant="ghost-muted" aria-label="Attach images or videos" title="Attach images or videos (or paste / drop them)" disabled={disabled} onClick={() => fileInput.current?.click()}>
                   <Paperclip aria-hidden="true" />
                 </Button>
                 <input
                   ref={fileInput}
                   type="file"
-                  accept={CHAT_IMAGE_TYPES.join(',')}
+                  accept={[...CHAT_IMAGE_TYPES, ...CHAT_VIDEO_TYPES, '.mov', '.mp4', '.m4v', '.webm'].join(',')}
                   multiple
                   hidden
                   data-testid="chat-image-input"
