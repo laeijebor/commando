@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react-native'
-import { Alert } from 'react-native'
+import { Alert, RefreshControl } from 'react-native'
 
 import { demoPrDetails, demoPrDiff, demoPrPreview } from '../demo/prDetail'
 import type { Host } from '../hosts/types'
@@ -112,6 +112,12 @@ it('falls back to the repository PR list when the pane sent no preview', async (
   await renderView(false)
   expect(requested.some((url) => url.includes('/api/prs?repo=leo%2Fcommando&state=all&scope=everyone'))).toBe(true)
   expect(screen.getByText(/by emerald-crab · 9 commits/u)).toBeTruthy()
+  // Pulling to refresh asks the daemon for a fresh list, so the merge state is current.
+  await act(async () => { screen.UNSAFE_getByType(RefreshControl).props.onRefresh() })
+  expect(requested.filter((url) => url.includes('/api/prs?'))).toEqual([
+    'http://studio:4310/api/prs?repo=leo%2Fcommando&state=all&scope=everyone',
+    'http://studio:4310/api/prs?repo=leo%2Fcommando&state=all&scope=everyone&refresh=1',
+  ])
 })
 
 describe('Merge PR', () => {

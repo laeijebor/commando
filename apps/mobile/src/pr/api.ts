@@ -84,12 +84,14 @@ export async function fetchPrDiff(host: Host, repo: string, number: number): Pro
 /**
  * The PR's summary when the pane list carried no `preview` (an older daemon,
  * or a PR opened from outside a pane): the same `GET /api/prs` read the
- * desktop panel falls back to.
+ * desktop panel falls back to. `refresh` waits for a fresh copy from GitHub
+ * (the daemon otherwise answers from its cache and refreshes behind it); it is
+ * only sent when the owner pulls to refresh, or after a merge.
  */
-export async function fetchPrPreview(host: Host, repo: string, number: number): Promise<PrPreview> {
+export async function fetchPrPreview(host: Host, repo: string, number: number, options: { refresh?: boolean } = {}): Promise<PrPreview> {
   const body = await readJson<{ list: { pullRequests: PrPreview[] } }>(
     host,
-    `/api/prs?repo=${encodeURIComponent(repo)}&state=all&scope=everyone`,
+    `/api/prs?repo=${encodeURIComponent(repo)}&state=all&scope=everyone${options.refresh ? '&refresh=1' : ''}`,
     'PR list failed',
     30_000,
   )
