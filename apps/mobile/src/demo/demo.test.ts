@@ -3,6 +3,7 @@ import { DemoDaemonClient } from './client'
 import { demoMessages, demoIdentities } from './seed'
 import { demoHost, isDemoHost, autoDemoEnabled } from './flags'
 import { demoResponse } from './http'
+import { DEMO_SUBAGENT_PANE } from './subagents'
 import { useDaemonStore } from '../daemon/store'
 import { useChatStore } from '../chat/store'
 import { useSessionPreferences } from '../ui/sessionPreferences'
@@ -111,4 +112,28 @@ it('gives native-preview a long transcript for viewport and scroll-follow checks
   expect(chat.items.filter((entry) => entry.kind === 'assistant_message')).toHaveLength(5)
   const text = chat.items.flatMap((entry) => 'text' in entry ? [entry.text] : []).join(' ')
   expect(text.length).toBeGreaterThan(1500)
+})
+
+it('fans the extra Claude chat out to subagents and answers their stop, transcript and relay messages', () => {
+  const client = new DemoDaemonClient({ host: demoHost() })
+  client.start()
+  const listener = jest.fn()
+  client.subscribe(listener)
+  const chat = () => useChatStore.getState().byHost[client.hostId]![DEMO_SUBAGENT_PANE]!
+  const subagents = chat().items.filter((entry) => entry.kind === 'subagent')
+  expect(new Set(subagents.map((entry) => entry.kind === 'subagent' && entry.state))).toEqual(new Set(['completed', 'running', 'failed']))
+  const runs = () => useChatStore.getState().externalRuns[client.hostId]![DEMO_SUBAGENT_PANE]!
+  expect(runs().map((run) => run.state)).toEqual(['quiet', 'completed'])
+
+  client.send({ type: 'chat_task', paneId: DEMO_SUBAGENT_PANE, action: 'stop', agentId: 'demo-agent-tests', toolUseId: 'demo-sub-tests' })
+  client.send({ type: 'chat_external_stop', paneId: DEMO_SUBAGENT_PANE, runId: 'demo-run-codex' })
+  const read = client.send({ type: 'chat_subagent_transcript', paneId: DEMO_SUBAGENT_PANE, agentId: 'demo-agent-history' })
+  jest.advanceTimersByTime(600)
+  expect(chat().items.find((entry) => entry.id === 'demo-sub-tests')).toMatchObject({ state: 'stopped' })
+  expect(runs()[0]).toMatchObject({ id: 'demo-run-codex', state: 'stopped' })
+  expect(listener).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_subagent_transcript_result', requestId: read }))
+
+  client.send({ type: 'chat_send', paneId: DEMO_SUBAGENT_PANE, text: 'Keep it amber', relayTo: { agentId: 'demo-agent-metrics', label: 'Port the metrics line' } })
+  expect(chat().items.at(-1)).toMatchObject({ kind: 'user_message', relayTo: { agentId: 'demo-agent-metrics' } })
+  client.stop()
 })

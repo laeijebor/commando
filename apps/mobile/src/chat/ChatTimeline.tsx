@@ -1,4 +1,4 @@
-import { createContext, memo, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, use, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
@@ -18,7 +18,7 @@ import {
   thoughtLabel,
   type PlanItem,
   type ReasoningItem,
-  type SubagentItem,
+  type TimelineRow,
   type WorkItem,
 } from '@commando/chat-timeline'
 
@@ -29,12 +29,27 @@ import { withAlpha } from '../ui/primitives'
 import { ImageViewer, type ViewableImage } from './ImageViewer'
 import { chatImageUri } from './images'
 import { Markdown } from './Markdown'
+import { SubagentGroup, useNow, type SubagentTask } from './Subagents'
 import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
 
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
 /** What rows need beyond their own item: where images load from and the session folder. */
 const TimelineContext = createContext<{ baseUrl: string; cwd: string; provider: string }>({ baseUrl: '', cwd: '', provider: 'Agent' })
+
+/**
+ * What subagent rows need: every item (their metrics read the subagent's own),
+ * a clock that ticks while one is live, and what opening or stopping one does.
+ * Apart from TimelineContext so the clock only re-renders subagent rows.
+ */
+const SubagentContext = createContext<{
+  items: readonly ChatItem[]
+  now: number
+  provider: string
+  onOpenSubagent?: ((toolUseId: string) => void) | undefined
+  onTask?: SubagentTask | undefined
+  controlsDisabled?: boolean | undefined
+}>({ items: [], now: 0, provider: 'Agent' })
 
 type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
 
@@ -44,7 +59,7 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
  * follows the newest turn on open/send and while already near the bottom.
  * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier }: {
+export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled }: {
   sendVersion?: number
   /** Older items the daemon left on the Mac (a bounded replay), and how to fetch them. */
   omittedItems?: number
@@ -54,9 +69,19 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   cwd: string
   baseUrl: string
   working: boolean
+  /** One subagent's conversation (its Agent call's id) instead of main's. */
+  scope?: string | undefined
+  /** Above the turns (a subagent's task); hides the empty prompt. */
+  header?: ReactNode
+  footer?: ReactNode
+  emptyText?: string | undefined
+  /** Opens a subagent's view from its row. */
+  onOpenSubagent?: ((toolUseId: string) => void) | undefined
+  onTask?: SubagentTask | undefined
+  controlsDisabled?: boolean | undefined
 }): React.JSX.Element {
   const theme = useTheme()
-  const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items)), [items])
+  const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
   const last = rows.at(-1)
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
   const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
@@ -65,6 +90,8 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
     return working && !streaming && !liveWork ? [...entries, { kind: 'working', id: 'working' }] : entries
   }, [rows, working, streaming, liveWork])
   const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name }), [baseUrl, cwd, provider])
+  const now = useNow(rows.some((row) => row.kind === 'subagents' && row.live))
+  const subagents = useMemo(() => ({ items, now, provider: context.provider, onOpenSubagent, onTask, controlsDisabled }), [items, now, context.provider, onOpenSubagent, onTask, controlsDisabled])
   const list = useRef<FlatList<Entry>>(null)
   const [scrolledBack, setScrolledBack] = useState(false)
   const following = useRef(true)
@@ -103,6 +130,9 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
     if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null }
   }
   const endUserScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    // iOS also ends a programmatic scrollToEnd with onMomentumScrollEnd; following it
+    // would scroll again every frame and swallow taps on the rows.
+    if (!userScrolling.current) return
     trackPosition(event)
     userScrolling.current = false
     follow('content')
@@ -110,6 +140,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
 
   return (
     <TimelineContext value={context}>
+      <SubagentContext value={subagents}>
       <View testID="chat-timeline-viewport" style={styles.viewport}>
         <FlatList
           contentContainerStyle={[styles.content, data.length === 0 && styles.emptyContent]}
@@ -121,8 +152,8 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           keyExtractor={(entry) => entry.id}
-          ListHeaderComponent={omittedItems > 0 && onLoadEarlier ? (
-            <Pressable
+          ListHeaderComponent={(omittedItems > 0 && onLoadEarlier) || header ? (<>
+            {omittedItems > 0 && onLoadEarlier ? <Pressable
               accessibilityLabel={`Load ${omittedItems} earlier ${omittedItems === 1 ? 'item' : 'items'}`}
               accessibilityRole="button"
               onPress={onLoadEarlier}
@@ -132,13 +163,15 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
               <Text style={[styles.earlierLabel, { color: theme.muted }]}>
                 {omittedItems} earlier {omittedItems === 1 ? 'item is' : 'items are'} on your Mac · <Text style={{ color: theme.accent }}>Load</Text>
               </Text>
-            </Pressable>
-          ) : null}
-          ListEmptyComponent={(
+            </Pressable> : null}
+            {header}
+          </>) : null}
+          ListEmptyComponent={header ? null : (
             <View style={styles.empty}>
-              <Text style={[styles.emptyText, { color: theme.muted }]}>Ask {context.provider} anything about this folder.</Text>
+              <Text style={[styles.emptyText, { color: theme.muted }]}>{emptyText ?? `Ask ${context.provider} anything about this folder.`}</Text>
             </View>
           )}
+          ListFooterComponent={footer ? <>{footer}</> : null}
           onLayout={() => follow('resize')}
           onContentSizeChange={() => follow('content')}
           onScrollBeginDrag={beginUserScroll}
@@ -163,6 +196,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
           </Pressable>
         ) : null}
       </View>
+      </SubagentContext>
     </TimelineContext>
   )
 }
@@ -199,7 +233,7 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
     case 'plan':
       return <PlanCard item={entry.item} />
     case 'subagents':
-      return <SubagentRows items={entry.items} />
+      return <SubagentRow row={entry} />
   }
 })
 
@@ -497,28 +531,10 @@ function PlanCard({ item }: { item: PlanItem }): React.JSX.Element {
   )
 }
 
-const SUBAGENT_STATES: Record<SubagentItem['state'], string> = { quiet: 'quiet', running: 'running', completed: 'done', failed: 'failed', stopped: 'stopped' }
-
-/** Subagents as a summary; their own transcripts stay on the desktop for now. */
-function SubagentRows({ items }: { items: SubagentItem[] }): React.JSX.Element {
-  const theme = useTheme()
-  return (
-    <View style={[styles.work, { backgroundColor: 'transparent', borderColor: theme.border }]}>
-      {items.map((agent) => (
-        <View key={agent.id} style={styles.workLine}>
-          <View style={styles.workIcon}>
-            {agent.state === 'running'
-              ? <ActivityIndicator color={theme.accent} size="small" style={styles.spinner} />
-              : <Feather color={agent.state === 'failed' ? theme.red : agent.state === 'quiet' ? theme.amber : theme.muted} name={agent.state === 'quiet' ? 'alert-circle' : 'cpu'} size={13} />}
-          </View>
-          <Text numberOfLines={1} style={[styles.workLabel, { color: theme.textSoft }]}>
-            {agent.description || agent.subagentType || 'Subagent'}
-          </Text>
-          <Text style={[styles.counts, { color: theme.textDim }]}>{agent.background ? 'background · ' : ''}{SUBAGENT_STATES[agent.state]}</Text>
-        </View>
-      ))}
-    </View>
-  )
+/** A turn's subagents: state, metrics, and (for SDK ones) a way into their own transcript. */
+function SubagentRow({ row }: { row: Extract<TimelineRow, { kind: 'subagents' }> }): React.JSX.Element {
+  const { items, now, provider, onOpenSubagent, onTask, controlsDisabled } = use(SubagentContext)
+  return <SubagentGroup controlsDisabled={controlsDisabled} items={items} now={now} onOpen={onOpenSubagent} onTask={onTask} provider={provider} row={row} />
 }
 
 const styles = StyleSheet.create({

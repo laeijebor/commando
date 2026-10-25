@@ -1,4 +1,4 @@
-import { applyChatMessage, useChatStore } from './store'
+import { applyChatMessage, applyExternalRunsMessage, useChatStore } from './store'
 import { chatState, item, session } from './testing'
 
 describe('the chat store', () => {
@@ -44,5 +44,21 @@ describe('the chat store', () => {
     useChatStore.getState().ingest('a', { type: 'provider_usage', usage: [] })
     expect(useChatStore.getState().byHost).toBe(before)
     expect(useChatStore.getState().byHost.b).toBeUndefined()
+  })
+
+  it('keeps each pane\'s external runs as the daemon last listed them', () => {
+    const run = { id: 'r1', runtime: 'codex' as const, label: 'Review', state: 'running' as const, startedAt: 1, updatedAt: 2 }
+    let runs = applyExternalRunsMessage({}, { type: 'chat_external_runs', paneId: '%7', runs: [run] })
+    expect(runs).toEqual({ '%7': [run] })
+    expect(applyExternalRunsMessage(runs, { type: 'provider_usage', usage: [] })).toBe(runs)
+    runs = applyExternalRunsMessage(runs, { type: 'chat_external_runs', paneId: '%7', runs: [] })
+    expect(runs).toEqual({})
+    expect(applyExternalRunsMessage(runs, { type: 'chat_external_runs', paneId: '%8', runs: [] })).toBe(runs)
+    runs = applyExternalRunsMessage({ '%7': [run] }, { type: 'chat_removed', paneId: '%7' })
+    expect(runs).toEqual({})
+    // A reconnect's snapshot drops runs the daemon no longer tracks; it re-sends the rest.
+    expect(applyExternalRunsMessage({ '%7': [run] }, { type: 'chat_snapshot', chats: [] })).toEqual({})
+    useChatStore.getState().ingest('h', { type: 'chat_external_runs', paneId: '%7', runs: [run] })
+    expect(useChatStore.getState().externalRuns.h).toEqual({ '%7': [run] })
   })
 })
