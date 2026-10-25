@@ -122,7 +122,8 @@ export function useDictation(handlers: Handlers): { available: boolean; listenin
     const finish = (hint?: string) => {
       const done = take
       take = null
-      if (done && !done.cancelled && pressedAgain && held) {
+      // A press made while this take finished starts now, even if this one was cancelled.
+      if (done && pressedAgain && held) {
         pressedAgain = false
         open()
         return
