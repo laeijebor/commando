@@ -48,7 +48,7 @@ export function PrView({ host, source, active = true, initialTab = 'description'
   const { repo, number } = source
   const scope = `${host.id}:${host.baseUrl}:${repo.toLowerCase()}#${number}`
 
-  const fallback = usePrResource<PrPreview>(`preview:${scope}`, () => fetchPrPreview(host, repo, number), { enabled: active && !source.preview, ttlMs: PREVIEW_TTL_MS })
+  const fallback = usePrResource<PrPreview>(`preview:${scope}`, (refresh) => fetchPrPreview(host, repo, number, { refresh }), { enabled: active && !source.preview, ttlMs: PREVIEW_TTL_MS })
   const details = usePrResource<PrDetails>(`details:${scope}`, (refresh) => fetchPrDetails(host, repo, number, { refresh }), { enabled: active, ttlMs: DETAILS_TTL_MS })
   const preview = source.preview ?? fallback.data
   // Details are re-read every minute while shown; a fallback preview is not, so the details' head wins.
