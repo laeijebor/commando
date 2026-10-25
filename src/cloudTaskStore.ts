@@ -4,7 +4,7 @@ import {
   type CloudOperation, type CloudProvidersResponse, type CloudResumeInput, type CloudTaskAction, type CloudTaskDetail,
   type CloudTaskSummary,
 } from '../shared/cloud-tasks'
-import type { CloudTaskPatch, CloudTasksApi } from './cloudTasksApi'
+import { CloudTasksHttpError, type CloudTaskPatch, type CloudTasksApi } from './cloudTasksApi'
 import { randomUuid } from './randomId'
 import { sha256 } from './sha256'
 
@@ -58,6 +58,9 @@ const summary = ({ prompt: _prompt, ...task }: CloudTaskDetail['task']): CloudTa
 const terminal = (operation: CloudOperation) => operation.state === 'accepted' || operation.state === 'rejected'
 export class CloudIntentMismatchError extends Error {
   constructor() { super('This draft does not match the saved intent digest (including kind and target). Correct it, or explicitly acknowledge a new intent and duplicate risk.') }
+}
+export class CloudTaskSubmissionRejectedError extends Error {
+  constructor(message: string) { super(message); this.name = 'CloudTaskSubmissionRejectedError' }
 }
 
 export class CloudTaskStore {
@@ -279,11 +282,11 @@ export class CloudTaskStore {
     this.writeIndex((entries) => [...entries, entry])
     this.memory.set(entry.key, frozen)
     this.setPending({ ...entry, status: 'checking', retryable: false })
-    const request = this.dispatch(entry, frozen).finally(() => this.retries.delete(entry.key))
+    const request = this.dispatch(entry, frozen, true).finally(() => this.retries.delete(entry.key))
     this.retries.set(entry.key, request)
     return request
   }
-  private async dispatch(entry: CloudPendingIndex, intent: CloudIntent): Promise<CloudTaskAction> {
+  private async dispatch(entry: CloudPendingIndex, intent: CloudIntent, firstAttempt = false): Promise<CloudTaskAction> {
     if (entry.installationId !== this.requireReady()) throw new Error('Installation changed. Reconfirm the request in the correct installation.')
     try {
       const action = await (intent.kind === 'create' ? this.api.create(intent.input, entry.key)
@@ -300,7 +303,16 @@ export class CloudTaskStore {
         this.update({ pending: this.snapshot.pending.filter((item) => item.key !== entry.key) })
       }
       return action
-    } catch {
+    } catch (error) {
+      // A rejection of a retry cannot settle an earlier uncertain attempt. An
+      // installation change also leaves the original installation unresolved.
+      if (firstAttempt && entry.installationId === this.snapshot.providers?.installationId
+        && error instanceof CloudTasksHttpError && error.rejectedBeforeRecord(intent.kind)) {
+        this.writeIndex((entries) => entries.filter((item) => item.key !== entry.key || item.installationId !== entry.installationId))
+        this.memory.delete(entry.key)
+        this.update({ pending: this.snapshot.pending.filter((item) => item.key !== entry.key) })
+        throw new CloudTaskSubmissionRejectedError(error.message)
+      }
       if (entry.installationId === this.snapshot.providers?.installationId) this.setPending({ ...entry, status: 'unknown', retryable: true })
       throw new Error('Delivery unknown — check the provider before retrying. The request may have been recorded or sent.')
     }

@@ -2,6 +2,26 @@ import { describe, expect, it, vi } from 'vitest'
 import { CloudTasksHttpError, createCloudTasksApi } from './cloudTasksApi'
 
 describe('cloud task HTTP client', () => {
+  it.each([
+    [400, 'invalid_request', 'Invalid prompt'],
+    [413, 'invalid_request', 'Request body is too large'],
+    [415, 'invalid_request', 'Content-Type must be application/json'],
+    [401, undefined, 'Unauthorized'],
+    [403, undefined, 'Invalid host or origin'],
+    [404, 'task_not_found', 'Cloud task not found'],
+  ] as const)('exposes daemon-owned %s/%s rejection text while retaining status and code', async (status, code, message) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ code, error: message }), { status }))
+    const api = createCloudTasksApi('owner', fetcher)
+    await expect(api.create({ provider: 'codex', credentialContextId: 'ctx', prompt: '日'.repeat(6_000), source: { environmentId: 'env', branch: 'main' }, accountConfirmed: true }, 'key'))
+      .rejects.toMatchObject({ name: 'CloudTasksHttpError', status, code: code ?? '', message })
+  })
+
+  it.each([[500, 'invalid_request'], [409, 'idempotency_conflict'], [401, 'auth_required'], [400, 'invalid_receipt']] as const)(
+    'does not expose arbitrary diagnostics for %s/%s', async (status, code) => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ code, error: 'PRIVATE diagnostic' }), { status }))
+      await expect(createCloudTasksApi('owner', fetcher).list()).rejects.toMatchObject({ status, code, message: expect.stringContaining(`Cloud request failed (${status})`) })
+    })
+
   it('accepts a 202 prepared-operation resume receipt with the confirmed context', async () => {
     const action = { task: { id: 'task' }, operation: { id: 'op', state: 'prepared' }, reused: true }
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(action), { status: 202 }))

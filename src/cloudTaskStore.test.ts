@@ -3,8 +3,8 @@
 import { webcrypto } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CloudCreateInput, CloudOperation, CloudProviderInfo, CloudTask, CloudTaskDetail } from '../shared/cloud-tasks'
-import type { CloudTasksApi } from './cloudTasksApi'
-import { CLOUD_PENDING_STORAGE_KEY, CloudTaskStore, cloudIntentDigest, cloudTaskStoreFor, digestCloudIntent, type CloudIntent } from './cloudTaskStore'
+import { CloudTasksHttpError, type CloudTasksApi } from './cloudTasksApi'
+import { CLOUD_PENDING_STORAGE_KEY, CloudTaskStore, CloudTaskSubmissionRejectedError, cloudIntentDigest, cloudTaskStoreFor, digestCloudIntent, type CloudIntent } from './cloudTaskStore'
 
 const provider: CloudProviderInfo = {
   id: 'codex', label: 'Codex', homeUrl: 'https://chatgpt.com/codex', readiness: 'ready', reason: 'Synthetic fixture',
@@ -121,6 +121,121 @@ describe('shared cloud task store', () => {
     expect(reloaded.getSnapshot().details['local-task'].operations[0].state).toBe('accepted')
     expect(reloaded.getSnapshot().pending).toEqual([])
     expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([])
+  })
+
+  it('clears a definitively rejected create and permits a corrected draft under a fresh key', async () => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    vi.mocked(api.create).mockRejectedValueOnce(new CloudTasksHttpError(400, 'invalid_request', 'Invalid prompt'))
+    const rejected = store.create({ ...input, prompt: '日'.repeat(6_000) })
+    await expect(rejected).rejects.toBeInstanceOf(CloudTaskSubmissionRejectedError)
+    await expect(rejected).rejects.toThrow('Invalid prompt')
+    const oldKey = vi.mocked(api.create).mock.calls[0][1]
+    expect(store.getSnapshot().pending).toEqual([])
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([])
+    expect(store['memory'].has(oldKey)).toBe(false)
+    await expect(store.retry(oldKey)).rejects.toThrow('Intent not found')
+    await store.create(input)
+    expect(api.create).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(api.create).mock.calls[1][1]).not.toBe(oldKey)
+    expect(api.byKey).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [400, 'invalid_request'], [413, 'invalid_request'], [415, 'invalid_request'], [401, ''], [403, ''],
+  ] as const)('clears fresh create, link, and message intents after %s/%s', async (status, code) => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    const error = new CloudTasksHttpError(status, code, 'Daemon rejection')
+    vi.mocked(api.create).mockRejectedValue(error)
+    vi.mocked(api.link).mockRejectedValue(error)
+    vi.mocked(api.message).mockRejectedValue(error)
+    await expect(store.create(input)).rejects.toThrow('Daemon rejection')
+    await expect(store.link({ provider: 'codex', credentialContextId: 'ctx', providerTaskId: 'task_fixture', accountConfirmed: true })).rejects.toThrow('Daemon rejection')
+    await expect(store.message('local-task', { credentialContextId: 'ctx', message: 'Follow-up', accountConfirmed: true })).rejects.toThrow('Daemon rejection')
+    expect(store.getSnapshot().pending).toEqual([])
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([])
+    expect(store['memory'].size).toBe(0)
+  })
+
+  it('clears a message to an unknown task but retains other task-not-found failures', async () => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    const error = new CloudTasksHttpError(404, 'task_not_found', 'Cloud task not found')
+    vi.mocked(api.message).mockRejectedValue(error)
+    await expect(store.message('missing', { credentialContextId: 'ctx', message: 'Follow-up', accountConfirmed: true })).rejects.toThrow('Cloud task not found')
+    expect(store.getSnapshot().pending).toEqual([])
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([])
+    vi.mocked(api.create).mockRejectedValue(error)
+    await expect(store.create(input)).rejects.toThrow('Delivery unknown')
+    vi.mocked(api.link).mockRejectedValue(error)
+    await expect(store.link({ provider: 'codex', credentialContextId: 'ctx', providerTaskId: 'task_fixture', accountConfirmed: true })).rejects.toThrow('Delivery unknown')
+    expect(store.getSnapshot().pending).toHaveLength(2)
+  })
+
+  it.each([
+    new Error('network'), new Error('timeout'),
+    new CloudTasksHttpError(500, 'internal_error', 'Server failure'),
+    new CloudTasksHttpError(503, 'invalid_request', 'Server failure'),
+    new CloudTasksHttpError(409, 'idempotency_conflict', 'Conflicting intent'),
+    new CloudTasksHttpError(409, 'capability_unavailable', 'Unavailable'),
+    new CloudTasksHttpError(429, 'rate_limited', 'Busy'),
+    new CloudTasksHttpError(400, 'invalid_intent', 'Invalid intent'),
+    new CloudTasksHttpError(401, 'auth_required', 'Provider auth failed'),
+    new CloudTasksHttpError(403, 'denied', 'Provider denied'),
+    new CloudTasksHttpError(404, 'operation_not_found', 'Missing operation'),
+  ])('retains unknown delivery and the frozen payload for $message ($status/$code)', async (error) => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    vi.mocked(api.create).mockRejectedValue(error)
+    await expect(store.create(input)).rejects.toThrow('Delivery unknown')
+    expect(store.getSnapshot().pending).toEqual([expect.objectContaining({ status: 'unknown', retryable: true })])
+    const key = store.getSnapshot().pending[0].key
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([expect.objectContaining({ key })])
+    expect(store['memory'].get(key)?.input).toEqual(input)
+  })
+
+  it.each([400, 401, 403])('does not let a later %s rejection erase an earlier uncertain attempt', async (status) => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    vi.mocked(api.create).mockRejectedValueOnce(new Error('Lost response'))
+      .mockRejectedValueOnce(new CloudTasksHttpError(status, status === 400 ? 'invalid_request' : '', 'Rejected retry'))
+    await expect(store.create(input)).rejects.toThrow('Delivery unknown')
+    const key = store.getSnapshot().pending[0].key
+    await expect(store.retry(key)).rejects.toThrow('Delivery unknown')
+    expect(store.getSnapshot().pending).toEqual([expect.objectContaining({ key, status: 'unknown', retryable: true })])
+    expect(store['memory'].has(key)).toBe(true)
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toHaveLength(1)
+  })
+
+  it('retains unknown delivery after a malformed receipt', async () => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    vi.mocked(api.create).mockImplementationOnce(async () => ({ task: task(), operation: operation('wrong-key'), reused: false }))
+    await expect(store.create(input)).rejects.toThrow('Delivery unknown')
+    expect(store.getSnapshot().pending[0]).toMatchObject({ status: 'unknown', retryable: true })
+  })
+
+  it('retains the old installation index even for a definitive rejection after an installation change', async () => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    let reject!: (error: Error) => void
+    vi.mocked(api.create).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    const sending = store.create(input)
+    const failure = expect(sending).rejects.toThrow('Delivery unknown')
+    await vi.waitFor(() => expect(api.create).toHaveBeenCalledOnce())
+    vi.mocked(api.providers).mockResolvedValue({ installationId: 'replacement', providers: [provider] })
+    await store.refresh()
+    reject(new CloudTasksHttpError(400, 'invalid_request', 'Invalid prompt'))
+    await failure
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([expect.objectContaining({ installationId: 'installation' })])
   })
 
   it('freezes inputs and coalesces explicit transport retry with the same key after recovery lookup', async () => {

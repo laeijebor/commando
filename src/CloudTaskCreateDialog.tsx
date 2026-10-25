@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CLOUD_PROMPT_LIMIT, cloudConnectionKey, cloudProviderHome, validCloudRemoteId, type CloudProviderId, type CloudProviderInfo, type CloudTaskSummary } from '../shared/cloud-tasks'
 import type { CloudTasksApi } from './cloudTasksApi'
-import { CloudIntentMismatchError, useCloudTasks, type CloudIntent } from './cloudTaskStore'
+import { CloudIntentMismatchError, CloudTaskSubmissionRejectedError, useCloudTasks, type CloudIntent } from './cloudTaskStore'
 import { cloudTaskConnectionLabel } from './CloudTaskCard'
 import './cloud-tasks.css'
 
@@ -63,11 +63,13 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
   close.current = onClose
   const headingId = useId()
   const helpId = useId()
+  const promptErrorId = useId()
   const info = providers?.providers.find((item) => cloudConnectionKey(item.id, item.credentialContextId) === selectedConnectionKey)
   const connectionLabel = info?.label ?? (connection ? `${provider === 'claude' ? 'Claude' : 'Codex'} · ${connection.credentialContextId} (unavailable)` : 'Connection unavailable')
   const { confirmed, credentialContextId, contextChanged, setConfirmed } = useCloudAccountConfirmation(info)
   const linking = kind === 'link'
   const messaging = kind === 'message'
+  const promptTooLong = !linking && new TextEncoder().encode(prompt).byteLength > CLOUD_PROMPT_LIMIT
   const capability = linking ? info?.capabilities.link : info?.readiness === 'ready' && (messaging ? info.capabilities.sendMessage : info.capabilities.create)
   const uncertainIntents = pending.some((item) => item.status !== 'recorded' || item.operation?.state === 'delivery_unknown')
   const reason = !info ? 'Selected connection is unavailable. Restore it or explicitly select a configured connection; another profile is never substituted.'
@@ -107,7 +109,7 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
   }, [])
 
   const submit = async () => {
-    if (submitting.current || uncertain || !connected || !capability || !confirmed
+    if (submitting.current || uncertain || promptTooLong || !connected || !capability || !confirmed
       || (!reentryKey && !linking && uncertainIntents && !riskConfirmed) || (messaging && !boundTask)) return
     submitting.current = true
     setBusy(true)
@@ -127,7 +129,7 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to record request.')
       if (cause instanceof CloudIntentMismatchError) { setMismatch(true); setRiskConfirmed(false) }
-      else setUncertain(true)
+      else if (!(cause instanceof CloudTaskSubmissionRejectedError)) setUncertain(true)
     } finally { submitting.current = false; setBusy(false) }
   }
 
@@ -169,16 +171,17 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
               placeholder={provider === 'claude' ? 'session_…' : 'task_…'} onChange={(event) => setRemoteId(event.target.value)} /></label>
             <p>Linking records an existing identity; it does not launch work or prove any uncertain message arrived. Identity may be labeled user-supplied.</p>
           </> : messaging ? <>
-            <label>Message<textarea required rows={4} value={prompt} maxLength={CLOUD_PROMPT_LIMIT} onChange={(event) => setPrompt(event.target.value)} /></label>
+            <label>Message<textarea required rows={4} value={prompt} maxLength={CLOUD_PROMPT_LIMIT} aria-invalid={promptTooLong} aria-describedby={promptTooLong ? promptErrorId : undefined} onChange={(event) => setPrompt(event.target.value)} /></label>
             <p>Original target: {boundTask?.id ?? 'Choose a task'} · {boundTask?.providerTaskId ?? 'No remote ID'}. Linking or session acceptance does not prove this message arrived.</p>
           </> : <>
             <label>{provider === 'codex' ? 'Existing environment ID' : 'Existing checkout path'}<input required value={target} maxLength={provider === 'codex' ? 160 : 1_024} onChange={(event) => setTarget(event.target.value)} /></label>
             <label>Requested branch<input required value={branch} maxLength={240} onChange={(event) => setBranch(event.target.value)} /></label>
-            <label>Task prompt<textarea required rows={4} value={prompt} maxLength={CLOUD_PROMPT_LIMIT} onChange={(event) => setPrompt(event.target.value)} /></label>
+            <label>Task prompt<textarea required rows={4} value={prompt} maxLength={CLOUD_PROMPT_LIMIT} aria-invalid={promptTooLong} aria-describedby={promptTooLong ? promptErrorId : undefined} onChange={(event) => setPrompt(event.target.value)} /></label>
             <p className="cloud-destination"><strong>Destination: {connectionLabel}</strong><br />{target || 'Choose a source'} · {branch || 'Choose a branch'}</p>
             <p>{provider === 'codex' ? 'Uses your existing provider environment. A moving branch does not verify a remote commit.'
               : 'Requires verified clean, pushed source and an enforceable no-bundle policy; source is revalidated before dispatch.'} No automatic push, apply, or merge.</p>
           </>}
+          {promptTooLong && <p id={promptErrorId} role="alert">{messaging ? 'Message' : 'Task prompt'} exceeds the {CLOUD_PROMPT_LIMIT.toLocaleString('en-US')}-byte UTF-8 limit. Shorten it before submitting.</p>}
           <label className="cloud-check"><input type="checkbox" required checked={confirmed} disabled={!info} onChange={(event) => setConfirmed(event.target.checked)} />
             I confirm the current CLI account/context and this destination{linking ? ' belong to this task' : ''}.
           </label>
@@ -188,7 +191,7 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
           </label>}
         </fieldset>
         {error && <p role="alert">{error} {uncertain && 'Close this dialog to recover the saved intent.'}</p>}
-        <button className="cloud-primary" type="submit" disabled={!connected || !capability || !confirmed || busy || uncertain
+        <button className="cloud-primary" type="submit" disabled={!connected || !capability || !confirmed || busy || uncertain || promptTooLong
           || (linking ? !validCloudRemoteId(provider, remoteId.trim()) : messaging ? !boundTask || !prompt.trim() : !target.trim() || !branch.trim() || !prompt.trim())
           || (!reentryKey && !linking && uncertainIntents && !riskConfirmed)}>
           {busy ? 'Recording…' : reentryKey ? mismatch && riskConfirmed ? 'Explicitly record new intent' : 'Reconfirm and recover original intent' : linking ? 'Link identity only' : 'Record cloud task'}

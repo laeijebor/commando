@@ -4,8 +4,8 @@ import { webcrypto } from 'node:crypto'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cloudConnectionKey, type CloudOperation, type CloudProviderInfo, type CloudTask, type CloudTaskDetail } from '../shared/cloud-tasks'
-import type { CloudTasksApi } from './cloudTasksApi'
+import { CLOUD_PROMPT_LIMIT, cloudConnectionKey, type CloudOperation, type CloudProviderInfo, type CloudTask, type CloudTaskDetail } from '../shared/cloud-tasks'
+import { CloudTasksHttpError, type CloudTasksApi } from './cloudTasksApi'
 import { CloudTasksHud, CloudTasksSection } from './CloudTasksSection'
 import { CLAUDE_CREATE_DISABLED_REASON, CloudTaskCreateDialog } from './CloudTaskCreateDialog'
 import { boundCloudDiff } from './CloudTaskDiff'
@@ -190,6 +190,75 @@ describe('cloud list/detail and integration exports', () => {
 })
 
 describe('cloud task dialog and browser-intent UX', () => {
+  it('blocks a multibyte create prompt by UTF-8 bytes and allows exactly the byte limit', async () => {
+    const api = fixtureApi()
+    const dialog = await openCreate(api)
+    fillCreate(dialog)
+    const prompt = dialog.getByLabelText('Task prompt')
+    const submit = dialog.getByRole('button', { name: 'Record cloud task' })
+    fireEvent.change(prompt, { target: { value: '日'.repeat(6_000) } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    expect(prompt).toHaveAttribute('aria-invalid', 'true')
+    expect(prompt).toHaveAccessibleDescription(/16,384-byte UTF-8 limit/)
+    expect(dialog.getByRole('alert')).toHaveTextContent('Task prompt exceeds')
+    expect(submit).toBeDisabled()
+    fireEvent.submit(submit.closest('form')!)
+    expect(api.create).not.toHaveBeenCalled()
+    // 5,461 Japanese characters plus one ASCII byte = 16,384 bytes.
+    const boundary = '日'.repeat(Math.floor(CLOUD_PROMPT_LIMIT / 3)) + 'a'.repeat(CLOUD_PROMPT_LIMIT % 3)
+    fireEvent.change(prompt, { target: { value: boundary } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    expect(prompt).toHaveAttribute('aria-invalid', 'false')
+    expect(dialog.queryByRole('alert')).not.toBeInTheDocument()
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+    await waitFor(() => expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ prompt: boundary }), expect.any(String)))
+  })
+
+  it('keeps a definitively rejected form editable and submits its corrected draft without duplicate-risk confirmation', async () => {
+    const api = fixtureApi()
+    vi.mocked(api.create).mockRejectedValueOnce(new CloudTasksHttpError(400, 'invalid_request', 'Invalid prompt'))
+    const dialog = await openCreate(api)
+    fillCreate(dialog)
+    fireEvent.click(dialog.getByRole('button', { name: 'Record cloud task' }))
+    expect(await dialog.findByRole('alert')).toHaveTextContent('Invalid prompt')
+    expect(dialog.getByRole('alert')).not.toHaveTextContent(/unknown|recover/)
+    expect(dialog.getByLabelText('Task prompt')).toBeEnabled()
+    const originalKey = vi.mocked(api.create).mock.calls[0][1]
+    expect(cloudTaskStoreFor(api).getSnapshot().pending).toEqual([])
+    fireEvent.change(dialog.getByLabelText('Task prompt'), { target: { value: 'Corrected draft' } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    expect(dialog.queryByRole('checkbox', { name: /earlier intent|duplicates|new intent/i })).not.toBeInTheDocument()
+    fireEvent.click(dialog.getByRole('button', { name: 'Record cloud task' }))
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.create).mock.calls[1][1]).not.toBe(originalKey)
+    expect(vi.mocked(api.create).mock.calls[1][0].prompt).toBe('Corrected draft')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('blocks a multibyte follow-up by UTF-8 bytes before creating an intent', async () => {
+    const task = fixtureTask({ id: 'local-claude', provider: 'claude', providerTaskId: 'session_fixture', providerUrl: 'https://claude.ai/code/session_fixture' })
+    const api = fixtureApi(task)
+    const providers = await api.providers()
+    providers.providers[1].readiness = 'ready'
+    render(<CloudTasksSection api={api} selectedTaskId={task.id} />)
+    const message = await screen.findByLabelText('Message')
+    const submit = screen.getByRole('button', { name: 'Send new message' })
+    fireEvent.change(message, { target: { value: '😀'.repeat(CLOUD_PROMPT_LIMIT / 4 + 1) } })
+    fireEvent.click(screen.getByRole('checkbox', { name: /owns this session/ }))
+    expect(message).toHaveAttribute('aria-invalid', 'true')
+    expect(message).toHaveAccessibleDescription(/16,384-byte UTF-8 limit/)
+    expect(submit).toBeDisabled()
+    fireEvent.submit(submit.closest('form')!)
+    expect(api.message).not.toHaveBeenCalled()
+    expect(cloudTaskStoreFor(api).getSnapshot().pending).toEqual([])
+    fireEvent.change(message, { target: { value: '😀'.repeat(CLOUD_PROMPT_LIMIT / 4) } })
+    expect(message).toHaveAttribute('aria-invalid', 'false')
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+    await waitFor(() => expect(api.message).toHaveBeenCalledOnce())
+  })
+
   it('traps keyboard and programmatic focus, closes on Escape, and restores the opener', async () => {
     const dialog = await openCreate(fixtureApi())
     const root = screen.getByRole('dialog')
