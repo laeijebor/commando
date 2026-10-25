@@ -1,4 +1,5 @@
 import { requireOptionalNativeModule } from 'expo'
+import * as Device from 'expo-device'
 
 import {
   CHAT_IMAGE_MAX_DIMENSION,
@@ -35,6 +36,8 @@ function load<T>(name: 'picker' | 'manipulator'): T | null {
   return (name === 'picker' ? require('expo-image-picker') : require('expo-image-manipulator')) as T
 }
 
+export const NO_CAMERA = 'The simulator has no camera; choose from the library instead'
+
 export const REBUILD_FOR_IMAGES = 'This build of the app has no photo picker; rebuild it to attach images'
 
 function megabytes(bytes: number): string {
@@ -43,6 +46,19 @@ function megabytes(bytes: number): string {
 
 export function isChatImageType(type: string): type is ChatImageType {
   return (CHAT_IMAGE_TYPES as readonly string[]).includes(type)
+}
+
+type PickerAsset = import('expo-image-picker').ImagePickerAsset
+
+function picked(assets: PickerAsset[]): PickedImage[] {
+  return assets.map((asset, index) => ({
+    uri: asset.uri,
+    name: asset.fileName || `photo-${index + 1}.jpg`,
+    type: asset.mimeType ?? 'image/jpeg',
+    width: asset.width,
+    height: asset.height,
+    ...(asset.fileSize === undefined ? {} : { size: asset.fileSize }),
+  }))
 }
 
 /** Opens the photo library for up to `limit` images. Null when it was cancelled. */
@@ -57,15 +73,28 @@ export async function pickImages(limit: number): Promise<PickedImage[] | null> {
     preferredAssetRepresentationMode: picker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
     quality: 1,
   })
-  if (result.canceled) return null
-  return result.assets.map((asset, index) => ({
-    uri: asset.uri,
-    name: asset.fileName || `photo-${index + 1}.jpg`,
-    type: asset.mimeType ?? 'image/jpeg',
-    width: asset.width,
-    height: asset.height,
-    ...(asset.fileSize === undefined ? {} : { size: asset.fileSize }),
-  }))
+  return result.canceled ? null : picked(result.assets)
+}
+
+/**
+ * Opens the camera for one photo. Null when it was cancelled. The camera's
+ * permission wording arrived in app version 0.2.0, so no build without it
+ * runs this code (asking without the wording crashes the app).
+ */
+export async function takePhoto(): Promise<PickedImage[] | null> {
+  const picker = load<ImagePickerModule>('picker')
+  if (!picker) throw new Error(REBUILD_FOR_IMAGES)
+  // The picker doesn't check for a camera, and UIKit ends the app when there is none.
+  if (!Device.isDevice) throw new Error(NO_CAMERA)
+  const permission = await picker.requestCameraPermissionsAsync()
+  if (!permission.granted) {
+    throw new Error(permission.canAskAgain
+      ? 'Commando needs the camera to take a photo'
+      : 'Camera access is off for Commando; turn it on in Settings to take photos')
+  }
+  // The camera saves JPEG, which Claude reads.
+  const result = await picker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 })
+  return result.canceled ? null : picked(result.assets)
 }
 
 function renamed(name: string, type: ChatImageType): string {

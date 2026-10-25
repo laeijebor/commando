@@ -32,11 +32,11 @@ import { providerPresentation } from '../ui/providerPresentation'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
-import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
+import { ContextMeter, IconButton, QueueList, SettingsPills, showSheet, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
 import { spliceDictation, useDictation } from './dictation'
 import { VideoTile } from './VideoTile'
-import { chatImageUri, pickImages, prepareImage, uploadChatImage, type PickedImage } from './images'
+import { chatImageUri, pickImages, prepareImage, takePhoto, uploadChatImage, type PickedImage } from './images'
 import { PasteImageBar } from './PasteImageBar'
 import { RelayChip } from './Subagents'
 
@@ -244,12 +244,16 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     }
   }
 
+  /** The paperclip offers the camera or the library. */
+  const attachButton = useRef<View>(null)
   const attach = async () => {
     const room = roomForImages()
     if (!room) return
+    const choice = await showSheet(attachButton.current, 'Attach images', ['Take Photo', 'Choose from Library'], -1)
+    if (choice === null || !mounted.current) return
     let picked
     try {
-      picked = await pickImages(room)
+      picked = await (choice === 0 ? takePhoto() : pickImages(room))
     } catch (error) {
       setAttachError(error instanceof Error ? error.message : String(error))
       return
@@ -501,7 +505,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           value={text}
         />
         <View style={styles.bar}>
-          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} /> : null}
+          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} ref={attachButton} /> : null}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pills} style={styles.pillsScroll} keyboardShouldPersistTaps="always">
             {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
             <SettingsPills

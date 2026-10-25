@@ -21,7 +21,9 @@ only. Bundle id `com.commando.companion`.
   providers, with session identity headers, right-aligned user bubbles, flat
   Markdown replies, foldable tool/thinking activity and scrollable code/diffs.
   Sending, queueing, steering, stopping, attachments and command/file menus use
-  the existing chat channel. While the clipboard holds an image (a screenshot,
+  the existing chat channel. The paperclip offers Take Photo (the camera, one
+  photo, asking for camera access the first time) or Choose from Library.
+  While the clipboard holds an image (a screenshot,
   an image copied in Photos or Safari, or one from the Mac over Universal
   Clipboard) the composer offers it above the field; iOS's paste control reads
   it without the "Allow Paste" prompt, and it uploads like a picked photo. Text
@@ -202,6 +204,8 @@ npx eas-cli update --channel production --platform ios --message "what changed"
 An update only reaches builds with the same runtime version, which follows the
 app version (`expo.version` in `app.json`). Adding, removing or upgrading a
 native module needs a new build: bump `expo.version`, rebuild, and install it.
+So does a new permission in `app.json` (camera, microphone): iOS ends an app
+that asks for one its build has no wording for.
 A phone build signed with the team's development profile can be shared without
 a cable through EAS internal distribution:
 
