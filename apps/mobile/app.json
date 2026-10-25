@@ -31,7 +31,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Commando attaches the photos you pick to a chat message.",
-          "cameraPermission": false,
+          "cameraPermission": "Commando uses the camera to take a photo you attach to a chat message.",
           "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat."
         }
       ],
