@@ -31,6 +31,8 @@ export class DemoDaemonClient extends DaemonClient {
     this.demoListeners.add(listener)
     return () => { this.demoListeners.delete(listener) }
   }
+  /** Demo routes answer over HTTP, then broadcast what the daemon would (see demo/guide.ts). */
+  emitDemo(message: ServerMessage): void { if (this.openDemo) this.emit(message) }
   private emit(message: ServerMessage): void {
     useDaemonStore.getState().ingest(this.hostId, message)
     useChatStore.getState().ingest(this.hostId, message)

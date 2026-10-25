@@ -7,6 +7,7 @@ import {
   describeTileUrl,
   groupTileRows,
   tileSubtitle,
+  tileTitle,
   unstreamableReason,
 } from './list'
 
@@ -111,4 +112,11 @@ describe('what the phone can stream', () => {
     expect(unstreamableReason(tile({ id: 'w-3', status: 'pending' })))
       .toBe('Waiting for you to allow this origin')
   })
+})
+
+it('titles an untitled guide by its kind, not its artifact host', () => {
+  const guide = tile({ id: 'w-0000000a', url: 'http://127.0.0.1:4310/redline/artifacts/0123456789abcdef/', content: { kind: 'guide', artifactId: '0123456789abcdef', file: 'run.md' } })
+  expect(tileTitle(guide)).toBe('Guide')
+  expect(tileTitle({ ...guide, title: 'Release runbook' })).toBe('Release runbook')
+  expect(tileTitle(tile({ id: 'w-0000000b', url: 'http://localhost:5173/' }))).toBe('localhost:5173')
 })

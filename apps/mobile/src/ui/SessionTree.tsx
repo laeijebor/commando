@@ -40,7 +40,9 @@ function useTreeRoutes(): {
     }),
     // A tile that cannot stream to the phone goes to the list, where it can be
     // confirmed or reopened as chromium.
-    openTile: (tile) => (canStream(tile)
+    openTile: (tile) => (tile.content?.kind === 'guide'
+      ? router.push({ pathname: '/(host)/[hostId]/guide/[tileId]', params: { hostId: hostId ?? '', tileId: tile.id } })
+      : canStream(tile)
       ? router.push({
           pathname: '/(host)/[hostId]/tile/[tileId]',
           params: { hostId: hostId ?? '', tileId: tile.id },
