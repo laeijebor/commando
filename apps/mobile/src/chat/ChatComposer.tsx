@@ -48,6 +48,9 @@ const takenCarries = new Map<string, number>()
 
 const FILE_SEARCH_DEBOUNCE_MS = 80
 
+/** Stands in for the dictation caret while the composer rewrites the draft around it. */
+const DICTATION_MARK = '\u0000'
+
 let attachmentCounter = 0
 function attachmentKey(prefix: string): string {
   attachmentCounter += 1
@@ -282,6 +285,18 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     const timer = setTimeout(() => setDictationHint(null), 2500)
     return () => clearTimeout(timer)
   }, [dictationHint])
+  /**
+   * The composer adding text to the draft itself (restored queue, refused send, carried draft).
+   * A take in progress rebuilds the draft from its starting draft, so that gets the same edit,
+   * with a marker keeping its place for the words.
+   */
+  const rewriteDraft = (rewrite: (current: string) => string) => {
+    setText(rewrite)
+    const base = dictationBase.current
+    const marked = rewrite(`${base.text.slice(0, base.selection.start)}${DICTATION_MARK}${base.text.slice(base.selection.end)}`)
+    const at = marked.indexOf(DICTATION_MARK)
+    if (at >= 0) dictationBase.current = { text: marked.replace(DICTATION_MARK, ''), selection: { start: at, end: at } }
+  }
   const canDictate = dictation.available && !closed && !switching
   // The mic leaves mid-hold when the session ends or switches; its release would never come.
   useEffect(() => {
@@ -305,7 +320,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       const sent = sentDrafts.current.get(requestId)
       if (!sent || Date.now() - sent.at > CHAT_SEND_REFUSAL_MS) continue
       sentDrafts.current.delete(requestId)
-      if (sent.text) setText((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
+      if (sent.text) rewriteDraft((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
       // A missing image has to be attached again, as the error says.
       if (!sent.images.length || code === 'chat_image_missing') continue
       const fit = fitAttachments(count, sent.images.length)
@@ -329,7 +344,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       if (!carried.text && fit.accepted === 0) return
       taken = fit.accepted
       takenCarries.set(carried.id, taken)
-      if (carried.text) setText((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+      if (carried.text) rewriteDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
       const images = restored(carried.images.slice(0, taken), host.baseUrl, 'carried')
       if (images.length) setAttachments((current) => [...images, ...current])
     }
@@ -369,7 +384,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       room -= count
       return true
     })
-    setText((current) => [...taken.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
+    rewriteDraft((current) => [...taken.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
     const images = restored(taken.flatMap((queued) => queued.images ?? []), host.baseUrl, 'queued')
     if (images.length) setAttachments((current) => [...images, ...current])
     const left = queue.length - taken.length
@@ -399,7 +414,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             disabled={!hostConnected}
             onChange={(change) => channel.queue(change)}
             onEditOrphaned={(edit) => {
-              setText((current) => [current.trim(), edit].filter(Boolean).join('\n\n'))
+              rewriteDraft((current) => [current.trim(), edit].filter(Boolean).join('\n\n'))
               setAttachError('That message was sent before your edit was saved; your edit is in the composer')
             }}
             queue={queue}

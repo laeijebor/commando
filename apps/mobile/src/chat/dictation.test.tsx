@@ -58,7 +58,7 @@ function renderChat(chat: ChatState = chatState()) {
   const paneChat = (next: ChatState): ChatState => ({ ...next, paneId: id, session: { ...next.session, paneId: id } })
   const client = fakeClient()
   const view = render(<ThemeProvider><ChatView chat={paneChat(chat)} client={client} host={HOST} phase="live" /></ThemeProvider>)
-  return { unmount: view.unmount, rerender: (next: ChatState) => view.rerender(<ThemeProvider><ChatView chat={paneChat(next)} client={client} host={HOST} phase="live" /></ThemeProvider>) }
+  return { client, unmount: view.unmount, rerender: (next: ChatState) => view.rerender(<ThemeProvider><ChatView chat={paneChat(next)} client={client} host={HOST} phase="live" /></ThemeProvider>) }
 }
 
 async function settle(): Promise<void> {
@@ -245,6 +245,50 @@ describe('hold to dictate in the composer', () => {
     native('end')
     native('start')
     expect(fake.abort).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps queued messages Stop brings back while a take finishes', async () => {
+    renderChat(chatState({ session: session({ status: 'running', queue: [{ id: 'q1', text: 'queued follow-up' }] }) }))
+    await settle()
+    await press()
+    native('start')
+    said('Also this')
+    release()
+    fireEvent.press(screen.getByLabelText('Stop'))
+    expect(input().props.value).toBe('queued follow-up\n\nAlso this')
+    said('Also this.', true)
+    native('end')
+    expect(input().props.value).toBe('queued follow-up\n\nAlso this.')
+  })
+
+  it('keeps holding when a refused send comes back mid-take, with both texts kept', async () => {
+    const { client } = renderChat()
+    await settle()
+    fireEvent.changeText(input(), 'hello')
+    fireEvent.press(screen.getByLabelText('Send'))
+    await press()
+    native('start')
+    said('next')
+    await act(async () => {
+      client.emit({ type: 'error', code: 'chat_unavailable', message: 'No agent host is connected for this pane', requestId: client.last('chat_send')!.requestId })
+    })
+    expect(input().props.value).toBe('next\n\nhello')
+    said('next one')
+    expect(input().props.value).toBe('next one\n\nhello')
+    expect(fake.abort).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Listening')).toBeTruthy()
+  })
+
+  it('frees the mic when the recogniser fails to set up and never ends', async () => {
+    renderChat()
+    await settle()
+    await press()
+    act(() => fake.emit('error', { error: 'audio-capture', message: 'No input' }))
+    expect(screen.getByText('Dictation stopped: No input')).toBeTruthy()
+    expect(screen.getByLabelText('Dictate')).toBeTruthy()
+    release()
+    await press()
+    expect(fake.start).toHaveBeenCalledTimes(2)
   })
 
   it('asks for permission first and says to hold again, since the prompt ends the press', async () => {
