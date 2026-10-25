@@ -592,7 +592,7 @@ describe('CursorChatSession', () => {
     const message = sdk.sends.at(-1)!.message
     expect(message.images).toBeUndefined()
     expect(message.text).toMatch(new RegExp(`^Watch\\n\\n\\[Attached video "clip\\.mov" is saved at: /sessions/[0-9a-f-]{36}/${video}\\]$`))
-    expect(session.snapshot().items.findLast((item) => item.kind === 'user_message')).toMatchObject({ text: 'Watch', images: [{ id: video, name: 'clip.mov' }] })
+    expect(session.snapshot().items.filter((item) => item.kind === 'user_message').at(-1)).toMatchObject({ text: 'Watch', images: [{ id: video, name: 'clip.mov' }] })
     session.close()
   })
   it('closes once after cancellation, rejects unsupported controls and never answers', async () => {
