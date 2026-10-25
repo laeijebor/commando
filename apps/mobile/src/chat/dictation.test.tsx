@@ -58,7 +58,7 @@ function renderChat(chat: ChatState = chatState()) {
   const paneChat = (next: ChatState): ChatState => ({ ...next, paneId: id, session: { ...next.session, paneId: id } })
   const client = fakeClient()
   const view = render(<ThemeProvider><ChatView chat={paneChat(chat)} client={client} host={HOST} phase="live" /></ThemeProvider>)
-  return { rerender: (next: ChatState) => view.rerender(<ThemeProvider><ChatView chat={paneChat(next)} client={client} host={HOST} phase="live" /></ThemeProvider>) }
+  return { unmount: view.unmount, rerender: (next: ChatState) => view.rerender(<ThemeProvider><ChatView chat={paneChat(next)} client={client} host={HOST} phase="live" /></ThemeProvider>) }
 }
 
 async function settle(): Promise<void> {
@@ -231,6 +231,20 @@ describe('hold to dictate in the composer', () => {
     native('end')
     expect(input().props.value).toBe('half a')
     expect(screen.queryByTestId('chat-dictate')).toBeNull()
+  })
+
+  it('aborts a take the composer left before the recogniser started, once it starts', async () => {
+    const view = renderChat()
+    await settle()
+    await press()
+    expect(fake.start).toHaveBeenCalled()
+    view.unmount()
+    expect(fake.abort).not.toHaveBeenCalled()
+    native('start')
+    expect(fake.abort).toHaveBeenCalledTimes(1)
+    native('end')
+    native('start')
+    expect(fake.abort).toHaveBeenCalledTimes(1)
   })
 
   it('asks for permission first and says to hold again, since the prompt ends the press', async () => {

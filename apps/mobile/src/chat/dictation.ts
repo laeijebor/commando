@@ -224,8 +224,29 @@ export function useDictation(handlers: Handlers): { available: boolean; listenin
         }),
       ],
       unmount: () => {
-        if (take?.started) speech?.abort()
+        const current = take
         take = null
+        if (!current?.started || !speech) return
+        const module = speech
+        if (current.live) return module.abort()
+        // Asked to start but not started: an abort now misses the task and the mic comes on
+        // with nothing left to stop it, so stay to abort it once it starts (or ends without).
+        let subscriptions: { remove(): void }[] = []
+        const done = () => {
+          for (const subscription of subscriptions) subscription.remove()
+          subscriptions = []
+        }
+        subscriptions = [
+          module.addListener('start', () => {
+            done()
+            module.abort()
+          }),
+          module.addListener('end', done),
+          // One native setup failure sends only an error; without this the listener would abort a later take.
+          module.addListener('error', (event) => {
+            if (event.error !== 'aborted') done()
+          }),
+        ]
       },
     }
   }, [])
