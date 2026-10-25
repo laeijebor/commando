@@ -289,6 +289,8 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   }, [canDictate, dictation.cancel])
 
   const clearDraft = () => {
+    // A take still finishing would put the sent words back when its last result lands.
+    dictation.cancel()
     setAttachments([])
     setAttachError(null)
     setText('')
@@ -451,7 +453,11 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           // would resign it, so a reconnect would close the keyboard mid-sentence.
           editable={!closed && !switching}
           multiline
-          onChangeText={setText}
+          onChangeText={(next) => {
+            // Typing wins over a take still finishing, whose last result would overwrite it.
+            dictation.cancel()
+            setText(next)
+          }}
           onFocus={clipboardImage.recheck}
           onSelectionChange={(event) => {
             setSelection(event.nativeEvent.selection)

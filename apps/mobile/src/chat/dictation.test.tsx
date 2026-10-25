@@ -179,6 +179,29 @@ describe('hold to dictate in the composer', () => {
     expect(input().props.value).toBe('First thought. Second one')
   })
 
+  it('drops a finishing take once its draft is sent or edited, so sent words stay sent', async () => {
+    renderChat()
+    await settle()
+    await press()
+    native('start')
+    said('Ship it')
+    release()
+    fireEvent.press(screen.getByLabelText('Send'))
+    expect(fake.abort).toHaveBeenCalledTimes(1)
+    said('Ship it.', true)
+    native('end')
+    expect(input().props.value).toBe('')
+
+    await press()
+    native('start')
+    said('Then')
+    release()
+    fireEvent.changeText(input(), 'typed instead')
+    said('Then this.', true)
+    native('end')
+    expect(input().props.value).toBe('typed instead')
+  })
+
   it('aborts when the session ends mid-hold and ignores what arrives after', async () => {
     const { rerender } = renderChat()
     await settle()
