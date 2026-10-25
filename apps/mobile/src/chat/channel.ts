@@ -119,6 +119,11 @@ export class ChatChannel {
     return this.transport.send({ type: 'chat_carry_taken', paneId: this.paneId, carryId, images }) !== null
   }
 
+  /** The chat's whole history, for a copy the daemon bounded on connect; it comes back as a `chat_state`. */
+  loadHistory(): boolean {
+    return this.transport.send({ type: 'chat_history', paneId: this.paneId }) !== null
+  }
+
   /** Files and folders for an `@` mention, searched by the chat's host. */
   searchFiles(query: string): Promise<ChatFileSearchResult> {
     return new Promise((resolve) => {

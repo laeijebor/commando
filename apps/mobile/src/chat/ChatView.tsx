@@ -59,7 +59,9 @@ export function ChatView({ host, chat, client, phase }: {
   const view = useSubagentView(items, channel, hostTakesTurnFlow(chat.session))
   const { agent, agents, relay } = view
   const request = requests[0]
-  const banner = !connected
+  // A reconnect that finishes within the grace period changes nothing on screen.
+  const reconnecting = useLingering(!connected, RECONNECT_BANNER_DELAY_MS)
+  const banner = reconnecting
     ? 'Reconnecting to Commando… The agent keeps working in its pane.'
     : !chat.hostConnected
       ? 'The agent host is disconnected. It keeps working in its pane and will reconnect.'
@@ -96,6 +98,8 @@ export function ChatView({ host, chat, client, phase }: {
       ) : (
         <ChatTimeline
           baseUrl={host.baseUrl}
+          omittedItems={chat.omittedItems}
+          onLoadEarlier={channel ? () => channel.loadHistory() : undefined}
           controlsDisabled={!connected}
           cwd={chat.session.cwd}
           items={items}
@@ -157,6 +161,23 @@ export function ChatView({ host, chat, client, phase }: {
       )}
     </View>
   )
+}
+
+/** How long the socket may be down before the chat says it is reconnecting. */
+export const RECONNECT_BANNER_DELAY_MS = 2_000
+
+/** True once `value` has held for `delayMs`; false again as soon as it stops. */
+function useLingering(value: boolean, delayMs: number): boolean {
+  const [held, setHeld] = useState(false)
+  useEffect(() => {
+    if (!value) {
+      setHeld(false)
+      return
+    }
+    const timer = setTimeout(() => setHeld(true), delayMs)
+    return () => clearTimeout(timer)
+  }, [value, delayMs])
+  return value && held
 }
 
 /**

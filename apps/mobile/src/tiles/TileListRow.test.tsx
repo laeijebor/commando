@@ -52,6 +52,13 @@ async function renderRow(pane: WebPane, queued = 0): Promise<Handlers> {
 }
 
 describe('a tile row', () => {
+  it('opens a guide tab natively, unlike other host-only content', async () => {
+    const handlers = await renderRow(tile({ id: 'w-00000009', url: '', title: 'Release runbook', engine: 'webkit', content: { kind: 'guide', artifactId: '0123456789abcdef', file: 'run.md' } }))
+    expect(screen.getByText('Tap to follow the guide: tick steps, add notes and update the agent.')).toBeTruthy()
+    fireEvent.press(screen.getByText('Release runbook'))
+    expect(handlers.onOpen).toHaveBeenCalledTimes(1)
+  })
+
   it('shows the host and a full address with the engine chip', async () => {
     await renderRow(tile({ id: 'w-00000001' }))
     expect(screen.getByText('127.0.0.1:4310')).toBeTruthy()
@@ -92,8 +99,15 @@ describe('a tile row', () => {
     expect(handlers.onOpen).not.toHaveBeenCalled()
   })
 
-  it('offers to reopen a webkit tile as chromium', async () => {
-    const handlers = await renderRow(tile({ id: 'w-00000002', engine: 'webkit' }))
+  it('opens a webkit tile the phone can load itself', async () => {
+    const handlers = await renderRow(tile({ id: 'w-00000004', engine: 'webkit' }))
+    expect(screen.queryByText('Reopen as chromium')).toBeNull()
+    fireEvent.press(screen.getByText('127.0.0.1:4310'))
+    expect(handlers.onOpen).toHaveBeenCalled()
+  })
+
+  it('offers to reopen a localhost webkit tile as chromium', async () => {
+    const handlers = await renderRow(tile({ id: 'w-00000002', engine: 'webkit', url: 'http://localhost:5173/app' }))
     expect(screen.getByText('webkit')).toBeTruthy()
     fireEvent.press(screen.getByText('Reopen as chromium'))
     expect(handlers.onReopenAsChromium).toHaveBeenCalled()

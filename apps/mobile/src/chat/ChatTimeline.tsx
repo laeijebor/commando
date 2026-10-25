@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, St
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
-import { PLAN_IMPLEMENTATION_PREFIX, chatImageUrl, chatPlanTitle, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
 import {
   canCollapsePlan,
   collapsedPlanPreview,
@@ -27,6 +27,7 @@ import { WorkingPulse } from '../ui/ChatIndicator'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { ImageViewer, type ViewableImage } from './ImageViewer'
+import { chatImageUri } from './images'
 import { Markdown } from './Markdown'
 import { SubagentGroup, useNow, type SubagentTask } from './Subagents'
 import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
@@ -58,8 +59,11 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
  * follows the newest turn on open/send and while already near the bottom.
  * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled }: {
+export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled }: {
   sendVersion?: number
+  /** Older items the daemon left on the Mac (a bounded replay), and how to fetch them. */
+  omittedItems?: number
+  onLoadEarlier?: () => void
   provider?: string
   items: readonly ChatItem[]
   cwd: string
@@ -148,12 +152,25 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
           keyExtractor={(entry) => entry.id}
+          ListHeaderComponent={(omittedItems > 0 && onLoadEarlier) || header ? (<>
+            {omittedItems > 0 && onLoadEarlier ? <Pressable
+              accessibilityLabel={`Load ${omittedItems} earlier ${omittedItems === 1 ? 'item' : 'items'}`}
+              accessibilityRole="button"
+              onPress={onLoadEarlier}
+              style={[styles.earlier, { borderColor: theme.border }]}
+              testID="chat-load-earlier"
+            >
+              <Text style={[styles.earlierLabel, { color: theme.muted }]}>
+                {omittedItems} earlier {omittedItems === 1 ? 'item is' : 'items are'} on your Mac · <Text style={{ color: theme.accent }}>Load</Text>
+              </Text>
+            </Pressable> : null}
+            {header}
+          </>) : null}
           ListEmptyComponent={header ? null : (
             <View style={styles.empty}>
               <Text style={[styles.emptyText, { color: theme.muted }]}>{emptyText ?? `Ask ${context.provider} anything about this folder.`}</Text>
             </View>
           )}
-          ListHeaderComponent={header ? <>{header}</> : null}
           ListFooterComponent={footer ? <>{footer}</> : null}
           onLayout={() => follow('resize')}
           onContentSizeChange={() => follow('content')}
@@ -269,7 +286,7 @@ export function ImageStrip({ images }: { images: readonly ChatImageRef[] }): Rea
     <>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.images} style={styles.imagesScroll}>
         {images.map((image, index) => {
-          const viewable = { uri: `${baseUrl}${chatImageUrl(image.id)}`, name: image.name ?? `Image ${index + 1}` }
+          const viewable = { uri: chatImageUri(baseUrl, image.id), name: image.name ?? `Image ${index + 1}` }
           return (
             <Pressable key={image.id} onPress={() => setOpen(viewable)} accessibilityRole="imagebutton" accessibilityLabel={`Open ${viewable.name}`}>
               <Image
@@ -526,6 +543,8 @@ const styles = StyleSheet.create({
   list: { flex: 1, height: 0, minHeight: 0 },
   jump: { position: 'absolute', right: 16, bottom: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
   jumpLabel: { fontSize: 12.5, fontWeight: '700' },
+  earlier: { alignSelf: 'center', borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 12 },
+  earlierLabel: { fontSize: 12.5 },
   content: { paddingHorizontal: 20, paddingVertical: 24, width: '100%', maxWidth: 776, alignSelf: 'center' },
   emptyContent: { flexGrow: 1 },
   empty: { flex: 1, justifyContent: 'center', alignItems: 'center' },

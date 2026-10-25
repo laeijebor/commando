@@ -872,6 +872,27 @@ describe('Claude chat launches', () => {
     ], undefined, { PATH: '/bin' }))
   })
 
+  it('starts a chat that names no profile with the default one, and keeps a profile it names', async () => {
+    const run = runner()
+    const fallback = vi.fn(async () => `${home}/.claudep`)
+    const creator = new TmuxCreator(run, [], undefined, async () => '/never', { PATH: '/bin' }, fallback)
+    await creator.createSession({ name: 'phone', cwd: '/tmp', agent: { provider: 'claude-chat', permissionMode: 'default' } })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([
+      COMMANDO_AGENT_LAUNCHER, 'claude', '--config-dir', `${home}/.claudep`, '--permission-mode', 'default',
+    ], undefined, { PATH: '/bin' }))
+    await creator.createSession({ name: 'picked', cwd: '/tmp', agent: { provider: 'claude-chat', configDir: `${home}/.claudew` } })
+    expect(run.mock.calls.at(-1)![0].at(-1)).toContain(`${home}/.claudew`)
+    expect(fallback).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts a chat on the bare login when there is no default profile, or it cannot be read', async () => {
+    for (const fallback of [async () => undefined, async () => { throw new Error('unreadable') }]) {
+      const run = runner()
+      await new TmuxCreator(run, [], undefined, async () => '/never', { PATH: '/bin' }, fallback).createSession({ name: 'x', cwd: '/tmp', agent: { provider: 'claude-chat' } })
+      expect(run.mock.calls[0][0].at(-1)).not.toContain('--config-dir')
+    }
+  })
+
   it('splits a pane that starts a chat, with the daemon environment scoped to it', async () => {
     const run = runner()
     await new TmuxCreator(run, [], undefined, async () => '/never', { PATH: '/bin', COMMANDO_PORT: '4410' }).createPane({

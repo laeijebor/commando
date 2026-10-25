@@ -4,13 +4,13 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import NewSessionScreen from '../../app/(host)/[hostId]/new-session'
 import { useHostsStore } from '../hosts/store'
 import { ThemeProvider } from '../theme'
-import { createTmuxSession, runInPane } from '../daemon/paneApi'
+import { createTmuxSession, fetchClaudeProfiles, runInPane } from '../daemon/paneApi'
 import { rememberDirectory } from './prefs'
 
 const mockRouter = { replace: jest.fn(), back: jest.fn() }
 jest.mock('expo-router', () => ({ useLocalSearchParams: () => ({ hostId: 'host-1' }), useRouter: () => mockRouter }))
 jest.mock('../daemon/useDaemonConnection', () => ({ useDaemonConnection: () => ({ snapshot: null }) }))
-jest.mock('../daemon/paneApi', () => ({ createTmuxSession: jest.fn(), fetchRepoInfo: jest.fn(async () => ({ isRepo: false })), runInPane: jest.fn() }))
+jest.mock('../daemon/paneApi', () => ({ createTmuxSession: jest.fn(), fetchClaudeProfiles: jest.fn(async () => []), fetchRepoInfo: jest.fn(async () => ({ isRepo: false })), runInPane: jest.fn() }))
 jest.mock('./prefs', () => ({ loadDirectoryHistory: async () => [], loadPrepareCommands: async () => ({}), rememberDirectory: jest.fn(async () => []), rememberPrepareCommand: jest.fn() }))
 jest.mock('../notifications', () => ({ usePushStore: { getState: () => ({ rules: { mutedSessions: [] } }) }, toggleMutedSession: jest.fn() }))
 
@@ -20,6 +20,7 @@ beforeEach(() => {
   jest.clearAllMocks()
   ;(createTmuxSession as jest.Mock).mockImplementation(async (_host: unknown, input: CreateTmuxSessionRequest) => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
   ;(rememberDirectory as jest.Mock).mockResolvedValue([])
+  ;(fetchClaudeProfiles as jest.Mock).mockResolvedValue([])
   useHostsStore.setState({ hosts: [{ id: 'host-1', name: 'studio', baseUrl: 'http://localhost:4310', auth: { kind: 'token', token: 'fixture' } }], hydrated: true })
 })
 
@@ -100,4 +101,35 @@ it('resets permissions when switching providers and hides the picker for CLI age
   expect(screen.getByRole('radio', { name: 'Ask when needed' }).props.accessibilityState.checked).toBe(true)
   fireEvent.press(screen.getByRole('radio', { name: 'Cursor' }))
   expect(screen.queryByRole('radio', { name: 'Ask when needed' })).toBeNull()
+})
+
+const PROFILES = [
+  { name: '', configDir: '/Users/me/.claude', lastUsedAt: 30 },
+  { name: 'p', configDir: '/Users/me/.claudep', lastUsedAt: 10, label: 'Personal', isDefault: true },
+  { name: 'w', configDir: '/Users/me/.claudew', lastUsedAt: 20 },
+]
+
+it('starts a Claude chat with the default profile, or the one picked', async () => {
+  ;(fetchClaudeProfiles as jest.Mock).mockResolvedValue(PROFILES)
+  await openScreen()
+  expect(screen.getByRole('radio', { name: 'Profile Personal' }).props.accessibilityState.checked).toBe(true)
+  await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Create' })) })
+  expect(createTmuxSession).toHaveBeenLastCalledWith(expect.any(Object), { name: 'cursor', agent: { provider: 'claude-chat', permissionMode: 'default', configDir: '/Users/me/.claudep' } })
+})
+
+it('sends the profile picked instead of the default', async () => {
+  ;(fetchClaudeProfiles as jest.Mock).mockResolvedValue(PROFILES)
+  await openScreen()
+  fireEvent.press(screen.getByRole('radio', { name: 'Profile w' }))
+  await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Create' })) })
+  expect(createTmuxSession).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ agent: expect.objectContaining({ configDir: '/Users/me/.claudew' }) }))
+})
+
+it('offers no profile picker for other agents, or with a single profile', async () => {
+  ;(fetchClaudeProfiles as jest.Mock).mockResolvedValue(PROFILES)
+  await openScreen()
+  fireEvent.press(screen.getByRole('radio', { name: 'Codex chat' }))
+  expect(screen.queryByRole('radio', { name: 'Profile Personal' })).toBeNull()
+  await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Create' })) })
+  expect((createTmuxSession as jest.Mock).mock.calls.at(-1)[1].agent).not.toHaveProperty('configDir')
 })

@@ -102,6 +102,7 @@ import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { SessionPreferenceStore } from './session-preferences.js'
@@ -155,6 +156,8 @@ import { snapshotsHaveSameState } from './snapshot-state.js'
 import { detectSessionRenames } from './session-renames.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
+import { WsBacklog } from './ws-backlog.js'
+import { chatHistoryBudget, chatMessageForClient } from './chat-replay.js'
 import {
   AgentStatusRegistry,
   type AgentStatusChange,
@@ -163,12 +166,6 @@ import {
 const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
-/**
- * Output a browser may leave unread before the daemon drops it as stalled. A
- * connect burst carries every chat's items (hosts cap each at 2 MB), so this
- * sits well above any one burst.
- */
-const MAX_WS_BUFFERED_BYTES = 32 * 1024 * 1024
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -201,6 +198,12 @@ type ClientState = {
   releaseInteractions: (() => void) | null
   answeredRequestIds: IdempotencyKeyMemory
   releaseUsage: (() => void) | undefined
+  /** Judges a growing outgoing queue by whether it drains, not by its size alone. */
+  backlog: WsBacklog
+  /** Per-chat byte budget the client asked for (the phone); undefined for full chats. */
+  chatHistoryBytes: number | undefined
+  /** Chats this client fetched in full with `chat_history`, kept whole from then on. */
+  fullChatPanes: Set<string>
 }
 
 type PaneStreamState = {
@@ -298,13 +301,15 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
 
 function send(client: ClientState, message: ServerMessage): boolean {
   if (client.socket.readyState !== WebSocket.OPEN) return false
-  // Judge the backlog already queued, not the message itself: one large frame
-  // (a chat snapshot) must not drop a client that is keeping up.
-  if (client.socket.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
-    client.socket.close(1013, 'Client is not consuming output')
+  // Judge the backlog already queued, not the message itself, and by whether
+  // it drains: a phone still downloading the connect burst is keeping up.
+  const stalled = client.backlog.check(client.socket.bufferedAmount)
+  if (stalled) {
+    client.socket.close(1013, stalled)
     return false
   }
-  client.socket.send(JSON.stringify(message))
+  if (message.type === 'chat_removed') client.fullChatPanes.delete(message.paneId)
+  client.backlog.write(client.socket, JSON.stringify(chatMessageForClient(message, client.chatHistoryBytes, client.fullChatPanes)))
   return true
 }
 
@@ -677,7 +682,9 @@ async function main(): Promise<void> {
   const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
   const gitWorktrees = new GitWorktreeService()
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
-  const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
+  // The profile store is set up further down; this only runs when a pane starts.
+  const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees, undefined, undefined,
+    async () => defaultClaudeProfile(await agentProfilePreferences.claudeProfiles({ includeHidden: false }))?.configDir)
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
@@ -2606,6 +2613,17 @@ async function main(): Promise<void> {
       case 'chat_carry_taken':
         agentHosts.takeCarried(message.paneId, message.carryId, message.images)
         return
+      case 'chat_history': {
+        const chat = agentHosts.states().find((state) => state.paneId === message.paneId)
+        if (!chat) {
+          sendError(client, 'chat_unavailable', 'No chat is running in this pane', message.requestId)
+          return
+        }
+        // Unbounded for this client from now on: it asked for the whole conversation.
+        client.fullChatPanes.add(message.paneId)
+        send(client, { type: 'chat_state', chat })
+        return
+      }
       case 'chat_return': {
         const pane = paneForId(message.paneId)
         if (!pane) {
@@ -2713,7 +2731,8 @@ async function main(): Promise<void> {
   })
   agentHostWebSocketServer.on('connection', (socket) => agentHosts.connect(socket))
 
-  webSocketServer.on('connection', (socket) => {
+  webSocketServer.on('connection', (socket, request: IncomingMessage) => {
+    const connectUrl = requestUrl(request)
     const client: ClientState = {
       id: randomUUID(),
       socket,
@@ -2728,6 +2747,9 @@ async function main(): Promise<void> {
       releaseInteractions: null,
       answeredRequestIds: new IdempotencyKeyMemory(),
       releaseUsage: undefined,
+      backlog: new WsBacklog(),
+      chatHistoryBytes: connectUrl ? chatHistoryBudget(connectUrl) : undefined,
+      fullChatPanes: new Set(),
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })

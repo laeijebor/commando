@@ -11,11 +11,15 @@ import type { Host } from '../hosts/types'
 import type { WebPane } from '@commando/protocol'
 import { useTheme } from '../theme'
 import { PaneInfoSections } from '../ui/PaneInfo'
+import { PrView } from '../pr/PrView'
 import { Button } from '../ui/primitives'
 import { openTile, closeTile, confirmTile, markTileSeen } from '../tiles/api'
 import { paneTabs, type PaneTab } from './tabs'
 import { tileWasViewed } from '../tiles/seen'
+import { canOpenOnPhone } from '../tiles/list'
 import { selectedTabOffset, type TabLayout } from './tabScroll'
+import { GuideView } from '../guide/GuideView'
+import { isGuideTile } from '../guide/model'
 
 export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, active = true }: { host?: Host; paneId?: string; active?: boolean; chat: boolean; header: ReactNode; children: ReactNode; onOpenTile: (tile: WebPane) => void }): React.JSX.Element {
   const theme = useTheme()
@@ -60,8 +64,8 @@ export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, act
       </Pressable>)}
     </ScrollView>
     <View style={[styles.body, tab.kind !== 'body' && styles.hidden]} accessibilityElementsHidden={tab.kind !== 'body'} importantForAccessibility={tab.kind !== 'body' ? 'no-hide-descendants' : 'auto'}>{children}</View>
-    {host && paneId && tab.kind !== 'body' ? tab.kind === 'web' ? <WebTabCard key={tab.id} host={host} tab={tab} onOpenTile={onOpenTile} /> : <ScrollView key={tab.id} contentContainerStyle={styles.sections}>
-      <PaneInfoSections active={foreground} host={host} paneId={paneId} brief={state.briefs[paneId]} status={state.agentStatuses[paneId]} pane={state.snapshot?.panes.find((pane) => pane.id === paneId)} ports={state.snapshot?.ports ?? []} sections={[tab.kind]} prFilter={tab.kind === 'pr' ? { repo: tab.pr.repo, number: tab.pr.number } : undefined} />
+    {host && paneId && tab.kind !== 'body' ? tab.kind === 'web' ? isGuideTile(tab.tile) ? <GuideView key={tab.id} active={foreground} host={host} tile={tab.tile} /> : <WebTabCard key={tab.id} host={host} tab={tab} onOpenTile={onOpenTile} /> : tab.kind === 'pr' ? <PrView key={tab.id} host={host} source={tab.pr} active={foreground} /> : <ScrollView key={tab.id} contentContainerStyle={styles.sections}>
+      <PaneInfoSections active={foreground} host={host} paneId={paneId} brief={state.briefs[paneId]} status={state.agentStatuses[paneId]} pane={state.snapshot?.panes.find((pane) => pane.id === paneId)} ports={state.snapshot?.ports ?? []} sections={[tab.kind]} />
     </ScrollView> : null}
   </View>
 }
@@ -73,7 +77,7 @@ function WebTabCard({ host, tab, onOpenTile }: { host: Host; tab: Extract<PaneTa
   const theme = useTheme()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const streamable = !tab.tile.content && tab.tile.engine === 'chromium' && tab.tile.status === 'open'
+  const streamable = canOpenOnPhone(tab.tile)
   const action = async () => {
     setBusy(true); setError(null)
     try {
@@ -82,7 +86,7 @@ function WebTabCard({ host, tab, onOpenTile }: { host: Host; tab: Extract<PaneTa
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not open this tab') }
     finally { setBusy(false) }
   }
-  const detail = tab.tile.content ? `${tab.label} is a ${tab.content} on your Mac. You can follow its agent here; its native view stays on the host.` : tab.tile.status === 'pending' ? 'This page is waiting for your confirmation before it opens.' : streamable ? 'Open the live page to interact, type and leave review notes with the full tile controls.' : 'This page uses the Mac’s WebKit view. Reopen it as chromium to stream it to your phone.'
+  const detail = tab.tile.content && !streamable ? `${tab.label} is a ${tab.content} on your Mac. You can follow its agent here; its native view stays on the host.` : tab.tile.status === 'pending' ? 'This page is waiting for your confirmation before it opens.' : streamable ? tab.content === 'canvas' ? 'Open the canvas to answer its questions and view each frame on your phone.' : 'Open the live page to interact, type and leave review notes with the full tile controls.' : 'This page uses the Mac’s WebKit view. Reopen it as chromium to stream it to your phone.'
   return <View style={styles.webBody}><View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
     <Feather name={tabIcon(tab)} color={theme.accent} size={28} /><Text style={[styles.title, { color: theme.text }]}>{tab.label}</Text><Text style={[styles.description, { color: theme.muted }]}>{detail}</Text>
     {!tab.tile.content ? <Text numberOfLines={2} style={[styles.url, { color: theme.textDim }]}>{tab.tile.url}</Text> : null}
