@@ -4,6 +4,7 @@ import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
   hostTakesInput,
+  hostTakesVideos,
   hostTakesMcp,
   hostTakesSettings,
   hostTakesSwitch,
@@ -425,6 +426,11 @@ export class AgentHostHub {
   takesInput(paneId: string): boolean {
     const session = this.chats.get(paneId)?.state.session
     return session ? hostTakesInput(session) : false
+  }
+
+  takesVideos(paneId: string): boolean {
+    const session = this.chats.get(paneId)?.state.session
+    return session ? hostTakesVideos(session) : false
   }
 
   /** Asks the pane's host for `@` mention candidates in its session folder. */

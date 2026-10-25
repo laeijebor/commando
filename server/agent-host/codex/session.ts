@@ -3,7 +3,9 @@ import {
   MAX_CHAT_ITEMS,
   MAX_CHAT_IMAGES,
   MAX_QUEUED_MESSAGES,
+  attachmentNote,
   isChatEffort,
+  isChatVideoId,
   isModelValue,
   type ChatAnswer,
   type ChatCommand,
@@ -292,11 +294,17 @@ export class CodexChatSession implements ChatProviderSession {
       const threadId = this.info.sessionId
       if (!threadId) throw new Error('Codex has no thread id')
       if (images.length > MAX_CHAT_IMAGES) throw new Error('Too many images')
-      const input: UserInput[] = trimmed ? [{ type: 'text', text: trimmed, text_elements: [] }] : []
+      const files: UserInput[] = []
+      const notes: string[] = []
       for (const image of images) {
         if (!this.spec.images) throw new Error('Chat images are unavailable')
-        input.push({ type: 'localImage', path: await this.spec.images.stage(image.id, threadId) })
+        const path = await this.spec.images.stage(image.id, threadId)
+        // Codex takes images; a video is a file it opens with its own tools.
+        if (isChatVideoId(image.id)) notes.push(attachmentNote(image.name ?? image.id, path, 'video'))
+        else files.push({ type: 'localImage', path })
       }
+      const prompt = [trimmed, ...notes].filter(Boolean).join('\n\n')
+      const input: UserInput[] = [...(prompt ? [{ type: 'text', text: prompt, text_elements: [] } as UserInput] : []), ...files]
       const active = this.activeTurn
       if (active && options.permissionMode) throw new Error('Permission changes apply to the next turn; wait for this turn to finish')
       if (options.permissionMode) this.applySettings({ permissionMode: options.permissionMode })
