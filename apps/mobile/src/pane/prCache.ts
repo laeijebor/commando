@@ -26,7 +26,17 @@ export class PanePrCache {
       if (!this.watchers.size && this.timer) { clearInterval(this.timer); this.timer = undefined }
     }
   }
-  private async load(key: string): Promise<void> {
+  /** Re-reads every watched pane list on `host` now, e.g. after a PR there was merged (the daemon drops its own copy then). */
+  async refreshHost(host: Host): Promise<void> {
+    const prefix = `${host.id}:${host.baseUrl}:`
+    await Promise.all([...this.watchers.keys()].filter((key) => key.startsWith(prefix)).map(async (key) => {
+      // Let a read already in flight finish, then read again: it may predate the change.
+      await this.loading.get(key)
+      this.cache.delete(key)
+      await this.load(key, false)
+    }))
+  }
+  private async load(key: string, background = true): Promise<void> {
     const watcher = this.watchers.get(key)
     if (!watcher || this.loading.has(key)) return
     const cached = this.cache.get(key)
@@ -34,7 +44,7 @@ export class PanePrCache {
     // Register before invoking the fetch, so even synchronous fake transports deduplicate.
     const load = Promise.resolve().then(async () => {
       try {
-        const list = await fetchPanePrs(watcher.host, watcher.paneId, { background: true })
+        const list = await fetchPanePrs(watcher.host, watcher.paneId, { background })
         if (!list) throw new Error('PR lookup failed')
         this.publish(key, { data: list })
       } catch (reason) {

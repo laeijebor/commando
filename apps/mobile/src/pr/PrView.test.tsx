@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react-native'
+import { Alert } from 'react-native'
 
 import { demoPrDetails, demoPrDiff, demoPrPreview } from '../demo/prDetail'
 import type { Host } from '../hosts/types'
 import { ThemeProvider } from '../theme'
+import type { PrPreview } from './api'
 import { PrView } from './PrView'
 
 const HOST: Host = { id: 'pr-view', name: 'studio', baseUrl: 'http://studio:4310', auth: { kind: 'token', token: 'secret' } }
@@ -27,10 +29,10 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-async function renderView(preview = true): Promise<void> {
+async function renderView(preview: PrPreview | false = demoPrPreview()): Promise<void> {
   render(
     <ThemeProvider>
-      <PrView host={HOST} source={{ repo: 'leo/commando', number: 257, title: 'Bring remote chat to the companion', url: 'https://github.com/leo/commando/pull/257', state: 'open', isDraft: false, ...(preview ? { preview: demoPrPreview() } : {}) }} />
+      <PrView host={HOST} source={{ repo: 'leo/commando', number: 257, title: 'Bring remote chat to the companion', url: 'https://github.com/leo/commando/pull/257', state: 'open', isDraft: false, ...(preview ? { preview } : {}) }} />
     </ThemeProvider>,
   )
   await act(async () => undefined)
@@ -110,4 +112,71 @@ it('falls back to the repository PR list when the pane sent no preview', async (
   await renderView(false)
   expect(requested.some((url) => url.includes('/api/prs?repo=leo%2Fcommando&state=all&scope=everyone'))).toBe(true)
   expect(screen.getByText(/by emerald-crab · 9 commits/u)).toBeTruthy()
+})
+
+describe('Merge PR', () => {
+  const posts: Array<{ url: string; body: unknown }> = []
+  let mergeResponse = (): Response => json({ merged: true })
+
+  beforeEach(() => {
+    posts.length = 0
+    mergeResponse = () => json({ merged: true })
+    const read = globalThis.fetch as jest.Mock
+    const reads = read.getMockImplementation()!
+    read.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') {
+        posts.push({ url, body: JSON.parse(String(init.body)) })
+        return mergeResponse()
+      }
+      return reads(input, init)
+    })
+  })
+
+  function pressMergeInAlert(alert: jest.SpyInstance): void {
+    const buttons = alert.mock.calls.at(-1)![2] as { text: string; onPress?: () => void }[]
+    buttons.find((button) => button.text === 'Merge')!.onPress!()
+  }
+
+  it('asks first, then merges the head it showed into its target and shows the PR as merged', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+    await renderView()
+    fireEvent.press(screen.getByLabelText('Merge #257'))
+    expect(alert.mock.calls.at(-1)![0]).toBe('Merge #257?')
+    expect(alert.mock.calls.at(-1)![1]).toBe('This merges feat/remote-chat into main on GitHub.')
+    expect(posts).toHaveLength(0)
+    await act(async () => { pressMergeInAlert(alert) })
+    expect(posts).toEqual([{
+      url: 'http://studio:4310/api/prs/merge',
+      body: { repo: 'leo/commando', number: 257, headRefOid: demoPrPreview().headRefOid, baseRefName: 'main' },
+    }])
+    expect(screen.getByText('Merged')).toBeTruthy()
+    expect(screen.queryByLabelText('Merge #257')).toBeNull()
+    alert.mockRestore()
+  })
+
+  it('shows the daemon\'s reason when GitHub refuses', async () => {
+    mergeResponse = () => new Response(JSON.stringify({ error: 'The PR has new commits. Resync and try again.' }), { status: 409 })
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+    await renderView()
+    fireEvent.press(screen.getByLabelText('Merge #257'))
+    await act(async () => { pressMergeInAlert(alert) })
+    expect(screen.getByText('The PR has new commits. Resync and try again.')).toBeTruthy()
+    expect(screen.getByText('Open')).toBeTruthy()
+    alert.mockRestore()
+  })
+
+  it('is greyed out with GitHub\'s reason when the PR cannot merge yet', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+    await renderView({ ...demoPrPreview(), mergeStateStatus: 'BLOCKED' })
+    expect(screen.getByText('GitHub reports unmet merge requirements')).toBeTruthy()
+    fireEvent.press(screen.getByLabelText('Merge #257'))
+    expect(alert).not.toHaveBeenCalled()
+    alert.mockRestore()
+  })
+
+  it('is not offered for a closed or merged PR', async () => {
+    await renderView({ ...demoPrPreview(), state: 'merged' })
+    expect(screen.queryByLabelText('Merge #257')).toBeNull()
+  })
 })
