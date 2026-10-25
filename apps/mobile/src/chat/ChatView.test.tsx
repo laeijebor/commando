@@ -111,6 +111,17 @@ describe('the phone chat view', () => {
     expect(client.last('chat_answer')).toMatchObject({ chatRequestId: 'req-1', answer: { kind: 'approval', decision: 'allow' } })
   })
 
+  it('shows why Claude asks and hides Always when Claude refuses one', async () => {
+    renderChat(chatState({
+      session: session({ status: 'waiting' }),
+      items: [item('request', { requestId: 'req-3', requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', detail: 'rm -f f/*', reason: 'Safety check: Dangerous rm operation', noAlwaysAllow: true, status: 'running' })],
+    }))
+    await settle()
+    expect(screen.getByText('Safety check: Dangerous rm operation')).toBeTruthy()
+    expect(screen.queryByText('Always')).toBeNull()
+    expect(screen.getByText('Allow once')).toBeTruthy()
+  })
+
   it('answers a question inline', async () => {
     const { client } = renderChat(chatState({
       session: session({ status: 'waiting' }),

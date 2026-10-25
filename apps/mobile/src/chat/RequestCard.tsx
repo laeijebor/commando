@@ -53,6 +53,7 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer, pr
         : (
             <>
               <Text style={[styles.title, { color: theme.text }]}>{request.title}</Text>
+              {request.reason ? <Text selectable style={[styles.reason, { color: theme.textSoft }]}>{shortPath(request.reason, cwd)}</Text> : null}
               {request.detail ? (
                 <ScrollView style={[styles.detail, { backgroundColor: theme.surfaceRaised, borderColor: theme.border }]} nestedScrollEnabled>
                   <Text selectable style={[styles.detailText, { color: theme.textSoft }]}>{shortPath(request.detail, cwd)}</Text>
@@ -60,7 +61,7 @@ export function RequestCard({ request, pendingCount, cwd, disabled, onAnswer, pr
               ) : null}
               <View style={styles.row}>
                 <Button disabled={disabled} label="Deny" onPress={() => answer({ kind: 'approval', decision: 'deny' })} style={styles.choice} variant="danger" />
-                <Button disabled={disabled} label="Always" onPress={() => answer({ kind: 'approval', decision: 'allow_always' })} style={styles.choice} />
+                {request.noAlwaysAllow ? null : <Button disabled={disabled} label="Always" onPress={() => answer({ kind: 'approval', decision: 'allow_always' })} style={styles.choice} />}
                 <Button disabled={disabled} label="Allow once" onPress={() => answer({ kind: 'approval', decision: 'allow' })} style={styles.choice} variant="primary" />
               </View>
             </>
@@ -145,6 +146,7 @@ const styles = StyleSheet.create({
   kicker: { flex: 1, fontSize: 11.5, fontWeight: '700', letterSpacing: 1 },
   count: { fontSize: 12 },
   title: { fontSize: 16, fontWeight: '700', lineHeight: 21 },
+  reason: { fontSize: 14, lineHeight: 19 },
   detail: { flexShrink: 1, minHeight: 36, overflow: 'hidden', maxHeight: 120, borderWidth: 1, borderRadius: 10 },
   detailText: { fontFamily: MONO, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 10, paddingVertical: 8 },
   row: { flexDirection: 'row', gap: 6 },

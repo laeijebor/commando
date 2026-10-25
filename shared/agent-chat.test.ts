@@ -41,6 +41,12 @@ describe('parseChatItem', () => {
     expect(parseChatItem({ ...base, kind: 'todo_list', todos: [{ content: 'x', status: 'odd' }, 5] })).toEqual({ ...base, kind: 'todo_list', todos: [{ content: 'x', status: 'pending' }] })
   })
 
+  it('keeps an approval reason and only a true noAlwaysAllow', () => {
+    const request = { ...base, kind: 'request', requestId: 'r', requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?' }
+    expect(parseChatItem({ ...request, reason: 'Safety check: rm', noAlwaysAllow: true })).toEqual({ ...request, reason: 'Safety check: rm', noAlwaysAllow: true })
+    expect(parseChatItem({ ...request, reason: 5, noAlwaysAllow: 'yes' })).toEqual(request)
+  })
+
   it('rejects malformed items', () => {
     expect(parseChatItem({ ...base, kind: 'file_change', toolUseId: 'u', toolName: 'Edit', path: 'a', additions: 'many', deletions: 0 })).toBeNull()
     expect(parseChatItem({ ...base, kind: 'mystery' })).toBeNull()
