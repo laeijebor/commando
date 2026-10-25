@@ -1,4 +1,5 @@
 import { requireOptionalNativeModule } from 'expo'
+import * as Device from 'expo-device'
 
 import {
   CHAT_IMAGE_MAX_DIMENSION,
@@ -34,6 +35,8 @@ function load<T>(name: 'picker' | 'manipulator'): T | null {
   if (!requireOptionalNativeModule(name === 'picker' ? 'ExponentImagePicker' : 'ExpoImageManipulator')) return null
   return (name === 'picker' ? require('expo-image-picker') : require('expo-image-manipulator')) as T
 }
+
+export const NO_CAMERA = 'The simulator has no camera; choose from the library instead'
 
 export const REBUILD_FOR_IMAGES = 'This build of the app has no photo picker; rebuild it to attach images'
 
@@ -81,6 +84,8 @@ export async function pickImages(limit: number): Promise<PickedImage[] | null> {
 export async function takePhoto(): Promise<PickedImage[] | null> {
   const picker = load<ImagePickerModule>('picker')
   if (!picker) throw new Error(REBUILD_FOR_IMAGES)
+  // The picker doesn't check for a camera, and UIKit ends the app when there is none.
+  if (!Device.isDevice) throw new Error(NO_CAMERA)
   const permission = await picker.requestCameraPermissionsAsync()
   if (!permission.granted) {
     throw new Error(permission.canAskAgain

@@ -1,7 +1,9 @@
 import { isChatImageId } from '@commando/agent-chat'
 
 import { DEMO_ORIGIN, demoHost } from '../demo/flags'
-import { chatImageUri, pickImages, prepareImage, REBUILD_FOR_IMAGES, takePhoto, uploadChatImage } from './images'
+import * as Device from 'expo-device'
+
+import { chatImageUri, NO_CAMERA, pickImages, prepareImage, REBUILD_FOR_IMAGES, takePhoto, uploadChatImage } from './images'
 
 const mockOptionalNative = jest.fn((_name: string): unknown => null)
 
@@ -53,6 +55,17 @@ describe('chat images', () => {
       mockCamera.result = { canceled: true, assets: null }
       await expect(takePhoto()).resolves.toBeNull()
       mockCamera.result = taken
+    })
+
+    it('refuses on a simulator, which has no camera, before asking for it', async () => {
+      const real = Device.isDevice
+      Object.defineProperty(Device, 'isDevice', { value: false, configurable: true })
+      try {
+        await expect(takePhoto()).rejects.toThrow(NO_CAMERA)
+        expect(mockCamera.launch).not.toHaveBeenCalled()
+      } finally {
+        Object.defineProperty(Device, 'isDevice', { value: real, configurable: true })
+      }
     })
 
     it("doesn't open the camera without permission, and points to Settings once iOS won't ask again", async () => {
