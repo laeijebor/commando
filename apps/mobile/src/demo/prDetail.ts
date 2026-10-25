@@ -27,6 +27,8 @@ export function demoPrPreview(): PrPreview {
     unresolvedThreads: 2,
     reviewDecision: 'changes_requested',
     conflicting: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
     checks: { state: 'pending', failed: 0, pending: 1, total: 4 },
     headRefName: 'feat/remote-chat',
     baseRefName: 'main',

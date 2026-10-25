@@ -74,6 +74,7 @@
       "^@commando/pairing$": "<rootDir>/../../shared/pairing.ts",
       "^@commando/guide-types$": "<rootDir>/../../shared/guide-types.ts",
       "^@commando/pr-quick-look$": "<rootDir>/../../shared/pr-quick-look.ts",
+      "^@commando/pr-merge$": "<rootDir>/../../shared/pr-merge.ts",
       "^@commando/pr-conversation$": "<rootDir>/../../shared/pr-conversation.ts"
     },
     "testPathIgnorePatterns": [
