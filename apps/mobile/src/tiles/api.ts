@@ -5,6 +5,8 @@ import type {
   WebPanePlacement,
 } from '@commando/protocol'
 
+import { parsePendingSent, type RedlinePageResponse } from '@commando/redline-response'
+
 import { daemonFetch, DaemonHttpError } from '../hosts/api'
 import type { Host } from '../hosts/types'
 import type { TileInspectRect } from './protocol'
@@ -29,11 +31,13 @@ export type PendingSendTarget = { id: number; revision: number }
  */
 export function toPendingSnapshot(body: unknown): WebPanePendingSnapshot {
   const raw = (body ?? {}) as Partial<WebPanePendingSnapshot>
+  const sent = parsePendingSent(raw.sent)
   return {
     ...(typeof raw.revision === 'number' ? { revision: raw.revision } : {}),
     notes: Array.isArray(raw.notes) ? (raw.notes as WebPanePendingNote[]) : [],
     knownUpTo: typeof raw.knownUpTo === 'number' ? raw.knownUpTo : Number.POSITIVE_INFINITY,
     dropped: typeof raw.dropped === 'number' ? raw.dropped : 0,
+    ...(sent ? { sent } : {}),
   }
 }
 
@@ -93,8 +97,34 @@ export async function navigateTile(host: Host, webPaneId: string, url: string): 
   await call(host, tilePath(webPaneId, '/navigate'), { method: 'POST', body: { url } })
 }
 
-export async function fetchPendingNotes(host: Host, webPaneId: string): Promise<WebPanePendingSnapshot> {
-  return toPendingSnapshot(await call(host, tilePath(webPaneId, '/pending')))
+/**
+ * `GET …/pending`. `sentPage` reads that page's sent answers without changing
+ * which page the daemon thinks the tile shows (the desktop canvas does the same).
+ */
+export async function fetchPendingNotes(
+  host: Host,
+  webPaneId: string,
+  sentPage?: string,
+): Promise<WebPanePendingSnapshot> {
+  const query = sentPage ? `?sentPage=${encodeURIComponent(sentPage)}` : ''
+  return toPendingSnapshot(await call(host, tilePath(webPaneId, `/pending${query}`)))
+}
+
+/**
+ * `POST …/pending/response` — an answer a page question queued, the route the
+ * desktop's native WebView uses for the same thing. `pageUrl` is the tile's
+ * canonical page URL, so the queue matches the desktop's.
+ */
+export async function addPendingResponse(
+  host: Host,
+  webPaneId: string,
+  pageUrl: string,
+  response: RedlinePageResponse,
+): Promise<WebPanePendingSnapshot> {
+  return toPendingSnapshot(await call(host, tilePath(webPaneId, '/pending/response'), {
+    method: 'POST',
+    body: { pageUrl, response },
+  }))
 }
 
 export async function addPendingNote(

@@ -40,6 +40,12 @@
       ],
       "@commando/pr-conversation": [
         "../../shared/pr-conversation.ts"
+      ],
+      "@commando/redline-response": [
+        "../../shared/redline-response.ts"
+      ],
+      "@commando/canvas-manifest": [
+        "../../shared/canvas-manifest.ts"
       ]
     }
   },
@@ -54,7 +60,9 @@
     "../../shared/chat-timeline.ts",
     "../../shared/chat-composer.ts",
     "../../shared/pr-quick-look.ts",
-    "../../shared/pr-conversation.ts"
+    "../../shared/pr-conversation.ts",
+    "../../shared/redline-response.ts",
+    "../../shared/canvas-manifest.ts"
   ],
   "exclude": [
     "node_modules"
