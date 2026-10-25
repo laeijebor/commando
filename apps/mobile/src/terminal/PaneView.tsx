@@ -107,6 +107,20 @@ function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: Pa
 }
 
 /**
+ * The keyboard's latest frame from every event since this module loaded, or
+ * undefined before the first. A pane that opens with the keyboard already up
+ * starts from it: `Keyboard.metrics()` only keeps the last did-show, which can
+ * be a third-party keyboard's provisional frame, and still reports a keyboard
+ * that is on its way down.
+ */
+let latestKeyboardFrame: KeyboardFrame | null | undefined
+for (const name of KEYBOARD_FRAME_EVENTS) {
+  Keyboard.addListener(name, (event) => {
+    latestKeyboardFrame = nextKeyboardFrame(name, event?.endCoordinates)
+  })
+}
+
+/**
  * How much of the pane's body the keyboard covers (0 while it is down).
  * The body sits under the stack's nav and above the tab bar, which
  * KeyboardAvoidingView's parent-relative frame can't see, so the body's frame
@@ -114,7 +128,8 @@ function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: Pa
  * edge (see `keyboardOverlap`). (`measure` reports the body relative to its
  * screen here, and a measure during the keyboard event can catch the
  * app-switch animation's transform, so it is only taken on layout. The
- * padding is capped below the body's height, so it can't change the frame.)
+ * padding is capped below the measured body's height, so it doesn't grow the
+ * body; if the body shrinks while padded, the next measure brings it back.)
  *
  * The keyboard follows every frame event, not just the will-show: a
  * third-party keyboard can post a too-tall provisional frame first and correct
@@ -131,8 +146,9 @@ function useKeyboardOverlap(): { ref: React.RefObject<View | null>; onLayout: ()
     const next = keyboardOverlap(keyboard.current, body.current, Dimensions.get('window').height)
     if (next === current.current) return
     current.current = next
-    if (duration !== undefined) {
-      LayoutAnimation.configureNext(LayoutAnimation.create(duration || 250, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
+    // A frame change with no duration (a keyboard swap, a correction) snaps, as the keyboard does.
+    if (duration) {
+      LayoutAnimation.configureNext(LayoutAnimation.create(duration, LayoutAnimation.Types.keyboard, LayoutAnimation.Properties.opacity))
     }
     setOverlap(next)
   }, [])
@@ -143,15 +159,13 @@ function useKeyboardOverlap(): { ref: React.RefObject<View | null>; onLayout: ()
     })
   }, [update])
   useEffect(() => {
-    // Opened with the keyboard already up: start from its last settled frame.
-    if (Keyboard.isVisible()) {
-      keyboard.current = Keyboard.metrics() ?? null
-      update()
-    }
+    // Opened with the keyboard already up: start from its latest frame.
+    keyboard.current = latestKeyboardFrame !== undefined ? latestKeyboardFrame : Keyboard.isVisible() ? (Keyboard.metrics() ?? null) : null
+    update()
     const subscriptions = KEYBOARD_FRAME_EVENTS.map((name) => Keyboard.addListener(name, (event) => {
       keyboard.current = nextKeyboardFrame(name, event?.endCoordinates)
       // The will-events animate alongside the keyboard; a did-event's frame has settled, so a correction snaps.
-      update(name.startsWith('keyboardWill') ? event?.duration ?? 0 : undefined)
+      update(name.startsWith('keyboardWill') ? event?.duration : undefined)
     }))
     return () => subscriptions.forEach((subscription) => subscription.remove())
   }, [update])

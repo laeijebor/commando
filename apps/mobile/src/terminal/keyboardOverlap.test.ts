@@ -16,13 +16,9 @@ const OFF_SCREEN: KeyboardFrame = { screenY: 852, height: 336 }
 
 type Step = [KeyboardFrameEvent, KeyboardFrame?]
 
-/** The overlap after each event, starting from `initial` (the keyboard already up when the pane opens). */
-function run(steps: Step[], { body = BODY, initial = null }: { body?: BodyFrame; initial?: KeyboardFrame | null } = {}): number[] {
-  let frame = initial
-  return steps.map(([event, end]) => {
-    frame = nextKeyboardFrame(event, end)
-    return keyboardOverlap(frame, body, WINDOW)
-  })
+/** The overlap after each event. */
+function run(steps: Step[], body: BodyFrame = BODY): number[] {
+  return steps.map(([event, end]) => keyboardOverlap(nextKeyboardFrame(event, end), body, WINDOW))
 }
 
 describe('the keyboard overlap', () => {
@@ -39,7 +35,7 @@ describe('the keyboard overlap', () => {
   })
 
   it('takes away the gap between the body and the bottom edge', () => {
-    expect(run([['keyboardWillShow', SYSTEM]], { body: BODY_ABOVE_TAB_BAR })).toEqual([296])
+    expect(run([['keyboardWillShow', SYSTEM]], BODY_ABOVE_TAB_BAR)).toEqual([296])
   })
 
   it('settles on the real frame when a third-party keyboard corrects a too-tall provisional one', () => {
@@ -71,9 +67,10 @@ describe('the keyboard overlap', () => {
   })
 
   it('pads at once when the pane opens with the keyboard already up', () => {
-    // No will-show arrives: the starting frame (from Keyboard.metrics) is all there is.
-    expect(keyboardOverlap(SYSTEM, BODY, WINDOW)).toBe(336)
-    expect(run([['keyboardDidHide']], { initial: SYSTEM })).toEqual([0])
+    // No will-show arrives: the pane starts from the latest frame of the events before it opened.
+    const before: Step[] = [['keyboardWillShow', SWIFTKEY_PROVISIONAL], ['keyboardDidShow', SWIFTKEY_PROVISIONAL], ['keyboardDidChangeFrame', SWIFTKEY]]
+    const latest = before.reduce<KeyboardFrame | null>((_frame, [event, end]) => nextKeyboardFrame(event, end), null)
+    expect(keyboardOverlap(latest, BODY, WINDOW)).toBe(405)
   })
 
   it('waits for the body to be measured', () => {
