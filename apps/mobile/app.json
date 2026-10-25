@@ -32,7 +32,7 @@
         {
           "photosPermission": "Commando attaches the photos you pick to a chat message.",
           "cameraPermission": false,
-          "microphonePermission": false
+          "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat."
         }
       ],
       [
