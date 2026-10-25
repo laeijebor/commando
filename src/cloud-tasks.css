@@ -1,0 +1,75 @@
+.cloud-tasks { min-width: 0; min-height: 0; color: var(--text); background: var(--bg); font-size: 11px; overflow: auto; }
+.cloud-section { flex: 1; width: 100%; }
+.cloud-tasks *, .cloud-dialog-backdrop { box-sizing: border-box; }
+.cloud-tasks :is(p, dd, code, strong, span, button) { overflow-wrap: anywhere; }
+.cloud-tasks p { line-height: 1.55; }
+.cloud-tasks :is(button, input, textarea, select) { font: inherit; }
+.cloud-tasks button { min-height: 28px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); color: var(--text-soft); cursor: pointer; }
+.cloud-tasks button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-soft); color: var(--text); }
+.cloud-tasks button:disabled { opacity: .48; cursor: not-allowed; }
+.cloud-tasks :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cloud-tasks a { color: var(--accent); }
+.cloud-tasks .cloud-primary { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+.cloud-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 8px; min-height: 38px; border-bottom: 1px solid var(--border); }
+.cloud-toolbar h1 { flex: 1; margin: 0; font-size: 12px; letter-spacing: -.025em; }
+.cloud-content { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); min-height: 0; }
+.cloud-list { min-width: 0; padding: 8px; background: var(--surface); border-right: 1px solid var(--border); }
+.cloud-list-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; color: var(--muted); font-size: 10px; }
+.cloud-tasks .cloud-task-card { width: 100%; min-width: 0; display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: start; gap: 7px; margin-bottom: 5px; padding: 8px; border-radius: 9px; text-align: left; }
+.cloud-tasks .cloud-task-card[aria-current="true"] { border-color: var(--accent); background: var(--surface-soft); }
+.cloud-tasks .cloud-task-card[data-uncertain] { border-color: color-mix(in srgb, var(--amber) 40%, var(--border)); }
+.cloud-avatar { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 7px; color: var(--bg); background: var(--purple, var(--accent)); font: 800 8px var(--mono); }
+.cloud-avatar--codex { background: var(--cyan); }
+.cloud-task-copy { min-width: 0; display: grid; gap: 5px; }
+.cloud-task-copy strong { font-size: 11px; line-height: 1.35; }
+.cloud-task-copy :is(small, span) { color: var(--muted); font: 9px/1.5 var(--mono); }
+.cloud-task-copy span { color: var(--text-soft); }
+.cloud-detail { min-width: 0; padding: 14px; }
+.cloud-detail h2 { font-size: 12px; margin: 8px 0 12px; }
+.cloud-notice { border: 1px solid var(--border); border-left: 2px solid var(--amber); border-radius: 6px; padding: 9px 10px; background: var(--surface-raised); line-height: 1.55; }
+.cloud-notice p { color: var(--text-soft); margin: 5px 0; }
+.cloud-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.cloud-data { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; padding: 12px 0; margin: 0; border-bottom: 1px solid var(--border); }
+.cloud-data dt { color: var(--muted); }
+.cloud-data dd { margin: 0; min-width: 0; color: var(--text-soft); }
+.cloud-detail-block { margin-top: 14px; }
+.cloud-tasks h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 7px; }
+.cloud-activity { padding-left: 17px; color: var(--text-soft); line-height: 1.6; }
+.cloud-activity li { margin-bottom: 8px; }
+.cloud-activity time { color: var(--muted); font: 9px var(--mono); }
+.cloud-hint { color: var(--muted); font-size: 10px; }
+.cloud-prompt { white-space: pre-wrap; }
+.cloud-tasks .cloud-back { display: none; margin-bottom: 8px; }
+.cloud-form, .cloud-form fieldset { display: grid; gap: 8px; min-width: 0; }
+.cloud-form { padding: 10px 0; }
+.cloud-form fieldset { border: 0; margin: 0; padding: 0; }
+.cloud-form label { display: grid; gap: 4px; color: var(--muted); font-size: 10px; }
+.cloud-form input:not([type="checkbox"]), .cloud-form textarea, .cloud-form select { min-width: 0; width: 100%; border: 1px solid var(--text-faint); border-radius: 6px; background: var(--surface-soft); color: var(--text); padding: 7px 8px; font-size: 11px; }
+.cloud-form textarea { resize: vertical; font-family: var(--mono); line-height: 1.4; }
+.cloud-tasks .cloud-check { display: flex; align-items: flex-start; gap: 6px; }
+.cloud-check input { accent-color: var(--accent); flex-shrink: 0; }
+.cloud-destination { margin: 0; border-left: 2px solid var(--accent); color: var(--muted); padding: 2px 0 2px 7px; }
+.cloud-destination strong { color: var(--text); }
+.cloud-diff { max-height: 65vh; overflow: auto; margin: 8px 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-deep); font: 11px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cloud-recovery { padding: 8px; border-bottom: 1px solid var(--border); }
+.cloud-recovery h2 { font-size: 11px; }
+.cloud-recovery .cloud-notice { margin: 6px 0; }
+.cloud-recovery button { margin: 4px 6px 0 0; }
+.cloud-hud { padding: 8px; background: var(--surface); }
+.cloud-hud h2 { font-size: 11px; display: flex; justify-content: space-between; }
+.cloud-hud h2 span { font: 9px var(--mono); color: var(--muted); }
+.cloud-task-card--compact .cloud-task-copy strong { font-size: 9px; }
+.cloud-dialog-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 16px; background: #000a; }
+.cloud-dialog { width: min(400px, 100%); max-height: calc(100dvh - 32px); overflow: auto; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-raised); box-shadow: var(--shadow, 0 24px 80px #000c); }
+.cloud-dialog > header { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.cloud-dialog h2 { flex: 1; margin: 0; font-size: 12px; }
+.cloud-dialog > .cloud-form { padding: 10px 12px 12px; }
+@media (max-width: 639px) {
+  .cloud-content { grid-template-columns: minmax(0, 1fr); }
+  .cloud-list { border-right: 0; }
+  .cloud-detail { display: none; padding: 12px; }
+  .cloud-content--detail-open .cloud-list { display: none; }
+  .cloud-content--detail-open .cloud-detail { display: block; }
+  .cloud-tasks .cloud-back { display: inline-block; }
+  .cloud-data { grid-template-columns: 88px minmax(0, 1fr); }
+}
