@@ -11,10 +11,10 @@ import {
   View,
 } from 'react-native'
 
-import type { ChatPermissionMode, GitRepoInfo, TmuxCreatedTarget } from '@commando/tmux-create'
-import { chatPermissionModes, isChatLaunchProvider, requireSessionAgentLaunch, TmuxAgentLaunchCompatibilityError } from '@commando/tmux-create'
+import type { ChatPermissionMode, ClaudeProfile, GitRepoInfo, TmuxCreatedTarget } from '@commando/tmux-create'
+import { chatPermissionModes, claudeProfileLabel, defaultClaudeProfile, isChatLaunchProvider, requireSessionAgentLaunch, TmuxAgentLaunchCompatibilityError } from '@commando/tmux-create'
 
-import { createTmuxSession, fetchRepoInfo } from '../../../src/daemon/paneApi'
+import { createTmuxSession, fetchClaudeProfiles, fetchRepoInfo } from '../../../src/daemon/paneApi'
 import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
 import {
   AGENT_CHOICES,
@@ -67,6 +67,9 @@ export default function NewSessionScreen(): React.JSX.Element {
   const [prepareEnabled, setPrepareEnabled] = useState(true)
   const [agent, setAgent] = useState<AgentChoice>(DEFAULT_AGENT_CHOICE)
   const [permissionMode, setPermissionMode] = useState<ChatPermissionMode>('default')
+  // The Claude profiles the daemon offers; the default one (as in Settings) is picked to start with.
+  const [profiles, setProfiles] = useState<ClaudeProfile[] | null>(null)
+  const [configDir, setConfigDir] = useState<string | undefined>(undefined)
   const [prompt, setPrompt] = useState('')
   const [notify, setNotify] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -96,6 +99,20 @@ export default function NewSessionScreen(): React.JSX.Element {
     const fallback = directoryHistory[0] ?? repos[0]?.root
     if (fallback) setDirectory(fallback)
   }, [directory, directoryHistory, repos])
+
+  useEffect(() => {
+    if (!host) return
+    let cancelled = false
+    fetchClaudeProfiles(host)
+      .then((found) => {
+        if (cancelled) return
+        setProfiles(found)
+        setConfigDir((current) => current && found.some((profile) => profile.configDir === current) ? current : defaultClaudeProfile(found)?.configDir)
+      })
+      // An older daemon has no list; it then starts the chat with its own default.
+      .catch(() => { if (!cancelled) setProfiles([]) })
+    return () => { cancelled = true }
+  }, [host])
 
   // Only the daemon can say whether a directory is a checkout, so the worktree
   // block stays hidden until `GET /api/git/repo` says it is.
@@ -140,7 +157,7 @@ export default function NewSessionScreen(): React.JSX.Element {
     setError(null)
     try {
       const request = buildSessionRequest(
-        { name, directory, worktreeEnabled, branch, worktreePath, prepareCommand, prepareEnabled, agent, prompt, permissionMode },
+        { name, directory, worktreeEnabled, branch, worktreePath, prepareCommand, prepareEnabled, agent, prompt, permissionMode, configDir },
         repo,
       )
       const { created } = requireSessionAgentLaunch(request, await createTmuxSession(host, request))
@@ -168,6 +185,7 @@ export default function NewSessionScreen(): React.JSX.Element {
   }, [
     agent,
     branch,
+    configDir,
     directory,
     host,
     hostId,
@@ -293,6 +311,20 @@ export default function NewSessionScreen(): React.JSX.Element {
             onPress={() => setPermissionMode(mode.value)}
             style={[styles.agentChoice, { backgroundColor: permissionMode === mode.value ? theme.surfaceSoft : theme.surfaceRaised, borderColor: permissionMode === mode.value ? theme.accent : theme.border }]}
           ><Text style={{ color: permissionMode === mode.value ? theme.text : theme.muted }}>{mode.label}</Text></Pressable>)}
+        </View>
+      </> : null}
+      {agent === 'claude-chat' && profiles && profiles.length > 1 ? <>
+        <SectionHeader label="Claude profile" />
+        <View style={styles.agentChoices}>
+          {profiles.map((profile) => <Pressable
+            key={profile.configDir}
+            accessibilityRole="radio"
+            accessibilityLabel={`Profile ${claudeProfileLabel(profile)}`}
+            accessibilityState={{ checked: configDir === profile.configDir, disabled: busy }}
+            disabled={busy}
+            onPress={() => setConfigDir(profile.configDir)}
+            style={[styles.agentChoice, { backgroundColor: configDir === profile.configDir ? theme.surfaceSoft : theme.surfaceRaised, borderColor: configDir === profile.configDir ? theme.accent : theme.border }]}
+          ><Text style={{ color: configDir === profile.configDir ? theme.text : theme.muted }}>{claudeProfileLabel(profile)}</Text></Pressable>)}
         </View>
       </> : null}
       {agent === 'shell' ? (

@@ -32,6 +32,9 @@
       "@commando/session-identity": [
         "../../shared/session-identity.ts"
       ],
+      "@commando/guide-types": [
+        "../../shared/guide-types.ts"
+      ],
       "@commando/pr-quick-look": [
         "../../shared/pr-quick-look.ts"
       ],

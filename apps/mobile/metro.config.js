@@ -31,6 +31,7 @@ config.resolver.extraNodeModules = {
   '@commando/agent-chat': path.join(repoRoot, 'shared', 'agent-chat.ts'),
   '@commando/chat-timeline': path.join(repoRoot, 'shared', 'chat-timeline.ts'),
   '@commando/chat-composer': path.join(repoRoot, 'shared', 'chat-composer.ts'),
+  '@commando/guide-types': path.join(repoRoot, 'shared', 'guide-types.ts'),
   '@commando/pr-quick-look': path.join(repoRoot, 'shared', 'pr-quick-look.ts'),
   '@commando/pr-conversation': path.join(repoRoot, 'shared', 'pr-conversation.ts'),
 }

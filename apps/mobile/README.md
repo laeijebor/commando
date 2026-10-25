@@ -21,7 +21,11 @@ only. Bundle id `com.commando.companion`.
   providers, with session identity headers, right-aligned user bubbles, flat
   Markdown replies, foldable tool/thinking activity and scrollable code/diffs.
   Sending, queueing, steering, stopping, attachments and command/file menus use
-  the existing chat channel. Terminal-only panes retain xterm, fit, keys and paste.
+  the existing chat channel. While the clipboard holds an image (a screenshot,
+  an image copied in Photos or Safari, or one from the Mac over Universal
+  Clipboard) the composer offers it above the field; iOS's paste control reads
+  it without the "Allow Paste" prompt, and it uploads like a picked photo. Text
+  still pastes through the field's own menu. Terminal-only panes retain xterm, fit, keys and paste.
 - **Pane tabs** — Chat/Terminal, Worklog, Changes, linked PRs and attached web
   tabs in desktop order. Switching keeps the conversation mounted. Chromium
   opens the existing full-screen tile route with its interaction/review controls;
@@ -160,6 +164,39 @@ then `expo start` against it:
 ```sh
 npx eas build --profile development --platform ios
 ```
+
+## Over-the-air updates
+
+The app is linked to the EAS project `@laeijebor/commando-companion` and
+checks the `production` channel on every launch. A new update downloads in the
+background and runs from the next cold start, so after publishing, open the
+app, swipe it away, and open it again.
+
+Publish JavaScript and asset changes from `apps/mobile`:
+
+```sh
+npx eas-cli update --channel production --platform ios --message "what changed"
+```
+
+An update only reaches builds with the same runtime version, which follows the
+app version (`expo.version` in `app.json`). Adding, removing or upgrading a
+native module needs a new build: bump `expo.version`, rebuild, and install it.
+A phone build signed with the team's development profile can be shared without
+a cable through EAS internal distribution:
+
+```sh
+npx expo prebuild -p ios --clean
+xcodebuild -workspace ios/Commando.xcworkspace -scheme Commando -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath /tmp/Commando.xcarchive \
+  -allowProvisioningUpdates archive
+xcodebuild -exportArchive -archivePath /tmp/Commando.xcarchive \
+  -exportOptionsPlist scripts/ExportOptions.development.plist -exportPath /tmp/Commando-ipa \
+  -allowProvisioningUpdates
+npx eas-cli upload --platform ios --build-path /tmp/Commando-ipa/Commando.ipa
+```
+
+Only devices in that profile can install it. Builds made before EAS Update was
+added never check for updates and must be replaced once.
 
 ## Pointing at a daemon over Tailscale
 
