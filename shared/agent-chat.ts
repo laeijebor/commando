@@ -8,7 +8,7 @@
 import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type ChatMcpResult } from './chat-mcp.js'
 import type { ChatCardEvent } from './chat-tile-events.js'
 
-export const AGENT_HOST_PROTOCOL_VERSION = 6
+export const AGENT_HOST_PROTOCOL_VERSION = 7
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -45,6 +45,12 @@ export const CHAT_MCP_HOST_VERSION = 6
 
 export function hostTakesMcp(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_MCP_HOST_VERSION
+}
+/** Hosts from this version take attached videos (older ones refuse their ids). */
+export const CHAT_VIDEO_HOST_VERSION = 7
+
+export function hostTakesVideos(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_VIDEO_HOST_VERSION
 }
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
@@ -103,19 +109,39 @@ export const MAX_CHAT_IMAGES = 10
 export const CHAT_IMAGE_MAX_DIMENSION = 2000
 export const CHAT_IMAGE_EXTENSIONS: Record<ChatImageType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
 /**
- * Names the saved copy of an attached image in the text Claude gets, so its
- * tools can open the file (after t3code's AttachmentPrompt). The host appends
- * one per image after the typed text.
+ * Videos are attached as files only: no model takes them as input, so the
+ * agent gets the saved copy's path and watches it with its own tools (ffmpeg
+ * frames, say). They travel as image refs whose id has a video extension.
  */
-export function attachmentNote(name: string, path: string): string {
-  return `[Attached image "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
+export const CHAT_VIDEO_TYPES = ['video/mp4', 'video/quicktime', 'video/webm'] as const
+export type ChatVideoType = typeof CHAT_VIDEO_TYPES[number]
+export const CHAT_VIDEO_EXTENSIONS: Record<ChatVideoType, string> = { 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm' }
+export const MAX_CHAT_VIDEO_BYTES = 500 * 1024 * 1024
+
+export type ChatAttachmentKind = 'image' | 'video'
+
+/**
+ * Names the saved copy of an attachment in the text the agent gets, so its
+ * tools can open the file (after t3code's AttachmentPrompt). The host appends
+ * one per attachment after the typed text.
+ */
+export function attachmentNote(name: string, path: string, kind: ChatAttachmentKind = 'image'): string {
+  return `[Attached ${kind} "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
 }
 
 /** Matches attachmentNote's notes; the first group is the saved path. */
-export const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g
-const ATTACHMENT_NOTE_START = '[Attached image "'
+export const ATTACHMENT_NOTES = /\s*\[Attached (?:image|video) "[^"\n]*" is saved at: ([^\]\n]+)\]/g
+const ATTACHMENT_NOTE_STARTS = ['[Attached image "', '[Attached video "']
 
-/** The text the person typed, without the notes the host added for Claude. */
+/** The videos a message's notes name: its saved copies, whose file names are their ids. */
+export function notedVideos(text: string): ChatImageRef[] {
+  return [...text.matchAll(/\[Attached video "([^"\n]*)" is saved at: ([^\]\n]+)\]/g)].flatMap((match) => {
+    const id = match[2]!.slice(match[2]!.lastIndexOf('/') + 1)
+    return isChatVideoId(id) ? [match[1] ? { id, name: match[1] } : { id }] : []
+  })
+}
+
+/** The text the person typed, without the notes the host added for the agent. */
 export function stripAttachmentNotes(text: string): string {
   return text.replace(ATTACHMENT_NOTES, '').trim()
 }
@@ -123,13 +149,13 @@ export function stripAttachmentNotes(text: string): string {
 /** A shortened prompt (a hook's summary, a session's first prompt) without the notes, even one cut off at the end. */
 export function stripAttachmentNotesFromSummary(text: string): string {
   const stripped = stripAttachmentNotes(text)
-  // A length limit can cut a note anywhere: after its opening (the image name
+  // A length limit can cut a note anywhere: after its opening (the file name
   // may hold a "["), or inside its opening words.
-  const marker = stripped.lastIndexOf(ATTACHMENT_NOTE_START)
+  const marker = Math.max(...ATTACHMENT_NOTE_STARTS.map((start) => stripped.lastIndexOf(start)))
   const open = marker >= 0 && !stripped.slice(marker).includes(']') ? marker : stripped.lastIndexOf('[')
   const tail = stripped.slice(open)
   const cutNote = open >= 0 && (open === 0 || /\s/.test(stripped[open - 1]!)) && !tail.includes(']')
-    && (tail.startsWith(ATTACHMENT_NOTE_START) || ATTACHMENT_NOTE_START.startsWith(tail))
+    && ATTACHMENT_NOTE_STARTS.some((start) => tail.startsWith(start) || start.startsWith(tail))
   return cutNote ? stripped.slice(0, open).trim() : stripped
 }
 
@@ -138,6 +164,17 @@ const CHAT_IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|gif|webp)$/
 
 export function isChatImageId(value: unknown): value is string {
   return typeof value === 'string' && CHAT_IMAGE_ID.test(value)
+}
+
+const CHAT_VIDEO_ID = /^[0-9a-f]{64}\.(mp4|mov|webm)$/
+
+export function isChatVideoId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_VIDEO_ID.test(value)
+}
+
+/** An image or a video someone attached: what a message's refs may name. */
+export function isChatAttachmentId(value: unknown): value is string {
+  return isChatImageId(value) || isChatVideoId(value)
 }
 
 export function chatImageType(id: string): ChatImageType {
@@ -174,6 +211,7 @@ export function chatImageStillId(id: string): string {
 /** The Content-Type a stored image is served with. */
 export function chatImageContentType(id: string): string {
   if (id.endsWith('.svg')) return 'image/svg+xml'
+  if (CHAT_VIDEO_ID.test(id)) return (Object.entries(CHAT_VIDEO_EXTENSIONS).find(([, value]) => id.endsWith(`.${value}`))?.[0] ?? 'video/mp4')
   return id.endsWith('.svg.png') ? 'image/png' : chatImageType(id)
 }
 
@@ -809,7 +847,7 @@ export function parseChatImageRefs(value: unknown, max = MAX_CHAT_IMAGES): ChatI
   if (!Array.isArray(value) || value.length > max) return null
   const refs: ChatImageRef[] = []
   for (const ref of value) {
-    if (!isRecord(ref) || !isChatImageId(ref.id) || !optionalString(ref.name, 1000)) return null
+    if (!isRecord(ref) || !isChatAttachmentId(ref.id) || !optionalString(ref.name, 1000)) return null
     refs.push(withOptional({ id: ref.id } as ChatImageRef, { name: typeof ref.name === 'string' ? ref.name.slice(0, 200) : undefined }))
   }
   return refs

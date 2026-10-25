@@ -1,4 +1,4 @@
-import { MAX_CHAT_ITEMS, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatTodo } from '../../../shared/agent-chat.js'
+import { MAX_CHAT_ITEMS, notedVideos, stripAttachmentNotes, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatTodo } from '../../../shared/agent-chat.js'
 
 export const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 export const string = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined
@@ -113,7 +113,9 @@ export class CursorItemMapper {
       } }, true)
     }
     if (entry.type !== 'agentConversationTurn') return []
-    const items = string(record(turn.userMessage).text) !== undefined ? this.expectUser(text(record(turn.userMessage).text)) : []
+    const sent = string(record(turn.userMessage).text)
+    // Attached videos were sent as notes after the typed text.
+    const items = sent !== undefined ? this.expectUser(stripAttachmentNotes(sent), notedVideos(sent)) : []
     for (const [index, value] of list(turn.steps).entries()) {
       const step = record(value)
       if (step.type === 'toolCall') { items.push(...this.endStep(), ...this.tool(`step-${index}`, step.message, true)) }

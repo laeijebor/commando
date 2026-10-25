@@ -123,10 +123,10 @@ import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
-import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
+import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
-import { AGENT_HOST_WS_PATH, isChatProvider } from '../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -1041,6 +1041,10 @@ async function main(): Promise<void> {
     if (images.length) {
       if (!agentHosts.takesInput(message.paneId)) {
         sendError(client, 'chat_unavailable', 'This chat started before images were supported; restart it to send images', message.requestId)
+        return
+      }
+      if (images.some((image) => isChatVideoId(image.id)) && !agentHosts.takesVideos(message.paneId)) {
+        sendError(client, 'chat_unavailable', 'This chat started before videos were supported; restart it to send videos', message.requestId)
         return
       }
       const stored = await Promise.all(images.map((image) => chatImages.exists(image.id)))
@@ -2917,6 +2921,7 @@ async function main(): Promise<void> {
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await handleChatImageUpload(request, response, url, chatImages)) return
+        if (await handleChatVideoUpload(request, response, url, chatImages)) return
         if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleRepoPrepareCommands(request, response, url, repoPrepareCommands)) return
@@ -2971,6 +2976,8 @@ async function main(): Promise<void> {
 
   const httpServers = networkAccess.listeners.map((listener) => {
     const server = createServer(requestListener)
+    // A 500 MB chat video takes longer than Node's default 5 minutes on a slow tailnet link.
+    server.requestTimeout = 30 * 60 * 1000
     server.on('upgrade', (request, socket, head) => {
       void (async () => {
         if (!networkAccess.validRequest(request)) {

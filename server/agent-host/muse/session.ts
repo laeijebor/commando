@@ -1,6 +1,8 @@
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
+  attachmentNote,
+  isChatVideoId,
   MAX_QUEUED_MESSAGES,
   isChatEffort,
   isModelValue,
@@ -290,7 +292,7 @@ export class MuseChatSession implements ChatProviderSession {
         if (this.activeTurn) throw new Error('Permission changes apply to the next turn; wait for this turn to finish')
         await this.applySettings({ permissionMode: options.permissionMode })
       }
-      const input = await this.input(trimmed, images)
+      const input = await this.input(trimmed, images, sessionId)
       const steer = Boolean(this.activeTurn)
       const commandId = uuidv7()
       this.mapper.expectUser(trimmed, images)
@@ -306,19 +308,26 @@ export class MuseChatSession implements ChatProviderSession {
     }).finally(() => { this.sending--; this.switchReady(); this.flushQueue() })
   }
   /** A leading `/skill` runs that skill with the rest of the message as its arguments. */
-  private async input(text: string, images: ChatImageRef[]): Promise<MuseInput[]> {
+  private async input(text: string, images: ChatImageRef[], sessionId: string): Promise<MuseInput[]> {
     const command = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
     const skill = command && this.commandList?.some((entry) => entry.name === command[1]) ? command : null
     const input: MuseInput[] = skill
       ? [{ type: 'skill', selector: skill[1]!, ...(skill[2]?.trim() ? { arguments: skill[2].trim() } : {}) }]
       : text ? [{ type: 'text', text }] : []
+    const notes: string[] = []
     for (const image of images) {
       if (!this.spec.images) throw new Error('Chat images are unavailable')
+      // A video is a file Muse opens with its own tools.
+      if (isChatVideoId(image.id)) {
+        notes.push(attachmentNote(image.name ?? image.id, await this.spec.images.stage(image.id, sessionId), 'video'))
+        continue
+      }
       const bytes = await this.spec.images.read(image.id)
       const mediaType = imageMediaType(bytes)
       if (!mediaType) throw new Error(`${image.name ?? 'An image'} is not a PNG, JPEG, GIF or WebP image`)
       input.push({ type: 'image', mediaType, base64Data: bytes.toString('base64') })
     }
+    if (notes.length) input.push({ type: 'text', text: notes.join('\n\n') })
     return input
   }
   updateQueue(change: ChatQueueAction): void {

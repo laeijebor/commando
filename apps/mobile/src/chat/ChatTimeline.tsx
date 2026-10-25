@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, St
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, isChatVideoId, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
 import {
   canCollapsePlan,
   collapsedPlanPreview,
@@ -28,6 +28,7 @@ import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { ImageViewer, type ViewableImage } from './ImageViewer'
 import { chatImageUri } from './images'
+import { VideoTile } from './VideoTile'
 import { Markdown } from './Markdown'
 import { SubagentGroup, useNow, type SubagentTask } from './Subagents'
 import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
@@ -286,6 +287,8 @@ export function ImageStrip({ images }: { images: readonly ChatImageRef[] }): Rea
     <>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.images} style={styles.imagesScroll}>
         {images.map((image, index) => {
+          // The phone doesn't play attached videos yet; it marks them.
+          if (isChatVideoId(image.id)) return <VideoTile key={image.id} name={image.name ?? `Video ${index + 1}`} style={styles.image} />
           const viewable = { uri: chatImageUri(baseUrl, image.id), name: image.name ?? `Image ${index + 1}` }
           return (
             <Pressable key={image.id} onPress={() => setOpen(viewable)} accessibilityRole="imagebutton" accessibilityLabel={`Open ${viewable.name}`}>

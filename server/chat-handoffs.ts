@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { isChatImageId, isChatProvider, type ChatCarriedDraft, type ChatHandoffInfo, type ChatImageRef, type ChatQueuedMessage } from '../shared/agent-chat.js'
+import { isChatAttachmentId, isChatProvider, type ChatCarriedDraft, type ChatHandoffInfo, type ChatImageRef, type ChatQueuedMessage } from '../shared/agent-chat.js'
 import { tmuxServerStateSuffix } from './agent-resume.js'
 import { isValidAgentSessionId } from './agent-resume-command.js'
 
@@ -32,7 +32,7 @@ export function defaultChatHandoffPath(): string {
 }
 
 function validImages(value: unknown): value is ChatImageRef[] {
-  return Array.isArray(value) && value.every((image) => image && typeof image === 'object' && isChatImageId((image as ChatImageRef).id)
+  return Array.isArray(value) && value.every((image) => image && typeof image === 'object' && isChatAttachmentId((image as ChatImageRef).id)
     && ((image as ChatImageRef).name === undefined || typeof (image as ChatImageRef).name === 'string'))
 }
 

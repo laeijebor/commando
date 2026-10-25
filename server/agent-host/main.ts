@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
-import { AGENT_HOST_WS_PATH, isChatProvider, providerName, isChatEffort, isChatPermissionMode, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatProvider, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId, providerName, isChatEffort, isChatPermissionMode, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatProvider, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { ChatImageStore } from '../chat-images.js'
 import { isChatPlanDir } from '../chat-plans-dir.js'
@@ -211,7 +211,10 @@ export function terminalLine(item: ChatItem): string | null {
   if (item.status === 'running' && item.kind !== 'request') return null
   switch (item.kind) {
     case 'user_message': {
-      const images = item.images?.length ? dim(` (${item.images.length} image${item.images.length === 1 ? '' : 's'})`) : ''
+      const videos = item.images?.filter((image) => isChatVideoId(image.id)).length ?? 0
+      const pictures = (item.images?.length ?? 0) - videos
+      const counts = [pictures ? `${pictures} image${pictures === 1 ? '' : 's'}` : '', videos ? `${videos} video${videos === 1 ? '' : 's'}` : ''].filter(Boolean)
+      const images = counts.length ? dim(` (${counts.join(', ')})`) : ''
       return `${color(35, '›')} ${bold(item.text)}${images}`
     }
     case 'assistant_message': return item.text ? `${color(37, '●')} ${item.text}` : null

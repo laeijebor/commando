@@ -6,6 +6,7 @@ import {
   MAX_QUEUED_MESSAGES,
   attachmentNote,
   chatImageType,
+  isChatVideoId,
   isChatEffort,
   isChatPermissionMode,
   isModelValue,
@@ -692,12 +693,20 @@ export class AgentSession implements ChatProviderSession {
     for (const listener of this.listeners.switchReady) listener()
   }
 
-  /** The image blocks for a send, and notes naming each image's copy in the session's folder. */
+  /**
+   * The image blocks for a send, and notes naming each attachment's copy in
+   * the session's folder. A video is only its copy: Claude watches it with its
+   * own tools, so one that can't be saved fails the send.
+   */
   private async attach(images: readonly ChatImageRef[]): Promise<{ blocks: unknown[]; notes: string[] }> {
     if (!images.length) return { blocks: [], notes: [] }
     const store = this.spec.images
     if (!store) throw new Error('this host has no image folder')
     const attached = await Promise.all(images.map(async (image) => {
+      if (isChatVideoId(image.id)) {
+        const path = await store.stage(image.id, this.imageSessionId)
+        return { block: null, note: attachmentNote(image.name ?? image.id, path, 'video') }
+      }
       const [bytes, path] = await Promise.all([
         store.read(image.id),
         // Without a copy Claude still sees the image; it just has no file to open.
@@ -711,7 +720,7 @@ export class AgentSession implements ChatProviderSession {
         note: path ? attachmentNote(image.name ?? image.id, path) : null,
       }
     }))
-    return { blocks: attached.map((image) => image.block), notes: attached.flatMap((image) => image.note ? [image.note] : []) }
+    return { blocks: attached.flatMap((image) => image.block ? [image.block] : []), notes: attached.flatMap((image) => image.note ? [image.note] : []) }
   }
 
   /** The image folders Claude may open: this session's, and any its resumed notes name. */
@@ -773,7 +782,7 @@ export class AgentSession implements ChatProviderSession {
     this.input.push({
       type: 'user',
       // Images first: a /command in a text block after them still expands.
-      message: { role: 'user', content: blocks.length ? [...blocks, ...(withNotes ? [{ type: 'text', text: withNotes }] : [])] : prompt },
+      message: { role: 'user', content: blocks.length ? [...blocks, ...(withNotes ? [{ type: 'text', text: withNotes }] : [])] : withNotes },
       parent_tool_use_id: null,
       // 'now' ends the running turn early and runs this as its own turn: at once
       // while Claude writes; a command it has only just started is aborted, one
