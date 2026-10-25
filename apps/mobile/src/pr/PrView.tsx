@@ -69,11 +69,15 @@ export function PrView({ host, source, active = true, initialTab = 'description'
   // Shown as merged straight away; the pane's PR list catches up on the refresh below.
   const [merged, setMerged] = useState(false)
   const base = details.data?.mergeTarget?.branch ?? preview?.baseRefName
+  // Mergeability lives on the preview, so a pull re-reads that too (the pane's list, or the fallback).
+  const refreshAll = () => {
+    void details.refresh()
+    if (source.preview) void panePrCache.refreshHost(host)
+    else void fallback.refresh()
+  }
   const afterMerge = (ok: boolean) => {
     if (ok) setMerged(true)
-    void details.refresh()
-    if (!source.preview) void fallback.refresh()
-    void panePrCache.refreshHost(host)
+    refreshAll()
   }
 
   return (
@@ -84,7 +88,7 @@ export function PrView({ host, source, active = true, initialTab = 'description'
       {tab === 'description' ? (
         <ScrollView
           contentContainerStyle={styles.body}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void details.refresh()} tintColor={theme.muted} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshAll} tintColor={theme.muted} />}
         >
           <PrHeader source={source} preview={preview} details={details.data} url={url} merged={merged}>
             <MergeButton host={host} source={source} preview={preview} merged={merged} head={head} base={base} onSettled={afterMerge} />
