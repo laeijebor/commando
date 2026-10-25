@@ -65,6 +65,15 @@ describe('PR pane repository API', () => {
     await expect(invalid.json()).resolves.toMatchObject({ code: 'invalid_request' })
   })
 
+  it('compares a PR with main by default and with its own base when asked', async () => {
+    const service = new PrService({ runner: vi.fn() })
+    const diff = vi.spyOn(service, 'pullRequestDiff').mockResolvedValue({ base: 'b', head: 'h', files: [], truncated: false })
+    const base = await startApi(() => undefined, () => undefined, service)
+    expect((await fetch(`${base}/api/prs/diff?repo=acme/widgets&number=12`)).status).toBe(200)
+    expect((await fetch(`${base}/api/prs/diff?repo=acme/widgets&number=12&base=pr`)).status).toBe(200)
+    expect(diff.mock.calls).toEqual([['acme/widgets', '12', 'main'], ['acme/widgets', '12', 'pr']])
+  })
+
   it('routes native stack reads and writes, and stamps a daemon-known creating pane', async () => {
     const service = new PrService({ runner: vi.fn() })
     const stack = { number: 7, open: true, baseRefName: 'main', pullRequests: [] }

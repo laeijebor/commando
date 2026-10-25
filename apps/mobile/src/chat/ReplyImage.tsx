@@ -1,5 +1,5 @@
 import { createContext, use, useState } from 'react'
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 
 import { chatImageStillId, chatImageUrl, findChatReplyImage, type ChatReplyImage, type ChatReplyImageError } from '@commando/agent-chat'
@@ -35,12 +35,17 @@ function Notice({ reason, src }: { reason: keyof typeof NOTICES; src: string }) 
 }
 
 /** An image drawn at the reply's width in its own shape; a tap opens it full screen. */
-function ShownImage({ uri, alt, name }: { uri: string; alt: string; name: string }) {
+function ShownImage({ uri, alt, name, external = false }: { uri: string; alt: string; name: string; external?: boolean }) {
   const theme = useTheme()
   const [ratio, setRatio] = useState<number | null>(null)
   const [failed, setFailed] = useState(false)
   const [open, setOpen] = useState(false)
-  if (failed) return <Notice reason="undrawable" src={name} />
+  if (failed) {
+    // A web image that won't load (a private GitHub upload, say) can still open in the browser.
+    return external
+      ? <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(uri).catch(() => undefined)}><Notice reason="undrawable" src={name} /></Pressable>
+      : <Notice reason="undrawable" src={name} />
+  }
   return (
     <>
       <Pressable onPress={() => setOpen(true)} accessibilityRole="imagebutton" accessibilityLabel={`Open ${alt || name}`} style={[styles.frame, { borderColor: theme.border, backgroundColor: theme.surface }]}>
@@ -72,7 +77,7 @@ export function ReplyImage({ src, alt }: { src: string; alt: string }): React.JS
   const image = findChatReplyImage(images, src)
   if (image && 'id' in image) return <ShownImage key={image.id} uri={`${baseUrl}${chatImageUrl(chatImageStillId(image.id))}`} alt={alt} name={fileName(image.src)} />
   if (image) return <Notice reason={image.error} src={image.src} />
-  if (/^https?:\/\//i.test(src)) return <ShownImage key={src} uri={src} alt={alt} name={fileName(src)} />
+  if (/^https?:\/\//i.test(src)) return <ShownImage key={src} uri={src} alt={alt} name={fileName(src)} external />
   if (running) {
     return (
       <View style={[styles.notice, { borderColor: theme.borderStrong }]}>
