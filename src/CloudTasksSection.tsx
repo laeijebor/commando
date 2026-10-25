@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   CLOUD_PROMPT_LIMIT, cloudConnectionKey, cloudProviderHome, cloudTaskLabel, isSafeCloudUrl,
   type CloudOperation, type CloudTaskDetail, type CloudTaskSummary,
@@ -121,6 +121,8 @@ function TaskDetail({ api, detail }: { api: CloudTasksApi; detail: CloudTaskDeta
   const canInspect = provider?.readiness === 'ready' && provider.capabilities.inspect
   const [title, setTitle] = useState(task.title)
   const [message, setMessage] = useState('')
+  const messageErrorId = useId()
+  const messageTooLong = new TextEncoder().encode(message).byteLength > CLOUD_PROMPT_LIMIT
   const { confirmed, credentialContextId, contextChanged, setConfirmed } = useCloudAccountConfirmation(provider)
   const [riskConfirmed, setRiskConfirmed] = useState(false)
   const [linking, setLinking] = useState(false)
@@ -188,7 +190,7 @@ function TaskDetail({ api, detail }: { api: CloudTasksApi; detail: CloudTaskDeta
     </section>
     {provider?.readiness === 'ready' && provider.capabilities.sendMessage && task.providerTaskId ? <form className="cloud-form" onSubmit={(event) => {
       event.preventDefault()
-      if (!confirmed || !message.trim() || (unresolvedMessage && !riskConfirmed)) return
+      if (!confirmed || !message.trim() || messageTooLong || (unresolvedMessage && !riskConfirmed)) return
       void run(async () => {
         const input = { credentialContextId, message, accountConfirmed: confirmed }
         // Each new intent needs a fresh account/duplicate-risk confirmation, including after a lost response.
@@ -197,12 +199,13 @@ function TaskDetail({ api, detail }: { api: CloudTasksApi; detail: CloudTaskDeta
         setMessage('')
       })
     }}>
-      <h3>Follow-up</h3><label>Message<textarea required rows={3} value={message} maxLength={CLOUD_PROMPT_LIMIT} disabled={!connected || busy} onChange={(event) => setMessage(event.target.value)} /></label>
+      <h3>Follow-up</h3><label>Message<textarea required rows={3} value={message} maxLength={CLOUD_PROMPT_LIMIT} aria-invalid={messageTooLong} aria-describedby={messageTooLong ? messageErrorId : undefined} disabled={!connected || busy} onChange={(event) => setMessage(event.target.value)} /></label>
+      {messageTooLong && <p id={messageErrorId} role="alert">Message exceeds the {CLOUD_PROMPT_LIMIT.toLocaleString('en-US')}-byte UTF-8 limit. Shorten it before submitting.</p>}
       <p>Confirmation context: <code>{provider.credentialContextId}</code> · {provider.verifiedAccountRef ?? 'Account identity unverified'}</p>
       {contextChanged && <p role="alert">Provider account/context changed. Review and confirm again before sending.</p>}
       <label className="cloud-check"><input type="checkbox" required checked={confirmed} disabled={!connected || busy} onChange={(event) => setConfirmed(event.target.checked)} />I confirm the current CLI account/context owns this session.</label>
       {unresolvedMessage && <label className="cloud-check cloud-notice"><input type="checkbox" required checked={riskConfirmed} disabled={!connected || busy} onChange={(event) => setRiskConfirmed(event.target.checked)} />An earlier message or intent is unresolved. I checked the provider and intend a new message; duplicates are possible.</label>}
-      <button disabled={!connected || busy || !confirmed || !message.trim() || (unresolvedMessage && !riskConfirmed)}>Send new message</button>
+      <button disabled={!connected || busy || !confirmed || !message.trim() || messageTooLong || (unresolvedMessage && !riskConfirmed)}>Send new message</button>
       <p>Message sent means delivery acknowledged, not task completion.</p>
     </form> : <p className="cloud-hint">Follow-up is unavailable through this CLI capability. Continue in the provider UI.</p>}
     <CloudTaskDiff api={api} task={task} enabled={provider?.readiness === 'ready' && provider.capabilities.diff && !!task.providerTaskId} connected={connected} />

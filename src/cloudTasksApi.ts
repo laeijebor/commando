@@ -25,6 +25,15 @@ export class CloudTasksHttpError extends Error {
     super(message)
     this.name = 'CloudTasksHttpError'
   }
+
+  /** Only for fresh create/link/message requests, never prepared-operation resumes. */
+  rejectedBeforeRecord(kind: CloudOperation['kind']): boolean {
+    // cloud-tasks-api.ts validates before calling the service; service input
+    // validation precedes prepare(). Auth gates in index.ts have no error code.
+    return ((this.status === 400 || this.status === 413 || this.status === 415) && this.code === 'invalid_request')
+      || ((this.status === 401 || this.status === 403) && this.code === '')
+      || (kind === 'message' && this.status === 404 && this.code === 'task_not_found')
+  }
 }
 
 export function createCloudTasksApi(token: string, fetcher: typeof fetch = fetch): CloudTasksApi {
@@ -40,10 +49,13 @@ export function createCloudTasksApi(token: string, fetcher: typeof fetch = fetch
       },
     })
     if (!response.ok) {
-      const body = await response.json().catch(() => null) as { code?: unknown } | null
-      // Do not reflect arbitrary provider diagnostics, credentials, or HTML in errors.
-      throw new CloudTasksHttpError(response.status, typeof body?.code === 'string' ? body.code : '',
+      const body = await response.json().catch(() => null) as { code?: unknown; error?: unknown } | null
+      const error = new CloudTasksHttpError(response.status, typeof body?.code === 'string' ? body.code : '',
         `Cloud request failed (${response.status}). Check provider readiness and reconnect before retrying.`)
+      // These are daemon-owned validation/auth messages. Keep arbitrary provider
+      // diagnostics and other failures behind the generic message.
+      if (error.rejectedBeforeRecord('message') && typeof body?.error === 'string') error.message = body.error
+      throw error
     }
     return await response.json() as T
   }
