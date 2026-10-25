@@ -1,0 +1,15 @@
+{
+  "tasks": [{
+    "id": "task_synthetic_exact",
+    "url": "https://chatgpt.com/codex/tasks/task_synthetic_exact",
+    "title": "Same title as the task being inspected",
+    "status": "ready",
+    "updated_at": "2026-09-13T10:00:00Z",
+    "environment_id": null,
+    "environment_label": "Synthetic environment",
+    "summary": { "files_changed": 1, "lines_added": 1, "lines_removed": 1 },
+    "is_review": false,
+    "attempt_total": null
+  }],
+  "cursor": null
+}
