@@ -178,6 +178,14 @@ export class WebPaneFeedbackStore {
     }
   }
 
+  /** The delivery keys among these that no poll has been handed yet. */
+  undelivered(webPaneId: string, deliveryKeys: readonly string[]): string[] {
+    const state = this.panes.get(webPaneId)
+    if (!state) return []
+    const wanted = new Set(deliveryKeys)
+    return state.notes.flatMap((entry) => entry.id > state.deliveredUpTo && entry.note.deliveryKey && wanted.has(entry.note.deliveryKey) ? [entry.note.deliveryKey] : [])
+  }
+
   info(): Record<string, WebPaneFeedbackInfo> {
     const result: Record<string, WebPaneFeedbackInfo> = {}
     for (const [id, state] of this.panes) {

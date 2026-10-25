@@ -11,7 +11,7 @@ const repo = 'acme/widgets'
 const targetId = '123e4567-e89b-42d3-a456-426614174000'
 const initial = () => setAutofixEnabled(null, repo, 12, targetId, true)
 const snapshot = (overrides: Partial<PrAutofixSnapshot> = {}): PrAutofixSnapshot => ({
-  state: 'open', url: `https://github.com/${repo}/pull/12`, headSha: 'sha1', failingChecks: ['lint', 'test'], viewer: 'leo', comments: [], ...overrides,
+  state: 'open', url: `https://github.com/${repo}/pull/12`, headSha: 'sha1', failingChecks: ['lint', 'test'], conflicting: false, baseRefName: 'main', viewer: 'leo', comments: [], ...overrides,
 })
 const noLinkedPrs = async () => []
 const directories: string[] = []
@@ -33,6 +33,19 @@ describe('PR auto-fix decisions', () => {
     expect(decidePrAutofix(snapshot({ headSha: '' }), initial(), false, 14).action).toBe('none')
   })
 
+  it('tells the agent about merge conflicts in a round sent for checks or comments', () => {
+    const conflicted = decidePrAutofix(snapshot({ conflicting: true, baseRefName: 'feat/layer-1' }), initial(), false, 10)
+    if (conflicted.action !== 'send') throw new Error('Expected prompt')
+    expect(conflicted.prompt).toContain('merge conflicts with its base branch `feat/layer-1`')
+    expect(conflicted.round.conflictsWith).toBe('feat/layer-1')
+    const clean = decidePrAutofix(snapshot(), initial(), false, 10)
+    if (clean.action !== 'send') throw new Error('Expected prompt')
+    expect(clean.prompt).not.toContain('merge conflicts')
+    expect(clean.round).not.toHaveProperty('conflictsWith')
+    // Conflicts alone do not start a round.
+    expect(decidePrAutofix(snapshot({ conflicting: true }), conflicted.state, false, 11).action).toBe('none')
+  })
+
   it('dedupes comment ids, excludes viewer comments, and combines comments and CI in one round', () => {
     const comments = [
       { id: '0:1', author: 'reviewer', body: 'Handle the empty input', url: 'https://github.com/comment/1' },
@@ -48,6 +61,14 @@ describe('PR auto-fix decisions', () => {
     expect(first.prompt).toContain('Handle the empty input')
     expect(first.prompt).toContain('Reply on any threads you choose not to fix')
     expect(first.prompt).not.toContain('My own note')
+    // The chat card gets the same round, structured.
+    expect(first.round).toEqual({
+      repo, number: 12, url: expect.any(String), round: 1, maxRounds: 5, failingChecks: ['lint', 'test'], headSha: 'sha1',
+      comments: [
+        { author: 'reviewer', body: 'Handle the empty input', url: 'https://github.com/comment/1' },
+        { author: 'coderabbitai[bot]', body: 'Changes requested', url: 'https://github.com/review/1' },
+      ],
+    })
     expect(decidePrAutofix(snapshot({ comments }), first.state, false, 11).action).toBe('none')
     expect(decidePrAutofix(snapshot({ comments: [...comments, { ...comments[0], id: '0:2' }] }), first.state, false, 12).action).toBe('send')
   })
@@ -167,7 +188,7 @@ describe('PR auto-fix persistence and delivery', () => {
     const send = vi.fn(() => true)
     const watcher = new PrAutofixWatcher(persisted, { snapshot: async () => snapshot(), linkedPrs: noLinkedPrs, target: () => ({ paneId: '%1', busy: false, connected: true }), send })
     await watcher.check(repo, 12)
-    expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('- lint'))
+    expect(send).toHaveBeenCalledWith('%1', expect.stringContaining('- lint'), expect.objectContaining({ failingChecks: ['lint', 'test'], round: 1 }))
     await watcher.check('acme/other', 1)
     expect(send).toHaveBeenCalledOnce()
     await writeFile(join(persisted.directory, 'watches.json'), JSON.stringify({ version: 1, watches: [], default: { enabled: 'yes', at: 1 } }))

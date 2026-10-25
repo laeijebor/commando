@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseChatConversations } from '../shared/chat-conversations.js'
@@ -13,7 +13,7 @@ const lines = (...values: unknown[]) => `${values.map((value) => JSON.stringify(
 
 let home: string
 beforeEach(async () => { home = await mkdtemp(join(tmpdir(), 'commando-conversations-')) })
-afterEach(async () => { await rm(home, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await rm(home, { recursive: true, force: true }) })
 
 async function claudeTranscript(name: string, entries: unknown[], at: number, configDir = join(home, '.claudep')): Promise<string> {
   const project = join(configDir, 'projects', '-work-app')
@@ -66,7 +66,41 @@ async function opencodeDb(dataHome = join(home, '.local', 'share')) {
   return db
 }
 
+async function museDb(dataHome = join(home, '.local', 'share')) {
+  await mkdir(join(dataHome, 'muse'), { recursive: true })
+  const db = new DatabaseSync(join(dataHome, 'muse', 'session-index.db'))
+  db.exec(`CREATE TABLE sessions (session_id TEXT PRIMARY KEY, workspace_root TEXT, title TEXT NOT NULL, git_branch TEXT,
+    updated_at_us INTEGER, prompt_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, msp_parent_session_id TEXT)`)
+  return db
+}
+
 describe('ChatConversationIndex', () => {
+  it('reads prompted top-level Muse sessions from its index, sharing the global limit', async () => {
+    const db = await museDb()
+    const id = '01a1509e-bbc8-7a33-bd71-167c86ced013'
+    try {
+      const insert = db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      insert.run(id, home, 'Mock up the landing page', 'landing', 3_000_000_000, 4, 'valid', null)
+      insert.run('01a155ff-bd2e-7061-b388-ea2f43cd6b99', home, 'New session', null, 9_000_000_000, 0, 'valid', null)
+      insert.run('01a155ff-bd2e-7061-b388-ea2f43cd6b9a', home, 'Child', null, 9_000_000_000, 2, 'valid', id)
+      insert.run('6f1c5bd4-d694-7ff1-831f-e2f5f5409c39', null, 'No folder', null, 9_000_000_000, 2, 'missing_metadata', null)
+      insert.run('01a155ff-bd2e-7061-b388-ea2f43cd6b9b', 'relative/path', 'Relative', null, 9_000_000_000, 2, 'valid', null)
+      await claudeTranscript(CLAUDE_ID, [user('Claude')], 1_000_000)
+      await cursorTranscript(CODEX_ID, home, { at: 2_000_000 })
+      expect(await index(2).index.list()).toMatchObject([
+        { provider: 'muse', sessionId: id, cwd: home, title: 'Mock up the landing page', branch: 'landing', updatedAt: 3_000_000 },
+        { provider: 'cursor', updatedAt: 2_000_000 },
+      ])
+    } finally { db.close() }
+  })
+
+  it('ignores a missing or malformed Muse index', async () => {
+    expect(await index().index.list()).toEqual([])
+    await mkdir(join(home, '.local', 'share', 'muse'), { recursive: true })
+    await writeFile(join(home, '.local', 'share', 'muse', 'session-index.db'), 'not sqlite')
+    expect(await index().index.list()).toEqual([])
+  })
+
   it.each([false, true])('indexes CLI Cursor transcripts (flat: %s), with exact cwd from the sidecar', async (flat) => {
     const cwd = join(home, 'workspace with spaces-and-dashes')
     await mkdir(cwd)
@@ -316,5 +350,168 @@ describe('ChatConversationIndex', () => {
     expect(await conversations.find('claude', '22222222-2222-3333-4444-555555555555')).toMatchObject({ title: 'Renamed' })
     // Past the limit, so the picker never offered it.
     expect(await conversations.find('claude', CLAUDE_ID)).toBeUndefined()
+  })
+})
+
+type CursorRow = {
+  agent_id: string | null
+  workspace_ref: string | null
+  name: string | null
+  updated_at: string | null
+}
+const CURSOR_ID = 'agent-11111111-2222-3333-4444-555555555555'
+const OTHER_CURSOR_ID = 'agent-22222222-2222-3333-4444-555555555555'
+const cursorRow = (overrides: Partial<CursorRow> = {}): CursorRow => ({
+  agent_id: CURSOR_ID, workspace_ref: '/work/app', name: 'Cursor work', updated_at: new Date(3_000_000).toISOString(), ...overrides,
+})
+
+async function cursorStore(project: string, hash: string, rows: CursorRow[], at: number): Promise<string> {
+  const file = join(home, '.cursor', 'projects', project, 'sdk-agent-store', hash, 'index.db')
+  await mkdir(dirname(file), { recursive: true })
+  const database = new DatabaseSync(file)
+  try {
+    database.exec('create table agents (agent_id TEXT, workspace_ref TEXT, status TEXT, name TEXT, metadata_json TEXT, created_at TEXT, updated_at TEXT)')
+    const insert = database.prepare('insert into agents values (?, ?, ?, ?, ?, ?, ?)')
+    for (const row of rows) insert.run(row.agent_id, row.workspace_ref, 'idle', row.name, '{}', row.updated_at, row.updated_at)
+  } finally {
+    database.close()
+  }
+  await utimes(file, at / 1000, at / 1000)
+  return file
+}
+
+describe('Cursor SQLite conversation stores', () => {
+  it('lists conversations from multiple workspaces and store hashes beside Claude and Codex transcripts', async () => {
+    await claudeTranscript(CLAUDE_ID, [user('Claude work')], 2_000_000)
+    await codexRollout(CODEX_ID, {}, [{ type: 'event_msg', payload: { type: 'user_message', message: 'Codex work' } }], 1_500_000)
+    await cursorStore('-work-app', 'hash-a', [cursorRow()], 4_000_000)
+    await cursorStore('-work-app-worktrees-feature', 'hash-b', [cursorRow({ agent_id: OTHER_CURSOR_ID, workspace_ref: '/work/app-worktrees/feature', name: 'Worktree chat', updated_at: new Date(1_000_000).toISOString() })], 3_000_000)
+    await cursorStore('-work-app', 'hash-c', [cursorRow({ agent_id: 'agent-another-hash', name: 'Another store', updated_at: new Date(500_000).toISOString() })], 2_000_000)
+    const { index: conversations, resolveRepos } = index()
+    const found = await conversations.list()
+    expect(found.map((entry) => entry.title)).toEqual(['Cursor work', 'Claude work', 'Codex work', 'Worktree chat', 'Another store'])
+    expect(found[0]).toEqual({ provider: 'cursor', sessionId: CURSOR_ID, cwd: '/work/app', title: 'Cursor work', updatedAt: 3_000_000, repoRoot: '/work/app', checkoutRoot: '/work/app' })
+    expect(found[3]).toMatchObject({ provider: 'cursor', sessionId: OTHER_CURSOR_ID, cwd: '/work/app-worktrees/feature' })
+    expect(resolveRepos).toHaveBeenCalledWith(['/work/app', '/work/app-worktrees/feature'])
+    expect(await conversations.find('cursor', OTHER_CURSOR_ID)).toEqual(found[3])
+  })
+
+  it('uses the newest rows within each database and keeps the overall conversation limit', async () => {
+    await cursorStore('-work-app', 'hash-a', [
+      cursorRow({ updated_at: new Date(1_000_000).toISOString() }),
+      cursorRow({ agent_id: OTHER_CURSOR_ID, name: 'Newest Cursor', updated_at: new Date(3_000_000).toISOString() }),
+    ], 1_000_000)
+    await claudeTranscript(CLAUDE_ID, [user('Older Claude')], 2_000_000)
+    expect((await index(1).index.list()).map((entry) => entry.title)).toEqual(['Newest Cursor'])
+  })
+
+  it('returns an empty list without warning when the Cursor projects directory does not exist', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await index().index.list()).toEqual([])
+    expect(await readdir(home)).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('skips corrupt databases, incompatible schemas and malformed rows without hiding valid conversations', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const corrupt = await cursorStore('-work-app', 'corrupt', [], 5_000_000)
+    await writeFile(corrupt, 'not a SQLite database')
+    const incompatible = await cursorStore('-work-app', 'incompatible', [], 4_000_000)
+    const database = new DatabaseSync(incompatible)
+    try { database.exec('drop table agents') } finally { database.close() }
+    await cursorStore('-work-app', 'valid', [
+      cursorRow({ agent_id: null }),
+      cursorRow({ agent_id: 'bad id!' }),
+      cursorRow({ workspace_ref: null }),
+      cursorRow({ workspace_ref: 'relative/path' }),
+      cursorRow({ workspace_ref: '/work/\0app' }),
+      cursorRow({ updated_at: null }),
+      cursorRow({ updated_at: 'not a date' }),
+      cursorRow(),
+    ], 3_000_000)
+    await claudeTranscript(CLAUDE_ID, [user('Still here')], 1_000_000)
+    expect((await index().index.list()).map((entry) => entry.title)).toEqual(['Cursor work', 'Still here'])
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn).toHaveBeenCalledWith('[commando] Could not read Cursor conversation store', corrupt, expect.any(Error))
+    expect(warn).toHaveBeenCalledWith('[commando] Could not read Cursor conversation store', incompatible, expect.any(Error))
+  })
+
+  it.each([
+    ['drop table agents', /no such table/],
+    ['alter table agents rename column name to renamed_name', /no such column/],
+  ] as const)('warns once per process and store path for schema changes: %s', async (schema, message) => {
+    const file = await cursorStore('-work-app', 'changed-schema', [], 1_000_000)
+    const database = new DatabaseSync(file)
+    try { database.exec(schema) } finally { database.close() }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const close = vi.spyOn(DatabaseSync.prototype, 'close')
+    const conversations = index().index
+    expect(await conversations.list()).toEqual([])
+    expect(await conversations.list()).toEqual([])
+    // A different index instance shares the process's warning history.
+    expect(await index().index.list()).toEqual([])
+    expect(warn).toHaveBeenCalledExactlyOnceWith('[commando] Could not read Cursor conversation store', file, expect.objectContaining({ message: expect.stringMatching(message) }))
+    expect(close).toHaveBeenCalledTimes(3)
+  })
+
+  it('silently skips locked stores and reads them once the lock is released', async () => {
+    const file = await cursorStore('-work-app', 'locked', [cursorRow()], 1_000_000)
+    const database = new DatabaseSync(file)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const conversations = index().index
+    try {
+      database.exec('begin exclusive')
+      expect(await conversations.list()).toEqual([])
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      database.exec('rollback')
+      database.close()
+    }
+    expect((await conversations.list()).map((entry) => entry.title)).toEqual(['Cursor work'])
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('treats New Agent and empty names as untitled, falling back to the conversation id', async () => {
+    await cursorStore('-work-app', 'hash-a', [
+      cursorRow({ name: ' New Agent ' }),
+      cursorRow({ agent_id: OTHER_CURSOR_ID, name: '  ' }),
+      cursorRow({ agent_id: 'agent-without-name', name: null }),
+      cursorRow({ agent_id: 'agent-named-chat', name: '  A named\nchat  ' }),
+    ], 1_000_000)
+    const titles = new Map((await index().index.list()).map((entry) => [entry.sessionId, entry.title]))
+    expect(titles.get(CURSOR_ID)).toBe(CURSOR_ID)
+    expect(titles.get(OTHER_CURSOR_ID)).toBe(OTHER_CURSOR_ID)
+    expect(titles.get('agent-without-name')).toBe('agent-without-name')
+    expect(titles.get('agent-named-chat')).toBe('A named chat')
+  })
+
+  it('chooses the latest conversation row when multiple stores contain the same agent', async () => {
+    await cursorStore('-work-app', 'newer-file', [cursorRow({ name: 'Older row', updated_at: new Date(1_000_000).toISOString() })], 3_000_000)
+    await cursorStore('-work-app', 'older-file', [cursorRow({ name: 'Newest row' })], 2_000_000)
+    const found = await index().index.list()
+    expect(found).toHaveLength(1)
+    expect(found[0]).toMatchObject({ sessionId: CURSOR_ID, title: 'Newest row', updatedAt: 3_000_000 })
+  })
+
+  it('opens existing stores read-only without rewriting the database or adding sidecar files', async () => {
+    const file = await cursorStore('-work-app', 'hash-a', [cursorRow()], 1_000_000)
+    const before = await readFile(file)
+    expect(await index().index.list()).toHaveLength(1)
+    expect(await readFile(file)).toEqual(before)
+    expect(await readdir(dirname(file))).toEqual(['index.db'])
+  })
+
+  it('reads only the 200 most recently modified database files', async () => {
+    // An older file with a newer conversation is deliberately outside the scan budget.
+    await cursorStore('-work-app', '000-oldest', [cursorRow({ agent_id: OTHER_CURSOR_ID, name: 'Outside budget', updated_at: new Date(9_000_000).toISOString() })], 1_000)
+    const seed = await cursorStore('-work-app', 'store-0', [cursorRow()], 10_000)
+    const bytes = await readFile(seed)
+    await Promise.all(Array.from({ length: 199 }, async (_, i) => {
+      const file = join(dirname(dirname(seed)), `store-${i + 1}`, 'index.db')
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, bytes)
+      await utimes(file, (10_001 + i) / 1000, (10_001 + i) / 1000)
+    }))
+    expect((await index().index.list()).map((entry) => entry.title)).toEqual(['Cursor work'])
   })
 })

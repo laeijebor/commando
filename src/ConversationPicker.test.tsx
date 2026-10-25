@@ -43,16 +43,31 @@ function renderPicker(overrides: Partial<Parameters<typeof ConversationPicker>[0
 }
 
 describe('ConversationPicker', () => {
-  it('labels Cursor and OpenCode conversations', async () => {
+  it('goes back to the pane palette with Backspace in an empty search', async () => {
+    const onBack = vi.fn()
+    const { input } = renderPicker({ onBack })
+    await screen.findAllByRole('option')
+    fireEvent.change(input, { target: { value: 'f' } })
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    expect(onBack).not.toHaveBeenCalled()
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    expect(onBack).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the palette' }))
+    expect(onBack).toHaveBeenCalledTimes(2)
+  })
+
+  it('labels Muse, Cursor and OpenCode conversations', async () => {
     renderPicker({ load: async () => [
       conversation('aaaaaaaa-0005', 'Cursor work', pane.path, 1, { provider: 'cursor' }),
       conversation('ses_session123', 'OpenCode work', pane.path, 2, { provider: 'opencode' }),
+      conversation('aaaaaaaa-0006', 'Muse work', pane.path, 3, { provider: 'muse' }),
     ] })
     const options = await screen.findAllByRole('option')
-    expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode'])
+    expect(options.map((option) => option.querySelector('.command-kind')?.textContent)).toEqual(['Cursor', 'OpenCode', 'Muse'])
   })
 
-  it.each(['cursor', 'opencode'] as const)('jumps to a server-verified live %s TUI instead of resuming it', async (provider) => {
+  it.each(['muse', 'cursor', 'opencode'] as const)('jumps to a server-verified live %s TUI instead of resuming it', async (provider) => {
     const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
     const { input, onJump, onPick } = renderPicker({
       load: async () => [conversation(sessionId, 'Open terminal work', pane.path, 1, { provider, openPaneId: '%7' })],
@@ -64,7 +79,7 @@ describe('ConversationPicker', () => {
     expect(onPick).not.toHaveBeenCalled()
   })
 
-  it.each(['claude', 'codex', 'cursor', 'opencode'] as const)('resumes an exited %s TUI now running vim when the server reports no open pane', async (provider) => {
+  it.each(['claude', 'codex', 'muse', 'cursor', 'opencode'] as const)('resumes an exited %s TUI now running vim when the server reports no open pane', async (provider) => {
     const sessionId = provider === 'opencode' ? 'ses_session123' : 'aaaaaaaa-0005'
     const past = conversation(sessionId, 'Exited terminal work', pane.path, 1, { provider })
     const { input, onJump, onPick } = renderPicker({
@@ -370,4 +385,20 @@ it('shows session avatars and muted codenames, glyph tiles, and History outside 
   const outside = screen.getByRole('group', { name: 'Outside Commando' })
   expect(outside.querySelector('.lucide-history')).toBeInTheDocument()
   expect(outside.querySelector('.session-avatar')).not.toBeInTheDocument()
+})
+
+
+it('shows a Cursor conversation and reopens it beside the pane', async () => {
+  const entry = conversation('agent-11111111-2222-3333-4444-555555555555', 'Cursor work', '/elsewhere', 1, { provider: 'cursor' })
+  const { input, onPick } = renderPicker({ load: async () => [entry] })
+  await screen.findByText('Cursor work')
+  expect(screen.getAllByText('Cursor').length).toBeGreaterThan(0)
+  fireEvent.keyDown(input, { key: 'Enter', metaKey: true })
+  expect(onPick).toHaveBeenCalledWith(entry, 'split')
+})
+
+it('associates live Cursor chats with their pane in the picker', () => {
+  const chat = { session: { provider: 'cursor', sessionId: 'agent-11111111-2222-3333-4444-555555555555' } } as ChatState
+  expect(openConversationPanes({ '%8': chat }, [], () => 'Cursor pane').get('cursor:agent-11111111-2222-3333-4444-555555555555'))
+    .toEqual({ paneId: '%8', label: 'Cursor pane' })
 })

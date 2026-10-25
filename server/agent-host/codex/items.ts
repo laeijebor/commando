@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { ChatImageRef, ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../../shared/agent-chat.js'
+import { notedVideos, stripAttachmentNotes, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatQuestion, type ChatRequestAnswer, type ChatTodo } from '../../../shared/agent-chat.js'
 import { list, record, requestKey, rpcId, string, type CodexTurn, type RpcNotification, type RpcRequest } from './protocol.js'
 
 const MAX_TEXT = 200_000
@@ -157,14 +157,16 @@ export class CodexItemMapper {
     switch (type) {
       case 'userMessage': {
         const content = list(item.content)
-        const message = content.map((input) => text(record(input).text)).filter(Boolean).join('\n')
+        const sent = content.map((input) => text(record(input).text)).filter(Boolean).join('\n')
+        // Attached videos arrive as notes after the typed text.
+        const message = stripAttachmentNotes(sent)
         const expectedIndex = this.expectedUsers.findIndex((entry) => entry.text === message)
         const expected = expectedIndex >= 0 ? this.expectedUsers.splice(expectedIndex, 1)[0] : undefined
-        const images = expected?.images ?? content.flatMap((input) => {
+        const images = expected?.images ?? [...content.flatMap((input) => {
           const path = string(record(input).path)
           const image = path ? this.imageForPath?.(path) : undefined
           return image ? [image] : []
-        })
+        }), ...notedVideos(sent)]
         return [this.put({
           ...base, ...(previous?.kind === 'user_message' ? previous : {}),
           kind: 'user_message', text: message, status: 'completed',

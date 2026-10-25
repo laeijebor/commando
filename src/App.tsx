@@ -1,4 +1,9 @@
 import { PairPhoneDialog } from './PairPhoneDialog'
+import { commanderInbox } from './commanderInbox'
+import { GROUP_ORDER } from './chat/AgentsInbox'
+import { CommanderTranscriptView, type CommanderPeek } from './chat/CommanderReadingPane'
+import { createCommanderApi } from './commanderApi'
+import { initialCommanderClientState, reduceCommanderMessage } from './commanderClientState'
 import { isSessionName } from '../shared/session-identity'
 import {
   Activity,
@@ -9,7 +14,12 @@ import {
   Bot,
   Check,
   CircleDotDashed,
+  Archive,
   Code2,
+  FolderX,
+  Pencil,
+  RotateCcw,
+  Trash2,
   Command,
   Grid2X2,
   KeyRound,
@@ -32,6 +42,7 @@ import {
   Server,
   ShieldCheck,
   SidebarOpen,
+  Settings,
   Smartphone,
   Terminal,
   UserRound,
@@ -52,6 +63,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from 'react'
@@ -102,7 +114,10 @@ import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
-import { SessionTree } from './SessionTree'
+import { createAgentProfilesApi } from './agentProfilesApi'
+import { SessionTree, type SessionActions } from './SessionTree'
+import { auxiliarySessionIds } from '../shared/auxiliary-session'
+import { ARCHIVE_RESTORE_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
 import type { AgentChatRequest } from '../shared/agent-chats'
 import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
@@ -113,13 +128,18 @@ import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { createChatConversationsApi } from './chatConversationsApi'
 import { ConversationPicker } from './ConversationPicker'
+import { PanePaletteMenu, panePaletteEntries, type PanePaletteScreen } from './PanePalette'
+import { McpSettings } from './McpSettings'
+import type { ChatMcpRequest, ChatMcpResult } from '../shared/chat-mcp'
+import { providerLabel } from '../shared/chat-composer'
 import { chatConversationKey } from '../shared/chat-conversations'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
 import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
-import { SidePanel } from './SidePanel'
+import { SidePanel, type PanePanelData } from './SidePanel'
+import { CommanderPeekTabs } from './CommanderPeekTabs'
 import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, NARROW_PANEL_QUERY, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
@@ -143,11 +163,12 @@ import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
-import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
+import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import { chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
+  hostTakesMcp,
   hostTakesSwitch,
   mergeChatItems,
   planImplementationPrompt,
@@ -165,6 +186,7 @@ import {
   type ChatProvider,
   providerTuiLabel,
 } from '../shared/agent-chat'
+import type { ChatCardEvent } from '../shared/chat-tile-events'
 import type { ChatStashEntry } from '../shared/chat-stash'
 import { createSimsApi, type SimsApiClient } from './simsApi'
 import { PaneScreenshotLightbox, type PaneScreenshotLightboxRequest } from './PaneScreenshotLightbox'
@@ -206,6 +228,7 @@ export const PR_PANE_LOOKUP_TIMEOUT_MS = 5_000
 
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
 const SimsView = lazy(() => import('./SimsView').then((module) => ({ default: module.SimsView })))
+const SettingsView = lazy(() => import('./SettingsView').then((module) => ({ default: module.SettingsView })))
 
 const PRESETS: Array<{
   id: GroupLayoutPreset
@@ -329,6 +352,7 @@ type TerminalPaneProps = {
   pane: TmuxPane
   lineageSnapshot?: LineageSnapshot
   lineageStatuses?: Record<string, AgentStatus>
+  commander?: Parameters<typeof ChatPane>[0]['commander']
   onSelectPane?: (id: string) => void
   attributionVisible?: boolean
   agentChatRequests?: AgentChatRequest[]
@@ -370,6 +394,8 @@ type TerminalPaneProps = {
   /** Set when an agent host drives this pane: the card can show a chat instead of the terminal. */
   chat?: ChatState
   externalRuns?: readonly ExternalAgentRun[]
+  tileEvents?: readonly ChatCardEvent[]
+  onOpenTile?: (webPaneId: string) => boolean
   chatView?: 'chat' | 'terminal'
   onChatView?: (view: 'chat' | 'terminal') => void
   onChatSend?: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
@@ -418,6 +444,7 @@ type TerminalPaneProps = {
 
 /** What clicking Claude Code in a chat's header does, or why it can't. */
 function claudeCodeSwitchTitle(chat: ChatState): string {
+  if (chat.session.provider === 'cursor') return 'Cursor chat does not support switching to a terminal UI'
   const label = providerTuiLabel(chat.session.provider)
   if (!chat.hostConnected) return 'The agent host is disconnected'
   if (!hostTakesSwitch(chat.session)) return `This chat started before switching to ${label}; restart it to switch`
@@ -433,6 +460,7 @@ export function TerminalPaneCard({
   pane,
   lineageSnapshot,
   lineageStatuses = {},
+  commander,
   onSelectPane,
   attributionVisible,
   agentChatRequests = [],
@@ -464,6 +492,8 @@ export function TerminalPaneCard({
   onAcknowledgeMark,
   chat,
   externalRuns,
+  tileEvents,
+  onOpenTile,
   chatView = 'chat',
   onChatView,
   onChatSend,
@@ -757,16 +787,21 @@ export function TerminalPaneCard({
         {showChat && chat ? (
           <ChatPane
             paneId={pane.id}
+            registerFocusable={registerFocusable}
             pane={pane}
             snapshot={lineageSnapshot}
             statuses={lineageStatuses}
+            commander={commander}
             onSelectPane={onSelectPane}
             {...(prsApi ? { prsApi } : {})}
             chat={chat}
             externalRuns={externalRuns}
+            {...(tileEvents ? { tileEvents } : {})}
+            {...(onOpenTile ? { onOpenTile } : {})}
             connected={connected}
             focused={focused}
             onFocus={onFocus}
+            onSelectionCopied={showSelectionCopied}
             onSend={(text, images, options) => onChatSend?.(text, images, options)}
             onInterrupt={(dropQueued) => onChatInterrupt?.(dropQueued)}
             onAnswer={(requestId, answer) => onChatAnswer?.(requestId, answer)}
@@ -933,7 +968,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims'
+type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'settings'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -1100,8 +1135,14 @@ export function App() {
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [paneSeen, setPaneSeen] = useState<Record<string, number>>({})
+  const [{ turnBriefs, relays, commanderState }, dispatchCommander] = useReducer(reduceCommanderMessage, initialCommanderClientState)
+  // The agent whose chat Commander's reading pane shows.
+  const [commanderPeek, setCommanderPeek] = useState<{ paneId: string; targetId: string } | null>(null)
+  const [commanderOpening, setCommanderOpening] = useState(false)
+  const commanderStateVersion = useRef(0)
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
+  const [tileEvents, setTileEvents] = useState<Record<string, ChatCardEvent[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
   /** Conversations running in Claude Code that started as a chat. */
   const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())
@@ -1120,6 +1161,10 @@ export function App() {
   const chatFileSearches = useRef(new Map<string, (result: ChatFileSearchResult) => void>())
   /** Pending subagent transcript reads, answered by `chat_subagent_transcript_result`. */
   const chatTranscripts = useRef(new Map<string, (result: ChatSubagentTranscript) => void>())
+  /** Pending MCP reads and actions, answered by `chat_mcp_result`. */
+  const chatMcpReplies = useRef(new Map<string, (result: ChatMcpResult) => void>())
+  /** One loader per pane, so the MCP screen's polling keeps a stable callback. */
+  const chatMcpLoaders = useRef(new Map<string, (request: ChatMcpRequest) => Promise<ChatMcpResult>>())
   /** Recent chat sends by request id, so a refusal shows on the right pane. */
   const chatSendPanes = useRef(new Map<string, string>())
   const [chatViews, setChatViews] = useState<Record<string, 'chat' | 'terminal'>>({})
@@ -1172,8 +1217,9 @@ export function App() {
   const [dropPreview, setDropPreview] = useState<{ paneId: string; placement: 'right' | 'below' } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   /** The workspace pane whose conversation picker is open. */
-  const [conversationPaneId, setConversationPaneId] = useState<string | null>(null)
-  const [conversationSessionFilter, setConversationSessionFilter] = useState<{ id: string; name: string } | undefined>()
+  /** The ⌘P palette over one pane, and the screen it shows. */
+  const [panePalette, setPanePalette] = useState<{ paneId: string; screen: PanePaletteScreen; sessionFilter?: { id: string; name: string } } | null>(null)
+  const palettePaneId = panePalette?.paneId ?? null
   const reopeningConversation = useRef(false)
   const [paletteQuery, setPaletteQuery] = useState('')
   const [paletteIndex, setPaletteIndex] = useState(0)
@@ -1224,6 +1270,7 @@ export function App() {
   const leftPanelResizePointer = useRef<number | null>(null)
   const leftPanelResizeWidth = useRef(leftPanelWidth)
   const cockpitBodyRef = useRef<HTMLDivElement | null>(null)
+  const sessionActionsRef = useRef<SessionActions | null>(null)
   const responsiveDrawersOpen = leftPanelOpen || rightPanelOpen
   const drawerOcclusionActive = responsiveDrawersOpen || drawerTransitionOcclusion
 
@@ -1479,6 +1526,16 @@ export function App() {
           message.briefs.map((brief) => [brief.paneId, brief]),
         ))
         break
+      case 'turn_brief':
+      case 'turn_brief_snapshot':
+      case 'commander_relay':
+      case 'commander_relay_snapshot':
+        dispatchCommander(message)
+        break
+      case 'commander_state':
+        commanderStateVersion.current += 1
+        dispatchCommander(message)
+        break
       case 'pane_mark':
         setPaneMarks((current) => ({ ...current, [message.mark.targetId]: message.mark }))
         break
@@ -1524,8 +1581,12 @@ export function App() {
       case 'chat_external_runs':
         setExternalRuns((current) => ({ ...current, [message.paneId]: message.runs }))
         break
+      case 'chat_tile_events':
+        setTileEvents((current) => ({ ...current, [message.paneId]: message.events }))
+        break
       case 'chat_snapshot':
         setExternalRuns({})
+        setTileEvents({})
         setChats(Object.fromEntries(message.chats.map((chat) => [chat.paneId, chat])))
         break
       case 'chat_stash':
@@ -1543,7 +1604,7 @@ export function App() {
       case 'chat_items':
         setChats((current) => {
           const chat = current[message.paneId]
-          return chat ? { ...current, [message.paneId]: { ...chat, items: mergeChatItems(chat.items, message.items) } } : current
+          return chat ? { ...current, [message.paneId]: { ...chat, items: mergeChatItems(message.replace ? [] : chat.items, message.items) } } : current
         })
         break
       case 'chat_commands':
@@ -1560,6 +1621,11 @@ export function App() {
       case 'chat_subagent_transcript_result': {
         const { type: _type, paneId: _paneId, requestId: readId, ...result } = message
         chatTranscripts.current.get(readId)?.(result)
+        break
+      }
+      case 'chat_mcp_result': {
+        const { type: _type, paneId: _paneId, requestId: mcpId, ...result } = message
+        chatMcpReplies.current.get(mcpId)?.(result)
         break
       }
       case 'chat_handoffs':
@@ -1874,6 +1940,29 @@ export function App() {
         .join('\u0000')
     : ''
 
+  // Agents read in Commander's reading pane are marked seen when it closes, so
+  // their rows stay put (not regrouped as idle) while you step through them.
+  const readingPaneId = commanderPeek?.paneId
+  const readAgents = useRef(new Set<string>())
+  useEffect(() => {
+    if (readingPaneId) readAgents.current.add(readingPaneId)
+    if (readingPaneId || !connected || !readAgents.current.size) return
+    const paneIds = [...readAgents.current].filter((paneId) => {
+      const settledAt = agentStatuses[paneId]?.settledAt
+      return settledAt !== undefined && settledAt > (paneSeen[paneId] ?? -Infinity)
+    })
+    // Sent in the protocol's batches of 64; anything the socket refuses waits for a reconnect.
+    const unsent = new Set(readAgents.current)
+    for (const paneId of readAgents.current) if (!paneIds.includes(paneId)) unsent.delete(paneId)
+    for (let start = 0; start < paneIds.length; start += 64) {
+      const batch = paneIds.slice(start, start + 64)
+      if (!send({ type: 'mark_panes_seen', paneIds: batch })) break
+      for (const paneId of batch) unsent.delete(paneId)
+    }
+    readAgents.current = unsent
+    // Runs when the pane opens, moves or closes, and on reconnect; statuses are read at that moment.
+  }, [readingPaneId, connected])
+
   useEffect(() => {
     if (!connected || !unseenViewedPaneKey) return
     send({ type: 'mark_panes_seen', paneIds: unseenViewedPaneKey.split('\u0000').slice(0, 64) })
@@ -1961,6 +2050,7 @@ export function App() {
     })
   }
 
+  const revealedPaneFocus = useRef<typeof pendingPaneFocus>(null)
   useEffect(() => {
     if (!pendingPaneFocus) return
     const pane = paneMap.get(pendingPaneFocus.paneId)
@@ -1969,16 +2059,24 @@ export function App() {
       setPendingPaneFocus(null)
       return
     }
+    const group = groups.find((candidate) => candidate.paneIds.includes(pendingPaneFocus.paneId))
+    const shown = pane.sessionId === selectedSessionId && (!group || group === activeGroup)
+    // Once the pane was shown, a different selection means the user moved on:
+    // drop the jump instead of pulling them back on every render.
+    if (!shown && revealedPaneFocus.current === pendingPaneFocus) {
+      setPendingPaneFocus(null)
+      return
+    }
     if (pane.sessionId !== selectedSessionId) {
       setArea('workspace')
       setSelectedSessionId(pane.sessionId)
       return
     }
-    const group = groups.find((candidate) => candidate.paneIds.includes(pendingPaneFocus.paneId))
     if (group && group !== activeGroup) {
       setActiveTabs((current) => ({ ...current, [pane.sessionId]: group.windowId }))
       return
     }
+    revealedPaneFocus.current = pendingPaneFocus
     const frame = window.requestAnimationFrame(() => {
       const node = paneRefs.current.get(pendingPaneFocus.paneId)
       if (!node?.isConnected) return
@@ -2097,6 +2195,35 @@ export function App() {
     setRightPanelOpen(false)
   }
 
+  const openCommander = async () => {
+    setCommanderOpening(true)
+    const version = commanderStateVersion.current
+    try {
+      const state = await createCommanderApi(token).ensure()
+      // A live broadcast received during the request is newer than its response.
+      if (version === commanderStateVersion.current) dispatchCommander({ type: 'commander_state', state })
+    } catch (cause) {
+      setCommanderOpening(false)
+      throw cause
+    }
+  }
+  /** Closes Commander and starts a fresh one on the profile, then shows it like opening Commander does. */
+  const switchCommanderProfile = async (configDir: string | null) => {
+    const version = commanderStateVersion.current
+    const state = await createCommanderApi(token).setProfile(configDir)
+    if (version === commanderStateVersion.current) dispatchCommander({ type: 'commander_state', state })
+    // Only now: earlier, the old Commander is still open and would be the one shown.
+    setCommanderOpening(true)
+  }
+  // Creation may report state before its structural snapshot arrives (or vice versa).
+  useEffect(() => {
+    if (!commanderOpening || !commanderState.paneId) return
+    const pane = snapshot?.panes.find((item) => item.id === commanderState.paneId && item.targetId === commanderState.targetId)
+    if (!pane) return
+    jumpToPane(pane.id, pane.targetId, true)
+    setCommanderOpening(false)
+  }, [commanderOpening, commanderState, snapshot?.panes])
+
   const jumpToPaneTarget = (targetId: string) => {
     const matches = snapshot?.panes.filter((pane) => pane.targetId === targetId) ?? []
     if (matches.length !== 1) return
@@ -2120,6 +2247,16 @@ export function App() {
       delete entries[tab.key]
       return { ...current, [tab.anchorPaneId]: entries }
     })
+  }
+
+  /** Brings a web tile forward beside its pane; false when the tile is gone. */
+  const revealWebPaneTab = (webPaneId: string): boolean => {
+    const tab = webPanes.find((pane) => pane.id === webPaneId)
+    if (!tab) return false
+    setFocusedPaneId(tab.anchorPaneId)
+    void selectPanelTab(tab)
+    setPanelRevealRequest({ tabId: tab.id, onVisible: () => setPanelRevealRequest(null), onUnavailable: () => setPanelRevealRequest(null) })
+    return true
   }
 
   /** Selects a linked PR's side-panel tab on a sub-tab, restoring it first if it was closed. */
@@ -2536,6 +2673,7 @@ export function App() {
   const gitDiffApi = useMemo(() => createGitDiffApi(token), [token])
   const simsApi = useMemo(() => createSimsApi(token), [token])
   const prsApi = useMemo(() => createPrsApi(token), [token])
+  const agentProfilesApi = useMemo(() => createAgentProfilesApi(token), [token])
   /**
    * "Implement in a new chat pane": splits the chat's pane and starts a fresh
    * chat with the same profile and folder, in the mode the chat had before plan
@@ -2593,10 +2731,32 @@ export function App() {
         }),
         pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, paneId),
         uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image),
+        uploadVideo: (file, signal) => uploadChatVideo(latestChatDeps.current.token, file, signal),
       }
       chatServiceCache.current.set(paneId, services)
     }
     return services
+  }
+  const chatMcpFor = (paneId: string) => {
+    let load = chatMcpLoaders.current.get(paneId)
+    if (!load) {
+      load = (request) => new Promise<ChatMcpResult>((resolve) => {
+        const id = requestId('chat-mcp')
+        const finish = (result: ChatMcpResult) => {
+          window.clearTimeout(timer)
+          chatMcpReplies.current.delete(id)
+          resolve(result)
+        }
+        // The daemon gives the agent 45s; this only covers a reply that never comes.
+        const timer = window.setTimeout(() => finish({ servers: [], error: 'The agent took too long to answer' }), 50_000)
+        chatMcpReplies.current.set(id, finish)
+        if (!latestChatDeps.current.send({ type: 'chat_mcp', paneId, request, requestId: id })) {
+          finish({ servers: [], error: 'Not connected to Commando' })
+        }
+      })
+      chatMcpLoaders.current.set(paneId, load)
+    }
+    return load
   }
   const chatFlowCache = useRef(new Map<string, ChatFlowServices>())
   const chatFlowFor = (paneId: string): ChatFlowServices => {
@@ -2681,6 +2841,101 @@ export function App() {
       await webPanesApi.open(url, anchorPaneId, undefined, engine)
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to open web pane')
+    }
+  }
+
+  const commanderGroups = useMemo(() => commanderInbox({
+    snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays,
+    commanderPaneId: commanderState.paneId,
+  }), [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId])
+  const commanderRows = useMemo(() => GROUP_ORDER.flatMap((group) => commanderGroups[group].map((row) => ({ row, group }))), [commanderGroups])
+  const commanderPeekEntry = commanderPeek ? commanderRows.find((entry) => entry.row.targetId === commanderPeek.targetId) : undefined
+  // An agent that closed (or left the inbox) closes its reading pane.
+  useEffect(() => {
+    if (commanderPeek && snapshot && !commanderPeekEntry) setCommanderPeek(null)
+  }, [commanderPeek, commanderPeekEntry, snapshot])
+  const resumeSessionChat = (sessionId: string) => {
+    const session = sessionMap.get(sessionId)
+    const panes = snapshot?.panes.filter((pane) => pane.sessionId === sessionId) ?? []
+    const pane = panes.find((pane) => pane.windowId === session?.activeWindowId && pane.active)
+      ?? panes.find((pane) => pane.active) ?? panes[0]
+    if (!session || !pane) return
+    jumpToPane(pane.id)
+    setActiveTabs((current) => ({ ...current, [sessionId]: pane.windowId }))
+    setPanePalette({ paneId: pane.id, screen: 'conversations', sessionFilter: { id: session.id, name: session.name } })
+  }
+  /**
+   * The session tree's menu for a read agent's session, run through the tree so both share its state.
+   * Archiving or deleting warns only when other processes would stop with it; failures show here,
+   * since the tree may be hidden.
+   */
+  const commanderPeekSessionActions = (sessionId: string): CommanderPeek['sessionActions'] => {
+    const session = sessionMap.get(sessionId)
+    if (!session) return undefined
+    const panes = snapshot?.panes ?? []
+    const run = (action: (actions: SessionActions) => Promise<void>) => () => {
+      setPaneActionError('')
+      if (sessionActionsRef.current) void action(sessionActionsRef.current)
+    }
+    const warning = () => sessionProcessesWarning(session.name, sessionProcesses(panes, sessionId, new Set(Object.keys(chats))))
+    const auxiliary = auxiliarySessionIds(snapshot?.sessions ?? [], panes, commanderState.sessionId).has(sessionId)
+    return [
+      { label: 'Open IDE', icon: Code2, onSelect: () => { void openSessionIde(sessionId) } },
+      { label: 'Change glyph…', icon: Pencil, onSelect: run((actions) => actions.changeIdentity(sessionId, false, setPaneActionError)) },
+      { label: 'Reset identity', icon: RotateCcw, onSelect: run((actions) => actions.changeIdentity(sessionId, true, setPaneActionError)) },
+      { label: 'Rename', icon: Pencil, onSelect: run((actions) => actions.renameSession(sessionId, setPaneActionError)) },
+      { label: 'Resume a chat…', icon: RotateCcw, disabled: !connected, onSelect: () => resumeSessionChat(sessionId) },
+      ...auxiliary ? [] : [{ label: 'Archive session', icon: Archive, onSelect: run((actions) => {
+        const text = warning()
+        return actions.archiveSession(sessionId, text ? `Archive session “${session.name}”?\n\n${text}\n\n${ARCHIVE_RESTORE_NOTE}` : null, setPaneActionError)
+      }) }],
+      { label: 'Delete session', icon: Trash2, danger: true, onSelect: run((actions) => {
+        const text = warning()
+        return actions.deleteSession(sessionId, false, text ? `Delete session “${session.name}” and all of its windows and panes?\n\n${text}` : null, setPaneActionError)
+      }) },
+      ...!auxiliary && panes.some((pane) => pane.sessionId === sessionId && pane.repo?.isWorktree)
+        ? [{ label: 'Delete session and worktree', icon: FolderX, danger: true, onSelect: run((actions) => actions.deleteSession(sessionId, true, warning(), setPaneActionError)) }] : [],
+    ]
+  }
+  const commanderPeekView = (): CommanderPeek | undefined => {
+    if (!commanderPeekEntry) return undefined
+    const { row, group } = commanderPeekEntry
+    const chat = chats[row.paneId], pane = paneMap.get(row.paneId), status = agentStatuses[row.paneId]
+    const view = chat
+      // Not given registerFocusable: the agent's own pane keeps that.
+      ? <ChatPane key={row.targetId} paneId={row.paneId} {...(pane ? { pane } : {})} snapshot={snapshot ?? undefined} statuses={agentStatuses}
+          onSelectPane={jumpToPane} prsApi={prsApi} chat={chat} externalRuns={externalRuns[row.paneId] ?? []} tileEvents={tileEvents[row.paneId] ?? []} onOpenTile={revealWebPaneTab} connected={connected}
+          focused={false} onFocus={() => {}}
+          onSend={(text, images, options) => sendChat(row.paneId, text, images, options)}
+          onInterrupt={(dropQueued) => interruptChat(row.paneId, dropQueued)}
+          onAnswer={(chatRequestId, answer) => answerChat(row.paneId, chatRequestId, answer)}
+          onConfigure={(settings) => configureChat(row.paneId, settings)}
+          onRestart={() => restartChat(row.paneId)}
+          onOpenPr={(repo, number, tab) => { void revealPrTab(row.paneId, repo, number, tab) }}
+          services={chatServicesFor(row.paneId)} flow={chatFlowFor(row.paneId)}
+          {...(chatSendErrors[row.paneId] ? { sendError: chatSendErrors[row.paneId] } : {})}
+          onDismissSendError={() => setChatSendErrors((current) => { const next = { ...current }; delete next[row.paneId]; return next })}
+          {...(chatActionErrors[row.paneId] ? { actionError: chatActionErrors[row.paneId] } : {})}
+          onDismissActionError={() => setChatActionErrors((current) => { const next = { ...current }; delete next[row.paneId]; return next })} />
+      : <CommanderTranscriptView key={row.targetId} token={token} row={row} provider={status?.provider === 'codex' ? 'codex' : 'claude'} cwd={pane?.path ?? ''}
+          refreshKey={`${status?.status ?? ''}:${status?.settledAt ?? ''}`} disabled={!connected}
+          onRelay={(relay) => dispatchCommander({ type: 'commander_relay', relay })} />
+    const sessionActions = pane ? commanderPeekSessionActions(pane.sessionId) : undefined
+    return {
+      row, group,
+      // Keyed by agent, so stepping to another agent starts on its chat.
+      view: pane ? <CommanderPeekTabs key={row.targetId} pane={pane} chat={view}
+        webTabs={webPanes.filter((webPane) => webPane.anchorPaneId === pane.id && webPane.dock !== 'split')}
+        gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
+        sessionUnseen={sessionAttention[pane.id]} sessionWarning={sessionWarnings[pane.id]} dismissedPrs={dismissedPrTabs[pane.id]}
+        titles={webPaneTitles} simulatorNames={simulatorNames} renderBuiltin={renderBuiltinPanelTab} renderTab={renderWebPane} /> : view,
+      ...sessionActions ? { sessionActions } : {},
+      onClose: () => setCommanderPeek(null),
+      onOpen: () => jumpToPane(row.paneId, row.targetId, true),
+      onStep: (direction) => {
+        const next = commanderRows[(commanderRows.indexOf(commanderPeekEntry) + direction + commanderRows.length) % commanderRows.length]
+        if (next) setCommanderPeek({ paneId: next.row.paneId, targetId: next.row.targetId })
+      },
     }
   }
 
@@ -2914,10 +3169,10 @@ export function App() {
     }
   }
 
-  /** A Codex or Muse chat launch with the permission mode remembered for the path's repository. */
-  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat'): Promise<SessionAgentLaunch> => {
+  /** A Codex, Muse or Cursor chat launch with the permission mode remembered for the path's repository. */
+  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat' | 'cursor-chat'): Promise<SessionAgentLaunch> => {
     const repoRoot = await gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined)
-    return { provider, permissionMode: loadChatLaunch(repoRoot ?? path, provider).permissionMode }
+    return { provider, ...chatLaunchPermission(provider, loadChatLaunch(repoRoot ?? path, provider).permissionMode) }
   }
 
   /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */
@@ -2945,7 +3200,7 @@ export function App() {
     try {
       const agent = choice === 'shell' ? undefined
         : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path)
-          : choice === 'codex-chat' || choice === 'muse-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
+          : choice === 'codex-chat' || choice === 'muse-chat' || choice === 'cursor-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
             : { provider: choice }
       await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
       // Focus lands once the snapshot swaps the launcher for the running pane.
@@ -2971,7 +3226,8 @@ export function App() {
         direction: direction === 'left' || direction === 'right' ? 'horizontal' : 'vertical',
         placement: before ? 'before' : 'after',
         cwd: pane.path,
-        ...(agent ? { agent } : {}),
+        // A plain new pane starts empty, offering the same choices as an empty session.
+        ...(agent ? { agent } : { empty: true }),
       })
       setMaximizedPaneId(null)
       setPendingPaneFocus({ paneId: created.paneId })
@@ -2982,11 +3238,15 @@ export function App() {
     }
   }
 
+  /** Closing a session's only pane leaves it empty, so an empty one has nothing to close. */
+  const canClosePane = (pane: TmuxPane) => !pane.empty || Boolean(snapshot?.panes.some((other) => other.sessionId === pane.sessionId && other.id !== pane.id))
+
   const killPane = async (paneId: string) => {
     const pane = paneMap.get(paneId)
-    if (!pane || paneActionPending) return
+    if (!pane || paneActionPending || !canClosePane(pane)) return
     const label = pane.title || pane.command || `Pane ${pane.index}`
-    if (!window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
+    // An empty pane runs nothing worth confirming.
+    if (!pane.empty && !window.confirm(`Kill pane "${label}"? Its running process will be terminated.`)) return
     setPaneActionPending(true)
     setPaneActionError('')
     clearLayoutTimers()
@@ -3006,11 +3266,15 @@ export function App() {
     // Only in the workspace: elsewhere the last focused chat is hidden.
     const canToggle = (paneId: string | null | undefined): paneId is string => Boolean(connected && area === 'workspace' && !paletteOpen && paneId && paneMap.has(paneId))
     const toggle = (paneId: string) => {
-      // Closes only a picker that is showing; one whose pane went away opens afresh.
-      const showing = conversationPaneId && paneMap.has(conversationPaneId)
-      setConversationSessionFilter(undefined)
-      setConversationPaneId(showing ? null : paneId)
-      // The picker shows in its pane, and closes once another pane takes focus.
+      // Closes only a palette that is showing; one whose pane went away opens afresh.
+      const showing = panePalette && paneMap.has(panePalette.paneId) ? panePalette : null
+      // ⌘P ⌘P goes straight on to resuming a conversation.
+      if (showing?.screen === 'menu') {
+        setPanePalette({ paneId: showing.paneId, screen: 'conversations' })
+        return
+      }
+      setPanePalette(showing ? null : { paneId, screen: 'menu' })
+      // The palette shows in its pane, and closes once another pane takes focus.
       if (!showing) setFocusedPaneId(paneId)
     }
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -3035,12 +3299,12 @@ export function App() {
     }
   })
 
-  // Like a menu, the picker closes when another pane is focused (a native terminal
+  // Like a menu, the palette closes when another pane is focused (a native terminal
   // click reaches the page only as focus) or its pane leaves the screen.
-  const conversationPaneShown = area === 'workspace' && Boolean(conversationPaneId && allVisiblePaneIds.includes(conversationPaneId))
+  const palettePaneShown = area === 'workspace' && Boolean(palettePaneId && allVisiblePaneIds.includes(palettePaneId))
   useEffect(() => {
-    if (conversationPaneId && (!conversationPaneShown || (effectivePaneId && effectivePaneId !== conversationPaneId && pendingPaneFocus?.paneId !== conversationPaneId))) setConversationPaneId(null)
-  }, [conversationPaneId, conversationPaneShown, effectivePaneId, pendingPaneFocus])
+    if (palettePaneId && (!palettePaneShown || (effectivePaneId && effectivePaneId !== palettePaneId && pendingPaneFocus?.paneId !== palettePaneId))) setPanePalette(null)
+  }, [palettePaneId, palettePaneShown, effectivePaneId, pendingPaneFocus])
 
   const reopenConversation = async () => {
     if (!connected || area !== 'workspace' || paletteOpen || reopeningConversation.current) return
@@ -3056,7 +3320,7 @@ export function App() {
         return
       }
       const paneId = await chatConversationsApi.resume({ provider: conversation.provider, sessionId: conversation.sessionId, placement: 'session' })
-      setConversationPaneId(null)
+      setPanePalette(null)
       setPendingPaneFocus({ paneId, waitForCreation: true })
     } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not reopen conversation')
@@ -3112,8 +3376,10 @@ export function App() {
     }
   })
 
-  const conversationPane = conversationPaneId ? paneMap.get(conversationPaneId) : undefined
-  const conversationChat = conversationPaneId ? chats[conversationPaneId] : undefined
+  const conversationPane = palettePaneId ? paneMap.get(palettePaneId) : undefined
+  const conversationChat = palettePaneId ? chats[palettePaneId] : undefined
+  const conversationSessionFilter = panePalette?.sessionFilter
+  const backToPaneMenu = () => setPanePalette((current) => current && { paneId: current.paneId, screen: 'menu' })
   const conversationPicker = conversationPane ? (
     <ConversationPicker
       key={`${conversationPane.id}:${conversationSessionFilter?.id ?? ''}`}
@@ -3132,16 +3398,40 @@ export function App() {
       load={loadConversations}
       onPick={async (conversation, placement) => {
         const paneId = await chatConversationsApi.resume({ paneId: conversationPane.id, provider: conversation.provider, sessionId: conversation.sessionId, placement })
-        setConversationPaneId(null)
+        setPanePalette(null)
         setPendingPaneFocus({ paneId, waitForCreation: true })
       }}
       onJump={(paneId) => {
-        setConversationPaneId(null)
+        setPanePalette(null)
         jumpToPane(paneId, undefined, true)
       }}
-      onClose={() => setConversationPaneId(null)}
+      onClose={() => setPanePalette(null)}
+      onBack={backToPaneMenu}
     />
   ) : null
+  const panePaletteNode = !conversationPane || !panePalette ? null
+    : panePalette.screen === 'conversations' ? conversationPicker
+      : panePalette.screen === 'mcp' && conversationChat ? (
+        <McpSettings
+          key={`${conversationPane.id}:mcp`}
+          agentLabel={providerLabel(conversationChat.session)}
+          load={chatMcpFor(conversationPane.id)}
+          onBack={backToPaneMenu}
+          onClose={() => setPanePalette(null)}
+        />
+      ) : (
+        <PanePaletteMenu
+          key={`${conversationPane.id}:menu`}
+          entries={panePaletteEntries(conversationChat && {
+            provider: conversationChat.session.provider,
+            providerLabel: providerLabel(conversationChat.session),
+            hostConnected: conversationChat.hostConnected,
+            takesMcp: hostTakesMcp(conversationChat.session),
+          })}
+          onOpen={(screen) => setPanePalette((current) => current && { paneId: current.paneId, screen })}
+          onClose={() => setPanePalette(null)}
+        />
+      )
   const paletteWebPaneUrl = webPaneUrlFromQuery(paletteQuery)
   const paletteRunCommand = runCommandFromQuery(paletteQuery)
   const paletteRunPane = currentPrPane && !currentPrPane.dead ? currentPrPane : undefined
@@ -3406,6 +3696,137 @@ export function App() {
     )
   }
 
+  /**
+   * A web tab (browser, canvas, guide, simulator), in a window group or Commander's reading pane.
+   * Docking, maximizing and dragging rearrange the tile's own window, so only a group offers them.
+   */
+  const renderWebPane = (webPane: WebPane, visible: boolean, groupId?: string) => (
+    <WebPaneCard
+      key={webPane.id}
+      webPane={webPane}
+      visible={visible}
+      onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
+      simulatorActive={activeSimulatorTileId === webPane.id}
+      onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
+      onClose={() => void closeWebPane(webPane.id)}
+      onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
+      wsToken={token}
+      connected={connected}
+      onOpenDevtools={
+        webPane.engine === 'chromium'
+          ? () => void openWebPaneDevtools(webPane)
+          : undefined
+      }
+      detached={detachedWebPaneIds.has(webPane.id)}
+      onPopOut={
+        nativeWindowBridge && webPane.engine === 'chromium' && webPane.status === 'open'
+          ? () => nativeWindowBridge.open(webPane.id)
+          : undefined
+      }
+      onFocusDetached={
+        nativeWindowBridge ? () => nativeWindowBridge.focus(webPane.id) : undefined
+      }
+      onReattach={
+        nativeWindowBridge ? () => nativeWindowBridge.reattach(webPane.id) : undefined
+      }
+      feedback={webPaneFeedback[webPane.id]}
+      pendingQueue={{
+        list: () => webPanesApi.pendingNotes(webPane.id),
+        add: (note) => webPanesApi.addPendingNote(webPane.id, note),
+        addResponse: (pageUrl, response) => webPanesApi.addPendingResponse(
+          webPane.id,
+          pageUrl,
+          response,
+        ),
+        update: (noteId, revision, change) => webPanesApi.updatePendingNote(
+          webPane.id,
+          noteId,
+          revision,
+          change,
+        ),
+        upload: (noteId, revision, file) => webPanesApi.uploadPendingAttachment(
+          webPane.id,
+          noteId,
+          revision,
+          file,
+        ),
+        removeAttachment: (noteId, revision, attachmentId) => (
+          webPanesApi.removePendingAttachment(
+            webPane.id,
+            noteId,
+            revision,
+            attachmentId,
+          )
+        ),
+        attachmentUrl: (attachmentId) => webPanesApi.pendingAttachmentUrl(
+          webPane.id,
+          attachmentId,
+        ),
+        remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
+        send: (ids, options) => webPanesApi.sendPendingNotes(
+          webPane.id,
+          ids,
+          options,
+        ),
+        dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
+        setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
+      }}
+      {...groupId ? {
+        onDock: () => void dockWebPane(webPane),
+        maximized: maximizedPaneId === webPane.id,
+        onMaximize: () => {
+          clearLayoutTimers()
+          setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
+        },
+        onDragStart: (event: DragEvent<HTMLElement>) => {
+          setDraggedPane({ kind: 'web', groupId, webPaneId: webPane.id })
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData('text/plain', webPane.id)
+        },
+        onDragEnd: () => {
+          setDraggedPane(null)
+          setDropPreview(null)
+        },
+      } : {}}
+      onNavigate={(url) => void navigateWebPane(webPane.id, url)}
+      navigateRequest={webPaneNavigateRequests[webPane.id]}
+      onAnswerNavigateRequest={(requestId, accept) => (
+        void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
+      )}
+      reloadRevision={webPaneReloads[webPane.id]}
+    />
+  )
+  /** A built-in panel tab (session log, changes, PR), in the side panel or Commander's reading pane. */
+  const renderBuiltinPanelTab = (tab: BuiltinPanelTab, visible: boolean, data: PanePanelData) => {
+    const pane = paneMap.get(tab.anchorPaneId)
+    if (!pane) return null
+    if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
+    const identity = parsePrPanelKey(tab.key)
+    if (identity) {
+      const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
+      return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
+        <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
+          onSelectionApplied={() => setPrSelections((current) => {
+            if (current[tab.id] !== prSelections[tab.id]) return current
+            const next = { ...current }; delete next[tab.id]; return next
+          })} />
+      </Suspense> : null
+    }
+    const supplied = paneBriefs[pane.id]
+    const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
+    const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
+      paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
+      state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
+    }
+    return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
+      fullWidth visible={visible} onAttentionChange={reportSessionAttention}
+      empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
+      simsApi={simsApi} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
+      screenshotsApi={paneScreenshotsApi} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
+      onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
+      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
+  }
+
   return (
     <ChatStashContext.Provider value={chatStash}>
     <PlanUsageContext.Provider value={planUsageByProfile}>
@@ -3582,6 +4003,10 @@ export function App() {
               <Smartphone aria-hidden="true" />
               <span>Simulators</span>
             </button>
+            <button type="button" className={area === 'settings' ? 'active' : ''} aria-current={area === 'settings' ? 'page' : undefined} onClick={() => { setArea('settings'); setLeftPanelOpen(false) }}>
+              <Settings aria-hidden="true" />
+              <span>Settings</span>
+            </button>
           </nav>
 
           <div className="tree-heading">
@@ -3602,6 +4027,11 @@ export function App() {
           <div className="session-tree">
             <SessionTree
               token={token}
+              commanderState={commanderState}
+              commanderNeedsYou={commanderGroups.needs_you.length}
+              commanderUnreadFinished={commanderGroups.finished.some((row) => row.unread)}
+              commanderOpening={commanderOpening}
+              onCreateCommander={openCommander}
               prsApi={prsApi}
               connected={connected}
               sessions={snapshot?.sessions ?? []}
@@ -3621,17 +4051,8 @@ export function App() {
               ides={sessionIdes}
               ideSessionId={area === 'ide' ? selectedSessionId : null}
               onOpenIde={(sessionId) => { void openSessionIde(sessionId) }}
-              onResumeChat={(sessionId) => {
-                const session = sessionMap.get(sessionId)
-                const panes = snapshot?.panes.filter((pane) => pane.sessionId === sessionId) ?? []
-                const pane = panes.find((pane) => pane.windowId === session?.activeWindowId && pane.active)
-                  ?? panes.find((pane) => pane.active) ?? panes[0]
-                if (!session || !pane) return
-                jumpToPane(pane.id)
-                setActiveTabs((current) => ({ ...current, [sessionId]: pane.windowId }))
-                setConversationSessionFilter({ id: session.id, name: session.name })
-                setConversationPaneId(pane.id)
-              }}
+              onResumeChat={resumeSessionChat}
+              actionsRef={sessionActionsRef}
               creation={{
                 disabled: !connected,
                 onCreateSession: tmuxCreateApi.createSession,
@@ -3781,100 +4202,6 @@ export function App() {
               const splitWebPanes = groupWebPanes.filter((webPane) => webPane.dock === 'split')
               const panelPaneId = builtinMaximized?.anchorPaneId ?? maximizedPanelTab?.anchorPaneId ?? effectivePaneId
               const focusedPane = panelPaneId ? paneMap.get(panelPaneId) : undefined
-              const renderWebPane = (webPane: WebPane, visible: boolean) => (
-                <WebPaneCard
-                  key={webPane.id}
-                  webPane={webPane}
-                  visible={visible}
-                  onTitle={(title) => setWebPaneTitles((current) => current[webPane.id] === title ? current : { ...current, [webPane.id]: title })}
-                  simulatorActive={activeSimulatorTileId === webPane.id}
-                  onActivateSimulator={() => setActiveSimulatorTileId(webPane.id)}
-                  onDock={() => void dockWebPane(webPane)}
-                  onClose={() => void closeWebPane(webPane.id)}
-                  onConfirm={(allowOrigin) => void confirmWebPane(webPane.id, allowOrigin)}
-                  wsToken={token}
-                  connected={connected}
-                  onOpenDevtools={
-                    webPane.engine === 'chromium'
-                      ? () => void openWebPaneDevtools(webPane)
-                      : undefined
-                  }
-                  detached={detachedWebPaneIds.has(webPane.id)}
-                  onPopOut={
-                    nativeWindowBridge && webPane.engine === 'chromium' && webPane.status === 'open'
-                      ? () => nativeWindowBridge.open(webPane.id)
-                      : undefined
-                  }
-                  onFocusDetached={
-                    nativeWindowBridge ? () => nativeWindowBridge.focus(webPane.id) : undefined
-                  }
-                  onReattach={
-                    nativeWindowBridge ? () => nativeWindowBridge.reattach(webPane.id) : undefined
-                  }
-                  feedback={webPaneFeedback[webPane.id]}
-                  pendingQueue={{
-                    list: () => webPanesApi.pendingNotes(webPane.id),
-                    add: (note) => webPanesApi.addPendingNote(webPane.id, note),
-                    addResponse: (pageUrl, response) => webPanesApi.addPendingResponse(
-                      webPane.id,
-                      pageUrl,
-                      response,
-                    ),
-                    update: (noteId, revision, change) => webPanesApi.updatePendingNote(
-                      webPane.id,
-                      noteId,
-                      revision,
-                      change,
-                    ),
-                    upload: (noteId, revision, file) => webPanesApi.uploadPendingAttachment(
-                      webPane.id,
-                      noteId,
-                      revision,
-                      file,
-                    ),
-                    removeAttachment: (noteId, revision, attachmentId) => (
-                      webPanesApi.removePendingAttachment(
-                        webPane.id,
-                        noteId,
-                        revision,
-                        attachmentId,
-                      )
-                    ),
-                    attachmentUrl: (attachmentId) => webPanesApi.pendingAttachmentUrl(
-                      webPane.id,
-                      attachmentId,
-                    ),
-                    remove: (noteId) => webPanesApi.removePendingNote(webPane.id, noteId),
-                    send: (ids, options) => webPanesApi.sendPendingNotes(
-                      webPane.id,
-                      ids,
-                      options,
-                    ),
-                    dismissDropped: () => webPanesApi.dismissPendingDropped(webPane.id),
-                    setPage: (url) => webPanesApi.setPendingPage(webPane.id, url),
-                  }}
-                  onDragStart={(event) => {
-                    setDraggedPane({ kind: 'web', groupId: group.id, webPaneId: webPane.id })
-                    event.dataTransfer.effectAllowed = 'move'
-                    event.dataTransfer.setData('text/plain', webPane.id)
-                  }}
-                  onDragEnd={() => {
-                    setDraggedPane(null)
-                    setDropPreview(null)
-                  }}
-                  onNavigate={(url) => void navigateWebPane(webPane.id, url)}
-                  navigateRequest={webPaneNavigateRequests[webPane.id]}
-                  onAnswerNavigateRequest={(requestId, accept) => (
-                    void answerWebPaneNavigateRequest(webPane.id, requestId, accept)
-                  )}
-                  reloadRevision={webPaneReloads[webPane.id]}
-                  maximized={maximizedPaneId === webPane.id}
-                  onMaximize={() => {
-                    clearLayoutTimers()
-                    setMaximizedPaneId((current) => (current === webPane.id ? null : webPane.id))
-                  }}
-                />
-              )
               const leafPaneIds = windowTree
                 ? layoutTreePanes(windowTree).map((leaf) => leaf.paneId)
                 : []
@@ -3932,40 +4259,12 @@ export function App() {
                         setMaximizedPaneId((current) => current === tab.id ? null : tab.id)
                       }
                     }}
-                    renderBuiltin={(tab, visible, data) => {
-                      const pane = paneMap.get(tab.anchorPaneId)
-                      if (!pane) return null
-                      if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
-                      const identity = parsePrPanelKey(tab.key)
-                      if (identity) {
-                        const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
-                        return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
-                          <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
-                            onSelectionApplied={() => setPrSelections((current) => {
-                              if (current[tab.id] !== prSelections[tab.id]) return current
-                              const next = { ...current }; delete next[tab.id]; return next
-                            })} />
-                        </Suspense> : null
-                      }
-                      const supplied = paneBriefs[pane.id]
-                      const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
-                      const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
-                        paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
-                        state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
-                      }
-                      return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
-                        fullWidth visible={visible} onAttentionChange={reportSessionAttention}
-                        empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
-                        simsApi={simsApi} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
-                        screenshotsApi={paneScreenshotsApi} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
-                        onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
-                        onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
-                    }}
+                    renderBuiltin={renderBuiltinPanelTab}
                     onSelect={(tab) => { void selectPanelTab(tab) }}
                     onSeen={connected ? markPanelTabSeen : undefined}
                     onClose={(id) => { void closeWebPane(id) }}
                     onOpen={(url, anchor, engine) => { void openWebPane(url, anchor, engine) }}
-                    renderTab={renderWebPane}>
+                    renderTab={(tab, visible) => renderWebPane(tab, visible, group.id)}>
                   {displayTree && (visibleGroupPanes.length || maximizedWebPane) ? (
                     <ResizablePaneLayout
                       key={`${group.id}:${maximizedGridPaneId ?? 'grid'}`}
@@ -4003,10 +4302,12 @@ export function App() {
                         if (pane.empty) {
                           return [
                             pane.id,
-                            <div key={rendererIdentity} className="conversation-picker-anchor" data-pane-id={pane.id}
+                            <div key={rendererIdentity} className="conversation-picker-anchor empty-pane-anchor" data-pane-id={pane.id}
                               onPointerDown={() => setFocusedPaneId(pane.id)} onFocusCapture={() => setFocusedPaneId(pane.id)}>
-                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
-                              {conversationPaneId === pane.id ? conversationPicker : null}
+                              <EmptyPane pane={pane} pending={paneActionPending} panelTrigger={panelTrigger} focusRef={(node) => registerFocusable(pane.id, node)}
+                                onClose={connected && canClosePane(pane) ? () => { void killPane(pane.id) } : undefined}
+                                onLaunch={(choice) => { void launchInEmptyPane(pane.id, choice) }} />
+                              {palettePaneId === pane.id ? panePaletteNode : null}
                             </div>,
                           ] as const
                         }
@@ -4017,10 +4318,20 @@ export function App() {
                             pane={pane}
                             lineageSnapshot={snapshot ?? undefined}
                             lineageStatuses={agentStatuses}
+                            commander={{ state: commanderState, groups: commanderGroups, token,
+                              onOpenPane: (paneId, targetId) => jumpToPane(paneId, targetId, true),
+                              onRelay: (relay) => dispatchCommander({ type: 'commander_relay', relay }),
+                              disabled: !connected,
+                              ...(pane.id === commanderState.paneId ? {
+                                ...(commanderPeek ? { peekTargetId: commanderPeek.targetId } : {}),
+                                onPeek: (paneId: string, targetId: string) => setCommanderPeek({ paneId, targetId }),
+                                peek: commanderPeekView(),
+                              } : {}),
+                            }}
                             onSelectPane={jumpToPane}
                             attributionVisible={attributionTargets.has(pane.targetId)}
                             agentChatRequests={Object.values(agentChatRequests).filter((request) => request.callerPaneId === pane.id && request.callerTargetId === pane.targetId)}
-                            {...(conversationPaneId === pane.id && conversationPicker ? { overlay: conversationPicker } : {})}
+                            {...(palettePaneId === pane.id && panePaletteNode ? { overlay: panePaletteNode } : {})}
                             onAnswerAgentChatRequest={async (id, decision) => {
                               setPaneActionError('')
                               try {
@@ -4040,6 +4351,8 @@ export function App() {
                             onRetryResume={() => retryAgentResume(pane.targetId)}
                             chat={chats[pane.id]}
                             externalRuns={externalRuns[pane.id]}
+                            {...(tileEvents[pane.id] ? { tileEvents: tileEvents[pane.id] } : {})}
+                            onOpenTile={revealWebPaneTab}
                             chatView={chatViews[pane.id] ?? 'chat'}
                             onChatView={(view) => setChatViews((current) => ({ ...current, [pane.id]: view }))}
                             onChatSend={(text, images, options) => sendChat(pane.id, text, images, options)}
@@ -4164,7 +4477,7 @@ export function App() {
                             registerFocusable={registerFocusable}
                           />,
                           ] as const
-                      }).concat(splitWebPanes.map((webPane) => [webPane.id, renderWebPane(webPane, true)] as const)))}
+                      }).concat(splitWebPanes.map((webPane) => [webPane.id, renderWebPane(webPane, true, group.id)] as const)))}
                     />
                   ) : (
                     <div className="group-empty">This saved group has no panes in the current tmux snapshot.</div>
@@ -4208,6 +4521,12 @@ export function App() {
           {area === 'sims' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening simulators...</p></section>}>
               <SimsView token={token} />
+            </Suspense>
+          ) : null}
+          {area === 'settings' ? (
+            <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening settings...</p></section>}>
+              <SettingsView api={agentProfilesApi} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
+                commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
           ) : null}
           {notesMounted ? (

@@ -2,7 +2,7 @@ import { assignSessionIdentities, deriveSessionIdentity, isSessionGlyph, normali
 import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 
 export type SessionPreferenceGroup = {
   id: string
@@ -12,6 +12,14 @@ export type SessionPreferenceGroup = {
 
 export type SessionGroupingMode = 'repository' | 'manual'
 
+export type RepositorySessionGroup = {
+  id: string
+  name: string
+  repoRoot: string
+  sessionIds: string[]
+  collapsed?: boolean
+}
+
 export type SessionTreePreferences = {
   version: 1
   groups: SessionPreferenceGroup[]
@@ -20,8 +28,9 @@ export type SessionTreePreferences = {
   sessionIdentities?: SessionIdentities
   /** How the sidebar groups sessions; defaults to `repository` when absent. */
   groupingMode?: SessionGroupingMode
-  /** Saved order within repository groups, independent of manual grouping. */
+  /** Top-level repository order: loose session ids and `group:<groupId>` tokens, independent of manual grouping. */
   repositorySessionIds?: string[]
+  repositoryGroups?: RepositorySessionGroup[]
 }
 
 export type TmuxSessionReference = {
@@ -125,13 +134,37 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
   }
   let repositorySessionIds: string[] | undefined
   if (value.repositorySessionIds !== undefined) {
-    if (!Array.isArray(value.repositorySessionIds) || value.repositorySessionIds.length > MAX_SESSIONS) return null
+    if (!Array.isArray(value.repositorySessionIds) || value.repositorySessionIds.length > MAX_SESSIONS + MAX_GROUPS) return null
     const ids = new Set<string>()
     for (const id of value.repositorySessionIds) {
-      if (typeof id !== 'string' || !SESSION_ID.test(id) || ids.has(id)) return null
+      if (typeof id !== 'string' || (!SESSION_ID.test(id) && !(id.startsWith('group:') && GROUP_ID.test(id.slice(6)))) || ids.has(id)) return null
       ids.add(id)
     }
     repositorySessionIds = [...ids]
+    if (repositorySessionIds.filter((id) => SESSION_ID.test(id)).length > MAX_SESSIONS || repositorySessionIds.filter((id) => id.startsWith('group:')).length > MAX_GROUPS) return null
+  }
+  let repositoryGroups: RepositorySessionGroup[] | undefined
+  if (value.repositoryGroups !== undefined) {
+    if (!Array.isArray(value.repositoryGroups) || value.repositoryGroups.length > MAX_GROUPS) return null
+    repositoryGroups = []
+    const ids = new Set<string>()
+    const members = new Set<string>()
+    for (const candidate of value.repositoryGroups) {
+      if (!isRecord(candidate) || typeof candidate.id !== 'string' || !GROUP_ID.test(candidate.id) || ids.has(candidate.id)) return null
+      if (typeof candidate.repoRoot !== 'string' || !isAbsolute(candidate.repoRoot) || candidate.repoRoot.length > 4096 || /[\u0000-\u001f\u007f]/.test(candidate.repoRoot)) return null
+      if (!Array.isArray(candidate.sessionIds) || (candidate.collapsed !== undefined && typeof candidate.collapsed !== 'boolean')) return null
+      let name: string
+      try { name = validateSessionGroupName(candidate.name) } catch { return null }
+      const sessionIds: string[] = []
+      for (const id of candidate.sessionIds) {
+        if (typeof id !== 'string' || !SESSION_ID.test(id) || members.has(id)) return null
+        members.add(id)
+        sessionIds.push(id)
+      }
+      if (members.size > MAX_SESSIONS) return null
+      ids.add(candidate.id)
+      repositoryGroups.push({ id: candidate.id, name, repoRoot: candidate.repoRoot, sessionIds, ...(candidate.collapsed !== undefined ? { collapsed: candidate.collapsed } : {}) })
+    }
   }
   return {
     version: 1,
@@ -141,6 +174,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
     ...(value.sessionIdentities !== undefined ? { sessionIdentities: normalizeSessionIdentities(value.sessionIdentities) } : {}),
     ...(groupingMode ? { groupingMode } : {}),
     ...(repositorySessionIds ? { repositorySessionIds } : {}),
+    ...(repositoryGroups ? { repositoryGroups } : {}),
   }
 }
 
@@ -190,8 +224,21 @@ export function reconcileSessionTreePreferences(
   }))
   const ungroupedSessionIds = reconcileIds(parsed.ungroupedSessionIds)
   const repositorySessionIds = parsed.repositorySessionIds
-    ? reconcileIds(parsed.repositorySessionIds, new Set())
+    ? (() => {
+      const seen = new Set<string>()
+      return parsed.repositorySessionIds.flatMap((id) => id.startsWith('group:') ? [id] : reconcileIds([id], seen))
+    })()
     : undefined
+  const repositoryClaimed = new Set<string>()
+  const repositoryGroups = parsed.repositoryGroups?.map((group) => ({
+    ...group,
+    sessionIds: reconcileIds(group.sessionIds, repositoryClaimed).filter((sessionId) => {
+      // reconcileIds carries the stored name to the remapped id in claimedNames.
+      const storedName = claimedNames.get(sessionId)
+      const current = currentById.get(sessionId)
+      return !storedName || !current || current.name === storedName || currentByName.has(storedName)
+    }),
+  }))
   for (const session of currentSessions) {
     if (!claimed.has(session.id)) {
       claimed.add(session.id)
@@ -200,7 +247,7 @@ export function reconcileSessionTreePreferences(
     }
   }
   const sessionNamesById: Record<string, string> = {}
-  for (const sessionId of new Set([...claimed, ...repositorySessionIds ?? []])) {
+  for (const sessionId of new Set([...claimed, ...repositorySessionIds ?? [], ...repositoryClaimed])) {
     const name = claimedNames.get(sessionId)
     if (name) sessionNamesById[sessionId] = name
   }
@@ -212,6 +259,7 @@ export function reconcileSessionTreePreferences(
     ...(parsed.sessionIdentities ? { sessionIdentities: parsed.sessionIdentities } : {}),
     ...(parsed.groupingMode ? { groupingMode: parsed.groupingMode } : {}),
     ...(repositorySessionIds ? { repositorySessionIds } : {}),
+    ...(repositoryGroups ? { repositoryGroups } : {}),
   }
 }
 
@@ -245,8 +293,9 @@ export function visibleSessionTreePreferences(
     ...(preferences.sessionIdentities ? { sessionIdentities: preferences.sessionIdentities } : {}),
     ...(preferences.groupingMode ? { groupingMode: preferences.groupingMode } : {}),
     ...(preferences.repositorySessionIds ? {
-      repositorySessionIds: preferences.repositorySessionIds.filter((sessionId) => current.has(sessionId)),
+      repositorySessionIds: preferences.repositorySessionIds.filter((sessionId) => sessionId.startsWith('group:') || current.has(sessionId)),
     } : {}),
+    ...(preferences.repositoryGroups ? { repositoryGroups: preferences.repositoryGroups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => current.has(id)) })) } : {}),
   }
 }
 
@@ -319,6 +368,15 @@ export class SessionPreferenceStore {
     })
   }
 
+  /** Follow a rename seen on the same tmux server, so reconcile doesn't mistake the session for a reused id. */
+  recordSessionRename(sessionId: string, previousName: string, name: string): Promise<SessionTreePreferences> {
+    return this.update((stored) => {
+      if (stored.sessionNamesById?.[sessionId] !== previousName) return { state: stored, result: stored }
+      const state = { ...stored, sessionNamesById: { ...stored.sessionNamesById, [sessionId]: name } }
+      return { state, result: state }
+    })
+  }
+
   renameIdentity(oldName: string, newName: string, sessionId: string): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       const identities = new Map(Object.entries(stored.sessionIdentities ?? {}))
@@ -346,13 +404,32 @@ export class SessionPreferenceStore {
     let validated: SessionTreePreferences
     const operation = this.writes.then(async () => {
       const stored = await this.readState()
+      // A session newly placed in a repository group takes its current name, replacing any name
+      // left over from an earlier session with the same id. The client sends the name it displayed
+      // for the session it moved; a stale snapshot's name won't match tmux, so it isn't accepted.
+      // Compare with the reconciled view the client was given: load() can leave stale members on disk.
+      const baseline = reconcileSessionTreePreferences(stored, currentSessions)
+      const storedMembers = new Map((baseline.repositoryGroups ?? []).map((group) => [group.id, new Set(group.sessionIds)]))
+      const currentNames = new Map(currentSessions.map((session) => [session.id, session.name]))
+      const assignedNames: Record<string, string> = {}
+      for (const group of parsed.repositoryGroups ?? []) {
+        for (const sessionId of group.sessionIds) {
+          if (storedMembers.get(group.id)?.has(sessionId)) continue
+          const submitted = parsed.sessionNamesById?.[sessionId]
+          const current = currentNames.get(sessionId)
+          // Not in a tmux snapshot yet (just created): trust the client's name until tmux reports it.
+          if (submitted && (current === undefined || current === submitted)) assignedNames[sessionId] = submitted
+        }
+      }
       validated = reconcileSessionTreePreferences({
         ...parsed,
         // Identity changes use dedicated queued mutations; grouping snapshots may be stale.
         ...(parsed.sessionIdentities || stored.sessionIdentities ? { sessionIdentities: stored.sessionIdentities ?? parsed.sessionIdentities } : {}),
+        // Renames are recorded server-side, so stored names win over a client's possibly stale copy.
         sessionNamesById: {
-          ...stored.sessionNamesById,
           ...parsed.sessionNamesById,
+          ...stored.sessionNamesById,
+          ...assignedNames,
         },
       }, currentSessions)
       await this.writeState(validated)

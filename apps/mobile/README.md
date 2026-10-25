@@ -21,7 +21,17 @@ only. Bundle id `com.commando.companion`.
   providers, with session identity headers, right-aligned user bubbles, flat
   Markdown replies, foldable tool/thinking activity and scrollable code/diffs.
   Sending, queueing, steering, stopping, attachments and command/file menus use
-  the existing chat channel. Terminal-only panes retain xterm, fit, keys and paste.
+  the existing chat channel. The paperclip offers Take Photo (the camera, one
+  photo, asking for camera access the first time) or Choose from Library.
+  While the clipboard holds an image (a screenshot,
+  an image copied in Photos or Safari, or one from the Mac over Universal
+  Clipboard) the composer offers it above the field; iOS's paste control reads
+  it without the "Allow Paste" prompt, and it uploads like a picked photo. Text
+  still pastes through the field's own menu. Holding the composer's mic button
+  dictates through Apple's speech recogniser (`expo-speech-recognition`): the
+  words stream into the draft at the caret and stop on release. The first hold
+  asks for the microphone and speech recognition; a build without the module
+  simply has no mic. Terminal-only panes retain xterm, fit, keys and paste.
 - **Pane tabs** — Chat/Terminal, Worklog, Changes, linked PRs and attached web
   tabs in desktop order. Switching keeps the conversation mounted. Chromium
   opens the existing full-screen tile route with its interaction/review controls;
@@ -30,11 +40,24 @@ only. Bundle id `com.commando.companion`.
   `EXPO_PUBLIC_COMMANDO_DEMO=1` to add it and select it on a fresh install.
   Tap the Chats header’s host name to return to Hosts and add a real daemon. The in-memory
   host seeds four repos, eight sessions, four providers, questions, rich turns,
-  worklogs, changes, PRs and browser/simulator/canvas/guide tabs. Sending produces
+  worklogs, changes, a PR with its description, diff and review conversation,
+  and browser/simulator/canvas/guide tabs. Sending produces
   a short streamed reply. Unsupported actions fail locally. Production builds
   exclude the fake transport; saved demo hosts are filtered out.
 - **Theme** — the five desktop themes, ported token for token from
   `src/styles.css`, with the choice persisted.
+- **Pull requests** — a linked PR's pane tab, and every PR row in the Info
+  sheet, open a native PR view over the desktop panel's own routes:
+  **Description** (title, state, branch → base, author, checks and review
+  readiness, and the body as Markdown with GitHub's HTML — hidden markers,
+  `<details>`, `<img>` — turned into native Markdown), **Diff** (GitHub's
+  "Files changed" from `GET /api/prs/diff?base=pr`: a virtualised file list,
+  each file's numbered unified diff drawn only when opened and in 300-line
+  chunks) and **Conversation** (`GET /api/prs/details`: comments, reviews
+  with their verdicts, and review threads with file, line, code, replies and
+  resolved/outdated state; resolved threads fold away). Details load when the
+  view shows and the diff when its tab is first opened; nothing polls, and
+  pull to refresh asks the daemon to bypass its GitHub cache.
 - **Info sheet** — pushed over a pane: the worklog (headline, recap, Next, plan
   checklist and activity timeline from `session_brief`), the HUD details when a
   pane has no brief, the diff from `GET /api/git/summary` polled every 15s with
@@ -68,6 +91,23 @@ only. Bundle id `com.commando.companion`.
   Send all and Send + Build. The redline controls inside the page keep working
   through the screencast, because the queue binding lives in the daemon's
   Chromium.
+- **Native tiles** — pages the phone can load itself skip the screencast and
+  render in a `react-native-webview` (`src/tiles/native/`): native scrolling,
+  text selection, pinch zoom, crisp text and no PNG traffic. Daemon-served
+  pages (`/redline/…`: artifacts, the SDK, show-me pages) are loaded from the
+  phone's daemon address and open natively, webkit tiles included; a public
+  page on a chromium tile streams by default (the host's Chromium holds its
+  logins) and the header's **Native / Stream** toggle switches; a page on the
+  Mac's own localhost (a dev server) only streams. If the WebView cannot load
+  the page, a chromium tile falls back to the stream on its own. An injected
+  bridge (`bridge.ts`) installs the same `__commandoRedlineQueue` binding the
+  desktop WebView and Chromium provide, so the SDK's controls queue answers
+  and publish their open questions, which the **Questions** sheet answers
+  natively; Review taps name an element and pin queued notes on the page. All
+  of it uses the daemon's pending-queue routes under the tile's canonical
+  (`127.0.0.1`) URL, so the desktop sees the same queue and sent answers.
+  **Canvas** tabs read `canvas.json`: question notes are answered natively into
+  the canvas's answer queue, and each frame opens as a native page.
 - **Settings** — the notification rules, muted sessions and quiet hours; the
   push registration and a test notification; the five themes; and the terminal
   defaults ("Fit pane to phone" and the font size) a newly opened pane starts
@@ -147,6 +187,41 @@ then `expo start` against it:
 ```sh
 npx eas build --profile development --platform ios
 ```
+
+## Over-the-air updates
+
+The app is linked to the EAS project `@laeijebor/commando-companion` and
+checks the `production` channel on every launch. A new update downloads in the
+background and runs from the next cold start, so after publishing, open the
+app, swipe it away, and open it again.
+
+Publish JavaScript and asset changes from `apps/mobile`:
+
+```sh
+npx eas-cli update --channel production --platform ios --message "what changed"
+```
+
+An update only reaches builds with the same runtime version, which follows the
+app version (`expo.version` in `app.json`). Adding, removing or upgrading a
+native module needs a new build: bump `expo.version`, rebuild, and install it.
+So does a new permission in `app.json` (camera, microphone): iOS ends an app
+that asks for one its build has no wording for.
+A phone build signed with the team's development profile can be shared without
+a cable through EAS internal distribution:
+
+```sh
+npx expo prebuild -p ios --clean
+xcodebuild -workspace ios/Commando.xcworkspace -scheme Commando -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath /tmp/Commando.xcarchive \
+  -allowProvisioningUpdates archive
+xcodebuild -exportArchive -archivePath /tmp/Commando.xcarchive \
+  -exportOptionsPlist scripts/ExportOptions.development.plist -exportPath /tmp/Commando-ipa \
+  -allowProvisioningUpdates
+npx eas-cli upload --platform ios --build-path /tmp/Commando-ipa/Commando.ipa
+```
+
+Only devices in that profile can install it. Builds made before EAS Update was
+added never check for updates and must be replaced once.
 
 ## Pointing at a daemon over Tailscale
 

@@ -73,7 +73,8 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
       const body = await response.json() as { profiles?: unknown }
       return Array.isArray(body.profiles)
         ? body.profiles.filter((profile): profile is ClaudeProfile => Boolean(profile) && typeof profile.name === 'string' && typeof profile.configDir === 'string'
-          && (profile.lastUsedAt === undefined || typeof profile.lastUsedAt === 'number'))
+          && (profile.lastUsedAt === undefined || typeof profile.lastUsedAt === 'number')
+          && (profile.label === undefined || typeof profile.label === 'string') && (profile.isDefault === undefined || typeof profile.isDefault === 'boolean'))
         : []
     },
   }

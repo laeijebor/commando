@@ -2,6 +2,7 @@ import type { ChatProvider } from '../../shared/agent-chat.js'
 import type { ChatProviderSession } from './provider.js'
 import { AgentSession, type AgentSessionSpec } from './session.js'
 import { which } from './which.js'
+import { CursorChatSession } from './cursor/session.js'
 import { CodexChatSession } from './codex/session.js'
 import { MuseChatSession } from './muse/session.js'
 
@@ -13,6 +14,7 @@ export async function createChatProviderSession(provider: ChatProvider, spec: Ag
       if (spec.configDir) process.env.CLAUDE_CONFIG_DIR = spec.configDir
       return new AgentSession({ ...spec, ...(claudePath ? { claudePath } : {}) })
     }
+    case 'cursor': return new CursorChatSession(spec)
     case 'codex': {
       const codexPath = await which('codex')
       if (!codexPath) throw new Error('Codex is not installed (codex was not found on PATH)')

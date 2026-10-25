@@ -92,6 +92,8 @@ export type SessionFormState = {
   agent?: AgentChoice
   prompt?: string
   permissionMode?: ChatPermissionMode
+  /** The Claude profile a Claude chat starts with; without one the daemon uses the default. */
+  configDir?: string
 }
 
 /**
@@ -108,6 +110,7 @@ export function buildSessionRequest(
     request.agent = {
       provider: form.agent,
       ...(isChatLaunchProvider(form.agent) ? { permissionMode: form.permissionMode ?? 'default' } : {}),
+      ...(form.agent === 'claude-chat' && form.configDir ? { configDir: form.configDir } : {}),
       ...(form.agent !== 'opencode' && form.prompt?.trim() ? { prompt: form.prompt } : {}),
     }
   }

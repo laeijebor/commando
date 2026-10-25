@@ -59,6 +59,17 @@ describe('conversation-owned web panes', () => {
     return { path, sessions, resolve, service, runningAgents, isAgentRunning }
   }
 
+  it('preserves Muse conversation ownership after persisting and reloading a tab', async () => {
+    const { service, sessions, path, resolve, isAgentRunning } = await setup()
+    const muse: AgentSessionRef = { provider: 'muse', id: '0199ea33-1234-7000-8000-123456789abc' }
+    sessions.set(anchor.anchorPaneId, muse)
+    const pane = service.open({ ...anchor, url: 'http://localhost/muse' })
+    await service.flush()
+    const loaded = track(new WebPaneService(path, Date.now, undefined, 'owner', resolve, isAgentRunning))
+    await loaded.load()
+    expect(loaded.get(pane.id)?.agentSession).toEqual(muse)
+  })
+
   it.each(['agent', 'user'] as const)('stamps %s opens, including built-in content, from the anchor conversation', async (openedBy) => {
     const { service, sessions } = await setup()
     sessions.set(anchor.anchorPaneId, conversation)

@@ -5,10 +5,10 @@ import * as Haptics from 'expo-haptics'
 
 import {
   MAX_CHAT_IMAGES,
-  chatImageUrl,
   hostTakesInput,
   hostTakesSettings,
   hostTakesTurnFlow,
+  isChatVideoId,
   type ChatCarriedDraft,
   type ChatCommand,
   type ChatFileSearchResult,
@@ -32,8 +32,13 @@ import { providerPresentation } from '../ui/providerPresentation'
 import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
-import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
-import { pickImages, prepareImage, uploadChatImage } from './images'
+import { ContextMeter, IconButton, QueueList, SettingsPills, showSheet, TriggerMenu, type MenuItem } from './ComposerParts'
+import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
+import { spliceDictation, useDictation } from './dictation'
+import { VideoTile } from './VideoTile'
+import { chatImageUri, pickImages, prepareImage, takePhoto, uploadChatImage, type PickedImage } from './images'
+import { PasteImageBar } from './PasteImageBar'
+import { RelayChip } from './Subagents'
 
 type Attachment = { key: string; name: string; uri: string; ref?: ChatImageRef }
 
@@ -46,6 +51,9 @@ const takenCarries = new Map<string, number>()
 
 const FILE_SEARCH_DEBOUNCE_MS = 80
 
+/** Stands in for the dictation caret while the composer rewrites the draft around it. */
+const DICTATION_MARK = '\u0000'
+
 let attachmentCounter = 0
 function attachmentKey(prefix: string): string {
   attachmentCounter += 1
@@ -53,7 +61,7 @@ function attachmentKey(prefix: string): string {
 }
 
 function restored(refs: readonly ChatImageRef[], baseUrl: string, prefix: string): Attachment[] {
-  return refs.map((ref) => ({ key: attachmentKey(prefix), name: ref.name ?? 'image', uri: `${baseUrl}${chatImageUrl(ref.id)}`, ref }))
+  return refs.map((ref) => ({ key: attachmentKey(prefix), name: ref.name ?? 'image', uri: chatImageUri(baseUrl, ref.id), ref }))
 }
 
 /** `@` results for the trigger's query; stale answers are dropped. */
@@ -113,8 +121,11 @@ function menuFor(
  * queue while Claude works), Steer and Stop, the queue, images, the `/` and
  * `@` menus and the settings pills. Open requests sit above it.
  */
-export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend }: {
+export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay }: {
   onSend?: () => void
+  /** Messages go to this subagent, relayed through main Claude's SendMessage. */
+  relayTarget?: { agentId: string; label: string } | undefined
+  onClearRelay?: (() => void) | undefined
   host: Host
   session: ChatSessionInfo
   /** The phone is connected to the daemon, and the daemon to the chat's host. */
@@ -167,7 +178,12 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const files = useFileSearch(trigger?.kind === 'mention' ? trigger.query : null, channel)
   const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files) : null), [trigger, session, commands, files])
 
+  // The draft as of the latest change, ahead of the render it causes (a dictation can start in between).
+  const draftNow = useRef({ text, selection })
+  draftNow.current = { text, selection }
+
   const applyText = (next: { text: string; cursor: number }) => {
+    draftNow.current = { text: next.text, selection: { start: next.cursor, end: next.cursor } }
     setText(next.text)
     setSelection({ start: next.cursor, end: next.cursor })
     setForcedSelection({ start: next.cursor, end: next.cursor })
@@ -192,26 +208,21 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     }
   }
 
-  const attach = async () => {
+  /** Room for more images, or why there is none (the error is shown). */
+  const roomForImages = (): number => {
     setAttachError(null)
     if (!richInput) {
       setAttachError('Restart this chat to attach images')
-      return
+      return 0
     }
     const room = MAX_CHAT_IMAGES - attachments.length
-    if (room <= 0) {
-      setAttachError(`A message can carry at most ${MAX_CHAT_IMAGES} images`)
-      return
-    }
-    let picked
-    try {
-      picked = await pickImages(room)
-    } catch (error) {
-      setAttachError(error instanceof Error ? error.message : String(error))
-      return
-    }
-    if (!picked?.length || !mounted.current) return
-    for (const image of picked) {
+    if (room <= 0) setAttachError(`A message can carry at most ${MAX_CHAT_IMAGES} images`)
+    return Math.max(0, room)
+  }
+
+  /** Picked or pasted images join the draft at once, then shrink and upload behind a spinner. */
+  const addImages = (images: readonly PickedImage[]) => {
+    for (const image of images) {
       const key = attachmentKey('picked')
       setAttachments((current) => [...current, { key, name: image.name, uri: image.uri }])
       const drop = (error: string) => {
@@ -225,7 +236,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           if (!prepared.ok) return drop(prepared.error)
           const ref = await uploadChatImage(host, prepared.image)
           if (!mounted.current) return
-          setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: prepared.image.name, ref } : attachment)))
+          setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: prepared.image.name, uri: prepared.image.uri, ref } : attachment)))
         } catch (error) {
           drop(`${image.name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -233,7 +244,78 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     }
   }
 
+  /** The paperclip offers the camera or the library. */
+  const attachButton = useRef<View>(null)
+  const attach = async () => {
+    const room = roomForImages()
+    if (!room) return
+    const choice = await showSheet(attachButton.current, 'Attach images', ['Take Photo', 'Choose from Library'], -1)
+    if (choice === null || !mounted.current) return
+    let picked
+    try {
+      picked = await (choice === 0 ? takePhoto() : pickImages(room))
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    if (!picked?.length || !mounted.current) return
+    addImages(picked)
+  }
+
+  // The clipboard's image is offered while it holds one; a paste uses it up until the clipboard changes.
+  const clipboardImage = useClipboardImage(richInput && !disabled)
+  const pasteImage = (data: ClipboardImageData) => {
+    // Kept on offer when there's no room, so it can come in once an image is removed.
+    if (!roomForImages()) return
+    clipboardImage.dismiss()
+    const image = pastedImage(data)
+    if (!image) {
+      setAttachError('The clipboard image is in a format that can\'t be attached')
+      return
+    }
+    void Haptics.selectionAsync()
+    addImages([image])
+  }
+
+  // Dictation replaces the selection it started on; each new transcript redoes that from the same draft.
+  const [dictationHint, setDictationHint] = useState<string | null>(null)
+  const dictationBase = useRef({ text: '', selection: { start: 0, end: 0 } })
+  const dictation = useDictation({
+    onBegin: () => {
+      dictationBase.current = draftNow.current
+      setDictationHint(null)
+      setAttachError(null)
+    },
+    onTranscript: (spoken) => applyText(spliceDictation(dictationBase.current.text, dictationBase.current.selection, spoken)),
+    onError: setAttachError,
+    onHint: setDictationHint,
+  })
+  useEffect(() => {
+    if (!dictationHint) return
+    const timer = setTimeout(() => setDictationHint(null), 2500)
+    return () => clearTimeout(timer)
+  }, [dictationHint])
+  /**
+   * The composer adding text to the draft itself (restored queue, refused send, carried draft).
+   * A take in progress rebuilds the draft from its starting draft, so that gets the same edit,
+   * with a marker keeping its place for the words.
+   */
+  const rewriteDraft = (rewrite: (current: string) => string) => {
+    setText(rewrite)
+    const base = dictationBase.current
+    const marked = rewrite(`${base.text.slice(0, base.selection.start)}${DICTATION_MARK}${base.text.slice(base.selection.end)}`)
+    const at = marked.indexOf(DICTATION_MARK)
+    if (at >= 0) dictationBase.current = { text: marked.replace(DICTATION_MARK, ''), selection: { start: at, end: at } }
+  }
+  const canDictate = dictation.available && !closed && !switching
+  // The mic leaves mid-hold when the session ends or switches; its release would never come.
+  useEffect(() => {
+    if (!canDictate) dictation.cancel()
+  }, [canDictate, dictation.cancel])
+
   const clearDraft = () => {
+    // A take still finishing would put the sent words back when its last result lands.
+    dictation.cancel()
     setAttachments([])
     setAttachError(null)
     setText('')
@@ -248,7 +330,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       const sent = sentDrafts.current.get(requestId)
       if (!sent || Date.now() - sent.at > CHAT_SEND_REFUSAL_MS) continue
       sentDrafts.current.delete(requestId)
-      if (sent.text) setText((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
+      if (sent.text) rewriteDraft((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
       // A missing image has to be attached again, as the error says.
       if (!sent.images.length || code === 'chat_image_missing') continue
       const fit = fitAttachments(count, sent.images.length)
@@ -272,7 +354,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       if (!carried.text && fit.accepted === 0) return
       taken = fit.accepted
       takenCarries.set(carried.id, taken)
-      if (carried.text) setText((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+      if (carried.text) rewriteDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
       const images = restored(carried.images.slice(0, taken), host.baseUrl, 'carried')
       if (images.length) setAttachments((current) => [...images, ...current])
     }
@@ -282,12 +364,14 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [carried?.id, attachments.length, switching])
 
-  /** Enter (the send button) queues while Claude works; Steer sends now. */
+  /** While relaying, nothing queues or steers: main Claude forwards it now. */
+  const queueing = running && turnFlow && !relayTarget
+  /** Enter (the send button) queues while Claude works; Steer sends now. A relay always goes now. */
   const submit = (steer = false) => {
     if (!canSend) return
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
-    const options: ChatSendOptions = running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
+    const options: ChatSendOptions = relayTarget ? { relayTo: relayTarget } : queueing ? { delivery: steer ? 'steer' : 'queue' } : {}
     const sent = text.trim()
     const requestId = channel.send(sent, images, options)
     onSend?.()
@@ -312,7 +396,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       room -= count
       return true
     })
-    setText((current) => [...taken.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
+    rewriteDraft((current) => [...taken.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
     const images = restored(taken.flatMap((queued) => queued.images ?? []), host.baseUrl, 'queued')
     if (images.length) setAttachments((current) => [...images, ...current])
     const left = queue.length - taken.length
@@ -332,17 +416,20 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       ? 'Switching to Claude Code…'
       : closed
         ? 'This session has ended'
-        : running ? 'Queue a message…' : `Ask ${providerPresentation(session.provider).name}… / for commands, @ for files`
+        : relayTarget
+          ? `Message @${relayTarget.label} through main ${providerPresentation(session.provider).name}…`
+          : running ? 'Queue a message…' : `Ask ${providerPresentation(session.provider).name}… / for commands, @ for files`
 
   return (
     <View style={styles.wrap}>
       <View style={[styles.box, { backgroundColor: theme.surface, borderColor: theme.borderMid }]} testID="chat-composer">
+        {relayTarget && onClearRelay ? <RelayChip label={relayTarget.label} onClear={onClearRelay} provider={providerPresentation(session.provider).name} /> : null}
         {queue.length ? (
           <QueueList provider={session.provider}
             disabled={!hostConnected}
             onChange={(change) => channel.queue(change)}
             onEditOrphaned={(edit) => {
-              setText((current) => [current.trim(), edit].filter(Boolean).join('\n\n'))
+              rewriteDraft((current) => [current.trim(), edit].filter(Boolean).join('\n\n'))
               setAttachError('That message was sent before your edit was saved; your edit is in the composer')
             }}
             queue={queue}
@@ -355,7 +442,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachments} keyboardShouldPersistTaps="always">
             {attachments.map((attachment) => (
               <View key={attachment.key} style={styles.thumb}>
-                <Image accessibilityLabel={attachment.name} source={{ uri: attachment.uri }} style={[styles.thumbImage, { borderColor: theme.border }]} />
+                {attachment.ref && isChatVideoId(attachment.ref.id)
+                  ? <VideoTile name={attachment.name} style={styles.thumbImage} />
+                  : <Image accessibilityLabel={attachment.name} source={{ uri: attachment.uri }} style={[styles.thumbImage, { borderColor: theme.border }]} />}
                 {attachment.ref ? null : (
                   <View style={[styles.thumbBusy, { backgroundColor: withAlpha(theme.bg, 0.55) }]}>
                     <ActivityIndicator color={theme.text} size="small" />
@@ -383,17 +472,30 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             <IconButton icon="x" label="Dismiss" onPress={dismissError} />
           </View>
         ) : null}
+        {dictationHint ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.hint, { color: theme.muted }]}>{dictationHint}</Text>
+        ) : null}
+        {clipboardImage.available ? (
+          <PasteImageBar onDismiss={clipboardImage.dismiss} onError={setAttachError} onImage={pasteImage} />
+        ) : null}
         <TextInput
           accessibilityLabel={`Message ${providerPresentation(session.provider).name}`}
           autoCapitalize="sentences"
-          editable={!disabled}
+          // A dropped connection only stops sending: making the field read-only
+          // would resign it, so a reconnect would close the keyboard mid-sentence.
+          editable={!closed && !switching}
           multiline
-          onChangeText={setText}
+          onChangeText={(next) => {
+            // Typing wins over a take still finishing, whose last result would overwrite it.
+            dictation.cancel()
+            setText(next)
+          }}
+          onFocus={clipboardImage.recheck}
           onSelectionChange={(event) => {
             setSelection(event.nativeEvent.selection)
             if (forcedSelection) setForcedSelection(undefined)
           }}
-          placeholder={placeholder}
+          placeholder={dictation.listening ? 'Listening…' : placeholder}
           placeholderTextColor={theme.textDim}
           ref={input}
           scrollEnabled
@@ -403,7 +505,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           value={text}
         />
         <View style={styles.bar}>
-          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} /> : null}
+          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} ref={attachButton} /> : null}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pills} style={styles.pillsScroll} keyboardShouldPersistTaps="always">
             {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
             <SettingsPills
@@ -427,7 +529,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
               <View style={[styles.stopGlyph, { backgroundColor: theme.red }]} />
             </Pressable>
           ) : null}
-          {running && turnFlow ? (
+          {queueing ? (
             <Pressable
               accessibilityLabel="Steer now"
               accessibilityHint={`Ends ${providerPresentation(session.provider).name}'s turn at its next safe point and sends this`}
@@ -440,8 +542,24 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
               <Feather color={theme.accent} name="zap" size={15} />
             </Pressable>
           ) : null}
+          {canDictate ? (
+            <Pressable
+              accessibilityHint="Hold to talk; release to stop"
+              accessibilityLabel={dictation.listening ? 'Listening' : 'Dictate'}
+              accessibilityRole="button"
+              accessibilityState={{ busy: dictation.listening }}
+              onPressIn={dictation.begin}
+              onPressOut={dictation.end}
+              style={[styles.round, styles.stop, dictation.listening
+                ? { backgroundColor: withAlpha(theme.red, 0.18), borderColor: theme.red }
+                : { borderColor: theme.borderMid }]}
+              testID="chat-dictate"
+            >
+              <Feather color={dictation.listening ? theme.red : theme.muted} name="mic" size={16} />
+            </Pressable>
+          ) : null}
           <Pressable
-            accessibilityLabel={running && turnFlow ? 'Queue' : 'Send'}
+            accessibilityLabel={queueing ? 'Queue' : 'Send'}
             accessibilityRole="button"
             accessibilityState={{ disabled: !canSend }}
             disabled={!canSend}
@@ -466,6 +584,7 @@ const styles = StyleSheet.create({
   thumbRemove: { position: 'absolute', top: -4, right: -4, width: 20, height: 20, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   error: { flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 14, paddingRight: 4, paddingTop: 8 },
   errorText: { flex: 1, fontSize: 12.5, lineHeight: 17, paddingTop: 6 },
+  hint: { fontSize: 12.5, lineHeight: 17, paddingHorizontal: 14, paddingTop: 8 },
   field: { fontSize: 15, lineHeight: 20, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4, minHeight: 40, maxHeight: 140 },
   bar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 6, paddingRight: 8, paddingBottom: 8 },
   pillsScroll: { flex: 1 },

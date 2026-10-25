@@ -4,8 +4,10 @@
   min-height: 254px;
   height: 100%;
   display: grid;
-  place-content: center;
+  /* safe: a pane shorter than the choices scrolls instead of clipping their top. */
+  place-content: safe center;
   justify-items: center;
+  overflow: auto;
   gap: 10px;
   padding: 24px;
   background: var(--surface-deep);
@@ -17,6 +19,9 @@
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .empty-pane__mark {
@@ -79,4 +84,18 @@
 .empty-pane__choices svg {
   width: 14px;
   height: 14px;
+}
+
+.empty-pane:focus {
+  outline: none;
+}
+
+/* A split slot is a flex row: fill it like a terminal pane, at any height. */
+.pane-split-child > .empty-pane-anchor {
+  flex: 1;
+  width: 100%;
+}
+
+.pane-split-child > .empty-pane-anchor > .empty-pane {
+  min-height: 0;
 }

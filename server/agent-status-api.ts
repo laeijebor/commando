@@ -4,11 +4,13 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AgentStatusChange, AgentStatusRegistry } from './agent-status-registry.js'
 import type { AgentInteractionBroker } from './agent-interaction-broker.js'
+import { isPanePrRef, type PanePrRef } from './pane-pr-records.js'
 
 const API_ROOT = '/api/agent-status/hooks'
 const MAX_REQUEST_BYTES = 64 * 1024
 const MAX_RESOLVED_OPENCODE_INTERACTIONS = 500
 const PANE_ID = /^%\d+$/
+const MAX_CREATED_PULL_REQUESTS = 10
 
 type AgentStatusApiDependencies = {
   token: string
@@ -16,6 +18,8 @@ type AgentStatusApiDependencies = {
   paneExists: (paneId: string) => boolean
   paneCommand: (paneId: string) => string | undefined
   onChange: (change: AgentStatusChange) => void
+  /** PRs the agent's own tool output shows it just created. */
+  onPullRequestsCreated?: (paneId: string, refs: PanePrRef[]) => void
   interactions?: AgentInteractionBroker
   /** A chat pane's host answers permission prompts itself (SDK canUseTool), so hooks never hold them. */
   chatOwnsPane?: (paneId: string) => boolean
@@ -176,6 +180,10 @@ export class AgentStatusHookApi {
 
       const body = await readJson(request)
       const updatedAt = this.dependencies.now?.() ?? Date.now()
+      if (provider === 'cursor' && this.dependencies.chatOwnsPane?.(targetPaneId)) {
+        writeJson(response, 200, { ok: true, changed: false })
+        return true
+      }
       let change: AgentStatusChange
       let cursorAssociation: CursorHookAssociation | null = null
       let openCodeInteraction: OpenCodeInteractionLifecycle | null = null
@@ -213,6 +221,10 @@ export class AgentStatusHookApi {
           processCommand,
           provider,
         )
+        const created = Array.isArray(body.createdPullRequests)
+          ? body.createdPullRequests.slice(0, MAX_CREATED_PULL_REQUESTS).filter(isPanePrRef)
+          : []
+        if (created.length) this.dependencies.onPullRequestsCreated?.(targetPaneId, created.map(({ repo, number }) => ({ repo, number })))
       } else if (provider === 'codex') {
         const event = body.event
         if (!isRecord(event)) throw new HttpError(400, 'event must be a JSON object')

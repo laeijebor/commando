@@ -3,7 +3,7 @@
     "name": "Commando",
     "slug": "commando-companion",
     "scheme": "commando",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -24,6 +24,9 @@
             }
           }
         }
+      },
+      "runtimeVersion": {
+        "policy": "appVersion"
       }
     },
     "plugins": [
@@ -33,8 +36,8 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac.",
-          "microphonePermission": false,
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac, and to take photos you attach to a chat message.",
+          "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat.",
           "recordAudioAndroid": false
         }
       ],
@@ -42,8 +45,8 @@
         "expo-image-picker",
         {
           "photosPermission": "Commando attaches the photos you pick to a chat message.",
-          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac.",
-          "microphonePermission": false
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac, and to take photos you attach to a chat message.",
+          "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat."
         }
       ],
       [
@@ -53,10 +56,29 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 160
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat.",
+          "speechRecognitionPermission": "Commando turns what you say into text for your chat message."
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "owner": "laeijebor",
+    "extra": {
+      "eas": {
+        "projectId": "04c2e655-ec00-46a7-a3e4-01f6e5acb574"
+      }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/04c2e655-ec00-46a7-a3e4-01f6e5acb574",
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
     }
   }
 }

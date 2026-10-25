@@ -18,6 +18,13 @@ then unused devices, then the least recently used devices. It boots it slim, ver
 it with the session name and task. Use `--device <udid>` only when the user names
 a specific simulator; release an existing lease before switching devices.
 
+Slim boots keep `com.apple.liveactivitiesd` running, so ActivityKit apps don't
+crash at launch, and `com.apple.assistantd`, so Spotlight doesn't loop on a
+missing Siri language; `simslim list` shows these devices as 168/170 slim.
+
+The default daemon shuts down any pool simulator left booted without a lease
+for 10 minutes, so always lease a pool device rather than booting it directly.
+
 Inspect the pool and its live device states with:
 
 ```sh

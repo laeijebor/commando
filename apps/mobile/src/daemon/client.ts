@@ -27,6 +27,18 @@ const NativeWebSocket = WebSocket as unknown as NativeWebSocketConstructor
 const BASE_RETRY_MS = 500
 const MAX_RETRY_MS = 15_000
 const MAX_BACKOFF_STEPS = 5
+/**
+ * A socket has to stay open this long before a drop counts as a fresh failure.
+ * Resetting the backoff on every open let a socket the daemon kept closing
+ * straight after the connect burst reconnect every 500ms, forever.
+ */
+export const STABLE_CONNECTION_MS = 10_000
+/**
+ * The newest part of each chat the daemon replays on connect. Every chat's
+ * whole history is tens of megabytes for a busy host, sent again on every
+ * reconnect; the chat on screen fetches the rest on request (`chat_history`).
+ */
+export const CHAT_HISTORY_BYTES = 256 * 1024
 
 export function retryDelay(attempt: number): number {
   const step = Math.min(Math.max(attempt - 1, 0), MAX_BACKOFF_STEPS)
@@ -71,6 +83,8 @@ export class DaemonClient {
   private cookie: string | null
   private socket: WebSocket | null = null
   private attempt = 0
+  /** When the current socket opened, so a drop soon after does not reset the backoff. */
+  private openedAt: number | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
   /**
@@ -112,8 +126,7 @@ export class DaemonClient {
   }
 
   get url(): string {
-    const base = `${webSocketBase(this.host.baseUrl)}/ws`
-
+    const base = `${webSocketBase(this.host.baseUrl)}/ws?chatHistory=${CHAT_HISTORY_BYTES}`
     return base
   }
 
@@ -289,7 +302,7 @@ export class DaemonClient {
 
     socket.onopen = () => {
       if (this.stopped || this.socket !== socket) return
-      this.attempt = 0
+      this.openedAt = Date.now()
       this.setPhase('live', `Live · ${this.host.name}`)
       void useSessionPreferences.getState().refresh(this.host)
       // A new socket is subscribed to nothing and holds no lease, whatever the
@@ -328,7 +341,12 @@ export class DaemonClient {
     }
 
     socket.onclose = (event: { code?: number; reason?: string }) => {
-      if (this.socket === socket) this.socket = null
+      // A socket replaced by `reconfigure` (or stopped) is no longer this
+      // client's: its close must not schedule a second, competing socket.
+      if (this.socket !== socket) return
+      this.socket = null
+      if (this.openedAt !== null && Date.now() - this.openedAt >= STABLE_CONNECTION_MS) this.attempt = 0
+      this.openedAt = null
       // The daemon drops every lease held by a socket that goes away, so the
       // bookkeeping is cleared rather than sent: there is nothing to send it
       // down. A screen with "Fit to phone" still on re-takes it on reconnect.

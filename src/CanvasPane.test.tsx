@@ -7,6 +7,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebPane } from '../shared/protocol'
 import { CanvasPane } from './CanvasPane'
+import { CanvasTip } from './CanvasHotspotDots'
 import { WebPaneCard } from './WebPaneCard'
 import { publishCanvasChange } from './webPanesApi'
 import { parseCanvasManifest } from '../shared/canvas-manifest'
@@ -176,6 +177,35 @@ describe('CanvasPane', () => {
     expect(wrapper).toHaveStyle({ left: '20px', top: '40px' })
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
   })
+  it('drags a note to a fixed spot and hands it back to auto layout', async () => {
+    vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
+    let board = structuredClone(example) as typeof example & { annotations: Array<{ fixed?: boolean }> }
+    fetcher.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') {
+        const move = JSON.parse(String(init.body)).moves[0]
+        board = { ...board, annotations: board.annotations.map((n) => n.id === move.id ? { ...n, x: move.x, y: move.y, fixed: move.fixed ?? true } : n) }
+        return { ok: true, json: async () => ({ ...parseCanvasManifest(board), contentHash: 'b'.repeat(64) }) }
+      }
+      return { ok: true, text: async () => JSON.stringify(board), headers: new Headers({ ETag: `"${'a'.repeat(64)}"` }) }
+    })
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" token="owner" />)
+    await screen.findByTitle('Settings')
+    const note = container.querySelector('[data-canvas-note="warn"]') as HTMLElement
+    note.setPointerCapture = vi.fn()
+    const scale = Number(/scale\(([^)]+)\)/.exec((container.querySelector('.canvas-world') as HTMLElement).style.transform)![1])
+    fireEvent.pointerDown(note, { button: 0, pointerId: 1, clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(note, { pointerId: 1, clientX: 23 * scale, clientY: 37 * scale })
+    expect(note).toHaveStyle({ left: '-10px', top: '-170px' })
+    fireEvent.pointerUp(note, { pointerId: 1 })
+    const patches = () => fetcher.mock.calls.filter(([, init]) => init?.method === 'PATCH')
+    await waitFor(() => expect(patches()).toHaveLength(1))
+    expect(patches()[0][0]).toBe(`/api/redline/artifacts/${artifactId}/canvas/annotations`)
+    expect(JSON.parse(patches()[0][1].body).moves).toEqual([{ id: 'warn', x: -10, y: -170 }])
+    fireEvent.click(await screen.findByRole('button', { name: 'Auto' }))
+    await waitFor(() => expect(patches()).toHaveLength(2))
+    expect(JSON.parse(patches()[1][1].body).moves).toEqual([{ id: 'warn', x: -10, y: -170, fixed: false }])
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument())
+  })
   it('reloads on a stale drag write and reports the conflict without remounting the iframe', async () => {
     vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1 } })
     let changed = false
@@ -272,6 +302,36 @@ describe('CanvasPane', () => {
     fireEvent.wheel(viewport, { deltaX: 25, deltaY: 10 }); const panned = layer.style.transform
     fireEvent.wheel(viewport, { deltaY: -20, ctrlKey: true, clientX: 50, clientY: 80 }); expect(layer.style.transform).not.toBe(panned)
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' })); expect(screen.getByLabelText('Zoom')).toHaveTextContent('%')
+  })
+  it('zooms on WebKit trackpad pinch gestures around the gesture point', async () => {
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    await screen.findByTitle('Settings')
+    const layer = container.querySelector('.canvas-world') as HTMLElement, viewport = container.querySelector('.canvas-viewport')!
+    const camera = () => { const [, x, y, scale] = /translate\(([-.\d]+)px, ([-.\d]+)px\) scale\(([-.\d]+)\)/.exec(layer.style.transform)!.map(Number); return { x, y, scale } }
+    const pinch = (type: string, scale?: number) => {
+      const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 200, clientY: 150 })
+      act(() => { viewport.dispatchEvent(event) }); return event
+    }
+    const before = camera(), world = { x: (200 - before.x) / before.scale, y: (150 - before.y) / before.scale }
+    expect(pinch('gesturestart').defaultPrevented).toBe(true)
+    expect(pinch('gesturechange', 1.2).defaultPrevented).toBe(true)
+    pinch('gesturechange', 1.5)
+    const after = camera()
+    expect(after.scale).toBeCloseTo(before.scale * 1.5)
+    expect((200 - after.x) / after.scale).toBeCloseTo(world.x)
+    expect((150 - after.y) / after.scale).toBeCloseTo(world.y)
+    expect(screen.getByLabelText('Zoom')).toHaveTextContent(`${Math.round(after.scale * 100)}%`)
+  })
+  it('promotes the world to a compositor layer only while the camera moves', async () => {
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    await screen.findByTitle('Settings')
+    const layer = container.querySelector('.canvas-world') as HTMLElement
+    await waitFor(() => expect(layer).not.toHaveClass('is-moving'))
+    fireEvent.wheel(container.querySelector('.canvas-viewport')!, { deltaX: 25, deltaY: 10 })
+    expect(layer).toHaveClass('is-moving')
+    await waitFor(() => expect(layer).not.toHaveClass('is-moving'))
+    expect(canvasPaneCss).toMatch(/\.canvas-world\.is-moving \{ will-change: transform; \}/)
+    expect(canvasPaneCss).toMatch(/\.canvas-viewport\.is-panning \.canvas-world \{ pointer-events: none; \}/)
   })
   it('fits all content without focus, including measured tall annotations', async () => {
     fetcher.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify({ ...example, frames: example.frames.map((frame) => ({ ...frame, focus: undefined })) }) }))
@@ -387,6 +447,52 @@ describe('canvas overview and frame bridge', () => {
     expect(screen.getByText('No comments yet')).toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
+  it('marks working controls in interactive frames with pulsing dots and explains the frame on badge hover', async () => {
+    const note = 'This screen supports dark mode — toggle the theme button in the menu'
+    fetcher.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify({ ...example, frames: [{ ...example.frames[0], interactiveNote: note }, example.frames[1]] }), json: async () => ({ notes: [], threads: [], knownUpTo: 0, dropped: 0 }) }))
+    const { container } = render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
+    const settings = await screen.findByTitle('Settings'), accounts = screen.getByTitle('Accounts')
+    report(settings, 'settings', [], { hotspots: [{ rect: labelRect, tip: 'Toggles dark mode' }, { rect: { ...labelRect, y: 100 }, goto: 'accounts' }, { rect: { ...labelRect, y: 200 } }] })
+    report(accounts, 'accounts', [], { hotspots: [{ rect: labelRect, tip: 'Static frames never work' }] })
+    const dots = () => container.querySelectorAll('.canvas-hotspot')
+    expect(dots()).toHaveLength(3)
+    const theme = screen.getByRole('note', { name: 'Toggles dark mode' })
+    fireEvent.pointerEnter(theme)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Toggles dark mode')
+    fireEvent.pointerLeave(theme)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(screen.getByRole('note', { name: 'Opens “Accounts”' })).toBeInTheDocument()
+    expect(dots()[2]).not.toHaveClass('has-tip')
+    expect(screen.queryByText('Static frames never work')).not.toBeInTheDocument()
+    fireEvent.doubleClick(settings)
+    fireEvent.click(dots()[0])
+    expect(screen.getByText('Live — Esc to leave')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }))
+    expect(dots()).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }))
+    expect(dots()).toHaveLength(3)
+    push(['Settings.html'])
+    expect(dots()).toHaveLength(0)
+
+    const badge = container.querySelector('.canvas-badge.has-note')!
+    expect(badge).toHaveAttribute('aria-description', note)
+    fireEvent.pointerEnter(badge)
+    expect(screen.getByRole('tooltip')).toHaveTextContent(note)
+    fireEvent.pointerLeave(badge)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    fireEvent.pointerEnter(badge)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(container.querySelectorAll('.canvas-badge.has-note')).toHaveLength(1)
+  })
+  it('keeps tooltips inside the viewport and flips them below near the top edge', () => {
+    // Mocked layout: the tip is 330×165 and its overlay 800 wide.
+    const tip = (x: number, y: number) => { cleanup(); render(<div><CanvasTip text="Tip" x={x} y={y} /></div>); return screen.getByRole('tooltip') }
+    expect(tip(790, 400)).toHaveStyle({ left: '627px' })
+    expect(tip(4, 400)).toHaveStyle({ left: '173px' })
+    expect(tip(400, 400)).not.toHaveClass('is-below')
+    expect(tip(400, 100)).toHaveClass('is-below')
+  })
   it('defaults overview off below 420px and permits an explicit toggle', async () => {
     vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(419)
     render(<CanvasPane artifactId={artifactId} manifest="canvas.json" />)
@@ -405,7 +511,9 @@ describe('canvas overview and frame bridge', () => {
     const path = container.querySelector('.canvas-connectors path')!, fallback = path.getAttribute('d')
     report(accounts, 'accounts', [{ name: 'Outlook row', rect: labelRect }])
     expect(path.getAttribute('d')).not.toBe(fallback)
-    expect(container.querySelector('.canvas-connectors circle')).toHaveAttribute('cx', '1070')
+    // The label is on the frame's left half, so the note moves to the left gutter and the connector meets the label's left edge.
+    expect(container.querySelector('.canvas-connectors circle')).toHaveAttribute('cx', '970')
+    expect(container.querySelector('[data-canvas-note="dev"]')).toHaveStyle({ left: '560px' })
     push(['Accounts.html'])
     expect(path.getAttribute('d')).toBe(fallback)
     expect(container.querySelector('.canvas-connectors circle')).not.toBeInTheDocument()
@@ -446,7 +554,7 @@ it('registers Escape once through manifest refreshes and ignores outside targets
   fireEvent.click(screen.getByRole('button', { name: 'Comment tool' }))
   fireEvent.keyDown(document.body, { key: 'Escape' })
   expect(screen.getByRole('button', { name: 'Comment tool' })).toHaveAttribute('aria-pressed', 'true')
-  push(['canvas.json']); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('canvas.json')).length).toBe(2))
+  push(['canvas.json']); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => (String(url).endsWith('canvas.json') && !String(url).includes('/pending'))).length).toBe(2))
   expect(add.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(1)
   expect(remove.mock.calls.filter(([type]) => type === 'keydown')).toHaveLength(0)
   fireEvent.keyDown(view.container.querySelector('.canvas-pane')!, { key: 'Escape' })

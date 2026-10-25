@@ -76,11 +76,170 @@ describe('plan presentation components', () => {
     expect(document.querySelector('#option-a')?.textContent).toContain('Recommended')
     expect(document.querySelector('#milestone')?.textContent).toContain('open')
     expect(document.querySelector('#milestone')?.textContent).toContain('After: Schema')
-    expect(document.querySelector('#evidence')?.textContent).toContain('verified')
+    expect(document.querySelector('redline-evidence .redline-evidence-summary')?.textContent).toBe('1 verified')
     expect(document.querySelector('#risk')?.textContent).toContain('likelihood: low')
     expect(document.querySelector('#risk')?.textContent).toContain('impact: high')
     expect(document.querySelector('redline-before-after .redline-plan-pair')?.contains(document.getElementById('prior'))).toBe(true)
     expect(document.querySelector('redline-tradeoffs .redline-plan-pair')?.contains(document.getElementById('option-b'))).toBe(true)
+  })
+
+  it('hoists a shared evidence status into a summary immediately after the heading', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-evidence heading="Observed facts">
+        <article data-evidence="DNS" data-status="observed"><p data-takeaway>Route 53 controls the names.</p><p>TTLs are short.</p></article>
+        <article data-evidence="Region" data-status="observed"><p>The app runs in Amsterdam.</p></article>
+      </redline-evidence>`
+    const host = document.querySelector('redline-evidence') as HTMLElement
+    const heading = host.querySelector('.redline-plan-heading') as HTMLElement
+    expect(heading.nextElementSibling?.className).toBe('redline-evidence-summary')
+    expect(heading.nextElementSibling?.textContent).toBe('2 observed')
+    expect(host.querySelectorAll('.redline-plan-status, .redline-plan-label')).toHaveLength(0)
+    expect([...host.querySelectorAll('.redline-evidence-topic')].map((node) => node.textContent)).toEqual(['DNS', 'Region'])
+    expect(host.querySelector('.redline-evidence-body > [data-takeaway]')?.textContent).toBe('Route 53 controls the names.')
+    expect(host.querySelectorAll('.redline-evidence-group')).toHaveLength(0)
+  })
+
+  it.each([
+    ['mixed', 'data-status="pending"', ['observed', 'pending']],
+    ['mixed with verified', 'data-status="verified"', ['observed', 'verified']],
+    ['missing', '', ['observed']],
+    ['empty', 'data-status=""', ['observed']],
+    ['blank', 'data-status="   "', ['observed']],
+  ])('keeps per-item evidence badges for %s statuses underneath their topics', (_name, secondStatus, statuses) => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-evidence>
+        <article data-evidence="DNS" data-status="observed">Verified records</article>
+        <article data-evidence="Region" ${secondStatus}>Region check</article>
+      </redline-evidence>`
+    const host = document.querySelector('redline-evidence') as HTMLElement
+    expect(host.querySelector('.redline-evidence-summary')?.textContent).toBe('2 items')
+    expect([...host.querySelectorAll('.redline-plan-status')].map((node) => node.textContent)).toEqual(statuses)
+    for (const status of host.querySelectorAll('.redline-plan-status')) {
+      expect(status.parentElement?.className).toBe('redline-evidence-meta')
+      expect(status.previousElementSibling?.className).toBe('redline-evidence-topic')
+    }
+  })
+
+  it('renders sources as text at the bottom and summarizes high impact and missing sources', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-evidence>
+        <article data-evidence="Database" data-status="observed" data-impact="high" data-source="&lt;img src=x onerror=alert(1)&gt; &amp; logs"><p>One instance</p></article>
+        <article data-evidence="Pool" data-status="observed" data-impact="high">Few slots free</article>
+        <article data-evidence="Memory" data-status="observed" data-source="   ">Memory peak</article>
+      </redline-evidence>`
+    const host = document.querySelector('redline-evidence') as HTMLElement
+    expect(host.querySelector('.redline-evidence-summary')?.textContent).toBe('3 observed · 2 high impact · 2 without a source')
+    const sources = [...host.querySelectorAll('.redline-evidence-source')]
+    expect(sources.map((node) => node.textContent)).toEqual([
+      'Source: <img src=x onerror=alert(1)> & logs', 'No source recorded', 'No source recorded',
+    ])
+    expect(sources[0].hasAttribute('data-missing')).toBe(false)
+    expect(sources.slice(1).every((node) => node.hasAttribute('data-missing'))).toBe(true)
+    expect(sources.every((node) => node.parentElement?.lastElementChild === node)).toBe(true)
+    expect(host.querySelector('img')).toBeNull()
+  })
+
+  it('does not warn about legacy prose sources or render a summary for empty evidence', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-evidence id="legacy"><article data-evidence="Trace" data-impact="high"><p>Captured request (source: trace log).</p></article></redline-evidence>
+      <redline-evidence id="empty" heading="Evidence"></redline-evidence>`
+    const host = document.getElementById('legacy') as HTMLElement
+    expect(host.querySelector('.redline-evidence-source')).toBeNull()
+    expect(host.querySelector('.redline-evidence-summary')?.textContent).toBe('1 item · 1 high impact')
+    expect(host.textContent).toContain('source: trace log')
+    expect(document.querySelector('#empty .redline-evidence-summary')).toBeNull()
+  })
+
+  it('shows no source warnings when every evidence item records a source', () => {
+    loadSdk()
+    document.body.innerHTML = `<redline-evidence><article data-evidence="DNS" data-source="dig NS">Route 53</article></redline-evidence>`
+    const host = document.querySelector('redline-evidence') as HTMLElement
+    expect(host.querySelector('.redline-evidence-source')?.textContent).toBe('Source: dig NS')
+    expect(host.querySelector('[data-missing]')).toBeNull()
+    expect(host.querySelector('.redline-evidence-summary')?.textContent).toBe('1 item')
+  })
+
+  it('groups direct evidence items in first-appearance order with counts and a trailing Other, preserving nodes', () => {
+    loadSdk()
+    const host = document.createElement('redline-evidence')
+    host.innerHTML = `
+      <article id="other-first" data-evidence="Monitoring" data-extra="keep">Monitors configured</article>
+      <article id="database" data-evidence="Database" data-group="Risks and surprises" data-impact="high"><p id="takeaway" data-takeaway>One instance</p><button id="evidence-action">Inspect</button></article>
+      <article id="dns" data-evidence="DNS" data-group="Inputs to the design" data-impact="high">Route 53</article>
+      <article id="pool" data-evidence="Pool" data-group="Risks and surprises" data-impact="high">Few slots free</article>
+      <article id="memory" data-evidence="Memory" data-group="Inputs to the design">Memory peak</article>
+      <article id="other-last" data-evidence="Old box">Probably gone</article>
+      <aside id="authored-wrapper"><article id="nested" data-evidence="Nested fact" data-group="Do not hoist">Keep this nested</article></aside>`
+    const originals = [...host.querySelectorAll('[id]')]
+    const button = host.querySelector<HTMLButtonElement>('#evidence-action')!
+    let clicks = 0
+    button.addEventListener('click', () => clicks++)
+    host.querySelector('#database')!.addEventListener('click', () => clicks++)
+    document.body.append(host)
+    const groups = [...host.querySelectorAll(':scope > .redline-evidence-group')]
+    expect(groups.map((group) => group.querySelector('h4')?.textContent)).toEqual([
+      'Risks and surprises 2', 'Inputs to the design 2', 'Other 2',
+    ])
+    expect(groups.map((group) => group.querySelector('.redline-evidence-group-count')?.textContent)).toEqual(['2', '2', '2'])
+    expect(groups.map((group) => [...group.querySelectorAll(':scope > [data-evidence]')].map((item) => item.id))).toEqual([
+      ['database', 'pool'], ['dns', 'memory'], ['other-first', 'other-last'],
+    ])
+    expect(groups.map((group) => group.getAttribute('data-impact'))).toEqual(['high', null, null])
+    expect(host.querySelector('#nested')?.parentElement?.id).toBe('authored-wrapper')
+    expect(host.querySelector('#other-first')?.getAttribute('data-extra')).toBe('keep')
+    for (const original of originals) expect(document.getElementById(original.id)).toBe(original)
+    expect(host.querySelector('.redline-evidence-body #evidence-action')).toBe(button)
+    button.click()
+    expect(clicks).toBe(2)
+    host.remove()
+    document.body.append(host)
+    expect(host.querySelectorAll(':scope > .redline-evidence-group')).toHaveLength(3)
+    expect(host.querySelectorAll('.redline-evidence-summary')).toHaveLength(1)
+    expect(host.querySelectorAll('#database > .redline-evidence-body')).toHaveLength(1)
+  })
+
+  it('keeps introductory and closing siblings around the grouped evidence block', () => {
+    loadSdk()
+    const host = document.createElement('redline-evidence')
+    host.innerHTML = `
+      <p id="intro">What we found</p>
+      <article data-evidence="Database" data-group="Risks">One instance</article>
+      <article data-evidence="DNS" data-group="Inputs">Route 53</article>
+      <p id="outro">These facts inform the plan.</p>`
+    const intro = host.querySelector('#intro')!
+    const outro = host.querySelector('#outro')!
+    document.body.append(host)
+    const groups = [...host.querySelectorAll(':scope > .redline-evidence-group')]
+    expect(groups).toHaveLength(2)
+    expect(intro.nextElementSibling).toBe(groups[0])
+    expect(groups[0].nextElementSibling).toBe(groups[1])
+    expect(groups[1].nextElementSibling).toBe(outro)
+    expect(host.lastElementChild).toBe(outro)
+    expect(document.getElementById('intro')).toBe(intro)
+    expect(document.getElementById('outro')).toBe(outro)
+  })
+
+  it('appends ungrouped items after authored members of a single explicit Other group', () => {
+    loadSdk()
+    document.body.innerHTML = `
+      <redline-evidence>
+        <article id="ungrouped-first" data-evidence="Monitoring">Four monitors</article>
+        <article id="explicit-first" data-evidence="Memory" data-group="Other" data-impact="high">Memory peak</article>
+        <article id="risk-fact" data-evidence="Database" data-group="Risks" data-impact="high">One instance</article>
+        <article id="explicit-last" data-evidence="Region" data-group="Other" data-impact="high">Amsterdam</article>
+        <article id="ungrouped-last" data-evidence="Old box">Probably gone</article>
+      </redline-evidence>`
+    const groups = [...document.querySelectorAll('redline-evidence > .redline-evidence-group')]
+    expect(groups.map((group) => group.querySelector('h4')?.textContent)).toEqual(['Other 4', 'Risks 1'])
+    expect(groups[0].querySelector('.redline-evidence-group-count')?.textContent).toBe('4')
+    expect([...groups[0].querySelectorAll(':scope > [data-evidence]')].map((item) => item.id)).toEqual([
+      'explicit-first', 'explicit-last', 'ungrouped-first', 'ungrouped-last',
+    ])
+    expect(groups[0].hasAttribute('data-impact')).toBe(false)
   })
 
   it('summarizes file changes and provenance, keeps directory links/IDs, and opens a diff anchor', () => {

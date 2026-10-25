@@ -2,12 +2,16 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Rabbit } from 'lucide-react'
 import {
   CHAT_IMAGE_TYPES,
+  CHAT_VIDEO_TYPES,
+  MAX_CHAT_VIDEO_BYTES,
   MAX_CHAT_IMAGES,
   chatImageUrl,
   chatPlanTitle,
   hostTakesInput,
   hostTakesSettings,
   hostTakesTurnFlow,
+  hostTakesVideos,
+  isChatVideoId,
   type ChatAnswer,
   type ChatCarriedDraft,
   type ChatCommand,
@@ -28,6 +32,7 @@ import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
 import { ContextMeter, ModelPicker, PermissionPicker, PlanUsageMeter } from './ComposerControls'
 import { usePlanUsage } from './planUsage'
+import { implementPermissionMode } from './turnFlow'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
 import {
   detectTrigger,
@@ -56,6 +61,8 @@ export interface ChatInputServices {
   /** Open pull requests in the chat's repository. */
   pullRequests: () => Promise<PullRequestOption[]>
   uploadImage: (image: PreparedImage) => Promise<ChatImageRef>
+  /** Uploads a video as it is; absent where the app can't. */
+  uploadVideo?: (file: File, signal?: AbortSignal) => Promise<ChatImageRef>
 }
 
 /** Sends the daemon refused, named by the request ids `onSend` returned. */
@@ -185,7 +192,12 @@ function TodoChip({ todos }: { todos: TodoItem }) {
   )
 }
 
-type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef }
+/** A file the composer attaches as a video: by type, or by name when Finder gives none. */
+const isVideoFile = (file: File) => file.type.startsWith('video/') || /\.(mov|mp4|m4v|webm)$/i.test(file.name)
+
+type Attachment = { key: string; name: string; previewUrl: string; ref?: ChatImageRef; video?: boolean }
+
+const isVideoAttachment = (attachment: Attachment) => attachment.video ?? (attachment.ref ? isChatVideoId(attachment.ref.id) : false)
 
 const uploadedRefs = (attachments: Attachment[]) => attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
 
@@ -325,7 +337,6 @@ export function ChatComposer({
   onInterrupt,
   onAnswer,
   onConfigure,
-  autoFocus,
   plan,
   onImplement,
   onImplementInNewPane,
@@ -355,7 +366,6 @@ export function ChatComposer({
   onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   onConfigure: (change: ChatSettingsChange) => void
-  autoFocus?: boolean
   /** Claude's latest plan, while it waits to be implemented or refined. */
   plan?: { item: PlanItem; implementMode: ChatSessionPermissionMode }
   onImplement?: () => void
@@ -418,7 +428,7 @@ export function ChatComposer({
   const running = session.status === 'running' || session.status === 'waiting'
   const closed = session.status === 'closed' || session.status === 'error'
   // A switch to Claude Code takes the draft as it is; answers and Stop still work.
-  const switching = Boolean(session.claudeCodeSwitch)
+  const switching = session.provider !== 'cursor' && Boolean(session.claudeCodeSwitch)
   const disabled = !hostConnected || closed || switching
   const request = requests[0]
   // Hosts started before 1b·2 can't search files or take images.
@@ -442,16 +452,19 @@ export function ChatComposer({
     element.style.height = `${Math.min(element.scrollHeight, 240)}px`
   }, [draft])
 
-  useEffect(() => {
-    if (autoFocus) textarea.current?.focus()
-  }, [autoFocus])
-
   // Object URLs for previews are released when attachments go or the composer unmounts.
   const previews = useRef(new Set<string>())
-  useEffect(() => () => { for (const url of previews.current) URL.revokeObjectURL(url) }, [])
+  /** Video uploads still running, by attachment key: a large one stops when its chip goes. */
+  const videoUploads = useRef(new Map<string, AbortController>())
+  useEffect(() => () => {
+    for (const url of previews.current) URL.revokeObjectURL(url)
+    for (const upload of videoUploads.current.values()) upload.abort()
+  }, [])
   const release = (attachment: Attachment) => {
     URL.revokeObjectURL(attachment.previewUrl)
     previews.current.delete(attachment.previewUrl)
+    videoUploads.current.get(attachment.key)?.abort()
+    videoUploads.current.delete(attachment.key)
   }
 
   const syncTrigger = useCallback((element: HTMLTextAreaElement) => {
@@ -493,7 +506,8 @@ export function ChatComposer({
         applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, ''))
         if (item.name === 'model') setModelMenuOpen(true)
         else if (item.name === 'fast') onConfigure({ fast: !fastModeOn(session) })
-        else onConfigure({ permissionMode: session.permissionMode === 'plan' ? 'default' : 'plan' })
+        // Cursor's 'default' is Sandboxed, so leaving plan returns to the mode the chat planned from.
+        else onConfigure({ permissionMode: session.permissionMode !== 'plan' ? 'plan' : session.provider === 'cursor' ? implementPermissionMode(session) : 'default' })
         return
       case 'command':
         applyText(item.runsHere
@@ -508,20 +522,26 @@ export function ChatComposer({
     }
   }
 
-  const addImages = (incoming: File[]) => {
-    if (!incoming.length) return
+  const addImages = (files: File[]) => {
+    if (!files.length) return
     if (!richInput || !services) {
       setAttachError('Restart this chat to attach images')
       return
     }
+    const videos = files.filter(isVideoFile)
+    let refused: string | null = null
+    if (videos.length && (!services.uploadVideo || !hostTakesVideos(session))) refused = 'Restart this chat to attach videos'
+    else if (videos.some((file) => file.size > MAX_CHAT_VIDEO_BYTES)) refused = `Videos must be ${MAX_CHAT_VIDEO_BYTES / 1024 / 1024} MB or smaller`
+    const incoming = files.filter((file) => !isVideoFile(file) || (!refused && file.size <= MAX_CHAT_VIDEO_BYTES))
     const fit = fitAttachments(attachments.length, incoming.length)
-    setAttachError(fit.error ?? null)
+    setAttachError(refused ?? fit.error ?? null)
     for (const file of incoming.slice(0, fit.accepted)) {
       const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`
       const previewUrl = URL.createObjectURL(file)
       previews.current.add(previewUrl)
-      const name = file.name || 'pasted image'
-      setAttachments((current) => [...current, { key, name, previewUrl }])
+      const video = isVideoFile(file)
+      const name = file.name || (video ? 'pasted video' : 'pasted image')
+      setAttachments((current) => [...current, { key, name, previewUrl, ...(video ? { video } : {}) }])
       const drop = (error: string) => {
         setAttachments((current) => current.filter((attachment) => {
           if (attachment.key === key) release(attachment)
@@ -530,6 +550,20 @@ export function ChatComposer({
         setAttachError(error)
       }
       void (async () => {
+        if (video) {
+          const upload = new AbortController()
+          videoUploads.current.set(key, upload)
+          try {
+            const ref = await services.uploadVideo!(file, upload.signal)
+            setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, ref } : attachment)))
+          } catch (error) {
+            // Removed while it uploaded: nothing to report.
+            if (!upload.signal.aborted) drop(`${name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
+          } finally {
+            videoUploads.current.delete(key)
+          }
+          return
+        }
         const prepared = await prepareImage(file)
         if (!prepared.ok) return drop(prepared.error)
         try {
@@ -780,10 +814,10 @@ export function ChatComposer({
   }
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const images = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/'))
-    if (!images.length) return
+    const files = [...event.clipboardData.files].filter((file) => file.type.startsWith('image/') || isVideoFile(file))
+    if (!files.length) return
     event.preventDefault()
-    addImages(images)
+    addImages(files)
   }
 
   const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes('Files')
@@ -864,14 +898,15 @@ export function ChatComposer({
         {attachments.length || shownError ? (
           <div className="flex flex-col gap-1.5 px-3 pt-2.5">
             {attachments.length ? (
-              <div className="flex flex-wrap gap-2" aria-label="Attached images">
+              <div className="flex flex-wrap gap-2" aria-label="Attachments">
                 {attachments.map((attachment) => (
                   <Thumbnail
                     key={attachment.key}
                     src={attachment.previewUrl}
                     name={attachment.name}
                     busy={!attachment.ref}
-                    onOpen={() => setViewing({ src: attachment.previewUrl, name: attachment.name })}
+                    video={isVideoAttachment(attachment)}
+                    onOpen={() => setViewing({ src: attachment.previewUrl, name: attachment.name, video: isVideoAttachment(attachment) })}
                     onRemove={() => removeAttachment(attachment.key)}
                   />
                 ))}
@@ -889,6 +924,7 @@ export function ChatComposer({
         ) : null}
         <textarea
           ref={textarea}
+          data-chat-composer=""
           rows={1}
           value={draft}
           disabled={disabled}
@@ -925,13 +961,13 @@ export function ChatComposer({
           <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
             {richInput ? (
               <>
-                <Button size="icon-sm" variant="ghost-muted" aria-label="Attach images" title="Attach images (or paste / drop them)" disabled={disabled} onClick={() => fileInput.current?.click()}>
+                <Button size="icon-sm" variant="ghost-muted" aria-label="Attach images or videos" title="Attach images or videos (or paste / drop them)" disabled={disabled} onClick={() => fileInput.current?.click()}>
                   <Paperclip aria-hidden="true" />
                 </Button>
                 <input
                   ref={fileInput}
                   type="file"
-                  accept={CHAT_IMAGE_TYPES.join(',')}
+                  accept={[...CHAT_IMAGE_TYPES, ...CHAT_VIDEO_TYPES, '.mov', '.mp4', '.m4v', '.webm'].join(',')}
                   multiple
                   hidden
                   data-testid="chat-image-input"

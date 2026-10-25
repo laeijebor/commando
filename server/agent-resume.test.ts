@@ -127,6 +127,23 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --resume ${SESSION}`)
   })
 
+  it('restores a Cursor chat host instead of its CLI child and refreshes picker settings without API keys', async () => {
+    const id = 'agent-11111111-2222-3333-4444-555555555555'
+    const host = 'node /c/server/agent-host/main.ts cursor --permission-mode bypassPermissions'
+    let permissionMode = 'bypassPermissions'
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      chatSettings: () => ({ permissionMode, bypassAllowed: true }),
+      readProcessTable: vi.fn(async () => `  500 1 ${host}\n  700 500 /bin/agent\n`),
+      readProcessEnvironment: vi.fn(async () => `${host} CURSOR_API_KEY=secret`),
+    })
+    await resume.observeHookStatus(hookStatus({ provider: 'cursor', agentSessionId: id }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)).toMatchObject({ provider: 'cursor', command: `/c/scripts/commando-agent cursor --permission-mode bypassPermissions --resume ${id}` })
+    permissionMode = 'auto'
+    await resume.observeHookStatus(hookStatus({ provider: 'cursor', agentSessionId: id }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent cursor --permission-mode auto --resume ${id}`)
+  })
+
   it('restores a Codex chat host instead of its app-server child, keeping permission flags and picker changes', async () => {
     const host = 'node /c/server/agent-host/main.ts codex --permission-mode bypassPermissions'
     let permissionMode = 'bypassPermissions'
@@ -405,13 +422,75 @@ describe('AgentResumeService', () => {
     panes.set(TARGET, pane({ command: 'zsh' }))
     panes.set(OTHER_TARGET, pane({ id: '%2', targetId: OTHER_TARGET, command: 'zsh' }))
     resume.reconcile([...panes.values()], NEW_SERVER)
-    await advance(4_000)
+    await advance(4_500)
     expect(sent.map((entry) => entry.paneId)).toEqual(['%1'])
     // The second pane waits out the stagger while the user starts typing in it.
     lines.set('%2', '➜  repo git checkout ma')
     await advance(2_500)
     expect(sent.map((entry) => entry.paneId)).toEqual(['%1'])
     expect(resumes.get(OTHER_TARGET)).toMatchObject({ state: 'failed', error: 'The pane has unsent input, so nothing was typed. Clear it, then retry.' })
+  })
+
+  it('waits for a slow shell to draw its prompt instead of treating the prompt as input', async () => {
+    let line = ''
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => line }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(7_000)
+    expect(sent).toHaveLength(0)
+    line = '➜  repo git:(main) '
+    await advance(1_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
+  })
+
+  it('waits out a prompt that draws its git segment after the rest', async () => {
+    // oh-my-zsh draws the git part of the prompt asynchronously, a moment after the prompt itself.
+    let line = '➜  repo'
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => line }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(4_200)
+    // A single read is not yet a prompt; typing now would follow a half-drawn line.
+    expect(sent).toHaveLength(0)
+    line = '➜  repo git:(main) ✗'
+    await advance(3_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
+  })
+
+  it('resumes a pane whose shell never draws a steady prompt', async () => {
+    let tick = 0
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => `${tick++} ` }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+    await advance(5_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'resuming' })
+  })
+
+  it('drops a pane that closes while its shell is starting without waiting out the settle limit', async () => {
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async () => '' }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    panes.delete(TARGET)
+    await advance(1_000)
+    expect(resumes.has(TARGET)).toBe(false)
+    expect(sent).toHaveLength(0)
+  })
+
+  it('does not hold ready panes behind one whose shell is still starting', async () => {
+    const lines = new Map([['%1', ''], ['%2', '➜  repo ']])
+    const resume = await recordOn(OLD_SERVER, service({ readPromptLine: async (target) => lines.get(target.id)! }))
+    await recordOn(OLD_SERVER, resume, pane({ id: '%2', targetId: OTHER_TARGET, processId: 501 }))
+    panes.set(TARGET, pane({ command: 'zsh', active: true }))
+    panes.set(OTHER_TARGET, pane({ id: '%2', targetId: OTHER_TARGET, command: 'zsh' }))
+    resume.reconcile([...panes.values()], NEW_SERVER)
+    await advance(5_000)
+    expect(sent.map((entry) => entry.paneId)).toEqual(['%2'])
   })
 
   it('does not type into a pane the user typed in during the shell-ready wait', async () => {
@@ -433,6 +512,118 @@ describe('AgentResumeService', () => {
     await advance(5_000)
     expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', error: 'Could not type into the pane: pane not found' })
     expect(resume.retry(undefined, NEW_SERVER)).toBe(1)
+  })
+
+  it('keeps a failed resume and its Retry across a daemon restart', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', error: 'The folder no longer exists: /repo' })
+    await first.flush()
+
+    // The daemon restarts on the same tmux server; the UI starts from nothing.
+    resumes.clear()
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', paneId: '%1', error: 'The folder no longer exists: /repo' })
+    // Never retyped on its own, even on a later restart.
+    second.reconcile([panes.get(TARGET)!], '400:4000')
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+
+    expect(second.retry(undefined, NEW_SERVER)).toBe(1)
+    await advance(3_000)
+    expect(sent).toHaveLength(1)
+    expect(resumes.get(TARGET)?.state).toBe('resuming')
+  })
+
+  it('does not offer a saved Retry for a pane that already runs something again', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    await first.flush()
+
+    // The user started the agent by hand before the daemon restarted.
+    resumes.clear()
+    panes.set(TARGET, pane())
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(resumes.has(TARGET)).toBe(false)
+  })
+
+  it('Resume all skips a pane that runs something again and keeps its live agent', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    await first.flush()
+
+    resumes.clear()
+    panes.set(TARGET, pane())
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(second.retry(undefined, NEW_SERVER)).toBe(0)
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+  })
+
+  it('keeps a record captured from a live agent while an older resume was queued', async () => {
+    const resume = await recordOn(OLD_SERVER)
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(1_000)
+    // The user starts a different conversation by hand before the queued resume runs.
+    panes.set(TARGET, pane())
+    const other = '33333333-3333-4333-8333-333333333333'
+    await resume.observeHookStatus(hookStatus({ paneId: '%1', agentSessionId: other }), panes.get(TARGET)!, NEW_SERVER)
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+    expect(resume.get(TARGET)?.sessionId).toBe(other)
+  })
+
+  it('clears a failed resume once the agent runs in the pane again', async () => {
+    const first = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    first.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    expect(resumes.get(TARGET)?.state).toBe('failed')
+
+    // The user starts the agent by hand.
+    panes.set(TARGET, pane())
+    await first.observeHookStatus(hookStatus({ paneId: '%1', agentSessionId: '33333333-3333-4333-8333-333333333333' }), panes.get(TARGET)!, NEW_SERVER)
+    expect(resumes.has(TARGET)).toBe(false)
+    expect(first.retry()).toBe(0)
+    await first.flush()
+
+    resumes.clear()
+    const second = service()
+    await second.load()
+    second.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    expect(resumes.has(TARGET)).toBe(false)
+  })
+
+  it('archives a failed resume and restores it with its Retry, never retyped', async () => {
+    const resume = await recordOn(OLD_SERVER, service({ pathExists: async () => false }))
+    panes.set(TARGET, pane({ command: 'zsh' }))
+    resume.reconcile([panes.get(TARGET)!], NEW_SERVER)
+    await advance(5_000)
+    const agents = resume.archivedAgents([TARGET])
+    expect(agents[TARGET]).toMatchObject({ provider: 'claude', sessionId: SESSION, failed: 'The folder no longer exists: /repo' })
+    resume.forgetTargets([TARGET])
+    expect(resumes.has(TARGET)).toBe(false)
+    expect(resume.retry()).toBe(0)
+
+    resume.restoreArchived(agents)
+    resume.reconcile([panes.get(TARGET)!], '400:4000')
+    expect(resumes.get(TARGET)).toMatchObject({ state: 'failed', error: 'The folder no longer exists: /repo' })
+    await advance(30_000)
+    expect(sent).toHaveLength(0)
+    expect(resume.retry(TARGET, '400:4000')).toBe(1)
   })
 
   it('clears a failed resume whose pane has gone when retried', async () => {

@@ -1,9 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { attachmentNote, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
+import { attachmentNote, chatImageContentType, hostTakesVideos, isChatAttachmentId, isChatVideoId, notedVideos, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
 describe('parseChatItem', () => {
+  it('keeps the images a reply shows, and drops ones that do not parse', () => {
+    const svg = `${'a'.repeat(64)}.svg`
+    expect(parseChatItem({ ...base, kind: 'assistant_message', text: '![d](d.svg)', images: [
+      { src: 'd.svg', id: svg },
+      { src: 'gone.png', error: 'missing' },
+      { src: 'bad.png', id: '../secret' },
+      { src: 'odd.png', error: 'exploded' },
+      { id: svg },
+    ] })).toEqual({ ...base, kind: 'assistant_message', text: '![d](d.svg)', images: [{ src: 'd.svg', id: svg }, { src: 'gone.png', error: 'missing' }] })
+    expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'x', images: [{ src: 'bad.png', id: 'nope' }] })).toEqual({ ...base, kind: 'assistant_message', text: 'x' })
+  })
+
+  it('names an SVG reply image and the PNG drawn from it', () => {
+    const svg = `${'a'.repeat(64)}.svg`
+    expect(chatImageStillId(svg)).toBe(`${svg}.png`)
+    expect(chatImageStillId(`${'a'.repeat(64)}.jpg`)).toBe(`${'a'.repeat(64)}.jpg`)
+    expect(chatImageContentType(svg)).toBe('image/svg+xml')
+    expect(chatImageContentType(`${svg}.png`)).toBe('image/png')
+    expect(chatImageContentType(`${'a'.repeat(64)}.webp`)).toBe('image/webp')
+    // Attachments, which reach Claude, never take SVG.
+    expect(isChatImageId(svg)).toBe(false)
+  })
+
   it('copies only known fields and normalises nested request and todo data', () => {
     expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'hi', extra: 'dropped' })).toEqual({ ...base, kind: 'assistant_message', text: 'hi' })
     expect(parseChatItem({
@@ -38,11 +61,18 @@ describe('chat providers', () => {
     const legacy = { type: 'handoff', paneId: '%1', sessionId: 'thread-123', cwd: '/w', queue: [], returnFlags: [] }
     expect(parseHostMessage(legacy)).toEqual(legacy)
     expect(parseHostMessage({ ...legacy, provider: 'codex' })).toEqual({ ...legacy, provider: 'codex' })
+    expect(parseHostMessage({ ...legacy, provider: 'cursor' })).toEqual({ ...legacy, provider: 'cursor' })
     expect(parseHostMessage({ ...legacy, provider: 'claude' })).toEqual({ ...legacy, provider: 'claude' })
     expect(parseHostMessage({ ...legacy, provider: 'other' })).toBeNull()
   })
 
-  it.each(['claude', 'codex'])('keeps %s on sessions, snapshots and updates', (provider) => {
+  it('keeps whether a Muse host runs without its sandbox, and nothing else in its place', () => {
+    const info = { ...session, provider: 'muse', sandboxed: false }
+    expect(parseChatSessionInfo(info)).toEqual(info)
+    expect(parseChatSessionInfo({ ...info, sandboxed: 'no' })).toEqual({ ...session, provider: 'muse' })
+  })
+
+  it.each(['claude', 'codex', 'cursor'])('keeps %s on sessions, snapshots and updates', (provider) => {
     const info = { ...session, provider }
     expect(parseChatSessionInfo({ ...info, extra: 'dropped' })).toEqual(info)
     expect(parseHostMessage({ type: 'session_snapshot', session: info, items: [] }))
@@ -51,7 +81,7 @@ describe('chat providers', () => {
       .toEqual({ type: 'session_update', session: info })
   })
 
-  it.each(['cursor', '', undefined, 7])('rejects unknown provider %s', (provider) => {
+  it.each(['other', '', undefined, 7])('rejects unknown provider %s', (provider) => {
     const info = { ...session, provider }
     expect(parseChatSessionInfo(info)).toBeNull()
     expect(parseHostMessage({ type: 'session_snapshot', session: info, items: [] })).toBeNull()
@@ -218,5 +248,49 @@ describe('attachment notes', () => {
     expect(stripAttachmentNotesFromSummary('see list[0] and [docs]')).toBe('see list[0] and [docs]')
     expect(stripAttachmentNotesFromSummary('arr[A')).toBe('arr[A')
     expect(stripAttachmentNotesFromSummary('no notes here')).toBe('no notes here')
+  })
+
+  it('names attached videos, which the person typing never sees', () => {
+    const id = `${'b'.repeat(64)}.mov`
+    const video = attachmentNote('Screen Recording.mov', `/state/chat-image-sessions/s1/${id}`, 'video')
+    expect(video).toBe(`[Attached video "Screen Recording.mov" is saved at: /state/chat-image-sessions/s1/${id}]`)
+    expect(stripAttachmentNotes(`what happens here?\n\n${video}\n\n${note}`)).toBe('what happens here?')
+    expect(stripAttachmentNotesFromSummary(`what happens here? ${video.slice(0, 25)}`)).toBe('what happens here?')
+    expect(notedVideos(`look\n\n${video}\n\n${note}`)).toEqual([{ id, name: 'Screen Recording.mov' }])
+    // Only a saved copy's name is an id; a typed note naming anything else is text.
+    expect(notedVideos('[Attached video "x" is saved at: /tmp/other.mov]')).toEqual([])
+  })
+})
+
+describe('attached videos', () => {
+  const id = `${'c'.repeat(64)}.mp4`
+
+  it('are refs with a video id, which only newer hosts take', () => {
+    expect(isChatVideoId(id)).toBe(true)
+    expect(isChatImageId(id)).toBe(false)
+    expect(isChatAttachmentId(id) && isChatAttachmentId(`${'c'.repeat(64)}.png`)).toBe(true)
+    expect(isChatVideoId(`${'c'.repeat(64)}.mkv`)).toBe(false)
+    expect(parseChatImageRefs([{ id, name: 'clip.mp4' }])).toEqual([{ id, name: 'clip.mp4' }])
+    expect(chatImageContentType(id)).toBe('video/mp4')
+    expect(chatImageContentType(`${'c'.repeat(64)}.mov`)).toBe('video/quicktime')
+    expect(hostTakesVideos({ hostVersion: 6 })).toBe(false)
+    expect(hostTakesVideos({ hostVersion: 7 })).toBe(true)
+  })
+})
+
+describe('chat login', () => {
+  it.each(['required', 'pending'])('keeps validated login state %s', (state) => {
+    const login = { state, reason: 'Sign in', url: 'https://cursor.com/login' }
+    expect(parseChatSessionInfo({ ...session, provider: 'cursor', login })?.login).toEqual(login)
+  })
+  it.each([null, {}, { state: 'logged-in' }, { state: 1 }])('drops malformed login %j', (login) => {
+    expect(parseChatSessionInfo({ ...session, login })?.login).toBeUndefined()
+  })
+  it.each(['http://cursor.com', 'javascript:alert(1)', 'not a url', `https://cursor.com/${'a'.repeat(2048)}`])('drops unsafe or oversized login URLs', (url) => {
+    expect(parseChatSessionInfo({ ...session, login: { state: 'pending', url } })?.login).toEqual({ state: 'pending' })
+  })
+  it('bounds the reason and drops nonstring optional fields', () => {
+    expect(parseChatSessionInfo({ ...session, login: { state: 'required', reason: 'x'.repeat(1000) } })?.login?.reason).toHaveLength(500)
+    expect(parseChatSessionInfo({ ...session, login: { state: 'required', reason: {}, url: 7 } })?.login).toEqual({ state: 'required' })
   })
 })

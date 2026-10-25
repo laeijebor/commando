@@ -1,6 +1,8 @@
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
+  attachmentNote,
+  isChatVideoId,
   MAX_QUEUED_MESSAGES,
   isChatEffort,
   isModelValue,
@@ -33,18 +35,22 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 /**
- * Commando's modes as Muse approval modes. "Ask when needed" is Muse's own default:
- * tools run in its sandbox and it asks before going beyond it. Muse has no plan mode.
+ * Commando's modes as Muse approval modes. Muse has no plan mode.
+ * - default, "Ask when needed": Muse's own default; tools run in its sandbox and it asks before going beyond it.
+ * - acceptEdits, "Approve everything": no prompts, still inside the sandbox.
+ * - bypassPermissions, "Full access": no prompts and no sandbox (`--yolo`). The sandbox is set when
+ *   the host starts, so a chat is started in full access or never reaches it.
  */
 export function museApprovalMode(mode: ChatSessionPermissionMode): MuseApprovalMode {
-  if (mode === 'default' || mode === 'acceptEdits') return 'onRequest'
-  if (mode === 'bypassPermissions') return 'allowAll'
+  if (mode === 'default') return 'onRequest'
+  if (mode === 'acceptEdits' || mode === 'bypassPermissions') return 'allowAll'
   throw new Error(`Muse does not support permission mode ${mode}`)
 }
 
-/** The Muse TUI's spelling of the same approval mode. */
-function tuiApprovalMode(mode: ChatSessionPermissionMode): string {
-  return museApprovalMode(mode) === 'allowAll' ? 'never' : 'on-request'
+/** The Muse TUI's flags for the same mode. */
+function tuiPermissionFlags(mode: ChatSessionPermissionMode): string[] {
+  if (mode === 'bypassPermissions') return ['--yolo']
+  return ['--approval-mode', museApprovalMode(mode) === 'allowAll' ? 'never' : 'on-request']
 }
 
 export function museModels(value: unknown): ChatModelOption[] {
@@ -70,7 +76,7 @@ export function museTuiSwitchCommand(
     executable,
     ...(settings.model ? ['--model', settings.model] : []),
     ...(settings.effort ? ['--reasoning-effort', settings.effort] : []),
-    '--approval-mode', tuiApprovalMode(settings.permissionMode),
+    ...tuiPermissionFlags(settings.permissionMode),
     // The chat already loads the workspace's rules and skills; the TUI would otherwise ask first.
     '--trust-workspace',
     'resume', sessionId,
@@ -108,7 +114,7 @@ export class MuseChatSession implements ChatProviderSession {
   private readonly client: MuseTransport
   private readonly mapper = new MuseItemMapper()
   private readonly files: WorkspaceFileIndex
-  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [] }
+  private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private readonly readyListeners: (() => void)[] = []
   private readonly pending = new Map<string, PendingRequest>()
   /** Answered here, waiting for Muse to take the answer; a refusal shows the prompt again. */
@@ -126,10 +132,16 @@ export class MuseChatSession implements ChatProviderSession {
   private closing = false
   private closed = false
   private interrupting = false
+  /** The host runs without Muse's sandbox; fixed for the chat's lifetime. */
+  private readonly fullAccess: boolean
 
   constructor(private readonly spec: AgentSessionSpec, client?: MuseTransport, private readonly executable = 'muse') {
     museApprovalMode(spec.permissionMode)
+    // Full access needs both: bypassPermissions alone, from before --yolo existed, meant approve-everything inside the sandbox.
+    this.fullAccess = spec.permissionMode === 'bypassPermissions' && spec.fullAccess === true
+    const permissionMode = spec.permissionMode === 'bypassPermissions' && !this.fullAccess ? 'acceptEdits' : spec.permissionMode
     this.client = client ?? new MuseRpcClient({
+      sandbox: !this.fullAccess,
       cwd: spec.cwd,
       env: { ...spec.env, ...(spec.resumeCommand ? resumeEnv(spec.resumeCommand) : {}) },
       executable,
@@ -144,8 +156,10 @@ export class MuseChatSession implements ChatProviderSession {
       hostPid: process.pid,
       hostVersion: AGENT_HOST_PROTOCOL_VERSION,
       ...(spec.resume ? { sessionId: spec.resume } : {}),
-      permissionMode: spec.permissionMode === 'acceptEdits' ? 'default' : spec.permissionMode,
-      bypassAllowed: spec.bypassAllowed || spec.permissionMode === 'bypassPermissions',
+      permissionMode,
+      // Full access needs a host started without the sandbox, so only such a chat has it.
+      bypassAllowed: this.fullAccess,
+      sandboxed: !this.fullAccess,
       ...(spec.model ? { selectedModel: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
       ...(spec.hostBuild ? { hostBuild: spec.hostBuild } : {}),
@@ -278,7 +292,7 @@ export class MuseChatSession implements ChatProviderSession {
         if (this.activeTurn) throw new Error('Permission changes apply to the next turn; wait for this turn to finish')
         await this.applySettings({ permissionMode: options.permissionMode })
       }
-      const input = await this.input(trimmed, images)
+      const input = await this.input(trimmed, images, sessionId)
       const steer = Boolean(this.activeTurn)
       const commandId = uuidv7()
       this.mapper.expectUser(trimmed, images)
@@ -294,19 +308,26 @@ export class MuseChatSession implements ChatProviderSession {
     }).finally(() => { this.sending--; this.switchReady(); this.flushQueue() })
   }
   /** A leading `/skill` runs that skill with the rest of the message as its arguments. */
-  private async input(text: string, images: ChatImageRef[]): Promise<MuseInput[]> {
+  private async input(text: string, images: ChatImageRef[], sessionId: string): Promise<MuseInput[]> {
     const command = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text)
     const skill = command && this.commandList?.some((entry) => entry.name === command[1]) ? command : null
     const input: MuseInput[] = skill
       ? [{ type: 'skill', selector: skill[1]!, ...(skill[2]?.trim() ? { arguments: skill[2].trim() } : {}) }]
       : text ? [{ type: 'text', text }] : []
+    const notes: string[] = []
     for (const image of images) {
       if (!this.spec.images) throw new Error('Chat images are unavailable')
+      // A video is a file Muse opens with its own tools.
+      if (isChatVideoId(image.id)) {
+        notes.push(attachmentNote(image.name ?? image.id, await this.spec.images.stage(image.id, sessionId), 'video'))
+        continue
+      }
       const bytes = await this.spec.images.read(image.id)
       const mediaType = imageMediaType(bytes)
       if (!mediaType) throw new Error(`${image.name ?? 'An image'} is not a PNG, JPEG, GIF or WebP image`)
       input.push({ type: 'image', mediaType, base64Data: bytes.toString('base64') })
     }
+    if (notes.length) input.push({ type: 'text', text: notes.join('\n\n') })
     return input
   }
   updateQueue(change: ChatQueueAction): void {
@@ -484,10 +505,11 @@ export class MuseChatSession implements ChatProviderSession {
     const model = this.info.models?.find((model) => model.value === (change.model ?? this.info.selectedModel))
     if (change.effort && model?.efforts && !model.efforts.includes(change.effort)) throw new Error('This Muse model does not support that effort')
     if (change.fast) throw new Error('Muse has no fast mode')
-    const mode = change.permissionMode === 'acceptEdits' ? 'default' : change.permissionMode
+    const mode = change.permissionMode
     if (mode) {
       museApprovalMode(mode)
-      if (mode === 'bypassPermissions' && !this.info.bypassAllowed) throw new Error('Approve everything must be allowed at launch')
+      if (mode === 'bypassPermissions' && !this.fullAccess) throw new Error('Full access turns off Muse\'s sandbox, so it has to be chosen when the chat starts')
+      if (mode !== 'bypassPermissions' && this.fullAccess) throw new Error('This chat runs without Muse\'s sandbox, so it stays in full access; start a new chat for a sandboxed one')
     }
     const sessionId = this.info.sessionId
     // Until Muse has the session loaded, the picks wait for openSession, which applies them.

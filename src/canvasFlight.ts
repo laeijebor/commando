@@ -1,8 +1,8 @@
-import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 import type { CanvasBounds, CanvasCamera } from './canvasCamera'
 import { flyToCanvasRect } from './canvasGeometry'
 
-export function useCanvasFlight(camera: CanvasCamera, setCamera: Dispatch<SetStateAction<CanvasCamera>>, viewport: RefObject<HTMLDivElement | null>) {
+export function useCanvasFlight(camera: () => CanvasCamera, setCamera: (camera: CanvasCamera) => void, viewport: RefObject<HTMLDivElement | null>) {
   const animation = useRef<number | null>(null)
   const cancel = () => {
     if (animation.current !== null) cancelAnimationFrame(animation.current)
@@ -15,7 +15,7 @@ export function useCanvasFlight(camera: CanvasCamera, setCamera: Dispatch<SetSta
     if (!node?.clientWidth || !node.clientHeight) return
     const to = flyToCanvasRect(bounds, { w: node.clientWidth, h: node.clientHeight })
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) { setCamera(to); return }
-    const from = camera, start = performance.now()
+    const from = camera(), start = performance.now()
     const step = (now: number) => {
       const progress = Math.min(1, Math.max(0, (now - start) / 300)), ease = 1 - (1 - progress) ** 3
       setCamera({ x: from.x + (to.x - from.x) * ease, y: from.y + (to.y - from.y) * ease, scale: from.scale + (to.scale - from.scale) * ease })

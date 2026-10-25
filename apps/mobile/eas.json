@@ -1,0 +1,12 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "production": {
+      "distribution": "internal",
+      "channel": "production"
+    }
+  }
+}

@@ -151,7 +151,7 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode, readableDir, resume } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
@@ -163,7 +163,8 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   }
   if (resume !== undefined && !isChatLaunchProvider(provider) && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
-  const chatName = provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : 'Claude'
+  if (fullAccess !== undefined && (fullAccess !== true || provider !== 'muse-chat' || permissionMode !== 'bypassPermissions')) throw new Error('Only a Muse chat in bypassPermissions can ask for full access')
+  const chatName = provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : provider === 'cursor-chat' ? 'Cursor' : 'Claude'
   if (chatName !== 'Claude' && (configDir !== undefined || readableDir !== undefined)) throw new Error(`${chatName} chat does not accept a Claude profile or readable folder`)
   if (isChatLaunchProvider(provider) && permissionMode !== undefined && !chatPermissionModes(provider).some((mode) => mode.value === permissionMode)) throw new Error(`Unsupported ${chatName} permission mode`)
   // Only one stashed plan's own folder: a chat must not be handed any other path.
@@ -173,7 +174,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (configDir !== undefined && (typeof configDir !== 'string' || !validClaudeConfigDir(configDir))) {
     throw new Error('Claude profile must be a ~/.claude… folder')
   }
-  if (permissionMode !== undefined && !CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) {
+  if (provider !== 'cursor-chat' && permissionMode !== undefined && !CHAT_PERMISSION_MODES.some((mode) => mode.value === permissionMode)) {
     throw new Error('Unsupported permission mode')
   }
   return {
@@ -183,6 +184,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
     ...(typeof readableDir === 'string' ? { readableDir } : {}),
     ...(typeof resume === 'string' ? { resume } : {}),
+    ...(fullAccess === true ? { fullAccess: true as const } : {}),
   }
 }
 
@@ -441,6 +443,8 @@ export class TmuxCreator {
     private readonly worktrees?: TmuxWorktreeProvider,
     private readonly resolveExecutable: AgentExecutableResolver = resolveAgentExecutable,
     private readonly launchEnv: LaunchEnvironment = process.env,
+    /** The profile a Claude chat starts with when its launch names none (a phone or API caller). */
+    private readonly defaultClaudeConfigDir: () => Promise<string | undefined> = async () => undefined,
   ) {}
 
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */
@@ -535,7 +539,9 @@ export class TmuxCreator {
   }
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
-    const argv = sessionAgentArgv(agent)
+    // Without a profile, Claude would sign in with the bare ~/.claude login, which may not be the one in use.
+    const configDir = agent.provider === 'claude-chat' && !agent.configDir ? await this.defaultClaudeConfigDir().catch(() => undefined) : undefined
+    const argv = sessionAgentArgv(configDir ? { ...agent, configDir } : agent)
     argv[0] = isChatLaunchProvider(agent.provider)
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
@@ -577,26 +583,31 @@ export class TmuxCreator {
       // the daemon context to this session; TMUX_PANE remains assigned by tmux.
       args.push(...this.agentEnvironmentArgs())
       args.push(agentLaunchPaneCommand(agentArgv, prepareCommand, this.launchEnv))
-    } else if (empty) {
-      const prepare = prepareCommand ? { command: prepareCommand, tmux: await this.resolveExecutable('tmux', this.launchEnv) } : undefined
-      args.push(emptyPaneCommand(prepare))
-    } else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
+    } else if (empty) args.push(await this.emptyPaneArg(prepareCommand))
+    else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
     const created = parseCreatedTarget(await this.run(args), 'session')
-    // A preparing pane marks itself once preparation succeeds.
-    if (empty && !prepareCommand) {
+    if (empty && !prepareCommand) await this.markNewPaneEmpty(created.paneId, `Session ${created.sessionName}`)
+    return created
+  }
+
+  private async emptyPaneArg(prepareCommand?: string): Promise<string> {
+    const prepare = prepareCommand ? { command: prepareCommand, tmux: await this.resolveExecutable('tmux', this.launchEnv) } : undefined
+    return emptyPaneCommand(prepare)
+  }
+
+  /** A preparing pane marks itself once preparation succeeds, so only an unprepared one is marked here. */
+  private async markNewPaneEmpty(paneId: string, createdLabel: string): Promise<void> {
+    try {
+      await this.markPaneEmpty(paneId)
+    } catch (error) {
+      // The pane exists either way: hand it back as a plain shell rather than orphan it.
+      console.warn('[commando] Could not mark the new pane empty; starting a shell in it', error)
       try {
-        await this.markPaneEmpty(created.paneId)
-      } catch (error) {
-        // The session exists either way: hand it back as a plain shell rather than orphan it.
-        console.warn('[commando] Could not mark the new pane empty; starting a shell in it', error)
-        try {
-          await this.run([...this.socketArgs, 'respawn-pane', '-k', '-t', created.paneId, LOGIN_SHELL_COMMAND])
-        } catch (respawnError) {
-          throw new Error(`Session ${created.sessionName} was created, but its pane could not be prepared. Close it and try again.`, { cause: respawnError })
-        }
+        await this.run([...this.socketArgs, 'respawn-pane', '-k', '-t', paneId, LOGIN_SHELL_COMMAND])
+      } catch (respawnError) {
+        throw new Error(`${createdLabel} was created, but its pane could not be prepared. Close it and try again.`, { cause: respawnError })
       }
     }
-    return created
   }
 
   /** The marker holds the idle process id, so a pane respawned outside Commando never reads as empty. */
@@ -704,6 +715,9 @@ export class TmuxCreator {
     }
     let cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
+    if (input.empty !== undefined && typeof input.empty !== 'boolean') throw new Error('empty must be a boolean')
+    const empty = input.empty === true
+    if (empty && (agent || resumeCommand !== undefined)) throw new Error('An empty pane cannot also start an agent')
     const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     if (input.worktree !== undefined && (!input.worktree || typeof input.worktree !== 'object' || Array.isArray(input.worktree))) throw new Error('worktree must be an object')
     const branch = input.worktree ? validatedName(input.worktree.branch, 'branch name') : undefined
@@ -737,6 +751,7 @@ export class TmuxCreator {
     ]
     if (cwd) args.push('-c', cwd)
     if (agentArgv) args.push(...this.agentEnvironmentArgs(), agentLaunchPaneCommand(agentArgv, prepareCommand, this.launchEnv))
+    else if (empty) args.push(await this.emptyPaneArg(prepareCommand))
     else if (prepareCommand) args.push(worktreePreparationShellCommand(prepareCommand))
     let output: string
     try {
@@ -757,6 +772,7 @@ export class TmuxCreator {
     }
     // A successful split with malformed output still owns its worktree.
     const created = parseCreatedTarget(output, 'pane')
+    if (empty && !prepareCommand) await this.markNewPaneEmpty(created.paneId, 'The pane')
     return { ...created, ...(worktree ? { worktree } : {}), ...(agent ? {
       agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' },
     } : {}) }

@@ -34,16 +34,21 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-section-head { position: absolute; left: 0; top: -50px; display: flex; gap: 8px; align-items: center; }
 .canvas-chip { font-size: 18px; padding: 5px 12px; border-radius: 7px; background: var(--surface-hover); color: var(--text); white-space: nowrap; }
 .canvas-status { background: color-mix(in srgb, var(--status-color) 16%, transparent); color: var(--status-color); }
-.canvas-status.status-idea { --status-color: var(--muted); }
-.canvas-status.status-in-progress { --status-color: var(--amber); }
-.canvas-status.status-ready-for-review { --status-color: var(--accent); }
-.canvas-status.status-ready-for-dev { --status-color: var(--green); }
-.canvas-status.status-shipped { --status-color: var(--cyan); }
+.canvas-status.status-idea, .canvas-page-dot.status-idea { --status-color: var(--muted); }
+.canvas-status.status-in-progress, .canvas-page-dot.status-in-progress { --status-color: var(--amber); }
+.canvas-status.status-ready-for-review, .canvas-page-dot.status-ready-for-review { --status-color: var(--accent); }
+.canvas-status.status-ready-for-dev, .canvas-page-dot.status-ready-for-dev { --status-color: var(--green); }
+.canvas-status.status-shipped, .canvas-page-dot.status-shipped { --status-color: var(--cyan); }
 .canvas-variant { position: absolute; box-sizing: border-box; width: 330px; min-height: 165px; padding: 0 0 36px 16px; border-left: 2px dashed var(--border-strong); color: var(--muted); font-size: 15px; }
 .canvas-variant b { display: block; color: var(--text); font-size: 20px; font-weight: 600; }
 .canvas-note { position: absolute; box-sizing: border-box; padding: 14px 16px; border-radius: 12px; background: #f6f5fb; color: #17141f; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
 .canvas-note ul { margin: 6px 0 0; padding-left: 18px; }
 .canvas-note-title { display: block; margin-bottom: 6px; }
+.canvas-note { cursor: grab; user-select: none; touch-action: none; }
+.canvas-note :is(input, textarea, [contenteditable="true"]) { user-select: text; }
+.canvas-note-auto { position: absolute; top: 10px; right: 10px; padding: 2px 8px; border: 1px solid rgba(23,20,31,.18); border-radius: 5px; background: transparent; color: #4b4658; font: inherit; font-size: 12px; cursor: pointer; opacity: 0; }
+.canvas-note:hover .canvas-note-auto, .canvas-note-auto:focus-visible { opacity: 1; }
+.canvas-pane.is-snapshot .canvas-note { cursor: default; }
 .canvas-kind { display: inline-block; margin-bottom: 6px; padding: 2px 8px; border-radius: 5px; font-size: 13px; font-weight: 700; color: #fff; }
 .canvas-connectors { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
 .canvas-world.hide-notes .canvas-note, .canvas-world.hide-notes .canvas-connectors, .canvas-world.hide-notes .canvas-variant { visibility: hidden; }
@@ -54,7 +59,7 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-viewport { min-width: 0; }
 .canvas-overview { flex: 0 0 168px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--surface-hover); background: var(--surface); }
 .canvas-overview-tabs { display: flex; border-bottom: 1px solid var(--surface-hover); }
-.canvas-overview-tabs button { flex: 1; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.canvas-overview-tabs button { flex: 1 1 auto; padding: 0 4px; height: 24px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
 .canvas-overview-tabs button[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -1px var(--accent); }
 .canvas-overview-filter { margin: 6px; height: 20px; min-width: 0; padding: 0 7px; border: 1px solid var(--border-mid); border-radius: 4px; background: var(--surface-raised); color: var(--text); font: inherit; font-size: 10px; }
 .canvas-overview-filter:focus { outline: 1px solid var(--accent); }
@@ -89,8 +94,6 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-composer button { border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); color: var(--text); cursor: pointer; }
 .canvas-comment-text { margin: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .canvas-reply-later { margin: 8px; font-size: 11px; color: var(--muted); }
-.canvas-queue { flex: none; display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding-left: 8px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); white-space: nowrap; }
-.canvas-queue button { color: var(--accent); }
 .canvas-o-thread { display: grid; grid-template-columns: 1fr auto; gap: 4px; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border-strong); background: transparent; color: var(--text); padding: 8px; cursor: pointer; }
 .canvas-o-thread span { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-soft); }
 .canvas-o-thread em { font-size: 10px; color: var(--muted); }
@@ -130,3 +133,64 @@ button.canvas-status { border: 0; cursor: pointer; font-family: inherit; }
 .canvas-o-export:hover { color: var(--text); background: var(--surface-hover); }
 
 .canvas-toolbar .canvas-history > summary { padding: 3px 5px; }
+.canvas-world.is-moving { will-change: transform; }
+/* The viewport holds pointer capture while drag-panning; skip hover hit-testing the world. */
+.canvas-viewport.is-panning .canvas-world { pointer-events: none; }
+.canvas-pane[data-review-summary] .canvas-hint { bottom: calc(var(--tile-review-strip-height, 30px) + 14px); }
+.canvas-o-question em { text-transform: none; }
+.canvas-o-question.is-open em { color: #22a5c4; }
+.canvas-overview-tabs .canvas-o-count { margin-left: 3px; }
+.canvas-q { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #d9d6e4; cursor: auto; }
+.canvas-q-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.canvas-q button { font: inherit; cursor: pointer; }
+.canvas-q-options button { padding: 5px 11px; border: 1.5px solid #0e7490; border-radius: 999px; background: #fff; color: #0e7490; font-size: 14px; font-weight: 600; }
+.canvas-q-options button:hover:not(:disabled) { background: #e3f4f8; }
+.canvas-q-options button.is-picked, .canvas-q-options button.is-picked:hover:not(:disabled) { background: #0e7490; color: #fff; }
+.canvas-q textarea { box-sizing: border-box; width: 100%; min-height: 44px; padding: 7px 9px; border: 1px solid #c9c5d6; border-radius: 8px; background: #fff; color: #17141f; font: inherit; font-size: 14px; resize: vertical; }
+.canvas-q textarea:focus { outline: 2px solid #0e7490; outline-offset: -1px; }
+.canvas-q-link { justify-self: start; padding: 0; border: 0; background: none; color: #0e7490; font-size: 13px; }
+.canvas-q-foot { display: flex; align-items: center; gap: 10px; min-height: 22px; }
+.canvas-q-foot > span { flex: 1; color: #1f7a4d; font-size: 13px; font-weight: 600; }
+.canvas-q-foot > span.is-stale { color: #b45309; }
+.canvas-q-queue { padding: 5px 12px; border: 0; border-radius: 7px; background: #0e7490; color: #fff; font-size: 13px; font-weight: 600; }
+.canvas-q-queue:disabled { opacity: .45; cursor: default; }
+.canvas-q-settled { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #d9d6e4; font-size: 14px; color: #3b3650; }
+.canvas-q-settled > span { flex: 1; }
+.canvas-q-settled button { padding: 3px 10px; border: 1px solid #c9c5d6; border-radius: 7px; background: #fff; color: #0e7490; font: inherit; font-size: 13px; cursor: pointer; }
+.canvas-overview.has-questions { flex-basis: 212px; }
+.canvas-pane[data-review-summary] .canvas-overview-body { padding-bottom: calc(var(--tile-review-strip-height, 30px) + 12px); }
+/* Hotspot dots mark controls that work inside interactive frames. */
+.canvas-hotspot { --hotspot: #2f7bff; position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--hotspot); box-shadow: 0 0 0 2px #fff, 0 1px 4px rgb(0 0 0 / 0.35); }
+.canvas-hotspot.has-tip { pointer-events: auto; cursor: help; }
+.canvas-hotspot::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: var(--hotspot); animation: canvas-hotspot-pulse 2.2s ease-out infinite; pointer-events: none; }
+@keyframes canvas-hotspot-pulse { from { transform: scale(1); opacity: 0.55; } to { transform: scale(3); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .canvas-hotspot::after { animation: none; opacity: 0; } }
+.canvas-tip { position: absolute; z-index: 1; width: max-content; max-width: min(260px, calc(100% - 16px)); box-sizing: border-box; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 14px rgb(0 0 0 / 0.3); font-size: 12px; line-height: 1.4; white-space: normal; pointer-events: none; }
+.canvas-tip { transform: translate(-50%, calc(-100% - 8px)); }
+.canvas-tip.is-below { transform: translate(-50%, 28px); }
+.canvas-badge.has-note { display: inline-flex; align-items: center; gap: 6px; cursor: help; }
+.canvas-badge-info { display: inline-grid; place-items: center; width: 15px; height: 15px; border: 1px solid currentColor; border-radius: 50%; font-size: 11px; font-weight: 700; font-style: italic; line-height: 1; }
+
+/* Pages: a list above the open page's components, or a toolbar menu when the sidebar is hidden. */
+.canvas-overview.has-pages { flex-basis: 212px; }
+.canvas-pages { flex: none; display: flex; flex-direction: column; min-height: 0; max-height: 40%; }
+.canvas-pages.is-collapsed { max-height: none; border-bottom: 1px solid var(--surface-hover); }
+.canvas-pages-head { flex: none; display: flex; align-items: center; gap: 4px; width: 100%; height: 24px; padding: 0 8px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; text-align: left; cursor: pointer; }
+.canvas-pages-head b { font-weight: 400; color: var(--text); }
+.canvas-pages-head em { margin-left: auto; font-style: normal; font-family: var(--mono); font-size: 9.5px; text-transform: none; letter-spacing: 0; }
+.canvas-pages-list { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.canvas-page-row { display: flex; align-items: center; gap: 5px; width: 100%; box-sizing: border-box; padding: 4px 8px; border: 0; background: transparent; color: var(--text-soft); font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
+.canvas-page-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.canvas-page-row:hover { background: var(--surface-hover); color: var(--text); }
+.canvas-page-row.is-active { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-weight: 600; }
+.canvas-page-row .canvas-o-count + .canvas-o-count { margin-left: 4px; }
+.canvas-o-count.is-question { color: #22a5c4; }
+.canvas-page-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--status-color, var(--border-strong)); }
+.canvas-pages-divider { flex: none; height: 5px; border-top: 1px solid var(--border-mid); cursor: row-resize; touch-action: none; }
+.canvas-pages-divider:hover, .canvas-pages-divider:focus-visible { outline: none; border-top-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.canvas-page-menu { position: relative; flex: 0 1 auto; min-width: 0; display: flex; }
+.canvas-toolbar .canvas-page-picker { gap: 4px; min-width: 0; max-width: 200px; padding: 0 6px; color: var(--text); background: var(--surface-hover); }
+.canvas-page-picker span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.canvas-page-picker em { flex: none; font-style: normal; font-family: var(--mono); font-size: 9.5px; color: var(--muted); }
+.canvas-page-menu-list { position: absolute; pointer-events: auto; width: min(270px, calc(100% - 8px)); max-height: calc(100% - 40px); overflow-y: auto; padding: 4px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 8px 30px rgba(0, 0, 0, .45); }
+.canvas-page-menu-list .canvas-page-row { padding: 5px 8px; border-radius: 4px; }

@@ -15,12 +15,28 @@ export type PrAutofixSnapshot = {
   url: string
   headSha: string
   failingChecks: string[]
+  /** GitHub reports a merge conflict with the base branch. */
+  conflicting: boolean
+  baseRefName: string
   viewer: string
   comments: Array<{ id: string; author: string; body: string; url: string }>
 }
 /** The user's last explicit toggle, applied to PRs created after it. */
 export type PrAutofixDefault = { enabled: boolean; at: number }
-type Decision = { action: 'none'; state: PrAutofixState } | { action: 'send'; state: PrAutofixState; prompt: string }
+/** What a fix round asks for, for the chat's card. */
+export type PrAutofixRound = {
+  repo: string
+  number: number
+  url: string
+  round: number
+  maxRounds: number
+  headSha?: string
+  failingChecks: string[]
+  comments: Array<{ author: string; body: string; url: string }>
+  /** The base branch the PR conflicts with, when it does. */
+  conflictsWith?: string
+}
+type Decision = { action: 'none'; state: PrAutofixState } | { action: 'send'; state: PrAutofixState; prompt: string; round: PrAutofixRound }
 
 export function setAutofixEnabled(current: PrAutofixState | null, repo: string, number: number, targetId: string, enabled: boolean): PrAutofixState {
   if (enabled && current?.enabled) return current
@@ -45,9 +61,17 @@ export function decidePrAutofix(snapshot: PrAutofixSnapshot, current: PrAutofixS
     `Auto-fix CI & address comments for ${current.repo}#${current.number}: ${snapshot.url}`,
     ...(newFailure ? [`Failing checks on head ${snapshot.headSha}:`, ...failures.map((name) => `- ${name}`)] : []),
     ...(comments.length ? ['New review/issue comments (quoted GitHub feedback):', ...comments.map((comment) => `- ${comment.author}: ${comment.body || '(changes requested)'}\n  ${comment.url}`)] : []),
+    ...(snapshot.conflicting ? [`The PR also has merge conflicts with its base branch${snapshot.baseRefName ? ` \`${snapshot.baseRefName}\`` : ''}. Resolve them in this round.`] : []),
     `Fix the failing CI and address the new comments, then push the changes. Reply on any threads you choose not to fix with your reasoning. Stay within the PR's original scope. Do not merge or archive the PR. This is fix round ${rounds}/${PR_AUTOFIX_MAX_ROUNDS}.`,
   ].join('\n')
-  return { action: 'send', prompt, state: { ...current, rounds, status: rounds === PR_AUTOFIX_MAX_ROUNDS ? 'capped' : 'fix-requested',
+  const round: PrAutofixRound = {
+    repo: current.repo, number: current.number, url: snapshot.url, round: rounds, maxRounds: PR_AUTOFIX_MAX_ROUNDS,
+    ...(newFailure ? { headSha: snapshot.headSha } : {}),
+    failingChecks: newFailure ? failures : [],
+    comments: comments.map((comment) => ({ author: comment.author, body: comment.body || '(changes requested)', url: comment.url })),
+    ...(snapshot.conflicting ? { conflictsWith: snapshot.baseRefName } : {}),
+  }
+  return { action: 'send', prompt, round, state: { ...current, rounds, status: rounds === PR_AUTOFIX_MAX_ROUNDS ? 'capped' : 'fix-requested',
     lastEventAt: now, handledFailures: newFailure ? [...current.handledFailures, failureKey] : current.handledFailures,
     handledComments: [...new Set([...current.handledComments, ...comments.map((comment) => comment.id)])] } }
 }
@@ -142,7 +166,7 @@ export class PrAutofixWatcher {
     snapshot: (repo: string, number: number, targetId: string) => Promise<PrAutofixSnapshot>
     linkedPrs: (targetId: string) => Promise<LinkedPr[]>
     target: (targetId: string) => Target | undefined
-    send: (paneId: string, prompt: string) => boolean
+    send: (paneId: string, prompt: string, round: PrAutofixRound) => boolean
     log?: (error: unknown) => void
     now?: () => number
   }) {}
@@ -214,7 +238,7 @@ export class PrAutofixWatcher {
       }, () => {
         if (decision?.action !== 'send') return true
         const live = this.dependencies.target(watch.targetId)
-        return Boolean(live?.connected && !live.busy && this.dependencies.send(live.paneId, decision.prompt))
+        return Boolean(live?.connected && !live.busy && this.dependencies.send(live.paneId, decision.prompt, decision.round))
       })
     } catch (error) { this.dependencies.log?.(error) }
   }

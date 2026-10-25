@@ -58,6 +58,7 @@ describe('AgentHost input relays', () => {
           socket.send(JSON.stringify({ type: 'task', paneId: '%4', action: 'background', agentId: 'a1b2', toolUseId: 'toolu_1', requestId: 't1' }))
           socket.send(JSON.stringify({ type: 'interrupt', paneId: '%4', dropQueued: ['queued-2'], requestId: 'i1' }))
           socket.send(JSON.stringify({ type: 'subagent_transcript', paneId: '%4', agentId: 'a1b2', requestId: 'r1' }))
+          socket.send(JSON.stringify({ type: 'mcp', paneId: '%4', request: { action: 'status' }, requestId: 'm1' }))
         }
       })
     })
@@ -79,6 +80,9 @@ describe('AgentHost input relays', () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
     host.stop()
     server.close()
+    // A provider without MCP management answers at once, so the palette doesn't wait out a timeout.
+    const mcp = received.findIndex((message) => message.type === 'mcp_result')
+    expect(received.splice(mcp, 1)[0]).toMatchObject({ type: 'mcp_result', paneId: '%4', requestId: 'm1', servers: [], error: expect.stringMatching(/can't be managed/) })
     expect(received.map((message) => message.type)).toEqual(['hello', 'session_snapshot', 'commands', 'file_search_result', 'subagent_transcript_result'])
     expect(received[3]).toEqual({ type: 'file_search_result', paneId: '%4', requestId: 'q1', entries: [{ path: 'src/comp.ts', kind: 'file' }], truncated: false })
     expect(received[4]).toEqual({ type: 'subagent_transcript_result', paneId: '%4', requestId: 'r1', items: [], error: 'no transcript for a1b2' })
@@ -88,5 +92,17 @@ describe('AgentHost input relays', () => {
       ['task', 'background', 'a1b2', 'toolu_1'],
       ['interrupt', ['queued-2']],
     ])
+  })
+})
+
+describe('Cursor host arguments', () => {
+  it('defaults to full access and keeps bypass available with explicit sandboxed mode', async () => {
+    const { parseHostArgs, chatResumeCommand, restartEnv } = await import('./main.js')
+    expect(parseHostArgs(['cursor'], {})).toEqual({ provider: 'cursor', permissionMode: 'bypassPermissions', bypassAllowed: true })
+    const args = parseHostArgs(['cursor', '--permission-mode', 'default', '--model', 'auto', '--resume', 'agent-123'], { CLAUDE_CONFIG_DIR: '/profile' })
+    expect(args).toEqual({ provider: 'cursor', permissionMode: 'default', bypassAllowed: true, model: 'auto', resume: 'agent-123' })
+    if (typeof args === 'string') throw new Error(args)
+    expect(chatResumeCommand('/c/commando-agent', args)).toBe('/c/commando-agent cursor --model auto --permission-mode default --allow-dangerously-skip-permissions')
+    expect(restartEnv('cursor', { CURSOR_API_KEY: 'never-forward', CODEX_HOME: '/codex', COMMANDO_PORT: '4410' })).toEqual(['-e', 'COMMANDO_PORT=4410'])
   })
 })

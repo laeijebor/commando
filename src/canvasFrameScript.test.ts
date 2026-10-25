@@ -58,11 +58,22 @@ describe('canvas frame script', () => {
       document.body.dispatchEvent(wheel); expect(wheel.defaultPrevented).toBe(true)
       expect(latest()).toMatchObject({ type: 'zoom', deltaY: -12, deltaMode: 0, x: 20, y: 30 })
     }
+    const pinch = (type: string, scale?: number) => {
+      const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale, clientX: 20, clientY: 30 })
+      document.body.dispatchEvent(event); return event
+    }
+    expect(pinch('gesturestart').defaultPrevented).toBe(true)
+    expect(pinch('gesturechange', 1.5).defaultPrevented).toBe(true)
+    expect(Math.exp(-latest().deltaY * 0.01)).toBeCloseTo(1.5)
+    pinch('gesturechange', 1.8)
+    expect(latest()).toMatchObject({ type: 'zoom', deltaMode: 0, x: 20, y: 30 })
+    expect(Math.exp(-latest().deltaY * 0.01)).toBeCloseTo(1.2)
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     expect(latest()).toMatchObject({ type: 'escape' })
     window.dispatchEvent(new MessageEvent('message', { source: window, data: { ...activate, live: false } }))
     post.mockClear(); expect(click().defaultPrevented).toBe(false)
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(pinch('gesturechange', 2).defaultPrevented).toBe(false)
     expect(post).not.toHaveBeenCalled()
   })
   it('reports labels in document order, inherits nearest groups in viewport coordinates', async () => {
@@ -76,7 +87,7 @@ describe('canvas frame script', () => {
       { name: 'Row', group: 'Accounts', id: 'outlook', rect: { x: 10, y: 20, w: 30, h: 40 } },
       { name: 'Title', group: 'Nested', rect: { x: 10, y: 20, w: 30, h: 40 } },
       { name: 'Footer', rect: { x: 10, y: 20, w: 30, h: 40 } },
-    ] })
+    ], hotspots: [] })
     post.mockClear()
     document.querySelector('button')!.setAttribute('data-canvas-label', 'Renamed')
     document.querySelector('footer')!.remove()
@@ -89,6 +100,36 @@ describe('canvas frame script', () => {
     expect(latest().type).toBe('labels')
     document.dispatchEvent(new Event('DOMContentLoaded'))
     expect(latest().type).toBe('labels')
+  })
+  it('reports click-through links and author hotspots with optional tooltips', () => {
+    document.body.innerHTML = '<a data-canvas-goto="accounts">Go</a><button data-canvas-hotspot="Toggles dark mode">Theme</button>' +
+      '<button data-canvas-hotspot>Bare</button><a data-canvas-goto="../bad" data-canvas-hotspot="Tip">Odd</a>'
+    document.querySelectorAll('a, button').forEach(box)
+    boot(); window.dispatchEvent(new Event('load'))
+    const rect = { x: 10, y: 20, w: 30, h: 40 }
+    expect(latest().hotspots).toEqual([{ rect, goto: 'accounts' }, { rect, tip: 'Toggles dark mode' }, { rect }])
+  })
+  it('skips hotspots that are disabled, invisible, transparent, clipped away or covered', () => {
+    document.body.innerHTML = '<button data-canvas-hotspot="a" style="visibility:hidden">A</button><button data-canvas-hotspot="b" style="opacity:0">B</button>' +
+      '<div style="opacity:0"><button data-canvas-hotspot="c">C</button></div><div style="overflow:hidden" id="clip"><button data-canvas-hotspot="d">D</button></div>' +
+      '<button data-canvas-goto="accounts" disabled>Off</button><button data-canvas-hotspot="e">E</button><button data-canvas-hotspot="f">F</button>'
+    document.querySelectorAll('button').forEach(box)
+    vi.spyOn(document.getElementById('clip')!, 'getBoundingClientRect').mockReturnValue({ left: 100, top: 100, width: 50, height: 50, right: 150, bottom: 150, x: 100, y: 100, toJSON() {} })
+    const rect = { x: 10, y: 20, w: 30, h: 40 }
+    boot(); window.dispatchEvent(new Event('load'))
+    expect(latest().hotspots).toEqual([{ rect, tip: 'e' }, { rect, tip: 'f' }])
+    elementAtPoint.mockImplementation(() => document.querySelectorAll('button')[6]) // F covers E's centre
+    window.dispatchEvent(new Event('load'))
+    expect(latest().hotspots).toEqual([{ rect, tip: 'f' }])
+  })
+  it('does not clip by a short body with overflow hidden, since that clips the viewport instead', () => {
+    document.body.style.overflow = 'hidden'
+    document.body.innerHTML = '<nav style="position:fixed"><button data-canvas-goto="accounts">Tab</button></nav>'
+    box(document.querySelector('button')!)
+    vi.spyOn(document.body, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 390, height: 10, right: 390, bottom: 10, x: 0, y: 0, toJSON() {} })
+    boot(); window.dispatchEvent(new Event('load'))
+    expect(latest().hotspots).toHaveLength(1)
+    document.body.style.overflow = ''
   })
   it('hit-tests viewport CSS pixels and replies with nearest label and element document rect', () => {
     document.body.innerHTML = '<div data-canvas-label="Row" data-canvas-id="row"><span id="hit">Text</span></div>'

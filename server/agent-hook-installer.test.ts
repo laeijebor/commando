@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AgentHookInstaller,
+  CHAT_IMAGE_INSTRUCTIONS,
   CLAUDE_HOOK_EVENTS,
   MUSE_HOOK_EVENTS,
   OPENCODE_HOOK_EVENTS,
@@ -283,6 +284,7 @@ describe('agent hook installer', () => {
     const run = async (event: string) => {
       const command = settings.hooks[event][0].hooks[0]
       const env: NodeJS.ProcessEnv = { ...process.env, COMMANDO_PORT: '1', TMUX_PANE: '%42' }
+      delete env.COMMANDO_CHAT_RESUME
       if (configDir) env.CLAUDE_CONFIG_DIR = configDir
       else delete env.CLAUDE_CONFIG_DIR
       const child = spawn(command.command, command.args, { env, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -294,6 +296,8 @@ describe('agent hook installer', () => {
     }
     expect(await run('SessionStart')).toContain(`Resume command for this conversation: ${launcher} --resume d227943a-841a-4dfa-94c7-afe2e0774487`)
     expect(await run('UserPromptSubmit')).not.toContain('Resume command')
+    // A terminal pane doesn't draw Markdown images.
+    expect(await run('SessionStart')).not.toContain(CHAT_IMAGE_INSTRUCTIONS)
   })
 
   it('gives a chat pane its own resume command instead of the TUI launcher', async () => {
@@ -308,6 +312,7 @@ describe('agent hook installer', () => {
     child.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'd227943a-841a-4dfa-94c7-afe2e0774487' }))
     await new Promise((resolve, reject) => { child.on('exit', resolve); child.on('error', reject) })
     expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain('Resume command for this conversation: /c/scripts/commando-agent claude --config-dir /Users/leo/.claudep --resume d227943a-841a-4dfa-94c7-afe2e0774487')
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(CHAT_IMAGE_INSTRUCTIONS)
   })
 
   it('emits Claude context through the installed startup/prompt command without changing permission output', async () => {
@@ -873,6 +878,53 @@ describe('agent hook installer', () => {
       ]) expect(serialized).not.toContain(rawValue)
       expect(serialized).not.toContain('tool_input')
       expect(serialized).not.toContain('tool_response')
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it('reports PRs the agent just created from its own tool output', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const received: Array<Record<string, unknown>> = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        received.push(JSON.parse(body) as Record<string, unknown>)
+        response.writeHead(200)
+        response.end()
+      })()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    try {
+      const send = async (input: Record<string, unknown>) => {
+        const child = spawn(process.execPath, [paths.claudeBridgePath], {
+          env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%42' },
+          stdio: ['pipe', 'ignore', 'inherit'],
+        })
+        child.stdin.end(JSON.stringify({ session_id: 'claude-session', hook_event_name: 'PostToolUse', ...input }))
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject)
+          child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Bridge exited ${code}`)))
+        })
+      }
+      await send({ tool_name: 'Bash', tool_input: { command: 'gh pr create --title x --body-file /tmp/b.md' },
+        tool_response: { stdout: 'https://github.com/acme/widgets/pull/42\nhttps://github.com/acme/widgets/pull/42\n', stderr: '' } })
+      await send({ tool_name: 'mcp__github__create_pull_request', tool_input: {},
+        tool_response: [{ type: 'text', text: '{"html_url":"https://github.com/acme/gadgets/pull/7"}' }] })
+      await send({ tool_name: 'Bash', tool_input: { command: 'gh pr view 9' },
+        tool_response: { stdout: 'https://github.com/acme/widgets/pull/9', stderr: '' } })
+      await send({ tool_name: 'Read', tool_input: { file_path: '/repo/notes.md' }, tool_response: 'https://github.com/acme/widgets/pull/8' })
+
+      expect(received.map((body) => body.createdPullRequests)).toEqual([
+        [{ repo: 'acme/widgets', number: 42 }],
+        [{ repo: 'acme/gadgets', number: 7 }],
+        undefined,
+        undefined,
+      ])
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }
@@ -1489,7 +1541,7 @@ describe('Muse hooks', () => {
     expect(start.code).toBe(0)
     const context = JSON.parse(start.stdout).hookSpecificOutput.additionalContext
     expect(context).toContain(paths.prMarkerCliPath)
-    expect(context).toContain(`Resume command for this conversation: muse resume ${session}`)
+    expect(context).toContain(`Resume command for this conversation: muse --yolo resume ${session}`)
 
     const reminder = await runMuseHook(command, { hook_event_name: 'SubagentStart', session_id: 'child', subagent_id: 'skill-reminder' }, { ...env, MUSE_THREAD_ID: 'child' })
     expect(reminder).toEqual({ code: 0, stdout: '' })
@@ -1983,7 +2035,10 @@ describe('generated simulator lease CLI', () => {
     }
     expect(Array.from(cli.formatLabel('😀'.repeat(100)))).toHaveLength(60)
     expect(() => cli.verifySlim(fakeSlim, simUdid.toLowerCase())).not.toThrow()
-    for (const output of ['', fakeSlim.replace('170/170', '169/170'), fakeSlim.replace('170/170', '0/0'),
+    // liveactivitiesd and assistantd stay enabled on newly slimmed devices; older leases kept only liveactivitiesd.
+    expect(() => cli.verifySlim(fakeSlim.replace('170/170', '168/170'), simUdid)).not.toThrow()
+    expect(() => cli.verifySlim(fakeSlim.replace('170/170', '169/170'), simUdid)).not.toThrow()
+    for (const output of ['', fakeSlim.replace('170/170', '167/170'), fakeSlim.replace('170/170', '171/170'), fakeSlim.replace('170/170', '0/0'),
       fakeSlim.replace('booted', 'shutdown'), fakeSlim.replace(simUdid, secondSimUdid)]) {
       expect(() => cli.verifySlim(output, simUdid)).toThrow('not booted and fully slim')
     }
@@ -1996,7 +2051,7 @@ describe('generated simulator lease CLI', () => {
       udid: simUdid, label: 'Session name · check empty state', originalName: 'Commando Pool 1',
     })
     expect(dependencies.run.mock.calls).toEqual([
-      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid]], disableDictationCall,
+      ['xcrun', ['simctl', 'list', 'devices', '--json']], ['simslim', ['on', simUdid, '--keep', 'com.apple.liveactivitiesd,com.apple.assistantd']], disableDictationCall,
       ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, 'Session name · check empty state']],
     ])
     expect(dependencies.request.mock.calls).toEqual([
@@ -2036,7 +2091,7 @@ describe('generated simulator lease CLI', () => {
     const fallback = simDependencies()
     fallback.exists.mockResolvedValue(true)
     await cli.runSimCommand(['lease'], fallback)
-    expect(fallback.run).toHaveBeenCalledWith('simslim', ['on', simUdid])
+    expect(fallback.run).toHaveBeenCalledWith('simslim', ['on', simUdid, '--keep', 'com.apple.liveactivitiesd,com.apple.assistantd'])
   })
 
   it('rolls back a fresh boot and claim when turning off dictation fails', async () => {
@@ -2083,7 +2138,7 @@ describe('generated simulator lease CLI', () => {
       deps.run.mockImplementation(async (file, args) => {
         if (file === 'xcrun') return JSON.stringify(fakeDevices)
         if (args[0] === failingCommand && failingCommand === 'on') throw new Error('boot failed')
-        return fakeSlim.replace('170/170', '169/170')
+        return fakeSlim.replace('170/170', '167/170')
       })
       await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow(failingCommand === 'on' ? 'boot failed' : 'fully slim')
       const renames = deps.run.mock.calls.filter(([, args]) => args.includes('rename'))
@@ -2191,7 +2246,7 @@ describe('generated simulator lease CLI', () => {
         ...(via === 'simfleet' ? [
           ['simfleet', ['sim', 'boot', simUdid], '/original-main'],
           ['simfleet', ['claim', simUdid, label], '/original-main'],
-        ] : [['simslim', ['on', simUdid]]]),
+        ] : [['simslim', ['on', simUdid, '--keep', 'com.apple.liveactivitiesd,com.apple.assistantd']]]),
         disableDictationCall, ['simslim', ['list', '--booted']], ['xcrun', ['simctl', 'rename', simUdid, label]],
       ])
       expect(deps.exists).not.toHaveBeenCalled()
@@ -2225,7 +2280,7 @@ describe('generated simulator lease CLI', () => {
         deps.run.mockImplementation(async (file, args) => {
           if (file === 'xcrun' && args[1] === 'list') return JSON.stringify(fakeDevices)
           if (bootFails && (args[0] === 'on' || args[0] === 'sim')) throw new Error('boot failed')
-          return fakeSlim.replace('170/170', '169/170')
+          return fakeSlim.replace('170/170', '167/170')
         })
         await expect(cli.runSimCommand(['lease'], deps)).rejects.toThrow(bootFails ? 'boot failed' : 'fully slim')
         expect(deps.run.mock.calls.some(([, args]) => args.includes('rename'))).toBe(false)
@@ -2434,7 +2489,7 @@ describe('generated simulator pool CLI', () => {
     expect(result).toEqual({ udid: thirdSimUdid, label: 'Pool session', originalName: 'Commando Pool 1' })
     expect(deps.members).toEqual([{ udid: thirdSimUdid, name: 'Commando Pool 1', created: true, addedAt: 1, projects: [] }])
     const create = deps.events.indexOf('xcrun simctl create Commando Pool 1 iPhone 17 Pro com.apple.CoreSimulator.SimRuntime.iOS-26-10')
-    const slim = deps.events.indexOf(`simslim on ${thirdSimUdid} --preserve-boot-state`)
+    const slim = deps.events.indexOf(`simslim on ${thirdSimUdid} --keep com.apple.liveactivitiesd,com.apple.assistantd --preserve-boot-state`)
     const record = deps.events.indexOf(`POST /pool ${thirdSimUdid}`)
     const reserve = deps.events.indexOf(`POST /reservation ${thirdSimUdid}`)
     expect(create).toBeGreaterThan(-1)
@@ -2462,8 +2517,8 @@ describe('generated simulator pool CLI', () => {
     await cli.runSimCommand(['pool', 'add', simUdid, secondSimUdid], deps)
     const changes = deps.events.filter((event) => event.startsWith('simslim on') || event.startsWith('xcrun simctl rename') || event.startsWith('POST /pool'))
     expect(changes).toEqual([
-      `simslim on ${simUdid} --preserve-boot-state`, `xcrun simctl rename ${simUdid} Commando Pool 1`, `POST /pool ${simUdid}`,
-      `simslim on ${secondSimUdid} --preserve-boot-state`, `xcrun simctl rename ${secondSimUdid} Commando Pool 3`, `POST /pool ${secondSimUdid}`,
+      `simslim on ${simUdid} --keep com.apple.liveactivitiesd,com.apple.assistantd --preserve-boot-state`, `xcrun simctl rename ${simUdid} Commando Pool 1`, `POST /pool ${simUdid}`,
+      `simslim on ${secondSimUdid} --keep com.apple.liveactivitiesd,com.apple.assistantd --preserve-boot-state`, `xcrun simctl rename ${secondSimUdid} Commando Pool 3`, `POST /pool ${secondSimUdid}`,
     ])
     expect(deps.members.map((entry) => entry.created)).toEqual([true, false, false])
     deps.events.length = 0
@@ -2479,7 +2534,7 @@ describe('generated simulator pool CLI', () => {
     expect(deps.members).toEqual([{ udid: secondSimUdid, name: 'Commando Pool 1', created: false, addedAt: 1, projects: [] }])
     expect(deps.events).not.toContain(`POST /pool ${simUdid}`)
     expect(deps.events.some((event) => event.startsWith(`xcrun simctl rename ${simUdid}`))).toBe(false)
-    expect(deps.events.indexOf(`simslim on ${simUdid} --preserve-boot-state`)).toBeLessThan(deps.events.indexOf(`simslim on ${secondSimUdid} --preserve-boot-state`))
+    expect(deps.events.indexOf(`simslim on ${simUdid} --keep com.apple.liveactivitiesd,com.apple.assistantd --preserve-boot-state`)).toBeLessThan(deps.events.indexOf(`simslim on ${secondSimUdid} --keep com.apple.liveactivitiesd,com.apple.assistantd --preserve-boot-state`))
   })
 
   it('validates add eligibility and refuses leased removal without changing the device', async () => {

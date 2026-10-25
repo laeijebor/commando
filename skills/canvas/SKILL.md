@@ -80,7 +80,8 @@ default to 390/844. Optional platform prefixes describe the target device.
   "frames": [
     { "id": "settings", "title": "Settings (top level)", "platform": "Mobile",
       "src": "Settings.html", "x": 0, "y": 0, "w": 390, "h": 844,
-      "focus": 1, "interactive": true },
+      "focus": 1, "interactive": true,
+      "interactiveNote": "Supports dark mode — toggle the theme button in the menu" },
     { "id": "accounts", "title": "Connected accounts", "platform": "Mobile",
       "src": "Accounts.html", "x": 960, "y": 0, "interactive": false,
       "variant": { "title": "Needs attention", "context": "Connected accounts",
@@ -105,6 +106,9 @@ Frame roles:
   includes everything. Set focus on the screens to discuss first.
 - `interactive`: boolean distinguishing a planned clickable prototype (cyan
   ▶ Interactive) from a Static reference. Frames stay inert until double-clicked or entered through Play.
+- `interactiveNote`: optional string, only with `interactive: true`. Hovering
+  the ▶ Interactive badge shows it; say what the interactivity covers, e.g.
+  “Supports dark mode — toggle the theme button in the menu”.
 - Sections group frame ids with an optional ticket. Status must be `idea`,
   `in-progress`, `ready-for-review`, `ready-for-dev` or `shipped`.
 - `variant`: title required, context and description optional; appears above
@@ -113,10 +117,94 @@ Frame roles:
   `items`, width (default 300) and target `{frame, label?}`. Kinds are
   `development` (implementation guidance, green), `important` (cautions,
   amber), `design` (design reasoning, accent), `question` (open decisions,
-  teal). Frame-target connectors point at the nearest frame edge. Label
-  targets connect to the named element once its labels arrive, falling back
-  to the frame edge while loading. Notes hides variants, annotations
-  and their connectors.
+  teal). Notes hides variants, annotations and their connectors.
+- Notes are laid out like margin comments. A targeted note placed to the
+  left or right of its frame is a gutter note: the canvas lines it up with
+  its label, keeps gutter notes in label order and stacks them without
+  overlap, so its x picks the gutter and its y is only a fallback until
+  labels arrive. A gutter note moves to the frame's other side when its label
+  is on that half and the other side has room. Its connector runs level to
+  the frame edge, then dashes in to the label. Notes above or below a frame,
+  and untargeted notes, keep their x/y and only move to avoid overlap.
+- `fixed`: optional boolean. `true` keeps the note exactly at x/y (others
+  flow around it). Dragging a note sets it; the note's Auto button clears it.
+
+### Pages
+
+Split a large canvas into pages when one board would be hard to navigate or
+heavy to load; you decide when that helps. Each page is its own board: it
+holds its own `sections`, `frames` and `annotations`, with its own
+coordinates. Only the open page's frames load. The sidebar lists the pages
+above the open page's components (a toolbar menu on narrow tiles), and the
+tab remembers each page's zoom and the last page opened.
+
+```json
+{
+  "title": "Trainer web app — new UI audit",
+  "pages": [
+    { "id": "today", "title": "Today and the rail",
+      "sections": [{ "id": "s-today", "title": "Today and the rail", "status": "ready-for-review", "frames": ["p-today"] }],
+      "frames": [{ "id": "p-today", "title": "Today — proposed", "src": "today.html", "x": 0, "y": 0, "focus": 1 }],
+      "annotations": [] },
+    { "id": "client", "title": "Client profile",
+      "frames": [{ "id": "p-client", "title": "Client overview", "src": "client.html", "x": 0, "y": 0 }] }
+  ]
+}
+```
+
+- A manifest uses either `pages` or top-level `frames`/`sections`/`annotations`,
+  not both. Without `pages` the canvas is a single page, as before.
+- Pages need an `id` (unique among pages) and a `title`, and each page needs a
+  `frames` array. Frame, section and note ids stay unique across the whole
+  canvas, so prototype links (`data-canvas-goto`), question keys, threads and
+  feedback work across pages.
+- A section's frames and a note's target frame must be on the same page.
+- `focus` numbers form one reading order across pages; Play starts at focus 1
+  and follows prototype links onto other pages. Threads, questions, queued
+  answers and spotlights open the right page. Pass `--frame` with a spotlight
+  on a paged canvas: labels are only known for the open page.
+- Order pages the way you want them read. The sidebar shows each page's
+  section status (its least advanced section), frame count, open questions
+  and open comments.
+
+## Ask the user questions
+
+Every `question` note is answerable on the canvas. Put the question itself in
+`text`, at most 256 characters (longer ones are reported and get no answer
+controls; put detail in `items`). The `title` is a short label such as "Your
+call". Add `options` for a
+choice; picking one queues it at once. Without options the note takes a text
+answer. Every question also takes an optional note.
+
+```json
+{ "id": "q-recipe", "kind": "question", "title": "Your call",
+  "text": "Should new copies of an archived recipe fail the save?",
+  "options": ["Fail with a clear error (recommended)", "Allow the copy"],
+  "target": { "frame": "open", "label": "Finding: recipe references" },
+  "x": 6600, "y": -420, "w": 420 }
+```
+
+- `options`: 1–50 strings, each up to 256 characters. `multiple: true` allows
+  several; the answer arrives as `"A, C"` and `response.data.choice` is the array.
+- `key`: answer identity (defaults to the note id). Keep it stable between
+  rounds and unique among question notes (a clashing key is reported and
+  ignored). Re-answering before sending replaces the queued answer. An answer
+  queued before you change the question's text or options no longer counts
+  as its answer; it stays in the queue until the user replaces or removes it.
+- Answers queue in the canvas's answer queue (the strip at the bottom of the
+  canvas, same drawer as redline: edit, attach images, Send this, Send all,
+  Send all + Build). The Questions tab in the overview lists every question
+  note as Open, Queued, Sent or Answered.
+- An answer note carries `response: {question, answer, note?, data?}` and
+  `selector: [data-canvas-note="<id>"]`, with no `canvas` context. Find the
+  note in `canvas.json` by that id.
+- Once you have the answer, record it so the question is settled:
+  `"answer": "Fail with a clear error (recommended)"`. The note then shows
+  "Answered" with Reopen and leaves the answer queue. Until you do, a sent
+  answer shows as "Sent · 2h ago". To ask again, change the text or options
+  and remove `answer`; a note with a recorded `answer` stays settled.
+- Use a question note when the decision belongs on the board; use plain
+  annotations for open-ended review.
 
 ## Label the frame HTML
 
@@ -146,6 +234,17 @@ manifest frame ids; static targets fit into view but stay inert.
 </div>
 ```
 
+Interactive frames show a pulsing blue dot on each control that works, so
+reviewers know what to try. Every `data-canvas-goto` element gets one, with a
+tooltip naming its target frame. Mark other working controls (in-page JS such
+as a theme toggle or an expanding row) with `data-canvas-hotspot`; its value is
+an optional tooltip. Only mark controls that respond — leave decorative buttons
+unmarked. Static frames, snapshots, comment mode and Notes off hide the dots.
+
+```html
+<button data-canvas-hotspot="Toggles dark mode" onclick="toggleTheme()">Theme</button>
+```
+
 ## Collecting feedback
 
 Editing files live-reloads the open tab. Never close/reopen it to refresh.
@@ -165,7 +264,9 @@ Comments can arrive as a pushed prompt in your anchor pane, or through
 and acknowledge the journal, even after a pushed prompt. The script tracks its
 acknowledgement cursor automatically. Keep the tab open for the next review.
 Use the 💬 tool to drop a pin on a frame (Esc exits), Queue to batch notes,
-and Send or Send this to deliver them through the shared feedback journal.
+and Send this (in the pin) or Send all (in the answer queue strip) to deliver
+them through the shared feedback journal. A batch sent with Send all + Build
+carries `handoff: {kind: "build", instruction}`; follow it as redline describes.
 Notes carry `canvas` context: threadId, frameId, frameTitle, frame-local CSS pixel point,
 label/labelId, section/ticket/status, focus and interactive. Prefer label +
 frame over selector when finding the source to edit. The first matching
@@ -196,15 +297,15 @@ completion. The journal remains the source of truth across daemon restarts.
 
 ## User layout and section status
 
-Users can drag frame label rows whenever comment mode is off and Play isn't running. Positions snap to 10 world pixels
-and are written atomically to the manifest. Users can also choose any of the
+Users can drag frame label rows, and notes, whenever comment mode is off and Play isn't running. Positions snap to 10 world pixels
+and are written atomically to the manifest; a dragged note is saved with `fixed: true`. Users can also choose any of the
 five statuses from a section's status chip. This writes the new status and
 queues then sends a feedback note with section, ticket and status context
 through the shared journal and push delivery. A stale edit reloads the manifest
 and asks the user to try again; a failed send leaves the note queued for Send.
 
 Always re-read `canvas.json` (or the custom manifest path) before rewriting it.
-Keep user-moved x/y positions and user-chosen section statuses, along with
+Keep user-moved x/y positions, `fixed` notes and user-chosen section statuses, along with
 unknown keys. Do not overwrite layout from an earlier in-memory copy. Agents
 edit the file directly; the layout/status daemon endpoints require owner auth.
 

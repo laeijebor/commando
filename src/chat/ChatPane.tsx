@@ -1,3 +1,6 @@
+import type { CommanderState } from '../../shared/commander'
+import { AgentsInbox, type AgentsInboxProps } from './AgentsInbox'
+import { CommanderSplit, type CommanderPeek } from './CommanderReadingPane'
 import { Component, useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
@@ -12,6 +15,7 @@ import {
   type ChatSendOptions,
   type ChatSessionPermissionMode,
   type ChatProvider,
+  type ChatLogin,
   type ChatSettingsChange,
   type ChatState,
   type ChatSubagentTranscript,
@@ -32,6 +36,7 @@ import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 import { Button } from './ui/button'
 import { latestTodos, pendingRequests, withExternalAgentRuns, type SubagentItem } from '../../shared/chat-timeline'
+import { withTileEvents, type ChatCardEvent } from '../../shared/chat-tile-events'
 import { findSubagent, implementPermissionMode, planAwaitingFollowUp, subagentLabel, switcherSubagents } from './turnFlow'
 import './chat.css'
 
@@ -55,6 +60,7 @@ export interface ChatFlowServices {
 }
 
 const EMPTY_EXTERNAL_RUNS: readonly ExternalAgentRun[] = []
+const EMPTY_TILE_EVENTS: readonly ChatCardEvent[] = []
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
 
@@ -78,21 +84,30 @@ export class ChatErrorBoundary extends Component<{ children: ReactNode }, { erro
 
 /** A chat pane: the agent host's turns as a narrow, readable column. */
 export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
-  return <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
+  const column = <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
+  // Commander's pane always renders its split, so opening a chat beside it keeps Commander's draft.
+  return props.paneId && props.commander?.state.paneId === props.paneId
+    ? <CommanderSplit {...(props.commander.peek ? { peek: props.commander.peek } : {})}>{column}</CommanderSplit>
+    : column
 }
 
 function ChatColumn({
   chat: hostChat,
   externalRuns = EMPTY_EXTERNAL_RUNS,
+  tileEvents = EMPTY_TILE_EVENTS,
+  onOpenTile,
   paneId,
   pane,
   snapshot,
   statuses = {},
+  commander,
   onSelectPane,
+  registerFocusable,
   prsApi,
   connected,
   focused,
   onFocus,
+  onSelectionCopied,
   onSend,
   onInterrupt,
   onAnswer,
@@ -108,16 +123,25 @@ function ChatColumn({
 }: {
   chat: ChatState
   externalRuns?: readonly ExternalAgentRun[]
+  /** Redline/canvas cards for this chat, from the daemon. */
+  tileEvents?: readonly ChatCardEvent[]
+  /** Brings a tile forward in this pane's side panel; false when it is gone. */
+  onOpenTile?: (webPaneId: string) => boolean
   paneId?: string
   pane?: TmuxPane
   snapshot?: LineageSnapshot
   statuses?: Record<string, AgentStatus>
+  commander?: AgentsInboxProps & { state: CommanderState; peek?: CommanderPeek }
   onSelectPane?: (id: string) => void
+  /** Lets pane jumps find and focus this chat, like terminal panes do. */
+  registerFocusable?: (paneId: string, node: HTMLElement | null) => void
   prsApi?: PrsApiClient
   /** Whether this browser is connected to the Commando daemon. */
   connected: boolean
   focused: boolean
   onFocus: () => void
+  /** Selecting transcript text copies it, like terminal panes; this confirms the copy. */
+  onSelectionCopied?: () => void
   onSend: (text: string, images?: ChatImageRef[], options?: ChatSendOptions) => string | void
   onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
@@ -139,6 +163,8 @@ function ChatColumn({
 }) {
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
+  // Cards only join the timeline; plan follow-ups and the opening task read the conversation itself.
+  const timelineItems = useMemo(() => tileEvents.length ? withTileEvents(chat.items, tileEvents, chat.session.sessionId) : chat.items, [chat.items, tileEvents, chat.session.sessionId])
   const openingTask = pane?.openedBy ? chat.items.find((item) => item.kind === 'user_message' && !item.parentToolUseId) : undefined
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const todos = useMemo(() => latestTodos(chat.items), [chat.items])
@@ -221,6 +247,8 @@ function ChatColumn({
     // Esc in a subagent's view goes back to main, unless the composer has a use for it.
     if (event.key !== 'Escape' || !viewing || event.defaultPrevented) return
     if (event.target instanceof HTMLTextAreaElement && (event.target.value || working)) return
+    // Handled here, so an enclosing view (Commander's reading pane) leaves it alone.
+    event.preventDefault()
     setViewing(undefined)
     setRelay(undefined)
   }
@@ -229,13 +257,68 @@ function ChatColumn({
     if (flowError) setFlowError(null)
     else onDismissActionError?.()
   }
+  const shell = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!paneId || !registerFocusable) return
+    registerFocusable(paneId, shell.current)
+    return () => registerFocusable(paneId, null)
+  }, [paneId, registerFocusable])
+  const focusComposer = () => shell.current?.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
+  // A press in the transcript may start a text selection, so the composer only
+  // takes the caret once the mouse is released without one.
+  const pressing = useRef(false)
+  // The selection a press started with; clicking a button keeps it, and that is no new selection.
+  const pressedRange = useRef<Range | null>(null)
+  const selectionCopied = useRef(onSelectionCopied)
+  selectionCopied.current = onSelectionCopied
+  useEffect(() => {
+    if (focused && !pressing.current) focusComposer()
+  }, [focused])
+  useEffect(() => {
+    const settle = () => {
+      const node = shell.current
+      const selection = window.getSelection()
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+      const before = pressedRange.current
+      pressedRange.current = null
+      const unchanged = before && range
+        && before.compareBoundaryPoints(Range.START_TO_START, range) === 0
+        && before.compareBoundaryPoints(Range.END_TO_END, range) === 0
+      const text = node && selection && !selection.isCollapsed && !unchanged && node.contains(selection.anchorNode) ? selection.toString() : ''
+      if (text) {
+        void navigator.clipboard?.writeText(text).then(() => selectionCopied.current?.(), () => undefined)
+      } else if (node && document.activeElement === node) {
+        focusComposer()
+      }
+    }
+    const release = () => {
+      if (!pressing.current) return
+      pressing.current = false
+      // A click inside an old selection clears it after mouseup's handlers run.
+      setTimeout(settle)
+    }
+    // Dragging a link ends without a mouseup.
+    const releases = ['mouseup', 'pointercancel', 'dragend'] as const
+    for (const type of releases) document.addEventListener(type, release)
+    return () => { for (const type of releases) document.removeEventListener(type, release) }
+  }, [])
   const retryTranscript = (id: string) => setTranscripts((current) => {
     const next = { ...current }
     delete next[id]
     return next
   })
   return (
-    <section className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col" onMouseDown={onFocus} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+    <section ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onFocus={(event) => {
+      // A pane jump focuses the shell; hand the caret to the composer.
+      if (event.target === event.currentTarget && !pressing.current) focusComposer()
+    }} onMouseDown={(event) => {
+      if (event.button === 0) {
+        pressing.current = true
+        const selection = window.getSelection()
+        pressedRange.current = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null
+      }
+      onFocus()
+    }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />
@@ -276,7 +359,9 @@ function ChatColumn({
       ) : (
         <ChatTimeline
           provider={chat.session.provider}
-          items={chat.items}
+          items={timelineItems}
+          {...(onOpenTile ? { onOpenTile } : {})}
+          {...(onOpenPr ? { onOpenPr } : {})}
           {...(openingTask?.kind === 'user_message' && pane && snapshot ? { userMessageCard: {
             itemId: openingTask.id,
             content: <OpenedChatTask key={openingTask.id} text={stripTaskPreamble(openingTask.text)} pane={pane} snapshot={snapshot} statuses={statuses} onSelectPane={onSelectPane} />,
@@ -289,12 +374,15 @@ function ChatColumn({
           {...(flow ? { onSavePlan: flow.savePlan } : {})}
         />
       )}
+      {commander?.state.paneId && commander.state.paneId === paneId ? (
+        <div className="px-4"><AgentsInbox {...commander} /></div>
+      ) : null}
       {agents.length ? (
         <div className="px-4">
           <AgentSwitcher provider={providerLabel(chat.session)} agents={agents} items={chat.items} viewing={viewing} now={now} disabled={!connected || !chat.hostConnected} externalDisabled={!connected || !flow?.stopExternal} onSelect={select} onTask={task} />
         </div>
       ) : null}
-      {chat.session.claudeCodeSwitch ? (
+      {chat.session.provider !== 'cursor' && chat.session.claudeCodeSwitch ? (
         <ClaudeCodeSwitchBanner
           state={chat.session.claudeCodeSwitch}
           provider={chat.session.provider}
@@ -302,6 +390,7 @@ function ChatColumn({
           {...(flow?.switchToClaudeCode ? { onSwitch: flow.switchToClaudeCode } : {})}
         />
       ) : null}
+      {chat.session.login ? <CursorLoginBanner login={chat.session.login} disabled={!connected || !chat.hostConnected} onSend={onSend} /> : null}
       {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
       <ChatComposer
         session={chat.session}
@@ -317,7 +406,6 @@ function ChatColumn({
         onInterrupt={onInterrupt}
         onAnswer={onAnswer}
         onConfigure={onConfigure}
-        autoFocus={focused}
         {...(plan ? { plan: { item: plan, implementMode: implementPermissionMode(chat.session) }, onImplement: implement } : {})}
         {...(implementInNewPane ? { onImplementInNewPane: implementInNewPane } : {})}
         {...(turnFlow && flow ? { onQueue: flow.queue } : {})}
@@ -328,6 +416,28 @@ function ChatColumn({
         {...(flow?.setUploading ? { onUploadingChange: flow.setUploading } : {})}
       />
     </section>
+  )
+}
+
+function CursorLoginBanner({ login, disabled, onSend }: {
+  login: ChatLogin
+  disabled: boolean
+  onSend: (text: string) => string | void
+}) {
+  return (
+    <div className="px-4 pt-2">
+      <div className="chat-login-banner" role="status">
+        <span className="min-w-40 flex-1">{login.state === 'required' ? login.reason || 'Cursor needs you to log in.' : 'Finish logging in to Cursor in your browser.'}</span>
+        {login.state === 'required' ? (
+          <Button size="xs" disabled={disabled} onClick={() => onSend('/login')}>Log in to Cursor</Button>
+        ) : (
+          <>
+            {login.url ? <a className="text-primary hover:underline" href={login.url} target="_blank" rel="noopener noreferrer">Open the login page</a> : null}
+            <Button size="xs" variant="outline" disabled={disabled} onClick={() => onSend('/login cancel')}>Cancel</Button>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 

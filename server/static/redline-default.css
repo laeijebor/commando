@@ -730,7 +730,7 @@
   }
 
   :where(html[data-redline-theme="commando"]) :is(
-    redline-before-after, redline-file-tree, redline-milestones, redline-evidence,
+    redline-before-after, redline-file-tree, redline-milestones,
     redline-scenario, redline-tradeoffs, redline-risk, redline-code-diff
   ) :is(.redline-plan-label, .redline-plan-status) {
     border: 1px solid var(--redline-page-border-strong);
@@ -742,7 +742,7 @@
   }
 
   :where(html[data-redline-theme="commando"]) :is(
-    redline-before-after, redline-file-tree, redline-milestones, redline-evidence,
+    redline-before-after, redline-file-tree, redline-milestones,
     redline-scenario, redline-tradeoffs, redline-risk
   ) .redline-plan-status {
     border-color: color-mix(in srgb, var(--redline-page-cyan) 45%, var(--redline-page-border));
@@ -826,15 +826,37 @@
     color: var(--redline-page-amber);
   }
 
-  :where(html[data-redline-theme="commando"]) :is(redline-milestones [data-milestone], redline-evidence [data-evidence], redline-scenario [data-step], redline-risk [data-risk]) {
+  :where(html[data-redline-theme="commando"]) :is(redline-milestones [data-milestone], redline-scenario [data-step], redline-risk [data-risk]) {
     min-width: 0;
     border-radius: 0 10px 10px 0;
     background: var(--redline-page-raised);
   }
 
-  :where(html[data-redline-theme="commando"]) redline-milestones [data-status="done"],
-  :where(html[data-redline-theme="commando"]) redline-evidence [data-status="verified"] {
+  :where(html[data-redline-theme="commando"]) redline-milestones [data-status="done"] {
     border-left-color: var(--redline-page-green) !important;
+  }
+  /* Evidence colours stay in the theme layer; SDK rules consume these tokens. */
+  :where(html[data-redline-theme="commando"]) redline-evidence {
+    --redline-evidence-heading-size: 1.15rem;
+    --redline-evidence-muted: var(--redline-page-muted);
+    --redline-evidence-count: var(--redline-page-cyan);
+    --redline-evidence-verified: var(--redline-page-green);
+    --redline-evidence-topic: var(--redline-page-text-soft);
+    --redline-evidence-impact: var(--redline-page-amber);
+    --redline-evidence-body: var(--redline-page-text-soft);
+    --redline-evidence-takeaway: var(--redline-page-text);
+    --redline-evidence-strong-weight: 600;
+    --redline-evidence-missing-source: color-mix(in srgb, var(--redline-page-amber) 70%, var(--redline-page-muted));
+    --redline-evidence-code: var(--redline-page-cyan);
+    --redline-evidence-code-font: var(--redline-page-mono);
+    --redline-evidence-summary-border: var(--redline-page-border);
+    --redline-evidence-divider: color-mix(in srgb, var(--redline-page-border) 70%, transparent);
+    --redline-evidence-group-count: var(--redline-page-text-soft);
+    --redline-evidence-status: var(--redline-page-cyan);
+    --redline-evidence-status-border: 1px solid color-mix(in srgb, var(--redline-page-cyan) 45%, var(--redline-page-border));
+    --redline-evidence-status-font: var(--redline-page-sans);
+    --redline-evidence-status-tracking: 0.02em;
+    --redline-evidence-status-line-height: 1.4;
   }
 
   :where(html[data-redline-theme="commando"]) redline-risk [data-risk] {

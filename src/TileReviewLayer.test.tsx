@@ -679,6 +679,29 @@ describe('TileReviewLayer', () => {
     expect(screen.getByRole('textbox', { name: 'Answer' })).toHaveValue('Half-typed')
   })
 
+  it('drops a typed draft when the agent rewords the question under the same key', async () => {
+    let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
+    const asked = (question: string): RedlinePageQuestionSnapshot => ({ type: 'questions', version: 1, questions: [{ question, queueKey: 'name', selector: '#name', kind: 'text' }] })
+    render(
+      <TileReviewLayer
+        webPaneId="w-reworded"
+        pageUrl="https://example.com/review"
+        reviewMode={false}
+        active={false}
+        containerRef={{ current: document.createElement('div') }}
+        inputRef={{ current: document.createElement('div') }}
+        pendingQueue={queue({ addResponse: async () => EMPTY_SNAPSHOT })}
+        surface={surface({ subscribeQuestions: (listener) => { publishQuestions = listener; return () => undefined } })}
+      />,
+    )
+    await act(async () => { await Promise.resolve() })
+    act(() => publishQuestions?.('https://example.com/review', asked('Project name?')))
+    fireEvent.click(screen.getByRole('button', { name: 'Answer queue · 1' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Answer' }), { target: { value: 'Half-typed' } })
+    act(() => publishQuestions?.('https://example.com/review', asked('Project codename?')))
+    expect(screen.getByRole('textbox', { name: 'Answer' })).toHaveValue('')
+  })
+
   it('clears question drafts when the page inventory moves to a new document', async () => {
     let publishQuestions: ((pageUrl: string, snapshot: RedlinePageQuestionSnapshot) => void) | undefined
     render(

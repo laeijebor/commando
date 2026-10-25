@@ -31,3 +31,17 @@ it.each(['claude', 'codex', 'opencode', 'cursor'] as const)('acknowledges the re
   expect(result.created.paneId).toBe('%7')
   expect(run).toHaveBeenCalledOnce()
 })
+
+it("offers pickers the profiles Settings allows, with their labels and default, and only picker fields", async () => {
+  const response = { writeHead: vi.fn(), end: vi.fn() }
+  const get = Object.assign(Readable.from([]), { method: 'GET', headers: {} }) as IncomingMessage
+  const profiles = vi.fn(async () => [
+    { name: 'claudew', configDir: '/h/.claudew', lastUsedAt: 2, label: 'Work', isDefault: true, hidden: false },
+    { name: 'claudep', configDir: '/h/.claudep' },
+  ])
+  await handleTmuxCreateApi(get, response as unknown as ServerResponse, new URL('http://localhost/api/tmux/claude-profiles'), new TmuxCreator(vi.fn(), []), vi.fn(), vi.fn(), profiles)
+  expect(JSON.parse(response.end.mock.calls[0][0])).toEqual({ profiles: [
+    { name: 'claudew', configDir: '/h/.claudew', lastUsedAt: 2, label: 'Work', isDefault: true },
+    { name: 'claudep', configDir: '/h/.claudep' },
+  ] })
+})

@@ -31,3 +31,13 @@ describe('handoff switch-back eligibility', () => {
     expect(paneChatHandoff('%4', status('claude', 'claude-session'), [{ sessionId: 'claude-session' }], legacy)).toEqual({ sessionId: 'claude-session' })
   })
 })
+
+
+it('keeps Chat available for Cursor host logs and hides the unsupported terminal UI switch', () => {
+  const onChat = vi.fn()
+  render(<PaneAgentSwitch mode="chat" provider="cursor" hostLogShown onChat={onChat} onClaudeCode={vi.fn()} />)
+  expect(screen.getAllByRole('button')).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
+  expect(onChat).toHaveBeenCalledOnce()
+  expect(paneChatHandoff('%4', { provider: 'cursor', agentSessionId: 'agent-12345678-0000' } as AgentStatus, [{ provider: 'cursor', sessionId: 'agent-12345678-0000' }], new Set())).toBeUndefined()
+})

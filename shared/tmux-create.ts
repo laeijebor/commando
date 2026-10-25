@@ -17,20 +17,20 @@ export type TmuxSplitPlacement = 'before' | 'after'
  * Interactive CLIs supported by creation; provider names are not executable names.
  * `claude-chat` runs Claude through Commando's agent host and shows it as a chat.
  */
-export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
+export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
 /** The providers that run through Commando's agent host as a chat. */
-export type ChatLaunchProvider = 'claude-chat' | 'codex-chat' | 'muse-chat'
+export type ChatLaunchProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat'
 export function isChatLaunchProvider(provider: unknown): provider is ChatLaunchProvider {
-  return provider === 'claude-chat' || provider === 'codex-chat' || provider === 'muse-chat'
+  return provider === 'claude-chat' || provider === 'codex-chat' || provider === 'muse-chat' || provider === 'cursor-chat'
 }
 /** The agent host's name for a chat provider: `commando-agent <name>`. */
 export function chatHostProvider(provider: ChatLaunchProvider): ChatProvider {
-  return provider === 'codex-chat' ? 'codex' : provider === 'muse-chat' ? 'muse' : 'claude'
+  return provider === 'codex-chat' ? 'codex' : provider === 'muse-chat' ? 'muse' : provider === 'cursor-chat' ? 'cursor' : 'claude'
 }
 export function chatLaunchProvider(provider: ChatProvider): ChatLaunchProvider {
-  return provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : 'claude-chat'
+  return provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : provider === 'cursor' ? 'cursor-chat' : 'claude-chat'
 }
-export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'auto'
 export type SessionAgentLaunch = {
   provider: SessionAgentProvider
   prompt?: string
@@ -42,6 +42,16 @@ export type SessionAgentLaunch = {
   readableDir?: string
   /** Chat providers, Cursor and OpenCode: the conversation to carry on. */
   resume?: string
+  /**
+   * muse-chat with bypassPermissions only: run without Muse's sandbox (`--yolo`). Named on its own
+   * because clients from before full access sent a bare bypassPermissions to mean the sandboxed mode.
+   */
+  fullAccess?: true
+}
+
+/** A chat launch's permission fields; Muse's bypassPermissions is marked as full access. */
+export function chatLaunchPermission(provider: ChatLaunchProvider, permissionMode: ChatPermissionMode): Pick<SessionAgentLaunch, 'permissionMode' | 'fullAccess'> {
+  return { permissionMode, ...(provider === 'muse-chat' && permissionMode === 'bypassPermissions' ? { fullAccess: true as const } : {}) }
 }
 
 export const CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
@@ -57,25 +67,46 @@ export const CODEX_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; 
   { value: 'bypassPermissions', label: 'Full access' },
 ]
 
+export const CURSOR_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
+  { value: 'bypassPermissions', label: 'Full access' },
+  { value: 'default', label: 'Sandboxed' },
+  { value: 'auto', label: 'Auto-review' },
+  { value: 'plan', label: 'Plan' },
+]
+
 /** Muse has no plan mode; "Ask when needed" is its own default. */
 export const MUSE_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
   { value: 'default', label: 'Ask when needed' },
-  { value: 'bypassPermissions', label: 'Approve everything' },
+  { value: 'acceptEdits', label: 'Approve everything (sandboxed)' },
+  { value: 'bypassPermissions', label: 'Full access (--yolo)' },
 ]
 
 export function chatPermissionModes(provider: ChatLaunchProvider): readonly { value: ChatPermissionMode; label: string }[] {
-  return provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : provider === 'muse-chat' ? MUSE_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
+  return provider === 'codex-chat' ? CODEX_CHAT_PERMISSION_MODES : provider === 'muse-chat' ? MUSE_CHAT_PERMISSION_MODES : provider === 'cursor-chat' ? CURSOR_CHAT_PERMISSION_MODES : CHAT_PERMISSION_MODES
 }
 
 /** A Claude config dir the daemon found in the home folder. */
-export type ClaudeProfile = { name: string; configDir: string; /** Last session activity, ms. */ lastUsedAt?: number }
-
-/** The profile to offer when none is remembered: the one used most recently. */
-export function defaultClaudeProfile(profiles: readonly ClaudeProfile[]): ClaudeProfile | undefined {
-  return [...profiles].sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0]
+export type ClaudeProfile = {
+  name: string
+  configDir: string
+  /** Last session activity, ms. */
+  lastUsedAt?: number
+  /** The name chosen in Settings, shown in place of `name`. */
+  label?: string
+  /** Chosen in Settings as the profile for new chats. */
+  isDefault?: boolean
 }
 
-/** The remembered profile while it still exists, else the most recently used one. */
+export function claudeProfileLabel(profile: ClaudeProfile): string {
+  return profile.label ?? profile.name
+}
+
+/** The profile to offer when none is remembered: the one chosen in Settings, else the one used most recently. */
+export function defaultClaudeProfile(profiles: readonly ClaudeProfile[]): ClaudeProfile | undefined {
+  return profiles.find((profile) => profile.isDefault) ?? [...profiles].sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0]
+}
+
+/** The remembered profile while it still exists, else the default one. */
 export function chatProfileConfigDir(remembered: string | undefined, profiles: readonly ClaudeProfile[]): string | undefined {
   return remembered && profiles.some((profile) => profile.configDir === remembered)
     ? remembered
@@ -87,6 +118,7 @@ export const SESSION_AGENT_CHOICES = [
   { value: 'claude-chat', label: 'Claude chat' },
   { value: 'codex-chat', label: 'Codex chat' },
   { value: 'muse-chat', label: 'Muse chat' },
+  { value: 'cursor-chat', label: 'Cursor chat' },
   { value: 'claude', label: 'Claude (terminal)' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
@@ -94,7 +126,7 @@ export const SESSION_AGENT_CHOICES = [
 ] as const
 
 export const SESSION_AGENT_EXECUTABLES: Record<SessionAgentProvider, string> = {
-  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', 'muse-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
+  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', 'muse-chat': 'commando-agent', 'cursor-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
 }
 
 /** Keep prompt data out of the shell and CLI option/subcommand parsers. */
@@ -105,8 +137,10 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       executable,
       chatHostProvider(launch.provider),
       ...(launch.provider === 'claude-chat' && launch.configDir ? ['--config-dir', launch.configDir] : []),
-      '--permission-mode', launch.permissionMode ?? 'default',
+      '--permission-mode', launch.permissionMode ?? (launch.provider === 'cursor-chat' ? 'bypassPermissions' : 'default'),
       ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
+      // Muse full access must be named: a bare bypassPermissions from before it existed stays sandboxed.
+      ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' && launch.fullAccess === true ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
@@ -166,6 +200,8 @@ export type CreateTmuxPaneRequest = {
   worktree?: CreateTmuxSessionWorktree
   /** Started interactively inside the new pane. */
   agent?: SessionAgentLaunch
+  /** Start with nothing running, as an empty session does. */
+  empty?: boolean
 }
 
 export type TmuxCreatedTarget = {

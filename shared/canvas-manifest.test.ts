@@ -13,6 +13,56 @@ const example = {
     { id: 'important', kind: 'important', title: 'Important', items: ['Daily planning moves to the top group.'], x: -30, y: -205 }],
 }
 describe('canvas manifest', () => {
+  describe('pages', () => {
+    const paged = {
+      title: 'Audit',
+      pages: [
+        { id: 'today', title: 'Today', frames: [{ id: 't1', title: 'Today', src: 'today.html', x: 0, y: 0, focus: 1 }],
+          sections: [{ id: 's-today', title: 'Today', status: 'idea', frames: ['t1'] }],
+          annotations: [{ id: 'n1', kind: 'design', text: 'Urgent first', target: { frame: 't1' }, x: 0, y: -200 }] },
+        { id: 'client', title: 'Client', frames: [{ id: 'c1', title: 'Client', src: 'client.html', x: 0, y: 0 }] },
+      ],
+    }
+    it('flattens every page into the shared lists, tagged with its page', () => {
+      const { manifest, errors } = parseCanvasManifest(paged)
+      expect(errors).toEqual([])
+      expect(manifest.pages).toEqual([{ id: 'today', title: 'Today' }, { id: 'client', title: 'Client' }])
+      expect(manifest.frames.map((f) => [f.id, f.page])).toEqual([['t1', 'today'], ['c1', 'client']])
+      expect(manifest.sections[0].page).toBe('today')
+      expect(manifest.annotations[0]).toMatchObject({ page: 'today', target: { frame: 't1' } })
+    })
+    it('reads a manifest without pages as one untagged page', () => {
+      const { manifest } = parseCanvasManifest(example)
+      expect(manifest.pages).toEqual([])
+      expect(manifest.frames[0]).not.toHaveProperty('page')
+    })
+    it('keeps ids unique across pages and reports errors at their page path', () => {
+      const { manifest, errors } = parseCanvasManifest({ ...paged, pages: [paged.pages[0], { id: 'client', title: 'Client', frames: [{ id: 't1', title: 'Again', src: 'x.html', x: 0, y: 0 }, { id: 'c2', title: 'C', src: '/abs.html', x: 0, y: 0 }] }] })
+      expect(errors).toEqual(['pages[1].frames[0].id: duplicate id "t1"', 'pages[1].frames[1].src: must be a relative path inside the canvas folder'])
+      expect(manifest.frames.map((f) => f.id)).toEqual(['t1'])
+    })
+    it('rejects sections and notes that point at a frame on another page', () => {
+      const { manifest, errors } = parseCanvasManifest({ ...paged, pages: [paged.pages[0], { ...paged.pages[1],
+        sections: [{ id: 's-client', title: 'Client', status: 'idea', frames: ['c1', 't1'] }],
+        annotations: [{ id: 'n2', kind: 'design', text: 'x', target: { frame: 't1' }, x: 0, y: 0 }] }] })
+      expect(errors).toEqual(['pages[1].sections[0].frames[1]: frame "t1" is on another page', 'pages[1].annotations[0].target.frame: frame "t1" is on another page'])
+      expect(manifest.sections[1].frames).toEqual(['c1'])
+      expect(manifest.annotations[1].target).toBeUndefined()
+    })
+    it('gives page ids their own namespace', () => {
+      const { manifest, errors } = parseCanvasManifest({ title: 'x', pages: [{ id: 'today', title: 'Today', frames: [{ id: 'today', title: 'T', src: 't.html', x: 0, y: 0 }] }, { id: 'today', title: 'Again', frames: [] }] })
+      expect(errors).toEqual(['pages[1].id: duplicate id "today"'])
+      expect(manifest.frames.map((f) => [f.id, f.page])).toEqual([['today', 'today']])
+    })
+    it('rejects mixing pages with top-level lists, and empty or malformed pages', () => {
+      expect(parseCanvasManifest({ ...paged, frames: [] }).errors).toEqual(['frames: belongs inside a page; a canvas with pages keeps its frames, sections and notes in pages[]'])
+      expect(parseCanvasManifest({ title: 'x', pages: {} }).errors).toEqual(['pages: must be an array of pages'])
+      expect(parseCanvasManifest({ title: 'x', pages: [], frames: [] }).errors).toEqual([])
+      const { manifest, errors } = parseCanvasManifest({ title: 'x', pages: [{ id: 'p', frames: [] }, 'nope', { id: 'q', title: 'Q' }] })
+      expect(errors).toEqual(['pages[0].title: must be a non-empty string', 'pages[1]: must be an object', 'pages[2].frames: must be an array'])
+      expect(manifest.pages).toEqual([{ id: 'q', title: 'Q' }])
+    })
+  })
   it('parses the Settings design example, defaults size, and ignores unknown keys', () => {
     const { manifest, errors } = parseCanvasManifest(JSON.stringify({ ...example, future: true, frames: [{ ...frame, extra: true }, ...example.frames.slice(1)] }))
     expect(errors).toEqual([])
@@ -21,6 +71,12 @@ describe('canvas manifest', () => {
     expect(manifest.frames[0]).not.toHaveProperty('extra')
     expect(manifest.sections[0].frames).toHaveLength(3)
     expect(manifest.annotations[0].target).toEqual({ frame: 'accounts', label: 'Outlook row' })
+  })
+  it('keeps an interactive note only on interactive frames', () => {
+    const note = 'Supports dark mode — toggle the theme button in the menu'
+    const { manifest, errors } = parseCanvasManifest({ title: 'Notes', frames: [{ ...frame, interactiveNote: note }, { ...frame, id: 'b', interactiveNote: 'x', interactive: false }, { ...frame, id: 'c', interactiveNote: 3 }] })
+    expect(manifest.frames.map((f) => f.interactiveNote)).toEqual([note, undefined, undefined])
+    expect(errors).toEqual(['frames[1].interactiveNote: requires interactive: true', 'frames[2].interactiveNote: must be a non-empty string'])
   })
   it.each(['../outside.html', 'frames/../../out', '/absolute', 'https://example.com', 'file:frame', 'C:\\frame', '\\outside', 'x\0.html', '%2e%2e/out', 'foo?bar', '#hash', '', './'])('rejects escaping or non-file path %j', (src) => {
     expect(canvasRelativePath(src)).toBeNull()
@@ -46,7 +102,7 @@ describe('canvas manifest', () => {
     expect(parseCanvasManifest({ ...example, sections: [{ ...example.sections[0], [key]: value }] }).errors.some((error) => error.startsWith(`sections[0].${path}:`))).toBe(true)
   })
   it.each([
-    ['id', ''], ['kind', 'bad'], ['x', '1'], ['y', NaN], ['w', 0], ['title', 4], ['text', 3], ['items', 1], ['items[0]', [null]],
+    ['id', ''], ['kind', 'bad'], ['x', '1'], ['y', NaN], ['w', 0], ['fixed', 'yes'], ['title', 4], ['text', 3], ['items', 1], ['items[0]', [null]],
     ['target', false], ['target.frame', { frame: 'absent' }], ['target.frame', {}], ['target.label', { frame: 'accounts', label: 2 }],
   ])('reports invalid annotation field %s', (path, value) => {
     const key = path.startsWith('target.') ? 'target' : path.startsWith('items[') ? 'items' : path
@@ -74,4 +130,33 @@ it.each(['bad/id', 'x'.repeat(65), 'space id', '雪', ''])('rejects invalid ids 
 
 it('encodes canvas path segments while preserving nested separators', () => {
   expect(encodeCanvasPath('folder name/雪 &.html')).toBe('folder%20name/%E9%9B%AA%20%26.html')
+})
+
+describe('answerable question notes', () => {
+  const base = { title: 'Board', frames: [{ id: 'a', title: 'A', src: 'a.html', x: 0, y: 0 }] }
+  const parse = (note: Record<string, unknown>) => parseCanvasManifest({ ...base, annotations: [{ id: 'q', kind: 'question', x: 0, y: 0, text: 'Ship it?', ...note }] })
+  it('keeps key, options, multiple and the recorded answer', () => {
+    const result = parse({ key: 'ship', options: ['Yes', 'No, wait'], multiple: true, answer: 'Yes' })
+    expect(result.errors).toEqual([])
+    expect(result.manifest.annotations[0]).toMatchObject({ key: 'ship', options: ['Yes', 'No, wait'], multiple: true, answer: 'Yes' })
+  })
+  it.each([
+    [{ options: [] }, 'annotations[0].options:'], [{ options: ['ok', ''] }, 'annotations[0].options[1]:'], [{ multiple: true }, 'annotations[0].multiple: needs options'],
+    [{ key: 'k'.repeat(129) }, 'annotations[0].key:'], [{ text: 't'.repeat(257) }, 'annotations[0].text: question notes must be at most 256'], [{ text: '', title: 't'.repeat(257) }, 'annotations[0].title: question notes must be at most 256'], [{ answer: 3 }, 'annotations[0].answer:'], [{ multiple: 'yes', options: ['a'] }, 'annotations[0].multiple:'],
+  ])('reports invalid question field %o', (note, prefix) => {
+    const result = parse(note)
+    expect(result.errors.some((error) => error.startsWith(prefix))).toBe(true)
+    expect(result.manifest.annotations).toHaveLength(1)
+  })
+  it('drops custom question keys that clash, so every question keeps its own answer', () => {
+    const q = (id: string, key?: string) => ({ id, kind: 'question', x: 0, y: 0, text: id, ...(key ? { key } : {}) })
+    const result = parseCanvasManifest({ ...base, annotations: [q('q1', 'x'), { id: 'broken' }, q('q2', 'x'), q('q3', 'q1'), q('q4', 'own')] })
+    expect(result.manifest.annotations.map((note) => note.key ?? note.id)).toEqual(['x', 'q2', 'q3', 'own'])
+    expect(result.errors.filter((error) => error.includes('duplicate question key'))).toEqual(['annotations[2].key: duplicate question key "x"', 'annotations[3].key: duplicate question key "q1"'])
+  })
+  it('ignores question fields on other note kinds', () => {
+    const result = parseCanvasManifest({ ...base, annotations: [{ id: 'd', kind: 'design', x: 0, y: 0, options: ['a'] }] })
+    expect(result.errors).toEqual(['annotations[0].options: only applies to question notes'])
+    expect(result.manifest.annotations[0].options).toBeUndefined()
+  })
 })

@@ -7,8 +7,10 @@ import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
 import { PrReadCache } from './pr-read-cache.js'
+import { PanePrRecords, isPanePrRef, recordRecency, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
+import { stripHtmlComments } from '../shared/chat-tile-events.js'
 import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 export type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 import {
@@ -56,6 +58,15 @@ const PR_METADATA_TTL_MS = 5 * 60_000
 // load can reuse any pane list fetched within that window instead of
 // searching GitHub once per pane.
 const PANE_BACKGROUND_TTL_MS = 5 * 60_000
+// A recorded PR whose marker is missing keeps its record this long, for tools
+// that add the marker after creating the PR.
+const RECORD_GRACE_MS = 10 * 60_000
+// Full status for 15 PRs keeps a lookup well inside GitHub's ~10s query limit.
+const RECORDED_LOOKUP_BATCH_SIZE = 15
+
+type RecordedRef = PanePrRecord & { targetId: string }
+/** Recorded PRs found by number, per pane, and the panes with a PR that couldn't be checked. */
+type RecordedLookup = { byTarget: Map<string, PanePrSummary[]>; incomplete: Set<string> }
 const PR_CONVERSATION_TTL_MS = 60_000
 const PR_CHECKS_TTL_MS = 30_000
 
@@ -84,7 +95,8 @@ query($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }`.trim()
-const REVIEW_THREAD_FIELDS = 'id isResolved viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
+const DIFF_HUNK_CONTEXT_LINES = 8
+const REVIEW_THREAD_FIELDS = 'id isResolved isOutdated viewerCanReply viewerCanResolve viewerCanUnresolve comments(first: 1) { nodes { databaseId } }'
 const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   ${RATE_LIMIT_FIELD}
   repository(owner: $owner, name: $name) {
@@ -96,25 +108,33 @@ const REVIEW_THREADS_QUERY = `query($owner: String!, $name: String!, $number: In
     }
   }
 }`
+const PANE_PR_FIELDS = `
+  number title url state isDraft body createdAt updatedAt
+  author { login }
+  changedFiles headRefName baseRefName headRefOid baseRefOid mergeStateStatus
+  reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
+  latestReviews(first: 10) { nodes { author { login } state } }
+  ${PR_STATUS_FIELDS}
+  repository { nameWithOwner }
+`
 const PANE_PULL_REQUESTS_QUERY = `
 query($targetQuery: String!, $first: Int!) {
   viewer { login }
   ${RATE_LIMIT_FIELD}
   linked: search(query: $targetQuery, type: ISSUE, first: $first) {
     issueCount
-    nodes {
-      ... on PullRequest {
-        number title url state isDraft body createdAt updatedAt
-        author { login }
-        changedFiles headRefName baseRefName headRefOid baseRefOid mergeStateStatus
-        reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
-        latestReviews(first: 10) { nodes { author { login } state } }
-        ${PR_STATUS_FIELDS}
-        repository { nameWithOwner }
-      }
-    }
+    nodes { ... on PullRequest { ${PANE_PR_FIELDS} } }
   }
 }`.trim()
+
+/** Looks recorded PRs up by number, which unlike search never misses one. Repos are validated before use. */
+function recordedPullRequestsQuery(refs: readonly PanePrRef[]): string {
+  const lookups = refs.map((ref, index) => {
+    const [owner, name] = ref.repo.split('/', 2)
+    return `r${index}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { pullRequest(number: ${ref.number}) { ${PANE_PR_FIELDS} } }`
+  })
+  return `query { viewer { login } ${RATE_LIMIT_FIELD} ${lookups.join(' ')} }`
+}
 const MAX_PINNED_REPOS = 30
 const MAX_RECENT_REPOS = 20
 const MAX_LIST_CACHE_ENTRIES = 100
@@ -158,6 +178,9 @@ export class PrServiceError extends Error {
     super(message)
     this.name = 'PrServiceError'
   }
+
+  /** What gh printed before failing; GraphQL partial errors still carry the other results. */
+  declare readonly output?: string
 }
 
 const defaultRunner: GhRunner = (args) =>
@@ -172,7 +195,10 @@ const defaultRunner: GhRunner = (args) =>
       },
       (error, stdout, stderr) => {
         if (error) {
-          reject(classifyGhFailure(error, stderr ?? ''))
+          const failure = classifyGhFailure(error, stderr ?? '')
+          // Not enumerable, so logging the error doesn't print megabytes of JSON.
+          if (stdout) Object.defineProperty(failure, 'output', { value: stdout, enumerable: false })
+          reject(failure)
           return
         }
         resolve(stdout)
@@ -275,6 +301,32 @@ function requiredNumber(record: JsonRecord, key: string): number {
   const value = record[key]
   if (typeof value !== 'number' || !Number.isFinite(value)) throw invalidUpstream()
   return value
+}
+
+/** GitHub lists at most this many files for a pull request. */
+const PR_FILES_LIMIT = 3_000
+
+function remoteDiffFile(file: unknown): import('../shared/pr-quick-look.js').PrRemoteDiff['files'][number] {
+  if (!isRecord(file)) throw invalidUpstream()
+  return {
+    path: requiredString(file, 'filename'),
+    status: requiredString(file, 'status'),
+    additions: typeof file.additions === 'number' ? file.additions : 0,
+    deletions: typeof file.deletions === 'number' ? file.deletions : 0,
+    patch: typeof file.patch === 'string' ? file.patch : null,
+  }
+}
+
+/**
+ * GitHub's review-comment hunk runs from the hunk header to the commented line;
+ * the last few lines are the context. The header stays on top so a reader can
+ * still tell added from removed lines and see the enclosing function.
+ */
+export function diffHunkTail(hunk: string, lines = DIFF_HUNK_CONTEXT_LINES): string {
+  const rows = hunk.split('\n')
+  if (rows.length <= lines + 1) return hunk
+  const tail = rows.slice(-lines)
+  return (rows[0]?.startsWith('@@') ? [rows[0], ...tail] : tail).join('\n')
 }
 
 function requiredBoolean(record: JsonRecord, key: string): boolean {
@@ -410,6 +462,10 @@ function searchStateQualifier(filter: PrStateFilter): string {
 
 function scopedSearchQuery(repo: string, qualifier: 'author' | 'review-requested', filter: PrStateFilter): string {
   return `repo:${repo} is:pr ${qualifier}:@me${searchStateQualifier(filter)}`
+}
+
+function prKey(ref: PanePrRef): string {
+  return `${ref.repo.toLowerCase()}#${ref.number}`
 }
 
 function paneTargetSearchQuery(targetIds: readonly string[], openOnly = false): string {
@@ -710,6 +766,7 @@ export class PrService {
   /** PR count of each repo list's last fetch, to pick single or batched reads. */
   private readonly listSizes = new Map<string, number>()
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
+  private readonly panePrRecords: PanePrRecords
   private readonly metadataCache: PrReadCache<JsonRecord>
   private readonly commentPagesCache: PrReadCache<JsonRecord[]>
   private readonly reviewThreadsCache: PrReadCache<Map<number, PrReviewThread>>
@@ -737,6 +794,8 @@ export class PrService {
     githubDisabledReason?: string
     /** 0 disables batching of concurrent pane reads. */
     paneBatchWindowMs?: number
+    /** Where each pane's known PRs are kept across restarts; memory only when unset. */
+    panePrRecordsPath?: string
   }) {
     this.paneBatchWindowMs = options?.paneBatchWindowMs ?? PANE_BATCH_WINDOW_MS
     const disabledReason = options?.githubDisabledReason
@@ -755,6 +814,7 @@ export class PrService {
     this.reposTtlMs = options?.reposTtlMs ?? REPOS_CACHE_TTL_MS
     this.repoContextTtlMs = options?.repoContextTtlMs ?? REPO_CONTEXT_CACHE_TTL_MS
     this.now = options?.now ?? Date.now
+    this.panePrRecords = new PanePrRecords(options?.panePrRecordsPath, this.now)
     this.metadataCache = new PrReadCache(PR_METADATA_TTL_MS, this.now)
     this.commentPagesCache = new PrReadCache(PR_CONVERSATION_TTL_MS, this.now, 300)
     this.reviewThreadsCache = new PrReadCache(PR_CONVERSATION_TTL_MS, this.now)
@@ -969,15 +1029,121 @@ export class PrService {
 
   /** One search for several panes; falls back to one search each if GitHub truncates it. */
   private fetchPaneGroup(targetIds: string[]): Promise<PanePrList>[] {
-    const group = this.searchPanes(targetIds, PANE_BATCH_PAGE_SIZE).then((result) => result.linked.truncated ? null : result)
-    return targetIds.map((targetId) => group.then((result) => result
-      ? this.paneListFrom(result, targetId, false, true)
+    const group = this.searchPanes(targetIds, PANE_BATCH_PAGE_SIZE).then(async (result) => result.linked.truncated ? null
+      : { result, recorded: await this.recordedPullRequests(targetIds, result) })
+    return targetIds.map((targetId) => group.then((found) => found
+      ? this.paneListFrom(found.result, targetId, false, true, found.recorded)
       : this.fetchPanePullRequests(targetId)))
   }
 
   /** `openOnly` reads are partial, so they never replace the pane's shared entities. */
   private async fetchPanePullRequests(targetId: string, openOnly = false): Promise<PanePrList> {
-    return this.paneListFrom(await this.searchPanes([targetId], PANE_PULL_REQUEST_PAGE_SIZE, openOnly), targetId, openOnly)
+    const result = await this.searchPanes([targetId], PANE_PULL_REQUEST_PAGE_SIZE, openOnly)
+    // Open-only reads reach past the newest page for auto-fix, which checks its one PR directly.
+    const recorded = openOnly ? undefined : await this.recordedPullRequests([targetId], result)
+    return this.paneListFrom(result, targetId, openOnly, false, recorded)
+  }
+
+  /** Records a pane's new PRs (reported by its agent or created here) so they show before search indexes them. */
+  async recordPanePullRequests(targetIdInput: unknown, refs: readonly PanePrRef[]): Promise<void> {
+    const targetId = validatePaneTargetId(targetIdInput)
+    if (await this.panePrRecords.add(targetId, refs)) this.paneListCache.delete(targetId)
+  }
+
+  /**
+   * GitHub's search sometimes returns nothing for a marker it matched a moment
+   * ago. Remember every PR it finds, then look up any it misses by number.
+   */
+  private async recordedPullRequests(targetIds: string[], result: Awaited<ReturnType<PrService['searchPanes']>>): Promise<RecordedLookup> {
+    const found = new Set<string>()
+    const hits = new Map<string, Array<PanePrRef & { createdAt: number }>>()
+    for (const node of result.linked.nodes) {
+      const targetId = parseCommandoPrMarker(typeof node.body === 'string' ? node.body : '')?.targetId
+      const ref = { repo: optionalObject(node, 'repository')?.nameWithOwner, number: node.number }
+      if (!isPanePrRef(ref)) continue
+      found.add(prKey(ref))
+      const createdAt = Date.parse(typeof node.createdAt === 'string' ? node.createdAt : '')
+      if (targetId && targetIds.includes(targetId)) hits.set(targetId, [...hits.get(targetId) ?? [], { repo: ref.repo, number: ref.number, createdAt }])
+    }
+    for (const [targetId, refs] of hits) await this.panePrRecords.add(targetId, refs)
+    // A truncated page leaves older PRs out on purpose; only a PR newer than the
+    // page's oldest one (or not yet seen by GitHub) can be missing from it.
+    const oldest = result.linked.truncated
+      ? Math.min(...result.linked.nodes.map((node) => Date.parse(typeof node.createdAt === 'string' ? node.createdAt : '')).filter(Number.isFinite))
+      : -Infinity
+    const missing: RecordedRef[] = []
+    for (const targetId of targetIds) {
+      for (const ref of await this.panePrRecords.list(targetId)) {
+        if (!found.has(prKey(ref)) && recordRecency(ref) > oldest) missing.push({ ...ref, targetId })
+      }
+    }
+    const lookup = await this.lookUpRecordedPullRequests(missing, result.viewer)
+    for (const [targetId, prs] of lookup.byTarget) {
+      lookup.byTarget.set(targetId, prs.filter((pr) => !found.has(prKey(pr)) && !(Date.parse(pr.createdAt) < oldest)))
+    }
+    return lookup
+  }
+
+  /**
+   * Looks PRs up by number, checking each still carries its pane's marker.
+   * Keeps the records in step: a PR that is gone, or lost its marker past the
+   * grace period, is dropped; a renamed repo is recorded under its new name.
+   * Throws when GitHub can't be read, like a failed search would.
+   */
+  private async lookUpRecordedPullRequests(refs: readonly RecordedRef[], viewer: string): Promise<RecordedLookup> {
+    const lookup: RecordedLookup = { byTarget: new Map(), incomplete: new Set() }
+    const batches: RecordedRef[][] = []
+    for (let start = 0; start < refs.length; start += RECORDED_LOOKUP_BATCH_SIZE) batches.push(refs.slice(start, start + RECORDED_LOOKUP_BATCH_SIZE))
+    const payloads = await Promise.all(batches.map((batch) => this.ghRead(['api', 'graphql', '-f', `query=${recordedPullRequestsQuery(batch)}`])
+      // gh exits non-zero when one lookup fails, but still prints the others.
+      .catch((error: unknown) => {
+        if (error instanceof PrServiceError && error.code !== 'rate_limited' && error.output) return error.output
+        throw error
+      })
+      .then(parseGhObject)))
+    const stale: RecordedRef[] = []
+    const seen: RecordedRef[] = []
+    batches.forEach((batch, batchIndex) => {
+      const payload = payloads[batchIndex]
+      const gone = new Set<unknown>()
+      const failed = new Set<unknown>()
+      for (const error of Array.isArray(payload.errors) ? payload.errors : []) {
+        const alias = isRecord(error) && Array.isArray(error.path) ? error.path[0] : undefined
+        if (alias === undefined) throw new PrServiceError(502, 'github_failed', 'GitHub returned errors for the recorded pull request query')
+        if (error.type === 'NOT_FOUND' || error.type === 'FORBIDDEN') gone.add(alias)
+        else failed.add(alias)
+      }
+      const data = objectField(payload, 'data')
+      const login = optionalObject(data, 'viewer')?.login
+      const reader = viewer || (typeof login === 'string' ? login : '')
+      batch.forEach((ref, index) => {
+        const alias = `r${index}`
+        // Other errors on one lookup say nothing about the PR; skip it this time.
+        if (failed.has(alias)) { lookup.incomplete.add(ref.targetId); return }
+        const repository = gone.has(alias) ? null : optionalObject(data, alias)
+        const node = repository && optionalObject(repository, 'pullRequest')
+        // The PR body stays the source of truth: a removed or moved marker drops the
+        // record, after a grace period for tools that add the marker after creating it.
+        const pullRequest = node ? parsePanePullRequest(node, ref.targetId, reader) : null
+        if (!pullRequest) {
+          if (this.now() - ref.at > RECORD_GRACE_MS) stale.push(ref)
+          return
+        }
+        // GitHub follows renamed and transferred repos; keep the record under the current name.
+        if (pullRequest.repo.toLowerCase() !== ref.repo.toLowerCase()) {
+          stale.push(ref)
+        }
+        // Also learns when the PR was created, so an old one stops counting as new.
+        seen.push({ repo: pullRequest.repo, number: pullRequest.number, at: ref.at, createdAt: Date.parse(pullRequest.createdAt), targetId: ref.targetId })
+        const prs = lookup.byTarget.get(ref.targetId) ?? []
+        if (!prs.some((known) => prKey(known) === prKey(pullRequest))) lookup.byTarget.set(ref.targetId, [...prs, pullRequest])
+      })
+    })
+    for (const targetId of new Set([...stale, ...seen].map((ref) => ref.targetId))) {
+      await this.panePrRecords.remove(targetId, stale.filter((ref) => ref.targetId === targetId))
+      await this.panePrRecords.add(targetId, seen.filter((ref) => ref.targetId === targetId))
+    }
+    return lookup
   }
 
   private async searchPanes(targetIds: string[], first: number, openOnly = false) {
@@ -1004,18 +1170,22 @@ export class PrService {
     return { order, fetchedAt, viewer: typeof viewer?.login === 'string' ? viewer.login : '', linked: searchConnection(data, 'linked') }
   }
 
-  private paneListFrom(result: Awaited<ReturnType<PrService['searchPanes']>>, targetId: string, openOnly: boolean, shared = false): PanePrList {
+  private paneListFrom(result: Awaited<ReturnType<PrService['searchPanes']>>, targetId: string, openOnly: boolean, shared = false, lookup?: RecordedLookup): PanePrList {
+    const recorded = lookup?.byTarget.get(targetId) ?? []
     const pullRequests = result.linked.nodes
       .map((node) => parsePanePullRequest(node, targetId, result.viewer))
       .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
+      .concat(recorded)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     const list: PanePrList = {
       targetId,
       viewer: result.viewer,
       // A shared search's count spans every pane in it, and is only used untruncated.
-      totalCount: shared ? pullRequests.length : result.linked.totalCount,
+      // Recorded PRs are by definition ones the search did not count.
+      totalCount: shared ? pullRequests.length : result.linked.totalCount + recorded.length,
       pullRequests,
-      truncated: result.linked.truncated,
+      // A recorded PR that couldn't be checked may still belong here.
+      truncated: result.linked.truncated || lookup?.incomplete.has(targetId) === true,
       fetchedAt: result.fetchedAt,
     }
     this.invalidateChangedReferences(list)
@@ -1211,16 +1381,21 @@ export class PrService {
       pr = find()
     }
     if (!pr) {
-      // Search truncation is not evidence that the linked PR disappeared.
-      if (list.truncated) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR list is incomplete')
-      return { state: 'missing', url: `https://github.com/${repo}/pull/${number}`, headSha: '', failingChecks: [], comments: [], viewer: list.viewer ?? '' }
+      // Search can miss a PR it found a moment ago; ask GitHub directly before calling it gone.
+      const lookup = await this.lookUpRecordedPullRequests([{ repo, number, at: this.now(), targetId }], list.viewer ?? '')
+      pr = lookup.byTarget.get(targetId)?.[0]
+      if (lookup.incomplete.size) throw new PrServiceError(502, 'pr_list_truncated', 'Linked PR could not be checked')
     }
-    if (pr.state !== 'open') return { state: pr.state, url: pr.url, headSha: '', failingChecks: [], comments: [], viewer: list.viewer ?? '' }
+    if (!pr) {
+      // The direct lookup above is authoritative, even when the search list was truncated.
+      return { state: 'missing', url: `https://github.com/${repo}/pull/${number}`, headSha: '', failingChecks: [], conflicting: false, baseRefName: '', comments: [], viewer: list.viewer ?? '' }
+    }
+    if (pr.state !== 'open') return { state: pr.state, url: pr.url, headSha: '', failingChecks: [], conflicting: false, baseRefName: '', comments: [], viewer: list.viewer ?? '' }
     if (!pr.preview?.headRefOid || !list.viewer) throw invalidUpstream()
     const comments = await this.fetchAutofixComments(repo, number)
     return { state: pr.state, url: pr.url, headSha: pr.preview.headRefOid,
       failingChecks: pr.checks?.runs.filter((run) => run.state === 'fail').map((run) => run.name) ?? [],
-      comments, viewer: list.viewer }
+      conflicting: pr.conflicting, baseRefName: pr.preview.baseRefName, comments, viewer: list.viewer }
   }
 
   private async commentPages(repo: string, number: number, kind: number, refresh = false) {
@@ -1243,8 +1418,11 @@ export class PrService {
         if (kind === 1 && entry.state !== 'CHANGES_REQUESTED') continue
         const author = optionalObject(entry, 'user')
         if (typeof author?.login !== 'string') continue
-        comments.push({ id: `${kind}:${entry.id}`, author: author.login,
-          body: typeof entry.body === 'string' ? stripCommandoPrMarkers(entry.body).slice(0, 500) : '',
+        // Hidden bot state (closed <!-- … --> blocks) goes before the cut, so the 500 characters kept are ones a reader sees.
+        const body = typeof entry.body === 'string' ? stripHtmlComments(stripCommandoPrMarkers(entry.body)).trim() : ''
+        // A comment with nothing visible left asks for nothing; an empty review still means changes requested.
+        if (!body && kind !== 1) continue
+        comments.push({ id: `${kind}:${entry.id}`, author: author.login, body: body.slice(0, 500),
           url: typeof entry.html_url === 'string' ? entry.html_url : '' })
       }
     }
@@ -1317,6 +1495,10 @@ export class PrService {
           kind: kind === 1 && typeof entry.state === 'string' ? entry.state.toLowerCase().replaceAll('_', ' ') : kind === 2 ? 'inline comment' : 'comment',
           ...(typeof entry.path === 'string' ? { path: entry.path } : {}),
           ...(typeof entry.line === 'number' ? { line: entry.line } : {}),
+          // An outdated comment has no current line; keep where it was written.
+          ...(kind === 2 && typeof entry.line !== 'number' && typeof entry.original_line === 'number' ? { originalLine: entry.original_line } : {}),
+          // Only a thread's first comment carries code context; replies share it.
+          ...(kind === 2 && typeof entry.in_reply_to_id !== 'number' && typeof entry.diff_hunk === 'string' ? { diffHunk: diffHunkTail(entry.diff_hunk) } : {}),
           ...(typeof entry.in_reply_to_id === 'number' ? { replyTo: entry.in_reply_to_id } : {}),
           ...(kind === 2 && typeof entry.id === 'number' ? { commentId: entry.id } : {}),
           ...(kind === 2 && reviewThreads.has(Number(entry.id)) ? { thread: reviewThreads.get(Number(entry.id)) } : {}),
@@ -1392,6 +1574,7 @@ export class PrService {
           id: requiredString(node, 'id'), commentId: requiredNumber(root, 'databaseId'),
           isResolved: requiredBoolean(node, 'isResolved'), viewerCanReply: requiredBoolean(node, 'viewerCanReply'),
           viewerCanResolve: requiredBoolean(node, 'viewerCanResolve'), viewerCanUnresolve: requiredBoolean(node, 'viewerCanUnresolve'),
+          ...(typeof node.isOutdated === 'boolean' ? { isOutdated: node.isOutdated } : {}),
         }
         result.set(thread.commentId, thread)
       }
@@ -1486,28 +1669,27 @@ export class PrService {
     return this.conflictInspector.inspect({ ...refs, repo, number })
   }
 
-  async pullRequestDiff(repoInput: unknown, numberInput: unknown): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {
+  async pullRequestDiff(repoInput: unknown, numberInput: unknown, against: 'main' | 'pr' = 'main'): Promise<import('../shared/pr-quick-look.js').PrRemoteDiff> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
     const pr = parseGhObject(await this.ghRead(['api', `repos/${repo}/pulls/${number}`]))
     const head = requiredString(objectField(pr, 'head'), 'sha')
     if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
+    if (against === 'pr') {
+      // GitHub's "Files changed": the PR against its own base, which still means something once it has merged.
+      const base = requiredString(objectField(pr, 'base'), 'sha')
+      const pages: unknown = JSON.parse(await this.ghRead(['api', `repos/${repo}/pulls/${number}/files?per_page=100`, '--paginate', '--slurp']))
+      if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw invalidUpstream()
+      const files = pages.flat().map(remoteDiffFile)
+      return { base, head, files, truncated: files.length >= PR_FILES_LIMIT }
+    }
     // GitHub's main is the remote origin/main, independent of local worktree state.
     const main = parseGhObject(await this.ghRead(['api', `repos/${repo}/commits/main`]))
     const base = requiredString(main, 'sha')
     if (!/^[a-f0-9]{40}$/i.test(base)) throw invalidUpstream()
     const comparison = parseGhObject(await this.ghRead(['api', `repos/${repo}/compare/${base}...${head}`]))
     if (!Array.isArray(comparison.files)) throw invalidUpstream()
-    const files = comparison.files.map((file: unknown) => {
-      if (!isRecord(file)) throw invalidUpstream()
-      return {
-        path: requiredString(file, 'filename'),
-        status: requiredString(file, 'status'),
-        additions: typeof file.additions === 'number' ? file.additions : 0,
-        deletions: typeof file.deletions === 'number' ? file.deletions : 0,
-        patch: typeof file.patch === 'string' ? file.patch : null,
-      }
-    })
+    const files = comparison.files.map(remoteDiffFile)
     return { base, head, files, truncated: files.length >= 300 }
   }
 

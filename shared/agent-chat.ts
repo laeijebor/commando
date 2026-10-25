@@ -5,7 +5,10 @@
  * host can carry one session (per-pane mode) or many (shared mode).
  */
 
-export const AGENT_HOST_PROTOCOL_VERSION = 5
+import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type ChatMcpResult } from './chat-mcp.js'
+import type { ChatCardEvent } from './chat-tile-events.js'
+
+export const AGENT_HOST_PROTOCOL_VERSION = 7
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -37,18 +40,30 @@ export const CHAT_SWITCH_HOST_VERSION = 5
 export function hostTakesSwitch(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_SWITCH_HOST_VERSION
 }
+/** Hosts from this version list and manage their agent's MCP servers. */
+export const CHAT_MCP_HOST_VERSION = 6
+
+export function hostTakesMcp(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_MCP_HOST_VERSION
+}
+/** Hosts from this version take attached videos (older ones refuse their ids). */
+export const CHAT_VIDEO_HOST_VERSION = 7
+
+export function hostTakesVideos(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_VIDEO_HOST_VERSION
+}
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
 
-export type ChatProvider = 'claude' | 'codex' | 'muse'
-export const CHAT_PROVIDERS: readonly ChatProvider[] = ['claude', 'codex', 'muse']
+export type ChatProvider = 'claude' | 'codex' | 'muse' | 'cursor'
+export const CHAT_PROVIDERS: readonly ChatProvider[] = ['claude', 'codex', 'muse', 'cursor']
 /** The provider's own terminal UI, which a chat can hand its conversation to. */
 export function providerTuiLabel(provider: ChatProvider | undefined): string {
-  return provider === 'codex' ? 'Codex TUI' : provider === 'muse' ? 'Muse TUI' : 'Claude Code'
+  return provider === 'codex' ? 'Codex TUI' : provider === 'muse' ? 'Muse TUI' : provider === 'cursor' ? 'Cursor' : 'Claude Code'
 }
 export function providerName(provider: ChatProvider | undefined): string {
-  return provider === 'codex' ? 'Codex' : provider === 'muse' ? 'Muse' : 'Claude'
+  return provider === 'codex' ? 'Codex' : provider === 'muse' ? 'Muse' : provider === 'cursor' ? 'Cursor' : 'Claude'
 }
 export function isChatProvider(value: unknown): value is ChatProvider {
   return typeof value === 'string' && (CHAT_PROVIDERS as readonly string[]).includes(value)
@@ -94,19 +109,39 @@ export const MAX_CHAT_IMAGES = 10
 export const CHAT_IMAGE_MAX_DIMENSION = 2000
 export const CHAT_IMAGE_EXTENSIONS: Record<ChatImageType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
 /**
- * Names the saved copy of an attached image in the text Claude gets, so its
- * tools can open the file (after t3code's AttachmentPrompt). The host appends
- * one per image after the typed text.
+ * Videos are attached as files only: no model takes them as input, so the
+ * agent gets the saved copy's path and watches it with its own tools (ffmpeg
+ * frames, say). They travel as image refs whose id has a video extension.
  */
-export function attachmentNote(name: string, path: string): string {
-  return `[Attached image "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
+export const CHAT_VIDEO_TYPES = ['video/mp4', 'video/quicktime', 'video/webm'] as const
+export type ChatVideoType = typeof CHAT_VIDEO_TYPES[number]
+export const CHAT_VIDEO_EXTENSIONS: Record<ChatVideoType, string> = { 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm' }
+export const MAX_CHAT_VIDEO_BYTES = 500 * 1024 * 1024
+
+export type ChatAttachmentKind = 'image' | 'video'
+
+/**
+ * Names the saved copy of an attachment in the text the agent gets, so its
+ * tools can open the file (after t3code's AttachmentPrompt). The host appends
+ * one per attachment after the typed text.
+ */
+export function attachmentNote(name: string, path: string, kind: ChatAttachmentKind = 'image'): string {
+  return `[Attached ${kind} "${name.replace(/["\]\r\n]/g, '_').slice(0, 120)}" is saved at: ${path}]`
 }
 
 /** Matches attachmentNote's notes; the first group is the saved path. */
-export const ATTACHMENT_NOTES = /\s*\[Attached image "[^"\n]*" is saved at: ([^\]\n]+)\]/g
-const ATTACHMENT_NOTE_START = '[Attached image "'
+export const ATTACHMENT_NOTES = /\s*\[Attached (?:image|video) "[^"\n]*" is saved at: ([^\]\n]+)\]/g
+const ATTACHMENT_NOTE_STARTS = ['[Attached image "', '[Attached video "']
 
-/** The text the person typed, without the notes the host added for Claude. */
+/** The videos a message's notes name: its saved copies, whose file names are their ids. */
+export function notedVideos(text: string): ChatImageRef[] {
+  return [...text.matchAll(/\[Attached video "([^"\n]*)" is saved at: ([^\]\n]+)\]/g)].flatMap((match) => {
+    const id = match[2]!.slice(match[2]!.lastIndexOf('/') + 1)
+    return isChatVideoId(id) ? [match[1] ? { id, name: match[1] } : { id }] : []
+  })
+}
+
+/** The text the person typed, without the notes the host added for the agent. */
 export function stripAttachmentNotes(text: string): string {
   return text.replace(ATTACHMENT_NOTES, '').trim()
 }
@@ -114,13 +149,13 @@ export function stripAttachmentNotes(text: string): string {
 /** A shortened prompt (a hook's summary, a session's first prompt) without the notes, even one cut off at the end. */
 export function stripAttachmentNotesFromSummary(text: string): string {
   const stripped = stripAttachmentNotes(text)
-  // A length limit can cut a note anywhere: after its opening (the image name
+  // A length limit can cut a note anywhere: after its opening (the file name
   // may hold a "["), or inside its opening words.
-  const marker = stripped.lastIndexOf(ATTACHMENT_NOTE_START)
+  const marker = Math.max(...ATTACHMENT_NOTE_STARTS.map((start) => stripped.lastIndexOf(start)))
   const open = marker >= 0 && !stripped.slice(marker).includes(']') ? marker : stripped.lastIndexOf('[')
   const tail = stripped.slice(open)
   const cutNote = open >= 0 && (open === 0 || /\s/.test(stripped[open - 1]!)) && !tail.includes(']')
-    && (tail.startsWith(ATTACHMENT_NOTE_START) || ATTACHMENT_NOTE_START.startsWith(tail))
+    && ATTACHMENT_NOTE_STARTS.some((start) => tail.startsWith(start) || start.startsWith(tail))
   return cutNote ? stripped.slice(0, open).trim() : stripped
 }
 
@@ -131,6 +166,17 @@ export function isChatImageId(value: unknown): value is string {
   return typeof value === 'string' && CHAT_IMAGE_ID.test(value)
 }
 
+const CHAT_VIDEO_ID = /^[0-9a-f]{64}\.(mp4|mov|webm)$/
+
+export function isChatVideoId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_VIDEO_ID.test(value)
+}
+
+/** An image or a video someone attached: what a message's refs may name. */
+export function isChatAttachmentId(value: unknown): value is string {
+  return isChatImageId(value) || isChatVideoId(value)
+}
+
 export function chatImageType(id: string): ChatImageType {
   const extension = id.slice(id.lastIndexOf('.') + 1)
   return (Object.entries(CHAT_IMAGE_EXTENSIONS).find(([, value]) => value === extension)?.[0] ?? 'image/png') as ChatImageType
@@ -139,6 +185,67 @@ export function chatImageType(id: string): ChatImageType {
 /** Where the browser loads a stored chat image from. */
 export function chatImageUrl(id: string): string {
   return `/chat-images/${id}`
+}
+
+/**
+ * Images an agent shows in its reply also take SVG (PR Lens diagrams, for
+ * one). They are never sent to Claude, so they stay apart from the ids above.
+ */
+const CHAT_REPLY_IMAGE_ID = /^[0-9a-f]{64}\.(png|jpg|gif|webp|svg)$/
+/** A PNG the daemon draws from a stored SVG, for clients that can't show SVG. */
+const CHAT_IMAGE_STILL_ID = /^[0-9a-f]{64}\.svg\.png$/
+
+export function isChatReplyImageId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_REPLY_IMAGE_ID.test(value)
+}
+
+export function isChatImageStillId(value: unknown): value is string {
+  return typeof value === 'string' && CHAT_IMAGE_STILL_ID.test(value)
+}
+
+/** The PNG of an SVG reply image; other images are already PNG, JPEG, GIF or WebP. */
+export function chatImageStillId(id: string): string {
+  return id.endsWith('.svg') ? `${id}.png` : id
+}
+
+/** The Content-Type a stored image is served with. */
+export function chatImageContentType(id: string): string {
+  if (id.endsWith('.svg')) return 'image/svg+xml'
+  if (CHAT_VIDEO_ID.test(id)) return (Object.entries(CHAT_VIDEO_EXTENSIONS).find(([, value]) => id.endsWith(`.${value}`))?.[0] ?? 'video/mp4')
+  return id.endsWith('.svg.png') ? 'image/png' : chatImageType(id)
+}
+
+/** Why a reply image isn't shown: no file there, one the daemon can't read, not an image, or the store failed. */
+export type ChatReplyImageError = 'missing' | 'unreadable' | 'unsupported' | 'too_large' | 'empty' | 'failed'
+
+/**
+ * An image an agent shows in a reply with Markdown, `![caption](/path.png)`.
+ * `src` is the address exactly as the Markdown parser reads it, so the
+ * renderer can match it; the daemon stores the file and gives it an id.
+ */
+export type ChatReplyImage = { src: string; id: string } | {
+  src: string
+  error: ChatReplyImageError
+  /** The file the daemon looked for, when `src` is relative or `~/`. */
+  path?: string
+}
+
+function decodedAddress(value: string): string {
+  try {
+    return decodeURI(value)
+  } catch {
+    return value
+  }
+}
+
+/**
+ * The reply image a rendered `<img>` means. Renderers percent-encode the
+ * address (`my shot.png` becomes `my%20shot.png`), so both sides are decoded.
+ */
+export function findChatReplyImage(images: readonly ChatReplyImage[] | undefined, src: string): ChatReplyImage | undefined {
+  if (!images?.length) return undefined
+  const wanted = decodedAddress(src)
+  return images.find((image) => image.src === src || decodedAddress(image.src) === wanted)
 }
 
 /** An image in a message or tool result, stored by the daemon or host. */
@@ -232,8 +339,15 @@ export type ChatItem = ChatItemBase & (
       steered?: boolean
       /** Relayed through main Claude's SendMessage tool to this subagent. */
       relayTo?: { agentId: string; label: string }
+      /** Redline, canvas and auto-fix cards shown in place of the text; added by the web app. */
+      tileEvents?: ChatCardEvent[]
     }
-  | { kind: 'assistant_message'; text: string }
+  | {
+      kind: 'assistant_message'
+      text: string
+      /** Local images the reply shows with Markdown; added by the daemon. */
+      images?: ChatReplyImage[]
+    }
   | { kind: 'reasoning'; text: string }
   | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
   | {
@@ -362,7 +476,14 @@ export interface ChatSettingsChange {
   permissionMode?: ChatSessionPermissionMode
 }
 
+export interface ChatLogin {
+  state: 'required' | 'pending'
+  reason?: string
+  url?: string
+}
+
 export interface ChatSessionInfo {
+  login?: ChatLogin
   /** tmux pane id (`%N`) the session belongs to. */
   paneId: string
   provider: ChatProvider
@@ -380,6 +501,8 @@ export interface ChatSessionInfo {
   permissionMode?: string
   /** Bypass needs a flag at launch, so only a chat started with it can switch to it. */
   bypassAllowed?: boolean
+  /** Muse only: false when the host runs without Muse's sandbox (full access). Absent means sandboxed. */
+  sandboxed?: boolean
   models?: ChatModelOption[]
   contextUsage?: ChatContextUsage
   /** Plan rate limits; absent before the first reading and for API-key logins. */
@@ -467,6 +590,8 @@ export interface ChatState {
   commands?: ChatCommand[]
   /** The draft and queue the chat had when it switched to Claude Code, until a composer takes them. */
   carried?: ChatCarriedDraft
+  /** Older items left out of a client's bounded copy (`/ws?chatHistory=`); `chat_history` fetches them. */
+  omittedItems?: number
 }
 
 // ---- host ⇄ daemon ----
@@ -476,13 +601,14 @@ export type HostToDaemonMessage =
   /** Full state for one session: sent on (re)connect and when a session starts. */
   | { type: 'session_snapshot'; session: ChatSessionInfo; items: ChatItem[] }
   | { type: 'session_update'; session: ChatSessionInfo }
-  /** Upserts by item id, in order. */
-  | { type: 'items'; paneId: string; items: ChatItem[] }
+  /** Upserts by item id, in order; `replace` drops the earlier items first (after /clear). */
+  | { type: 'items'; paneId: string; items: ChatItem[]; replace?: true }
   | { type: 'session_closed'; paneId: string }
   /** The full command list; replaces the previous one. */
   | { type: 'commands'; paneId: string; commands: ChatCommand[] }
   | ({ type: 'file_search_result'; paneId: string; requestId: string } & ChatFileSearchResult)
   | ({ type: 'subagent_transcript_result'; paneId: string; requestId: string } & ChatSubagentTranscript)
+  | ({ type: 'mcp_result'; paneId: string; requestId: string } & ChatMcpResult)
   /**
    * The host is about to hand the conversation to its TUI: the daemon keeps
    * its queue (and the client's draft) until the chat comes back, and the
@@ -539,6 +665,8 @@ export type DaemonToHostMessage =
   /** Stop or background one running subagent. */
   | { type: 'task'; paneId: string; action: ChatTaskAction; agentId: string; toolUseId: string; requestId: string }
   | { type: 'subagent_transcript'; paneId: string; agentId: string; requestId: string }
+  /** Lists the agent's MCP servers, or acts on one first. */
+  | { type: 'mcp'; paneId: string; request: ChatMcpRequest; requestId: string }
   /** Finds files and folders in the session's folder for an `@` mention. */
   | { type: 'file_search'; paneId: string; query: string; requestId: string }
   /** `dropQueued` names queued messages the client took back into its draft. */
@@ -719,7 +847,7 @@ export function parseChatImageRefs(value: unknown, max = MAX_CHAT_IMAGES): ChatI
   if (!Array.isArray(value) || value.length > max) return null
   const refs: ChatImageRef[] = []
   for (const ref of value) {
-    if (!isRecord(ref) || !isChatImageId(ref.id) || !optionalString(ref.name, 1000)) return null
+    if (!isRecord(ref) || !isChatAttachmentId(ref.id) || !optionalString(ref.name, 1000)) return null
     refs.push(withOptional({ id: ref.id } as ChatImageRef, { name: typeof ref.name === 'string' ? ref.name.slice(0, 200) : undefined }))
   }
   return refs
@@ -732,6 +860,21 @@ function optionalImages(value: unknown): ChatImageRef[] | undefined {
   if (value === undefined) return undefined
   const refs = parseChatImageRefs(value, MAX_ITEM_IMAGES)
   return refs?.length ? refs : undefined
+}
+
+const REPLY_IMAGE_ERRORS: readonly ChatReplyImageError[] = ['missing', 'unreadable', 'unsupported', 'too_large', 'empty', 'failed']
+
+/** A reply's images; one that doesn't parse is dropped, and the reply shows its address instead. */
+function parseChatReplyImages(value: unknown): ChatReplyImage[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const images = value.slice(0, MAX_ITEM_IMAGES).flatMap((image): ChatReplyImage[] => {
+    if (!isRecord(image) || typeof image.src !== 'string' || !image.src || image.src.length > 4096) return []
+    if (isChatReplyImageId(image.id)) return [{ src: image.src, id: image.id }]
+    if (!REPLY_IMAGE_ERRORS.includes(image.error as ChatReplyImageError)) return []
+    const path = typeof image.path === 'string' && image.path && image.path.length <= 4096 && image.path !== image.src ? image.path : undefined
+    return [withOptional({ src: image.src, error: image.error as ChatReplyImageError }, { path })]
+  })
+  return images.length ? images : undefined
 }
 
 const COMMAND_NAME = /^[\w][\w:.@-]{0,127}$/
@@ -843,6 +986,9 @@ export function parseChatItem(value: unknown): ChatItem | null {
           })
         : null
     case 'assistant_message':
+      return typeof value.text === 'string'
+        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images) })
+        : null
     case 'reasoning':
       return typeof value.text === 'string' ? { ...base, kind: value.kind, text: value.text.slice(0, MAX_TEXT) } : null
     case 'command':
@@ -901,6 +1047,15 @@ export function parseChatItem(value: unknown): ChatItem | null {
   }
 }
 
+function parseChatLogin(value: unknown): ChatLogin | undefined {
+  if (!isRecord(value) || (value.state !== 'required' && value.state !== 'pending')) return undefined
+  let url: string | undefined
+  if (typeof value.url === 'string' && value.url.length <= 2048) {
+    try { if (new URL(value.url).protocol === 'https:') url = value.url } catch { /* Drop invalid URLs. */ }
+  }
+  return { state: value.state, ...(typeof value.reason === 'string' ? { reason: value.reason.slice(0, 500) } : {}), ...(url ? { url } : {}) }
+}
+
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isRecord(value)) return null
   if (!isPaneId(value.paneId) || !isChatProvider(value.provider) || typeof value.cwd !== 'string') return null
@@ -911,6 +1066,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   }
   if (value.selectedModel !== undefined && !isModelValue(value.selectedModel)) return null
   if (value.effort !== undefined && !isChatEffort(value.effort)) return null
+  const login = parseChatLogin(value.login)
   const models = parseModels(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
   const planUsage = parsePlanUsage(value.planUsage)
@@ -934,6 +1090,8 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(isChatEffort(value.effort) ? { effort: value.effort } : {}),
     ...(value.fast === true ? { fast: true } : {}),
     ...(value.bypassAllowed === true ? { bypassAllowed: true } : {}),
+    ...(typeof value.sandboxed === 'boolean' ? { sandboxed: value.sandboxed } : {}),
+    ...(login ? { login } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(planUsage ? { planUsage } : {}),
@@ -967,7 +1125,7 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
     }
     case 'items': {
       const items = parseItems(value.items)
-      return isPaneId(value.paneId) && items ? { type: 'items', paneId: value.paneId, items } : null
+      return isPaneId(value.paneId) && items ? { type: 'items', paneId: value.paneId, items, ...(value.replace === true ? { replace: true } : {}) } : null
     }
     case 'session_closed':
       return isPaneId(value.paneId) ? { type: 'session_closed', paneId: value.paneId } : null
@@ -988,6 +1146,11 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
       return withOptional({ type: 'subagent_transcript_result' as const, paneId: value.paneId, requestId: value.requestId, items }, {
         error: optionalText(value.error, 1000),
       })
+    }
+    case 'mcp_result': {
+      const result = parseChatMcpResult(value)
+      if (!isPaneId(value.paneId) || !shortString(value.requestId) || !result) return null
+      return { type: 'mcp_result', paneId: value.paneId, requestId: value.requestId, ...result }
     }
     case 'handoff': {
       const queue = parseQueue(value.queue)
@@ -1029,6 +1192,12 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
       return isPaneId(value.paneId) && isAgentId(value.agentId) && shortString(value.requestId)
         ? { type: 'subagent_transcript', paneId: value.paneId, agentId: value.agentId, requestId: value.requestId }
         : null
+    case 'mcp': {
+      const request = parseChatMcpRequest(value.request)
+      return isPaneId(value.paneId) && request && shortString(value.requestId)
+        ? { type: 'mcp', paneId: value.paneId, request, requestId: value.requestId }
+        : null
+    }
     case 'file_search':
       return isPaneId(value.paneId) && typeof value.query === 'string' && value.query.length <= MAX_FILE_QUERY && shortString(value.requestId)
         ? { type: 'file_search', paneId: value.paneId, query: value.query, requestId: value.requestId }

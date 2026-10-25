@@ -92,7 +92,10 @@ function started(spec: Partial<ConstructorParameters<typeof AgentSession>[0]> = 
   const session = new AgentSession({ paneId: '%3', cwd: '/work', permissionMode: 'default', env: {}, configDir: '/home/me/.claudew', ...spec }, fake.run, () => 1, store)
   const items = new Map<string, ChatItem>()
   const sessions: ChatSessionInfo[] = []
-  session.on('items', (changed) => { for (const item of changed) items.set(item.id, item) })
+  session.on('items', (changed, replace) => {
+    if (replace) items.clear()
+    for (const item of changed) items.set(item.id, item)
+  })
   session.on('session', (info) => sessions.push(info))
   session.start()
   return { fake, session, items, sessions }
@@ -223,9 +226,17 @@ describe('commando-agent arguments', () => {
     expect(sessionFlags(withSessionSettings(args, info))).not.toContain('--fast')
   })
 
+  it('takes --yolo only for Muse and keeps it across restarts', () => {
+    const args = parseHostArgs(['muse', '--permission-mode', 'bypassPermissions', '--yolo'], {})
+    expect(args).toMatchObject({ provider: 'muse', permissionMode: 'bypassPermissions', yolo: true })
+    if (typeof args === 'string') throw new Error(args)
+    expect(sessionFlags(withSessionSettings(args, { paneId: '%1', provider: 'muse', cwd: '/', status: 'idle', hostPid: 1, hostVersion: 1, permissionMode: 'bypassPermissions' }))).toContain('--yolo')
+    expect(parseHostArgs(['claude', '--yolo'], {})).toMatch(/--yolo is only for muse/)
+  })
+
   it('lists every provider in help and rejects unsupported subcommands', () => {
-    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse>/)
-    expect(parseHostArgs(['cursor'], {})).toMatch(/^Usage/)
+    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse\|cursor>/)
+    expect(parseHostArgs(['cursor'], {})).toEqual({ provider: 'cursor', permissionMode: 'bypassPermissions', bypassAllowed: true })
     expect(parseHostArgs([], {})).toMatch(/^Usage/)
     expect(parseHostArgs(['codex', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
   })
@@ -971,6 +982,46 @@ describe('AgentSession richer input', () => {
     expect(fake.options.additionalDirectories).toEqual(['/sessions/abcd1234-0000', '/sessions/beforeclear-0000'])
   })
 
+  it('sends a video as a note naming its copy, with no image block, and refuses one it could not copy', async () => {
+    const videoId = `${'e'.repeat(64)}.mov`
+    const stage = vi.fn(async (id: string, sessionId: string) => {
+      if (id === `${'f'.repeat(64)}.mov`) throw new Error('ENOSPC')
+      return `/sessions/${sessionId}/${id}`
+    })
+    const { fake, session, items } = started({ images: { ...images, stage } })
+    const sessionId = fake.options.sessionId
+    session.send('what goes wrong here?', [{ id: videoId, name: 'Screen Recording.mov' }])
+    session.send('both', [{ id: imageId, name: 'pane.png' }, { id: videoId }])
+    session.send('lost', [{ id: `${'f'.repeat(64)}.mov` }])
+    await tick()
+    await tick()
+    expect(fake.prompts).toHaveLength(2)
+    expect(fake.prompts[0]!.message.content).toBe(`what goes wrong here?\n\n[Attached video "Screen Recording.mov" is saved at: /sessions/${sessionId}/${videoId}]`)
+    expect(fake.prompts[1]!.message.content).toEqual([
+      expect.objectContaining({ type: 'image' }),
+      { type: 'text', text: `both\n\n[Attached image "pane.png" is saved at: /sessions/${sessionId}/${imageId}]\n\n[Attached video "${videoId}" is saved at: /sessions/${sessionId}/${videoId}]` },
+    ])
+    expect(images.read).not.toHaveBeenCalledWith(videoId)
+    const users = [...items.values()].filter((item) => item.kind === 'user_message')
+    expect(users[0]).toMatchObject({ text: 'what goes wrong here?', images: [{ id: videoId, name: 'Screen Recording.mov' }] })
+    expect([...items.values()].some((item) => item.kind === 'notice' && /wasn't sent: ENOSPC/.test(item.text))).toBe(true)
+  })
+
+  it('shows a resumed conversation\'s videos and copies them back', async () => {
+    const videoId = `${'e'.repeat(64)}.mov`
+    const store = { ...images, stage: vi.fn(async (id: string, sessionId: string) => `/sessions/${sessionId}/${id}`) }
+    const history = [
+      { type: 'user', message: { role: 'user', content: `what goes wrong?\n\n[Attached video "clip.mov" is saved at: /sessions/abcd1234-0000/${videoId}]` }, parent_tool_use_id: null },
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'It scrolls.' }] }, parent_tool_use_id: null },
+    ]
+    const { items } = started({ images: store, resume: 'abcd1234-0000' }, { messages: async () => history, title: async () => undefined })
+    await tick()
+    await tick()
+    expect(store.stage.mock.calls).toEqual([[videoId, 'abcd1234-0000']])
+    const users = [...items.values()].filter((item) => item.kind === 'user_message')
+    expect(users).toEqual([expect.objectContaining({ text: 'what goes wrong?', images: [{ id: videoId, name: 'clip.mov' }] })])
+  })
+
   it('still sends an image it could not copy for Claude, without a note', async () => {
     const log = vi.fn()
     const { fake, session } = started({ images: { ...images, stage: vi.fn(async () => { throw new Error('ENOSPC') }) }, log })
@@ -1026,13 +1077,14 @@ describe('AgentSession richer input', () => {
     expect([...items.values()].find((item) => item.kind === 'notice')).toMatchObject({ level: 'error', text: "Claude couldn't read an attached image: Could not process image. Try a smaller PNG or JPEG." })
   })
 
-  it('marks /clear in the timeline and drops the old title', async () => {
+  it('clears the timeline on /clear, leaving a notice, and drops the old title', async () => {
     const { fake, session, items, sessions } = started()
     session.send('first question')
     await tick()
     fake.push({ type: 'conversation_reset', new_conversation_id: 'n', uuid: 'n', trigger: 'clear', session_id: 's2' } as unknown as SDKMessage)
     await tick()
-    expect([...items.values()].some((item) => item.kind === 'notice' && /Context cleared/.test(item.text))).toBe(true)
+    expect([...items.values()]).toEqual([expect.objectContaining({ kind: 'notice', text: expect.stringMatching(/Context cleared/) })])
+    expect(session.snapshot().items).toEqual([...items.values()])
     expect(sessions.at(-1)?.title).toBeUndefined()
   })
 

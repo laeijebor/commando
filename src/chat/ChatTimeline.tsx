@@ -1,19 +1,39 @@
 import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatTaskAction } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { providerLabel } from './ComposerControls'
 import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
+import { ReplyImage } from './ReplyImage'
 import { SubagentGroup, useNow } from './Subagents'
+import { TileEventCard } from './TileEventCard'
+import { AutofixCard } from './AutofixCard'
+import type { PrQuickLookTab } from '../PrQuickLook'
 import { activitySummary, deriveTimelineRows, isWork, mergeActivityRows, patchLines, shortPath, thoughtLabel, type ActivityRow, type ActivitySummary, type QuietTimelineRow, type ReasoningItem, type SubagentItem, type WorkItem } from '../../shared/chat-timeline'
 import { elapsedLabel } from './turnFlow'
 import { WorkLogDetails, WorkLogList, WorkLogRow } from './WorkLog'
 
 const markdownPlugins = [remarkGfm]
+const CODE_URL = /^https?:\/\/\S+$/
+type HastParent = Pick<NonNullable<ExtraProps['node']>, 'children'>
+
+/** Links inline code that is only a web address, as agents often write a URL in backticks. Code already in a link or a code block is left alone. */
+function linkCodeUrls(parent: HastParent) {
+  parent.children = parent.children.map((child) => {
+    if (child.type !== 'element' || child.tagName === 'a' || child.tagName === 'pre') return child
+    const [text] = child.children
+    if (child.tagName === 'code' && child.children.length === 1 && text.type === 'text' && CODE_URL.test(text.value)) {
+      return { type: 'element', tagName: 'a', properties: { href: text.value }, children: [child] }
+    }
+    linkCodeUrls(child)
+    return child
+  })
+}
+const rehypePlugins = [() => linkCodeUrls]
 const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
   pre: MarkdownPre,
@@ -22,19 +42,34 @@ const markdownComponents: Components = {
 }
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean }>({ items: [], now: 0, provider: 'Claude' })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void }>({ items: [], now: 0, provider: 'Claude' })
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+/** Image addresses reach `ReplyImage` as written: it decides what loads, and a local path is never a link. */
+const keepImageSources: UrlTransform = (url, key, node) => key === 'src' && node.tagName === 'img' ? url : defaultUrlTransform(url)
+
+/** The reply a Markdown image belongs to; context keeps `img` one component, so images don't reload as a reply streams. */
+const ReplyImagesContext = createContext<{ images?: readonly ChatReplyImage[]; running?: boolean }>({})
+
+function MarkdownImage({ src, alt }: { src?: unknown; alt?: string }) {
+  const { images, running } = use(ReplyImagesContext)
+  return <ReplyImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} images={images} running={running} />
+}
+
+const replyComponents: Components = { ...markdownComponents, img: MarkdownImage }
+
+/** `images` are the local files a reply shows; `running` while it still streams. */
+export const Markdown = memo(function Markdown({ text, images, running }: { text: string; images?: readonly ChatReplyImage[]; running?: boolean }) {
+  const reply = useMemo(() => ({ images, running }), [images, running])
   return (
-    <div className="chat-markdown">
-      <ReactMarkdown remarkPlugins={markdownPlugins} components={markdownComponents}>
-        {text}
-      </ReactMarkdown>
-    </div>
+    <ReplyImagesContext value={reply}>
+      <div className="chat-markdown">
+        <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={rehypePlugins} components={replyComponents} urlTransform={keepImageSources}>
+          {text}
+        </ReactMarkdown>
+      </div>
+    </ReplyImagesContext>
   )
 })
-
-
 
 function WorkIcon({ item }: { item: WorkItem }) {
   const className = cn('size-3.5', item.status === 'running' ? 'text-primary' : item.status === 'failed' ? 'text-destructive' : 'text-icon-muted')
@@ -272,6 +307,15 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
   const context = use(TimelineContext)
   switch (row.kind) {
     case 'user':
+      if (row.item.tileEvents?.length) {
+        return (
+          <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
+            {row.item.tileEvents.map((event) => event.kind === 'autofix'
+              ? <AutofixCard key={event.id} event={event} {...(context.onOpenPr ? { onOpenPr: context.onOpenPr } : {})} />
+              : <TileEventCard key={event.id} event={event} {...(context.onOpenTile ? { onOpenTile: context.onOpenTile } : {})} />)}
+          </div>
+        )
+      }
       return (
         <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
           {row.item.steered || row.item.relayTo ? (
@@ -293,7 +337,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
     case 'subagents':
       return <SubagentGroup row={row} items={context.items} now={context.now} onTask={context.onTask} controlsDisabled={context.controlsDisabled} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
     case 'assistant':
-      return <div className="chat-reply pb-3"><Markdown text={row.item.text} /></div>
+      return <div className="chat-reply pb-3"><Markdown text={row.item.text} images={row.item.images} running={row.item.status === 'running'} /></div>
     case 'activity':
       return <ActivityGroup row={row} cwd={cwd} />
     case 'notice':
@@ -306,7 +350,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -322,11 +366,15 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onSavePlan?: SavePlan
   onTask?: (action: ChatTaskAction, agent: SubagentItem) => void
   controlsDisabled?: boolean
+  /** Brings a redline/canvas card's tile forward; false when it is gone. */
+  onOpenTile?: (webPaneId: string) => boolean
+  /** Opens an auto-fix card's PR in the side panel. */
+  onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
 }) {
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
   const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled])
+  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -345,7 +393,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
     return () => element.removeEventListener('scroll', onScroll)
   }, [])
 
-  const last = rows.at(-1)
+  // A card the user sent after the latest activity doesn't end that activity.
+  const last = [...rows].reverse().find((row) => !(row.kind === 'user' && row.item.tileEvents?.length))
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
   const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   return (

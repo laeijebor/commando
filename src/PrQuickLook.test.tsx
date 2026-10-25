@@ -128,6 +128,26 @@ describe('PR quick look', () => {
     expect(api.details).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps the conversation on screen while a resolve refreshes the PR card and details', async () => {
+    const entry = { id: '2:10', commentId: 10, kind: 'inline comment', author: 'Reviewer', body: 'Resolve this finding', url: '', createdAt: '',
+      thread: { id: 'PRRT_10', commentId: 10, isResolved: false, viewerCanReply: true, viewerCanResolve: true, viewerCanUnresolve: true } }
+    const { api, onRefresh, rerender } = setup({}, undefined, [entry])
+    await screen.findByRole('heading', { name: 'Complete description' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Conversation' }))
+    let finishDetails!: (value: PrDetails) => void
+    api.details.mockImplementation(() => new Promise((resolve) => { finishDetails = resolve }))
+    onRefresh.mockImplementationOnce(async () => rerender({ unresolvedThreads: 0, updatedAt: '2026-01-04' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(screen.getByText('✓ Resolved')).toBeVisible()
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1))
+    expect(screen.queryByText('Loading conversation…')).not.toBeInTheDocument()
+    expect(screen.getByText('Resolve this finding')).toBeVisible()
+    expect(screen.getByText('✓ Resolved')).toBeVisible()
+    await act(async () => finishDetails({ body: '', checks: [], unresolvedThreads: 0, conversation: [{ ...entry, thread: { ...entry.thread, isResolved: true } }] }))
+    expect(screen.getByRole('button', { name: 'Reopen' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: /Conversation/ })).toHaveTextContent('0 unresolved threads')
+  })
+
   it('rejects a newer returned diff rather than tagging it with the old card revision', async () => {
     const { api } = setup({ headRefOid: 'b'.repeat(40) })
     await screen.findByRole('heading', { name: 'Complete description' })

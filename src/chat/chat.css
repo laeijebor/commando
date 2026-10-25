@@ -151,6 +151,7 @@
   border-radius: 8px;
   background: var(--surface);
 }
+.chat-markdown a > code { color: var(--accent); }
 .chat-markdown pre code { padding: 0; border: 0; background: none; font-size: 12.5px; }
 .chat-markdown blockquote { padding-left: 12px; border-left: 2px solid var(--border-strong); color: var(--muted); }
 /* Tables scroll sideways rather than squeeze their columns. Cells wrap only between words, and
@@ -164,6 +165,31 @@
 .chat-reply .chat-table-scroll { width: 100cqw; margin-inline: calc((100% - 100cqw) / 2); }
 .chat-reply .chat-table-frame { width: max-content; min-width: min(100%, var(--chat-content-max-width)); max-width: min(100%, var(--chat-table-max-width)); margin-inline: auto; }
 .chat-markdown hr { border: 0; border-top: 1px solid var(--border); }
+/* Images a reply shows: as wide as the text, not taller than most of a screen; a click enlarges one. */
+.chat-reply-image {
+  display: block;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: zoom-in;
+}
+.chat-reply-image img, .chat-markdown img.chat-reply-web-image { display: block; max-width: 100%; max-height: min(70vh, 640px); height: auto; object-fit: contain; }
+.chat-reply-image-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.chat-reply-image-notice code { overflow-wrap: anywhere; }
 
 @keyframes chat-pulse { 50% { opacity: 0.35; } }
 .chat-pulse { animation: chat-pulse 1.2s ease-in-out infinite; }
@@ -180,12 +206,19 @@
 .commando-chat .chat-pr-row.closed, .commando-chat .chat-pr-row.dismissed { opacity: .6; }
 .commando-chat .chat-pr-dismiss { display: flex; flex-shrink: 0; padding: 2px; border-radius: 4px; color: var(--muted); cursor: pointer; }
 .commando-chat .chat-pr-dismiss:hover { color: var(--text-soft); background: var(--surface-deep); }
-.commando-chat .chat-pr-link { display: flex; flex: 1 1 14rem; gap: 8px; min-width: 0; color: inherit; text-decoration: none; }
+.commando-chat .chat-pr-link { display: flex; flex: 1 1 14rem; gap: 8px; min-width: 0; color: inherit; }
+.commando-chat .chat-pr-link a { color: inherit; text-decoration: none; }
 /* HUD status chips, sized for the chat column; they move below the title before squeezing it. */
 .commando-chat .chat-pr-badges { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; margin-left: auto; }
 .commando-chat .chat-pr-badges .pr-chip { font-size: 11px; white-space: nowrap; }
-.commando-chat .chat-pr-link:hover { text-decoration: underline; }
+.commando-chat .chat-pr-link a:hover { text-decoration: underline; }
 .commando-chat .chat-pr-diff { flex-shrink: 0; font-family: var(--mono); white-space: nowrap; padding: 2px 5px; border-radius: 4px; background: var(--surface-deep); }
 .commando-chat .chat-pr-ci { display: flex; align-items: center; gap: 5px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.commando-chat .chat-pr-toggle { display: flex; align-items: center; gap: 4px; color: var(--muted); cursor: pointer; padding: 2px 4px 4px; border-radius: 4px; }
+.commando-chat .chat-pr-toggle:hover { color: var(--text-soft); }
 .commando-chat .chat-pr-more { display: block; text-align: left; color: var(--muted); cursor: pointer; padding: 2px 8px 5px; }
 .chat-floating .chat-pr-autofix-toggle { appearance: auto; width: 14px; height: 14px; accent-color: var(--accent); flex-shrink: 0; }
+
+.commando-chat .chat-login-banner {
+  @apply mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-secondary-label;
+}

@@ -13,13 +13,17 @@ import type {
   ChatSwitchAction,
   ChatTaskAction,
 } from '../../shared/agent-chat.js'
+import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 
 export interface ChatProviderSessionEvents {
-  items: (items: ChatItem[]) => void
+  /** `replace`: the conversation started over (/clear), so these items are all the chat shows. */
+  items: (items: ChatItem[], replace?: true) => void
   /** Relayed to the daemon as session_update. */
   session: (info: ChatSessionInfo) => void
   commands: (commands: ChatCommand[]) => void
   closed: () => void
+  /** The provider needs its host respawned (same conversation) before the next turn can run. */
+  restart: () => void
 }
 
 /** Optional handoff to the provider's terminal UI on the same conversation. */
@@ -51,7 +55,11 @@ export interface ChatProviderSession {
   searchFiles(query: string): Promise<ChatFileSearchResult>
   controlTask(action: ChatTaskAction, agentId: string, toolUseId: string): Promise<void>
   subagentTranscript(agentId: string): Promise<ChatSubagentTranscript>
+  /** The agent's MCP servers, after acting on one; absent where the provider has none to manage. */
+  mcp?(request: ChatMcpRequest): Promise<ChatMcpResult>
   setResumeCommand(command: string): void
+  /** Shows a host-level problem (a failed restart, say) in the chat as well as the pane. */
+  hostNotice?(level: 'info' | 'error', text: string): void
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] }
   close(): void
 }

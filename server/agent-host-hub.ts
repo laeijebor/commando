@@ -4,6 +4,8 @@ import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
   hostTakesInput,
+  hostTakesVideos,
+  hostTakesMcp,
   hostTakesSettings,
   hostTakesSwitch,
   hostTakesTurnFlow,
@@ -24,6 +26,7 @@ import {
   type DaemonToHostMessage,
   type HostToDaemonMessage,
 } from '../shared/agent-chat.js'
+import type { ChatMcpRequest, ChatMcpResult } from '../shared/chat-mcp.js'
 import type { AgentInteractionAnswer, ServerMessage } from '../shared/protocol.js'
 import type { ChatResumeSettings } from './agent-resume-command.js'
 import type { ChatHandoffStore } from './chat-handoffs.js'
@@ -39,6 +42,8 @@ const DISCONNECTED_GRACE_MS = 60_000
 const FILE_SEARCH_TIMEOUT_MS = 10_000
 /** Reading a long subagent transcript can take a moment. */
 const SUBAGENT_TRANSCRIPT_TIMEOUT_MS = 20_000
+/** Reconnecting or starting a sign-in can wait on a slow server. */
+const MCP_TIMEOUT_MS = 45_000
 
 /**
  * Where a chat's requests and status show beyond its pane: the approvals
@@ -75,6 +80,8 @@ type HubDependencies = {
   handoffs?: Pick<ChatHandoffStore, 'save' | 'returned' | 'take' | 'discard'>
   /** A chat switched to Claude Code, or came back. */
   onHandoffsChange?: () => void
+  /** Stores the local images replies show with Markdown and attaches them (see chat-reply-images.ts). */
+  replyImages?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
 }
 
 /** A chat's unsent draft, sent with its switch to Claude Code. */
@@ -118,6 +125,7 @@ export class AgentHostHub {
   private readonly chats = new Map<string, ChatEntry>()
   private readonly fileSearches = new Map<string, PendingHostRequest<ChatFileSearchResult>>()
   private readonly transcripts = new Map<string, PendingHostRequest<ChatSubagentTranscript>>()
+  private readonly mcpRequests = new Map<string, PendingHostRequest<ChatMcpResult>>()
   /** Drafts of chats waiting to switch to Claude Code, by pane, until the host hands over. */
   private readonly switchDrafts = new Map<string, ChatSwitchDraft>()
 
@@ -153,6 +161,9 @@ export class AgentHostHub {
       for (const [requestId, read] of this.transcripts) {
         if (read.socket === socket) this.finish(this.transcripts, requestId, { items: [], error: 'The agent host disconnected' })
       }
+      for (const [requestId, request] of this.mcpRequests) {
+        if (request.socket === socket) this.finish(this.mcpRequests, requestId, { servers: [], error: 'The agent host disconnected' })
+      }
       for (const [paneId, entry] of this.chats) {
         if (entry.socket !== socket) continue
         entry.socket = null
@@ -173,6 +184,17 @@ export class AgentHostHub {
         this.dependencies.broadcast({ type: 'chat_session', paneId, session: entry.state.session, hostConnected: false })
       }
     })
+  }
+
+  /** Items with their replies' local images stored and attached; as they came if that fails. */
+  private async withReplyImages(items: ChatItem[], cwd: string | undefined): Promise<ChatItem[]> {
+    if (!this.dependencies.replyImages || !cwd || !items.some((item) => item.kind === 'assistant_message' && item.text.includes('!['))) return items
+    try {
+      return await this.dependencies.replyImages(items, cwd)
+    } catch (error) {
+      this.dependencies.log?.(`[agent-host] couldn't attach reply images: ${error instanceof Error ? error.message : String(error)}`)
+      return items
+    }
   }
 
   private async handle(socket: WebSocket, message: HostToDaemonMessage): Promise<void> {
@@ -204,11 +226,13 @@ export class AgentHostHub {
         // A chat back from Claude Code offers its draft and queue to the composer again.
         const carried = message.session.sessionId ? this.dependencies.handoffs?.returned(message.session.sessionId) : undefined
         if (message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
+        const items = await this.withReplyImages(message.items, message.session.cwd)
+        if (socket.readyState !== socket.OPEN) return
         const state: ChatState = {
           paneId,
           ...(targetId ? { targetId } : {}),
           session: message.session,
-          items: mergeChatItems([], message.items),
+          items: mergeChatItems([], items),
           hostConnected: true,
           ...(updateAvailable ? { updateAvailable } : {}),
           // The host resends its list straight after; keep the menu meanwhile.
@@ -251,14 +275,19 @@ export class AgentHostHub {
         return
       }
       case 'items': {
+        if (!this.owned(socket, message.paneId) || (message.items.length === 0 && !message.replace)) return
+        const items = await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd)
+        // The host may have been replaced while the images were stored.
         const entry = this.owned(socket, message.paneId)
-        if (!entry || message.items.length === 0) return
-        entry.state = { ...entry.state, items: mergeChatItems(entry.state.items, message.items) }
-        const startsTurn = !entry.hadTurn && message.items.some((item) => item.kind === 'user_message')
+        if (!entry) return
+        entry.state = { ...entry.state, items: mergeChatItems(message.replace ? [] : entry.state.items, items) }
+        const startsTurn = !entry.hadTurn && items.some((item) => item.kind === 'user_message')
         if (startsTurn) entry.hadTurn = true
         if (entry.visible) {
-          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items: message.items })
-          this.syncInteractions(message.paneId, entry, message.items)
+          this.dependencies.broadcast({ type: 'chat_items', paneId: message.paneId, items, ...(message.replace ? { replace: true } : {}) })
+          // Requests in the replaced timeline can no longer be answered.
+          if (message.replace) this.closeRequests(message.paneId, entry)
+          this.syncInteractions(message.paneId, entry, items)
           if (startsTurn) this.reportStatus(message.paneId, entry)
         }
         return
@@ -284,7 +313,15 @@ export class AgentHostHub {
       case 'subagent_transcript_result': {
         const read = this.transcripts.get(message.requestId)
         if (!read || read.socket !== socket || read.paneId !== message.paneId) return
-        this.finish(this.transcripts, message.requestId, message.error ? { items: message.items, error: message.error } : { items: message.items })
+        const items = await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd)
+        this.finish(this.transcripts, message.requestId, message.error ? { items, error: message.error } : { items })
+        return
+      }
+      case 'mcp_result': {
+        const request = this.mcpRequests.get(message.requestId)
+        if (!request || request.socket !== socket || request.paneId !== message.paneId) return
+        const { type: _type, paneId: _paneId, requestId, ...result } = message
+        this.finish(this.mcpRequests, requestId, result)
         return
       }
       case 'handoff': {
@@ -369,10 +406,31 @@ export class AgentHostHub {
     })
   }
 
+  /** Lists the pane agent's MCP servers, after acting on one when asked. */
+  mcp(paneId: string, request: ChatMcpRequest): Promise<ChatMcpResult> {
+    const entry = this.chats.get(paneId)
+    if (!entry?.socket) return Promise.resolve({ servers: [], error: 'No agent host is connected for this pane' })
+    if (!hostTakesMcp(entry.state.session)) return Promise.resolve({ servers: [], error: 'Restart this chat to manage its MCP servers' })
+    const socket = entry.socket
+    const requestId = randomUUID()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.finish(this.mcpRequests, requestId, { servers: [], error: 'The agent took too long to answer' }), MCP_TIMEOUT_MS)
+      this.mcpRequests.set(requestId, { paneId, socket, timer, resolve })
+      if (!this.sendTo(socket, { type: 'mcp', paneId, request, requestId })) {
+        this.finish(this.mcpRequests, requestId, { servers: [], error: 'No agent host is connected for this pane' })
+      }
+    })
+  }
+
   /** Hosts started before images existed would drop them, so the daemon refuses instead. */
   takesInput(paneId: string): boolean {
     const session = this.chats.get(paneId)?.state.session
     return session ? hostTakesInput(session) : false
+  }
+
+  takesVideos(paneId: string): boolean {
+    const session = this.chats.get(paneId)?.state.session
+    return session ? hostTakesVideos(session) : false
   }
 
   /** Asks the pane's host for `@` mention candidates in its session folder. */

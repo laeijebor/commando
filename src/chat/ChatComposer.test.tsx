@@ -285,6 +285,15 @@ describe('the / menu', () => {
     expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'plan' })
   })
 
+  it('leaves plan mode for the pre-plan mode in a Cursor chat, whose default is Sandboxed', () => {
+    const { input, type, onConfigure, view } = renderComposer()
+    const cursor = { ...session, provider: 'cursor' as const, permissionMode: 'plan' as const, prePlanPermissionMode: 'bypassPermissions' as const }
+    view.rerender(<ChatComposer session={cursor} hostConnected requests={[]} commands={commands} services={services()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={onConfigure} />)
+    type('/plan')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'bypassPermissions' })
+  })
+
   it('toggles fast mode with /fast only on a model that offers it', () => {
     const { input, type, onConfigure, view } = renderComposer()
     type('/fas')
@@ -337,7 +346,7 @@ describe('@ and # mentions', () => {
     const { type } = renderComposer({ session: { ...session, hostVersion: 2 } })
     type('@src')
     expect(screen.queryByTestId('composer-menu')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Attach images' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Attach images or videos' })).toBeNull()
   })
 })
 
@@ -384,6 +393,70 @@ describe('image attachments', () => {
     paste(input, Array.from({ length: 11 }, (_, index) => png(`p${index}.png`)))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('A message can carry at most 10 images'))
     expect(screen.getAllByRole('button', { name: /^Open p\d+\.png$/ })).toHaveLength(10)
+  })
+
+  describe('videos', () => {
+    const videoId = `${'e'.repeat(64)}.mov`
+    const videoSession = { ...session, hostVersion: 7 }
+    const mov = (name = 'Screen Recording.mov', type = 'video/quicktime') => new File([new Uint8Array(100)], name, { type })
+
+    it('uploads a pasted video as it is and sends it with the text', async () => {
+      const upload = services({ uploadVideo: vi.fn(async (file: File) => ({ id: videoId, name: file.name })) })
+      const { input, type, onSend } = renderComposer({ session: videoSession, services: upload })
+      paste(input, [mov()])
+      expect(screen.getByRole('button', { name: 'Play Screen Recording.mov' })).toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByLabelText('Uploading')).toBeNull())
+      expect(upload.uploadImage).not.toHaveBeenCalled()
+      type('what goes wrong here?')
+      fireEvent.keyDown(input, { key: 'Enter' })
+      expect(onSend).toHaveBeenCalledWith('what goes wrong here?', [{ id: videoId, name: 'Screen Recording.mov' }])
+    })
+
+    it('knows a video by its name when the clipboard gives no type', async () => {
+      const uploadVideo = vi.fn(async (file: File) => ({ id: videoId, name: file.name }))
+      const { input } = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      paste(input, [mov('clip.MOV', '')])
+      await waitFor(() => expect(uploadVideo).toHaveBeenCalledOnce())
+    })
+
+    it('refuses a video for a chat whose host predates them, and one over 500 MB', async () => {
+      const uploadVideo = vi.fn(async (file: File) => ({ id: videoId, name: file.name }))
+      const { input } = renderComposer({ services: services({ uploadVideo }) })
+      paste(input, [mov(), png()])
+      expect(await screen.findByRole('alert')).toHaveTextContent('Restart this chat to attach videos')
+      // The image beside it still attaches.
+      expect(screen.getByRole('button', { name: 'Open shot.png' })).toBeInTheDocument()
+      cleanup()
+      const fresh = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      const huge = mov('long.mov')
+      Object.defineProperty(huge, 'size', { value: 501 * 1024 * 1024 })
+      paste(fresh.input, [huge])
+      expect(await screen.findByRole('alert')).toHaveTextContent('Videos must be 500 MB or smaller')
+      expect(uploadVideo).not.toHaveBeenCalled()
+    })
+
+    it('stops a video upload when its chip is removed, without an error', async () => {
+      let signal: AbortSignal | undefined
+      const uploadVideo = vi.fn((_file: File, given?: AbortSignal) => {
+        signal = given
+        return new Promise<never>((_resolve, reject) => given?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
+      })
+      const { input } = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      paste(input, [mov()])
+      await waitFor(() => expect(uploadVideo).toHaveBeenCalledOnce())
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Screen Recording.mov' }))
+      expect(signal?.aborted).toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+
+    it('reports a video that did not upload', async () => {
+      const uploadVideo = vi.fn(async () => { throw new Error('Only MP4, QuickTime (.mov) and WebM videos can be attached') })
+      const { input } = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      paste(input, [mov('clip.mkv', 'video/x-matroska')])
+      expect(await screen.findByRole('alert')).toHaveTextContent("clip.mkv didn't upload: Only MP4, QuickTime (.mov) and WebM videos can be attached")
+      expect(screen.queryByRole('button', { name: 'Play clip.mkv' })).toBeNull()
+    })
   })
 
   it('holds Send while an upload runs and reports a failed upload', async () => {
@@ -485,5 +558,78 @@ describe('images in the timeline', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open pane.png' }))
     const viewer = await screen.findByRole('dialog', { name: 'pane.png' })
     expect(within(viewer).getByRole('img', { name: 'pane.png' })).toBeInTheDocument()
+  })
+
+  it('shows the local images a reply shows with Markdown, and enlarges one on click', async () => {
+    const svg = `${'b'.repeat(64)}.svg`
+    const text = [
+      '![Slide preview](/Users/me/Downloads/slide.png)',
+      '![PR diagram](<./out/my diagram.svg>)',
+      '![gone](/tmp/gone.png)',
+      '![web](https://example.com/chart.png)',
+      '![nope](javascript:alert(1))',
+      '`~/Downloads/slide.pptx`',
+    ].join('\n\n')
+    const items: ChatItem[] = [{ ...base, id: 'a1', kind: 'assistant_message', text, images: [
+      { src: '/Users/me/Downloads/slide.png', id: imageId },
+      { src: './out/my diagram.svg', id: svg },
+      { src: '/tmp/gone.png', error: 'missing' },
+    ] }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    expect(screen.getByRole('img', { name: 'Slide preview' })).toHaveAttribute('src', `/chat-images/${imageId}`)
+    expect(screen.getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
+    expect(screen.getByRole('img', { name: 'Image not found: /tmp/gone.png' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'web' })).toHaveAttribute('src', 'https://example.com/chart.png')
+    expect(screen.getByRole('img', { name: "Image isn't available: javascript:alert(1)" })).toBeInTheDocument()
+    expect(document.querySelector('img[src^="javascript:"], img[src^="/Users/"]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open PR diagram' }))
+    const viewer = await screen.findByRole('dialog', { name: 'PR diagram' })
+    expect(within(viewer).getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
+  })
+
+  it('zooms and pans the enlarged image, and fits it again', async () => {
+    const items: ChatItem[] = [{ ...base, id: 'u1', kind: 'user_message', text: 'look', images: [{ id: imageId, name: 'wide.png' }] }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open wide.png' }))
+    const viewer = await screen.findByRole('dialog', { name: 'wide.png' })
+    const image = within(viewer).getByRole('img', { name: 'wide.png' })
+    Object.defineProperty(image, 'naturalWidth', { value: 4000 })
+    Object.defineProperty(image, 'naturalHeight', { value: 1000 })
+    fireEvent.load(image)
+    const percent = () => within(viewer).getByText(/^\d+%$/).textContent
+    const opened = percent()
+    expect(within(viewer).getByRole('button', { name: 'Zoom out' })).toBeDisabled()
+    fireEvent.click(within(viewer).getByRole('button', { name: 'Zoom in' }))
+    expect(Number.parseInt(percent()!)).toBeGreaterThan(Number.parseInt(opened!))
+    fireEvent.keyDown(window, { key: '+' })
+    const zoomed = image.style.width
+    fireEvent.click(within(viewer).getByRole('button', { name: 'Fit to screen' }))
+    expect(percent()).toBe(opened)
+    expect(image.style.width).not.toBe(zoomed)
+    fireEvent.keyDown(window, { key: '0' })
+    expect(within(viewer).getByRole('button', { name: 'Fit to screen' })).toBeDisabled()
+
+    // Zoomed in, a click on the image (or the first click of a double-click) keeps the viewer open.
+    fireEvent.keyDown(window, { key: '+' })
+    const surface = image.parentElement!
+    fireEvent.pointerDown(image, { pointerId: 1, button: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerUp(surface, { pointerId: 1, clientX: 10, clientY: 10 })
+    fireEvent.doubleClick(image)
+    expect(screen.getByRole('dialog', { name: 'wide.png' })).toBeInTheDocument()
+    expect(within(viewer).getByRole('button', { name: 'Fit to screen' })).toBeDisabled()
+    // A click on the space around it still closes it.
+    fireEvent.pointerDown(surface, { pointerId: 2, button: 0, clientX: 5, clientY: 5 })
+    fireEvent.pointerUp(surface, { pointerId: 2, clientX: 5, clientY: 5 })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'wide.png' })).toBeNull())
+  })
+
+  it('waits for a streaming reply to store its image instead of showing a broken one', () => {
+    const items: ChatItem[] = [{ ...base, id: 'a1', kind: 'assistant_message', status: 'running', text: 'Here: ![Chart](/tmp/chart.png)' }]
+    const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
+    render(<ChatPane chat={state} connected focused={false} onFocus={vi.fn()} onSend={vi.fn()} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+    expect(screen.getByText('Chart')).toBeInTheDocument()
+    expect(document.querySelector('img[src="/tmp/chart.png"]')).toBeNull()
   })
 })

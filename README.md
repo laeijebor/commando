@@ -42,6 +42,25 @@ COMMANDO_OWNER_EMAIL=leo@ijebor.com npm start
 
 The production daemon serves the compiled app and prints its `127.0.0.1` URL.
 
+### Desktop release build
+
+For everyday use, run the desktop app as a Release build against a production daemon instead of `npm run desktop:dev`. The dev setup loads the Vite dev server (React's development build) and, in Debug, draws terminals without Metal; both cost noticeably more CPU.
+
+```bash
+# Stop npm run desktop:dev first; both use port 4310.
+COMMANDO_TOKEN=<your token> npm run desktop:release -- install
+```
+
+`install` creates `~/.commando/desktop-release.env` (port, token and any other daemon variables), builds the web UI and the Release app, installs `/Applications/Commando.app`, and registers a launchd agent (`dev.commando.daemon`) that keeps `NODE_ENV=production` running through a login shell. It also puts a **Rebuild Commando** icon on the Desktop, which rebuilds from this checkout, restarts the daemon and relaunches the app, posting a notification when it finishes or fails (log: `~/.commando/logs/rebuild.log`; daemon log: `~/.commando/logs/daemon.log`).
+
+```bash
+npm run desktop:release -- rebuild   # same as the Desktop icon
+npm run desktop:release -- stop      # quit the app and disable the daemon (also across logins), e.g. before npm run desktop:dev
+npm run desktop:release -- start     # enable the daemon again and open the app
+```
+
+Run `install` from the main checkout: the agent and the Rebuild icon point at it. The daemon runs the server code straight from that checkout, so server changes on `main` take effect at the next daemon restart (normally a rebuild), while UI changes need the rebuild.
+
 ## Commands
 
 ```bash
@@ -396,6 +415,7 @@ Opting in holds agent hooks open exactly like Island does: a pending permission 
 | --- | --- | --- |
 | `COMMANDO_PORT` | Local daemon port | `4310` |
 | `COMMANDO_GITHUB` | `on`/`off`: GitHub reads (PR lists, quick look, branch PR badges). Daemons on other ports share the same `gh` API budget | `on` at `4310`, `off` on other ports |
+| `COMMANDO_TURN_BRIEFS` | Case-insensitive `off`/`0`/`false` disables model turn briefs; `on`/`1`/`true` enables them | Enabled at `4310`, disabled on other ports |
 | `COMMANDO_OWNER_EMAIL` | Enables email/password auth and restricts first-owner creation to this address | Token-only mode |
 | `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
 | `COMMANDO_AUTH_SECRET_PATH` | Generated cookie-signing secret | `~/.commando/auth.secret` |

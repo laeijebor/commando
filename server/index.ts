@@ -2,13 +2,21 @@ import { AgentChatsApi } from './agent-chats-api.js'
 import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
+import { AgentLoginProber, AgentProfilePreferences, handleAgentProfilesApi } from './agent-profiles.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { CanvasPush } from './canvas-push.js'
+import { ChatTileEvents, defaultChatTileEventsPath } from './chat-tile-events.js'
 import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
+import { Commander } from './commander.js'
+import { createCommanderStatusObserver } from './commander-observer.js'
+import { CommanderApi } from './commander-api.js'
+import { CommanderRelays } from './commander-relays.js'
+import { CommanderStalls } from './commander-stalls.js'
+import { TurnBriefs } from './turn-briefs.js'
 import { defaultGuideStatePath, GuideStateStore, Guides } from './guides.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
@@ -20,6 +28,7 @@ import {
   type ServerResponse,
 } from 'node:http'
 import { extname, join, resolve, sep } from 'node:path'
+import { findResumeRollout, type ResumeRolloutLookup } from './external-agents/codex-rollout.js'
 import { homedir } from 'node:os'
 import type { Duplex } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
@@ -34,7 +43,10 @@ import type {
   SavedWorkspace,
   ServerMessage,
   SessionBrief,
+  TmuxPane,
+  WebPane,
 } from '../shared/protocol.js'
+import { isRedlineArtifactUrl, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
@@ -65,13 +77,16 @@ import { handleLinearApi } from './linear-api.js'
 import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
+import { defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { TmuxSessionActions } from './tmux-session-actions.js'
 import { SessionArchives } from './session-archives.js'
-import { releaseClosedSimLease } from './sim-lease-release.js'
+import { releaseClosedSimLease, runSimTool } from './sim-lease-release.js'
+import { POOL_REAP_INTERVAL_MS, SimPoolReaper, leasedUdidsInSiblingFiles, simPoolReaperEnabled } from './sim-pool-reaper.js'
 import { AgentResumeService, readPaneAgentLaunch, readProcessTable } from './agent-resume.js'
 import { isShellCommand, parseProcessTable, type ChatResumeSettings } from './agent-resume-command.js'
 import { ChatHandoffStore, type ChatHandoff } from './chat-handoffs.js'
@@ -87,6 +102,7 @@ import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
 import { SessionPreferenceStore } from './session-preferences.js'
@@ -107,9 +123,10 @@ import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
-import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
+import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
+import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
-import { AGENT_HOST_WS_PATH, isChatProvider } from '../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -142,6 +159,8 @@ import { snapshotsHaveSameState } from './snapshot-state.js'
 import { detectSessionRenames } from './session-renames.js'
 import { stripAnsi } from './terminal-text.js'
 import { TmuxResurrectSaver } from './tmux-resurrect-saver.js'
+import { WsBacklog } from './ws-backlog.js'
+import { chatHistoryBudget, chatMessageForClient } from './chat-replay.js'
 import {
   AgentStatusRegistry,
   type AgentStatusChange,
@@ -150,12 +169,6 @@ import {
 const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
-/**
- * Output a browser may leave unread before the daemon drops it as stalled. A
- * connect burst carries every chat's items (hosts cap each at 2 MB), so this
- * sits well above any one burst.
- */
-const MAX_WS_BUFFERED_BYTES = 32 * 1024 * 1024
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -188,6 +201,12 @@ type ClientState = {
   releaseInteractions: (() => void) | null
   answeredRequestIds: IdempotencyKeyMemory
   releaseUsage: (() => void) | undefined
+  /** Judges a growing outgoing queue by whether it drains, not by its size alone. */
+  backlog: WsBacklog
+  /** Per-chat byte budget the client asked for (the phone); undefined for full chats. */
+  chatHistoryBytes: number | undefined
+  /** Chats this client fetched in full with `chat_history`, kept whole from then on. */
+  fullChatPanes: Set<string>
 }
 
 type PaneStreamState = {
@@ -272,13 +291,15 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
 
 function send(client: ClientState, message: ServerMessage): boolean {
   if (client.socket.readyState !== WebSocket.OPEN) return false
-  // Judge the backlog already queued, not the message itself: one large frame
-  // (a chat snapshot) must not drop a client that is keeping up.
-  if (client.socket.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
-    client.socket.close(1013, 'Client is not consuming output')
+  // Judge the backlog already queued, not the message itself, and by whether
+  // it drains: a phone still downloading the connect burst is keeping up.
+  const stalled = client.backlog.check(client.socket.bufferedAmount)
+  if (stalled) {
+    client.socket.close(1013, stalled)
     return false
   }
-  client.socket.send(JSON.stringify(message))
+  if (message.type === 'chat_removed') client.fullChatPanes.delete(message.paneId)
+  client.backlog.write(client.socket, JSON.stringify(chatMessageForClient(message, client.chatHistoryBytes, client.fullChatPanes)))
   return true
 }
 
@@ -523,6 +544,7 @@ async function main(): Promise<void> {
   })
   const workspaces = new WorkspaceStore()
   const sessionBriefs = new SessionBriefStore()
+  const sessionPreferences = new SessionPreferenceStore()
   const paneScreenshots = new PaneScreenshotRegistry({ statePath: defaultPaneScreenshotStatePath(port) })
   await sessionBriefs.load().catch((error: unknown) => {
     console.error('[commando] failed to load persisted session briefs', error)
@@ -540,6 +562,10 @@ async function main(): Promise<void> {
   const webPaneAgentRequests = new WebPaneAgentRequests()
   const canvasSpotlight = new CanvasSpotlightStore()
   let canvasPush: CanvasPush | undefined
+  const chatTileEvents = new ChatTileEvents({
+    path: defaultChatTileEventsPath(port),
+    publish: (paneId, events) => broadcast({ type: 'chat_tile_events', paneId, events }),
+  })
   let guides: Guides | undefined
   const feedbackJournal = new FeedbackJournal()
   const pendingJournal = new PendingNotesJournal()
@@ -560,7 +586,10 @@ async function main(): Promise<void> {
   // onDrain fires only at request time, safely after publishWebPanes exists.
   webPaneFeedback = new WebPaneFeedbackStore(
     feedbackJournal,
-    () => publishWebPanes(),
+    (id) => {
+      publishWebPanes()
+      chatTileEvents.drained(id)
+    },
     Date.now,
     releaseAttachment,
     (id, keys) => canvasPush?.acknowledge(id, keys),
@@ -579,6 +608,7 @@ async function main(): Promise<void> {
     onTargetDown: (webPaneId) => webTileRelay.dropTile(webPaneId),
     onPageTitle: (webPaneId, title) => {
       if (webPanes.setTitle(webPaneId, title)) publishWebPanes()
+      chatTileEvents.retitle(webPaneId, title)
     },
     // Page answers land in the daemon's pending store first — a tile with no
     // connected viewer (hidden tab, other session focused) must not drop them.
@@ -640,10 +670,12 @@ async function main(): Promise<void> {
   const linear = new LinearService()
   const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
   if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
-  const prs = new PrService({ githubDisabledReason: githubOffReason })
+  const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
   const gitWorktrees = new GitWorktreeService()
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
-  const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees)
+  // The profile store is set up further down; this only runs when a pane starts.
+  const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees, undefined, undefined,
+    async () => defaultClaudeProfile(await agentProfilePreferences.claudeProfiles({ includeHidden: false }))?.configDir)
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
@@ -759,7 +791,15 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
-  const simLeaseRegistry = new SimLeaseRegistry({ statePath: defaultSimLeaseStatePath(port), pool: new SimPoolRegistry({ statePath: defaultSimPoolStatePath() }) })
+  const simLeaseStatePath = defaultSimLeaseStatePath(port)
+  const simLeaseRegistry = new SimLeaseRegistry({ statePath: simLeaseStatePath, pool: new SimPoolRegistry({ statePath: defaultSimPoolStatePath() }) })
+  const simPoolReaper = simPoolReaperEnabled(process.env, port, DEFAULT_PORT) ? new SimPoolReaper({
+    poolUdids: () => simLeaseRegistry.pool.list().map((member) => member.udid),
+    isHeld: (udid) => simLeaseRegistry.isHeld(udid),
+    otherLeasedUdids: () => leasedUdidsInSiblingFiles(simLeaseStatePath),
+    runner: runSimTool,
+    log: (message) => console.log(`[sim-pool] ${message}`),
+  }) : undefined
 
   const publishedBriefs = new Map(sessionBriefs.values().map((brief) => [brief.paneId, brief]))
   const briefTargetIds = new Map<string, string>()
@@ -837,7 +877,11 @@ async function main(): Promise<void> {
     }
   }
 
+  let observeCommanderStatus: ((change: AgentStatusChange, restored?: boolean) => void) | undefined
+  let reconcileCommander: (() => void) | undefined
+
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
+    observeCommanderStatus?.(change, restored)
     if (change?.type === 'upsert') {
       if (reconcileWebPaneAgentSession(change.status.paneId)) publishWebPanes()
       void canvasPush?.statusChanged(change.status.paneId)
@@ -915,6 +959,8 @@ async function main(): Promise<void> {
     return hostBuildCache.build
   }
   const interactions = new AgentInteractionBroker()
+  const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
+  const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
   const agentHosts: AgentHostHub = new AgentHostHub({
@@ -923,6 +969,8 @@ async function main(): Promise<void> {
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
     broadcast: (message) => {
       if (message.type === 'chat_session' && (message.session.status === 'running' || message.session.status === 'waiting')) noteChatBusy?.(message.paneId)
+      // An idle chat can take the redline answers that arrived while it worked.
+      if (message.type === 'chat_session' && message.session.status === 'idle') void canvasPush?.statusChanged(message.paneId)
       broadcast(message)
     },
     verifyHost: async (paneId, hostPid) => {
@@ -943,6 +991,7 @@ async function main(): Promise<void> {
     }),
     log: (message) => console.log(message),
     handoffs: chatHandoffs,
+    replyImages: (items, cwd) => replyImages.attach(items, cwd),
     onHandoffsChange: () => publishChatHandoffs(),
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
@@ -954,7 +1003,14 @@ async function main(): Promise<void> {
       if (!pane || !chat || chat.session.status === 'closed') return undefined
       return { paneId: pane.id, connected: chat.hostConnected, busy: chat.session.status !== 'idle' }
     },
-    send: (paneId, prompt) => agentHosts.send(paneId, prompt, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {}),
+    send: (paneId, prompt, round) => {
+      // The prompt names its card so the chat shows the card instead of the raw text.
+      const id = chatTileEvents.reserveId()
+      const sent = agentHosts.send(paneId, `${prompt}\n${tileEventMarker([id])}`, randomUUID(), [], agentHosts.takesTurnFlow(paneId) ? { delivery: 'queue' } : {})
+      const sessionId = agentHosts.states().find((chat) => chat.paneId === paneId)?.session.sessionId
+      if (sent) chatTileEvents.autofix({ ...round, id, paneId, ...(sessionId ? { sessionId } : {}) })
+      return sent
+    },
     log: (error) => console.error('[commando] PR auto-fix failed', error),
   })
   const externalAgents = new ExternalAgentWatcher({
@@ -981,13 +1037,16 @@ async function main(): Promise<void> {
     const pid = Number((await runTmuxCreateCommand([...tmuxSocketArgsFromEnv(), 'display-message', '-p', '-t', paneId, '#{pane_pid}']).catch(() => '')).trim())
     return Number.isInteger(pid) && pid > 0 ? pid : undefined
   }
-  const chatImages = new ChatImageStore()
   const chatSends = new Map<string, Promise<void>>()
   const deliverChatSend = async (client: ClientState, message: Extract<ClientMessage, { type: 'chat_send' }>): Promise<void> => {
     const images = message.images ?? []
     if (images.length) {
       if (!agentHosts.takesInput(message.paneId)) {
         sendError(client, 'chat_unavailable', 'This chat started before images were supported; restart it to send images', message.requestId)
+        return
+      }
+      if (images.some((image) => isChatVideoId(image.id)) && !agentHosts.takesVideos(message.paneId)) {
+        sendError(client, 'chat_unavailable', 'This chat started before videos were supported; restart it to send videos', message.requestId)
         return
       }
       const stored = await Promise.all(images.map((image) => chatImages.exists(image.id)))
@@ -1479,11 +1538,19 @@ async function main(): Promise<void> {
           { serverId: snapshotServerId, sessions: snapshot.sessions },
           { serverId: nextServerId, sessions: nextSnapshot.sessions },
         )
+        // Record tmux-side renames before publishing the snapshot, so a grouping save
+        // reconciled against the new names keeps repository-group membership.
+        for (const { sessionId, previousName, name } of sessionRenames) {
+          await sessionPreferences.recordSessionRename(sessionId, previousName, name).catch((error: unknown) => {
+            console.warn('[commando] Session name update failed after tmux rename', error)
+          })
+        }
         snapshotRevision = nextSnapshot.revision
         if (snapshotReady) previousPaneIds = new Set(snapshot.panes.map((pane) => pane.id))
         snapshot = nextSnapshot
         snapshotServerId = nextServerId
         snapshotReady = true
+        reconcileCommander?.()
         // Invalidate pending tab ownership before any brief/status publication
         // can stamp it with evidence from a replacement foreground agent.
         for (const pane of snapshot.panes) {
@@ -1526,7 +1593,7 @@ async function main(): Promise<void> {
           // A switch hands the same conversation from the chat host to Claude Code, so the
           // registry still scopes its status to the host's process; the resume checks that
           // Claude Code in the pane really resumes that conversation.
-          const live = agentStatuses.liveHookStatus(paneId, pane.command)
+          const live = agentStatuses.liveHookStatus(paneId, pane.command) ?? agentStatuses.chatHostStatus(paneId)
           if (live) return live
           const status = agentStatuses.get(paneId)
           const switched = status?.source === 'hook' && isChatProvider(status.provider) && status.agentSessionId !== undefined
@@ -1664,7 +1731,15 @@ async function main(): Promise<void> {
       })
   }
 
+  const tmuxSessionActions = new TmuxSessionActions()
+  const saveResurrectAfter = (change: string) => {
+    void resurrectSaver.save().catch((error: unknown) => {
+      console.error(`[commando] tmux Resurrect save failed after ${change}`, error)
+    })
+  }
   const sessionManagement = new SessionManagementApi({
+    actions: tmuxSessionActions,
+    preferences: sessionPreferences,
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
@@ -1681,16 +1756,8 @@ async function main(): Promise<void> {
       worktreeForDirectory: (directory) => gitWorktrees.worktreeForDirectory(directory),
       removeWorktree: (worktree) => gitWorktrees.removeWorktree(worktree),
     }),
-    afterSessionDeleted: () => {
-      void resurrectSaver.save().catch((error: unknown) => {
-        console.error('[commando] tmux Resurrect save failed after session deletion', error)
-      })
-    },
-    afterSessionRestored: () => {
-      void resurrectSaver.save().catch((error: unknown) => {
-        console.error('[commando] tmux Resurrect save failed after session restore', error)
-      })
-    },
+    afterSessionDeleted: () => saveResurrectAfter('session deletion'),
+    afterSessionRestored: () => saveResurrectAfter('session restore'),
     beforeWindowDeleted: async (windowId) => {
       await tmux.releaseWindowPaneResizes(windowId)
     },
@@ -1816,6 +1883,10 @@ async function main(): Promise<void> {
     paneExists,
     paneCommand: (paneId) => paneForId(paneId)?.command,
     onChange: publishAgentStatusChange,
+    onPullRequestsCreated: (paneId, refs) => {
+      const targetId = paneForId(paneId)?.targetId
+      if (targetId) void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
+    },
     interactions,
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,
@@ -1891,7 +1962,7 @@ async function main(): Promise<void> {
   const sendAgentTerminal = async (paneId: string, text: string): Promise<void> => {
     const pane = paneForId(paneId)
     const status = agentStatuses.get(paneId)
-    if (!pane || pane.dead || agentHosts.owns(paneId) || !status || status.status !== 'done' || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
+    if (!pane || pane.dead || agentHosts.owns(paneId) || !status || !(status.status === 'done' || (status.status === 'failed' && status.source === 'hook')) || status.provider === 'unknown' || processStatusForPane(pane).provider !== status.provider) throw new Error('Agent is unavailable')
     // Bracketed paste keeps the multi-line prompt as one input instead of typed newlines.
     await tmux.pasteText(paneId, text)
     await new Promise((resolve) => setTimeout(resolve, 150))
@@ -1899,19 +1970,27 @@ async function main(): Promise<void> {
   }
   // One paste at a time per agent pane, whichever tab is pushing.
   const agentPushes = new Set<string>()
+  const chatSessionFor = (paneId: string) => agentHosts.states().find((chat) => chat.paneId === paneId)?.session
+  /** A canvas's manifest title, or a page's title; undefined when neither is known yet. */
+  const tileTitle = (pane: WebPane): string | undefined => {
+    if (pane.content?.kind === 'canvas') {
+      const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
+      try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || undefined } catch { /* The journal still works without a manifest. */ }
+      return undefined
+    }
+    return pane.title?.trim() || undefined
+  }
   canvasPush = new CanvasPush({
     sending: agentPushes,
     repoRoot: fileURLToPath(new URL('../', import.meta.url)),
     pane: (id) => webPanes.get(id),
-    title: (pane) => {
-      if (pane.content?.kind === 'canvas') {
-        const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
-        try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || 'Canvas' } catch { /* The journal still works without a manifest. */ }
-      }
-      return 'Canvas'
-    },
+    title: (pane) => tileTitle(pane) ?? (pane.content?.kind === 'canvas' ? 'Canvas' : tileFileName(pane.url)),
     owns: (paneId) => agentHosts.owns(paneId),
     sendChat: (paneId, text, requestId) => agentHosts.send(paneId, text, requestId),
+    undelivered: (webPaneId, keys) => webPaneFeedback.undelivered(webPaneId, keys),
+    chatIdle: (paneId) => chatSessionFor(paneId)?.status === 'idle',
+    eventIds: (webPaneId, keys) => chatTileEvents.idsFor(webPaneId, keys),
+    delivered: (ids) => chatTileEvents.delivered(ids),
     status: (paneId) => agentStatuses.get(paneId),
     sendTerminal: sendAgentTerminal,
   })
@@ -1927,6 +2006,8 @@ async function main(): Promise<void> {
     sending: agentPushes,
   })
   const repoPrepareCommands = new RepoPrepareCommands(defaultRepoPrepareCommandsPath(port))
+  const agentProfilePreferences = new AgentProfilePreferences()
+  const agentLoginProber = new AgentLoginProber()
   const agentChatsApi = new AgentChatsApi({
     agentToken: agentHookToken,
     ownerAuthorized: requestIsAuthorized,
@@ -1953,13 +2034,88 @@ async function main(): Promise<void> {
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
   const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const commander = new Commander({
+    statePath: `${sessionBriefs.statePath}.commander.json`, snapshot: () => snapshot,
+    creator: tmuxCreator, refreshSnapshot: refreshSnapshotFresh,
+    changed: (state) => broadcast({ type: 'commander_state', state }),
+    closeSession: async (sessionId) => {
+      await tmuxSessionActions.delete(sessionId)
+      saveResurrectAfter('switching the Commander profile')
+    },
+  })
+  await commander.load()
+  const commanderRelays = new CommanderRelays({
+    statePath: `${sessionBriefs.statePath}.commander-relays.json`, pane: paneForId,
+    chatStatus: (id) => agentHosts.states().find((state) => state.paneId === id)?.session.status,
+    status: (id) => agentStatuses.get(id), owns: (id) => agentHosts.owns(id),
+    sendChat: (id, text, requestId, options) => agentHosts.send(id, text, requestId, [], options),
+    sendTerminal: async (id, text) => {
+      if (agentPushes.has(id)) throw new Error('Another delivery is in progress')
+      agentPushes.add(id)
+      try { await sendAgentTerminal(id, text) } finally { agentPushes.delete(id) }
+    },
+    changed: (relay) => broadcast({ type: 'commander_relay', relay }),
+  })
+  await commanderRelays.load()
+  const commanderError = (error: unknown): void => console.warn('[commando] Commander observer failed', error)
+  const commanderConfigDir = async (pane: TmuxPane): Promise<string | undefined> => {
+    const chat = agentHosts.states().find((s) => s.paneId === pane.id)?.session
+    if (chat?.configDir) return chat.configDir
+    const status = agentStatuses.get(pane.id)
+    if (status?.provider !== 'claude') return undefined
+    if (pane.processId !== undefined) {
+      const launch = await readPaneAgentLaunch(pane.processId, 'claude').catch(() => undefined)
+      if (launch?.env.CLAUDE_CONFIG_DIR) return launch.env.CLAUDE_CONFIG_DIR
+    }
+    return status.agentSessionId ? (await chatConversations.find('claude', status.agentSessionId))?.configDir : undefined
+  }
+  const turnBriefs = new TurnBriefs({
+    statePath: `${sessionBriefs.statePath}.turn-briefs.json`, port,
+    commanderTarget: () => commander.state().targetId,
+    configDir: async (id) => { const pane = paneForId(id); return pane ? commanderConfigDir(pane) : undefined },
+    changed: (brief) => {
+      broadcast({ type: 'turn_brief', brief })
+      void commanderStalls.check().catch(commanderError)
+    },
+  })
+  await turnBriefs.load()
+  const commanderStalls: CommanderStalls = new CommanderStalls({
+    agents: () => commanderApi.agents(), status: (id) => agentStatuses.get(id),
+    commander: () => commander.state(), relays: commanderRelays,
+  })
+  const codexRolloutLookups = new Map<string, ResumeRolloutLookup>()
+  const commanderApi: CommanderApi = new CommanderApi({
+    agentToken: agentHookToken, ownerAuthorized: requestIsAuthorized, snapshot: () => snapshot,
+    claudeProfiles: () => agentProfilePreferences.claudeProfiles({ includeHidden: true }),
+    status: (id) => agentStatuses.get(id), commander, relays: commanderRelays, stalls: commanderStalls,
+    brief: (target) => turnBriefs.get(target), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
+    chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
+    owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id), seen: () => paneSeen.snapshot(),
+    configDir: commanderConfigDir,
+    screen: async (pane) => (await captureRenderedCompanionOutput(tmux, pane.sessionId, pane.id)).output,
+    codexRollout: async (sessionId) => (await findResumeRollout(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions'), sessionId, Date.now(), codexRolloutLookups))?.path,
+  })
+  observeCommanderStatus = createCommanderStatusObserver({
+    pane: paneForId, owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id),
+    finalMessage: (id) => agentStatuses.finalMessage(id), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
+    chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
+    briefs: turnBriefs, stalls: commanderStalls, relays: commanderRelays, error: commanderError,
+  })
+  reconcileCommander = () => {
+    commander.reconcile()
+    void commanderRelays.flush().catch(commanderError)
+    void commanderStalls.check().catch(commanderError)
+  }
+  turnBriefs.start()
+  commanderRelays.start()
+  commanderStalls.start()
   const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
   conversationTitles.start()
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
     resumes: agentResume,
     briefs: sessionBriefs,
-    sessionPreferences: new SessionPreferenceStore(),
+    sessionPreferences,
     snapshot: () => snapshot,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
@@ -1980,10 +2136,25 @@ async function main(): Promise<void> {
     pending: webPanePending,
     canvasThreads,
     spotlight: canvasSpotlight,
-    onCanvasSent: (id, notes) => {
-      try { canvasSnapshots.captureSent(webPanes.get(id), notes) }
+    onFeedbackSent: (id, notes) => {
+      const pane = webPanes.get(id)
+      try { canvasSnapshots.captureSent(pane, notes) }
       catch (error) { console.warn('[commando] canvas snapshot failed', error) }
+      const source = tileSource(pane)
+      const session = pane ? chatSessionFor(pane.anchorPaneId) : undefined
+      if (pane && source && session && agentHosts.owns(pane.anchorPaneId)) {
+        // A waiting poll already has the notes; otherwise a redline Send waits for a busy agent to go idle.
+        const keys = notes.flatMap((note) => note.deliveryKey ? [note.deliveryKey] : [])
+        const status = keys.length && !webPaneFeedback.undelivered(id, keys).length ? 'collected'
+          : source === 'redline' && session.status !== 'idle' ? 'waiting' : 'sent'
+        chatTileEvents.sent(pane, source, notes, { title: tileTitle(pane), status, sessionId: session.sessionId })
+      }
       void canvasPush?.deliver(id, notes)
+    },
+    onOpened: (pane) => {
+      if (pane.openedBy !== 'agent' || !agentHosts.owns(pane.anchorPaneId)) return
+      const source = pane.content?.kind === 'canvas' ? 'canvas' : !pane.content && isRedlineArtifactUrl(pane.url) ? 'redline' : undefined
+      if (source) chatTileEvents.opened(pane, source, tileTitle(pane), chatSessionFor(pane.anchorPaneId)?.sessionId)
     },
     attachmentStore: webPaneAttachments,
     agentRequests: webPaneAgentRequests,
@@ -2403,6 +2574,12 @@ async function main(): Promise<void> {
         })
         return
       }
+      case 'chat_mcp': {
+        void agentHosts.mcp(message.paneId, message.request).then((result) => {
+          send(client, { type: 'chat_mcp_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        })
+        return
+      }
       case 'chat_subagent_transcript': {
         void agentHosts.subagentTranscript(message.paneId, message.agentId).then((result) => {
           send(client, { type: 'chat_subagent_transcript_result', paneId: message.paneId, requestId: message.requestId, ...result })
@@ -2447,6 +2624,17 @@ async function main(): Promise<void> {
       case 'chat_carry_taken':
         agentHosts.takeCarried(message.paneId, message.carryId, message.images)
         return
+      case 'chat_history': {
+        const chat = agentHosts.states().find((state) => state.paneId === message.paneId)
+        if (!chat) {
+          sendError(client, 'chat_unavailable', 'No chat is running in this pane', message.requestId)
+          return
+        }
+        // Unbounded for this client from now on: it asked for the whole conversation.
+        client.fullChatPanes.add(message.paneId)
+        send(client, { type: 'chat_state', chat })
+        return
+      }
       case 'chat_return': {
         const pane = paneForId(message.paneId)
         if (!pane) {
@@ -2554,7 +2742,8 @@ async function main(): Promise<void> {
   })
   agentHostWebSocketServer.on('connection', (socket) => agentHosts.connect(socket))
 
-  webSocketServer.on('connection', (socket) => {
+  webSocketServer.on('connection', (socket, request: IncomingMessage) => {
+    const connectUrl = requestUrl(request)
     const client: ClientState = {
       id: randomUUID(),
       socket,
@@ -2569,6 +2758,9 @@ async function main(): Promise<void> {
       releaseInteractions: null,
       answeredRequestIds: new IdempotencyKeyMemory(),
       releaseUsage: undefined,
+      backlog: new WsBacklog(),
+      chatHistoryBytes: connectUrl ? chatHistoryBudget(connectUrl) : undefined,
+      fullChatPanes: new Set(),
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
@@ -2577,12 +2769,16 @@ async function main(): Promise<void> {
     send(client, webPanesMessage())
     void queueBriefPublication(async () => {
       send(client, { type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
+      send(client, { type: 'turn_brief_snapshot', briefs: turnBriefs.values() })
+      send(client, { type: 'commander_relay_snapshot', relays: commanderRelays.values() })
+      send(client, { type: 'commander_state', state: commander.state() })
     })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
     for (const { paneId, runs } of externalAgents.snapshots()) send(client, { type: 'chat_external_runs', paneId, runs })
+    for (const { paneId, events } of chatTileEvents.snapshots()) send(client, { type: 'chat_tile_events', paneId, events })
     send(client, chatHandoffsMessage())
     send(client, { type: 'chat_stash', entries: chatStash.list() })
     const replayStatuses = agentStatuses.values()
@@ -2688,6 +2884,7 @@ async function main(): Promise<void> {
       if (await simLeaseApi.handle(request, response, url)) return
       if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
+      if (await commanderApi.handle(request, response, url)) return
       if (await agentChatsApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
       if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
@@ -2738,9 +2935,15 @@ async function main(): Promise<void> {
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await handleChatImageUpload(request, response, url, chatImages)) return
+        if (await handleChatVideoUpload(request, response, url, chatImages)) return
         if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleRepoPrepareCommands(request, response, url, repoPrepareCommands)) return
+        if (await handleAgentProfilesApi(request, response, url, {
+          preferences: agentProfilePreferences, prober: agentLoginProber, creator: tmuxCreator,
+          sessionNames: () => snapshot.sessions.map((session) => session.name),
+          refreshSnapshot: async () => { await refreshSnapshotFresh() },
+        })) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await sessionIdeApi.handle(request, response, url)) return
@@ -2762,6 +2965,7 @@ async function main(): Promise<void> {
           async () => {
             await refreshSnapshot()
           },
+          () => agentProfilePreferences.claudeProfiles({ includeHidden: false }),
         )) return
         writeJson(response, 404, { error: 'Not found' })
         return
@@ -2786,6 +2990,8 @@ async function main(): Promise<void> {
 
   const httpServers = networkAccess.listeners.map((listener) => {
     const server = createServer(requestListener)
+    // A 500 MB chat video takes longer than Node's default 5 minutes on a slow tailnet link.
+    server.requestTimeout = 30 * 60 * 1000
     server.on('upgrade', (request, socket, head) => {
       void (async () => {
         if (!networkAccess.validRequest(request)) {
@@ -2892,6 +3098,9 @@ async function main(): Promise<void> {
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
   resurrectSaver.start()
+  const simPoolReaperTimer = simPoolReaper && setInterval(() => {
+    void simPoolReaper.sweep().catch((error: unknown) => console.warn('[sim-pool] unleased simulator check failed', error))
+  }, POOL_REAP_INTERVAL_MS)
 
   const encodedToken = encodeURIComponent(token)
   console.log(`[commando] development: http://127.0.0.1:${DEVELOPMENT_WEB_PORT}/${auth ? '' : `#token=${encodedToken}`}`)
@@ -2909,6 +3118,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     clearInterval(snapshotTimer)
+    if (simPoolReaperTimer) clearInterval(simPoolReaperTimer)
     externalAgents.close()
     prAutofix.stop()
     resurrectSaver.stop()
@@ -2917,6 +3127,9 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    turnBriefs.stop()
+    commanderRelays.stop()
+    commanderStalls.stop()
     conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()

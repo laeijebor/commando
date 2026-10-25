@@ -6,6 +6,7 @@ import {
   MAX_QUEUED_MESSAGES,
   attachmentNote,
   chatImageType,
+  isChatVideoId,
   isChatEffort,
   isChatPermissionMode,
   isModelValue,
@@ -33,7 +34,10 @@ import {
 } from '../../shared/agent-chat.js'
 import { ClaudeItemMapper, notedAttachmentPaths, planFromInput, questionsFromInput, relayPrompt, toolTitle, type ChatImageSink } from './claude-items.js'
 import { WorkspaceFileIndex } from './file-index.js'
+import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
+import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
+import { commanderAllowedTools } from '../commander-tools.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
 import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
@@ -67,6 +71,8 @@ export interface AgentSessionSpec {
   log?: (message: string) => void
   /** Claude Code just exited and handed the conversation back; the chat says so. */
   returnedFromClaudeCode?: boolean
+  /** Muse only: bypassPermissions runs without Muse's sandbox (`commando-agent muse --yolo`). */
+  fullAccess?: boolean
 }
 
 /** The chat image store as a session uses it (see server/chat-images.ts). */
@@ -317,7 +323,7 @@ export class AgentSession implements ChatProviderSession {
   private readonly mapper: ClaudeItemMapper
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
-  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], switchReady: [] }
+  private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], switchReady: [], restart: [] }
   private queryHandle: Query | null = null
   private info: ChatSessionInfo
   /** Set once Claude reports session_state_changed; it then decides idle and running. */
@@ -464,6 +470,8 @@ export class AgentSession implements ChatProviderSession {
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
         thinking: { type: 'adaptive', display: 'summarized' },
         permissionMode: this.spec.permissionMode,
+        // Commander may run its own CLI without asking; nothing else is pre-approved.
+        ...(commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
         ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
         // Load the same settings, skills, CLAUDE.md and hooks the TUI would.
         settingSources: ['user', 'project', 'local'],
@@ -685,12 +693,20 @@ export class AgentSession implements ChatProviderSession {
     for (const listener of this.listeners.switchReady) listener()
   }
 
-  /** The image blocks for a send, and notes naming each image's copy in the session's folder. */
+  /**
+   * The image blocks for a send, and notes naming each attachment's copy in
+   * the session's folder. A video is only its copy: Claude watches it with its
+   * own tools, so one that can't be saved fails the send.
+   */
   private async attach(images: readonly ChatImageRef[]): Promise<{ blocks: unknown[]; notes: string[] }> {
     if (!images.length) return { blocks: [], notes: [] }
     const store = this.spec.images
     if (!store) throw new Error('this host has no image folder')
     const attached = await Promise.all(images.map(async (image) => {
+      if (isChatVideoId(image.id)) {
+        const path = await store.stage(image.id, this.imageSessionId)
+        return { block: null, note: attachmentNote(image.name ?? image.id, path, 'video') }
+      }
       const [bytes, path] = await Promise.all([
         store.read(image.id),
         // Without a copy Claude still sees the image; it just has no file to open.
@@ -704,7 +720,7 @@ export class AgentSession implements ChatProviderSession {
         note: path ? attachmentNote(image.name ?? image.id, path) : null,
       }
     }))
-    return { blocks: attached.map((image) => image.block), notes: attached.flatMap((image) => image.note ? [image.note] : []) }
+    return { blocks: attached.flatMap((image) => image.block ? [image.block] : []), notes: attached.flatMap((image) => image.note ? [image.note] : []) }
   }
 
   /** The image folders Claude may open: this session's, and any its resumed notes name. */
@@ -766,7 +782,7 @@ export class AgentSession implements ChatProviderSession {
     this.input.push({
       type: 'user',
       // Images first: a /command in a text block after them still expands.
-      message: { role: 'user', content: blocks.length ? [...blocks, ...(withNotes ? [{ type: 'text', text: withNotes }] : [])] : prompt },
+      message: { role: 'user', content: blocks.length ? [...blocks, ...(withNotes ? [{ type: 'text', text: withNotes }] : [])] : withNotes },
       parent_tool_use_id: null,
       // 'now' ends the running turn early and runs this as its own turn: at once
       // while Claude writes; a command it has only just started is aborted, one
@@ -807,6 +823,13 @@ export class AgentSession implements ChatProviderSession {
     } catch (error) {
       return { items: [], error: `Couldn't read the subagent's transcript: ${errorText(error)}` }
     }
+  }
+
+  /** The session's MCP servers, as Claude Code's `/mcp` shows them, after acting on one when asked. */
+  async mcp(request: ChatMcpRequest): Promise<ChatMcpResult> {
+    const handle = this.queryHandle
+    if (!handle || this.info.status === 'closed' || this.info.status === 'error') return { servers: [], error: "This session isn't running" }
+    return runClaudeMcp(handle as ClaudeMcpHandle, request)
   }
 
   /** Files and folders for an `@` mention, from the session's folder. */
@@ -1215,11 +1238,16 @@ export class AgentSession implements ChatProviderSession {
       this.setSlashCommands(message.commands)
       return
     }
-    if (message.type === 'conversation_reset' && this.info.title) {
-      // /clear starts a new conversation, which gets its own title.
-      const { title: _previous, ...rest } = this.info
-      this.info = rest
-      this.emitSession()
+    if (message.type === 'conversation_reset') {
+      // /clear starts a new conversation, which gets its own title and an empty timeline.
+      if (this.info.title) {
+        const { title: _previous, ...rest } = this.info
+        this.info = rest
+        this.emitSession()
+      }
+      this.mapper.clear()
+      this.emitItems(this.mapper.handle(message), true)
+      return
     }
     if (message.type === 'system' && (message.subtype === 'init' || message.subtype === 'status')) {
       // Claude re-sends init each turn, and status when the mode changes (e.g. entering plan mode itself).
@@ -1312,8 +1340,8 @@ export class AgentSession implements ChatProviderSession {
     for (const listener of this.listeners.session) listener({ ...this.info })
   }
 
-  private emitItems(items: ChatItem[]): void {
-    if (!items.length) return
-    for (const listener of this.listeners.items) listener(items)
+  private emitItems(items: ChatItem[], replace?: true): void {
+    if (!items.length && !replace) return
+    for (const listener of this.listeners.items) listener(items, replace)
   }
 }

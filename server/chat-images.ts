@@ -1,16 +1,23 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { constants, createReadStream, existsSync, mkdirSync, renameSync, utimesSync, writeFileSync } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, utimes, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, open, readFile, readdir, rename, rmdir, stat, unlink, utimes, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import {
   CHAT_IMAGE_EXTENSIONS,
+  CHAT_VIDEO_EXTENSIONS,
   MAX_CHAT_IMAGE_BYTES,
-  chatImageType,
+  MAX_CHAT_VIDEO_BYTES,
+  chatImageContentType,
+  isChatAttachmentId,
   isChatImageId,
+  isChatVideoId,
+  isChatImageStillId,
+  isChatReplyImageId,
   type ChatImageRef,
   type ChatImageType,
+  type ChatVideoType,
 } from '../shared/agent-chat.js'
 
 /**
@@ -29,13 +36,32 @@ export function chatImagesDir(env: Record<string, string | undefined> = process.
   return env.COMMANDO_CHAT_IMAGES_DIR || join(homedir(), '.commando', 'chat-images')
 }
 
-/** Images in tool results can be larger than the ones people attach. */
-const MAX_STORED_IMAGE_BYTES = 32 * 1024 * 1024
+/** Images in tool results and replies can be larger than the ones people attach. */
+export const MAX_STORED_IMAGE_BYTES = 32 * 1024 * 1024
+/** A diagram is text; anything bigger is not one worth drawing. */
+const MAX_SVG_BYTES = 5 * 1024 * 1024
+/** The widest PNG drawn from an SVG: sharp on a phone, small enough to load quickly. */
+const STILL_MAX_WIDTH = 1600
 /** Unused images are pruned; a resumed transcript stores them again. */
 export const CHAT_IMAGE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 /** Claude session ids name the session folders; the same rule the host checks `--resume` with. */
 const SESSION_ID = /^[A-Za-z0-9-]{8,80}$/
-const TEMPORARY = /^\.[0-9a-f]{64}\.\w+\.[0-9a-f]+\.tmp$/
+const TEMPORARY = /^\.[0-9a-f]{64}\.[\w.]+\.[0-9a-f]+\.tmp$/
+/** A video being uploaded, before its hash is known. */
+const UPLOAD_TEMPORARY = /^\.upload\.[0-9a-f]+\.tmp$/
+
+/**
+ * The video type from its first bytes: an MP4 or QuickTime file (an `ftyp`
+ * box, or a bare QuickTime atom) or WebM (an EBML header).
+ */
+export function sniffVideoType(bytes: Uint8Array): ChatVideoType | null {
+  const ascii = (start: number, length: number) => String.fromCharCode(...bytes.subarray(start, start + length))
+  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return 'video/webm'
+  if (bytes.length < 12) return null
+  const box = ascii(4, 4)
+  if (box === 'ftyp') return ascii(8, 4) === 'qt  ' ? 'video/quicktime' : 'video/mp4'
+  return ['moov', 'mdat', 'wide', 'free', 'skip'].includes(box) ? 'video/quicktime' : null
+}
 
 /** The image type from its first bytes; the declared type is never trusted. */
 export function sniffImageType(bytes: Uint8Array): ChatImageType | null {
@@ -45,6 +71,18 @@ export function sniffImageType(bytes: Uint8Array): ChatImageType | null {
   if (bytes.length >= 6 && (ascii(0, 'GIF87a') || ascii(0, 'GIF89a'))) return 'image/gif'
   if (bytes.length >= 12 && ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp'
   return null
+}
+
+/**
+ * Whether the bytes are an SVG document: optional XML declaration, comments
+ * and doctype, then an `<svg>` element. It is only ever shown through `<img>`
+ * and served with scripts off (see `handleChatImage`).
+ */
+export function looksLikeSvg(bytes: Uint8Array): boolean {
+  const head = Buffer.from(bytes.subarray(0, 4096))
+  if (head.includes(0)) return false
+  const text = head.toString('utf8').replace(/^\uFEFF/, '')
+  return /^\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*|<!DOCTYPE[^>]*>\s*)*<svg[\s>]/i.test(text)
 }
 
 export type ChatImageSaveError = 'unsupported' | 'too_large' | 'empty'
@@ -60,7 +98,12 @@ export class ChatImageStore {
   ) {}
 
   path(id: string): string | null {
-    return isChatImageId(id) ? join(this.dir, id) : null
+    return isChatAttachmentId(id) ? join(this.dir, id) : null
+  }
+
+  /** Any stored image the daemon serves: attachments, reply images (SVG too) and SVG stills. */
+  servedPath(id: string): string | null {
+    return isChatReplyImageId(id) || isChatImageStillId(id) || isChatVideoId(id) ? join(this.dir, id) : null
   }
 
   async exists(id: string): Promise<boolean> {
@@ -85,18 +128,135 @@ export class ChatImageStore {
   async save(bytes: Uint8Array, maxBytes = MAX_CHAT_IMAGE_BYTES): Promise<{ id: string } | { error: ChatImageSaveError }> {
     const checked = this.check(bytes, maxBytes)
     if ('error' in checked) return checked
+    await this.write(checked.id, bytes)
+    return checked
+  }
+
+  /**
+   * Stores an image an agent shows in its reply: what an upload accepts, and
+   * SVG. Nothing stored here is sent to Claude.
+   */
+  async saveReplyImage(bytes: Uint8Array): Promise<{ id: string } | { error: ChatImageSaveError }> {
+    const checked = this.check(bytes, MAX_STORED_IMAGE_BYTES)
+    if (!('error' in checked) || checked.error !== 'unsupported') {
+      if (!('error' in checked)) await this.write(checked.id, bytes)
+      return checked
+    }
+    if (!looksLikeSvg(bytes)) return checked
+    if (bytes.length > MAX_SVG_BYTES) return { error: 'too_large' }
+    const id = `${createHash('sha256').update(bytes).digest('hex')}.svg`
+    await this.write(id, bytes)
+    return { id }
+  }
+
+  /**
+   * Stores an uploaded video as it streams in, hashing on the way, so a large
+   * one is never held in memory. Refuses anything that isn't MP4, QuickTime or
+   * WebM, or is over `maxBytes`.
+   */
+  async saveVideo(source: AsyncIterable<Uint8Array>, maxBytes = MAX_CHAT_VIDEO_BYTES): Promise<{ id: string } | { error: ChatImageSaveError }> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 })
-    const path = join(this.dir, checked.id)
+    const temporary = join(this.dir, `.upload.${randomBytes(6).toString('hex')}.tmp`)
+    const hash = createHash('sha256')
+    const head: Buffer[] = []
+    let headSize = 0
+    let size = 0
+    const file = await open(temporary, 'wx', 0o600)
+    let kept = false
+    try {
+      let type: ChatVideoType | null = null
+      for await (const chunk of source) {
+        size += chunk.length
+        if (size > maxBytes) return { error: 'too_large' }
+        if (headSize < 16) {
+          head.push(Buffer.from(chunk.subarray(0, 16 - headSize)))
+          headSize += Math.min(chunk.length, 16 - headSize)
+          // Refused as soon as its first bytes say it isn't a video, not after the whole upload.
+          if (headSize >= 16 && !(type = sniffVideoType(Buffer.concat(head)))) return { error: 'unsupported' }
+        }
+        hash.update(chunk)
+        await file.write(chunk)
+      }
+      if (!size) return { error: 'empty' }
+      type ??= sniffVideoType(Buffer.concat(head))
+      if (!type) return { error: 'unsupported' }
+      await file.close()
+      const id = `${hash.digest('hex')}.${CHAT_VIDEO_EXTENSIONS[type]}`
+      const path = join(this.dir, id)
+      if (existsSync(path)) {
+        const now = new Date()
+        await utimes(path, now, now).catch(() => undefined)
+      } else {
+        await rename(temporary, path)
+        kept = true
+      }
+      return { id }
+    } finally {
+      await file.close().catch(() => undefined)
+      if (!kept) await unlink(temporary).catch(() => undefined)
+    }
+  }
+
+  private readonly drawing = new Map<string, Promise<string | null>>()
+
+  /**
+   * The path of a PNG drawn from a stored SVG, drawn on first use (for the
+   * phone, which can't show SVG). Drawing runs off the main thread; it has no
+   * animation, so a diagram shows its first frame. Null when it can't be drawn.
+   */
+  still(svgId: string): Promise<string | null> {
+    const source = isChatReplyImageId(svgId) && svgId.endsWith('.svg') ? join(this.dir, svgId) : null
+    if (!source) return Promise.resolve(null)
+    const path = `${source}.png`
+    const running = this.drawing.get(path)
+    if (running) return running
+    const draw = (async () => {
+      if (existsSync(path)) {
+        const now = new Date()
+        await utimes(path, now, now).catch(() => undefined)
+        return path
+      }
+      const failed = (what: string, error: unknown) => {
+        this.log?.(`Couldn't ${what} ${svgId}: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+      let svg: Buffer
+      try {
+        svg = await readFile(source)
+      } catch (error) {
+        // Pruned, or never stored: a 404, nothing to report.
+        return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : failed('read', error)
+      }
+      let png: Buffer
+      try {
+        png = await drawSvg(svg)
+      } catch (error) {
+        return failed('draw a PNG of', error)
+      }
+      try {
+        await this.write(basename(path), png)
+        return path
+      } catch (error) {
+        return failed('store the PNG of', error)
+      }
+    })().finally(() => this.drawing.delete(path))
+    this.drawing.set(path, draw)
+    return draw
+  }
+
+  /** Writes a stored file by id, atomically; an existing one is only marked as used. */
+  private async write(id: string, bytes: Uint8Array): Promise<void> {
+    await mkdir(this.dir, { recursive: true, mode: 0o700 })
+    const path = join(this.dir, id)
     if (existsSync(path)) {
       // Keep a reused image from being pruned.
       const now = new Date()
       await utimes(path, now, now).catch(() => undefined)
-      return checked
+      return
     }
-    const temporary = join(this.dir, `.${checked.id}.${randomBytes(6).toString('hex')}.tmp`)
+    const temporary = join(this.dir, `.${id}.${randomBytes(6).toString('hex')}.tmp`)
     await writeFile(temporary, bytes, { mode: 0o600 })
     await rename(temporary, path)
-    return checked
   }
 
   /**
@@ -132,7 +292,7 @@ export class ChatImageStore {
 
   /** An uploaded image's bytes, for the message that sends it to Claude. */
   async read(id: string): Promise<Buffer> {
-    const path = this.path(id)
+    const path = isChatImageId(id) ? this.path(id) : null
     if (!path) throw new Error('Invalid image id')
     const stats = await stat(path)
     if (!stats.isFile() || stats.size > MAX_STORED_IMAGE_BYTES) throw new Error('Not a stored image')
@@ -150,7 +310,7 @@ export class ChatImageStore {
   stagedImage(path: string): { id: string; sessionId: string } | null {
     const id = basename(path)
     const sessionId = basename(dirname(path))
-    return dirname(dirname(path)) === this.sessionsDir && SESSION_ID.test(sessionId) && isChatImageId(id) ? { id, sessionId } : null
+    return dirname(dirname(path)) === this.sessionsDir && SESSION_ID.test(sessionId) && isChatAttachmentId(id) ? { id, sessionId } : null
   }
 
   /**
@@ -165,11 +325,13 @@ export class ChatImageStore {
     const folder = this.sessionFolder(sessionId)
     await mkdir(folder, { recursive: true, mode: 0o700 })
     const path = join(folder, id)
+    // In use again, so the prune keeps it: a video, unlike an image, is never re-saved from a transcript.
+    const now = new Date()
+    await utimes(source, now, now)
     // Copied every time, so the file matches its name even if Claude changed it.
     const temporary = join(folder, `.${id}.${randomBytes(6).toString('hex')}.tmp`)
     await copyFile(source, temporary, constants.COPYFILE_FICLONE)
     // A clone keeps the stored file's time; the copy's age should count from now.
-    const now = new Date()
     await utimes(temporary, now, now)
     await rename(temporary, path)
     return path
@@ -212,6 +374,44 @@ export class ChatImageStore {
   }
 }
 
+/** Fonts for SVG text on macOS. Loading every system font instead takes seconds a drawing. */
+const MAC_FONTS = ['/System/Library/Fonts/Helvetica.ttc', '/System/Library/Fonts/SFNS.ttf', '/System/Library/Fonts/Menlo.ttc']
+
+/** The tallest PNG drawn from an SVG; a taller diagram is drawn smaller. */
+const STILL_MAX_HEIGHT = 4096
+
+/**
+ * Whether an SVG names anything outside itself. resvg loads `<image href>`
+ * paths from disk, and the PNG is served to anyone with the SVG's hash, so a
+ * diagram that does is never drawn. Only `data:` and `#fragment` are kept.
+ */
+export function svgReferencesFiles(svg: Buffer): boolean {
+  return /\bhref\s*=\s*(["'])\s*(?!data:|#)/i.test(svg.toString('utf8'))
+}
+
+/** How much to scale an SVG of this size: twice, within `STILL_MAX_WIDTH` by `STILL_MAX_HEIGHT`. */
+export function stillZoom(width: number, height: number): number {
+  return Math.min(2, STILL_MAX_WIDTH / width, STILL_MAX_HEIGHT / height)
+}
+
+/** Draws an SVG as a PNG, off the main thread. */
+async function drawSvg(svg: Buffer): Promise<Buffer> {
+  if (svgReferencesFiles(svg)) throw new Error('it refers to other files, which are never drawn')
+  const { Resvg, renderAsync } = await import('@resvg/resvg-js')
+  // Parsing without fonts is quick and gives the size resvg will draw at, before any pixels exist.
+  const { width, height } = new Resvg(svg, { font: { loadSystemFonts: false }, logLevel: 'off' })
+  if (!(width > 0 && height > 0)) throw new Error('it has no size')
+  const fonts = MAC_FONTS.filter((path) => existsSync(path))
+  const image = await renderAsync(svg, {
+    fitTo: { mode: 'zoom', value: stillZoom(width, height) },
+    font: fonts.length
+      ? { loadSystemFonts: false, fontFiles: fonts, defaultFontFamily: 'Helvetica', sansSerifFamily: 'Helvetica', monospaceFamily: 'Menlo' }
+      : { loadSystemFonts: true },
+    logLevel: 'off',
+  })
+  return image.asPng()
+}
+
 /** A folder's names, or null when it doesn't exist yet. */
 async function listFolder(folder: string): Promise<string[] | null> {
   try {
@@ -226,7 +426,7 @@ async function pruneFolder(folder: string, maxAgeMs: number, now: number): Promi
   let removed = 0
   for (const name of await listFolder(folder) ?? []) {
     // Only our own files: content-hash names and abandoned temporaries.
-    if (!isChatImageId(name) && !TEMPORARY.test(name)) continue
+    if (!isChatReplyImageId(name) && !isChatImageStillId(name) && !isChatVideoId(name) && !TEMPORARY.test(name) && !UPLOAD_TEMPORARY.test(name)) continue
     const path = join(folder, name)
     try {
       const stats = await stat(path)
@@ -309,10 +509,72 @@ export async function handleChatImageUpload(request: IncomingMessage, response: 
   return true
 }
 
+const VIDEO_UPLOAD_ERRORS: Record<ChatImageSaveError, [number, string]> = {
+  unsupported: [415, 'Only MP4, QuickTime (.mov) and WebM videos can be attached'],
+  too_large: [413, `Videos must be ${MAX_CHAT_VIDEO_BYTES / 1024 / 1024} MB or smaller`],
+  empty: [400, 'The video is empty'],
+}
+
+/**
+ * `POST /api/chat/videos` (behind the API's auth): the raw video as the body,
+ * written to disk as it arrives.
+ */
+export async function handleChatVideoUpload(request: IncomingMessage, response: ServerResponse, url: URL, store: ChatImageStore): Promise<boolean> {
+  if (url.pathname !== '/api/chat/videos') return false
+  if (request.method !== 'POST') {
+    response.writeHead(405, { Allow: 'POST' })
+    response.end()
+    return true
+  }
+  const refuse = (error: ChatImageSaveError) => {
+    const [status, message] = VIDEO_UPLOAD_ERRORS[error]
+    // The rest of a refused body isn't read; closing tells the client to stop sending it.
+    const unread = !request.complete
+    if (unread) response.setHeader('Connection', 'close')
+    json(response, status, { error: message })
+    if (unread) response.once('finish', () => request.destroy())
+  }
+  if (Number(request.headers['content-length']) > MAX_CHAT_VIDEO_BYTES) {
+    refuse('too_large')
+    return true
+  }
+  let saved: Awaited<ReturnType<ChatImageStore['saveVideo']>>
+  try {
+    saved = await store.saveVideo(request)
+  } catch (error) {
+    // The client went away mid-upload: nobody is left to answer.
+    if (request.destroyed && !request.complete) return true
+    console.error('[commando] chat video upload could not be stored', error)
+    json(response, 507, { error: `Commando couldn't store the video: ${(error as NodeJS.ErrnoException).code ?? 'write failed'}` })
+    return true
+  }
+  if ('error' in saved) refuse(saved.error)
+  else json(response, 201, { video: { id: saved.id } })
+  return true
+}
+
+/** The one byte range a `Range: bytes=…` header asks for, or null for none or one that can't be served. */
+export function byteRange(header: string | undefined, size: number): { start: number; end: number } | 'unsatisfiable' | null {
+  const match = header ? /^bytes=(\d*)-(\d*)$/.exec(header.trim()) : null
+  if (!match || (!match[1] && !match[2])) return null
+  let start: number
+  let end: number
+  if (!match[1]) {
+    // `bytes=-N`: the last N bytes.
+    start = Math.max(0, size - Number(match[2]))
+    end = size - 1
+  } else {
+    start = Number(match[1])
+    end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1
+  }
+  return start > end || start >= size ? 'unsatisfiable' : { start, end }
+}
+
 /**
  * `GET /chat-images/<sha256>.<ext>`: served without the API token, like pane
  * screenshots, so plain `<img>` tags can load it. The id is the content's
  * hash, so it can only be asked for by someone who already has the image.
+ * `<sha256>.svg.png` is that SVG drawn as a PNG, drawn on first request.
  */
 export async function handleChatImage(request: IncomingMessage, response: ServerResponse, url: URL, store: ChatImageStore): Promise<boolean> {
   const match = /^\/chat-images\/([^/]+)$/.exec(url.pathname)
@@ -323,7 +585,8 @@ export async function handleChatImage(request: IncomingMessage, response: Server
     return true
   }
   const id = match[1]!
-  const path = store.path(id)
+  let path = store.servedPath(id)
+  if (path && isChatImageStillId(id) && !existsSync(path)) path = await store.still(id.slice(0, -'.png'.length))
   let size = 0
   try {
     const stats = path ? await stat(path) : null
@@ -334,19 +597,29 @@ export async function handleChatImage(request: IncomingMessage, response: Server
     response.end()
     return true
   }
-  response.writeHead(200, {
-    'Content-Type': chatImageType(id),
-    'Content-Length': size,
+  // Videos play from byte ranges; WebKit won't play one served whole.
+  const range = byteRange(request.headers.range, size)
+  if (range === 'unsatisfiable') {
+    response.writeHead(416, { 'Content-Range': `bytes */${size}`, 'Cache-Control': 'no-store' })
+    response.end()
+    return true
+  }
+  response.writeHead(range ? 206 : 200, {
+    'Content-Type': chatImageContentType(id),
+    'Content-Length': range ? range.end - range.start + 1 : size,
+    'Accept-Ranges': 'bytes',
+    ...(range ? { 'Content-Range': `bytes ${range.start}-${range.end}/${size}` } : {}),
     // Content-addressed: the bytes behind an id never change.
     'Cache-Control': 'private, max-age=31536000, immutable',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': "default-src 'none'",
+    // An SVG opened on its own is a document: no scripts, no requests, and a sandbox.
+    'Content-Security-Policy': id.endsWith('.svg') ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox" : "default-src 'none'",
   })
   if (request.method === 'HEAD') {
     response.end()
     return true
   }
-  const stream = createReadStream(path!)
+  const stream = createReadStream(path!, range ?? {})
   stream.on('error', () => response.destroy())
   stream.pipe(response)
   return true

@@ -16,7 +16,11 @@ const MAX_HEAD_BYTES = 16 * 1024 * 1024
 const TAIL_BYTES = 256 * 1024
 /** The picker lists this many of the newest conversations. */
 const DEFAULT_LIMIT = 1000
+/** Bound SQLite reads across Cursor SDK workspaces, newest stores first. */
+const MAX_CURSOR_STORES = 200
 const MAX_TITLE = 200
+/** Unexpected store failures are reported once per path across all index instances. */
+const warnedCursorStores = new Set<string>()
 
 type TranscriptFile = { provider: ChatConversationProvider; file: string; configDir?: string; cwd?: string }
 type Candidate = TranscriptFile & { mtimeMs: number; size: number }
@@ -70,6 +74,19 @@ async function headAndTail(file: string, size: number): Promise<{ head: Record<s
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function warnCursorStoreError(file: string, error: unknown): void {
+  const { code, errcode, message } = record(error)
+  // Node exposes SQLite's primary/extended result as errcode; other wrappers use code.
+  const primaryCode = typeof errcode === 'number' ? errcode & 0xff : undefined
+  if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM'
+    || (typeof code === 'string' && /^SQLITE_(?:BUSY|CANTOPEN|LOCKED)(?:_|$)/.test(code))
+    || primaryCode === 5 || primaryCode === 6 || primaryCode === 14
+    || (typeof message === 'string' && /database (?:is )?(?:locked|busy)|unable to open database file/i.test(message))) return
+  if (warnedCursorStores.has(file)) return
+  warnedCursorStores.add(file)
+  console.warn('[commando] Could not read Cursor conversation store', file, error)
 }
 
 function text(value: unknown): string {
@@ -247,6 +264,7 @@ export class ChatConversationIndex {
   private readonly home: string
   private readonly codexHome: string
   private readonly opencodeDb: string
+  private readonly museDb: string
   private readonly limit: number
   private readonly parsed = new Map<string, { mtimeMs: number; size: number; cwd?: string; value: Parsed }>()
   private threadNames: { mtimeMs: number; names: Map<string, string> } | undefined
@@ -255,7 +273,9 @@ export class ChatConversationIndex {
   constructor(private readonly options: ChatConversationIndexOptions) {
     this.home = options.home ?? homedir()
     this.codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(this.home, '.codex')
-    this.opencodeDb = join(options.xdgDataHome ?? process.env.XDG_DATA_HOME ?? join(this.home, '.local', 'share'), 'opencode', 'opencode.db')
+    const dataHome = options.xdgDataHome ?? process.env.XDG_DATA_HOME ?? join(this.home, '.local', 'share')
+    this.opencodeDb = join(dataHome, 'opencode', 'opencode.db')
+    this.museDb = join(dataHome, 'muse', 'session-index.db')
     this.limit = options.limit ?? DEFAULT_LIMIT
   }
 
@@ -349,6 +369,28 @@ export class ChatConversationIndex {
     }
   }
 
+  /**
+   * Muse's own session index, read the same way as OpenCode's. Sessions nobody prompted, child
+   * sessions and ones Muse could not read are not conversations to carry on.
+   */
+  private museConversations(): Omit<ChatConversation, 'repoRoot' | 'checkoutRoot'>[] {
+    let db: DatabaseSync | undefined
+    try {
+      db = new DatabaseSync(this.museDb, { readOnly: true })
+      return db.prepare(`SELECT session_id, workspace_root, title, git_branch, updated_at_us FROM sessions
+        WHERE status = 'valid' AND prompt_count > 0 AND msp_parent_session_id IS NULL`).all().flatMap((row) => {
+        if (!isChatConversationSessionId(row.session_id) || typeof row.workspace_root !== 'string' || !isAbsolute(row.workspace_root)
+          || typeof row.title !== 'string' || !row.title.trim() || typeof row.updated_at_us !== 'number' || !Number.isFinite(row.updated_at_us)) return []
+        const branch = typeof row.git_branch === 'string' && row.git_branch ? { branch: row.git_branch } : {}
+        return [{ provider: 'muse' as const, sessionId: row.session_id, cwd: row.workspace_root, title: shortTitle(row.title), updatedAt: Math.round(row.updated_at_us / 1000), ...branch }]
+      })
+    } catch {
+      return []
+    } finally {
+      db?.close()
+    }
+  }
+
   /** Names given to Codex threads, from Codex's own index. */
   private async codexThreadNames(): Promise<Map<string, string>> {
     const file = join(this.codexHome, 'session_index.jsonl')
@@ -379,9 +421,51 @@ export class ChatConversationIndex {
     }
   }
 
+  private async cursorConversations(): Promise<ChatConversation[]> {
+    const projects = join(this.home, '.cursor', 'projects')
+    const files: { file: string; provider: ChatConversationProvider }[] = []
+    for (const project of await entries(projects)) {
+      if (!project.directory) continue
+      const stores = join(projects, project.name, 'sdk-agent-store')
+      for (const store of await entries(stores)) {
+        if (!store.directory) continue
+        const directory = join(stores, store.name)
+        if ((await entries(directory)).some((entry) => entry.file && entry.name === 'index.db')) {
+          files.push({ file: join(directory, 'index.db'), provider: 'cursor' })
+        }
+      }
+    }
+    const candidates = (await withStats(files)).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, MAX_CURSOR_STORES)
+    const found = new Map<string, ChatConversation>()
+    for (const candidate of candidates) {
+      let database: DatabaseSync | undefined
+      try {
+        database = new DatabaseSync(candidate.file, { readOnly: true })
+        const rows = database.prepare('select agent_id, workspace_ref, name, updated_at from agents order by updated_at desc limit ?').all(this.limit)
+        for (const row of rows) {
+          if (!isChatConversationSessionId(row.agent_id) || typeof row.workspace_ref !== 'string' || !isAbsolute(row.workspace_ref) || row.workspace_ref.includes('\0')) continue
+          const updatedAt = typeof row.updated_at === 'string' ? Date.parse(row.updated_at) : NaN
+          if (!Number.isFinite(updatedAt)) continue
+          const name = typeof row.name === 'string' ? row.name.trim() : ''
+          const title = shortTitle(name && name !== 'New Agent' ? name : row.agent_id)
+          const previous = found.get(row.agent_id)
+          if (!previous || updatedAt > previous.updatedAt) {
+            found.set(row.agent_id, { provider: 'cursor', sessionId: row.agent_id, cwd: row.workspace_ref, title, updatedAt })
+          }
+        }
+      } catch (error) {
+        warnCursorStoreError(candidate.file, error)
+      } finally {
+        database?.close()
+      }
+    }
+    return [...found.values()]
+  }
+
   async list(): Promise<ChatConversation[]> {
-    const [claude, codex, cursor, threadNames] = await Promise.all([this.claudeFiles(), this.codexFiles(), this.cursorFiles(), this.codexThreadNames()])
+    const [claude, codex, cursor, threadNames, cursorChats] = await Promise.all([this.claudeFiles(), this.codexFiles(), this.cursorFiles(), this.codexThreadNames(), this.cursorConversations()])
     const opencode = this.opencodeConversations()
+    const muse = this.museConversations()
     const candidates = (await withStats([...claude, ...codex, ...cursor])).sort((a, b) => b.mtimeMs - a.mtimeMs)
     const found: (Omit<ChatConversation, 'repoRoot' | 'checkoutRoot'>)[] = []
     const seen = new Set<string>()
@@ -397,7 +481,7 @@ export class ChatConversationIndex {
         found.push({ ...value, updatedAt: Math.round(batch[offset]!.mtimeMs) })
       })
     }
-    const newest = [...found, ...opencode].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, this.limit)
+    const newest = [...found, ...opencode, ...muse, ...cursorChats].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, this.limit)
     const repos = await this.options.resolveRepos([...new Set(newest.map((conversation) => conversation.cwd))])
     this.last = newest.map((conversation) => {
       const repo = repos.get(conversation.cwd)

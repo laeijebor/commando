@@ -1,5 +1,6 @@
 import type { PaneScreenshotFile, PaneScreenshotFolder } from '@commando/protocol'
 import type {
+  ClaudeProfile,
   CreateTmuxPaneRequest,
   CreateTmuxSessionRequest,
   CreateTmuxWindowRequest,
@@ -9,6 +10,7 @@ import type {
 import { TMUX_CREATE_ROUTES, parseTmuxCreateResponse, requireSessionAgentLaunch } from '@commando/tmux-create'
 
 import type { PrDetail } from '../pane/prs'
+import type { PrPreview } from '../pr/api'
 import { authHeaders, daemonFetch, DaemonHttpError } from '../hosts/api'
 import type { Host } from '../hosts/types'
 
@@ -51,6 +53,8 @@ export type PanePrSummary = {
   isDraft: boolean
   createdAt: string
   updatedAt: string
+  /** The PR's full summary; daemons since pane PR previews send it. */
+  preview?: PrPreview
 }
 
 export type PanePrList = {
@@ -108,6 +112,12 @@ export function fetchFileDiff(host: Host, paneId: string, file: string): Promise
     'File diff failed',
     20_000,
   )
+}
+
+/** `GET /api/tmux/claude-profiles` — the Claude profiles (config folders) a chat can start with. */
+export async function fetchClaudeProfiles(host: Host): Promise<ClaudeProfile[]> {
+  const body = await json<{ profiles: ClaudeProfile[] }>(host, TMUX_CREATE_ROUTES.claudeProfiles, 'Profile lookup failed')
+  return body.profiles
 }
 
 /** `GET /api/git/repo?path=…` — whether a directory is a checkout, and which one. */

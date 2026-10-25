@@ -19,6 +19,9 @@ const appMocks = vi.hoisted(() => ({
   nativeConnect: vi.fn(),
   send: vi.fn(),
   useDaemon: vi.fn(),
+  sessionTree: vi.fn(),
+  // Terminal panes that never register a focus node, like a renderer that fails to mount.
+  unfocusablePanes: new Set<string>(),
 }))
 
 vi.mock('./authClient', () => ({
@@ -73,7 +76,7 @@ vi.mock('./TerminalPaneRenderer', () => ({
 
     return (
       <div
-        ref={(node) => registerFocusable(paneId, node)}
+        ref={(node) => { if (!appMocks.unfocusablePanes.has(paneId)) registerFocusable(paneId, node) }}
         tabIndex={-1}
         data-testid={`renderer-${paneId}`}
         data-renderer={renderer}
@@ -111,8 +114,9 @@ vi.mock('./PaneGitStats', () => ({
     <button type="button" className="pane-git-stats" aria-label="Git changes vs main: 1 files, +3 -1" onClick={onOpenChanges}>+3 −1</button>
   ),
 }))
-vi.mock('./SessionTree', () => ({ SessionTree: () => null }))
+vi.mock('./SessionTree', () => ({ SessionTree: (props: unknown) => { appMocks.sessionTree(props); return null } }))
 vi.mock('./PortsSection', () => ({ PortsSection: () => null }))
+vi.mock('./SettingsView', () => ({ SettingsView: ({ onOpenPane }: { onOpenPane: (paneId: string) => void }) => <section aria-label="Settings"><button type="button" onClick={() => onOpenPane('%2')}>Open login pane</button></section> }))
 
 let daemonMessage: ((message: ServerMessage) => void) | undefined
 let daemonConnection: ConnectionState = {
@@ -356,6 +360,17 @@ async function renderAppWithSnapshot(snapshot = snapshotWith([pane, adjacentPane
   return view
 }
 
+describe('Settings area', () => {
+  it('opens Settings from the nav and jumps to a pane it opens', async () => {
+    await renderAppWithSnapshot()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+    fireEvent.click(screen.getByRole('button', { name: 'Open login pane' }))
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Settings' })).toBeNull())
+  })
+})
+
 describe('pane close and create shortcuts', () => {
   const deleteUrl = (id: string) => `/api/pane-management/panes/${encodeURIComponent(id)}/delete`
 
@@ -402,7 +417,7 @@ describe('pane close and create shortcuts', () => {
     })))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes', expect.objectContaining({
       method: 'POST', body: JSON.stringify({
-        targetId: pane.id, direction: 'horizontal', placement: 'after', cwd: pane.path,
+        targetId: pane.id, direction: 'horizontal', placement: 'after', cwd: pane.path, empty: true,
       }),
     })))
   })
@@ -425,6 +440,24 @@ describe('pane close and create shortcuts', () => {
     })))
   })
 
+  it('closes an empty pane without asking for confirmation', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }, adjacentPane]))
+    vi.mocked(fetch).mockResolvedValue(new Response('{"ok":true,"emptied":true}', { status: 200 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close empty pane' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(deleteUrl(pane.id), expect.objectContaining({ method: 'DELETE' })))
+    expect(confirm).not.toHaveBeenCalled()
+  })
+
+  it("offers no close button on a session's only pane once it is empty", async () => {
+    await renderAppWithSnapshot(snapshotWith([{ ...pane, empty: true }]))
+    expect(screen.queryByRole('button', { name: 'Close empty pane' })).not.toBeInTheDocument()
+    fireEvent.focus(screen.getByRole('region', { name: 'Empty pane' }))
+    fireEvent.keyDown(window, { key: 'w', metaKey: true })
+    await act(async () => { await Promise.resolve() })
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining('/delete'), expect.anything())
+  })
+
   it('launches a Codex chat in an empty pane with the remembered Codex permission mode', async () => {
     window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ 'codex:/repo': { permissionMode: 'plan' }, '/repo': { permissionMode: 'bypassPermissions' } }))
     await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, empty: true }]))
@@ -435,6 +468,19 @@ describe('pane close and create shortcuts', () => {
     fireEvent.click(within(screen.getByRole('group', { name: 'Start in this pane' })).getByRole('button', { name: 'Codex chat' }))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes/launch', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ paneId: adjacentPane.id, agent: { provider: 'codex-chat', permissionMode: 'plan' } }),
+    })))
+  })
+
+  it('launches a Cursor chat in an empty pane with the remembered Cursor permission mode', async () => {
+    window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ 'cursor:/repo': { permissionMode: 'auto' }, '/repo': { permissionMode: 'bypassPermissions' } }))
+    await renderAppWithSnapshot(snapshotWith([pane, { ...adjacentPane, empty: true }]))
+    vi.mocked(fetch).mockImplementation(async (input) => new Response(JSON.stringify(
+      String(input).startsWith('/api/git/repo') ? { isRepo: true, mainRoot: '/repo' } : { launched: true },
+    ), { status: 200 }))
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'Start in this pane' })).getByRole('button', { name: 'Cursor chat' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/tmux/panes/launch', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ paneId: adjacentPane.id, agent: { provider: 'cursor-chat', permissionMode: 'auto' } }),
     })))
   })
 
@@ -934,7 +980,7 @@ describe('HUD tabs', () => {
       act(() => daemonMessage?.({ type: 'chat_state', chat: { paneId: adjacentPane.id, hostConnected: true, items: [],
         session: { paneId: adjacentPane.id, provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 1 } } }))
       const strip = await screen.findByRole('region', { name: 'Linked pull requests' })
-      fireEvent.click(within(strip).getByRole('link', { name: /^#12 / }))
+      fireEvent.click(within(strip).getByRole('link', { name: 'feat: pane diff' }))
       expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
       const panel = document.querySelector('[id="panel-tab-panel:%13:pr:acme:widgets:12"]') as HTMLElement
       await waitFor(() => expect(within(panel).getByRole('tab', { name: /Description/ })).toHaveAttribute('aria-selected', 'true'))
@@ -3048,5 +3094,146 @@ describe('agent-opened chat integration', () => {
     expect(screen.getByRole('alert')).toHaveClass('pane-action-error')
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss pane action error' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('Commander integration', () => {
+  it('routes daemon briefs and relays through the pane card to the inbox', async () => {
+    await renderAppWithSnapshot()
+    const now = Date.now()
+    act(() => {
+      daemonMessage?.({ type: 'commander_state', state: { targetId: adjacentPane.targetId, paneId: adjacentPane.id, sessionId: adjacentPane.sessionId } })
+      daemonMessage?.({ type: 'agent_status', status: { paneId: pane.id, provider: 'codex', status: 'done', source: 'hook', confidence: 'high', reason: '', summary: 'Fallback headline', updatedAt: now, settledAt: now } })
+      daemonMessage?.({ type: 'turn_brief_snapshot', briefs: [{ paneId: pane.id, targetId: pane.targetId, turnKey: String(now), text: 'Needs a decision', kind: 'needs_you', source: 'model', endedAt: now, createdAt: now }] })
+      daemonMessage?.({ type: 'chat_state', chat: { paneId: adjacentPane.id, hostConnected: true, items: [], session: { paneId: adjacentPane.id, provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 1 } } })
+    })
+    const inbox = await screen.findByTestId('agents-inbox')
+    expect(within(inbox).getByText('Needs a decision')).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'commander_relay', relay: { id: 'relay-1', origin: 'inbox', kind: 'relay', toPaneId: pane.id, toTargetId: pane.targetId, text: 'Reply', delivery: 'queue', status: 'delivered', createdAt: now } }))
+    expect(within(inbox).getByText('Relayed · delivered')).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'turn_brief', brief: { paneId: pane.id, targetId: pane.targetId, turnKey: String(now), text: 'Latest summary', kind: 'done', source: 'model', endedAt: now, createdAt: now } }))
+    expect(within(inbox).getByText('Latest summary')).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'commander_relay_snapshot', relays: [] }))
+    expect(within(inbox).queryByText('Relayed · delivered')).toBeNull()
+    act(() => daemonMessage?.({ type: 'commander_state', state: { targetId: null } }))
+    expect(screen.queryByTestId('agents-inbox')).toBeNull()
+  })
+
+  it('reads another agent in the reading pane and sends what you type straight to it', async () => {
+    await renderAppWithSnapshot()
+    const now = Date.now()
+    const chat = (id: string, text: string) => ({ type: 'chat_state' as const, chat: { paneId: id, hostConnected: true,
+      items: [{ id: `${id}-a`, turnId: 't', status: 'completed' as const, createdAt: now, updatedAt: now, kind: 'assistant_message' as const, text }],
+      session: { paneId: id, provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 1 } } })
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() })
+      daemonMessage?.({ type: 'commander_state', state: { targetId: pane.targetId, paneId: pane.id, sessionId: pane.sessionId } })
+      daemonMessage?.(chat(pane.id, 'Commander here'))
+      daemonMessage?.(chat(remotePane.id, 'Review finished; two nits left'))
+      daemonMessage?.({ type: 'agent_status', status: { paneId: remotePane.id, provider: 'claude', status: 'done', source: 'hook', confidence: 'high', reason: '', summary: 'Review finished', updatedAt: now, settledAt: now } })
+    })
+    const inbox = await screen.findByTestId('agents-inbox')
+    fireEvent.click(within(inbox).getByRole('option', { name: /^review-agent/ }))
+    const reading = await screen.findByTestId('commander-reading-pane')
+    expect(within(reading).getByText('Review finished; two nits left')).toBeInTheDocument()
+    // Still in Commander's session: nothing navigated.
+    expect((appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string }).selectedSessionId).toBe(pane.sessionId)
+    const composer = within(reading).getByRole('textbox', { name: /^Message/ })
+    fireEvent.change(composer, { target: { value: 'Fix the nits too' } })
+    fireEvent.keyDown(composer, { key: 'Enter' })
+    await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: remotePane.id, text: 'Fix the nits too' })))
+    // Read only once you move on, so the row doesn't regroup under you.
+    const seen = () => appMocks.send.mock.calls.some(([message]) => (message as { type?: string, paneIds?: string[] }).type === 'mark_panes_seen' && (message as { paneIds: string[] }).paneIds.includes(remotePane.id))
+    expect(seen()).toBe(false)
+    // (jsdom has no width, so the pane covers Commander and its inbox is aria-hidden.)
+    expect(within(inbox).getByRole('option', { name: /^review-agent/, hidden: true })).toHaveAttribute('aria-selected', 'true')
+    // A mark the socket refuses on close is sent again after a reconnect.
+    const marks = () => appMocks.send.mock.calls.filter(([message]) => (message as { type?: string }).type === 'mark_panes_seen').length
+    appMocks.send.mockReturnValue(false)
+    fireEvent.keyDown(within(reading).getByRole('button', { name: 'Next agent' }), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('commander-reading-pane')).toBeNull())
+    expect(seen()).toBe(true)
+    const refused = marks()
+    const live = daemonConnection
+    daemonConnection = { phase: 'reconnecting', detail: 'Offline', attempt: 1 }
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    appMocks.send.mockReturnValue(true)
+    daemonConnection = live
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    await waitFor(() => expect(marks()).toBeGreaterThan(refused))
+    // clearAllMocks keeps return values; restore the default for later tests.
+    appMocks.send.mockReset()
+  })
+
+  it('opens a chat from the inbox and still lets the session tree navigate away', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    await renderAppWithSnapshot()
+    const now = Date.now()
+    const chat = (id: string) => ({ type: 'chat_state' as const, chat: { paneId: id, hostConnected: true, items: [], session: { paneId: id, provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 1 } } })
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() })
+      daemonMessage?.({ type: 'commander_state', state: { targetId: pane.targetId, paneId: pane.id, sessionId: pane.sessionId } })
+      daemonMessage?.(chat(pane.id))
+      daemonMessage?.(chat(remotePane.id))
+      daemonMessage?.({ type: 'agent_status', status: { paneId: remotePane.id, provider: 'claude', status: 'done', source: 'hook', confidence: 'high', reason: '', summary: 'Review finished', updatedAt: now, settledAt: now } })
+    })
+    const inbox = await screen.findByTestId('agents-inbox')
+    fireEvent.click(within(inbox).getByRole('button', { name: /^Open review-agent/ }))
+    // The chat pane registers a focus target, so the jump completes with the caret in its composer.
+    const remote = () => document.querySelector<HTMLElement>(`[data-pane-id="${remotePane.id}"]`)!
+    await waitFor(() => expect(remote()).toHaveClass('is-focused', 'is-jump-highlighted'))
+    await waitFor(() => expect(document.activeElement).toBe(within(remote()).getByRole('textbox', { name: /^Message/ })))
+    const tree = () => appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string, onSelectSession: (id: string) => void }
+    act(() => tree().onSelectSession(pane.sessionId))
+    await waitFor(() => expect(tree().selectedSessionId).toBe(pane.sessionId))
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    expect(tree().selectedSessionId).toBe(pane.sessionId)
+  })
+
+  it('lets the session tree navigate away from a jump whose pane never takes focus', async () => {
+    appMocks.unfocusablePanes.add(remotePane.id)
+    try {
+      await renderAppWithSnapshot()
+      act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+      const tree = () => appMocks.sessionTree.mock.lastCall![0] as { selectedSessionId: string, onSelectSession: (id: string) => void, onSelectPane: (id: string) => void }
+      act(() => tree().onSelectPane(remotePane.id))
+      await waitFor(() => expect(tree().selectedSessionId).toBe(remotePane.sessionId))
+      act(() => tree().onSelectSession(pane.sessionId))
+      await waitFor(() => expect(tree().selectedSessionId).toBe(pane.sessionId))
+      act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+      expect(tree().selectedSessionId).toBe(pane.sessionId)
+    } finally {
+      appMocks.unfocusablePanes.clear()
+    }
+  })
+
+  it.each(['response first', 'snapshot first'] as const)('opens the created Commander with %s', async (order) => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+    await renderAppWithSnapshot()
+    const fetcher = vi.mocked(fetch)
+    const fallback = fetcher.getMockImplementation()!
+    let respond!: (response: Response) => void
+    fetcher.mockImplementation((url, init) => String(url) === '/api/commander'
+      ? new Promise((resolve) => { respond = resolve }) : fallback(url, init))
+    const controls = appMocks.sessionTree.mock.lastCall![0] as { onCreateCommander: () => Promise<void> }
+    let creating!: Promise<void>
+    act(() => { creating = controls.onCreateCommander() })
+    if (order === 'response first') {
+      await act(async () => {
+        respond(new Response(JSON.stringify({ ok: true, state: { targetId: remotePane.targetId, paneId: remotePane.id, sessionId: remotePane.sessionId } })))
+        await creating
+      })
+    }
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotAcrossSessions() }))
+    if (order === 'snapshot first') {
+      act(() => daemonMessage?.({ type: 'commander_state', state: { targetId: remotePane.targetId, paneId: remotePane.id, sessionId: remotePane.sessionId } }))
+      // The late response lacks the live pane; it must not erase the broadcast.
+      await act(async () => {
+        respond(new Response(JSON.stringify({ ok: true, state: { targetId: remotePane.targetId } })))
+        await creating
+      })
+    }
+    await waitFor(() => expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused', 'is-jump-highlighted'))
+    expect(fetcher).toHaveBeenCalledWith('/api/commander', expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: expect.objectContaining({ Authorization: 'Bearer test-token' }) }))
   })
 })

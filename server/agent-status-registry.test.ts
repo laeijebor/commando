@@ -1795,6 +1795,15 @@ describe('observed Cursor stop/response ordering', () => {
     expect(registry.get('%1')?.details?.currentActivity).toBeUndefined()
     expect(JSON.stringify(registry.get('%1'))).not.toContain('opaque/')
   })
+  it('reserves a live Muse hook conversation and releases it after the process exits', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook('%12', { hook_event_name: 'SessionStart', session_id: 'muse-session-123' }, 1, null, 'muse')
+    expect(registry.openConversationStatus('%12', 'muse', 'muse')).toMatchObject({ provider: 'muse', agentSessionId: 'muse-session-123' })
+    expect(registry.openConversationStatus('%12', 'vim', 'unknown')).toBeUndefined()
+    registry.applyClaudeHook('%12', { hook_event_name: 'SessionEnd', session_id: 'muse-session-123' }, 2, null, 'muse')
+    expect(registry.openConversationStatus('%12', 'muse', 'muse')).toBeUndefined()
+  })
+
   it('counts a SessionStart-only hook as an open conversation without changing process liveness', () => {
     const registry = new AgentStatusRegistry()
     expect(registry.openConversationStatus(paneId, '2.1.295', 'claude')).toBeUndefined()
@@ -1834,5 +1843,46 @@ describe('observed Cursor stop/response ordering', () => {
     expect(registry.openConversationStatus(paneId, '2.1.295', 'claude')).toBeUndefined()
     expect(registry.openConversationStatus(paneId, 'zsh', 'unknown')).toBeUndefined()
     expect(registry.openConversationStatus(paneId, 'vim', 'unknown')).toBeUndefined()
+  })
+})
+
+
+it.each([false, true])('keeps Cursor chat status separate from TUI associations (prior hooks: %s)', (priorHooks) => {
+  const registry = new AgentStatusRegistry()
+  if (priorHooks) registry.applyCursorHook(paneId, { hook_event_name: 'sessionStart', conversation_id: 'old-cursor-tui', generation_id: 'g1' }, 0, 'node', association)
+  registry.applyChatHost(paneId, { provider: 'cursor', sessionId: 'agent-12345678-0000', status: 'working' }, 1)
+  expect(registry.get(paneId)).toMatchObject({ provider: 'cursor', status: 'working' })
+  expect(registry.hasCursorHookProcess(paneId)).toBe(false)
+  expect(registry.cursorAssociation(paneId)).toBeNull()
+  expect(registry.acceptsCursorContext(paneId, 'agent-12345678-0000', association)).toBe(false)
+  expect(registry.invalidateCursorAssociation(paneId, association)).toBeNull()
+  expect(registry.get(paneId)?.status).toBe('working')
+})
+
+it('vouches for a chat host conversation without hooks, once it has a session and while it is connected', () => {
+  const registry = new AgentStatusRegistry()
+  // A Cursor chat creates its agent with the first message, so it reports a session id only then.
+  registry.applyChatHost(paneId, { provider: 'cursor', status: 'unknown' }, 1)
+  expect(registry.chatHostStatus(paneId)).toBeUndefined()
+  registry.applyChatHost(paneId, { provider: 'cursor', sessionId: 'agent-12345678-0000', status: 'working' }, 2)
+  expect(registry.chatHostStatus(paneId)).toMatchObject({ provider: 'cursor', agentSessionId: 'agent-12345678-0000', source: 'hook' })
+  registry.applyChatHost(paneId, null, 3)
+  expect(registry.chatHostStatus(paneId)).toBeUndefined()
+  // Hooked chats keep relying on their hooks.
+  registry.applyChatHost(paneId, { provider: 'claude', sessionId: 'aaaaaaaa-0001', status: 'working' }, 4)
+  expect(registry.chatHostStatus(paneId)).toBeUndefined()
+})
+
+describe('private turn final messages', () => {
+  it('retains bounded Claude and Codex response context without broadcasting it', () => {
+    const registry = new AgentStatusRegistry()
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Recap line\nPRIVATE CONTEXT'.repeat(200) }), 1)
+    expect(registry.finalMessage(paneId)).toHaveLength(2000)
+    expect(JSON.stringify(registry.get(paneId))).not.toContain('PRIVATE CONTEXT')
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt: 'Next task' }), 2)
+    expect(registry.finalMessage(paneId)).toBeUndefined()
+    registry.applyCodexEvent('%2', codexEvent({ 'last-assistant-message': 'Codex recap\nPRIVATE CODEX' }), 3)
+    expect(registry.finalMessage('%2')).toBe('Codex recap\nPRIVATE CODEX')
+    expect(JSON.stringify(registry.get('%2'))).not.toContain('PRIVATE CODEX')
   })
 })

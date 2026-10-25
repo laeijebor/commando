@@ -182,7 +182,7 @@ export default function TilesScreen(): React.JSX.Element {
                   onOpen={() => {
                     if (!host) return
                     router.push({
-                      pathname: '/(host)/[hostId]/tile/[tileId]',
+                      pathname: row.tile.content?.kind === 'guide' ? '/(host)/[hostId]/guide/[tileId]' : '/(host)/[hostId]/tile/[tileId]',
                       params: { hostId: host.id, tileId: row.tile.id },
                     })
                   }}

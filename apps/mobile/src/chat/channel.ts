@@ -7,6 +7,8 @@ import type {
   ChatQueueAction,
   ChatSendOptions,
   ChatSettingsChange,
+  ChatSubagentTranscript,
+  ChatTaskAction,
 } from '@commando/agent-chat'
 import type { ServerMessage } from '@commando/protocol'
 
@@ -16,6 +18,8 @@ import { nextRequestId, type DaemonClient, type OutgoingMessage } from '../daemo
 export const CHAT_SEND_REFUSAL_MS = 30_000
 const ACTION_REFUSAL_MS = 30_000
 const FILE_SEARCH_TIMEOUT_MS = 15_000
+/** The web's limit for reading a subagent's saved transcript. */
+const TRANSCRIPT_TIMEOUT_MS = 25_000
 
 /** Sends the daemon refused, by the request ids `send` returned (the web's ChatSendError). */
 export type ChatSendError = {
@@ -41,6 +45,7 @@ export class ChatChannel {
   private readonly sends = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly actions = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly searches = new Map<string, (result: ChatFileSearchResult) => void>()
+  private readonly transcripts = new Map<string, (result: ChatSubagentTranscript) => void>()
   private refused: ChatSendError['refused'] = []
 
   constructor(
@@ -82,9 +87,41 @@ export class ChatChannel {
     this.action({ type: 'chat_queue', paneId: this.paneId, ...change })
   }
 
+  /** Stop or background an SDK subagent, by its agent id and the Agent call that started it. */
+  task(action: ChatTaskAction, agentId: string, toolUseId: string): void {
+    this.action({ type: 'chat_task', paneId: this.paneId, action, agentId, toolUseId })
+  }
+
+  /** Stop an external run (`codex exec`, `claude -p`, …) the daemon watches. */
+  stopExternal(runId: string): void {
+    this.action({ type: 'chat_external_stop', paneId: this.paneId, runId })
+  }
+
+  /** A subagent's saved turns, for one whose items aren't in the chat (after a resume). Never rejects. */
+  subagentTranscript(agentId: string): Promise<ChatSubagentTranscript> {
+    return new Promise((resolve) => {
+      const requestId = nextRequestId()
+      const finish = (result: ChatSubagentTranscript): void => {
+        clearTimeout(timer)
+        this.transcripts.delete(requestId)
+        resolve(result)
+      }
+      const timer = setTimeout(() => finish({ items: [], error: 'Reading the transcript timed out' }), TRANSCRIPT_TIMEOUT_MS)
+      this.transcripts.set(requestId, finish)
+      if (this.transport.send({ type: 'chat_subagent_transcript', paneId: this.paneId, agentId, requestId }) === null) {
+        finish({ items: [], error: 'Not connected to Commando' })
+      }
+    })
+  }
+
   /** The composer took back what the chat carried across Claude Code; false when the socket couldn't say so. */
   carryTaken(carryId: string, images: number): boolean {
     return this.transport.send({ type: 'chat_carry_taken', paneId: this.paneId, carryId, images }) !== null
+  }
+
+  /** The chat's whole history, for a copy the daemon bounded on connect; it comes back as a `chat_state`. */
+  loadHistory(): boolean {
+    return this.transport.send({ type: 'chat_history', paneId: this.paneId }) !== null
   }
 
   /** Files and folders for an `@` mention, searched by the chat's host. */
@@ -111,9 +148,15 @@ export class ChatChannel {
       this.searches.get(requestId)?.(result)
       return
     }
+    if (message.type === 'chat_subagent_transcript_result') {
+      const { type: _type, paneId: _paneId, requestId, ...result } = message
+      this.transcripts.get(requestId)?.(result)
+      return
+    }
     if (message.type !== 'error' || !message.requestId) return
     const { requestId } = message
     this.searches.get(requestId)?.({ entries: [], truncated: false, error: message.message })
+    this.transcripts.get(requestId)?.({ items: [], error: message.message })
     const send = this.sends.get(requestId)
     if (send) {
       clearTimeout(send)
@@ -138,6 +181,7 @@ export class ChatChannel {
     this.sends.clear()
     this.actions.clear()
     for (const finish of [...this.searches.values()]) finish({ entries: [], truncated: false, error: 'The chat closed' })
+    for (const finish of [...this.transcripts.values()]) finish({ items: [], error: 'The chat closed' })
   }
 
   private refuse(entry: { requestId: string; code?: string }, message: string): void {
