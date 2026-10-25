@@ -33,6 +33,7 @@ import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
 import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
+import { spliceDictation, useDictation } from './dictation'
 import { chatImageUri, pickImages, prepareImage, uploadChatImage, type PickedImage } from './images'
 import { PasteImageBar } from './PasteImageBar'
 import { RelayChip } from './Subagents'
@@ -172,7 +173,12 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const files = useFileSearch(trigger?.kind === 'mention' ? trigger.query : null, channel)
   const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files) : null), [trigger, session, commands, files])
 
+  // The draft as of the latest change, ahead of the render it causes (a dictation can start in between).
+  const draftNow = useRef({ text, selection })
+  draftNow.current = { text, selection }
+
   const applyText = (next: { text: string; cursor: number }) => {
+    draftNow.current = { text: next.text, selection: { start: next.cursor, end: next.cursor } }
     setText(next.text)
     setSelection({ start: next.cursor, end: next.cursor })
     setForcedSelection({ start: next.cursor, end: next.cursor })
@@ -261,6 +267,30 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     void Haptics.selectionAsync()
     addImages([image])
   }
+
+  // Dictation replaces the selection it started on; each new transcript redoes that from the same draft.
+  const [dictationHint, setDictationHint] = useState<string | null>(null)
+  const dictationBase = useRef({ text: '', selection: { start: 0, end: 0 } })
+  const dictation = useDictation({
+    onBegin: () => {
+      dictationBase.current = draftNow.current
+      setDictationHint(null)
+      setAttachError(null)
+    },
+    onTranscript: (spoken) => applyText(spliceDictation(dictationBase.current.text, dictationBase.current.selection, spoken)),
+    onError: setAttachError,
+    onHint: setDictationHint,
+  })
+  useEffect(() => {
+    if (!dictationHint) return
+    const timer = setTimeout(() => setDictationHint(null), 2500)
+    return () => clearTimeout(timer)
+  }, [dictationHint])
+  const canDictate = dictation.available && !closed && !switching
+  // The mic leaves mid-hold when the session ends or switches; its release would never come.
+  useEffect(() => {
+    if (!canDictate) dictation.cancel()
+  }, [canDictate, dictation.cancel])
 
   const clearDraft = () => {
     setAttachments([])
@@ -417,6 +447,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             <IconButton icon="x" label="Dismiss" onPress={dismissError} />
           </View>
         ) : null}
+        {dictationHint ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.hint, { color: theme.muted }]}>{dictationHint}</Text>
+        ) : null}
         {clipboardImage.available ? (
           <PasteImageBar onDismiss={clipboardImage.dismiss} onError={setAttachError} onImage={pasteImage} />
         ) : null}
@@ -433,7 +466,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             setSelection(event.nativeEvent.selection)
             if (forcedSelection) setForcedSelection(undefined)
           }}
-          placeholder={placeholder}
+          placeholder={dictation.listening ? 'Listening…' : placeholder}
           placeholderTextColor={theme.textDim}
           ref={input}
           scrollEnabled
@@ -480,6 +513,22 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
               <Feather color={theme.accent} name="zap" size={15} />
             </Pressable>
           ) : null}
+          {canDictate ? (
+            <Pressable
+              accessibilityHint="Hold to talk; release to stop"
+              accessibilityLabel={dictation.listening ? 'Listening' : 'Dictate'}
+              accessibilityRole="button"
+              accessibilityState={{ busy: dictation.listening }}
+              onPressIn={dictation.begin}
+              onPressOut={dictation.end}
+              style={[styles.round, styles.stop, dictation.listening
+                ? { backgroundColor: withAlpha(theme.red, 0.18), borderColor: theme.red }
+                : { borderColor: theme.borderMid }]}
+              testID="chat-dictate"
+            >
+              <Feather color={dictation.listening ? theme.red : theme.muted} name="mic" size={16} />
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityLabel={queueing ? 'Queue' : 'Send'}
             accessibilityRole="button"
@@ -506,6 +555,7 @@ const styles = StyleSheet.create({
   thumbRemove: { position: 'absolute', top: -4, right: -4, width: 20, height: 20, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   error: { flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 14, paddingRight: 4, paddingTop: 8 },
   errorText: { flex: 1, fontSize: 12.5, lineHeight: 17, paddingTop: 6 },
+  hint: { fontSize: 12.5, lineHeight: 17, paddingHorizontal: 14, paddingTop: 8 },
   field: { fontSize: 15, lineHeight: 20, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4, minHeight: 40, maxHeight: 140 },
   bar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 6, paddingRight: 8, paddingBottom: 8 },
   pillsScroll: { flex: 1 },
