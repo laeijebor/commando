@@ -1,5 +1,6 @@
 import type { NativeTerminalFramePayload } from './nativeTerminalBridge'
 import { isNativeTerminalFramePayload } from './nativeTerminalBridge'
+import { randomUuid } from './randomId'
 import {
   MAX_RESPONSE_PAYLOAD_BYTES,
   MAX_QUESTION_SNAPSHOT_BYTES,
@@ -148,16 +149,10 @@ export function hasNativeWebViewHandler(): boolean {
   return messageHandler() !== null
 }
 
-function createPageId(): string {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
 let attachmentSequence = 0
 
 export class NativeWebViewBridge {
-  readonly pageId = createPageId()
+  readonly pageId = randomUuid()
 
   private sequence = 0
   private lastEventSequence = 0
