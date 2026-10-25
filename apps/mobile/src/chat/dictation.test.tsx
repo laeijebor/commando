@@ -202,6 +202,23 @@ describe('hold to dictate in the composer', () => {
     expect(input().props.value).toBe('typed instead')
   })
 
+  it('starts a press made just after Send once the dropped take ends', async () => {
+    renderChat()
+    await settle()
+    await press()
+    native('start')
+    said('First message')
+    release()
+    fireEvent.press(screen.getByLabelText('Send'))
+    await press()
+    native('end')
+    await settle()
+    expect(fake.start).toHaveBeenCalledTimes(2)
+    native('start')
+    said('Next message')
+    expect(input().props.value).toBe('Next message')
+  })
+
   it('aborts when the session ends mid-hold and ignores what arrives after', async () => {
     const { rerender } = renderChat()
     await settle()
