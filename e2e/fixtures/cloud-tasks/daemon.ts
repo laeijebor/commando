@@ -139,6 +139,10 @@ export class CloudDaemonFixture {
       if (path === '/api/prs/prefs' && method === 'GET') return reply({ prefs: { version: 1, pinnedRepos: [], recentRepos: [], lastRepo: null, lastFilter: 'open', lastScope: 'mine' } })
       if (path === '/api/prs/repos' && method === 'GET') return reply({ repos: [] })
       if (path === '/api/prs/repo' && method === 'GET') return reply({ repo: null })
+      if (path === '/api/prs/pane' && method === 'GET') return reply({ list: {
+        targetId: '', totalCount: 0, pullRequests: [], truncated: false, fetchedAt: Date.parse(timestamp),
+      } })
+      if (path === '/api/session-management/archives' && method === 'GET') return reply({ archives: [] })
       if (path === '/api/session-management/preferences' && method === 'GET') return reply({ preferences: {
         version: 1, groups: [], ungroupedSessionIds: this.snapshot.sessions.map((session) => session.id),
       } })
