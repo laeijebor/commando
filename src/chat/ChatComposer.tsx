@@ -62,7 +62,7 @@ export interface ChatInputServices {
   pullRequests: () => Promise<PullRequestOption[]>
   uploadImage: (image: PreparedImage) => Promise<ChatImageRef>
   /** Uploads a video as it is; absent where the app can't. */
-  uploadVideo?: (file: File) => Promise<ChatImageRef>
+  uploadVideo?: (file: File, signal?: AbortSignal) => Promise<ChatImageRef>
 }
 
 /** Sends the daemon refused, named by the request ids `onSend` returned. */
@@ -454,10 +454,17 @@ export function ChatComposer({
 
   // Object URLs for previews are released when attachments go or the composer unmounts.
   const previews = useRef(new Set<string>())
-  useEffect(() => () => { for (const url of previews.current) URL.revokeObjectURL(url) }, [])
+  /** Video uploads still running, by attachment key: a large one stops when its chip goes. */
+  const videoUploads = useRef(new Map<string, AbortController>())
+  useEffect(() => () => {
+    for (const url of previews.current) URL.revokeObjectURL(url)
+    for (const upload of videoUploads.current.values()) upload.abort()
+  }, [])
   const release = (attachment: Attachment) => {
     URL.revokeObjectURL(attachment.previewUrl)
     previews.current.delete(attachment.previewUrl)
+    videoUploads.current.get(attachment.key)?.abort()
+    videoUploads.current.delete(attachment.key)
   }
 
   const syncTrigger = useCallback((element: HTMLTextAreaElement) => {
@@ -544,11 +551,16 @@ export function ChatComposer({
       }
       void (async () => {
         if (video) {
+          const upload = new AbortController()
+          videoUploads.current.set(key, upload)
           try {
-            const ref = await services.uploadVideo!(file)
+            const ref = await services.uploadVideo!(file, upload.signal)
             setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, ref } : attachment)))
           } catch (error) {
-            drop(`${name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
+            // Removed while it uploaded: nothing to report.
+            if (!upload.signal.aborted) drop(`${name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
+          } finally {
+            videoUploads.current.delete(key)
           }
           return
         }

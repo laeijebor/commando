@@ -164,18 +164,21 @@ export class ChatImageStore {
     const file = await open(temporary, 'wx', 0o600)
     let kept = false
     try {
+      let type: ChatVideoType | null = null
       for await (const chunk of source) {
         size += chunk.length
         if (size > maxBytes) return { error: 'too_large' }
         if (headSize < 16) {
           head.push(Buffer.from(chunk.subarray(0, 16 - headSize)))
           headSize += Math.min(chunk.length, 16 - headSize)
+          // Refused as soon as its first bytes say it isn't a video, not after the whole upload.
+          if (headSize >= 16 && !(type = sniffVideoType(Buffer.concat(head)))) return { error: 'unsupported' }
         }
         hash.update(chunk)
         await file.write(chunk)
       }
       if (!size) return { error: 'empty' }
-      const type = sniffVideoType(Buffer.concat(head))
+      type ??= sniffVideoType(Buffer.concat(head))
       if (!type) return { error: 'unsupported' }
       await file.close()
       const id = `${hash.digest('hex')}.${CHAT_VIDEO_EXTENSIONS[type]}`
@@ -322,11 +325,13 @@ export class ChatImageStore {
     const folder = this.sessionFolder(sessionId)
     await mkdir(folder, { recursive: true, mode: 0o700 })
     const path = join(folder, id)
+    // In use again, so the prune keeps it: a video, unlike an image, is never re-saved from a transcript.
+    const now = new Date()
+    await utimes(source, now, now)
     // Copied every time, so the file matches its name even if Claude changed it.
     const temporary = join(folder, `.${id}.${randomBytes(6).toString('hex')}.tmp`)
     await copyFile(source, temporary, constants.COPYFILE_FICLONE)
     // A clone keeps the stored file's time; the copy's age should count from now.
-    const now = new Date()
     await utimes(temporary, now, now)
     await rename(temporary, path)
     return path
@@ -523,10 +528,11 @@ export async function handleChatVideoUpload(request: IncomingMessage, response: 
   }
   const refuse = (error: ChatImageSaveError) => {
     const [status, message] = VIDEO_UPLOAD_ERRORS[error]
-    // The rest of an oversized body isn't read; closing tells the client to stop sending it.
-    if (error === 'too_large') response.setHeader('Connection', 'close')
+    // The rest of a refused body isn't read; closing tells the client to stop sending it.
+    const unread = !request.complete
+    if (unread) response.setHeader('Connection', 'close')
     json(response, status, { error: message })
-    if (error === 'too_large') response.once('finish', () => request.destroy())
+    if (unread) response.once('finish', () => request.destroy())
   }
   if (Number(request.headers['content-length']) > MAX_CHAT_VIDEO_BYTES) {
     refuse('too_large')

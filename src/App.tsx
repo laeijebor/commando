@@ -2729,7 +2729,7 @@ export function App() {
         }),
         pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, paneId),
         uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image),
-        uploadVideo: (file) => uploadChatVideo(latestChatDeps.current.token, file),
+        uploadVideo: (file, signal) => uploadChatVideo(latestChatDeps.current.token, file, signal),
       }
       chatServiceCache.current.set(paneId, services)
     }

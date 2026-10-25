@@ -435,6 +435,21 @@ describe('image attachments', () => {
       expect(uploadVideo).not.toHaveBeenCalled()
     })
 
+    it('stops a video upload when its chip is removed, without an error', async () => {
+      let signal: AbortSignal | undefined
+      const uploadVideo = vi.fn((_file: File, given?: AbortSignal) => {
+        signal = given
+        return new Promise<never>((_resolve, reject) => given?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
+      })
+      const { input } = renderComposer({ session: videoSession, services: services({ uploadVideo }) })
+      paste(input, [mov()])
+      await waitFor(() => expect(uploadVideo).toHaveBeenCalledOnce())
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Screen Recording.mov' }))
+      expect(signal?.aborted).toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+
     it('reports a video that did not upload', async () => {
       const uploadVideo = vi.fn(async () => { throw new Error('Only MP4, QuickTime (.mov) and WebM videos can be attached') })
       const { input } = renderComposer({ session: videoSession, services: services({ uploadVideo }) })

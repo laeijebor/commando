@@ -17,14 +17,16 @@ export async function uploadChatImage(token: string, image: PreparedImage, fetch
 }
 
 /** Uploads a composer video as it is, streamed from disk; the daemon checks its type. */
-export async function uploadChatVideo(token: string, file: File, fetcher: typeof fetch = fetch): Promise<ChatImageRef> {
+export async function uploadChatVideo(token: string, file: File, signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<ChatImageRef> {
   const response = await fetcher('/api/chat/videos', {
     method: 'POST',
     body: file,
+    signal,
     credentials: 'same-origin',
     headers: { 'Content-Type': file.type || 'application/octet-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
   })
   const result = await response.json().catch(() => ({})) as { video?: { id?: unknown }; error?: string }
+  if (response.status === 408) throw new Error('the upload took longer than Commando waits (30 minutes); try a shorter or smaller video')
   if (!response.ok || !isChatVideoId(result.video?.id)) throw new Error(result.error ?? `Upload failed (${response.status})`)
   return { id: result.video.id, name: file.name || 'video' }
 }

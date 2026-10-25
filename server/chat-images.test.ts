@@ -227,6 +227,11 @@ describe('chat image store', () => {
 
   it('refuses other files, empty bodies and videos over the limit, keeping nothing', async () => {
     expect(await store.saveVideo(chunks(PNG))).toEqual({ error: 'unsupported' })
+    // A large non-video is refused from its first bytes, before the rest arrives.
+    let read = 0
+    async function* counted() { for await (const chunk of chunks(Buffer.concat([PNG, Buffer.alloc(100_000)]))) { read += chunk.length; yield chunk } }
+    expect(await store.saveVideo(counted())).toEqual({ error: 'unsupported' })
+    expect(read).toBe(1000)
     expect(await store.saveVideo(chunks(Buffer.alloc(0)))).toEqual({ error: 'empty' })
     expect(await store.saveVideo(chunks(MOV), 1000)).toEqual({ error: 'too_large' })
     expect(await readdir(join(dir, 'images'))).toEqual([])
@@ -235,10 +240,14 @@ describe('chat image store', () => {
   it('stages a video for a session but never reads it as an image', async () => {
     const saved = await store.saveVideo(chunks(MOV))
     const id = 'id' in saved ? saved.id : ''
+    // Staging marks it in use, so a video sent again is kept by the prune.
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000)
+    await utimes(join(dir, 'images', id), old, old)
     const path = await store.stage(id, 'session-1234')
     expect(await readFile(path)).toEqual(MOV)
     expect(store.stagedImage(path)).toEqual({ id, sessionId: 'session-1234' })
     await expect(store.read(id)).rejects.toThrow('Invalid image id')
+    expect(Date.now() - (await stat(join(dir, 'images', id))).mtimeMs).toBeLessThan(60_000)
   })
 
   it('prunes old videos and abandoned uploads', async () => {
@@ -368,5 +377,11 @@ describe('chat image routes', () => {
     expect(big.status).toBe(413)
     expect(big.body).toMatch(/500 MB or smaller/)
     expect((await fetch(`${base}/api/chat/videos`)).status).toBe(405)
+  })
+
+  it('answers a large non-video with 415 even though it stops reading the body', async () => {
+    const response = await fetch(`${base}/api/chat/videos`, { method: 'POST', body: Buffer.concat([PNG, Buffer.alloc(8 * 1024 * 1024)]) }).catch((error: unknown) => error)
+    expect(response).toBeInstanceOf(Response)
+    expect((response as Response).status).toBe(415)
   })
 })

@@ -2976,6 +2976,8 @@ async function main(): Promise<void> {
 
   const httpServers = networkAccess.listeners.map((listener) => {
     const server = createServer(requestListener)
+    // A 500 MB chat video takes longer than Node's default 5 minutes on a slow tailnet link.
+    server.requestTimeout = 30 * 60 * 1000
     server.on('upgrade', (request, socket, head) => {
       void (async () => {
         if (!networkAccess.validRequest(request)) {
