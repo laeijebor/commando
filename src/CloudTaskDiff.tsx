@@ -28,14 +28,16 @@ export function CloudTaskDiff({ api, task, enabled, connected }: {
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
   useEffect(() => { setRequested(false); setDiff(null); setError('') }, [task.id])
+  useEffect(() => { setDiff(null); setError('') }, [task.providerUpdatedAt, task.rawState, task.remoteState])
   useEffect(() => {
     if (!requested || !enabled || !connected) return
     let current = true
+    setDiff(null)
     setError('')
     void api.diff(task.id).then((result) => { if (current) setDiff(boundCloudDiff(result)) })
       .catch(() => { if (current) setError('Diff unavailable. Open the provider or retry when connected.') })
     return () => { current = false }
-  }, [api, task.id, requested, enabled, connected, attempt])
+  }, [api, task.id, task.providerUpdatedAt, task.rawState, task.remoteState, requested, enabled, connected, attempt])
   if (!enabled) return null
   return <section className="cloud-detail-block" aria-label="Read-only diff">
     <h3>Read-only diff</h3>
@@ -43,6 +45,7 @@ export function CloudTaskDiff({ api, task, enabled, connected }: {
     {requested && !diff && !error && <p role="status">{connected ? 'Loading diff…' : 'Reconnect to load the diff.'}</p>}
     {error && <p role="alert">{error} <button disabled={!connected} onClick={() => setAttempt((n) => n + 1)}>Retry diff</button></p>}
     {diff && <>
+      <button type="button" disabled={!connected} onClick={() => setAttempt((n) => n + 1)}>Refresh diff</button>
       <p>Result ready is not proof of success or passed tests. No changes are applied locally.</p>
       {diff.truncated && <p className="cloud-notice" role="status">Diff truncated at 256 KiB or 5,000 lines. Open the provider for the complete result.</p>}
       <pre className="cloud-diff" tabIndex={0} aria-label="Unified diff">{diff.text || 'No diff returned.'}</pre>
