@@ -1,5 +1,6 @@
 import { MAX_PASTE_BYTES, MAX_TERMINAL_COLS, MAX_TERMINAL_ROWS } from '../shared/protocol'
 import type { TerminalTheme } from './theme'
+import { randomUuid } from './randomId'
 
 export const NATIVE_TERMINAL_PROTOCOL = 'commando.native-terminal' as const
 export const NATIVE_TERMINAL_VERSION = 1 as const
@@ -176,13 +177,7 @@ type AttachmentRecord = {
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1_000
 const DEFAULT_ATTACH_TIMEOUT_MS = 1_000
 
-function createPageId(): string {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-const PAGE_ID = createPageId()
+const PAGE_ID = randomUuid()
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)

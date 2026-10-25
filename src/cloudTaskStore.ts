@@ -5,6 +5,8 @@ import {
   type CloudTaskSummary,
 } from '../shared/cloud-tasks'
 import type { CloudTaskPatch, CloudTasksApi } from './cloudTasksApi'
+import { randomUuid } from './randomId'
+import { sha256 } from './sha256'
 
 export const CLOUD_FOREGROUND_INTERVAL_MS = 30_000
 export const CLOUD_PENDING_STORAGE_KEY = 'commando-cloud-pending-intents-v1'
@@ -45,6 +47,7 @@ function readIndex(storage: Storage): CloudPendingIndex[] {
 }
 export async function cloudIntentDigest(intent: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalCloudRequest(intent))
+  if (typeof crypto.subtle?.digest !== 'function') return sha256(bytes)
   const hash = await crypto.subtle.digest('SHA-256', bytes)
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
@@ -270,7 +273,7 @@ export class CloudTaskStore {
   private async begin(intent: CloudIntent): Promise<CloudTaskAction> {
     const installationId = this.requireReady()
     const frozen = JSON.parse(canonicalCloudRequest(intent)) as CloudIntent
-    const entry: CloudPendingIndex = { key: crypto.randomUUID(), digest: await digestCloudIntent(frozen), installationId }
+    const entry: CloudPendingIndex = { key: randomUuid(), digest: await digestCloudIntent(frozen), installationId }
     if (installationId !== this.requireReady()) throw new Error('Installation changed. Reconfirm the request.')
     // Persist BEFORE calling any mutation. The request exists only in this store's memory.
     this.writeIndex((entries) => [...entries, entry])

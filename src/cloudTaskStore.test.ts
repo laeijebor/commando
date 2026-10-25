@@ -290,6 +290,39 @@ describe('shared cloud task store', () => {
     { kind: 'link', taskId: 'local-task', input: { provider: 'codex', credentialContextId: 'ctx', providerTaskId: 'task_fixture', accountConfirmed: true } },
     { kind: 'message', taskId: 'local-task', input: { credentialContextId: 'ctx', message: 'Original follow-up', accountConfirmed: true } },
   ]
+  it.each(reentries)('persists and dispatches $kind without randomUUID or subtle, matching the secure digest', async (intent) => {
+    const digest = vi.spyOn(webcrypto.subtle, 'digest')
+    const secureDigest = await digestCloudIntent(intent)
+    expect(digest).toHaveBeenCalledOnce()
+    const getRandomValues = vi.fn(webcrypto.getRandomValues.bind(webcrypto))
+    vi.stubGlobal('crypto', { getRandomValues })
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    const capture = (key: string) => {
+      expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([
+        { key, digest: secureDigest, installationId: 'installation' },
+      ])
+      return { task: task(), operation: operation(key, { kind: intent.kind, state: 'prepared', receipt: null }), reused: false }
+    }
+    vi.mocked(api.create).mockImplementation(async (_input, key) => capture(key))
+    vi.mocked(api.link).mockImplementation(async (_input, key) => capture(key))
+    vi.mocked(api.message).mockImplementation(async (_id, _input, key) => capture(key))
+    const action = await (intent.kind === 'create' ? store.create(intent.input)
+      : intent.kind === 'link' ? store.link(intent.input, intent.taskId)
+        : store.message(intent.taskId, intent.input))
+    const key = action.operation.idempotencyKey
+    expect(key).toMatch(/^[a-f0-9]{32}$/)
+    expect(getRandomValues).toHaveBeenCalledOnce()
+    expect(digest).toHaveBeenCalledOnce()
+    expect(store.getSnapshot().pending).toEqual([
+      expect.objectContaining({ key, digest: secureDigest, status: 'recorded' }),
+    ])
+    if (intent.kind === 'create') expect(api.create).toHaveBeenCalledWith(intent.input, key)
+    if (intent.kind === 'link') expect(api.link).toHaveBeenCalledWith(intent.input, key, intent.taskId)
+    if (intent.kind === 'message') expect(api.message).toHaveBeenCalledWith(intent.taskId, intent.input, key)
+  })
+
   it.each(reentries)('re-enters a reloaded $kind with the same key only after digest, kind, target, and confirmation match', async (intent) => {
     const api = apiFixture()
     localStorage.setItem(CLOUD_PENDING_STORAGE_KEY, JSON.stringify([{ key: 'reload-key', digest: await digestCloudIntent(intent), installationId: 'installation' }]))
