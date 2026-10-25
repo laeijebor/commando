@@ -146,6 +146,24 @@ describe('AgentSession', () => {
     expect(sessions.at(-1)?.status).toBe('running')
   })
 
+  it('says why Claude asks in bypass mode and drops always-allow when Claude refuses to keep it', () => {
+    const { fake, session, items } = started()
+    session.send('clean up')
+    // As Claude Code 2.1.309 sends a safety check from bypassPermissions mode.
+    void fake.canUseTool('Bash', { command: 'rm -f f/*' }, {
+      ...signalOptions('r-safety'), suggestions: [], suppressAlwaysAllowRule: true,
+      decisionReason: 'Dangerous rm operation on statically-unresolvable target: /work/f/*', decisionReasonType: 'safetyCheck',
+    } as Parameters<CanUseTool>[2])
+    expect(items.get('request-r-safety')).toMatchObject({
+      requestKind: 'approval', detail: 'rm -f f/*', noAlwaysAllow: true,
+      reason: 'Safety check: Dangerous rm operation on statically-unresolvable target: /work/f/*',
+    })
+    // A plain prompt carries no reason and keeps always-allow.
+    void fake.canUseTool('Bash', { command: 'git push' }, signalOptions('r-plain'))
+    expect(items.get('request-r-plain')).not.toHaveProperty('reason')
+    expect(items.get('request-r-plain')).not.toHaveProperty('noAlwaysAllow')
+  })
+
   it('answers AskUserQuestion with the questions and answers the tool expects', async () => {
     const { fake, session, items } = started()
     const questions = [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A', description: '' }, { label: 'B', description: '' }] }]

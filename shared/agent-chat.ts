@@ -371,6 +371,10 @@ export type ChatItem = ChatItemBase & (
       toolName: string
       title: string
       detail?: string
+      /** Why the agent asks even though its mode might skip asking, e.g. a safety check in bypass mode. */
+      reason?: string
+      /** The agent won't keep an "always allow" for this request, so only once or deny are offered. */
+      noAlwaysAllow?: boolean
       questions?: ChatQuestion[]
       answer?: ChatRequestAnswer
     }
@@ -1017,7 +1021,10 @@ export function parseChatItem(value: unknown): ChatItem | null {
       if (typeof value.title !== 'string' || typeof value.toolName !== 'string') return null
       return withOptional({
         ...base, kind: 'request' as const, requestId: value.requestId, requestKind: value.requestKind as 'approval' | 'question', toolName: value.toolName.slice(0, 200), title: value.title.slice(0, 1000),
-      }, { detail: optionalText(value.detail, 16_384), questions: parseQuestions(value.questions), answer: parseRequestAnswer(value.answer) })
+      }, {
+        detail: optionalText(value.detail, 16_384), reason: optionalText(value.reason, 1000), noAlwaysAllow: value.noAlwaysAllow === true ? true : undefined,
+        questions: parseQuestions(value.questions), answer: parseRequestAnswer(value.answer),
+      })
     case 'notice':
       return (value.level === 'info' || value.level === 'error') && typeof value.text === 'string'
         ? { ...base, kind: 'notice', level: value.level, text: value.text.slice(0, 16_384) }

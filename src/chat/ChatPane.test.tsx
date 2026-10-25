@@ -103,6 +103,19 @@ describe('ChatPane', () => {
     expect(handlers.onAnswer).toHaveBeenCalledWith('r9', { kind: 'approval', decision: 'allow_always' })
   })
 
+  it('shows why Claude asks and offers no always-allow when Claude refuses one', () => {
+    const request: ChatItem = {
+      ...base, id: 'request-r10', status: 'running', kind: 'request', requestId: 'r10', requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?',
+      detail: 'rm -f f/*', reason: 'Safety check: Dangerous rm operation on statically-unresolvable target: /tmp/f/*', noAlwaysAllow: true,
+    }
+    const handlers = renderPane(chat({}, [request]))
+    const panel = screen.getByRole('group', { name: 'Allow Bash?' })
+    expect(within(panel).getByText('Safety check: Dangerous rm operation on statically-unresolvable target: /tmp/f/*')).toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: 'Always allow' })).toBeNull()
+    fireEvent.click(within(panel).getByRole('button', { name: 'Allow once' }))
+    expect(handlers.onAnswer).toHaveBeenCalledWith('r10', { kind: 'approval', decision: 'allow' })
+  })
+
   it('answers AskUserQuestion with a picked option or typed text', () => {
     const request: ChatItem = {
       ...base, id: 'request-q1', status: 'running', kind: 'request', requestId: 'q1', requestKind: 'question', toolName: 'AskUserQuestion', title: 'Claude is asking',

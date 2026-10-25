@@ -87,6 +87,7 @@ function ApprovalPanel({ request, pendingCount, cwd, disabled, onAnswer }: { req
         <span className="shrink-0 font-semibold uppercase tracking-wide text-warning">{request.title}</span>
         {pendingCount > 1 ? <span className="ml-auto shrink-0 tabular-nums">1/{pendingCount}</span> : null}
       </div>
+      {request.reason ? <p className="text-xs text-foreground">{shortPath(request.reason, cwd)}</p> : null}
       {request.detail ? (
         <code className="block max-h-24 w-full min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs text-foreground">
           {shortPath(request.detail, cwd)}
@@ -94,7 +95,7 @@ function ApprovalPanel({ request, pendingCount, cwd, disabled, onAnswer }: { req
       ) : null}
       <div className="flex flex-wrap gap-1.5">
         <Button size="xs" disabled={disabled} onClick={() => onAnswer({ kind: 'approval', decision: 'allow' })}>Allow once</Button>
-        <Button size="xs" variant="outline" disabled={disabled} onClick={() => onAnswer({ kind: 'approval', decision: 'allow_always' })}>Always allow</Button>
+        {request.noAlwaysAllow ? null : <Button size="xs" variant="outline" disabled={disabled} onClick={() => onAnswer({ kind: 'approval', decision: 'allow_always' })}>Always allow</Button>}
         <Button size="xs" variant="destructive-outline" disabled={disabled} onClick={() => onAnswer({ kind: 'approval', decision: 'deny' })}>Deny</Button>
       </div>
     </div>
