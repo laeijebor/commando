@@ -26,6 +26,9 @@ export type PrPreview = {
   unresolvedThreads?: number
   reviewDecision?: 'approved' | 'changes_requested' | 'review_required' | null
   conflicting?: boolean
+  /** GitHub's `mergeable` and `mergeStateStatus`, read by `prMergeDisabledReason`. */
+  mergeable?: string
+  mergeStateStatus?: string
   checks?: { state: 'pass' | 'fail' | 'pending'; failed: number; pending: number; total: number } | null
   headRefName?: string
   baseRefName?: string
@@ -35,18 +38,21 @@ export type PrPreview = {
   updatedAt?: string
 }
 
+/** The daemon's `{ error }` message for a failed response, or `fallback` with the status. */
+async function failure(response: Response, fallback: string): Promise<DaemonHttpError> {
+  let message = `${fallback} (${response.status})`
+  try {
+    const body = (await response.json()) as { error?: unknown }
+    if (typeof body.error === 'string' && body.error) message = body.error
+  } catch {
+    // Not JSON: keep the status line.
+  }
+  return new DaemonHttpError(response.status, message)
+}
+
 async function readJson<T>(host: Host, path: string, fallback: string, timeoutMs: number): Promise<T> {
   const response = await daemonFetch(host, path, { timeoutMs })
-  if (!response.ok) {
-    let message = `${fallback} (${response.status})`
-    try {
-      const body = (await response.json()) as { error?: unknown }
-      if (typeof body.error === 'string' && body.error) message = body.error
-    } catch {
-      // Not JSON: keep the status line.
-    }
-    throw new DaemonHttpError(response.status, message)
-  }
+  if (!response.ok) throw await failure(response, fallback)
   return (await response.json()) as T
 }
 
@@ -90,4 +96,19 @@ export async function fetchPrPreview(host: Host, repo: string, number: number): 
   const found = body.list.pullRequests.find((candidate) => candidate.number === number)
   if (!found) throw new Error(`#${number} is not in ${repo}'s pull request list`)
   return found
+}
+
+/**
+ * `POST /api/prs/merge` — the desktop panel's Merge PR. The daemon re-reads
+ * the PR first and refuses if it is no longer mergeable, has new commits
+ * (`headRefOid`) or now targets another branch (`baseRefName`), then merges
+ * with the first method the repository allows (merge, squash, rebase).
+ */
+export async function mergePr(host: Host, repo: string, number: number, headRefOid: string, baseRefName?: string): Promise<void> {
+  const response = await daemonFetch(host, '/api/prs/merge', {
+    method: 'POST',
+    body: { repo, number, headRefOid, ...(baseRefName ? { baseRefName } : {}) },
+    timeoutMs: 60_000,
+  })
+  if (!response.ok) throw await failure(response, 'Merge failed')
 }
