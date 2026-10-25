@@ -36,7 +36,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac.",
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac, and to take photos you attach to a chat message.",
           "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat.",
           "recordAudioAndroid": false
         }
@@ -45,7 +45,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Commando attaches the photos you pick to a chat message.",
-          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac.",
+          "cameraPermission": "Commando uses the camera to scan the pairing code shown on your Mac, and to take photos you attach to a chat message.",
           "microphonePermission": "Commando listens while you hold the mic button, to type what you say into a chat."
         }
       ],
