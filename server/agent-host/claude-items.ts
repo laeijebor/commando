@@ -363,7 +363,7 @@ export class ClaudeItemMapper {
    * A permission request. One from a subagent (`agentId`) belongs to its Agent
    * call, so a background subagent's request outlives the main turn's end.
    */
-  request(requestId: string, agentId: string | undefined, fields: { requestKind: 'approval' | 'question'; toolName: string; title: string; detail?: string; questions?: ChatQuestion[] }): ChatItem[] {
+  request(requestId: string, agentId: string | undefined, fields: { requestKind: 'approval' | 'question'; toolName: string; title: string; detail?: string; reason?: string; noAlwaysAllow?: boolean; questions?: ChatQuestion[] }): ChatItem[] {
     const parent = agentId ? this.subagentByTask.get(agentId) : undefined
     return [this.put({ ...this.base(`request-${requestId}`, 'running', parent), kind: 'request', requestId, ...fields })]
   }

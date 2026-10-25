@@ -307,6 +307,18 @@ function approvalDetail(toolName: string, input: Record<string, unknown>): strin
 }
 
 /**
+ * Why Claude asks, when it says: a safety check asks even in bypass mode
+ * (say, `rm` on a wildcard), so the card names it. A plain prompt has no reason.
+ */
+function approvalReason(options: { decisionReason?: string }): string | undefined {
+  const reason = options.decisionReason?.trim()
+  if (!reason) return undefined
+  // Not in the SDK's types yet, but sent alongside decisionReason.
+  const type = (options as { decisionReasonType?: unknown }).decisionReasonType
+  return type === 'safetyCheck' ? `Safety check: ${reason}` : reason
+}
+
+/**
  * One agent conversation driven through the Claude Agent SDK. It knows nothing
  * about processes or sockets: a host owns it and forwards its events.
  */
@@ -1179,6 +1191,7 @@ export class AgentSession implements ChatProviderSession {
       ? 'Claude is asking'
       : options.title ?? `Allow ${options.displayName ?? toolTitle(toolName, input)}?`
     const detail = requestKind === 'approval' ? approvalDetail(toolName, input) : undefined
+    const reason = requestKind === 'approval' ? approvalReason(options) : undefined
     if (options.signal.aborted) return Promise.resolve({ behavior: 'deny', message: 'Cancelled.' })
     return new Promise<PermissionResult>((resolve) => {
       this.pending.set(requestId, { requestKind, input, suggestions: options.suggestions, resolve })
@@ -1187,6 +1200,8 @@ export class AgentSession implements ChatProviderSession {
         toolName,
         title,
         ...(detail ? { detail } : {}),
+        ...(reason ? { reason } : {}),
+        ...(requestKind === 'approval' && options.suppressAlwaysAllowRule ? { noAlwaysAllow: true } : {}),
         ...(requestKind === 'question' ? { questions: questionsFromInput(input) } : {}),
       }))
       this.setStatus('waiting')
