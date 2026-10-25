@@ -33,6 +33,7 @@ import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
 import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
+import { spliceDictation, useDictation } from './dictation'
 import { chatImageUri, pickImages, prepareImage, uploadChatImage, type PickedImage } from './images'
 import { PasteImageBar } from './PasteImageBar'
 import { RelayChip } from './Subagents'
@@ -47,6 +48,9 @@ const drafts = new Map<string, Draft>()
 const takenCarries = new Map<string, number>()
 
 const FILE_SEARCH_DEBOUNCE_MS = 80
+
+/** Stands in for the dictation caret while the composer rewrites the draft around it. */
+const DICTATION_MARK = '\u0000'
 
 let attachmentCounter = 0
 function attachmentKey(prefix: string): string {
@@ -172,7 +176,12 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const files = useFileSearch(trigger?.kind === 'mention' ? trigger.query : null, channel)
   const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files) : null), [trigger, session, commands, files])
 
+  // The draft as of the latest change, ahead of the render it causes (a dictation can start in between).
+  const draftNow = useRef({ text, selection })
+  draftNow.current = { text, selection }
+
   const applyText = (next: { text: string; cursor: number }) => {
+    draftNow.current = { text: next.text, selection: { start: next.cursor, end: next.cursor } }
     setText(next.text)
     setSelection({ start: next.cursor, end: next.cursor })
     setForcedSelection({ start: next.cursor, end: next.cursor })
@@ -262,7 +271,45 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     addImages([image])
   }
 
+  // Dictation replaces the selection it started on; each new transcript redoes that from the same draft.
+  const [dictationHint, setDictationHint] = useState<string | null>(null)
+  const dictationBase = useRef({ text: '', selection: { start: 0, end: 0 } })
+  const dictation = useDictation({
+    onBegin: () => {
+      dictationBase.current = draftNow.current
+      setDictationHint(null)
+      setAttachError(null)
+    },
+    onTranscript: (spoken) => applyText(spliceDictation(dictationBase.current.text, dictationBase.current.selection, spoken)),
+    onError: setAttachError,
+    onHint: setDictationHint,
+  })
+  useEffect(() => {
+    if (!dictationHint) return
+    const timer = setTimeout(() => setDictationHint(null), 2500)
+    return () => clearTimeout(timer)
+  }, [dictationHint])
+  /**
+   * The composer adding text to the draft itself (restored queue, refused send, carried draft).
+   * A take in progress rebuilds the draft from its starting draft, so that gets the same edit,
+   * with a marker keeping its place for the words.
+   */
+  const rewriteDraft = (rewrite: (current: string) => string) => {
+    setText(rewrite)
+    const base = dictationBase.current
+    const marked = rewrite(`${base.text.slice(0, base.selection.start)}${DICTATION_MARK}${base.text.slice(base.selection.end)}`)
+    const at = marked.indexOf(DICTATION_MARK)
+    if (at >= 0) dictationBase.current = { text: marked.replace(DICTATION_MARK, ''), selection: { start: at, end: at } }
+  }
+  const canDictate = dictation.available && !closed && !switching
+  // The mic leaves mid-hold when the session ends or switches; its release would never come.
+  useEffect(() => {
+    if (!canDictate) dictation.cancel()
+  }, [canDictate, dictation.cancel])
+
   const clearDraft = () => {
+    // A take still finishing would put the sent words back when its last result lands.
+    dictation.cancel()
     setAttachments([])
     setAttachError(null)
     setText('')
@@ -277,7 +324,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       const sent = sentDrafts.current.get(requestId)
       if (!sent || Date.now() - sent.at > CHAT_SEND_REFUSAL_MS) continue
       sentDrafts.current.delete(requestId)
-      if (sent.text) setText((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
+      if (sent.text) rewriteDraft((current) => (current.trim() ? `${current}\n\n${sent.text}` : sent.text))
       // A missing image has to be attached again, as the error says.
       if (!sent.images.length || code === 'chat_image_missing') continue
       const fit = fitAttachments(count, sent.images.length)
@@ -301,7 +348,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       if (!carried.text && fit.accepted === 0) return
       taken = fit.accepted
       takenCarries.set(carried.id, taken)
-      if (carried.text) setText((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
+      if (carried.text) rewriteDraft((current) => [carried.text, current.trim()].filter(Boolean).join('\n\n'))
       const images = restored(carried.images.slice(0, taken), host.baseUrl, 'carried')
       if (images.length) setAttachments((current) => [...images, ...current])
     }
@@ -343,7 +390,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
       room -= count
       return true
     })
-    setText((current) => [...taken.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
+    rewriteDraft((current) => [...taken.map((queued) => queued.text), current.trim()].filter(Boolean).join('\n\n'))
     const images = restored(taken.flatMap((queued) => queued.images ?? []), host.baseUrl, 'queued')
     if (images.length) setAttachments((current) => [...images, ...current])
     const left = queue.length - taken.length
@@ -376,7 +423,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             disabled={!hostConnected}
             onChange={(change) => channel.queue(change)}
             onEditOrphaned={(edit) => {
-              setText((current) => [current.trim(), edit].filter(Boolean).join('\n\n'))
+              rewriteDraft((current) => [current.trim(), edit].filter(Boolean).join('\n\n'))
               setAttachError('That message was sent before your edit was saved; your edit is in the composer')
             }}
             queue={queue}
@@ -417,6 +464,9 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
             <IconButton icon="x" label="Dismiss" onPress={dismissError} />
           </View>
         ) : null}
+        {dictationHint ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.hint, { color: theme.muted }]}>{dictationHint}</Text>
+        ) : null}
         {clipboardImage.available ? (
           <PasteImageBar onDismiss={clipboardImage.dismiss} onError={setAttachError} onImage={pasteImage} />
         ) : null}
@@ -427,13 +477,17 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           // would resign it, so a reconnect would close the keyboard mid-sentence.
           editable={!closed && !switching}
           multiline
-          onChangeText={setText}
+          onChangeText={(next) => {
+            // Typing wins over a take still finishing, whose last result would overwrite it.
+            dictation.cancel()
+            setText(next)
+          }}
           onFocus={clipboardImage.recheck}
           onSelectionChange={(event) => {
             setSelection(event.nativeEvent.selection)
             if (forcedSelection) setForcedSelection(undefined)
           }}
-          placeholder={placeholder}
+          placeholder={dictation.listening ? 'Listening…' : placeholder}
           placeholderTextColor={theme.textDim}
           ref={input}
           scrollEnabled
@@ -480,6 +534,22 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
               <Feather color={theme.accent} name="zap" size={15} />
             </Pressable>
           ) : null}
+          {canDictate ? (
+            <Pressable
+              accessibilityHint="Hold to talk; release to stop"
+              accessibilityLabel={dictation.listening ? 'Listening' : 'Dictate'}
+              accessibilityRole="button"
+              accessibilityState={{ busy: dictation.listening }}
+              onPressIn={dictation.begin}
+              onPressOut={dictation.end}
+              style={[styles.round, styles.stop, dictation.listening
+                ? { backgroundColor: withAlpha(theme.red, 0.18), borderColor: theme.red }
+                : { borderColor: theme.borderMid }]}
+              testID="chat-dictate"
+            >
+              <Feather color={dictation.listening ? theme.red : theme.muted} name="mic" size={16} />
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityLabel={queueing ? 'Queue' : 'Send'}
             accessibilityRole="button"
@@ -506,6 +576,7 @@ const styles = StyleSheet.create({
   thumbRemove: { position: 'absolute', top: -4, right: -4, width: 20, height: 20, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   error: { flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 14, paddingRight: 4, paddingTop: 8 },
   errorText: { flex: 1, fontSize: 12.5, lineHeight: 17, paddingTop: 6 },
+  hint: { fontSize: 12.5, lineHeight: 17, paddingHorizontal: 14, paddingTop: 8 },
   field: { fontSize: 15, lineHeight: 20, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4, minHeight: 40, maxHeight: 140 },
   bar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 6, paddingRight: 8, paddingBottom: 8 },
   pillsScroll: { flex: 1 },
