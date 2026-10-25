@@ -40,7 +40,9 @@ function useTreeRoutes(): {
     }),
     // A tile the phone cannot show goes to the list, where it can be
     // confirmed or reopened as chromium.
-    openTile: (tile) => (canOpenOnPhone(tile)
+    openTile: (tile) => (tile.content?.kind === 'guide'
+      ? router.push({ pathname: '/(host)/[hostId]/guide/[tileId]', params: { hostId: hostId ?? '', tileId: tile.id } })
+      : canOpenOnPhone(tile)
       ? router.push({
           pathname: '/(host)/[hostId]/tile/[tileId]',
           params: { hostId: hostId ?? '', tileId: tile.id },

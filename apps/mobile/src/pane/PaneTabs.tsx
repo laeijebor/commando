@@ -11,12 +11,15 @@ import type { Host } from '../hosts/types'
 import type { WebPane } from '@commando/protocol'
 import { useTheme } from '../theme'
 import { PaneInfoSections } from '../ui/PaneInfo'
+import { PrView } from '../pr/PrView'
 import { Button } from '../ui/primitives'
 import { openTile, closeTile, confirmTile, markTileSeen } from '../tiles/api'
 import { paneTabs, type PaneTab } from './tabs'
 import { tileWasViewed } from '../tiles/seen'
 import { canOpenOnPhone } from '../tiles/list'
 import { selectedTabOffset, type TabLayout } from './tabScroll'
+import { GuideView } from '../guide/GuideView'
+import { isGuideTile } from '../guide/model'
 
 export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, active = true }: { host?: Host; paneId?: string; active?: boolean; chat: boolean; header: ReactNode; children: ReactNode; onOpenTile: (tile: WebPane) => void }): React.JSX.Element {
   const theme = useTheme()
@@ -61,8 +64,8 @@ export function PaneTabs({ host, paneId, chat, header, children, onOpenTile, act
       </Pressable>)}
     </ScrollView>
     <View style={[styles.body, tab.kind !== 'body' && styles.hidden]} accessibilityElementsHidden={tab.kind !== 'body'} importantForAccessibility={tab.kind !== 'body' ? 'no-hide-descendants' : 'auto'}>{children}</View>
-    {host && paneId && tab.kind !== 'body' ? tab.kind === 'web' ? <WebTabCard key={tab.id} host={host} tab={tab} onOpenTile={onOpenTile} /> : <ScrollView key={tab.id} contentContainerStyle={styles.sections}>
-      <PaneInfoSections active={foreground} host={host} paneId={paneId} brief={state.briefs[paneId]} status={state.agentStatuses[paneId]} pane={state.snapshot?.panes.find((pane) => pane.id === paneId)} ports={state.snapshot?.ports ?? []} sections={[tab.kind]} prFilter={tab.kind === 'pr' ? { repo: tab.pr.repo, number: tab.pr.number } : undefined} />
+    {host && paneId && tab.kind !== 'body' ? tab.kind === 'web' ? isGuideTile(tab.tile) ? <GuideView key={tab.id} active={foreground} host={host} tile={tab.tile} /> : <WebTabCard key={tab.id} host={host} tab={tab} onOpenTile={onOpenTile} /> : tab.kind === 'pr' ? <PrView key={tab.id} host={host} source={tab.pr} active={foreground} /> : <ScrollView key={tab.id} contentContainerStyle={styles.sections}>
+      <PaneInfoSections active={foreground} host={host} paneId={paneId} brief={state.briefs[paneId]} status={state.agentStatuses[paneId]} pane={state.snapshot?.panes.find((pane) => pane.id === paneId)} ports={state.snapshot?.ports ?? []} sections={[tab.kind]} />
     </ScrollView> : null}
   </View>
 }

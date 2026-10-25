@@ -8,10 +8,9 @@ import type {
 export function tileTitle(tile: Pick<WebPane, 'title' | 'url' | 'content'>): string {
   if (tile.title?.trim()) return tile.title.trim()
   const kind = tile.content?.kind
-  // A canvas tab's URL is its artifact folder, which names nothing.
-  if (kind === 'canvas') return 'Canvas'
-  try { const host = new URL(tile.url).host; if (host) return host } catch { /* Native content has no URL. */ }
-  return kind === 'simulator' ? 'Simulator' : kind === 'guide' ? 'Guide' : 'Web'
+  // A canvas or guide URL is only the artifact folder, so its host names nothing.
+  if (!kind || kind === 'simulator') try { const host = new URL(tile.url).host; if (host) return host } catch { /* Native content has no URL. */ }
+  return kind === 'simulator' ? 'Simulator' : kind === 'canvas' ? 'Canvas' : kind === 'guide' ? 'Guide' : 'Web'
 }
 
 /** A tile as the list renders it: everything resolved against the snapshot. */

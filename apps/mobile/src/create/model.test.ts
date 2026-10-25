@@ -57,6 +57,13 @@ describe('the create form model', () => {
     expect(buildSessionRequest({ ...FORM, worktreeEnabled: false }, REPO).worktree).toBeUndefined()
   })
 
+  it('sends a Claude profile only for a Claude chat', () => {
+    const configDir = '/Users/leo/.claudep'
+    expect(buildSessionRequest({ ...FORM, agent: 'claude-chat', configDir }, null).agent).toEqual({ provider: 'claude-chat', permissionMode: 'default', configDir })
+    expect(buildSessionRequest({ ...FORM, agent: 'codex-chat', configDir }, null).agent).not.toHaveProperty('configDir')
+    expect(buildSessionRequest({ ...FORM, agent: 'claude-chat' }, null).agent).not.toHaveProperty('configDir')
+  })
+
   it('sends a path only when it differs from the daemon default, and drops an unwanted preparation', () => {
     const request = buildSessionRequest(
       { ...FORM, worktreePath: '/Volumes/work/companion', prepareEnabled: false },

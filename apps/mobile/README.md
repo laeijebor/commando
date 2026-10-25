@@ -21,7 +21,11 @@ only. Bundle id `com.commando.companion`.
   providers, with session identity headers, right-aligned user bubbles, flat
   Markdown replies, foldable tool/thinking activity and scrollable code/diffs.
   Sending, queueing, steering, stopping, attachments and command/file menus use
-  the existing chat channel. Terminal-only panes retain xterm, fit, keys and paste.
+  the existing chat channel. While the clipboard holds an image (a screenshot,
+  an image copied in Photos or Safari, or one from the Mac over Universal
+  Clipboard) the composer offers it above the field; iOS's paste control reads
+  it without the "Allow Paste" prompt, and it uploads like a picked photo. Text
+  still pastes through the field's own menu. Terminal-only panes retain xterm, fit, keys and paste.
 - **Pane tabs** — Chat/Terminal, Worklog, Changes, linked PRs and attached web
   tabs in desktop order. Switching keeps the conversation mounted. Chromium
   opens the existing full-screen tile route with its interaction/review controls;
@@ -30,11 +34,24 @@ only. Bundle id `com.commando.companion`.
   `EXPO_PUBLIC_COMMANDO_DEMO=1` to add it and select it on a fresh install.
   Tap the Chats header’s host name to return to Hosts and add a real daemon. The in-memory
   host seeds four repos, eight sessions, four providers, questions, rich turns,
-  worklogs, changes, PRs and browser/simulator/canvas/guide tabs. Sending produces
+  worklogs, changes, a PR with its description, diff and review conversation,
+  and browser/simulator/canvas/guide tabs. Sending produces
   a short streamed reply. Unsupported actions fail locally. Production builds
   exclude the fake transport; saved demo hosts are filtered out.
 - **Theme** — the five desktop themes, ported token for token from
   `src/styles.css`, with the choice persisted.
+- **Pull requests** — a linked PR's pane tab, and every PR row in the Info
+  sheet, open a native PR view over the desktop panel's own routes:
+  **Description** (title, state, branch → base, author, checks and review
+  readiness, and the body as Markdown with GitHub's HTML — hidden markers,
+  `<details>`, `<img>` — turned into native Markdown), **Diff** (GitHub's
+  "Files changed" from `GET /api/prs/diff?base=pr`: a virtualised file list,
+  each file's numbered unified diff drawn only when opened and in 300-line
+  chunks) and **Conversation** (`GET /api/prs/details`: comments, reviews
+  with their verdicts, and review threads with file, line, code, replies and
+  resolved/outdated state; resolved threads fold away). Details load when the
+  view shows and the diff when its tab is first opened; nothing polls, and
+  pull to refresh asks the daemon to bypass its GitHub cache.
 - **Info sheet** — pushed over a pane: the worklog (headline, recap, Next, plan
   checklist and activity timeline from `session_brief`), the HUD details when a
   pane has no brief, the diff from `GET /api/git/summary` polled every 15s with
@@ -164,6 +181,39 @@ then `expo start` against it:
 ```sh
 npx eas build --profile development --platform ios
 ```
+
+## Over-the-air updates
+
+The app is linked to the EAS project `@laeijebor/commando-companion` and
+checks the `production` channel on every launch. A new update downloads in the
+background and runs from the next cold start, so after publishing, open the
+app, swipe it away, and open it again.
+
+Publish JavaScript and asset changes from `apps/mobile`:
+
+```sh
+npx eas-cli update --channel production --platform ios --message "what changed"
+```
+
+An update only reaches builds with the same runtime version, which follows the
+app version (`expo.version` in `app.json`). Adding, removing or upgrading a
+native module needs a new build: bump `expo.version`, rebuild, and install it.
+A phone build signed with the team's development profile can be shared without
+a cable through EAS internal distribution:
+
+```sh
+npx expo prebuild -p ios --clean
+xcodebuild -workspace ios/Commando.xcworkspace -scheme Commando -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath /tmp/Commando.xcarchive \
+  -allowProvisioningUpdates archive
+xcodebuild -exportArchive -archivePath /tmp/Commando.xcarchive \
+  -exportOptionsPlist scripts/ExportOptions.development.plist -exportPath /tmp/Commando-ipa \
+  -allowProvisioningUpdates
+npx eas-cli upload --platform ios --build-path /tmp/Commando-ipa/Commando.ipa
+```
+
+Only devices in that profile can install it. Builds made before EAS Update was
+added never check for updates and must be replaced once.
 
 ## Pointing at a daemon over Tailscale
 

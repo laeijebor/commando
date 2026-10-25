@@ -27,6 +27,7 @@
     "expo-splash-screen": "~57.0.9",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
+    "expo-updates": "~57.0.26",
     "marked": "^16.4.2",
     "react": "19.2.3",
     "react-native": "0.86.3",
@@ -66,7 +67,10 @@
       "^\\./protocol\\.js$": "<rootDir>/../../shared/protocol.ts",
       "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",
       "^@/(.*)$": "<rootDir>/src/$1",
-      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts"
+      "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts",
+      "^@commando/guide-types$": "<rootDir>/../../shared/guide-types.ts",
+      "^@commando/pr-quick-look$": "<rootDir>/../../shared/pr-quick-look.ts",
+      "^@commando/pr-conversation$": "<rootDir>/../../shared/pr-conversation.ts"
     },
     "testPathIgnorePatterns": [
       "/node_modules/",

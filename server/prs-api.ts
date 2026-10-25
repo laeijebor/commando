@@ -200,7 +200,7 @@ export async function handlePrsApi(
       json(response, 200, path[0] === 'details'
         ? { details: await service.pullRequestDetails(repo, number, { refresh: url.searchParams.get('refresh') === '1' }) }
         : path[0] === 'conflicts' ? { conflicts: await service.pullRequestConflicts(repo, number) }
-        : { diff: await service.pullRequestDiff(repo, number) })
+        : { diff: await service.pullRequestDiff(repo, number, url.searchParams.get('base') === 'pr' ? 'pr' : 'main') })
       return true
     }
 
