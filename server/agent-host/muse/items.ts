@@ -1,4 +1,4 @@
-import type { ChatImageRef, ChatItem, ChatItemStatus, ChatQuestion, ChatRequestAnswer, ChatTodo } from '../../../shared/agent-chat.js'
+import { notedVideos, stripAttachmentNotes, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatQuestion, type ChatRequestAnswer, type ChatTodo } from '../../../shared/agent-chat.js'
 import { record } from '../rpc-client.js'
 
 const MAX_TEXT = 200_000
@@ -145,10 +145,12 @@ export class MuseItemMapper {
     switch (kind) {
       case 'userMessage': {
         if (item.retracted === true) { this.items.delete(id); return [] }
-        const message = text(item.displayText ?? item.text)
+        // Attached videos are notes after the typed text.
+        const message = stripAttachmentNotes(text(item.displayText ?? item.text))
         const expectedIndex = this.expectedUsers.findIndex((entry) => entry.text === message || entry.text === text(item.text))
         const expected = expectedIndex >= 0 ? this.expectedUsers.splice(expectedIndex, 1)[0] : undefined
-        const images = expected?.images ?? (previous?.kind === 'user_message' ? previous.images : undefined)
+        const noted = notedVideos(text(item.text))
+        const images = expected?.images ?? (previous?.kind === 'user_message' ? previous.images : noted.length ? noted : undefined)
         return [this.put({ ...base, kind: 'user_message', status: 'completed', text: expected?.text ?? message,
           ...(images?.length ? { images } : {}), ...(item.steered === true ? { steered: true } : {}) })]
       }

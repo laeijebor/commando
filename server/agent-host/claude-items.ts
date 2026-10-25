@@ -1,5 +1,6 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { ATTACHMENT_NOTES, isAgentId, stripAttachmentNotes, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatQuestion, type ChatRequestAnswer, type ChatSubagentState, type ChatTodo } from '../../shared/agent-chat.js'
+import { basename } from 'node:path'
+import { ATTACHMENT_NOTES, isAgentId, isChatVideoId, notedVideos, stripAttachmentNotes, type ChatImageRef, type ChatItem, type ChatItemStatus, type ChatQuestion, type ChatRequestAnswer, type ChatSubagentState, type ChatTodo } from '../../shared/agent-chat.js'
 
 const MAX_OUTPUT = 20_000
 /** Transcript user entries that Claude Code wrote itself, not the person. */
@@ -56,11 +57,15 @@ function imageData(part: unknown): string | undefined {
 export function notedAttachmentPaths(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]): string[] {
   return messages.flatMap((entry) => {
     const content = record(entry.message).content
-    // The host only writes notes beside the images they describe.
-    if (entry.type !== 'user' || entry.parent_tool_use_id || !Array.isArray(content) || !content.some((part) => record(part).type === 'image')) return []
+    if (entry.type !== 'user' || entry.parent_tool_use_id) return []
+    // A video's note is all it sends, so the message can be plain text.
+    if (typeof content === 'string') return [...content.matchAll(ATTACHMENT_NOTES)].flatMap((match) => isChatVideoId(basename(match[1]!)) ? [match[1]!] : [])
+    // The host only writes image notes beside the images they describe.
+    if (!Array.isArray(content)) return []
+    const withImages = content.some((part) => record(part).type === 'image')
     return content.flatMap((part) => {
       const text = record(part).type === 'text' ? str(record(part).text) ?? '' : ''
-      return [...text.matchAll(ATTACHMENT_NOTES)].map((match) => match[1]!)
+      return [...text.matchAll(ATTACHMENT_NOTES)].flatMap((match) => withImages || isChatVideoId(basename(match[1]!)) ? [match[1]!] : [])
     })
   })
 }
@@ -432,11 +437,11 @@ export class ClaudeItemMapper {
           this.handleToolResults(message as { content: unknown })
         } else if (!REPLAY_NOISE.test(text)) {
           const blocks = Array.isArray(message.content) ? message.content.filter((part) => record(part).type === 'image') : []
-          const images = this.saveImages(blocks)
+          const images = [...this.saveImages(blocks), ...notedVideos(text)]
           const relayed = parseRelayPrompt(text)
           const typed = stripAttachmentNotes(relayed?.text ?? text)
           // An image that can't be shown still marks the turn, so it isn't lost from the timeline.
-          if (typed || blocks.length) this.startTurn(typed || (images.length ? '' : '[image]'), images, relayed ? { relayTo: relayed.relayTo } : {})
+          if (typed || blocks.length || images.length) this.startTurn(typed || (images.length ? '' : '[image]'), images, relayed ? { relayTo: relayed.relayTo } : {})
         }
       } else if (entry.type === 'user') {
         this.handleToolResults(message as { content: unknown })

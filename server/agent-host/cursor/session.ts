@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import type { AgentOptions, ModelListItem, ModelSelection, SDKImage } from '@cursor/sdk'
 import {
-  AGENT_HOST_PROTOCOL_VERSION, MAX_CHAT_IMAGES, MAX_QUEUED_MESSAGES, isChatEffort, isModelValue,
+  AGENT_HOST_PROTOCOL_VERSION, MAX_CHAT_IMAGES, MAX_QUEUED_MESSAGES, attachmentNote, isChatEffort, isChatVideoId, isModelValue,
   type ChatAnswer, type ChatCommand, type ChatEffort, type ChatFileSearchResult, type ChatImageRef, type ChatItem,
   type ChatModelOption, type ChatQueueAction, type ChatQueuedMessage, type ChatSendOptions, type ChatSessionInfo,
   type ChatSessionPermissionMode, type ChatSettingsChange, type ChatSubagentTranscript, type ChatTaskAction,
@@ -59,6 +60,8 @@ export class CursorChatSession implements ChatProviderSession {
   private sdk?: CursorSdk
   private agent?: CursorAgent
   private readonly mapper = new CursorItemMapper()
+  /** The folder attached videos are copied to; Cursor's agent id isn't known before its first run. */
+  private readonly attachmentFolder = randomUUID()
   private readonly files: WorkspaceFileIndex
   private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private info: ChatSessionInfo
@@ -282,8 +285,14 @@ export class CursorChatSession implements ChatProviderSession {
   }
   private async startRun(text: string, images: ChatImageRef[]): Promise<void> {
     const input: SDKImage[] = []
+    const notes: string[] = []
     for (const image of images) {
       if (!this.spec.images) throw new Error('Chat images are unavailable')
+      // A video is a file Cursor opens with its own tools.
+      if (isChatVideoId(image.id)) {
+        notes.push(attachmentNote(image.name ?? image.id, await this.spec.images.stage(image.id, this.attachmentFolder), 'video'))
+        continue
+      }
       const data = await this.spec.images.read(image.id)
       const mimeType = cursorImageMime(data)
       if (!mimeType) throw new Error('Cursor supports PNG, JPEG, GIF and WebP images only')
@@ -313,7 +322,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.mapper.begin(turnId)
     this.emitItems(this.mapper.expectUser(text, images))
     if (!sandboxed) this.ranUnsandboxed = true
-    const run = await this.agent.send({ text, ...(input.length ? { images: input } : {}) }, {
+    const run = await this.agent.send({ text: [text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
       model, mode: this.info.permissionMode === 'plan' ? 'plan' : 'agent',
       onDelta: ({ update }) => { if (!this.closing) this.emitItems(this.mapper.delta(update)) },
     })

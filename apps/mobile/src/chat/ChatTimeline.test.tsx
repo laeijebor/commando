@@ -46,3 +46,12 @@ it('ignores the momentum end of its own scrollToEnd, so following never loops', 
   act(() => jest.advanceTimersByTime(30))
   expect(scroll).not.toHaveBeenCalled()
 })
+it('marks an attached video with a film tile instead of loading it as an image', async () => {
+  const video = `${'e'.repeat(64)}.mov`
+  const image = `${'a'.repeat(64)}.png`
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" items={[item('user_message', { text: 'Watch', images: [{ id: video, name: 'clip.mov' }, { id: image, name: 'pane.png' }] })]} working={false} /></ThemeProvider>)
+  await act(async () => undefined)
+  expect(screen.getByLabelText('Video: clip.mov')).toBeTruthy()
+  expect(screen.queryByLabelText('Open clip.mov')).toBeNull()
+  expect(screen.getByLabelText('Open pane.png')).toBeTruthy()
+})
