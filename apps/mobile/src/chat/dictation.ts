@@ -211,11 +211,19 @@ export function useDictation(handlers: Handlers): { available: boolean; listenin
           latest.current.onTranscript(said)
         }),
         module.addListener('error', (event) => {
-          if (!take || take.cancelled) return
-          const message = dictationError(event)
-          if (!message) return
-          latest.current.onError(message)
-          take.heard = true
+          const current = take
+          if (!current) return
+          const message = current.cancelled ? null : dictationError(event)
+          if (message) {
+            latest.current.onError(message)
+            current.heard = true
+          }
+          // Setup can fail before `start` with an error and no `end`, which would leave the mic
+          // waiting forever; finish the take here (a trailing `end` then finds none).
+          if (current.started && !current.live && event.error !== 'aborted') {
+            pressedAgain = false
+            finish()
+          }
         }),
         module.addListener('end', () => {
           if (!take) return
