@@ -498,6 +498,58 @@ describe('durable cloud orchestration', () => {
     expect(adapter.sendMessage).not.toHaveBeenCalled()
   })
 
+  it.each((['throws', 'times out', 'not found', 'invalid observation'] as const).flatMap((failure) =>
+    [false, true].map((recovery) => ({ failure, recovery })),
+  ))('accepts a confirmed link when inspection $failure (recovery=$recovery)', async ({ failure, recovery }) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { service, adapter, store } = setup()
+    let taskId: string | undefined
+    if (recovery) {
+      adapter.create.mockResolvedValue({ state: 'delivery_unknown', issue: { code: 'delivery_unknown', message: 'Synthetic uncertainty' } })
+      const creation = await service.createTask(input, 'uncertain-create')
+      await turn()
+      taskId = creation.task.id
+    }
+    const held = deferred<CloudInspection>()
+    if (failure === 'times out') adapter.inspect.mockReturnValue(held.promise)
+    else if (failure === 'not found') adapter.inspect.mockRejectedValue(new CloudTaskError(404, 'task_not_observed', 'PRIVATE listing diagnostic'))
+    else if (failure === 'invalid observation') adapter.inspect.mockResolvedValue({ remoteState: 'running', rawState: 'PRIVATE invalid state!' })
+    else adapter.inspect.mockRejectedValue(new Error('PRIVATE transient listing failure'))
+
+    const link = await service.linkTask({ provider: 'codex', providerTaskId: 'task_external', ...confirmation }, 'link', taskId)
+    await turn()
+    // Identity is durable before even an uncooperative inspection settles.
+    expect(service.getOperation(link.operation.id)).toMatchObject({ state: 'accepted', issue: null, receipt: { providerTaskId: 'task_external', evidence: 'user_link' } })
+    if (failure === 'times out') await vi.advanceTimersByTimeAsync(20_001)
+    expect(service.getTask(link.task.id).task).toMatchObject({
+      deliveryState: 'accepted', providerTaskId: 'task_external', identityEvidence: 'user_link',
+      remoteState: 'unknown', rawState: null, observationState: 'unavailable', lastObservedAt: null, providerUpdatedAt: null,
+      issue: { code: 'observation_failed', message: 'Refresh failed. The saved task is retained.' },
+    })
+    expect(store.events).not.toContain('finish:rejected')
+    expect(adapter.sendMessage).not.toHaveBeenCalled()
+    expect(adapter.create).toHaveBeenCalledTimes(recovery ? 1 : 0)
+    if (recovery) expect(service.getOperationByKey('uncertain-create').state).toBe('delivery_unknown')
+    if (failure === 'times out') {
+      expect(adapter.inspect.mock.calls[0][1]?.aborted).toBe(true)
+      held.resolve({ remoteState: 'result_ready', rawState: 'ready' })
+      await turn()
+      expect(service.getTask(link.task.id).task).toMatchObject({ identityEvidence: 'user_link', remoteState: 'unknown', observationState: 'unavailable' })
+    }
+  })
+
+  it('applies a successful link inspection without upgrading user-supplied identity evidence', async () => {
+    const { service, adapter } = setup()
+    adapter.inspect.mockResolvedValue({ remoteState: 'running', rawState: 'in_progress', updatedAt: '2026-09-13T01:00:00Z' })
+    const link = await service.linkTask({ provider: 'codex', providerTaskId: 'task_external', ...confirmation }, 'link')
+    await turn()
+    expect(service.getTask(link.task.id).task).toMatchObject({
+      deliveryState: 'accepted', identityEvidence: 'user_link', remoteState: 'running', rawState: 'in_progress',
+      observationState: 'fresh', lastObservedAt: expect.any(String), providerUpdatedAt: '2026-09-13T01:00:00Z', issue: null,
+    })
+    expect(service.getOperation(link.operation.id).receipt?.evidence).toBe('user_link')
+  })
+
   it.each([
     { ...input, executable: '/bin/sh' }, { ...input, env: { TOKEN: 'secret' } },
     { ...input, source: { ...input.source, url: 'https://evil.test' } },
@@ -667,6 +719,34 @@ describe('durable cloud orchestration', () => {
     held.resolve({ remoteState: 'running', rawState: 'running' })
     await vi.advanceTimersByTimeAsync(0)
     expect(service.getTask(action.task.id).task.remoteState).toBe('unknown')
+  })
+
+  it.each([
+    { providerUpdatedAt: '2026-09-13T02:00:00Z' },
+    { rawState: 'in_progress' },
+    { remoteState: 'result_ready' as const },
+  ])('invalidates cached and in-flight diffs on provider observation change %j', async (revision) => {
+    const { service, store, adapter } = setup()
+    const action = await service.createTask(input, 'create')
+    await turn()
+    await service.getDiff(action.task.id)
+    store.updateTask(action.task.id, { title: 'Local rename' })
+    await service.getDiff(action.task.id)
+    expect(adapter.diff).toHaveBeenCalledTimes(1)
+
+    store.updateTask(action.task.id, revision)
+    const held = deferred<{ text: string; truncated: boolean }>()
+    adapter.diff.mockReturnValueOnce(held.promise)
+    const previousObservation = service.getDiff(action.task.id)
+    await turn()
+    store.updateTask(action.task.id, { rawState: 'newer_observation' })
+    adapter.diff.mockResolvedValueOnce({ text: '+newer diff', truncated: false })
+    const nextObservation = service.getDiff(action.task.id)
+    held.resolve({ text: '+older diff', truncated: false })
+    expect((await previousObservation).text).toBe('+older diff')
+    expect((await nextObservation).text).toBe('+newer diff')
+    expect((await service.getDiff(action.task.id)).text).toBe('+newer diff')
+    expect(adapter.diff).toHaveBeenCalledTimes(3)
   })
 
   it('does not poll on its own and bounds multiline/multibyte diffs', async () => {

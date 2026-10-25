@@ -401,11 +401,20 @@ export class CloudTaskService {
         // Recheck a recovery that could have raced a late creation receipt.
         if (this.store.operationsForTask(task.id).some((entry) => entry.kind === 'create')) this.assertRecovery(task, input)
         const receipt: CloudReceipt = { providerTaskId: input.providerTaskId, providerUrl: cloudTaskUrl(task.provider, input.providerTaskId), evidence: 'user_link' }
-        if (info.capabilities.inspect) {
-          const linkedTask = { ...task, ...receipt, identityEvidence: receipt.evidence }
-          inspectionPatch(await bounded(this.track(adapter.inspect(linkedTask, controller.signal)), READ_TIMEOUT_MS, () => controller.abort()))
+        if (this.stopped) return
+        // Explicit confirmation records local identity even if a bounded listing misses it.
+        knownReceipt = receipt
+        const linkedTask = this.store.finishOperation(id, { state: 'accepted', receipt }).task
+        if (info.capabilities.inspect && linkedTask.providerTaskId === receipt.providerTaskId) {
+          let patch: Parameters<CloudTaskRepository['updateTask']>[1]
+          try {
+            const observation = await bounded(this.track(adapter.inspect(linkedTask, controller.signal)), READ_TIMEOUT_MS, () => controller.abort())
+            patch = { ...inspectionPatch(observation), observationState: 'fresh', lastObservedAt: this.timestamp(), issue: null }
+          } catch (error) {
+            patch = { remoteState: 'unknown', rawState: null, providerUpdatedAt: null, lastObservedAt: null, observationState: 'unavailable', issue: providerIssue(error, 'observation_failed') }
+          }
+          if (!this.stopped) this.store.updateTask(task.id, { ...patch, issue: this.identityConflict(task.id) ?? patch.issue })
         }
-        if (!this.stopped) this.store.finishOperation(id, { state: 'accepted', receipt })
         return
       }
       invoked = true
@@ -539,7 +548,8 @@ export class CloudTaskService {
     this.active()
     const task = this.getTask(id).task
     const connection = cloudConnectionKey(task.provider, task.credentialContextId)
-    const cacheKey = `${connection}/${id}`
+    // A new provider observation must not reuse an older cached or in-flight diff.
+    const cacheKey = `${connection}/${id}/${canonicalCloudRequest([task.providerUpdatedAt, task.rawState, task.remoteState])}`
     const existing = this.diffs.get(cacheKey)
     if (existing) return existing
     const cached = this.diffCache.get(cacheKey)

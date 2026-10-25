@@ -8,7 +8,7 @@ import { CLOUD_PROMPT_LIMIT, cloudConnectionKey, type CloudOperation, type Cloud
 import { CloudTasksHttpError, type CloudTasksApi } from './cloudTasksApi'
 import { CloudTasksHud, CloudTasksSection } from './CloudTasksSection'
 import { CLAUDE_CREATE_DISABLED_REASON, CloudTaskCreateDialog } from './CloudTaskCreateDialog'
-import { boundCloudDiff } from './CloudTaskDiff'
+import { boundCloudDiff, CloudTaskDiff } from './CloudTaskDiff'
 import { CLOUD_PENDING_STORAGE_KEY, cloudTaskStoreFor, digestCloudIntent } from './cloudTaskStore'
 
 // Deliberately synthetic provider evidence; tests never call a CLI or provider.
@@ -186,6 +186,75 @@ describe('cloud list/detail and integration exports', () => {
     expect(screen.getByRole('button', { name: 'Send new message' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Load diff' })).not.toBeInTheDocument()
     expect(api.refresh).not.toHaveBeenCalled()
+  })
+})
+
+describe('cloud diff refresh', () => {
+  it.each([
+    { providerUpdatedAt: '2026-09-13T02:00:00Z' },
+    { rawState: 'in_progress' },
+    { remoteState: 'result_ready' as const },
+  ])('invalidates a requested diff on provider observation change %j', async (revision) => {
+    const task = fixtureTask({ remoteState: 'running', rawState: 'running' })
+    const api = fixtureApi(task)
+    const { rerender } = render(<CloudTaskDiff api={api} task={task} enabled connected />)
+    fireEvent.click(screen.getByRole('button', { name: 'Load diff' }))
+    await screen.findByLabelText('Unified diff')
+    let resolve!: (diff: { text: string; truncated: boolean }) => void
+    vi.mocked(api.diff).mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    rerender(<CloudTaskDiff api={api} task={{ ...task, ...revision }} enabled connected />)
+    expect(api.diff).toHaveBeenCalledTimes(2)
+    expect(screen.queryByLabelText('Unified diff')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Loading diff')
+    await act(async () => { resolve({ text: '+updated result', truncated: false }) })
+    expect(screen.getByLabelText('Unified diff')).toHaveTextContent('+updated result')
+  })
+
+  it('keeps provider revision changes on demand and ignores local-only revisions', async () => {
+    const task = fixtureTask()
+    const api = fixtureApi(task)
+    const { rerender } = render(<CloudTaskDiff api={api} task={task} enabled connected />)
+    const observed = { ...task, providerUpdatedAt: '2026-09-13T02:00:00Z' }
+    rerender(<CloudTaskDiff api={api} task={observed} enabled connected />)
+    expect(api.diff).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Load diff' }))
+    await screen.findByLabelText('Unified diff')
+    rerender(<CloudTaskDiff api={api} task={{ ...observed, title: 'Renamed', revision: 9, updatedAt: '2026-09-13T03:00:00Z' }} enabled connected />)
+    expect(api.diff).toHaveBeenCalledTimes(1)
+    expect(screen.getByLabelText('Unified diff')).toBeInTheDocument()
+  })
+
+  it('ignores an older in-flight diff after the provider revision changes', async () => {
+    const task = fixtureTask()
+    const api = fixtureApi(task)
+    let resolve!: (diff: { text: string; truncated: boolean }) => void
+    vi.mocked(api.diff).mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const { rerender } = render(<CloudTaskDiff api={api} task={task} enabled connected />)
+    fireEvent.click(screen.getByRole('button', { name: 'Load diff' }))
+    vi.mocked(api.diff).mockResolvedValueOnce({ text: '+current revision', truncated: false })
+    rerender(<CloudTaskDiff api={api} task={{ ...task, providerUpdatedAt: '2026-09-13T02:00:00Z' }} enabled connected />)
+    await waitFor(() => expect(screen.getByLabelText('Unified diff')).toHaveTextContent('+current revision'))
+    await act(async () => { resolve({ text: '+outdated revision', truncated: false }) })
+    expect(screen.getByLabelText('Unified diff')).toHaveTextContent('+current revision')
+  })
+
+  it('refreshes a loaded diff explicitly and disables refresh while disconnected', async () => {
+    const task = fixtureTask()
+    const api = fixtureApi(task)
+    const { rerender } = render(<CloudTaskDiff api={api} task={task} enabled connected />)
+    fireEvent.click(screen.getByRole('button', { name: 'Load diff' }))
+    await screen.findByLabelText('Unified diff')
+    rerender(<CloudTaskDiff api={api} task={task} enabled connected={false} />)
+    const refresh = screen.getByRole('button', { name: 'Refresh diff' })
+    expect(refresh).toBeDisabled()
+    fireEvent.click(refresh)
+    expect(api.diff).toHaveBeenCalledTimes(1)
+    rerender(<CloudTaskDiff api={api} task={task} enabled connected />)
+    await screen.findByLabelText('Unified diff')
+    vi.mocked(api.diff).mockResolvedValueOnce({ text: '+explicitly refreshed', truncated: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh diff' }))
+    await waitFor(() => expect(screen.getByLabelText('Unified diff')).toHaveTextContent('+explicitly refreshed'))
+    expect(api.diff).toHaveBeenCalledTimes(3)
   })
 })
 
