@@ -1,10 +1,11 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ExternalLink, X } from 'lucide-react'
-import Markdown from 'react-markdown'
+import Markdown, { type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
+import { githubAssetUrl } from '../shared/github-assets'
 import type { PrConflicts, PrConversationEntry, PrDetails, PrRemoteDiff } from '../shared/pr-quick-look'
 import { PrConversationPanel } from './PrConversationPanel'
 import { refreshPrCommentStatus } from './prStore'
@@ -19,13 +20,40 @@ const tabs = ['Description', 'Checks', 'Conversation', 'Diff', 'Conflicts', 'Sta
 export type PrQuickLookTab = (typeof tabs)[number]
 type Snapshot<T> = { api: PrsApiClient; references: string; revision: string; value: T; retry?: number }
 
+/** Loads a GitHub attachment through the daemon; set by the PR view. */
+const AssetLoader = createContext<((src: string) => Promise<string>) | null>(null)
+
+/**
+ * Attachments on private repos (PR Lens diagrams, screenshots) only load with a
+ * GitHub login, which this page doesn't have, so the daemon fetches them.
+ */
+function MarkdownImage({ node: _node, src, ...props }: ComponentProps<'img'> & ExtraProps) {
+  const load = useContext(AssetLoader)
+  const asset = load && typeof src === 'string' && githubAssetUrl(src) ? src : null
+  const [loaded, setLoaded] = useState<{ src: string; url: string | null } | null>(null)
+  useEffect(() => {
+    if (!asset || !load) return
+    let live = true
+    load(asset).then(
+      (url) => { if (live) setLoaded({ src: asset, url }) },
+      () => { if (live) setLoaded({ src: asset, url: null }) },
+    )
+    return () => { live = false }
+  }, [asset, load])
+  if (!asset) return <img src={src} {...props} />
+  const url = loaded?.src === asset ? loaded.url : undefined
+  if (url === undefined) return <span className="pr-quick-image-loading" role="img" aria-label={props.alt}>Loading image…</span>
+  // On failure, fall back to GitHub's own URL: public repos still load it.
+  return <img src={url ?? src} {...props} />
+}
+
 function MarkdownBody({ body }: { body: string }) {
   return (
     <div className="pr-quick-markdown">
       <Markdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeRaw, rehypeSanitize]}
-        components={{ a: (props) => <a {...props} target="_blank" rel="noreferrer" />, pre: MarkdownPre }}
+        components={{ a: (props) => <a {...props} target="_blank" rel="noreferrer" />, pre: MarkdownPre, img: MarkdownImage }}
       >
         {body}
       </Markdown>
@@ -274,6 +302,7 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
     if (refreshError) throw refreshError
   }
   return (
+    <AssetLoader.Provider value={api.asset}>
     <div className="pr-quick-view">
         <header className="pr-quick-header">
           <div>
@@ -533,5 +562,6 @@ export function PrQuickLookView({ pr, repo, api, actions, onRefresh, closeButton
           </a>
         </footer>
     </div>
+    </AssetLoader.Provider>
   )
 }
