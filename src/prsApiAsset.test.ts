@@ -22,4 +22,18 @@ describe('prs api asset', () => {
     await expect(api.asset(src)).rejects.toThrow('502')
     await expect(api.asset(src)).resolves.toMatch(/^data:image\/png;base64,/)
   })
+
+  it('keeps only the 32 most recently used images', async () => {
+    const fetcher = vi.fn(async () => new Response('x', { headers: { 'Content-Type': 'image/png' } }))
+    const api = createPrsApi('tok', fetcher as unknown as typeof fetch)
+    const src = (n: number) => `https://github.com/user-attachments/assets/00000000-0000-0000-0000-${String(n).padStart(12, '0')}`
+    for (let n = 0; n < 32; n += 1) await api.asset(src(n))
+    await api.asset(src(0))
+    await api.asset(src(32))
+    expect(fetcher).toHaveBeenCalledTimes(33)
+    await api.asset(src(0))
+    expect(fetcher).toHaveBeenCalledTimes(33)
+    await api.asset(src(1))
+    expect(fetcher).toHaveBeenCalledTimes(34)
+  })
 })
