@@ -28,12 +28,14 @@ function setup(
   overrides: Partial<PrSummary> = {},
   target?: string,
   conversation?: import('../shared/pr-quick-look').PrConversationEntry[],
+  body?: string,
 ) {
   const api = {
+    asset: vi.fn(async (src: string) => src.endsWith('0000') ? Promise.reject(new Error('404')) : 'data:image/svg+xml;base64,PHN2Zy8+'),
     renderDiff: vi.fn().mockImplementation(async (_path: string, patch: string) => patch),
     threadAction: vi.fn().mockResolvedValue({ ok: true }),
     details: vi.fn().mockResolvedValue({
-      body: '# Complete description\n\nFull body\n\n<sub>Badge text</sub>\n\n<script>window.bad = true</script>\n\n<a href="javascript:alert(1)">Unsafe link</a>',
+      body: body ?? '# Complete description\n\nFull body\n\n<sub>Badge text</sub>\n\n<script>window.bad = true</script>\n\n<a href="javascript:alert(1)">Unsafe link</a>',
       conversation: conversation ?? [
         {
           id: '1',
@@ -87,6 +89,16 @@ function setup(
 }
 
 describe('PR quick look', () => {
+  it('loads GitHub attachments through the daemon and leaves other images alone', async () => {
+    const diagram = 'https://github.com/user-attachments/assets/ae328c6b-f0ea-4b47-8b77-ad5ae9424e6f'
+    const missing = 'https://github.com/user-attachments/assets/ae328c6b-f0ea-4b47-8b77-000000000000'
+    const { api } = setup({}, undefined, undefined, `![Architecture](${diagram})\n\n![Gone](${missing})\n\n![Badge](https://img.shields.io/badge/x)`)
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Architecture' })).toHaveAttribute('src', 'data:image/svg+xml;base64,PHN2Zy8+'), { timeout: 5000 })
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Gone' })).toHaveAttribute('src', missing))
+    expect(screen.getByRole('img', { name: 'Badge' })).toHaveAttribute('src', 'https://img.shields.io/badge/x')
+    expect(api.asset).toHaveBeenCalledTimes(2)
+  }, 10_000)
+
   it('keeps the modal on the Delta renderer outside the embedded panel container', async () => {
     const { api } = setup()
     await screen.findByRole('heading', { name: 'Complete description' })

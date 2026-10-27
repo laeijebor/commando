@@ -7,6 +7,7 @@ import { prMergeDisabledReason } from '../shared/pr-merge.js'
 import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
 import { PrReadCache } from './pr-read-cache.js'
+import { fetchGithubAsset, githubAssetUrl, type GithubAsset } from './github-assets.js'
 import { PanePrRecords, isPanePrRef, recordRecency, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
@@ -26,6 +27,9 @@ const GIT_COMMAND_BUFFER_BYTES = 64 * 1024
 const LIST_CACHE_TTL_MS = 20_000
 const REPOS_CACHE_TTL_MS = 5 * 60_000
 const REPO_CONTEXT_CACHE_TTL_MS = 5_000
+const GITHUB_TOKEN_TTL_MS = 10 * 60_000
+/** Attachments never change, so a small cache saves refetching them on every tab switch. */
+const GITHUB_ASSET_CACHE_SIZE = 32
 const PULL_REQUEST_PAGE_SIZE = 30
 // GitHub gives up on a query after ~10s, and full status for 30 PRs takes
 // about that long on a busy repo. A list longer than one batch is discovered
@@ -774,6 +778,9 @@ export class PrService {
   private readonly threadsCache = new Map<string, CacheEntry<PrThreads>>()
   private readonly repoContextCache = new Map<string, CacheEntry<string | null>>()
   private suggestionsCache: CacheEntry<string[]> | null = null
+  private githubTokenCache: CacheEntry<string> | null = null
+  private readonly assetCache = new Map<string, Promise<GithubAsset>>()
+  private readonly assetFetcher: typeof fetch
   private graphqlPausedUntil = 0
   private paneBatch: {
     waiters: Map<string, Array<{ resolve: (list: PanePrList) => void; reject: (cause: unknown) => void }>>
@@ -796,6 +803,7 @@ export class PrService {
     paneBatchWindowMs?: number
     /** Where each pane's known PRs are kept across restarts; memory only when unset. */
     panePrRecordsPath?: string
+    assetFetcher?: typeof fetch
   }) {
     this.paneBatchWindowMs = options?.paneBatchWindowMs ?? PANE_BATCH_WINDOW_MS
     const disabledReason = options?.githubDisabledReason
@@ -814,6 +822,7 @@ export class PrService {
     this.reposTtlMs = options?.reposTtlMs ?? REPOS_CACHE_TTL_MS
     this.repoContextTtlMs = options?.repoContextTtlMs ?? REPO_CONTEXT_CACHE_TTL_MS
     this.now = options?.now ?? Date.now
+    this.assetFetcher = options?.assetFetcher ?? fetch
     this.panePrRecords = new PanePrRecords(options?.panePrRecordsPath, this.now)
     this.metadataCache = new PrReadCache(PR_METADATA_TTL_MS, this.now)
     this.commentPagesCache = new PrReadCache(PR_CONVERSATION_TTL_MS, this.now, 300)
@@ -1750,6 +1759,33 @@ export class PrService {
       truncated: totalCount > threadNodes.length,
       fetchedAt: this.now(),
     }
+  }
+
+  /** An image attached to a PR body or comment, downloaded with the gh user's login so private repos work. */
+  githubAsset(urlInput: unknown): Promise<GithubAsset> {
+    const url = githubAssetUrl(urlInput)
+    if (!url) return Promise.reject(new PrServiceError(400, 'invalid_request', 'Not a GitHub attachment URL'))
+    const cached = this.assetCache.get(url)
+    if (cached) return cached
+    const asset = this.githubToken().then((token) => fetchGithubAsset(url, token, this.assetFetcher))
+    this.assetCache.set(url, asset)
+    asset.catch(() => { if (this.assetCache.get(url) === asset) this.assetCache.delete(url) })
+    while (this.assetCache.size > GITHUB_ASSET_CACHE_SIZE) this.assetCache.delete(this.assetCache.keys().next().value!)
+    return asset
+  }
+
+  private githubToken(): Promise<string> {
+    const cached = this.githubTokenCache
+    if (cached && this.now() - cached.at < GITHUB_TOKEN_TTL_MS) return cached.promise
+    const promise = this.runner(['auth', 'token']).then((output) => {
+      const token = output.trim()
+      if (!token) throw new PrServiceError(401, 'github_auth_required', 'gh is not logged in on the daemon host')
+      return token
+    })
+    const entry = { at: this.now(), promise }
+    this.githubTokenCache = entry
+    promise.catch(() => { if (this.githubTokenCache === entry) this.githubTokenCache = null })
+    return promise
   }
 
   async listRepos(): Promise<PrRepoOption[]> {
