@@ -16,6 +16,21 @@ export type PrPreferences = {
 // Separate clients for the same auth/transport share one store. Tests and other
 // credentials remain isolated without a process-wide singleton leaking data.
 const storeKeys = new WeakMap<typeof fetch, Map<string, object>>()
+// Attachments never change, so each one is downloaded once per page load.
+const assetUrls = new WeakMap<typeof fetch, Map<string, Promise<string>>>()
+
+/**
+ * data:, not blob:. The page CSP allows data: images, and an SVG opened in its
+ * own tab gets an opaque origin, so any script in it can't reach the daemon.
+ */
+function dataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the image'))
+    reader.readAsDataURL(blob)
+  })
+}
 
 export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
   let keys = storeKeys.get(fetcher)
@@ -41,8 +56,26 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     }
     return result as T
   }
+  /** A GitHub attachment fetched through the daemon, which has the GitHub login, as a data: URL. */
+  const asset = (src: string): Promise<string> => {
+    let cache = assetUrls.get(fetcher)
+    if (!cache) { cache = new Map(); assetUrls.set(fetcher, cache) }
+    const cached = cache.get(src)
+    if (cached) return cached
+    const url = fetcher(`/api/prs/asset?url=${encodeURIComponent(src)}`, {
+      credentials: 'same-origin',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`Image request failed (${response.status})`)
+      return dataUrl(await response.blob())
+    })
+    cache.set(src, url)
+    url.catch(() => { if (cache.get(src) === url) cache.delete(src) })
+    return url
+  }
   return {
     storeKey,
+    asset,
     autofixStatus: async (repo: string, number: number) =>
       (await request<{ status: PrAutofixStatus | null }>(`/autofix?repo=${encodeURIComponent(repo)}&number=${number}`)).status,
     setAutofix: async (repo: string, number: number, enabled: boolean, paneId: string) =>

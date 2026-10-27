@@ -54,6 +54,24 @@ afterEach(async () => {
 })
 
 describe('PR pane repository API', () => {
+  it('serves GitHub attachments as inert images', async () => {
+    const asset = 'https://github.com/user-attachments/assets/ae328c6b-f0ea-4b47-8b77-ad5ae9424e6f'
+    const service = new PrService({
+      runner: vi.fn(async () => 'gho_secret\n'),
+      assetFetcher: (async () => new Response('<svg/>', { headers: { 'Content-Type': 'image/svg+xml' } })) as unknown as typeof fetch,
+      preferencesPath: '/nonexistent/prs.json',
+    })
+    const base = await startApi(() => undefined, undefined, service)
+    const response = await fetch(`${base}/api/prs/asset?url=${encodeURIComponent(asset)}`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('image/svg+xml')
+    expect(response.headers.get('content-security-policy')).toContain('sandbox')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(await response.text()).toBe('<svg/>')
+    expect((await fetch(`${base}/api/prs/asset?url=${encodeURIComponent('https://evil.test/x.svg')}`)).status).toBe(400)
+    expect((await fetch(`${base}/api/prs/asset`, { method: 'POST' })).status).toBe(405)
+  })
+
   it('accepts only bounded JSON patch rendering requests', async () => {
     const base = await startApi(() => undefined)
     const url = `${base}/api/prs/diff-render`

@@ -189,6 +189,25 @@ export async function handlePrsApi(
       return true
     }
 
+    if (path.length === 1 && path[0] === 'asset') {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET')
+        json(response, 405, { error: 'Method not allowed' })
+        return true
+      }
+      const asset = await service.githubAsset(url.searchParams.get('url'))
+      response.writeHead(200, {
+        'Cache-Control': 'private, max-age=86400',
+        'Content-Length': asset.bytes.length,
+        'Content-Type': asset.contentType,
+        // SVGs can carry script; opened directly, this keeps them inert on the daemon's origin.
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
+        'X-Content-Type-Options': 'nosniff',
+      })
+      response.end(asset.bytes)
+      return true
+    }
+
     if (path.length === 1 && (path[0] === 'details' || path[0] === 'diff' || path[0] === 'conflicts')) {
       if (request.method !== 'GET') {
         response.setHeader('Allow', 'GET')
