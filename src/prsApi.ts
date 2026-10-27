@@ -16,7 +16,9 @@ export type PrPreferences = {
 // Separate clients for the same auth/transport share one store. Tests and other
 // credentials remain isolated without a process-wide singleton leaking data.
 const storeKeys = new WeakMap<typeof fetch, Map<string, object>>()
-// Attachments never change, so each one is downloaded once per page load.
+// Attachments never change, so recent ones are kept for the page's life. The
+// cap keeps a long-open cockpit from piling up images of up to 10 MB each.
+const ASSET_CACHE_SIZE = 32
 const assetUrls = new WeakMap<typeof fetch, Map<string, Promise<string>>>()
 
 /**
@@ -61,7 +63,12 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
     let cache = assetUrls.get(fetcher)
     if (!cache) { cache = new Map(); assetUrls.set(fetcher, cache) }
     const cached = cache.get(src)
-    if (cached) return cached
+    if (cached) {
+      // Re-insert so eviction drops the least recently used image.
+      cache.delete(src)
+      cache.set(src, cached)
+      return cached
+    }
     const url = fetcher(`/api/prs/asset?url=${encodeURIComponent(src)}`, {
       credentials: 'same-origin',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -70,6 +77,7 @@ export function createPrsApi(token: string, fetcher: typeof fetch = fetch) {
       return dataUrl(await response.blob())
     })
     cache.set(src, url)
+    while (cache.size > ASSET_CACHE_SIZE) cache.delete(cache.keys().next().value!)
     url.catch(() => { if (cache.get(src) === url) cache.delete(src) })
     return url
   }
