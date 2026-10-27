@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CONCEPT · Commando Cloud tasks</title>
+  <style>
+    /* Product-only document: tokens and dimensions copied from the inspected source.
+       No Redline document theme, fonts, product imports or provider requests. */
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 10px; font-synthesis: none; --surface-deep:#0a0812; --bg:#0c0a14; --surface:#100d1a; --surface-raised:#131020; --surface-soft:#181428; --surface-hover:#1f1a31; --border:#2c2542; --border-mid:#363048; --border-strong:#443a63; --text:#f5f3fa; --text-soft:#c6c0d6; --text-dim:#655f78; --text-faint:#524f67; --muted:#8f87a6; --muted-dim:#7a7590; --green:#85f4b1; --accent:#b9a3ff; --accent-ink:#0e0a1c; --cyan:#73d9e2; --amber:#f3c66b; --red:#ff8d89; --purple:#b9a3ff; --shadow:0 24px 70px rgba(0,0,0,.45); --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-width: 0; width: 100%; min-height: 100%; background: var(--bg); color: var(--text); }
+    body { font-size: 11px; }
+    button, input, select, textarea { font: inherit; }
+    button { color: inherit; cursor: pointer; touch-action: manipulation; }
+    button:disabled { cursor: not-allowed; opacity: .48; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    [hidden] { display: none !important; }
+    svg { width: 15px; height: 15px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    p { margin: 8px 0; line-height: 1.5; }
+    code, pre, .mono { font-family: var(--mono); }
+    p, dd, code, strong, span, button { overflow-wrap: anywhere; }
+    a { color: var(--accent); }
+    .concept-strip { padding: 8px 10px; border-bottom: 1px solid var(--border-strong); background: var(--surface-soft); color: var(--text-soft); line-height: 1.5; }
+    .concept-strip strong { color: var(--amber); letter-spacing: .04em; }
+    .concept-strip a { margin-left: 8px; white-space: nowrap; }
+    .app-titlebar { height: 44px; display: flex; align-items: center; gap: 12px; padding: 0 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb,var(--surface-deep) 94%,transparent); box-shadow: 0 12px 30px rgba(0,0,0,.18); }
+    .brand-lockup { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: var(--accent-ink); background: var(--accent); box-shadow: 0 0 26px color-mix(in srgb,var(--accent) 21%,transparent); }
+    .brand-mark svg { width: 14px; height: 14px; stroke-width: 2.4; }
+    .brand-copy { display: grid; line-height: 1.05; }
+    .brand-copy strong { font-size: 12px; letter-spacing: -.02em; }
+    .brand-copy small { font: 9px var(--mono); color: var(--muted-dim); }
+    .titlebar-actions { display: flex; margin-left: auto; align-items: center; gap: 6px; }
+    .connection-pill { min-height: 26px; display: inline-flex; align-items: center; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); background: var(--surface-raised); font: 9px var(--mono); }
+    .btn { min-height: 28px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); color: var(--text-soft); font-size: 11px; }
+    .btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-soft); color: var(--text); }
+    .btn.primary { border-color: color-mix(in srgb,var(--accent) 40%,var(--border)); color: var(--accent); background: color-mix(in srgb,var(--accent) 9%,var(--surface)); }
+    .app-body { display: grid; grid-template-columns: 230px minmax(0,1fr); min-height: 610px; }
+    .session-sidebar { min-width: 0; background: var(--surface); border-right: 1px solid var(--border); padding: 8px; }
+    .sidebar-header { min-height: 34px; padding: 0 6px 6px; display: grid; align-content: center; }
+    .sidebar-header strong { font-size: 11px; margin-top: 2px; }
+    .kicker { color: var(--muted-dim); font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    .primary-nav { display: grid; gap: 2px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    .primary-nav button { min-width: 0; width: 100%; height: 31px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border: 1px solid transparent; border-radius: 9px; color: var(--muted); background: transparent; text-align: left; font-size: 11px; font-weight: 600; }
+    .primary-nav button:hover:not(:disabled), .primary-nav button.active { color: var(--text); background: var(--surface-hover); }
+    .primary-nav button.active { border-color: color-mix(in srgb,var(--accent) 12%,transparent); box-shadow: inset 2px 0 var(--accent); }
+    .nav-count { margin-left: auto; font: 8px var(--mono); color: var(--muted-dim); }
+    .sidebar-empty { padding: 18px 10px; color: var(--muted-dim); font-size: 10px; text-align: center; line-height: 1.5; }
+    main, .task-content, .task-list, .task-detail { min-width: 0; }
+    .workspace-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 38px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
+    .workspace-toolbar h1 { margin: 0; flex: 1; font-size: 12px; letter-spacing: -.025em; }
+    .task-content { display: grid; grid-template-columns: 260px minmax(0,1fr); }
+    .task-list { padding: 8px; border-right: 1px solid var(--border); background: var(--surface); }
+    .list-tools { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .list-tools label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
+    input[type="checkbox"] { accent-color: var(--accent); }
+    .task-row { width: 100%; min-width: 0; display: grid; grid-template-columns: 27px minmax(0,1fr); align-items: start; gap: 7px; margin-bottom: 5px; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); text-align: left; }
+    .task-row:hover { border-color: var(--border-strong); background: var(--surface-soft); }
+    .task-row[aria-current="true"] { border-color: var(--accent); background: var(--surface-soft); }
+    .task-row.unknown { border-color: rgba(243,198,107,.38); background: rgba(49,39,20,.38); }
+    .avatar { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 7px; color: var(--bg); background: var(--purple); font: 800 8px var(--mono); }
+    .avatar.codex { background: var(--cyan); }
+    .task-copy { min-width: 0; display: grid; gap: 5px; }
+    .task-copy strong { font-size: 11px; line-height: 1.35; }
+    .task-copy small { color: var(--muted); font: 9px/1.5 var(--mono); }
+    .state { font: 9px/1.5 var(--mono); color: var(--text-soft); }
+    .state.warn { color: var(--amber); }
+    .task-detail { padding: 14px; }
+    .detail-title { display: flex; gap: 9px; align-items: start; margin: 8px 0 12px; }
+    .detail-title h2 { font-size: 12px; margin: 0 0 4px; }
+    .detail-title p { color: var(--muted); font: 9px var(--mono); margin: 0; }
+    .notice { display: block; border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 6px; padding: 9px 10px; background: var(--surface-raised); line-height: 1.55; }
+    .notice.warn { border-left-color: var(--amber); }
+    .notice strong { display: block; font-size: 11px; }
+    .notice p { color: var(--text-soft); margin: 5px 0 0; }
+    .actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+    .data { display: grid; grid-template-columns: 100px minmax(0,1fr); gap: 8px; padding: 12px 0; margin: 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+    dt { color: var(--muted); }
+    dd { margin: 0; min-width: 0; color: var(--text-soft); }
+    .detail-block { margin-top: 14px; }
+    .detail-block h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 0 0 7px; }
+    .activity { padding-left: 17px; color: var(--text-soft); line-height: 1.6; }
+    .activity li { margin-bottom: 5px; }
+    .activity time { color: var(--muted); font-family: var(--mono); font-size: 9px; margin-right: 5px; }
+    .hint { color: var(--muted); font-size: 10px; }
+    .back { display: none; margin-bottom: 8px; }
+    .offline-banner { margin: 0; border-bottom: 1px solid rgba(243,198,107,.22); color: #d7bd88; background: #201b10; padding: 8px 10px; font-size: 10px; line-height: 1.5; }
+    #demo-status { min-height: 34px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--surface); color: var(--text-soft); font-size: 11px; line-height: 1.5; }
+    .inline-form { display: grid; gap: 8px; padding: 10px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; }
+    label { min-width: 0; }
+    .inline-form label, .create-form label { display: grid; gap: 4px; color: var(--muted); font-size: 10px; }
+    input:not([type="checkbox"]), textarea, select { min-width: 0; width: 100%; border: 1px solid var(--text-faint); border-radius: 6px; background: var(--surface-soft); color: var(--text); padding: 7px 8px; font-size: 11px; }
+    textarea { resize: vertical; font-family: var(--mono); line-height: 1.4; }
+    .inline-form .check-label { display: flex; align-items: flex-start; gap: 6px; }
+    .diff { margin: 8px 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-deep); font: 11px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .diff .add { display: block; border-left: 2px solid var(--green); color: var(--green); padding-left: 5px; }
+    .diff .del { display: block; border-left: 2px solid var(--red); color: var(--red); padding-left: 5px; }
+    .workspace-demo { padding: 12px; display: grid; grid-template-columns: minmax(0,1fr) 280px; gap: 12px; }
+    .empty-workspace { padding: 22px 12px; color: var(--muted); background: var(--surface-deep); border: 1px solid var(--border); line-height: 1.6; }
+    .hud { min-width: 0; padding: 8px; background: var(--surface); border: 1px solid var(--border); }
+    .hud h2 { margin: 5px 0 10px; font-size: 11px; }
+    .hud .task-copy strong { font-size: 9px; }
+    .hud .task-copy small, .hud .state { font-size: 9px; }
+    dialog { width: min(360px,calc(100% - 32px)); max-height: min(90dvh,calc(100% - 32px)); padding: 0; overflow: auto; border: 1px solid var(--border-strong); border-radius: 12px; color: var(--text); background: var(--surface-raised); box-shadow: 0 24px 80px #000c; }
+    dialog::backdrop { background: #000a; }
+    dialog > header { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .dialog-heading { display: grid; gap: 3px; min-width: 0; flex: 1; }
+    .dialog-heading small { color: var(--muted-dim); text-transform: uppercase; letter-spacing: .1em; font-size: 9px; }
+    .dialog-heading strong { font-size: 12px; }
+    .close { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px; color: var(--muted-dim); background: transparent; font-size: 16px; }
+    .close:hover { color: var(--text); background: var(--surface-hover); }
+    .create-form { display: grid; gap: 8px; padding: 10px 12px 12px; }
+    .destination { margin: 0; border-left: 2px solid var(--accent); color: var(--muted); padding: 2px 0 2px 7px; font-size: 11px; }
+    .destination strong { color: var(--text); }
+    .create-submit { border: 1px solid #9ccfd8; border-radius: 6px; background: #3e8fb0; color: var(--surface-soft); padding: 8px 10px; font-size: 11px; font-weight: 750; }
+    @media (max-width: 1040px) {
+      .app-body { grid-template-columns: minmax(0,1fr); min-height: 600px; }
+      .session-sidebar { border-right: 0; padding: 6px 8px 0; }
+      .sidebar-header, .sidebar-empty { display: none; }
+      .primary-nav { grid-template-columns: repeat(4,minmax(0,1fr)); padding-bottom: 6px; }
+      .primary-nav button { gap: 6px; }
+      .workspace-demo { grid-template-columns: minmax(0,1fr) 280px; }
+    }
+    @media (max-width: 639px) {
+      .app-body { display: block; min-height: 0; }
+      .task-content, .workspace-demo { grid-template-columns: minmax(0,1fr); }
+      .task-list { border-right: 0; min-height: 390px; }
+      .task-detail { display: none; padding: 12px; }
+      .task-content.detail-open .task-list { display: none; }
+      .task-content.detail-open .task-detail { display: block; }
+      .back { display: inline-block; }
+      .primary-nav button { justify-content: center; gap: 4px; padding: 0 3px; font-size: 11px; }
+      .primary-nav svg, .primary-nav .nav-count { display: none; }
+      .connection-pill { display: none; }
+      .data { grid-template-columns: 88px minmax(0,1fr); }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+  </style>
+</head>
+<body>
+  <div id="concept-label" class="concept-strip"><strong>CONCEPT / DEMO</strong> · Source-derived proposal, not a running feature. Fixture data at 1:1. Every sample action is local only. <a href="cloud-agents-plan.html" target="_top">Review plan ↗</a></div>
+  <header id="product-titlebar" class="app-titlebar">
+    <div class="brand-lockup"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 7 5 5-5 5m8 0h6"/></svg></span><span class="brand-copy"><strong>Commando</strong><small>cloud task concept</small></span></div>
+    <div class="titlebar-actions"><span class="connection-pill" id="connection-label">Fixture context</span><button class="btn" id="offline-toggle" aria-pressed="false">Demo: go offline</button></div>
+  </header>
+  <div id="offline-banner" class="offline-banner" hidden>Demo: daemon offline. Cached observations remain visible; daemon actions are disabled. Provider links remain available.</div>
+  <div class="app-body">
+    <aside class="session-sidebar" id="product-sidebar">
+      <div class="sidebar-header"><span class="kicker">Machine</span><strong>Local sessions</strong></div>
+      <nav class="primary-nav" aria-label="Commando areas — demo">
+        <button id="nav-workspace" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12"/></svg><span>Workspace</span><span class="nav-count">0</span></button>
+        <button type="button" disabled title="Linear is outside this cloud concept"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke-dasharray="3 3"/></svg><span>Linear</span></button>
+        <button type="button" disabled title="Notes is outside this cloud concept"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6"/></svg><span>Notes</span></button>
+        <button id="nav-cloud" type="button" class="active" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18h12a4 4 0 0 0 .5-8A6 6 0 0 0 7 7a5.5 5.5 0 0 0-1 11Z"/></svg><span>Cloud tasks</span><span class="nav-count" id="nav-total">3</span></button>
+      </nav>
+      <div class="sidebar-empty">No local sessions in this fixture.<br>Saved cloud tasks remain accessible.</div>
+    </aside>
+    <main>
+      <section id="cloud-area" aria-label="Cloud tasks concept">
+        <header class="workspace-toolbar"><h1>Cloud tasks</h1><button id="new-task" class="btn primary" data-daemon>+ New task · demo</button></header>
+        <div class="task-content" id="task-content">
+          <section class="task-list" id="task-list" aria-label="Saved cloud task fixtures">
+            <div class="list-tools"><span class="kicker">Saved tasks</span><label><input type="checkbox" id="show-archived">Archived</label></div>
+            <div id="task-rows"></div>
+            <p class="hint">Only submitted or explicitly linked tasks. Sample IDs and times are fictional.</p>
+          </section>
+          <article class="task-detail" id="task-detail" aria-label="Selected cloud task">
+            <button class="btn back" id="back-to-list">← Back to tasks</button>
+            <div id="detail-content"></div>
+          </article>
+        </div>
+      </section>
+      <section id="workspace-area" aria-label="Workspace HUD concept" hidden>
+        <header class="workspace-toolbar"><h1>Workspace · demo</h1><span class="hint">Local selection preserved</span></header>
+        <div class="workspace-demo">
+          <div class="empty-workspace"><strong>No local sessions</strong><p>This fixture demonstrates that saved cloud tasks survive an empty tmux snapshot.</p><p>The cloud HUD is a separate group; it does not change local counts or filters.</p></div>
+          <aside class="hud" id="cloud-hud"><span class="kicker">Local agents · 0</span><h2>Cloud tasks</h2><div id="hud-rows"></div></aside>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="demo-status" role="status" aria-live="polite">Demo only. Select a task to inspect saved receipt, stale observation or uncertain delivery.</div>
+
+  <dialog id="create-dialog" aria-labelledby="create-title" data-native-terminal-occluder="">
+    <header><div class="dialog-heading"><small>Fixture destination</small><strong id="create-title">New cloud task · demo</strong></div><button class="close" id="close-create" aria-label="Close new task demo">×</button></header>
+    <form id="create-form" class="create-form">
+      <label>Provider<select name="provider" id="create-provider"><option value="codex">Codex Cloud · CX</option><option value="claude">Claude Code Cloud · CL</option></select></label>
+      <p class="hint" id="provider-help">Synthetic UI fixture only. Real provider capabilities stay disabled until P0b evidence.</p>
+      <label><span id="target-label">Existing environment ID</span><input name="target" id="create-target" value="env-demo-disposable" required maxlength="240"></label>
+      <label>Branch<input name="branch" id="create-branch" value="demo/cloud-review" required maxlength="120"></label>
+      <label>Task prompt<textarea name="prompt" rows="3" required maxlength="2000">Add a focused regression test for the empty task list.</textarea></label>
+      <p class="destination" id="destination-summary"></p>
+      <p class="hint" id="source-help">Uses an existing provider environment. No push, checkout, apply or merge.</p>
+      <button class="create-submit" type="submit">Demo: record task locally</button>
+      <p class="hint">No provider call. The next screen lets you explicitly simulate sending and a receipt. Recorded locally does not mean accepted.</p>
+    </form>
+  </dialog>
+
+  <script>
+    (() => {
+      'use strict';
+      const $ = (id) => document.getElementById(id);
+      const tasks = [
+        { id:'claude-receipt', provider:'claude', title:'Review recovery edge cases', target:'demo-org/disposable-cloud', branch:'demo/cloud-review', commit:'9ac42f1 (requested locally)', remote:'session_demo_cl_01', status:'Submitted · Live status in Claude', kind:'accepted', checked:'Receipt saved 09:41 · fixture', prompt:'Review recovery edge cases in the disposable example. Summarize findings in the provider UI.', activity:['09:40 · Recorded locally','09:40 · Sending','09:41 · Create receipt saved (fixture)','09:44 · Follow-up m-demo-1 timed out after possible dispatch; delivery unknown'], messageUnknown:true, archived:false },
+        { id:'codex-result', provider:'codex', title:'Add empty-list regression coverage', target:'env-demo-disposable', branch:'demo/empty-state', commit:'Moving branch; remote commit not verified', remote:'task_demo_cx_02', status:'Result ready · stale observation', kind:'result', checked:'Last checked 09:12 · 29m ago (fixture)', stale:true, prompt:'Add focused regression coverage for the empty task list in the disposable example.', activity:['09:01 · Recorded locally','09:02 · Provider receipt saved (fixture)','09:12 · Result ready observed (fixture)'], archived:false },
+        { id:'codex-unknown', provider:'codex', title:'Investigate missing receipt', target:'env-demo-disposable', branch:'demo/receipt-check', commit:'Moving branch; remote commit not verified', remote:'Not known', status:'Delivery unknown', kind:'unknown', checked:'Dispatch ended 09:38 · no receipt (fixture)', prompt:'Review the disposable example for a missing receipt edge case.', activity:['09:37 · Recorded locally','09:37 · Sending','09:38 · Timeout after possible dispatch; no replay'], archived:false }
+      ];
+      let selected = tasks[0].id;
+      let offline = false;
+      let opener = null;
+      const task = () => tasks.find((item) => item.id === selected);
+      const providerName = (t) => t.provider === 'claude' ? 'Claude' : 'Codex';
+      const text = (tag, value, className) => { const e = document.createElement(tag); e.textContent = value; if (className) e.className = className; return e; };
+      function announce(message) { $('demo-status').textContent = 'Demo: ' + message; }
+      function action(label, callback, daemon = false, accountRequired = false) { const e = text('button',label,'btn'); e.type='button'; e.dataset.demoAction=label; if (daemon) { e.dataset.daemon=''; e.disabled=offline; } if(accountRequired){e.dataset.accountRequired='';e.disabled=true;} e.addEventListener('click',callback); return e; }
+      function avatar(t) { return text('span', t.provider === 'claude' ? 'CL' : 'CX', 'avatar ' + t.provider); }
+      function choose(id, focus = true) {
+        selected=id; setArea('cloud'); $('task-content').classList.add('detail-open'); render();
+        if (focus) { const target = window.matchMedia('(max-width: 639px)').matches ? $('back-to-list') : $('detail-title'); target.focus(); }
+      }
+      function card(t, hud = false) {
+        const b = document.createElement('button'); b.type='button'; b.className='task-row' + (t.kind === 'unknown' ? ' unknown' : ''); b.id=(hud?'hud-':'row-')+t.id;
+        if (!hud) b.setAttribute('aria-current',String(t.id===selected));
+        b.setAttribute('aria-label',`${providerName(t)}: ${t.title}. ${t.status}${t.archived ? '. Archived' : ''}`);
+        b.append(avatar(t)); const copy=text('span','','task-copy'); copy.append(text('strong',t.title), text('span',t.status,'state'+(t.kind==='unknown'||t.stale?' warn':'')), text('small',hud ? (t.provider==='claude'?'Live status only in Claude':t.checked) : t.target+' · '+t.branch+(t.archived?' · Archived':''))); b.append(copy); b.addEventListener('click',()=>choose(t.id)); return b;
+      }
+      function renderRows() {
+        $('task-rows').replaceChildren(); $('hud-rows').replaceChildren();
+        const shown=tasks.filter(t=>!t.archived||$('show-archived').checked);
+        shown.forEach(t=>$('task-rows').append(card(t)));
+        tasks.filter(t=>!t.archived).forEach(t=>$('hud-rows').append(card(t,true)));
+        if (!shown.length) $('task-rows').append(text('p','No unarchived tasks. Enable Archived to restore them.','hint'));
+        $('nav-total').textContent=String(tasks.filter(t=>!t.archived).length);
+      }
+      function renderDetail() {
+        const t=task(); const root=$('detail-content'); root.replaceChildren();
+        const heading=text('div','','detail-title'); heading.append(avatar(t)); const names=text('div',''); const title=text('h2',t.title); title.id='detail-title'; title.tabIndex=-1; names.append(title,text('p',providerName(t)+' Cloud · fixture'+(t.archived?' · Archived':''))); heading.append(names); root.append(heading);
+        const notice=text('div','','notice'+(t.kind==='unknown'||t.stale?' warn':'')); notice.id='task-observation'; notice.append(text('strong',t.status));
+        let explanation='Provider receipt retained. Live status is not available through a verified read interface here; open Claude for progress. No completion claim.';
+        if (t.kind==='result') explanation='Cached result is ready for review, not proof of success or passed tests. '+(t.stale?'This observation is stale; refresh to simulate a new read.':'Fixture read is current; task outcome is still not verified.');
+        if (t.kind==='unknown') explanation='Check the provider before retrying. This request may have reached Codex. A timeout or list miss cannot prove it did not. Never replay automatically.';
+        if (t.kind==='prepared') explanation='Saved only in this demo’s memory. In the product, the durable local 202 is not cloud acceptance. Do not close the laptop expecting hosted execution yet.';
+        if (t.kind==='sending') explanation='Dispatch simulated; no receipt yet. Acceptance is unconfirmed. Do not close the laptop expecting hosted execution yet.';
+        if (t.kind==='accepted' && t.provider==='codex') explanation='Provider receipt simulated. Execution status has not been observed; no completion claim.';
+        if (t.kind==='linked') explanation='Identity linked as user-supplied only. Provider acceptance is NOT verified; original create delivery remains unknown. Linking also cannot prove that any follow-up message arrived.';
+        notice.append(text('p',explanation)); root.append(notice);
+        const accountLabel=text('label','','notice detail-block'); accountLabel.id='account-confirmation';
+        const accountCheck=document.createElement('input'); accountCheck.type='checkbox'; accountCheck.disabled=offline;
+        accountLabel.append(accountCheck,text('span',' Demo: confirm the CLI account before sending this follow-up.'),text('p','Official account identity is unavailable in this fixture. Confirm you are signed in to the account that owns this Claude session.','hint'));
+        accountCheck.addEventListener('change',()=>root.querySelectorAll('[data-account-required]').forEach(e=>{e.disabled=offline||!accountCheck.checked;}));
+        const actions=text('div','','actions');
+        actions.append(action('Open in '+providerName(t)+' · demo',()=>announce('provider-link action illustrated only. No URL opened and no provider contacted. Production keeps a validated provider link available even offline.')));
+        actions.append(action('Refresh · demo',()=>{
+          if (t.kind==='result') { t.stale=false; t.status='Result ready'; t.checked='Checked just now · simulated fixture read'; announce('fixture observation refreshed. Result ready does not mean tests passed.'); }
+          else if (t.provider==='claude' && t.kind==='accepted') announce('saved Claude receipt restored. Live status remains unavailable; no poll was invented.');
+          else announce('no new provider evidence. Delivery and execution state are unchanged.');
+          render();
+        },true));
+        actions.append(action((t.archived?'Unarchive':'Archive')+' · demo',()=>{t.archived=!t.archived; announce((t.archived?'archived':'unarchived')+' in memory only; remote work is unaffected.'); render();},true)); root.append(actions);
+        const data=text('dl','','data');
+        [['Target',t.target],['Requested ref',t.branch],['Commit',t.commit],['Remote ID',t.remote],['Observation',t.checked],['Account','Demo context · official account identity unverified']].forEach(([k,v])=>data.append(text('dt',k),text('dd',v,k==='Remote ID'?'mono':'')));
+        root.append(data);
+        const original=text('section','','detail-block'); original.id='original-prompt'; original.append(text('h3','Original prompt'),text('p',t.prompt)); root.append(original);
+        const history=text('section','','detail-block'); history.id='commando-activity'; history.append(text('h3','Commando activity · fixture'),text('p','Local delivery history, not a provider transcript.','hint')); const list=text('ol','','activity'); t.activity.forEach(line=>list.append(text('li',line))); history.append(list); root.append(history);
+        if(t.messageUnknown) {
+          const message=text('section','','notice warn detail-block'); message.id='uncertain-message';
+          message.append(text('strong','Follow-up m-demo-1 · Delivery unknown'),text('p','The create receipt above proves only session acceptance. Linking this known session cannot prove the message arrived. Keep this message unknown without message-specific receipt evidence.'));
+          if(t.messageUserChecked) message.append(text('p','User acknowledgement: “I checked.” Separate metadata only; provider-confirmed delivery is still unknown.'));
+          else message.append(action('Demo: record “I checked”',()=>{t.messageUserChecked=true;t.activity.push('Now · User checked m-demo-1; delivery remains unknown');announce('user acknowledgement recorded separately. Message delivery remains unknown; no receipt inferred.');render();},true));
+          root.append(message);
+        }
+        if (t.kind==='prepared'||t.kind==='sending') {
+          const next=action(t.kind==='prepared'?'Demo: simulate sending':'Demo: simulate provider receipt',()=>{
+            if(t.kind==='prepared'){t.kind='sending'; t.status='Sending'; t.activity.push('Now · Sending simulated'); announce('sending simulated, still no provider acceptance.');}
+            else {t.kind='accepted';t.remote=(t.provider==='claude'?'session':'task')+'_'+t.id;t.status='Submitted'+(t.provider==='claude'?' · Live status in Claude':' to Codex');t.checked='Receipt saved just now · fixture';t.activity.push('Now · Valid provider receipt simulated');announce('receipt simulated. This is fixture acceptance only; no cloud task exists.');}
+            render();
+          },true); root.append(next);
+        }
+        if (t.kind==='result') {
+          const details=document.createElement('details'); details.className='detail-block'; details.id='diff-preview'; details.append(text('summary','Read-only diff · local fixture')); details.append(text('p','Disposable example: tests/empty-list.test.ts, lines 1–2 (fictional). Production caps output at 256 KiB / 5,000 lines with an explicit truncation notice.','hint'));
+          const pre=text('pre','','diff'); pre.append(text('span','--- a/tests/empty-list.test.ts\n+++ b/tests/empty-list.test.ts\n@@ -1 +1,2 @@\n'),text('span','- // pending coverage','del'),text('span','+ // empty-list regression fixture','add'),text('span','+ expect(tasks).toEqual([])','add')); details.append(pre); root.append(details);
+        }
+        if (t.provider==='claude'&&t.kind==='accepted') {
+          root.append(accountLabel);
+          const f=text('form','','inline-form detail-block'); f.id='message-demo'; const label=text('label','Follow-up · demo'); const input=document.createElement('textarea'); input.rows=2; input.required=true; input.maxLength=2000; input.placeholder='Ask a follow-up (local fixture only)'; input.disabled=offline; label.append(input); f.append(label);
+          const submit=text('button','Demo: acknowledge a new message','btn'); submit.type='submit'; submit.dataset.accountRequired=''; submit.disabled=true; f.append(submit,text('p','Synthetic capability only; real linked-session follow-up needs its own P0b evidence. This simulates a receipt for a new message, never resolves an earlier uncertain one.','hint'));
+          f.addEventListener('submit',e=>{e.preventDefault(); if(offline||!accountCheck.checked)return; t.activity.push('Now · New message sent (simulated message-specific receipt); prior uncertain message unchanged'); announce('new-message receipt simulated only. Any earlier uncertain message remains unknown; no provider contacted.'); render();}); root.append(f);
+        }
+        if (t.kind==='unknown') {
+          const f=text('form','','inline-form detail-block'); f.id='recovery-demo'; f.append(text('strong','Link a known task · demo'));
+          const label=text('label','Provider task ID'); const input=document.createElement('input'); input.required=true;input.maxLength=120;input.placeholder='task_demo_known';input.disabled=offline;label.append(input);f.append(label);
+          const confirm=text('label','','check-label');const check=document.createElement('input');check.type='checkbox';check.required=true;check.disabled=offline;confirm.append(check,text('span','I confirm the current account/context and that this fixture ID belongs to this source. This is a user check, not verified identity.'));f.append(confirm);
+          const submit=text('button','Demo: link identity only','btn');submit.type='submit';submit.disabled=offline;f.append(submit,text('p','Linking recovers create identity only—not provider acceptance or message delivery. No replay. Conflicting late receipts must be surfaced, never overwrite a manual link.','hint'));
+          f.addEventListener('submit',e=>{e.preventDefault();if(offline)return;t.remote=input.value.trim();if(!t.remote)return;t.kind='linked';t.status='Identity linked · user-supplied, unverified';t.activity.push('Now · Identity linked only; create acceptance unverified, original delivery unknown');announce('identity linked in memory only. Provider acceptance is NOT verified and no message is declared delivered.');render();});root.append(f);
+        }
+      }
+      function render() {
+        const focused=document.activeElement;
+        const inDetail=$('detail-content').contains(focused);
+        const actionLabel=focused?.dataset?.demoAction;
+        renderRows(); renderDetail(); $('new-task').disabled=offline;
+        if(inDetail) {
+          const equivalent=[...$('detail-content').querySelectorAll('[data-demo-action]')].find(e=>e.dataset.demoAction===actionLabel&&!e.disabled);
+          (equivalent||$('detail-title')).focus({preventScroll:true});
+        }
+      }
+      function setArea(area) { const cloud=area==='cloud'; $('cloud-area').hidden=!cloud;$('workspace-area').hidden=cloud;[['nav-cloud',cloud],['nav-workspace',!cloud]].forEach(([id,active])=>{ $(id).classList.toggle('active',active);if(active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}); }
+      $('nav-cloud').addEventListener('click',()=>setArea('cloud'));
+      $('nav-workspace').addEventListener('click',()=>{setArea('workspace');announce('Workspace fixture opened; local count stays 0, cloud tasks have their own HUD group.');});
+      $('back-to-list').addEventListener('click',()=>{$('task-content').classList.remove('detail-open');const row=$('row-'+selected);(row||$('show-archived')).focus();});
+      $('show-archived').addEventListener('change',renderRows);
+      $('offline-toggle').addEventListener('click',()=>{offline=!offline;$('offline-toggle').setAttribute('aria-pressed',String(offline));$('offline-toggle').textContent=offline?'Demo: reconnect':'Demo: go offline';$('offline-banner').hidden=!offline;$('connection-label').textContent=offline?'Offline fixture':'Fixture context';announce(offline?'offline fixture enabled. Cached values retained; provider-link demonstration remains available.':'reconnected locally; no provider requests or automatic replay.');render();});
+      const dialog=$('create-dialog');
+      function closeDialog(){dialog.close();if(opener?.isConnected)opener.focus();}
+      $('new-task').addEventListener('click',()=>{opener=document.activeElement;updateDestination();dialog.showModal();$('create-provider').focus();});
+      $('close-create').addEventListener('click',closeDialog);
+      dialog.addEventListener('cancel',e=>{e.preventDefault();closeDialog();});
+      dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeDialog();}});
+      dialog.addEventListener('keydown',e=>{if(e.key!=='Tab')return;const items=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href]')];const first=items[0],last=items[items.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}});
+      function updateDestination(){const claude=$('create-provider').value==='claude';$('destination-summary').textContent='Demo destination: '+(claude?'Claude':'Codex')+' Cloud · '+$('create-target').value+' · '+$('create-branch').value;$('target-label').textContent=claude?'Existing checkout — source policy unverified':'Existing environment ID';$('provider-help').textContent=claude?'Synthetic UI only. Real creation stays disabled until P0b proves receipt/detach and an enforceable source-selection/no-bundle path.':'Synthetic UI fixture only. Real provider capabilities stay disabled until P0b evidence.';$('source-help').textContent=claude?'Clean git status or a scratch checkout is not no-bundle proof. Freeze repository/remote/ref; revalidate before dispatch. Drift or unenforceable policy means no dispatch and reconfirmation.':'Uses an existing provider environment. Freeze the confirmed source; revalidate before dispatch. No push, checkout, apply or merge.';}
+      $('create-provider').addEventListener('change',()=>{$('create-target').value=$('create-provider').value==='claude'?'/demo/disposable-cloud':'env-demo-disposable';updateDestination();});
+      $('create-target').addEventListener('input',updateDestination);$('create-branch').addEventListener('input',updateDestination);
+      $('create-form').addEventListener('submit',e=>{
+        e.preventDefault();if(offline)return;const data=new FormData(e.currentTarget);const prompt=String(data.get('prompt')).trim();if(!prompt)return;
+        const t={id:'local-demo-'+tasks.length,provider:String(data.get('provider')),title:prompt.slice(0,80),target:String(data.get('target')),branch:String(data.get('branch')),commit:'Requested branch; remote commit not verified',remote:'Not known',status:'Recorded locally',kind:'prepared',checked:'No provider observation',prompt,activity:['Now · Recorded locally in demo memory'],archived:false};tasks.push(t);closeDialog();choose(t.id);announce('task recorded in memory only. No HTTP request, CLI or provider call; no cloud acceptance.');
+      });
+      render();
+    })();
+  </script>
+</body>
+</html>

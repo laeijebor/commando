@@ -319,6 +319,127 @@ test, restart only the disposable daemon while preserving its profile and set
 `COMMANDO_IDE_SHARED_RESTART_E2E=1`; run the `daemon restart` test to verify font
 size 24, Dracula and the imported keybinding persist across a full daemon restart.
 
+## Provider-hosted cloud tasks
+
+**Cloud tasks** is a separate area beside Workspace, Linear, and Notes. It tracks
+Claude Code Cloud sessions and Codex Cloud tasks independently of tmux. A compact
+Cloud tasks group in the workspace HUD opens the same saved records. Removing a
+local session or archiving a cloud card does not cancel provider work.
+
+The **Connection** picker offers **Claude Team**, **Claude Max**, and **Codex**.
+Team uses Claude's default login with `CLAUDE_CONFIG_DIR` unset; Max uses
+`~/.claudep`. Each subprocess gets its own profile setting, so concurrent work
+does not switch another agent's login. Task cards and the HUD show the selected
+connection. A saved task remains bound to that connection across reloads,
+reordering and recovery; an unavailable Max connection never falls back to Team.
+
+### Current provider support
+
+| Action | Claude Code Cloud | Codex Cloud |
+| --- | --- | --- |
+| Link an existing ID | Yes, explicitly user-supplied | Yes, explicitly user-supplied |
+| Create from Commando | Unavailable until source-selection/no-bundle behavior is verified | Version-gated CLI submission |
+| Live status | Open the session in Claude | Version-gated, exact-ID CLI lookup |
+| Follow-up | Version-gated CLI message acknowledgement | Open the task in Codex |
+| Diff | Open the session in Claude | Version-gated, bounded read-only preview |
+
+Linking records an identity; it does not prove provider acceptance or delivery of
+an earlier message. Claude creation is deliberately unavailable: a clean checkout
+does not establish whether the CLI will upload a repository bundle. Existing
+Claude sessions can still be linked and, with verified CLI support, messaged.
+
+Cloud CLI execution is **off by default until its installed version is explicitly
+verified**. Missing binaries and unsupported capabilities appear in the task
+dialog. This implementation's automated tests use synthetic executables and API
+fixtures; they are not evidence of an authenticated provider smoke test.
+
+On the daemon host, sign in through the official CLI using the subscription
+account that owns the cloud environment/session. After checking that version's
+cloud commands, receipt output, and detach behavior against a disposable target,
+configure the exact semantic version you verified:
+
+```sh
+COMMANDO_CODEX_CLI=/absolute/path/to/codex
+COMMANDO_CLOUD_CODEX_VERIFIED_VERSION='<verified-semver>'
+COMMANDO_CLOUD_CODEX_CONTEXT=codex-work-account
+
+COMMANDO_CLAUDE_CLI=/absolute/path/to/claude
+COMMANDO_CLOUD_CLAUDE_TEAM_VERIFIED_VERSION='<verified-team-semver>'
+COMMANDO_CLOUD_CLAUDE_MAX_VERIFIED_VERSION='<verified-max-semver>'
+
+# Optional: these are the default connection identities and Max directory.
+COMMANDO_CLOUD_CLAUDE_TEAM_CONTEXT=claude:team
+COMMANDO_CLOUD_CLAUDE_MAX_CONTEXT=claude:max
+COMMANDO_CLOUD_CLAUDE_MAX_CONFIG_DIR="$HOME/.claudep"
+```
+
+Pass these variables to the daemon's launch environment. Executable overrides
+are optional: discovery checks PATH, then `~/.local/bin`, and for Codex checks
+installed NVM Node versions newest-first. An explicit override always wins,
+including an invalid one; it never silently falls back to a different binary.
+Discovery does not execute shell aliases or install/update software. Version values are
+the exact version numbers, not the full `codex-cli …` or `… (Claude Code)` label,
+and ranges are not accepted. A version mismatch disables CLI capabilities again.
+Each Claude version setting enables only its own supported follow-up delivery,
+not creation; verifying Team does not enable Max. The former singular
+`COMMANDO_CLOUD_CLAUDE_VERIFIED_VERSION` is not used by the two-connection factory.
+Context labels are local identity namespaces, not credentials. Use a new context
+when changing accounts; the app checks declared context changes and requires
+confirmation when the provider's actual account identity cannot be inspected.
+
+Team explicitly removes `CLAUDE_CONFIG_DIR` from its child environment even if
+the daemon inherited it. It is important not to replace this with an explicit
+`~/.claude` value: those selections can resolve different saved credentials.
+Max's directory override must be an absolute path. The parent environment and
+other local agent processes are unchanged.
+
+Legacy records using `claude-default` or a custom singular context remain visible
+but are not silently assigned to Team or Max. If their original profile is known,
+set the corresponding new connection's `*_CONTEXT` to that recorded identity;
+otherwise explicitly link under the intended connection. The former singular
+`COMMANDO_CLOUD_CLAUDE_CONTEXT` does not select either new connection.
+
+The daemon lets the official CLIs manage subscription authentication. It does
+not copy OAuth credentials, use private cloud-task APIs, install provider CLIs,
+push branches, or apply/merge returned patches. Codex creation requires an
+existing provider environment ID and branch; local uncommitted changes are not
+sent to it. A branch remains a moving ref unless the provider establishes its
+resolved commit.
+
+### Delivery and recovery
+
+- **Recorded locally / Sending:** no confirmed remote acceptance yet. Keep the
+  laptop awake until a provider receipt arrives.
+- **Submitted:** provider receipt saved. Provider-hosted execution can continue
+  with Commando closed. Provider limits, expiry and input requests still apply.
+- **Delivery unknown:** dispatch may have succeeded. Commando never automatically
+  retries it. Inspect the provider and explicitly link its identity when known.
+- **Prepared after restart:** explicitly reconfirm the saved request/account to
+  resume a create, message or local link; uncertain operations cannot be replayed.
+
+The browser saves pending keys and request digests, not prompts or credentials,
+before sending. Reload recovery checks the original operation by key. Re-entering
+an identical unrecorded draft can reuse its key; changing it requires an explicit
+new intent. Follow-up message uncertainty remains separate from session identity.
+Conflicting late receipts retain both identities for review.
+
+Tasks and operations live in the private `~/.commando/cloud-tasks.sqlite` journal.
+Set `COMMANDO_CLOUD_TASKS_PATH` to isolate another daemon or test run. A corrupt
+journal disables cloud routes instead of replacing history or taking local tmux
+offline. All cloud APIs require the existing owner cookie or daemon bearer token;
+the agent hook token does not authorize cloud operations.
+
+Codex observations refresh while the area/HUD is subscribed, with shared bounded
+reads and error backoff. On reconnect, cached state remains visible until a fresh
+observation arrives. A provider result being ready is not a claim that the task
+succeeded or its tests passed. Diff previews are escaped text capped at 256 KiB
+or 5,000 lines; the provider link offers the full result.
+
+Verification: `npm test` includes journal, CLI, orchestration, client and actual
+daemon authorization/restart tests. Run `npx playwright test e2e/cloud-tasks.pw.ts
+--workers=1` for isolated real-App/CSS browser fixtures; set `COMMANDO_CHROMIUM`
+to an installed browser executable when needed.
+
 ## Web Pane Tiles
 
 Agents (and you) can open a web page as a tile in the pane grid, right beside a

@@ -78,6 +78,10 @@ import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
 import { defaultPanePrRecordsPath } from './pane-pr-records.js'
+import { CloudTaskStore } from './cloud-task-store.js'
+import { CloudTaskService } from './cloud-task-service.js'
+import { handleCloudTasksApi } from './cloud-tasks-api.js'
+import { createCloudConnections } from './cloud-connections.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
@@ -123,10 +127,10 @@ import { assembleClientSessionBriefs, withSimulatorClaim } from './session-brief
 import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
-import { ChatImageStore, handleChatImage, handleChatImageUpload } from './chat-images.js'
+import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
-import { AGENT_HOST_WS_PATH, isChatProvider } from '../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -671,6 +675,17 @@ async function main(): Promise<void> {
   const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
   if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
   const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
+  let cloudTaskStore: CloudTaskStore | undefined
+  let cloudTasks: CloudTaskService | undefined
+  try {
+    cloudTaskStore = new CloudTaskStore(resolve(process.env.COMMANDO_CLOUD_TASKS_PATH ?? `${homedir()}/.commando/cloud-tasks.sqlite`))
+    cloudTasks = new CloudTaskService({ store: cloudTaskStore, providers: createCloudConnections() })
+  } catch {
+    cloudTaskStore?.close()
+    cloudTaskStore = undefined
+    // Storage failure must not reset task history or take local tmux offline.
+    console.error('[commando] Cloud task storage unavailable; cloud routes are disabled')
+  }
   const gitWorktrees = new GitWorktreeService(undefined, { worktreesParent: worktreesParentFromEnv(process.env) })
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   // The profile store is set up further down; this only runs when a pane starts.
@@ -1043,6 +1058,10 @@ async function main(): Promise<void> {
     if (images.length) {
       if (!agentHosts.takesInput(message.paneId)) {
         sendError(client, 'chat_unavailable', 'This chat started before images were supported; restart it to send images', message.requestId)
+        return
+      }
+      if (images.some((image) => isChatVideoId(image.id)) && !agentHosts.takesVideos(message.paneId)) {
+        sendError(client, 'chat_unavailable', 'This chat started before videos were supported; restart it to send videos', message.requestId)
         return
       }
       const stored = await Promise.all(images.map((image) => chatImages.exists(image.id)))
@@ -2921,6 +2940,13 @@ async function main(): Promise<void> {
         }
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
+        if (/^\/api\/(?:cloud-tasks|cloud-providers|cloud-operations)(?:\/|$)/.test(url.pathname)) {
+          if (!cloudTasks) {
+            writeJson(response, 503, { code: 'cloud_storage_unavailable', error: 'Cloud task storage is unavailable. Saved history has not been reset.' })
+            return
+          }
+          if (await handleCloudTasksApi(request, response, url, cloudTasks)) return
+        }
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
@@ -2931,6 +2957,7 @@ async function main(): Promise<void> {
         })) return
         if (await handlePaneScreenshotApi(request, response, url, paneScreenshots)) return
         if (await handleChatImageUpload(request, response, url, chatImages)) return
+        if (await handleChatVideoUpload(request, response, url, chatImages)) return
         if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
         if (await handleRepoPrepareCommands(request, response, url, repoPrepareCommands)) return
@@ -2985,6 +3012,8 @@ async function main(): Promise<void> {
 
   const httpServers = networkAccess.listeners.map((listener) => {
     const server = createServer(requestListener)
+    // A 500 MB chat video takes longer than Node's default 5 minutes on a slow tailnet link.
+    server.requestTimeout = 30 * 60 * 1000
     server.on('upgrade', (request, socket, head) => {
       void (async () => {
         if (!networkAccess.validRequest(request)) {
@@ -3115,6 +3144,11 @@ async function main(): Promise<void> {
     externalAgents.close()
     prAutofix.stop()
     resurrectSaver.stop()
+    void cloudTasks?.stop().catch(() => {
+      console.error('[commando] Cloud dispatcher stopped with uncertain delivery; saved tasks require reconciliation')
+    })
+    // Keep SQLite available to late CLI receipts while shutdown drains children.
+    process.once('beforeExit', () => cloudTaskStore?.close())
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     // Agent hosts keep their turns running and reconnect to the next daemon.

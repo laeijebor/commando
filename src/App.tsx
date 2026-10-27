@@ -20,6 +20,7 @@ import {
   Pencil,
   RotateCcw,
   Trash2,
+  Cloud,
   Command,
   Grid2X2,
   KeyRound,
@@ -151,6 +152,8 @@ import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
+import { createCloudTasksApi } from './cloudTasksApi'
+import { CloudTasksSection, CloudTasksHud } from './CloudTasksSection'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -163,7 +166,7 @@ import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
 import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type ChatSendError } from './chat/ChatComposer'
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
-import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage } from './chatInputApi'
+import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
@@ -969,7 +972,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'settings'
+type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'settings' | 'cloud'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -1428,6 +1431,7 @@ export function App() {
   }, [])
 
   const [area, setArea] = useState<CommandoArea>('workspace')
+  const [selectedCloudTaskId, setSelectedCloudTaskId] = useState<string | null>(null)
   const [notesMounted, setNotesMounted] = useState(false)
   const paneRefs = useRef(new Map<string, HTMLElement>())
   const paneStreamsRef = useRef<PaneStreamRegistry | null>(null)
@@ -2732,6 +2736,7 @@ export function App() {
         }),
         pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, paneId),
         uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image),
+        uploadVideo: (file, signal) => uploadChatVideo(latestChatDeps.current.token, file, signal),
       }
       chatServiceCache.current.set(paneId, services)
     }
@@ -2808,6 +2813,7 @@ export function App() {
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [simulatorTabKey, connected, token])
+  const cloudTasksApi = useMemo(() => createCloudTasksApi(token), [token])
   const webPanesApi = createWebPanesApi(token)
 
   const renameSelectedSession = async () => {
@@ -3991,6 +3997,10 @@ export function App() {
               <span>Workspace</span>
               <span className="nav-count">{snapshot?.sessions.length ?? 0}</span>
             </button>
+            <button type="button" className={area === 'cloud' ? 'active' : ''} aria-current={area === 'cloud' ? 'page' : undefined} onClick={() => { setArea('cloud'); setLeftPanelOpen(false) }}>
+              <Cloud aria-hidden="true" />
+              <span>Cloud tasks</span>
+            </button>
             <button type="button" className={area === 'linear' ? 'active' : ''} aria-current={area === 'linear' ? 'page' : undefined} onClick={() => { setArea('linear'); setLeftPanelOpen(false) }}>
               <CircleDotDashed aria-hidden="true" />
               <span>Linear</span>
@@ -4529,6 +4539,7 @@ export function App() {
                 commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
           ) : null}
+          {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
               <NotesSection
@@ -4631,6 +4642,11 @@ export function App() {
             </button>
           </div>
           <div className="agent-stream">
+            {hudTab === 'agents' ? <CloudTasksHud api={cloudTasksApi} onSelectTask={(id) => {
+              setSelectedCloudTaskId(id)
+              setArea('cloud')
+              setRightPanelOpen(false)
+            }} /> : null}
             {visibleHudGroups.map((group) => (
               <section className="agent-group" key={group.id} aria-labelledby={`agent-group-${group.id}`}>
                 <header>

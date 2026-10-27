@@ -1,15 +1,18 @@
-import { useMemo, useState } from 'react'
-import { Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { useMemo, useRef, useState } from 'react'
+import { ActivityIndicator, Alert, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
+import * as Haptics from 'expo-haptics'
+import { prMergeDisabledReason } from '@commando/pr-merge'
 
 import { Markdown } from '../chat/Markdown'
 import type { PanePrSummary } from '../daemon/paneApi'
 import type { Host } from '../hosts/types'
+import { panePrCache } from '../pane/prCache'
 import { prChips } from '../pane/prs'
 import { useTheme } from '../theme'
 import { relativeTime } from '../time'
 import { Meta, Pill, Segmented } from '../ui/primitives'
-import { fetchPrDetails, fetchPrDiff, fetchPrPreview, type PrDetails, type PrPreview } from './api'
+import { fetchPrDetails, fetchPrDiff, fetchPrPreview, mergePr, type PrDetails, type PrPreview } from './api'
 import { usePrResource } from './cache'
 import { prDiffTotals } from './diff'
 import { githubMarkdown } from './markdown'
@@ -45,7 +48,7 @@ export function PrView({ host, source, active = true, initialTab = 'description'
   const { repo, number } = source
   const scope = `${host.id}:${host.baseUrl}:${repo.toLowerCase()}#${number}`
 
-  const fallback = usePrResource<PrPreview>(`preview:${scope}`, () => fetchPrPreview(host, repo, number), { enabled: active && !source.preview, ttlMs: PREVIEW_TTL_MS })
+  const fallback = usePrResource<PrPreview>(`preview:${scope}`, (refresh) => fetchPrPreview(host, repo, number, { refresh }), { enabled: active && !source.preview, ttlMs: PREVIEW_TTL_MS })
   const details = usePrResource<PrDetails>(`details:${scope}`, (refresh) => fetchPrDetails(host, repo, number, { refresh }), { enabled: active, ttlMs: DETAILS_TTL_MS })
   const preview = source.preview ?? fallback.data
   // Details are re-read every minute while shown; a fallback preview is not, so the details' head wins.
@@ -63,6 +66,19 @@ export function PrView({ host, source, active = true, initialTab = 'description'
     { value: 'conversation' as const, label: details.data ? `Conversation · ${timeline.length}` : 'Conversation' },
   ]
   const refreshing = details.loading && Boolean(details.data)
+  // Shown as merged straight away; the pane's PR list catches up on the refresh below.
+  const [merged, setMerged] = useState(false)
+  const base = details.data?.mergeTarget?.branch ?? preview?.baseRefName
+  // Mergeability lives on the preview, so a pull re-reads that too (the pane's list, or the fallback).
+  const refreshAll = () => {
+    void details.refresh()
+    if (source.preview) void panePrCache.refreshHost(host)
+    else void fallback.refresh()
+  }
+  const afterMerge = (ok: boolean) => {
+    if (ok) setMerged(true)
+    refreshAll()
+  }
 
   return (
     <View style={styles.root}>
@@ -72,9 +88,11 @@ export function PrView({ host, source, active = true, initialTab = 'description'
       {tab === 'description' ? (
         <ScrollView
           contentContainerStyle={styles.body}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void details.refresh()} tintColor={theme.muted} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshAll} tintColor={theme.muted} />}
         >
-          <PrHeader source={source} preview={preview} details={details.data} url={url} />
+          <PrHeader source={source} preview={preview} details={details.data} url={url} merged={merged}>
+            <MergeButton host={host} source={source} preview={preview} merged={merged} head={head} base={base} onSettled={afterMerge} />
+          </PrHeader>
           {details.error ? <Text accessibilityRole="alert" style={[styles.error, { color: theme.red }]}>{details.error}</Text> : null}
           {details.data?.stale ? <StaleNote details={details.data} /> : null}
           <View style={[styles.rule, { backgroundColor: theme.border }]} />
@@ -93,9 +111,16 @@ export function PrView({ host, source, active = true, initialTab = 'description'
   )
 }
 
-function PrHeader({ source, preview, details, url }: { source: PrViewSource; preview?: PrPreview | undefined; details?: PrDetails | undefined; url: string }): React.JSX.Element {
+function PrHeader({ source, preview, details, url, merged, children }: {
+  source: PrViewSource
+  preview?: PrPreview | undefined
+  details?: PrDetails | undefined
+  url: string
+  merged: boolean
+  children?: React.ReactNode
+}): React.JSX.Element {
   const theme = useTheme()
-  const state = preview?.state ?? source.state ?? 'open'
+  const state = merged ? 'merged' : preview?.state ?? source.state ?? 'open'
   const draft = (preview?.isDraft ?? source.isDraft) && state === 'open'
   const title = preview?.title ?? source.title ?? `Pull request #${source.number}`
   const base = details?.mergeTarget?.branch ?? preview?.baseRefName
@@ -156,11 +181,90 @@ function PrHeader({ source, preview, details, url }: { source: PrViewSource; pre
           {attention.length > 6 ? <Meta>and {attention.length - 6} more</Meta> : null}
         </View>
       ) : null}
-      <Pressable accessibilityRole="link" accessibilityLabel={`Open #${source.number} on GitHub`} onPress={() => void Linking.openURL(url).catch(() => undefined)} style={[styles.github, { borderColor: theme.borderMid, backgroundColor: theme.surfaceSoft }]}>
-        <Feather name="external-link" size={14} color={theme.text} />
-        <Text style={[styles.githubLabel, { color: theme.text }]}>Open on GitHub</Text>
-      </Pressable>
+      <View style={styles.wrapRow}>
+        <Pressable accessibilityRole="link" accessibilityLabel={`Open #${source.number} on GitHub`} onPress={() => void Linking.openURL(url).catch(() => undefined)} style={[styles.action, { borderColor: theme.borderMid, backgroundColor: theme.surfaceSoft }]}>
+          <Feather name="external-link" size={14} color={theme.text} />
+          <Text style={[styles.actionLabel, { color: theme.text }]}>Open on GitHub</Text>
+        </Pressable>
+        {children}
+      </View>
     </View>
+  )
+}
+
+/**
+ * The desktop panel's Merge PR, behind a confirmation. It is offered only for
+ * an open PR and greyed out with GitHub's reason when the PR can't merge yet;
+ * the daemon checks again before merging, so a stale list only costs an error.
+ */
+function MergeButton({ host, source, preview, merged, head, base, onSettled }: {
+  host: Host
+  source: PrViewSource
+  preview?: PrPreview | undefined
+  merged: boolean
+  head?: string | undefined
+  base?: string | undefined
+  onSettled: (merged: boolean) => void
+}): React.JSX.Element | null {
+  const theme = useTheme()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const inFlight = useRef(false)
+  const state = merged ? 'merged' : preview?.state ?? source.state ?? 'open'
+  if (state !== 'open') return null
+  const reason = prMergeDisabledReason({
+    state,
+    isDraft: Boolean(preview?.isDraft ?? source.isDraft),
+    ...(preview?.mergeable ? { mergeable: preview.mergeable } : {}),
+    ...(preview?.mergeStateStatus ? { mergeStateStatus: preview.mergeStateStatus } : {}),
+  }) ?? (head ? null : 'Loading the PR’s latest commit…')
+
+  const merge = async (headRefOid: string) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setBusy(true)
+    setError('')
+    let ok = false
+    try {
+      await mergePr(host, source.repo, source.number, headRefOid, base)
+      ok = true
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : 'Unable to merge pull request')
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+    } finally {
+      inFlight.current = false
+      setBusy(false)
+      onSettled(ok)
+    }
+  }
+  const confirm = () => {
+    if (!head) return
+    const branches = preview?.headRefName && base ? `${preview.headRefName} into ${base}` : base ? `into ${base}` : 'this pull request'
+    Alert.alert(`Merge #${source.number}?`, `This merges ${branches} on GitHub.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Merge', onPress: () => void merge(head) },
+    ])
+  }
+
+  const disabled = Boolean(reason) || busy
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Merge #${source.number}`}
+        accessibilityState={{ disabled, busy }}
+        accessibilityHint={reason ?? undefined}
+        disabled={disabled}
+        onPress={confirm}
+        style={[styles.action, { borderColor: 'transparent', backgroundColor: theme.accent, opacity: reason ? 0.5 : 1 }]}
+      >
+        {busy ? <ActivityIndicator size="small" color={theme.accentInk} /> : <Feather name="git-merge" size={14} color={theme.accentInk} />}
+        <Text style={[styles.actionLabel, { color: theme.accentInk }]}>{busy ? 'Merging…' : 'Merge PR'}</Text>
+      </Pressable>
+      {reason && !busy ? <Meta style={styles.fullRow}>{reason}</Meta> : null}
+      {error ? <Text accessibilityRole="alert" style={[styles.error, styles.fullRow, { color: theme.red }]}>{error}</Text> : null}
+    </>
   )
 }
 
@@ -177,8 +281,9 @@ const styles = StyleSheet.create({
   checks: { gap: 4 },
   check: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   checkName: { fontSize: 13, flexShrink: 1 },
-  github: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1 },
-  githubLabel: { fontSize: 13.5, fontWeight: '600' },
+  action: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1 },
+  actionLabel: { fontSize: 13.5, fontWeight: '600' },
+  fullRow: { width: '100%' },
   rule: { height: StyleSheet.hairlineWidth },
   error: { fontSize: 13.5 },
 })

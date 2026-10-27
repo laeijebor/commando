@@ -147,6 +147,24 @@ describe('AgentSession', () => {
     expect(sessions.at(-1)?.status).toBe('running')
   })
 
+  it('says why Claude asks in bypass mode and drops always-allow when Claude refuses to keep it', () => {
+    const { fake, session, items } = started()
+    session.send('clean up')
+    // As Claude Code 2.1.309 sends a safety check from bypassPermissions mode.
+    void fake.canUseTool('Bash', { command: 'rm -f f/*' }, {
+      ...signalOptions('r-safety'), suggestions: [], suppressAlwaysAllowRule: true,
+      decisionReason: 'Dangerous rm operation on statically-unresolvable target: /work/f/*', decisionReasonType: 'safetyCheck',
+    } as Parameters<CanUseTool>[2])
+    expect(items.get('request-r-safety')).toMatchObject({
+      requestKind: 'approval', detail: 'rm -f f/*', noAlwaysAllow: true,
+      reason: 'Safety check: Dangerous rm operation on statically-unresolvable target: /work/f/*',
+    })
+    // A plain prompt carries no reason and keeps always-allow.
+    void fake.canUseTool('Bash', { command: 'git push' }, signalOptions('r-plain'))
+    expect(items.get('request-r-plain')).not.toHaveProperty('reason')
+    expect(items.get('request-r-plain')).not.toHaveProperty('noAlwaysAllow')
+  })
+
   it('answers AskUserQuestion with the questions and answers the tool expects', async () => {
     const { fake, session, items } = started()
     const questions = [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A', description: '' }, { label: 'B', description: '' }] }]
@@ -981,6 +999,46 @@ describe('AgentSession richer input', () => {
     await tick()
     expect(store.stage.mock.calls).toEqual([[imageId, 'beforeclear-0000'], [imageId, 'abcd1234-0000']])
     expect(fake.options.additionalDirectories).toEqual(['/sessions/abcd1234-0000', '/sessions/beforeclear-0000'])
+  })
+
+  it('sends a video as a note naming its copy, with no image block, and refuses one it could not copy', async () => {
+    const videoId = `${'e'.repeat(64)}.mov`
+    const stage = vi.fn(async (id: string, sessionId: string) => {
+      if (id === `${'f'.repeat(64)}.mov`) throw new Error('ENOSPC')
+      return `/sessions/${sessionId}/${id}`
+    })
+    const { fake, session, items } = started({ images: { ...images, stage } })
+    const sessionId = fake.options.sessionId
+    session.send('what goes wrong here?', [{ id: videoId, name: 'Screen Recording.mov' }])
+    session.send('both', [{ id: imageId, name: 'pane.png' }, { id: videoId }])
+    session.send('lost', [{ id: `${'f'.repeat(64)}.mov` }])
+    await tick()
+    await tick()
+    expect(fake.prompts).toHaveLength(2)
+    expect(fake.prompts[0]!.message.content).toBe(`what goes wrong here?\n\n[Attached video "Screen Recording.mov" is saved at: /sessions/${sessionId}/${videoId}]`)
+    expect(fake.prompts[1]!.message.content).toEqual([
+      expect.objectContaining({ type: 'image' }),
+      { type: 'text', text: `both\n\n[Attached image "pane.png" is saved at: /sessions/${sessionId}/${imageId}]\n\n[Attached video "${videoId}" is saved at: /sessions/${sessionId}/${videoId}]` },
+    ])
+    expect(images.read).not.toHaveBeenCalledWith(videoId)
+    const users = [...items.values()].filter((item) => item.kind === 'user_message')
+    expect(users[0]).toMatchObject({ text: 'what goes wrong here?', images: [{ id: videoId, name: 'Screen Recording.mov' }] })
+    expect([...items.values()].some((item) => item.kind === 'notice' && /wasn't sent: ENOSPC/.test(item.text))).toBe(true)
+  })
+
+  it('shows a resumed conversation\'s videos and copies them back', async () => {
+    const videoId = `${'e'.repeat(64)}.mov`
+    const store = { ...images, stage: vi.fn(async (id: string, sessionId: string) => `/sessions/${sessionId}/${id}`) }
+    const history = [
+      { type: 'user', message: { role: 'user', content: `what goes wrong?\n\n[Attached video "clip.mov" is saved at: /sessions/abcd1234-0000/${videoId}]` }, parent_tool_use_id: null },
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'It scrolls.' }] }, parent_tool_use_id: null },
+    ]
+    const { items } = started({ images: store, resume: 'abcd1234-0000' }, { messages: async () => history, title: async () => undefined })
+    await tick()
+    await tick()
+    expect(store.stage.mock.calls).toEqual([[videoId, 'abcd1234-0000']])
+    const users = [...items.values()].filter((item) => item.kind === 'user_message')
+    expect(users).toEqual([expect.objectContaining({ text: 'what goes wrong?', images: [{ id: videoId, name: 'clip.mov' }] })])
   })
 
   it('still sends an image it could not copy for Claude, without a note', async () => {

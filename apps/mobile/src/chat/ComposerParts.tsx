@@ -150,7 +150,7 @@ export function TriggerMenu({ label, items, status, onPick, onDismiss }: {
 }
 
 /** Shows a native action sheet anchored to `anchor` (a popover on iPad); resolves the picked index. */
-function showSheet(anchor: View | null, title: string, options: string[], selected: number): Promise<number | null> {
+export function showSheet(anchor: View | null, title: string, options: string[], selected: number): Promise<number | null> {
   const node = anchor ? findNodeHandle(anchor) : null
   return new Promise((resolve) => {
     ActionSheetIOS.showActionSheetWithOptions({
@@ -275,10 +275,11 @@ export function ContextMeter({ usage }: { usage: ChatContextUsage }): React.JSX.
   )
 }
 
-export function IconButton({ icon, label, onPress, disabled }: { icon: React.ComponentProps<typeof Feather>['name']; label: string; onPress: () => void; disabled?: boolean }): React.JSX.Element {
+export function IconButton({ icon, label, onPress, disabled, ref }: { icon: React.ComponentProps<typeof Feather>['name']; label: string; onPress: () => void; disabled?: boolean; ref?: React.Ref<View> }): React.JSX.Element {
   const theme = useTheme()
   return (
     <Pressable
+      ref={ref}
       accessibilityLabel={label}
       accessibilityRole="button"
       accessibilityState={{ disabled: Boolean(disabled) }}

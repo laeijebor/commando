@@ -41,6 +41,9 @@
       "@commando/pr-quick-look": [
         "../../shared/pr-quick-look.ts"
       ],
+      "@commando/pr-merge": [
+        "../../shared/pr-merge.ts"
+      ],
       "@commando/pr-conversation": [
         "../../shared/pr-conversation.ts"
       ],
@@ -67,6 +70,7 @@
     "../../shared/chat-composer.ts",
     "../../shared/pairing.ts",
     "../../shared/pr-quick-look.ts",
+    "../../shared/pr-merge.ts",
     "../../shared/pr-conversation.ts",
     "../../shared/redline-response.ts",
     "../../shared/canvas-manifest.ts",
