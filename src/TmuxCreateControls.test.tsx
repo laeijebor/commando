@@ -10,6 +10,7 @@ import {
   TmuxCreateControls,
   WORKTREE_PREPARE_COMMANDS_STORAGE_KEY,
 } from './TmuxCreateControls'
+import { agentPill, chooseAgent, choosePermission, expectAgent, menuLabels, openWorkspace, permissionPill } from './newSessionTestHelpers'
 
 const created: TmuxCreatedTarget = {
   kind: 'session',
@@ -32,6 +33,8 @@ function probeFor(table: Record<string, GitRepoInfo>) {
 }
 
 beforeEach(() => {
+  // Most of these tests are about the session itself; start them on Nothing as before.
+  window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ '*': 'none' }))
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ command: '' })))
 })
 
@@ -47,7 +50,7 @@ describe('TmuxCreateControls', () => {
     const onCreated = vi.fn()
     render(<TmuxCreateControls variant={variant} onCreateSession={onCreateSession} onCreated={onCreated} />)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    chooseAgent('cursor')
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('daemon did not confirm the requested Cursor interactive launch')
     expect(onCreated).not.toHaveBeenCalled()
@@ -68,7 +71,7 @@ describe('TmuxCreateControls', () => {
     render(<TmuxCreateControls onCreateSession={onCreateSession} onCreated={onCreated} />)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.change(screen.getByLabelText(/Initial window name/), { target: { value: 'first-window' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    chooseAgent('cursor')
     fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: 'first prompt' } })
     const form = screen.getByRole('button', { name: 'Create session' }).closest('form')!
     fireEvent.submit(form)
@@ -94,9 +97,9 @@ describe('TmuxCreateControls', () => {
     expect(screen.getByLabelText('Session name')).toHaveValue('')
     expect(screen.getByLabelText(/Initial window name/)).toHaveValue('')
     expect(screen.getByLabelText(/Opening prompt/)).toHaveValue('')
-    expect(screen.getByLabelText('Start with')).toHaveValue('cursor')
+    expectAgent('cursor')
 
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'shell' } })
+    chooseAgent('shell')
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'next' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await waitFor(() => expect(onCreated).toHaveBeenLastCalledWith(nextCreated, 'ungrouped', undefined))
@@ -111,7 +114,7 @@ describe('TmuxCreateControls', () => {
     const onCreated = vi.fn().mockRejectedValueOnce(new Error('Unable to open session')).mockResolvedValueOnce(undefined)
     render(<TmuxCreateControls onCreateSession={onCreateSession} onCreated={onCreated} />)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    chooseAgent('cursor')
     const form = screen.getByRole('button', { name: 'Create session' }).closest('form')!
     fireEvent.submit(form)
     await screen.findByRole('alert')
@@ -133,7 +136,7 @@ describe('TmuxCreateControls', () => {
     const onCreated = vi.fn((): void => view.unmount())
     const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} onCreated={onCreated} />)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    chooseAgent('cursor')
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await screen.findByRole('alert')
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Open created session %3' })))
@@ -144,59 +147,68 @@ describe('TmuxCreateControls', () => {
   it.each(['inline', 'dialog'] as const)('creates Cursor interactively in the %s form with None as the default', async (variant) => {
     const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
     render(<TmuxCreateControls variant={variant} onCreateSession={onCreateSession} />)
-    expect(screen.getByLabelText('Start with')).toHaveValue('none')
+    expectAgent('none')
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    chooseAgent('cursor')
     const prompt = "Read Leo's spec\nInspect $HOME `whoami`"
     fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: prompt } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith({ name: 'work', windowName: '', cwd: '', agent: { provider: 'cursor', prompt } }))
-    expect(screen.getByLabelText('Start with')).toHaveValue('cursor')
-    expect(screen.getByLabelText(/Opening prompt/)).toHaveValue('')
+    expectAgent('cursor')
+    await waitFor(() => expect(screen.getByLabelText(/Opening prompt/)).toHaveValue(''))
   })
 
-  it('remembers what each repository starts with and defaults to None elsewhere', async () => {
+  it('starts a quick Claude chat when nothing has been remembered yet', () => {
+    window.localStorage.clear()
+    render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} />)
+    expectAgent('claude-chat')
+    expect(screen.getByLabelText('Opening prompt')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start chat' })).toBeInTheDocument()
+  })
+
+  it('remembers what each repository starts with, and elsewhere what was started last', async () => {
     const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
     const probe = probeFor({ [MAIN]: repo })
     const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} />)
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
     await screen.findByLabelText(/Create a worktree and branch/)
-    expect(screen.getByLabelText('Start with')).toHaveValue('none')
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'codex' } })
+    expectAgent('none')
+    chooseAgent('codex')
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'codex' } })))
-    expect(JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY)!)).toEqual({ [MAIN]: 'codex' })
+    expect(JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY)!)).toEqual({ [MAIN]: 'codex', '*': 'codex' })
+    window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ [MAIN]: 'codex', '*': 'shell' }))
 
     view.unmount()
     render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} />)
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
-    await waitFor(() => expect(screen.getByLabelText('Start with')).toHaveValue('codex'))
+    await waitFor(() => expectAgent('codex'))
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/Users/dev/other' } })
-    await waitFor(() => expect(screen.getByLabelText('Start with')).toHaveValue('none'))
+    await waitFor(() => expectAgent('shell'))
   })
 
   it('picks up a choice remembered elsewhere each time the inline form opens', async () => {
     render(<TmuxCreateControls onCreateSession={vi.fn()} />)
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/Users/dev/plain' } })
-    expect(screen.getByLabelText('Start with')).toHaveValue('none')
+    expectAgent('none')
     window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ '/Users/dev/plain': 'opencode' }))
     const details = screen.getByText('New session').closest('details')!
     details.open = true
     fireEvent(details, new Event('toggle'))
-    expect(screen.getByLabelText('Start with')).toHaveValue('opencode')
+    expectAgent('opencode')
   })
 
   it('omits a retained opening prompt when switching to OpenCode or Shell', async () => {
     const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
     render(<TmuxCreateControls onCreateSession={onCreateSession} />)
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor' } })
+    chooseAgent('cursor')
     fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: 'Read' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'opencode' } })
+    chooseAgent('opencode')
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'opencode' } })))
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'shell' } })
+    chooseAgent('shell')
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenLastCalledWith({ name: 'work', windowName: '', cwd: '' }))
@@ -267,6 +279,7 @@ describe('TmuxCreateControls', () => {
 
     render(<TmuxCreateControls onCreateSession={vi.fn()} />)
 
+    openWorkspace()
     const input = screen.getByRole('combobox', { name: /Working directory/ })
     fireEvent.focus(input)
     expect(screen.getByRole('listbox', { name: 'Suggested working directories' })).toBeInTheDocument()
@@ -369,6 +382,7 @@ describe('TmuxCreateControls', () => {
     expect(await screen.findByText('New session in GIZMO')).toBeVisible()
     expect(screen.getByText('GIZMO', { selector: '.tmux-create__destination strong' })).toBeVisible()
     expect(screen.getByLabelText('Session name')).toHaveFocus()
+    openWorkspace()
     const directory = screen.getByRole('combobox', { name: /Working directory/ })
     expect(directory).toHaveValue('/Users/dev/gizmo')
     fireEvent.focus(directory)
@@ -498,6 +512,7 @@ describe('TmuxCreateControls worktrees', () => {
     const toggle = await screen.findByLabelText(/Create a worktree and branch/)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'flow' } })
 
+    openWorkspace()
     fireEvent.click(screen.getByRole('button', { name: /Edit worktree path/ }))
     fireEvent.change(screen.getByLabelText(/Worktree path/), { target: { value: '/Users/dev/elsewhere/flow' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
@@ -529,6 +544,7 @@ describe('TmuxCreateControls worktrees', () => {
     )
     expect(screen.getByText('Save-All', { selector: '.tmux-create__destination strong' })).toBeVisible()
     expect(screen.getByText(/^Repository/)).toBeInTheDocument()
+    openWorkspace()
     expect(screen.getByRole('combobox', { name: /Working directory/ })).toHaveValue(MAIN)
     expect(await screen.findByLabelText(/Create a worktree and branch/)).toBeChecked()
   })
@@ -615,41 +631,152 @@ describe('Claude chat launches', () => {
     agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' },
   })
 
-  it('offers chat before the terminal, sends the chosen profile and permissions, and remembers them per repository', async () => {
+  it('lists each Claude profile for chat and terminal, chats first, and remembers the pick per repository', async () => {
     const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest) => chatResponse(input))
     const probe = probeFor({ [MAIN]: repo })
     const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} loadClaudeProfiles={async () => profiles} />)
-    const startWith = screen.getByLabelText('Start with') as HTMLSelectElement
-    const labels = [...startWith.options].map((option) => option.textContent)
-    expect(labels.indexOf('Claude chat')).toBeLessThan(labels.indexOf('Claude (terminal)'))
+    await waitFor(() => expect(menuLabels(agentPill())).toContain('Claude chat · claudew'))
+    const labels = menuLabels(agentPill())
+    expect(labels.slice(0, 3)).toEqual(['Claude chat · claude', 'Claude chat · claudep', 'Claude chat · claudew'])
+    expect(labels.indexOf('Cursor chat')).toBeLessThan(labels.indexOf('Claude terminal · claude'))
+    expect(labels).toEqual(expect.arrayContaining(['Claude terminal · claudep', 'Claude terminal · claudew', 'Shell', '*Nothing']))
 
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
-    fireEvent.change(startWith, { target: { value: 'claude-chat' } })
-    const profile = await screen.findByLabelText('Profile')
-    await waitFor(() => expect(profile).toHaveValue('/Users/dev/.claudep'))
-    fireEvent.change(profile, { target: { value: '/Users/dev/.claudew' } })
-    fireEvent.change(screen.getByLabelText('Permissions'), { target: { value: 'acceptEdits' } })
-    fireEvent.click(await screen.findByRole('button', { name: 'Create session' }))
+    await screen.findByLabelText(/Create a worktree and branch/)
+    chooseAgent('claude-chat', 'claudew')
+    expectAgent('claude-chat', 'claudew')
+    choosePermission('Accept edits')
+    fireEvent.click(await screen.findByRole('button', { name: 'Start chat' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
     expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'claude-chat', configDir: '/Users/dev/.claudew', permissionMode: 'acceptEdits' })
 
     view.unmount()
     render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={probe} loadClaudeProfiles={async () => profiles} />)
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
-    await waitFor(() => expect(screen.getByLabelText('Profile')).toHaveValue('/Users/dev/.claudew'))
-    expect(screen.getByLabelText('Permissions')).toHaveValue('acceptEdits')
+    await waitFor(() => expectAgent('claude-chat', 'claudew'))
+    expect(permissionPill()).toHaveAccessibleName('Permissions: Accept edits')
+  })
+
+  it('starts terminal Claude on the chosen profile, with no permission mode', async () => {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest) => chatResponse(input))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadClaudeProfiles={async () => profiles} />)
+    await waitFor(() => expect(menuLabels(agentPill())).toContain('Claude terminal · claudep'))
+    chooseAgent('claude', 'claudep')
+    expect(screen.queryByRole('button', { name: /^Permissions:/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Attach images or videos' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Opening prompt'), { target: { value: 'Fix it' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0]).toMatchObject({ name: '', autoName: true, agent: { provider: 'claude', configDir: '/Users/dev/.claudep', prompt: 'Fix it' } })
   })
 
   it('names profiles by their Settings label and starts on the chosen default', async () => {
+    window.localStorage.clear()
     const labelled = [profiles[0]!, { ...profiles[1]!, label: 'Personal' }, { ...profiles[2]!, label: 'Work', isDefault: true }]
     render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} probeRepo={probeFor({ [MAIN]: repo })} loadClaudeProfiles={async () => labelled} />)
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
-    const profile = await screen.findByLabelText('Profile') as HTMLSelectElement
-    await waitFor(() => expect(profile).toHaveValue('/Users/dev/.claudew'))
-    expect([...profile.options].map((option) => option.textContent)).toEqual(['claude', 'Personal', 'Work'])
+    await screen.findByLabelText(/Create a worktree and branch/)
+    await waitFor(() => expectAgent('claude-chat', 'Work'))
+    expect(menuLabels(agentPill()).slice(0, 3)).toEqual(['Claude chat · claude', 'Claude chat · Personal', '*Claude chat · Work'])
+  })
+})
+
+describe('models', () => {
+  const claudeModels = [
+    { value: 'default', displayName: 'Default (recommended)', description: 'Opus 5.5' },
+    { value: 'sonnet', displayName: 'Sonnet 5.5' },
+  ]
+  const catalogs = {
+    'claude:/Users/dev/.claudep': { models: claudeModels, updatedAt: Date.now() - 2 * 3_600_000 },
+    codex: { models: [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }, { value: 'gpt-6-luna', displayName: 'GPT-6-Luna' }], updatedAt: 1 },
+  }
+  const respond = async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' } })
+
+  it("offers the cached models for the agent and profile, starts on the pick and remembers it", async () => {
+    window.localStorage.clear()
+    window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ '*': { configDir: '/Users/dev/.claudep', permissionMode: 'default' } }))
+    const onCreateSession = vi.fn(respond)
+    const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadModelCatalogs={async () => catalogs} />)
+    const pill = await screen.findByRole('button', { name: 'Model: Default model' })
+    fireEvent.click(pill)
+    expect(screen.getByText(/From this agent's last chat, 2h ago/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Sonnet 5.5/ }))
+    expect(screen.getByRole('button', { name: 'Model: Sonnet 5.5' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toMatchObject({ provider: 'claude-chat', model: 'sonnet' })
+
+    view.unmount()
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadModelCatalogs={async () => catalogs} />)
+    expect(await screen.findByRole('button', { name: 'Model: Sonnet 5.5' })).toBeInTheDocument()
+    chooseAgent('codex-chat')
+    // Codex has no "default" entry of its own: the picker adds one, which sends no model.
+    expect(menuLabels(screen.getByRole('button', { name: 'Model: Default model' }))).toEqual(['*Default', 'GPT-6.1-Sol', 'GPT-6-Luna'])
+    chooseAgent('shell')
+    expect(screen.queryByRole('button', { name: /^Model:/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('opening prompt first', () => {
+  const respond = async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' } })
+  const png = () => new File(['png'], 'shot.png', { type: 'image/png' })
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:preview'), revokeObjectURL: vi.fn() }))
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 800, height: 600, close: () => {} })))
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('sends a pasted screenshot with the prompt, and lets the daemon name the session', async () => {
+    const onCreateSession = vi.fn(respond)
+    let finish!: (ref: { id: string; name: string }) => void
+    const uploadImage = vi.fn(() => new Promise<{ id: string; name: string }>((resolve) => { finish = resolve }))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} uploads={{ uploadImage, uploadVideo: vi.fn() }} />)
+    const prompt = screen.getByLabelText('Opening prompt')
+    expect(screen.getByLabelText('Session name')).toBeRequired()
+    fireEvent.paste(prompt, { clipboardData: { files: [png()] } })
+    await waitFor(() => expect(uploadImage).toHaveBeenCalledOnce())
+    expect(screen.getByLabelText('Session name')).not.toBeRequired()
+    expect(screen.getByLabelText('Session name')).toHaveAttribute('placeholder', 'Named from the prompt')
+    expect(screen.getByRole('button', { name: 'Uploading images...' })).toBeDisabled()
+    await act(async () => finish({ id: `${'a'.repeat(64)}.png`, name: 'shot.png' }))
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0]).toEqual({
+      name: '', autoName: true, windowName: '', cwd: '',
+      agent: { provider: 'claude-chat', images: [{ id: `${'a'.repeat(64)}.png`, name: 'shot.png' }], permissionMode: 'default' },
+    })
+  })
+
+  it('needs a name for agents without a prompt, and keeps images away from non-chats', async () => {
+    render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn(respond)} uploads={{ uploadImage: vi.fn(async () => ({ id: `${'b'.repeat(64)}.png` })), uploadVideo: vi.fn() }} />)
+    fireEvent.paste(screen.getByLabelText('Opening prompt'), { clipboardData: { files: [png()] } })
+    await screen.findByRole('button', { name: 'Open shot.png' })
+    chooseAgent('codex')
+    expect(screen.getByText(/Only chats are sent images/)).toBeInTheDocument()
+    chooseAgent('shell')
+    expect(screen.queryByLabelText('Opening prompt')).not.toBeInTheDocument()
+    expect(screen.getByText('A shell starts without an opening prompt.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Session name')).toBeRequired()
+  })
+
+  it('keeps the workspace folded until something needs attention', async () => {
+    render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} probeRepo={probeFor({ [MAIN]: repo })} />)
+    const summary = () => screen.getByRole('button', { expanded: false, name: /folder|worktree|repo/ })
+    expect(summary()).toHaveTextContent('In the default folder')
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    await waitFor(() => expect(summary()).toHaveTextContent('New worktree named after the session · origin/main'))
+    fireEvent.change(screen.getByLabelText('Opening prompt'), { target: { value: 'Tidy the README' } })
+    expect(summary()).toHaveTextContent('New worktree named from the prompt · origin/main')
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'Quick chat' } })
+    expect(summary()).toHaveTextContent('New worktree quick-chat · origin/main')
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/Users/dev/scratch' } })
+    const opened = await screen.findByRole('button', { expanded: true })
+    expect(opened).toHaveTextContent('In ~/scratch · not a git repo')
+    expect(screen.getByText(/Not a git repository/)).toBeVisible()
   })
 })
 
@@ -661,8 +788,8 @@ describe('Claude chat profile loading', () => {
     }))
     render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadClaudeProfiles={async () => { throw new Error('offline') }} />)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'claude-chat' } })
-    const submit = screen.getByRole('button', { name: 'Create session' })
+    chooseAgent('claude-chat')
+    const submit = screen.getByRole('button', { name: 'Start chat' })
     await waitFor(() => expect(submit).not.toBeDisabled())
     fireEvent.click(submit)
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())

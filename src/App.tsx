@@ -4058,6 +4058,7 @@ export function App() {
                 onCreateSession: tmuxCreateApi.createSession,
                 probeRepo: (directory) => gitDiffApi.repo(directory),
                 loadClaudeProfiles: tmuxCreateApi.claudeProfiles,
+                loadModelCatalogs: tmuxCreateApi.models,
                 onCreated: (created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() },
               }}
             />
