@@ -329,7 +329,7 @@
 .tmux-create__prompt.is-dragging { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
 .tmux-create__prompt.is-off { border-style: dashed; background: var(--surface); }
 .tmux-create .tmux-create__prompt textarea {
-  min-height: 3.2em;
+  min-height: 6.5em;
   max-height: 16em;
   border: 0;
   background: transparent;
@@ -343,6 +343,7 @@
 .tmux-create .tmux-create__prompt textarea:focus-visible { outline: none; }
 .tmux-create .tmux-create__prompt textarea::placeholder { color: var(--muted-dim); }
 .tmux-create__no-prompt { margin: 0; padding: 9px 10px 2px; color: var(--muted-dim); }
+
 .tmux-create__attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 8px 0; }
 .tmux-create__prompt > .tmux-create__message { margin: 4px 10px 0; }
 .tmux-create__prompt-bar {
@@ -442,3 +443,5 @@
 
 .tmux-create__submit { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .tmux-create__submit kbd { border-radius: 4px; background: rgb(0 0 0 / 14%); padding: 1px 5px; font: inherit; font-size: .9em; font-weight: 600; }
+/* With images above it, the text box can start smaller. */
+.tmux-create .tmux-create__attachments + textarea { min-height: 3.2em; }

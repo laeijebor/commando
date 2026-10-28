@@ -9,6 +9,17 @@ import { relativeAge, type AgentOption, type StartWith } from './newSessionAgent
 
 const PILL = 'tmux-create__pill'
 
+/** Pill-sized names for permission modes; the menu keeps the full ones. */
+const SHORT_PERMISSION: Record<string, string> = {
+  'Ask before edits': 'Ask',
+  'Plan mode': 'Plan',
+  'Bypass permissions': 'Bypass',
+  'Workspace access': 'Workspace',
+  'Full access (--yolo)': 'Full access',
+  'Approve everything (sandboxed)': 'Approve all',
+  'Ask when needed': 'Ask',
+}
+
 function agentKey(option: Pick<AgentOption, 'provider' | 'configDir'>): string {
   return option.configDir ? `${option.provider}@${option.configDir}` : option.provider
 }
@@ -71,7 +82,7 @@ export function NewSessionModelPicker({ models, selected, updatedAt, disabled, o
 }) {
   const [open, setOpen] = useState(false)
   const current = models.find((model) => model.value === selected) ?? models[0]
-  const label = current?.value === 'default' ? 'Default model' : current?.displayName ?? 'Default model'
+  const label = current?.value === 'default' || !current ? 'Default model' : current.displayName
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger disabled={disabled} className={cn(PILL, open && 'is-open')} aria-label={`Model: ${label}`}>
@@ -115,7 +126,7 @@ export function NewSessionPermissionPicker({ modes, selected, disabled, onPick }
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger disabled={disabled} className={cn(PILL, open && 'is-open')} aria-label={`Permissions: ${current?.label ?? ''}`} title={current?.label}>
         <Shield aria-hidden="true" />
-        <span className="tmux-create__pill-text">{current?.label}</span>
+        <span className="tmux-create__pill-text">{current ? SHORT_PERMISSION[current.label] ?? current.label : null}</span>
       </PopoverTrigger>
       <PopoverPopup className="w-[240px]" side="bottom" aria-label="Permissions">
         <div role="menu" aria-label="Permissions">
