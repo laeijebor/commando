@@ -751,6 +751,40 @@ describe('opening prompt first', () => {
     })
   })
 
+  it('asks the naming model for a name, says so on the button, and lets ⌘↵ skip the wait', async () => {
+    const onCreateSession = vi.fn(respond)
+    let answer!: (value: { name: string | null; by?: string }) => void
+    const suggest = vi.fn((_request: unknown, signal?: AbortSignal) => new Promise<{ name: string | null; by?: string }>((resolve, reject) => {
+      answer = resolve
+      signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    const describe = vi.fn(async () => ({ settings: { mode: 'naming-model' as const, namingModel: { provider: 'codex' as const, model: 'gpt-6-luna' }, timeoutSeconds: 10 }, status: { state: 'available' as const }, label: 'GPT-6-Luna' }))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} naming={{ suggest, describe }} />)
+    const prompt = screen.getByLabelText('Opening prompt')
+    fireEvent.change(prompt, { target: { value: 'Tidy the README' } })
+    await waitFor(() => expect(screen.getByLabelText('Session name')).toHaveAttribute('placeholder', 'Auto · named by GPT-6-Luna'))
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    expect(await screen.findByRole('button', { name: 'Naming with GPT-6-Luna...' })).toBeEnabled()
+    expect(suggest).toHaveBeenCalledWith({ prompt: 'Tidy the README', chat: { provider: 'claude' } }, expect.any(AbortSignal))
+    await act(async () => answer({ name: 'tidy-readme', by: 'GPT-6-Luna' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0]).toMatchObject({ name: 'tidy-readme', autoName: true })
+
+    fireEvent.change(prompt, { target: { value: 'Another one' } })
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    await screen.findByRole('button', { name: 'Naming with GPT-6-Luna...' })
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledTimes(2))
+    expect(onCreateSession.mock.calls[1]![0]).toMatchObject({ name: '', autoName: true })
+  })
+
+  it("names with the chat's model when the naming model can't work here", async () => {
+    const describe = vi.fn(async () => ({ settings: { mode: 'naming-model' as const, namingModel: { provider: 'codex' as const, model: 'gpt-6-luna' }, timeoutSeconds: 10 }, status: { state: 'unavailable' as const, since: 1, reason: 'Not logged in' }, label: 'GPT-6-Luna' }))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn(respond)} naming={{ suggest: vi.fn(), describe }} />)
+    fireEvent.change(screen.getByLabelText('Opening prompt'), { target: { value: 'Go' } })
+    await waitFor(() => expect(screen.getByLabelText('Session name')).toHaveAttribute('placeholder', 'Auto · named by Claude'))
+  })
+
   it('needs a name for agents without a prompt, and keeps images away from non-chats', async () => {
     render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn(respond)} uploads={{ uploadImage: vi.fn(async () => ({ id: `${'b'.repeat(64)}.png` })), uploadVideo: vi.fn() }} />)
     fireEvent.paste(screen.getByLabelText('Opening prompt'), { clipboardData: { files: [png()] } })

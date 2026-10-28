@@ -23,7 +23,7 @@ import { SessionPrCount } from './SessionPrCount'
 import { paneAttention, paneAttentionLabels, sessionIndicator } from './sessionIndicator'
 import { ARCHIVE_RESTORE_NOTE } from './sessionProcesses'
 
-type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles' | 'loadModelCatalogs'> & {
+type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles' | 'loadModelCatalogs' | 'naming'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
 }
 
@@ -600,6 +600,7 @@ export function SessionTree(props: Props) {
         probeRepo={props.creation.probeRepo}
         loadClaudeProfiles={props.creation.loadClaudeProfiles}
         loadModelCatalogs={props.creation.loadModelCatalogs}
+        naming={props.creation.naming}
         onCreated={(created, sessionGroupId, worktree) => finishCreated(created, sessionGroupId, worktree)}
       /> : null}
       {props.creation && sessionCreateRequest ? <SessionCreateDialog
@@ -610,6 +611,7 @@ export function SessionTree(props: Props) {
         probeRepo={props.creation.probeRepo}
         loadClaudeProfiles={props.creation.loadClaudeProfiles}
         loadModelCatalogs={props.creation.loadModelCatalogs}
+        naming={props.creation.naming}
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}

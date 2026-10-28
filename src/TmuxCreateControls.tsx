@@ -39,6 +39,8 @@ import {
 } from './newSessionAgents'
 import { AgentPicker, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
 import { isAttachableFile, useOpeningAttachments, type AttachmentUploads } from './useOpeningAttachments'
+import type { SessionNamingApi } from './sessionNamingApi'
+import type { SessionNamingResponse } from '../shared/session-naming'
 
 export type SessionCreateRepo = { root: string; name: string; defaultBranch?: string }
 
@@ -75,6 +77,8 @@ export type TmuxCreateControlsProps = {
   loadModelCatalogs?: () => Promise<ModelCatalogs>
   /** Where pasted images and videos go; defaults to the daemon's chat uploads. */
   uploads?: AttachmentUploads
+  /** Names a session from its prompt when no name is given (the daemon's naming model). */
+  naming?: Pick<SessionNamingApi, 'suggest' | 'describe'>
 }
 
 type RepoProbe = { directory: string; info: GitRepoInfo } | null
@@ -225,6 +229,7 @@ export function TmuxCreateControls({
   loadClaudeProfiles,
   loadModelCatalogs,
   uploads,
+  naming,
 }: TmuxCreateControlsProps) {
   const prepareEditVersion = useRef(0)
   const [openVersion, setOpenVersion] = useState(0)
@@ -265,6 +270,10 @@ export function TmuxCreateControls({
   const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined))
   const [modelCatalogs, setModelCatalogs] = useState<ModelCatalogs | null>(null)
   const [modelPick, setModelPick] = useState<{ key: string; value: string } | null>(null)
+  const [namingInfo, setNamingInfo] = useState<SessionNamingResponse | null>(null)
+  /** Set while a model names the session; pressing create again skips the wait. */
+  const namingRef = useRef<AbortController | null>(null)
+  const [namingWith, setNamingWith] = useState<string | null>(null)
   /** null follows whether something needs attention; true/false is the user's own choice. */
   const [workspaceChoice, setWorkspaceChoice] = useState<boolean | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -295,7 +304,7 @@ export function TmuxCreateControls({
   const repo = repoProbe && repoProbe.directory === workingDirectory && repoProbe.info.isRepo && repoProbe.info.mainRoot
     ? repoProbe.info
     : null
-  const unavailable = disabled || pending || (probing && !repo)
+  const unavailable = disabled || pending || namingWith !== null || (probing && !repo)
   const notRepo = Boolean(probeRepo && workingDirectory && repoProbe && repoProbe.directory === workingDirectory && !repoProbe.info.isRepo)
   const promptAccepted = takesPrompt(agentProvider)
   const imagesAccepted = takesImages(agentProvider)
@@ -352,6 +361,18 @@ export function TmuxCreateControls({
   // The parent may pass a new function each render; refetch only when the form (re)opens.
   const loadModelCatalogsRef = useRef(loadModelCatalogs)
   loadModelCatalogsRef.current = loadModelCatalogs
+  const namingRefApi = useRef(naming)
+  namingRefApi.current = naming
+  useEffect(() => {
+    const api = namingRefApi.current
+    if (!api) return
+    let cancelled = false
+    void api.describe().then(
+      (info) => { if (!cancelled) setNamingInfo(info) },
+      (cause: unknown) => console.warn('Unable to load session naming settings', cause),
+    )
+    return () => { cancelled = true }
+  }, [openVersion, sessionCreateRequest?.id])
   useEffect(() => {
     const load = loadModelCatalogsRef.current
     if (!load) return
@@ -382,6 +403,13 @@ export function TmuxCreateControls({
     ? [...models, { value: wantedModel, displayName: wantedModel }]
     : models
   const permissionModes = isChatLaunchProvider(agentProvider) ? chatPermissionModes(agentProvider) : []
+  // Who will name the session: the naming model while it works here, else the chat's own (Claude or Codex).
+  const chatModelLabel = chatProvider === 'claude' || chatProvider === 'codex'
+    ? (selectedModel === 'default' ? (chatProvider === 'claude' ? 'Claude' : 'Codex') : models.find((model) => model.value === selectedModel)?.displayName ?? selectedModel)
+    : null
+  const namingLabel = !naming ? null
+    : namingInfo?.settings.mode !== 'chat-model' && namingInfo?.status.state === 'available' ? namingInfo.label
+      : chatModelLabel
   const options = agentOptions(claudeProfiles)
 
   useEffect(() => {
@@ -526,15 +554,39 @@ export function TmuxCreateControls({
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    // Pressed again while a model names the session: skip the wait.
+    if (namingRef.current) {
+      namingRef.current.abort()
+      return
+    }
     // ⌘↵ submits without the button, so its disabled state is checked here too.
     if (partialCreationRef.current || attachments.uploading || unavailable || chatProfilesLoading) return
     const formElement = event.currentTarget
-    setPending(true)
     setError('')
     setStatus('')
+    let nameHint = ''
+    if (autoName && naming) {
+      const controller = new AbortController()
+      namingRef.current = controller
+      setNamingWith(namingLabel)
+      try {
+        nameHint = (await naming.suggest({
+          prompt: openingPrompt,
+          ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
+          ...(chatProvider ? { chat: { provider: chatProvider, ...(chatProvider === 'claude' && claudeConfigDir ? { configDir: claudeConfigDir } : {}), ...(selectedModel !== 'default' ? { model: selectedModel } : {}) } } : {}),
+        }, controller.signal)).name ?? ''
+      } catch (cause) {
+        // Skipped, or the daemon couldn't name it: the daemon falls back to the prompt's first words.
+        if (!controller.signal.aborted) console.warn('Unable to name the session', cause)
+      } finally {
+        namingRef.current = null
+        setNamingWith(null)
+      }
+    }
+    setPending(true)
     try {
       const cwd = workingDirectory
-      const request: CreateTmuxSessionRequest = { name: sessionName, windowName, cwd, ...(autoName ? { autoName: true } : {}) }
+      const request: CreateTmuxSessionRequest = { name: autoName ? nameHint : sessionName, windowName, cwd, ...(autoName ? { autoName: true } : {}) }
       if (agentProvider === 'none') {
         request.empty = true
       } else if (agentProvider !== 'shell') {
@@ -929,7 +981,7 @@ export function TmuxCreateControls({
   )
 
   const chatStart = isChatLaunchProvider(agentProvider)
-  const submitLabel = pending
+  const submitLabel = namingWith ? `Naming with ${namingWith}...` : pending
     ? partialCreation ? 'Opening...' : 'Creating...'
     : probing && !repo ? 'Checking repository...'
       : attachments.uploading ? 'Uploading images...'
@@ -950,7 +1002,7 @@ export function TmuxCreateControls({
             maxLength={128}
             autoComplete="off"
             value={sessionName}
-            placeholder={promptGiven ? 'Named from the prompt' : undefined}
+            placeholder={promptGiven ? (namingLabel ? `Auto · named by ${namingLabel}` : 'Named from the prompt') : undefined}
             onChange={(event) => setSessionName(event.target.value)}
           />
         </label>
@@ -974,9 +1026,9 @@ export function TmuxCreateControls({
             Open created session {partialCreation.response.created.paneId}
           </button>
         ) : null}
-        <button className="tmux-create__submit" type="submit" disabled={unavailable || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading}>
+        <button className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading}>
           {submitLabel}
-          {pending || attachments.uploading ? null : <kbd aria-hidden="true">⌘↵</kbd>}
+          {namingWith ? <kbd aria-hidden="true">⌘↵ to skip</kbd> : pending || attachments.uploading ? null : <kbd aria-hidden="true">⌘↵</kbd>}
         </button>
       </form>
       <ImageViewer image={viewing} onClose={() => setViewing(null)} />
