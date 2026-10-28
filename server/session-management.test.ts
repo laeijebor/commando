@@ -121,7 +121,7 @@ describe('session tree preferences', () => {
     })
   })
 
-  it('serializes private persistent preferences', async () => {
+  it('serializes private persistent preferences and follows sessions across a tmux restart by name', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'commando-session-prefs-'))
     directories.push(directory)
     const path = join(directory, 'private', 'sessions.json')
@@ -133,36 +133,40 @@ describe('session tree preferences', () => {
     }, [
       { id: '$1', name: 'work' },
       { id: '$2', name: 'other' },
-    ])
+    ], '1:1')
     expect(saved.ungroupedSessionIds).toEqual(['$2'])
     expect(saved.sessionNamesById).toEqual({ '$1': 'work', '$2': 'other' })
+    expect(saved.serverId).toBe('1:1')
     await expect(new SessionPreferenceStore(path).load([
       { id: '$1', name: 'work' },
       { id: '$2', name: 'other' },
-    ])).resolves.toEqual(saved)
+    ], '1:1')).resolves.toEqual(saved)
     expect((await stat(path)).mode & 0o777).toBe(0o600)
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(saved)
 
+    // tmux restarted and restored "other" first, under the id "work" used to have.
     const partialRestore = await new SessionPreferenceStore(path).load([
       { id: '$1', name: 'other' },
-    ])
+    ], '2:2')
     expect(partialRestore).toEqual({
       version: 1,
-      groups: [{ id: 'work', name: 'Work', sessionIds: ['$1'] }],
-      ungroupedSessionIds: [],
-      sessionNamesById: { '$1': 'work' },
+      groups: [{ id: 'work', name: 'Work', sessionIds: ['name:work'] }],
+      ungroupedSessionIds: ['$1'],
+      sessionNamesById: { '$1': 'other' },
+      serverId: '2:2',
     })
-    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(saved)
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(partialRestore)
 
     const restored = await new SessionPreferenceStore(path).load([
       { id: '$1', name: 'other' },
       { id: '$2', name: 'work' },
-    ])
+    ], '2:2')
     expect(restored).toEqual({
       version: 1,
       groups: [{ id: 'work', name: 'Work', sessionIds: ['$2'] }],
       ungroupedSessionIds: ['$1'],
       sessionNamesById: { '$1': 'other', '$2': 'work' },
+      serverId: '2:2',
     })
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(restored)
   })

@@ -261,7 +261,7 @@ describe('ChatConversationsApi', () => {
     expect(result).toMatchObject({ status: 200, body: { conversations: [{ session: { id: '$8', name: 'vivi', group: groupingMode === 'manual' ? 'Subscriptions' : 'commando' } }] } })
     expect(load).toHaveBeenCalledWith([
       { id: '$8', name: 'vivi', windowIds: ['@1'] }, { id: '$1', name: 'scratch', windowIds: ['@1'] },
-    ])
+    ], undefined)
     expect(replace).not.toHaveBeenCalled()
     expect(await readFile(path, 'utf8')).toBe(stored)
     expect(await stat(path)).toMatchObject({ mtimeMs: before.mtimeMs, ino: before.ino })
