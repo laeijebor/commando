@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  autoSessionName,
   CHAT_PERMISSION_MODES,
   chatPermissionModes,
   isChatLaunchProvider,
@@ -443,6 +444,15 @@ function parseCreatedTarget(output: string, kind: TmuxCreatedTarget['kind']): Tm
   }
 }
 
+const AUTO_NAME_ATTEMPTS = 20
+
+/** The names an auto-named session tries in turn: the hint or the prompt's first words, then -2, -3… */
+function autoNameCandidates(hint: unknown, agent: SessionAgentLaunch | undefined): string[] {
+  if (hint !== undefined && typeof hint !== 'string') throw new Error('session name must be a string')
+  const base = autoSessionName(hint ?? '') || autoSessionName(agent?.prompt ?? '') || 'chat'
+  return [base, ...Array.from({ length: AUTO_NAME_ATTEMPTS - 1 }, (_, index) => `${base}-${index + 2}`)]
+}
+
 export class TmuxCreator {
   private readonly launching = new Set<string>()
 
@@ -458,10 +468,12 @@ export class TmuxCreator {
 
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */
   async createSession(input: CreateTmuxSessionRequest, resumeCommand?: string): Promise<TmuxCreateResponse> {
-    const name = validatedName(input.name, 'session name', true)
+    if (input.autoName !== undefined && typeof input.autoName !== 'boolean') throw new Error('autoName must be a boolean')
+    const autoName = input.autoName === true
     const windowName = optionalName(input.windowName, 'window name')
     const cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
+    const names = autoName ? autoNameCandidates(input.name, agent) : [validatedName(input.name, 'session name', true)]
     if (input.empty !== undefined && typeof input.empty !== 'boolean') throw new Error('empty must be a boolean')
     const empty = input.empty === true
     if (empty && (agent || resumeCommand !== undefined)) throw new Error('An empty session cannot also start an agent')
@@ -470,37 +482,64 @@ export class TmuxCreator {
       ? { agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } }
       : {}
     if (input.worktree === undefined) {
+      const name = autoName ? await this.freeSessionName(names) : names[0]!
       const created = await this.newSession(name, windowName, cwd, undefined, agentArgv, empty)
       return { created, ...acknowledgment(created) }
     }
 
     if (!this.worktrees) throw new Error('Worktree creation is not available')
     if (!cwd) throw new Error('A working directory is required to create a worktree')
-    const branch = validatedName(input.worktree.branch, 'branch name')
+    // An auto-named session names its branch too, and must not borrow one that already exists.
+    const branchFromName = autoName && !input.worktree.branch
+    const chosenBranch = branchFromName ? undefined : validatedName(input.worktree.branch, 'branch name')
     const worktreePath = validatedPath(input.worktree.path)
     const prepareCommand = optionalPrepareCommand(input.worktree.prepareCommand)
-    if (await this.sessionExists(name)) throw new Error(`Session ${name} already exists`)
-
     const repo = await this.worktrees.probe(cwd)
     if (!repo.isRepo || !repo.mainRoot) {
       throw new GitWorktreeError('not-repo', `${cwd} is not inside a git repository`)
     }
-    const { worktree, rollback } = await this.worktrees.createWorktree({
-      mainRoot: repo.mainRoot,
-      branch,
-      path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch),
-      ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
-    })
+    for (const [index, name] of names.entries()) {
+      if (await this.sessionExists(name)) {
+        if (!autoName) throw new Error(`Session ${name} already exists`)
+        continue
+      }
+      const branch = chosenBranch ?? name
+      let created: CreateWorktreeResult
+      try {
+        created = await this.worktrees.createWorktree({
+          mainRoot: repo.mainRoot,
+          branch,
+          path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch),
+          ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
+          ...(branchFromName ? { newBranchOnly: true } : {}),
+        })
+      } catch (error) {
+        const taken = error instanceof GitWorktreeError && (error.kind === 'branch-exists' || error.kind === 'path-exists' || error.kind === 'branch-checked-out')
+        if (branchFromName && taken && index < names.length - 1) continue
+        throw error
+      }
+      const target = await this.sessionInWorktree(name, windowName, created, prepareCommand, agentArgv, empty)
+      return { created: target, worktree: created.worktree, ...acknowledgment(target) }
+    }
+    throw new Error(`Every name tried for this session is taken (${names[0]}…)`)
+  }
+
+  private async freeSessionName(names: readonly string[]): Promise<string> {
+    for (const name of names) if (!await this.sessionExists(name)) return name
+    throw new Error(`Every name tried for this session is taken (${names[0]}…)`)
+  }
+
+  /** Starts the session in a worktree just created, removing the worktree again if tmux fails. */
+  private async sessionInWorktree(
+    name: string,
+    windowName: string | undefined,
+    { worktree, rollback }: CreateWorktreeResult,
+    prepareCommand: string | undefined,
+    agentArgv: string[] | undefined,
+    empty: boolean,
+  ): Promise<TmuxCreatedTarget> {
     try {
-      const created = await this.newSession(
-        name,
-        windowName,
-        worktree.path,
-        prepareCommand,
-        agentArgv,
-        empty,
-      )
-      return { created, worktree, ...acknowledgment(created) }
+      return await this.newSession(name, windowName, worktree.path, prepareCommand, agentArgv, empty)
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       if (await this.sessionExists(name)) {

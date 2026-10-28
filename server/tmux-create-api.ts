@@ -8,6 +8,7 @@ const WORKTREE_ERROR_STATUS: Record<GitWorktreeErrorKind, number> = {
   'bad-path': 400,
   'not-repo': 400,
   'branch-checked-out': 409,
+  'branch-exists': 409,
   'path-exists': 409,
   exec: 502,
 }

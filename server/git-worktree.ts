@@ -13,7 +13,7 @@ const REMOTE = 'origin'
 /** Conservative subset of `git check-ref-format --branch`. */
 const BRANCH_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u
 
-export type GitWorktreeErrorKind = 'bad-branch' | 'bad-path' | 'branch-checked-out' | 'path-exists' | 'not-repo' | 'exec'
+export type GitWorktreeErrorKind = 'bad-branch' | 'bad-path' | 'branch-checked-out' | 'branch-exists' | 'path-exists' | 'not-repo' | 'exec'
 
 export class GitWorktreeError extends Error {
   constructor(readonly kind: GitWorktreeErrorKind, message: string) {
@@ -28,6 +28,8 @@ export type CreateWorktreeInput = {
   path: string
   defaultBranch?: string
   remote?: string
+  /** Refuse an existing branch instead of reusing it: the name was picked for the caller, not chosen. */
+  newBranchOnly?: boolean
 }
 
 export type CreateWorktreeResult = {
@@ -155,6 +157,7 @@ export class GitWorktreeService {
     const cwd = input.mainRoot
 
     const branchExists = await this.refExists(cwd, `refs/heads/${branch}`)
+    if (branchExists && input.newBranchOnly) throw new GitWorktreeError('branch-exists', `Branch ${branch} already exists`)
     const worktrees = branchExists || await this.pathExists(target)
       ? parseWorktreeList((await this.git(cwd, ['worktree', 'list', '--porcelain'])).stdout)
       : []

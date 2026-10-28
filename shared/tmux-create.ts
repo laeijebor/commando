@@ -187,7 +187,13 @@ export type CreateTmuxSessionWorktree = {
 }
 
 export type CreateTmuxSessionRequest = {
+  /** With `autoName`, only a hint (possibly empty). */
   name: string
+  /**
+   * Let the daemon pick the name: `name` (or else the opening prompt's first words) made unique
+   * among sessions. A worktree with no branch is then named after it, on a new branch only.
+   */
+  autoName?: boolean
   windowName?: string
   cwd?: string
   worktree?: CreateTmuxSessionWorktree
@@ -362,4 +368,15 @@ export type ModelCatalogs = Record<string, ModelCatalogEntry>
 /** Claude lists differ per login, so each profile keeps its own; other providers have one login. */
 export function modelCatalogKey(provider: ChatProvider, configDir?: string): string {
   return provider === 'claude' && configDir ? `claude:${configDir}` : provider
+}
+
+const AUTO_NAME_WORDS = 6
+const AUTO_NAME_LENGTH = 40
+
+/** A tmux-safe kebab name from free text (a model's suggestion or a prompt), or '' when nothing is left. */
+export function autoSessionName(text: string): string {
+  // The first sentence of the first line says what it's about; the rest is detail.
+  const sentence = text.trim().split(/\n|[.!?](?:\s|$)/u, 1)[0] ?? ''
+  const words = sentence.split(/\s+/u).slice(0, AUTO_NAME_WORDS).join(' ')
+  return sanitizeBranchName(words).replace(/\./gu, '-').slice(0, AUTO_NAME_LENGTH).replace(/-+$/u, '')
 }

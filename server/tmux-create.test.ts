@@ -854,6 +854,59 @@ describe('TmuxCreator worktree-backed sessions', () => {
   })
 })
 
+describe('auto-named sessions', () => {
+  /** tmux runner where only the named sessions exist. */
+  const tmuxWith = (existing: string[]) => vi.fn(async (args: readonly string[]): Promise<string> => {
+    if (args.includes('has-session')) {
+      if (existing.includes(String(args.at(-1)).slice(1))) return ''
+      throw new Error("can't find session")
+    }
+    return output()
+  })
+  const sessionName = (run: ReturnType<typeof tmuxWith>) => {
+    const args = run.mock.calls.find(([call]) => call.includes('new-session'))![0]
+    return args[args.indexOf('-s') + 1]
+  }
+
+  it("names a session after the hint, else the prompt's first words, and makes it unique", async () => {
+    const run = tmuxWith(['fix-the-flaky-login-test', 'fix-the-flaky-login-test-2'])
+    const creator = new TmuxCreator(run, [], undefined, async () => '/never', {})
+    await creator.createSession({ name: '', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', prompt: 'Fix the flaky login test. It fails on CI about once a day' } })
+    expect(sessionName(run)).toBe('fix-the-flaky-login-test-3')
+    const hinted = tmuxWith([])
+    await new TmuxCreator(hinted, [], undefined, async () => '/never', {}).createSession({ name: 'Quick chat: v2.0', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', prompt: 'ignored' } })
+    expect(sessionName(hinted)).toBe('quick-chat-v2-0')
+    const imageOnly = tmuxWith([])
+    await new TmuxCreator(imageOnly, [], undefined, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', images: [{ id: `${'e'.repeat(64)}.png` }] } })
+    expect(sessionName(imageOnly)).toBe('chat')
+  })
+
+  it('names the worktree branch after the session and never reuses an existing branch', async () => {
+    const run = tmuxWith([])
+    const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => {
+      if (input.branch === 'tidy-readme') throw new GitWorktreeError('branch-exists', 'Branch tidy-readme already exists')
+      return { worktree: { path: input.path, branch: input.branch, base: 'origin/main', reusedBranch: false }, rollback: async () => {} }
+    })
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
+    const result = await new TmuxCreator(run, [], git, async () => '/never', {}).createSession({
+      name: '', autoName: true, cwd: '/repo', worktree: { branch: '' }, agent: { provider: 'claude-chat', prompt: 'Tidy README' },
+    })
+    expect(createWorktree.mock.calls.map(([input]) => [input.branch, input.newBranchOnly])).toEqual([['tidy-readme', true], ['tidy-readme-2', true]])
+    expect(result.worktree?.branch).toBe('tidy-readme-2')
+    expect(sessionName(run)).toBe('tidy-readme-2')
+  })
+
+  it('keeps a branch the user typed, and refuses a taken name when not auto-named', async () => {
+    const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => ({ worktree: { path: input.path, branch: input.branch, base: '', reusedBranch: true }, rollback: async () => {} }))
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
+    await new TmuxCreator(tmuxWith([]), [], git, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/repo', worktree: { branch: 'mine' }, agent: { provider: 'claude-chat', prompt: 'Go' } })
+    expect(createWorktree).toHaveBeenCalledWith(expect.not.objectContaining({ newBranchOnly: true }))
+    expect(createWorktree.mock.calls[0]![0].branch).toBe('mine')
+    await expect(new TmuxCreator(tmuxWith(['taken']), [], git, async () => '/never', {}).createSession({ name: 'taken', cwd: '/repo', worktree: { branch: 'b' } })).rejects.toThrow(/already exists/)
+    await expect(new TmuxCreator(tmuxWith([]), [], git, async () => '/never', {}).createSession({ name: '', cwd: '/tmp' })).rejects.toThrow(/session name/)
+  })
+})
+
 describe('Claude chat launches', () => {
   const home = process.env.HOME ?? '/Users/test'
 
