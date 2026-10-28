@@ -13,7 +13,7 @@ function Pill({ children, title }: { children: ReactNode; title?: string }) {
   return <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={title}>{children}</span>
 }
 
-function PillTrigger({ label, open, disabled }: { label: string; open: boolean; disabled: boolean }) {
+export function PillTrigger({ label, open, disabled }: { label: string; open: boolean; disabled: boolean }) {
   return (
     <PopoverTrigger
       disabled={disabled}
@@ -28,11 +28,11 @@ function PillTrigger({ label, open, disabled }: { label: string; open: boolean; 
   )
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
+export function SectionLabel({ children }: { children: ReactNode }) {
   return <h5 className="mx-2 mt-1 mb-0.5 text-2xs font-semibold uppercase tracking-wide text-icon-muted">{children}</h5>
 }
 
-function MenuOption({ checked, label, description, onSelect }: { checked: boolean; label: string; description?: string; onSelect: () => void }) {
+export function MenuOption({ checked, label, description, onSelect }: { checked: boolean; label: string; description?: string; onSelect: () => void }) {
   return (
     <button
       type="button"

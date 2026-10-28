@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chatLaunchPermission, chatPermissionModes, sanitizeBranchName, sessionAgentArgv } from './tmux-create.js'
+import { chatImageArg, chatLaunchPermission, chatPermissionModes, parseChatImageArg, sanitizeBranchName, sessionAgentArgv } from './tmux-create.js'
 
 describe('interactive agent arguments', () => {
   it.each([['claude', 'claude'], ['codex', 'codex'], ['opencode', 'opencode'], ['cursor', 'agent']] as const)('maps %s to its actual CLI', (provider, command) => {
@@ -23,6 +23,17 @@ describe('interactive agent arguments', () => {
     expect(sessionAgentArgv({ provider: 'claude', prompt: 'Fix' })).toEqual(['claude', '--', ' Fix'])
     expect(sessionAgentArgv({ provider: 'codex', prompt: 'Fix' })).toEqual(['codex', '--', 'Fix'])
     expect(sessionAgentArgv({ provider: 'opencode', prompt: 'Fix' })).toEqual(['opencode', '--prompt=Fix'])
+  })
+  it('starts terminal Claude and Codex on a chosen model, with or without a prompt', () => {
+    expect(sessionAgentArgv({ provider: 'claude', model: 'sonnet' })).toEqual(['claude', '--model', 'sonnet'])
+    expect(sessionAgentArgv({ provider: 'claude', model: 'sonnet', prompt: 'Fix' })).toEqual(['claude', '--model', 'sonnet', '--', ' Fix'])
+    expect(sessionAgentArgv({ provider: 'codex', model: 'gpt-6.1-sol', prompt: 'Fix' })).toEqual(['codex', '--model', 'gpt-6.1-sol', '--', 'Fix'])
+  })
+  it('round-trips image ids and names through --image, splitting at the first colon', () => {
+    const id = `${'c'.repeat(64)}.png`
+    expect(parseChatImageArg(chatImageArg({ id, name: 'a: b.png' }))).toEqual({ id, name: 'a: b.png' })
+    expect(parseChatImageArg(chatImageArg({ id }))).toEqual({ id })
+    expect(sessionAgentArgv({ provider: 'codex-chat', images: [{ id }], prompt: '' })).toEqual(['commando-agent', 'codex', '--permission-mode', 'default', '--image', id])
   })
 })
 

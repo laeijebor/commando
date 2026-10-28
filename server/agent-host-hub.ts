@@ -18,6 +18,7 @@ import {
   type ChatItem,
   type ChatQueueAction,
   type ChatSendOptions,
+  type ChatSessionInfo,
   type ChatSettingsChange,
   type ChatSubagentTranscript,
   type ChatSwitchAction,
@@ -63,6 +64,8 @@ export type ChatInteractions = {
 }
 
 type HubDependencies = {
+  /** Each chat's session info as it starts or changes (the model catalog keeps its model list). */
+  onSessionInfo?: (session: ChatSessionInfo) => void
   paneExists: (paneId: string) => boolean
   targetIdFor: (paneId: string) => string | undefined
   broadcast: (message: ServerMessage) => void
@@ -251,6 +254,7 @@ export class AgentHostHub {
           hadTurn: state.items.some((item) => item.kind === 'user_message'),
         }
         this.chats.set(paneId, entry)
+        this.dependencies.onSessionInfo?.(message.session)
         if (known) {
           this.dependencies.broadcast({ type: 'chat_state', chat: state })
           this.syncInteractions(paneId, entry, state.items, true)
@@ -268,6 +272,7 @@ export class AgentHostHub {
           if (this.dependencies.handoffs?.discard(message.session.sessionId)) this.dependencies.onHandoffsChange?.()
         }
         entry.state = { ...entry.state, session: message.session }
+        this.dependencies.onSessionInfo?.(message.session)
         if (entry.visible) {
           this.dependencies.broadcast({ type: 'chat_session', paneId: message.session.paneId, session: message.session, hostConnected: true })
           this.reportStatus(message.session.paneId, entry)

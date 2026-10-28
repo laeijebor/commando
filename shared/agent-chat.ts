@@ -739,7 +739,8 @@ function finiteCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
-function parseModels(value: unknown): ChatModelOption[] | undefined {
+/** Model options from untrusted JSON (a host's session info, the model catalog file). */
+export function parseChatModelOptions(value: unknown): ChatModelOption[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.slice(0, 64).flatMap((model) => {
     if (!isRecord(model) || !isModelValue(model.value) || typeof model.displayName !== 'string') return []
@@ -1074,7 +1075,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (value.selectedModel !== undefined && !isModelValue(value.selectedModel)) return null
   if (value.effort !== undefined && !isChatEffort(value.effort)) return null
   const login = parseChatLogin(value.login)
-  const models = parseModels(value.models)
+  const models = parseChatModelOptions(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
   const planUsage = parsePlanUsage(value.planUsage)
   const queue = parseQueue(value.queue)

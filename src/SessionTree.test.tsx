@@ -7,6 +7,7 @@ import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
 import type { TmuxCreatedTarget } from '../shared/tmux-create'
 import { deriveSessionIdentity } from '../shared/session-identity'
 import { SessionTree, type SessionActions } from './SessionTree'
+import { openWorkspace } from './newSessionTestHelpers'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import type { PrsApiClient, PanePrSummary } from './prsApi'
 import type { SessionTreePreferences } from './sessionManagementApi'
@@ -30,6 +31,8 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 beforeEach(() => {
+  // Creation tests here are about groups, not agents: start sessions on Nothing as before.
+  window.localStorage.setItem('commando.tmux-create.start-with-by-repo', JSON.stringify({ '*': 'none' }))
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ command: '' })))
   vi.clearAllMocks()
   sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [], groupingMode: 'manual' })
@@ -382,7 +385,8 @@ describe('SessionTree', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in GIZMO' }))
     const dialog = await screen.findByRole('dialog', { name: 'New session' })
-    expect(within(dialog).getByText('GIZMO')).toBeVisible()
+    expect(within(dialog).getByText('Session group · GIZMO')).toBeVisible()
+    openWorkspace(dialog)
     expect(within(dialog).getByRole('combobox', { name: /Working directory/ })).toHaveValue('/Users/dev/gizmo')
     fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'new-gizmo-work' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
@@ -847,7 +851,8 @@ describe('SessionTree', () => {
       renderTree({ creation: { onCreateSession } })
       fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
       const dialog = await screen.findByRole('dialog', { name: 'New session' })
-      expect(within(dialog).getByText('Save-All')).toBeVisible()
+      expect(within(dialog).getByText('Repository · Save-All')).toBeVisible()
+      openWorkspace(dialog)
       const directory = within(dialog).getByRole('combobox', { name: /Working directory/ })
       expect(directory).toHaveValue(SAVE_ALL.root)
       expect(within(dialog).getByLabelText('Session name')).toHaveFocus()
@@ -1218,6 +1223,7 @@ describe('repository sub-groups', () => {
     setup({ creation: { onCreateSession, onCreated } })
     fireEvent.click(await screen.findByRole('button', { name: 'New session in Landing' }))
     const dialog = await screen.findByRole('dialog', { name: 'New session' })
+    openWorkspace(dialog)
     expect(within(dialog).getByRole('combobox', { name: /Working directory/ })).toHaveValue(repo.root)
     fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'new-work' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))

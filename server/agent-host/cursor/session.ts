@@ -8,7 +8,7 @@ import {
 } from '../../../shared/agent-chat.js'
 import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents } from '../provider.js'
-import type { AgentSessionSpec } from '../session.js'
+import { hasInitialTurn, type AgentSessionSpec } from '../session.js'
 import { CursorItemMapper, record, string } from './items.js'
 import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from './sdk.js'
 
@@ -183,7 +183,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.listeners.commands.forEach((listener) => listener(this.commands))
   }
   private sendInitialPrompt(): void {
-    if (!this.closing && this.readyToSend && this.spec.initialPrompt && !this.initialSent) { this.initialSent = true; this.send(this.spec.initialPrompt) }
+    if (!this.closing && this.readyToSend && hasInitialTurn(this.spec) && !this.initialSent) { this.initialSent = true; this.send(this.spec.initialPrompt ?? '', this.spec.initialImages) }
   }
   private authRequired(): void {
     const reason = this.spec.env.CURSOR_API_KEY
