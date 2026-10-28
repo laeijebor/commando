@@ -4,10 +4,11 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
-import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId, providerName, isChatEffort, isChatPermissionMode, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatProvider, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat.js'
+import { AGENT_HOST_WS_PATH, MAX_CHAT_IMAGES, isChatAttachmentId, type ChatImageRef, isChatProvider, isChatVideoId, providerName, isChatEffort, isChatPermissionMode, isModelValue, isPaneId, type ChatEffort, type ChatItem, type ChatProvider, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { ChatImageStore } from '../chat-images.js'
 import { isChatPlanDir } from '../chat-plans-dir.js'
+import { parseChatImageArg } from '../../shared/tmux-create.js'
 import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
 import { createChatProviderSession } from './factory.js'
@@ -37,6 +38,7 @@ Options:
                                    Allow switching to bypassPermissions later in the chat
   --claude-path PATH               Claude Code executable (default: claude on PATH)
   --readable-dir DIR               Let Claude read DIR without asking (a stashed plan's folder only)
+  --image ID[:NAME]                Send an uploaded image or video with the first message (repeatable)
   --prompt TEXT                    Send TEXT as the first message
   --from-claude-code               Claude Code just handed this conversation back (Commando's switch)
 `
@@ -63,6 +65,8 @@ export interface HostArgs {
   /** A stashed plan's folder this chat (only) may read. */
   readableDir?: string
   prompt?: string
+  /** Uploaded attachments sent with the first message. */
+  images?: ChatImageRef[]
   /** Started by Commando's switch when Claude Code exited; never carried into restarts. */
   fromClaudeCode?: boolean
   /** Muse only: run without Muse's sandbox. An explicit flag, so commands from before it existed stay sandboxed. */
@@ -102,6 +106,13 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
           break
         }
         case '--prompt': args.prompt = needValue(true); break
+        case '--image': {
+          const image = parseChatImageArg(needValue())
+          if (!isChatAttachmentId(image.id)) return `Invalid image id: ${image.id}\n\n${USAGE}`
+          if ((args.images?.length ?? 0) >= MAX_CHAT_IMAGES) return `At most ${MAX_CHAT_IMAGES} images\n\n${USAGE}`
+          args.images = [...(args.images ?? []), image]
+          break
+        }
         case '--from-claude-code': args.fromClaudeCode = true; break
         case '--fast': args.fast = true; break
         case '--yolo':
@@ -284,6 +295,7 @@ async function main(): Promise<void> {
       ...(parsed.bypassAllowed ? { bypassAllowed: true } : {}),
       ...(parsed.claudePath ? { claudePath: parsed.claudePath } : {}),
       ...(parsed.prompt ? { initialPrompt: parsed.prompt } : {}),
+      ...(parsed.images ? { initialImages: parsed.images } : {}),
       ...(resumeCommand ? { resumeCommand } : {}),
       ...(hostBuild ? { hostBuild } : {}),
       images: new ChatImageStore(undefined, (message) => write(dim(message))),

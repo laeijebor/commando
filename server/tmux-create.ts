@@ -25,6 +25,7 @@ import {
   type SessionAgentLaunchAcknowledgment,
 } from '../shared/tmux-create.js'
 import { isChatConversationSessionId } from '../shared/chat-conversations.js'
+import { isModelValue, parseChatImageRefs } from '../shared/agent-chat.js'
 import { isChatPlanDir } from './chat-plans-dir.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 
@@ -151,16 +152,22 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess, model, images } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown; model?: unknown; images?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (!isChatLaunchProvider(provider) && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
-    throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
+  if (!isChatLaunchProvider(provider) && (permissionMode !== undefined || readableDir !== undefined)) {
+    throw new Error('Only a chat accepts a permission mode and readable folder')
   }
+  if (configDir !== undefined && !isChatLaunchProvider(provider) && provider !== 'claude') throw new Error('Only Claude accepts a profile')
+  if (model !== undefined && (!isModelValue(model) || (!isChatLaunchProvider(provider) && provider !== 'claude' && provider !== 'codex'))) {
+    throw new Error('Only a chat, Claude or Codex accepts a model id')
+  }
+  const imageRefs = images === undefined ? undefined : parseChatImageRefs(images)
+  if (images !== undefined && (!imageRefs || !isChatLaunchProvider(provider))) throw new Error('Only a chat accepts up to 10 attached images')
   if (resume !== undefined && !isChatLaunchProvider(provider) && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (fullAccess !== undefined && (fullAccess !== true || provider !== 'muse-chat' || permissionMode !== 'bypassPermissions')) throw new Error('Only a Muse chat in bypassPermissions can ask for full access')
@@ -181,6 +188,8 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     provider: provider as SessionAgentLaunch['provider'],
     ...(typeof prompt === 'string' ? { prompt } : {}),
     ...(typeof configDir === 'string' ? { configDir } : {}),
+    ...(typeof model === 'string' ? { model } : {}),
+    ...(imageRefs?.length ? { images: imageRefs } : {}),
     ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
     ...(typeof readableDir === 'string' ? { readableDir } : {}),
     ...(typeof resume === 'string' ? { resume } : {}),
@@ -545,6 +554,8 @@ export class TmuxCreator {
     argv[0] = isChatLaunchProvider(agent.provider)
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
+    // Terminal Claude picks its login the way `claudep`-style aliases do: from the environment.
+    if (agent.provider === 'claude' && agent.configDir) return ['/usr/bin/env', `CLAUDE_CONFIG_DIR=${agent.configDir}`, ...argv]
     return argv
   }
 

@@ -363,6 +363,13 @@ describe('commando-agent prompt parsing', () => {
     expect(parseHostArgs(['claude', '--prompt', '--- yaml notes'], {})).toMatchObject({ prompt: '--- yaml notes' })
     expect(parseHostArgs(['claude', '--prompt'], {})).toMatch(/needs a value/)
   })
+
+  it('takes uploaded images for the opening prompt and refuses anything that is not an upload id', () => {
+    const id = `${'d'.repeat(64)}.png`
+    expect(parseHostArgs(['claude', '--image', `${id}:shot.png`, '--image', id, '--prompt', 'look'], {})).toMatchObject({ images: [{ id, name: 'shot.png' }, { id }], prompt: 'look' })
+    expect(parseHostArgs(['claude', '--image', '../secret.png'], {})).toMatch(/Invalid image id/)
+    expect(parseHostArgs(['claude', ...Array.from({ length: 11 }, () => ['--image', id]).flat()], {})).toMatch(/At most 10/)
+  })
 })
 
 describe('AgentSession resume replay', () => {
@@ -954,6 +961,21 @@ describe('AgentSession richer input', () => {
     expect(fake.prompts[1]!.message.content).toBe('and a follow-up')
     const users = [...items.values()].filter((item) => item.kind === 'user_message')
     expect(users[0]).toMatchObject({ text: 'what is this?', images: [{ id: imageId, name: 'pane.png' }] })
+  })
+
+  it('sends the images a launch was given with its opening prompt, or on their own', async () => {
+    const { fake, items } = started({ images, initialPrompt: 'what is this?', initialImages: [{ id: imageId, name: 'shot.png' }] })
+    await tick()
+    await tick()
+    expect(fake.prompts[0]!.message.content).toEqual([
+      expect.objectContaining({ type: 'image' }),
+      { type: 'text', text: expect.stringMatching(/^what is this\?\n\n\[Attached image "shot.png"/) },
+    ])
+    expect([...items.values()].find((item) => item.kind === 'user_message')).toMatchObject({ images: [{ id: imageId, name: 'shot.png' }] })
+    const alone = started({ images, initialImages: [{ id: imageId }] })
+    await tick()
+    await tick()
+    expect(alone.fake.prompts).toHaveLength(1)
   })
 
   it('gives Claude only its own session folder, never the whole image store', async () => {

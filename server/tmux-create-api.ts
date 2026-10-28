@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { ClaudeProfile, TmuxCreateResponse } from '../shared/tmux-create.js'
+import type { ClaudeProfile, ModelCatalogs, TmuxCreateResponse } from '../shared/tmux-create.js'
 import { GitWorktreeError, type GitWorktreeErrorKind } from './git-worktree.js'
 import { listClaudeProfiles, TmuxCreateCommandError, TmuxCreator } from './tmux-create.js'
 
@@ -59,10 +59,16 @@ export async function handleTmuxCreateApi(
   onCreated: () => Promise<void>,
   /** The profiles pickers offer; Settings can label, default and hide them. */
   claudeProfiles: () => Promise<ClaudeProfile[]> = listClaudeProfiles,
+  /** The model lists the New session modal offers, remembered from earlier chats. */
+  modelCatalogs: () => Promise<ModelCatalogs> = async () => ({}),
 ): Promise<boolean> {
   if (!url.pathname.startsWith(`${ROOT}/`)) return false
   if (url.pathname === `${ROOT}/claude-profiles` && request.method === 'GET') {
     json(response, 200, { profiles: (await claudeProfiles()).map(({ name, configDir, lastUsedAt, label, isDefault }) => ({ name, configDir, ...(lastUsedAt === undefined ? {} : { lastUsedAt }), ...(label ? { label } : {}), ...(isDefault ? { isDefault } : {}) })) })
+    return true
+  }
+  if (url.pathname === `${ROOT}/models` && request.method === 'GET') {
+    json(response, 200, { catalogs: await modelCatalogs() })
     return true
   }
   if (request.method !== 'POST') {

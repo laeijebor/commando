@@ -1,9 +1,10 @@
-import type { ChatProvider } from './agent-chat.js'
+import type { ChatImageRef, ChatModelOption, ChatProvider } from './agent-chat.js'
 export const TMUX_CREATE_ROUTES = {
   session: '/api/tmux/sessions',
   window: '/api/tmux/windows',
   pane: '/api/tmux/panes',
   claudeProfiles: '/api/tmux/claude-profiles',
+  models: '/api/tmux/models',
   launch: '/api/tmux/panes/launch',
 } as const
 
@@ -34,8 +35,12 @@ export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPer
 export type SessionAgentLaunch = {
   provider: SessionAgentProvider
   prompt?: string
-  /** claude-chat only: the Claude config dir (`~/.claudep`, `~/.claudew`) that picks the login. */
+  /** claude-chat and claude: the Claude config dir (`~/.claudep`, `~/.claudew`) that picks the login. */
   configDir?: string
+  /** Chat providers, claude and codex: the model to start on (a picker value such as `sonnet` or `gpt-6.1-sol`). */
+  model?: string
+  /** Chat providers only: images or videos (uploaded to /api/chat/images) sent with the opening prompt. */
+  images?: ChatImageRef[]
   /** Chat providers only. */
   permissionMode?: ChatPermissionMode
   /** claude-chat only: one stashed plan's folder, which this chat alone may read. */
@@ -137,25 +142,38 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       executable,
       chatHostProvider(launch.provider),
       ...(launch.provider === 'claude-chat' && launch.configDir ? ['--config-dir', launch.configDir] : []),
+      ...(launch.model ? ['--model', launch.model] : []),
       '--permission-mode', launch.permissionMode ?? (launch.provider === 'cursor-chat' ? 'bypassPermissions' : 'default'),
       ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
       // Muse full access must be named: a bare bypassPermissions from before it existed stays sandboxed.
       ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' && launch.fullAccess === true ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),
+      ...(launch.images ?? []).flatMap((image) => ['--image', chatImageArg(image)]),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]
   }
   if (launch.provider === 'cursor' && launch.resume) return [executable, `--resume=${launch.resume}`]
   if (launch.provider === 'opencode' && launch.resume) return [executable, '-s', launch.resume]
-  if (!launch.prompt?.trim()) return [executable]
+  const model = launch.model && (launch.provider === 'claude' || launch.provider === 'codex') ? ['--model', launch.model] : []
+  if (!launch.prompt?.trim()) return [executable, ...model]
   if (launch.provider === 'opencode') return [executable, `--prompt=${launch.prompt}`]
   // Claude's Commander parser dispatches exact command names even after `--`.
   // An inert leading space keeps arbitrary prompts in the interactive action.
-  if (launch.provider === 'claude') return [executable, '--', ` ${launch.prompt}`]
+  if (launch.provider === 'claude') return [executable, ...model, '--', ` ${launch.prompt}`]
   return launch.provider === 'cursor'
     ? [executable, 'agent', '--', launch.prompt]
-    : [executable, '--', launch.prompt]
+    : [executable, ...model, '--', launch.prompt]
+}
+
+/** `--image ID` or `--image ID:NAME`: ids never contain a colon, so the first one splits them. */
+export function chatImageArg(image: ChatImageRef): string {
+  return image.name ? `${image.id}:${image.name}` : image.id
+}
+
+export function parseChatImageArg(value: string): ChatImageRef {
+  const split = value.indexOf(':')
+  return split < 0 ? { id: value } : { id: value.slice(0, split), name: value.slice(split + 1) }
 }
 
 /** Ask the daemon to branch and add a git worktree before starting the session in it. */
@@ -334,4 +352,14 @@ export function sanitizeBranchName(name: string): string {
 export function defaultWorktreePath(mainRoot: string, branch: string): string {
   const root = mainRoot.replace(/\/+$/u, '')
   return `${root}-worktrees/${branch}`
+}
+
+/** A provider's model list as last seen: from its most recent chat, or Codex's own cache. */
+export type ModelCatalogEntry = { models: ChatModelOption[]; updatedAt: number }
+/** Keyed by `modelCatalogKey`. */
+export type ModelCatalogs = Record<string, ModelCatalogEntry>
+
+/** Claude lists differ per login, so each profile keeps its own; other providers have one login. */
+export function modelCatalogKey(provider: ChatProvider, configDir?: string): string {
+  return provider === 'claude' && configDir ? `claude:${configDir}` : provider
 }

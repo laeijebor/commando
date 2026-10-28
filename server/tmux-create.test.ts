@@ -904,6 +904,38 @@ describe('Claude chat launches', () => {
     expect(args.at(-1)).toContain(COMMANDO_AGENT_LAUNCHER)
   })
 
+  it('starts a chat on the chosen model with its pasted images, before the prompt', async () => {
+    const run = runner()
+    const image = `${'a'.repeat(64)}.png`
+    await new TmuxCreator(run, [], undefined, async () => '/never', { PATH: '/bin' }).createSession({
+      name: 'quick', cwd: '/tmp',
+      agent: { provider: 'claude-chat', configDir: `${home}/.claudep`, model: 'sonnet', permissionMode: 'default', images: [{ id: image, name: 'shot: one.png' }], prompt: 'What is this?' },
+    })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([
+      COMMANDO_AGENT_LAUNCHER, 'claude', '--config-dir', `${home}/.claudep`, '--model', 'sonnet', '--permission-mode', 'default', '--image', `${image}:shot: one.png`, '--prompt', 'What is this?',
+    ], undefined, { PATH: '/bin' }))
+  })
+
+  it('starts terminal Claude on a profile and model the way claudep-style aliases do', async () => {
+    const run = runner()
+    await new TmuxCreator(run, [], undefined, async () => '/bin/claude', { PATH: '/bin' }).createSession({
+      name: 'term', cwd: '/tmp', agent: { provider: 'claude', configDir: `${home}/.claudew`, model: 'opus', prompt: 'Hi' },
+    })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([
+      '/usr/bin/env', `CLAUDE_CONFIG_DIR=${home}/.claudew`, '/bin/claude', '--model', 'opus', '--', ' Hi',
+    ], undefined, { PATH: '/bin' }))
+  })
+
+  it('refuses images outside chats, malformed images and bad model ids', async () => {
+    const creator = new TmuxCreator(runner(), [], undefined, async () => '/bin/claude', {})
+    const image = { id: `${'b'.repeat(64)}.png` }
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', images: [image] } })).rejects.toThrow(/Only a chat accepts/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', images: [{ id: '../etc/passwd' }] } })).rejects.toThrow(/images/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', images: Array.from({ length: 11 }, () => image) } })).rejects.toThrow(/images/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', model: '--yolo' } })).rejects.toThrow(/model/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'opencode', model: 'gpt' } })).rejects.toThrow(/model/)
+  })
+
   it("launches a chat with its stashed plan's folder ahead of the prompt", async () => {
     const run = runner()
     const dir = join(chatPlansDir(), 'f'.repeat(32))
@@ -922,11 +954,13 @@ describe('Claude chat launches', () => {
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', configDir: '/etc/passwd' } })).rejects.toThrow(/profile/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', configDir: `${home}/../.claudep` } })).rejects.toThrow(/profile/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', permissionMode: 'yolo' as never } })).rejects.toThrow(/permission/)
-    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', configDir: `${home}/.claudep` } })).rejects.toThrow(/Only Claude chat/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'codex', configDir: `${home}/.claudep` } })).rejects.toThrow(/Only Claude accepts a profile/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', configDir: '/etc/passwd' } })).rejects.toThrow(/profile/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', permissionMode: 'plan' } })).rejects.toThrow(/Only a chat/)
     // A chat may be handed one stashed plan's folder, never the plans folder or anything else.
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: chatPlansDir() } })).rejects.toThrow(/stashed plan folder/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: home } })).rejects.toThrow(/stashed plan folder/)
-    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', readableDir: join(chatPlansDir(), 'a'.repeat(32)) } })).rejects.toThrow(/Only Claude chat/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', readableDir: join(chatPlansDir(), 'a'.repeat(32)) } })).rejects.toThrow(/Only a chat/)
     expect(validClaudeConfigDir(`${home}/.claudep`)).toBe(true)
     expect(validClaudeConfigDir(`${home}/projects/.claude`)).toBe(false)
   })
