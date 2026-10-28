@@ -39,9 +39,26 @@ export class NamingFailure extends Error {
 export type NameRunner = (model: NamerModel, prompt: string, imagePaths: readonly string[], signal: AbortSignal) => Promise<string>
 
 const MAX_OUTPUT = 16_384
-const HARD_FAILURE = /not logged in|log ?in|unauthori[sz]ed|\b40[13]\b|invalid api key|credit balance|model[^\n]{0,60}(not found|not exist|not supported|unsupported|unknown|invalid)|unknown model|model_not_found/iu
+/**
+ * Failures that won't go away by trying again, with the reason Settings shows.
+ * Only these exact phrases count: the reason is ours, never a line of output,
+ * which can echo the user's prompt.
+ */
+const HARD_FAILURES: readonly [RegExp, string][] = [
+  [/not logged in|please (?:run )?\/?login|run `?(?:codex|claude) login|log in again|invalid api key|unauthori[sz]ed|\b401\b/iu, 'Not logged in'],
+  [/credit balance is too low|insufficient[_ ]quota/iu, 'Out of credit'],
+  [/model[_ ]not[_ ]found|unknown model|model[^\n]{0,60}\b(?:does not exist|is not supported|not available|isn't available)/iu, "The model isn't available to this login"],
+]
 
-function run(executable: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, signal: AbortSignal): Promise<string> {
+/** Why a CLI failed for good, judged on its output minus any line of the prompt it echoed. */
+export function hardFailureReason(output: string, prompt: string): string | null {
+  const echoed = new Set(prompt.split('\n').map((line) => line.trim()).filter(Boolean))
+  const lines = output.split('\n').map((line) => line.trim()).filter((line) => line && !echoed.has(line) && !prompt.includes(line))
+  for (const [pattern, reason] of HARD_FAILURES) if (lines.some((line) => pattern.test(line))) return reason
+  return null
+}
+
+function run(executable: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, signal: AbortSignal, prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { env, cwd, signal, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
@@ -51,11 +68,8 @@ function run(executable: string, args: string[], env: NodeJS.ProcessEnv, cwd: st
     child.once('error', reject)
     child.once('close', (code) => {
       if (code === 0) return resolve(stdout)
-      const output = `${stderr}\n${stdout}`
-      const line = output.split('\n').map((text) => text.trim()).find((text) => HARD_FAILURE.test(text))
-      reject(line
-        ? new NamingFailure('hard', line.slice(0, 200))
-        : new NamingFailure('soft', `exited with code ${code}`))
+      const reason = hardFailureReason(`${stderr}\n${stdout}`, prompt)
+      reject(reason ? new NamingFailure('hard', reason) : new NamingFailure('soft', `exited with code ${code}`))
     })
   })
 }
@@ -74,13 +88,13 @@ export function defaultNameRunner(env: NodeJS.ProcessEnv = process.env, resolveE
       if (model.provider === 'claude') {
         return await run(executable, [
           '-p', ...(model.model ? ['--model', model.model] : []), '--no-session-persistence', '--strict-mcp-config', '--tools', '', '--', prompt,
-        ], modelPrintEnv(env, model.configDir), dir, signal)
+        ], modelPrintEnv(env, model.configDir), dir, signal, prompt)
       }
       const output = join(dir, 'name.txt')
       await run(executable, [
         'exec', ...(model.model ? ['-m', model.model] : []), '--ephemeral', '--skip-git-repo-check', '-s', 'read-only', '--ignore-rules', '--ignore-user-config',
         '-c', 'model_reasoning_effort=low', '-C', dir, '-o', output, ...imagePaths.flatMap((path) => ['-i', path]), '--', prompt,
-      ], modelPrintEnv(env), dir, signal)
+      ], modelPrintEnv(env), dir, signal, prompt)
       return await readFile(output, 'utf8')
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -107,6 +121,10 @@ type Stored = { settings: SessionNamingSettings; failures: Record<string, Failur
 
 const TIMEOUTS_BEFORE_REST = 2
 const REST_MS = 60 * 60_000
+/** A remembered hard failure is tried again after this long even if nothing visibly changed. */
+const UNAVAILABLE_MS = 24 * 60 * 60_000
+/** With the chat's model to fall back on, the naming model gets this share of the wait. */
+const NAMING_MODEL_SHARE = 0.6
 const MAX_PROMPT = 4_000
 
 function modelKey(model: NamerModel): string {
@@ -138,9 +156,10 @@ export type SessionNamerOptions = {
 
 /** The login file whose change means a failed naming model is worth trying again. */
 export async function loginFingerprint(model: NamingModel, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
+  // Claude keeps its login in the Keychain on macOS; its account record lives in .claude.json.
   const file = model.provider === 'codex'
     ? join(env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
-    : join(model.configDir ?? join(homedir(), '.claude'), '.credentials.json')
+    : model.configDir ? join(model.configDir, '.claude.json') : join(homedir(), '.claude.json')
   return stat(file).then((info) => String(info.mtimeMs), () => undefined)
 }
 
@@ -202,9 +221,10 @@ export class SessionNamer {
     const failure = stored.failures[key]
     if (failure?.kind === 'unavailable') {
       const fingerprint = await this.options.fingerprint?.(model)
-      // A new login is worth another try.
-      if (failure.fingerprint === undefined || fingerprint === undefined || fingerprint === failure.fingerprint) {
-        return { state: 'unavailable', since: failure.since, reason: failure.reason }
+      // A new login is worth another try, and so is a day's wait.
+      const loginChanged = failure.fingerprint !== undefined && fingerprint !== undefined && fingerprint !== failure.fingerprint
+      if (!loginChanged && this.now() - failure.since < UNAVAILABLE_MS) {
+        return { state: 'unavailable', since: failure.since, reason: failure.reason, canRetry: true }
       }
       delete stored.failures[key]
       await this.save()
@@ -215,7 +235,7 @@ export class SessionNamer {
     if (model.provider === 'codex') {
       const listed = (await this.options.catalogs?.().catch(() => undefined))?.codex?.models
       if (listed && !listed.some((option) => option.value === model.model)) {
-        return { state: 'unavailable', since: this.now(), reason: `${model.model} isn't in Codex's model list on this machine` }
+        return { state: 'unavailable', since: this.now(), reason: `${model.model} isn't in Codex's model list on this machine; pick another model`, canRetry: false }
       }
     }
     const lastNamedAt = stored.lastNamedAt[key]
@@ -274,7 +294,9 @@ export class SessionNamer {
       if (!text && !images.length) continue
       const remaining = deadline - this.now()
       if (remaining < 500) break
-      const timeout = AbortSignal.timeout(remaining)
+      // Leave the chat's model time to answer if the naming model is slow.
+      const share = remember && attempts.length > 1 ? Math.min(remaining, settings.timeoutSeconds * 1000 * NAMING_MODEL_SHARE) : remaining
+      const timeout = AbortSignal.timeout(share)
       try {
         const name = nameFromReply(await this.run(model, namingPrompt(text, images.length), images, AbortSignal.any([signal, timeout])))
         if (remember) await this.succeeded(model)
@@ -302,7 +324,8 @@ export class SessionNamer {
     const key = modelKey(model)
     if (error === null) {
       const previous = stored.failures[key]
-      const count = (previous?.kind === 'timeouts' ? previous.count : 0) + 1
+      // A rest that has ended starts the count again.
+      const count = (previous?.kind === 'timeouts' && !(previous.until && previous.until <= this.now()) ? previous.count : 0) + 1
       stored.failures[key] = { kind: 'timeouts', count, ...(count >= TIMEOUTS_BEFORE_REST ? { until: this.now() + REST_MS } : {}) }
     } else if (error instanceof NamingFailure && error.kind === 'hard') {
       const fingerprint = await this.options.fingerprint?.(model)

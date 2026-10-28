@@ -785,8 +785,29 @@ describe('opening prompt first', () => {
     expect(onCreateSession.mock.calls[1]![0]).toMatchObject({ name: '', autoName: true })
   })
 
+  it('creates nothing when the dialog closes while the model names the session', async () => {
+    const onCreateSession = vi.fn(respond)
+    let answer!: (value: { name: string | null }) => void
+    const suggest = vi.fn((_request: unknown, signal?: AbortSignal) => new Promise<{ name: string | null }>((resolve, reject) => {
+      answer = resolve
+      signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} naming={{ suggest, describe: vi.fn(async () => { throw new Error('offline') }) }} uploads={{ uploadImage: vi.fn(async () => ({ id: `${'c'.repeat(64)}.png` })), uploadVideo: vi.fn() }} />)
+    const prompt = screen.getByLabelText('Opening prompt')
+    fireEvent.change(prompt, { target: { value: 'Go' } })
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    await screen.findByRole('button', { name: /^Naming with/ })
+    // A paste mid-naming would be left out of the session, so it is ignored.
+    fireEvent.paste(prompt, { clipboardData: { files: [png()] } })
+    expect(screen.queryByRole('button', { name: 'Open shot.png' })).not.toBeInTheDocument()
+    view.unmount()
+    await act(async () => { answer({ name: 'late' }) })
+    expect(suggest.mock.calls[0]![1]!.aborted).toBe(true)
+    expect(onCreateSession).not.toHaveBeenCalled()
+  })
+
   it("names with the chat's model when the naming model can't work here", async () => {
-    const describe = vi.fn(async () => ({ settings: { mode: 'naming-model' as const, namingModel: { provider: 'codex' as const, model: 'gpt-6-luna' }, timeoutSeconds: 10 }, status: { state: 'unavailable' as const, since: 1, reason: 'Not logged in' }, label: 'GPT-6-Luna' }))
+    const describe = vi.fn(async () => ({ settings: { mode: 'naming-model' as const, namingModel: { provider: 'codex' as const, model: 'gpt-6-luna' }, timeoutSeconds: 10 }, status: { state: 'unavailable' as const, since: 1, reason: 'Not logged in', canRetry: true }, label: 'GPT-6-Luna' }))
     render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn(respond)} naming={{ suggest: vi.fn(), describe }} />)
     fireEvent.change(screen.getByLabelText('Opening prompt'), { target: { value: 'Go' } })
     await waitFor(() => expect(screen.getByLabelText('Session name')).toHaveAttribute('placeholder', 'Auto · named by Claude'))

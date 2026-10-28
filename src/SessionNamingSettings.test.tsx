@@ -29,7 +29,7 @@ describe('Session naming settings', () => {
   it('switches model and mode, shows a failure with Try again, and saves the wait', async () => {
     const api: SessionNamingApi = {
       suggest: vi.fn(),
-      describe: vi.fn(async () => response({ status: { state: 'unavailable', since: Date.UTC(2026, 9, 28, 14, 2), reason: 'Not logged in' } })),
+      describe: vi.fn(async () => response({ status: { state: 'unavailable', since: Date.UTC(2026, 9, 28, 14, 2), reason: 'Not logged in', canRetry: true } })),
       update: vi.fn(async (change) => response({ settings: { ...response().settings, ...change } })),
       retry: vi.fn(async () => response()),
     }

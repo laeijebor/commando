@@ -273,6 +273,15 @@ export function TmuxCreateControls({
   const [namingInfo, setNamingInfo] = useState<SessionNamingResponse | null>(null)
   /** Set while a model names the session; pressing create again skips the wait. */
   const namingRef = useRef<AbortController | null>(null)
+  /** Set when the form goes away mid-naming (the dialog closed): the session is then not created. */
+  const unmountedRef = useRef(false)
+  useEffect(() => {
+    unmountedRef.current = false
+    return () => {
+      unmountedRef.current = true
+      namingRef.current?.abort()
+    }
+  }, [])
   const [namingWith, setNamingWith] = useState<string | null>(null)
   /** null follows whether something needs attention; true/false is the user's own choice. */
   const [workspaceChoice, setWorkspaceChoice] = useState<boolean | null>(null)
@@ -582,8 +591,9 @@ export function TmuxCreateControls({
         if (!controller.signal.aborted) console.warn('Unable to name the session', cause)
       } finally {
         namingRef.current = null
-        setNamingWith(null)
+        if (!unmountedRef.current) setNamingWith(null)
       }
+      if (unmountedRef.current) return
     }
     setPending(true)
     try {
@@ -649,7 +659,7 @@ export function TmuxCreateControls({
   // ⌘V anywhere in the form attaches images to the prompt; text pastes as usual.
   const onPaste = (event: ClipboardEvent<HTMLFormElement>) => {
     const files = [...event.clipboardData.files].filter(isAttachableFile)
-    if (!files.length || !promptAccepted) return
+    if (!files.length || !promptAccepted || unavailable) return
     event.preventDefault()
     attachments.add(files)
   }

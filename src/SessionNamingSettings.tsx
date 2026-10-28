@@ -42,7 +42,9 @@ export function namingModelOptions(catalogs: ModelCatalogs, profiles: readonly C
 function statusText(status: NamingModelStatus, now = Date.now()): string {
   switch (status.state) {
     case 'available': return status.lastNamedAt ? `Available · last named a session ${relativeAge(status.lastNamedAt, now)}` : 'Available'
-    case 'unavailable': return `Unavailable on this machine since ${new Date(status.since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: ${status.reason}. Using the chat's model until it works again.`
+    case 'unavailable': return status.canRetry
+      ? `Unavailable on this machine since ${new Date(status.since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: ${status.reason}. Using the chat's model until it works again.`
+      : `Unavailable: ${status.reason}. Using the chat's model meanwhile.`
     case 'resting': return `${status.reason}; tried again after ${new Date(status.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Using the chat's model meanwhile.`
   }
 }
@@ -121,7 +123,7 @@ export function SessionNamingSection({ api, loadModels, profiles }: {
           </select>
           {settings.mode === 'naming-model' ? <span className="settings-profile-status" role="status">{statusText(status)}</span> : null}
         </div>
-        {settings.mode === 'naming-model' && status.state !== 'available' ? (
+        {settings.mode === 'naming-model' && (status.state === 'resting' || (status.state === 'unavailable' && status.canRetry)) ? (
           <div className="settings-profile-controls">
             <button type="button" className="settings-button" disabled={busy} onClick={() => void run(() => api.retry())}><RefreshCw aria-hidden="true" />Try again</button>
           </div>

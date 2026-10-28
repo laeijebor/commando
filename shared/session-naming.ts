@@ -32,7 +32,7 @@ export const MAX_NAMING_TIMEOUT_SECONDS = 60
 export type NamingModelStatus =
   | { state: 'available'; lastNamedAt?: number }
   /** A hard failure (no login, unknown model, missing CLI): skipped until Try again or a login change. */
-  | { state: 'unavailable'; since: number; reason: string }
+  | { state: 'unavailable'; since: number; reason: string; canRetry: boolean }
   /** Timed out twice in a row: skipped for a while. */
   | { state: 'resting'; until: number; reason: string }
 

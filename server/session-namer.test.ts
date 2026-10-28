@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ModelCatalogs } from '../shared/tmux-create.js'
-import { nameFromReply, namingPrompt, NamingFailure, parseSuggestRequest, SessionNamer, type NameRunner, type SessionNamerOptions } from './session-namer.js'
+import { chmod, writeFile } from 'node:fs/promises'
+import { defaultNameRunner, hardFailureReason, nameFromReply, namingPrompt, NamingFailure, parseSuggestRequest, SessionNamer, type NameRunner, type SessionNamerOptions } from './session-namer.js'
 
 const catalogs: ModelCatalogs = {
   codex: { models: [{ value: 'gpt-6-luna', displayName: 'GPT-6-Luna' }, { value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }], updatedAt: 1 },
@@ -68,6 +69,20 @@ describe('SessionNamer', () => {
     expect((await subject.describe()).status.state).toBe('available')
   }, 10_000)
 
+  it("leaves the chat's model time to answer when the naming model is slow, and restarts the count after a rest", async () => {
+    const run = vi.fn<NameRunner>((model, _prompt, _images, abort) => model.provider === 'codex'
+      ? new Promise((_, reject) => abort.addEventListener('abort', () => reject(new Error('aborted'))))
+      : Promise.resolve('from-the-chat'))
+    const { namer: subject, advance } = await namer(run)
+    await subject.update({ timeoutSeconds: 2 })
+    expect(await subject.suggest({ prompt: 'Go', chat: { provider: 'claude' } }, signal())).toEqual({ name: 'from-the-chat', by: 'Claude' })
+    await subject.suggest({ prompt: 'Go', chat: { provider: 'claude' } }, signal())
+    expect((await subject.describe()).status.state).toBe('resting')
+    advance(61 * 60_000)
+    await subject.suggest({ prompt: 'Go', chat: { provider: 'claude' } }, signal())
+    expect((await subject.describe()).status.state).toBe('available')
+  }, 15_000)
+
   it('learns nothing when the user skips the wait', async () => {
     const skip = new AbortController()
     const run = vi.fn<NameRunner>((_model, _prompt, _images, abort) => new Promise((_, reject) => abort.addEventListener('abort', () => reject(new Error('aborted')))))
@@ -108,6 +123,27 @@ describe('SessionNamer', () => {
     await subject.update({ namingModel: { provider: 'claude', model: 'haiku', configDir: join(process.env.HOME ?? '/h', '.claudep') }, timeoutSeconds: 15 })
     const reread = new SessionNamer({ path, run: vi.fn(), catalogs: async () => catalogs })
     expect((await reread.describe()).settings).toEqual({ mode: 'naming-model', namingModel: { provider: 'claude', model: 'haiku', configDir: join(process.env.HOME ?? '/h', '.claudep') }, timeoutSeconds: 15 })
+  })
+})
+
+describe('telling a failure that lasts from one that passes', () => {
+  it("never takes the user's own words, echoed back by the CLI, for a reason to give up", () => {
+    const prompt = 'Name this coding session…\n\nTask:\nFix the login page, it returns 401 for unauthorized users'
+    expect(hardFailureReason(`user\nTask:\nFix the login page, it returns 401 for unauthorized users\nERROR: stream disconnected (429)`, prompt)).toBeNull()
+    expect(hardFailureReason('ERROR: Not logged in. Please run codex login', prompt)).toBe('Not logged in')
+    expect(hardFailureReason('error: {"code":"model_not_found"}', 'x')).toBe("The model isn't available to this login")
+    expect(hardFailureReason('Fetching catalog in the background… failed', 'x')).toBeNull()
+  })
+
+  it('runs the CLI without a shell and reports a fixed reason, never its output', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'namer-cli-'))
+    const codex = join(dir, 'codex')
+    await writeFile(codex, '#!/bin/sh\nfor arg; do last="$arg"; done\nprintf "user\\n%s\\n" "$last" >&2\ncase "$last" in *secret*) echo "ERROR: Not logged in" >&2; exit 1;; esac\nexit 1\n')
+    await chmod(codex, 0o755)
+    const runner = defaultNameRunner({ PATH: dir }, async () => codex)
+    await expect(runner({ provider: 'codex', model: 'gpt-6-luna' }, 'Task: fix login $(touch /tmp/pwned)', [], new AbortController().signal)).rejects.toMatchObject({ kind: 'soft' })
+    await expect(runner({ provider: 'codex', model: 'gpt-6-luna' }, 'Task: secret', [], new AbortController().signal)).rejects.toMatchObject({ kind: 'hard', message: 'Not logged in' })
+    await expect(defaultNameRunner({ PATH: dir }, async () => { throw new Error('missing') })({ provider: 'claude' }, 'x', [], new AbortController().signal)).rejects.toMatchObject({ kind: 'hard', message: "Claude isn't installed on this machine" })
   })
 })
 
