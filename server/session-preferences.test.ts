@@ -369,6 +369,16 @@ describe('repository sub-groups', () => {
     expect(saved.repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
   })
 
+  it('keeps a placeholder when a client view without a server id is saved during a partial restore', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$9'] }] }, [{ id: '$9', name: 'work' }], '1:1')
+    const partial = [{ id: '$1', name: 'scratch' }]
+    expect((await store.load(partial, '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:work'] }])
+    const legacyView = { ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$1'] }], sessionNamesById: { $1: 'work' } }
+    expect((await store.replace(legacyView, partial, '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:work'] }])
+    expect((await store.load([...partial, { id: '$2', name: 'work' }], '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
+  })
+
   it('rejects malformed placeholders and server ids', () => {
     expect(parseSessionTreePreferences({ ...base, ungroupedSessionIds: ['name:'] })).toBeNull()
     expect(parseSessionTreePreferences({ ...base, ungroupedSessionIds: ['name:bad\nname'] })).toBeNull()

@@ -211,6 +211,8 @@ export function reconcileSessionTreePreferences(
   const sameServer = !serverId || !parsed.serverId || parsed.serverId === serverId
   // Only ids known to come from this server outrank names; a client view without one may predate a restart.
   const idsFromThisServer = Boolean(serverId) && parsed.serverId === serverId
+  // A client view that doesn't say which server it came from may predate a tmux restart.
+  const unknownOrigin = Boolean(serverId) && !parsed.serverId
   const storedNames = parsed.sessionNamesById ?? {}
   const sessionNamesById: Record<string, string> = {}
   const resolve = (entry: string): string | undefined => {
@@ -221,6 +223,9 @@ export function reconcileSessionTreePreferences(
     const live = name ? currentByName.get(name) : undefined
     if (live) return live.id
     if (!sameServer) return name ? PENDING_PREFIX + name : undefined
+    // Its session is gone and tmux has given the id to another one: hold the place by name. A tmux
+    // rename looks the same from here, but this view would already have reloaded with a server id.
+    if (unknownOrigin && name && currentById.has(entry)) return PENDING_PREFIX + name
     // Closed (its name lets a restore after a tmux restart find it), or created but not in a tmux snapshot yet.
     if (name) sessionNamesById[entry] = name
     return entry
