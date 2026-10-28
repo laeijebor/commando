@@ -81,7 +81,7 @@ describe('session identities', () => {
     const path = join(folder, 'session-tree.json')
     const store = new SessionPreferenceStore(path)
     const sessions = [{ id: '$1', name: 'Chat' }]
-    const stale = await store.ensureIdentities([], sessions, serverId)
+    const stale = await store.ensureIdentities([], sessions)
     const custom = await store.changeIdentity('Chat', '👩🏽‍💻', sessions)
     expect(custom.sessionIdentities?.Chat).toMatchObject({ glyph: '👩🏽‍💻', glyphSource: 'user' })
     await store.replace(stale, sessions)
