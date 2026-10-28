@@ -772,6 +772,8 @@ describe('opening prompt first', () => {
     await waitFor(() => expect(screen.getByLabelText('Session name')).toHaveAttribute('placeholder', 'Auto · named by GPT-6-Luna'))
     fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
     expect(await screen.findByRole('button', { name: 'Naming with GPT-6-Luna...' })).toBeEnabled()
+    // The prompt is disabled while naming, so focus moves to the button that skips.
+    expect(screen.getByRole('button', { name: 'Naming with GPT-6-Luna...' })).toHaveFocus()
     expect(suggest).toHaveBeenCalledWith({ prompt: 'Tidy the README', chat: { provider: 'claude' } }, expect.any(AbortSignal))
     await act(async () => answer({ name: 'tidy-readme', by: 'GPT-6-Luna' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
@@ -779,8 +781,8 @@ describe('opening prompt first', () => {
 
     fireEvent.change(prompt, { target: { value: 'Another one' } })
     fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
-    await screen.findByRole('button', { name: 'Naming with GPT-6-Luna...' })
-    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    const skip = await screen.findByRole('button', { name: 'Naming with GPT-6-Luna...' })
+    fireEvent.keyDown(skip, { key: 'Enter', metaKey: true })
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledTimes(2))
     expect(onCreateSession.mock.calls[1]![0]).toMatchObject({ name: '', autoName: true })
   })

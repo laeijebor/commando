@@ -238,6 +238,7 @@ export function TmuxCreateControls({
   const sessionNameRef = useRef<HTMLInputElement>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const submitRef = useRef<HTMLButtonElement>(null)
   const [sessionName, setSessionName] = useState('')
   const [windowName, setWindowName] = useState('')
   const [workingDirectoryHistory, setWorkingDirectoryHistory] = useState(loadWorkingDirectoryHistory)
@@ -579,6 +580,8 @@ export function TmuxCreateControls({
     if (autoName && naming) {
       const controller = new AbortController()
       namingRef.current = controller
+      // The prompt is about to be disabled; keep focus in the form so ⌘↵ can skip.
+      submitRef.current?.focus()
       setNamingWith(namingLabel)
       try {
         nameHint = (await naming.suggest({
@@ -1038,7 +1041,7 @@ export function TmuxCreateControls({
             Open created session {partialCreation.response.created.paneId}
           </button>
         ) : null}
-        <button className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading}>
+        <button ref={submitRef} className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading}>
           {submitLabel}
           {namingWith ? <kbd aria-hidden="true">⌘↵ to skip</kbd> : pending || attachments.uploading ? null : <kbd aria-hidden="true">⌘↵</kbd>}
         </button>

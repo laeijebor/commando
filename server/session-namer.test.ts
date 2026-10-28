@@ -57,6 +57,16 @@ describe('SessionNamer', () => {
     expect((await subject.retry()).status.state).toBe('available')
   })
 
+  it('tries again once a login file appears where there was none', async () => {
+    let login: string | undefined
+    const run = vi.fn<NameRunner>(async () => { throw new NamingFailure('hard', 'Not logged in') })
+    const { namer: subject } = await namer(run, { fingerprint: async () => login })
+    await subject.suggest({ prompt: 'Go' }, signal())
+    expect((await subject.describe()).status.state).toBe('unavailable')
+    login = 'first-login'
+    expect((await subject.describe()).status.state).toBe('available')
+  })
+
   it('rests the naming model for an hour after two timeouts in a row', async () => {
     const run = vi.fn<NameRunner>((_model, _prompt, _images, abort) => new Promise((_, reject) => abort.addEventListener('abort', () => reject(new Error('aborted')))))
     const { namer: subject, advance } = await namer(run)

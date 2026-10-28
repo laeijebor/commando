@@ -222,7 +222,8 @@ export class SessionNamer {
     if (failure?.kind === 'unavailable') {
       const fingerprint = await this.options.fingerprint?.(model)
       // A new login is worth another try, and so is a day's wait.
-      const loginChanged = failure.fingerprint !== undefined && fingerprint !== undefined && fingerprint !== failure.fingerprint
+      // Includes a login file appearing for the first time.
+      const loginChanged = fingerprint !== undefined && fingerprint !== failure.fingerprint
       if (!loginChanged && this.now() - failure.since < UNAVAILABLE_MS) {
         return { state: 'unavailable', since: failure.since, reason: failure.reason, canRetry: true }
       }
