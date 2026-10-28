@@ -126,6 +126,7 @@ import type { LineageSnapshot } from './chatLineage'
 import { SessionIdeView } from './SessionIdeView'
 import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
+import { createSessionNamingApi } from './sessionNamingApi'
 import { createChatConversationsApi } from './chatConversationsApi'
 import { ConversationPicker } from './ConversationPicker'
 import { PanePaletteMenu, panePaletteEntries, type PanePaletteScreen } from './PanePalette'
@@ -2654,6 +2655,8 @@ export function App() {
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
   const tmuxCreateApi = createTmuxHttpApi(token)
+  const sessionNamingApi = useMemo(() => createSessionNamingApi(token), [token])
+  const sessionNamingSettings = useMemo(() => ({ api: sessionNamingApi, loadModels: createTmuxHttpApi(token).models }), [sessionNamingApi, token])
   const chatConversationsApi = useMemo(() => createChatConversationsApi(token), [token])
   const loadConversations = useCallback(async () => {
     const conversations = await chatConversationsApi.list()
@@ -4059,6 +4062,7 @@ export function App() {
                 probeRepo: (directory) => gitDiffApi.repo(directory),
                 loadClaudeProfiles: tmuxCreateApi.claudeProfiles,
                 loadModelCatalogs: tmuxCreateApi.models,
+                naming: sessionNamingApi,
                 onCreated: (created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() },
               }}
             />
@@ -4526,7 +4530,7 @@ export function App() {
           ) : null}
           {area === 'settings' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening settings...</p></section>}>
-              <SettingsView api={agentProfilesApi} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
+              <SettingsView api={agentProfilesApi} naming={sessionNamingSettings} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
                 commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
           ) : null}

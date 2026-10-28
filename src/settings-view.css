@@ -38,3 +38,7 @@
 .settings-commander label { display: inline-flex; align-items: center; gap: 6px; }
 .settings-commander select { padding: 4px 6px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; }
 .settings-warning { color: var(--amber); }
+.settings-naming-model { padding: 4px 6px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; }
+.settings-profile .settings-naming-note { color: var(--muted); }
+.settings-naming-wait { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-soft); }
+.settings-naming-wait input { width: 56px; padding: 4px 6px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text); background: var(--surface); font: inherit; }
