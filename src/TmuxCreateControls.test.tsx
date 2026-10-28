@@ -711,6 +711,13 @@ describe('models', () => {
     view.unmount()
     render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadModelCatalogs={async () => catalogs} />)
     expect(await screen.findByRole('button', { name: 'Model: Sonnet 5.5' })).toBeInTheDocument()
+    // A pick in one folder doesn't follow the form to another that remembers its own.
+    window.localStorage.setItem('commando.tmux-create.model-by-agent', JSON.stringify({ '*|claude:/Users/dev/.claudep': 'sonnet', '/Users/dev/other|claude:/Users/dev/.claudep': 'default' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Model: Sonnet 5.5' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Sonnet 5.5/ }))
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/Users/dev/other' } })
+    expect(await screen.findByRole('button', { name: 'Model: Default model' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '' } })
     chooseAgent('codex-chat')
     // Codex has no "default" entry of its own: the picker adds one, which sends no model.
     expect(menuLabels(screen.getByRole('button', { name: 'Model: Default model' }))).toEqual(['*Default', 'GPT-6.1-Sol', 'GPT-6-Luna'])
