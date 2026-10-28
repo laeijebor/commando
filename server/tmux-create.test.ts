@@ -878,7 +878,7 @@ describe('auto-named sessions', () => {
     expect(sessionName(hinted)).toBe('quick-chat-v2-0')
     const imageOnly = tmuxWith([])
     await new TmuxCreator(imageOnly, [], undefined, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', images: [{ id: `${'e'.repeat(64)}.png` }] } })
-    expect(sessionName(imageOnly)).toBe('chat')
+    expect(sessionName(imageOnly)).toMatch(/^[a-z]+-[a-z]+$/u)
   })
 
   it('names the worktree branch after the session and never reuses an existing branch', async () => {

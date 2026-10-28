@@ -27,6 +27,7 @@ import {
 } from '../shared/tmux-create.js'
 import { isChatConversationSessionId } from '../shared/chat-conversations.js'
 import { isModelValue, parseChatImageRefs } from '../shared/agent-chat.js'
+import { SESSION_ADJECTIVES, SESSION_ANIMALS } from '../shared/session-identity.js'
 import { isChatPlanDir } from './chat-plans-dir.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 
@@ -447,10 +448,16 @@ function parseCreatedTarget(output: string, kind: TmuxCreatedTarget['kind']): Tm
 
 const AUTO_NAME_ATTEMPTS = 20
 
+/** For a session with nothing to name it after (a screenshot alone): `amber-fox`, say. */
+export function generatedSessionName(random: () => number = Math.random): string {
+  const pick = <T,>(list: readonly T[]) => list[Math.floor(random() * list.length)]!
+  return `${pick(SESSION_ADJECTIVES)}-${pick(SESSION_ANIMALS)}`.toLowerCase()
+}
+
 /** The names an auto-named session tries in turn: the hint or the prompt's first words, then -2, -3… */
 function autoNameCandidates(hint: unknown, agent: SessionAgentLaunch | undefined): string[] {
   if (hint !== undefined && typeof hint !== 'string') throw new Error('session name must be a string')
-  const base = autoSessionName(hint ?? '') || autoSessionName(agent?.prompt ?? '') || 'chat'
+  const base = autoSessionName(hint ?? '') || autoSessionName(agent?.prompt ?? '') || generatedSessionName()
   return [base, ...Array.from({ length: AUTO_NAME_ATTEMPTS - 1 }, (_, index) => `${base}-${index + 2}`)]
 }
 
