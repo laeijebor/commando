@@ -32,6 +32,8 @@ type Dependencies = {
   snapshot: () => CommandoSnapshot
   briefs: Pick<SessionBriefStore, 'conversationRecords'>
   sessionPreferences: Pick<SessionPreferenceStore, 'loadReadOnly'>
+  /** The tmux server the snapshot's sessions belong to. */
+  serverId?: () => string | null
   /** The chat a pane runs, if it is a chat pane. */
   chatSession: (paneId: string) => ChatSessionInfo | undefined
   /** Chats on any pane, to keep two hosts off one conversation. */
@@ -129,7 +131,7 @@ export class ChatConversationsApi {
     const snapshot = this.dependencies.snapshot()
     const [conversations, preferences] = await Promise.all([
       this.dependencies.index.list(),
-      this.dependencies.sessionPreferences.loadReadOnly(snapshot.sessions),
+      this.dependencies.sessionPreferences.loadReadOnly(snapshot.sessions, this.dependencies.serverId?.()),
     ])
     const records = new Map(this.dependencies.briefs.conversationRecords().map((record) => [`${record.provider}:${record.id}`, record]))
     const sessions = new Map(snapshot.sessions.map((session) => [session.id, session]))

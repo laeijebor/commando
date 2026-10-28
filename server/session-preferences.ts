@@ -31,6 +31,8 @@ export type SessionTreePreferences = {
   /** Top-level repository order: loose session ids and `group:<groupId>` tokens, independent of manual grouping. */
   repositorySessionIds?: string[]
   repositoryGroups?: RepositorySessionGroup[]
+  /** The tmux server (`pid:start_time`) whose session ids these preferences use. */
+  serverId?: string
 }
 
 export type TmuxSessionReference = {
@@ -40,12 +42,25 @@ export type TmuxSessionReference = {
 
 const SESSION_ID = /^\$\d+$/
 const GROUP_ID = /^[A-Za-z0-9._-]{1,64}$/
+const SERVER_ID = /^[A-Za-z0-9:._-]{1,64}$/
+/**
+ * Holds a session's place after a tmux restart until a session with this name is restored.
+ * Session ids are only meaningful on the server that issued them; names survive tmux-resurrect.
+ */
+const PENDING_PREFIX = 'name:'
 const MAX_GROUPS = 128
 const MAX_SESSIONS = 4_096
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
+
+const isSessionName = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\u0000-\u001f\u007f]/.test(value)
+
+/** A live tmux session id, or a placeholder naming a session that hasn't been restored yet. */
+const isSessionEntry = (value: string): boolean =>
+  SESSION_ID.test(value) || (value.startsWith(PENDING_PREFIX) && isSessionName(value.slice(PENDING_PREFIX.length)))
 
 export function validateSessionGroupName(value: unknown): string {
   if (typeof value !== 'string' || value !== value.trim() || value.length === 0 || value.length > 128) {
@@ -80,13 +95,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
 
     const sessionIds: string[] = []
     for (const sessionId of candidate.sessionIds) {
-      if (
-        typeof sessionId !== 'string' ||
-        !SESSION_ID.test(sessionId) ||
-        assignedSessionIds.has(sessionId)
-      ) {
-        return null
-      }
+      if (typeof sessionId !== 'string' || !isSessionEntry(sessionId) || assignedSessionIds.has(sessionId)) return null
       assignedSessionIds.add(sessionId)
       sessionIds.push(sessionId)
     }
@@ -96,13 +105,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
 
   const ungroupedSessionIds: string[] = []
   for (const sessionId of value.ungroupedSessionIds) {
-    if (
-      typeof sessionId !== 'string' ||
-      !SESSION_ID.test(sessionId) ||
-      assignedSessionIds.has(sessionId)
-    ) {
-      return null
-    }
+    if (typeof sessionId !== 'string' || !isSessionEntry(sessionId) || assignedSessionIds.has(sessionId)) return null
     assignedSessionIds.add(sessionId)
     ungroupedSessionIds.push(sessionId)
   }
@@ -115,15 +118,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
     if (entries.length > MAX_SESSIONS) return null
     sessionNamesById = {}
     for (const [sessionId, name] of entries) {
-      if (
-        !SESSION_ID.test(sessionId) ||
-        typeof name !== 'string' ||
-        name.length === 0 ||
-        name.length > 128 ||
-        /[\u0000-\u001f\u007f]/.test(name)
-      ) {
-        return null
-      }
+      if (!SESSION_ID.test(sessionId) || !isSessionName(name)) return null
       sessionNamesById[sessionId] = name
     }
   }
@@ -137,11 +132,11 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
     if (!Array.isArray(value.repositorySessionIds) || value.repositorySessionIds.length > MAX_SESSIONS + MAX_GROUPS) return null
     const ids = new Set<string>()
     for (const id of value.repositorySessionIds) {
-      if (typeof id !== 'string' || (!SESSION_ID.test(id) && !(id.startsWith('group:') && GROUP_ID.test(id.slice(6)))) || ids.has(id)) return null
+      if (typeof id !== 'string' || !(isSessionEntry(id) || (id.startsWith('group:') && GROUP_ID.test(id.slice(6)))) || ids.has(id)) return null
       ids.add(id)
     }
     repositorySessionIds = [...ids]
-    if (repositorySessionIds.filter((id) => SESSION_ID.test(id)).length > MAX_SESSIONS || repositorySessionIds.filter((id) => id.startsWith('group:')).length > MAX_GROUPS) return null
+    if (repositorySessionIds.filter((id) => !id.startsWith('group:')).length > MAX_SESSIONS || repositorySessionIds.filter((id) => id.startsWith('group:')).length > MAX_GROUPS) return null
   }
   let repositoryGroups: RepositorySessionGroup[] | undefined
   if (value.repositoryGroups !== undefined) {
@@ -157,7 +152,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
       try { name = validateSessionGroupName(candidate.name) } catch { return null }
       const sessionIds: string[] = []
       for (const id of candidate.sessionIds) {
-        if (typeof id !== 'string' || !SESSION_ID.test(id) || members.has(id)) return null
+        if (typeof id !== 'string' || !isSessionEntry(id) || members.has(id)) return null
         members.add(id)
         sessionIds.push(id)
       }
@@ -166,6 +161,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
       repositoryGroups.push({ id: candidate.id, name, repoRoot: candidate.repoRoot, sessionIds, ...(candidate.collapsed !== undefined ? { collapsed: candidate.collapsed } : {}) })
     }
   }
+  if (value.serverId !== undefined && (typeof value.serverId !== 'string' || !SERVER_ID.test(value.serverId))) return null
   return {
     version: 1,
     groups,
@@ -175,6 +171,7 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
     ...(groupingMode ? { groupingMode } : {}),
     ...(repositorySessionIds ? { repositorySessionIds } : {}),
     ...(repositoryGroups ? { repositoryGroups } : {}),
+    ...(value.serverId !== undefined ? { serverId: value.serverId } : {}),
   }
 }
 
@@ -182,9 +179,18 @@ export function emptySessionTreePreferences(): SessionTreePreferences {
   return { version: 1, groups: [], ungroupedSessionIds: [] }
 }
 
+/**
+ * Map stored entries onto the live tmux sessions.
+ *
+ * tmux never reuses a session id while its server runs, but a restarted server (for example
+ * after tmux-resurrect) hands out ids from the start again. So ids are trusted only on the
+ * server that issued them (`serverId`); entries from another server are matched by session
+ * name, and those not restored yet keep their place as `name:` placeholders.
+ */
 export function reconcileSessionTreePreferences(
   preferences: SessionTreePreferences,
   currentSessions: readonly TmuxSessionReference[],
+  serverId?: string | null,
 ): SessionTreePreferences {
   const parsed = parseSessionTreePreferences(preferences)
   if (!parsed) throw new Error('Invalid session tree preferences')
@@ -193,36 +199,43 @@ export function reconcileSessionTreePreferences(
   const currentByName = new Map<string, TmuxSessionReference>()
   for (const session of currentSessions) {
     if (!SESSION_ID.test(session.id)) throw new Error('Invalid tmux session id')
-    if (
-      typeof session.name !== 'string' ||
-      session.name.length === 0 ||
-      session.name.length > 128 ||
-      /[\u0000-\u001f\u007f]/.test(session.name)
-    ) {
-      throw new Error('Invalid tmux session name')
-    }
+    if (!isSessionName(session.name)) throw new Error('Invalid tmux session name')
     if (currentById.has(session.id) || currentByName.has(session.name)) continue
     currentById.set(session.id, session)
     currentByName.set(session.name, session)
   }
 
-  const claimed = new Set<string>()
-  const claimedNames = new Map<string, string>()
-  const reconcileIds = (sessionIds: readonly string[], seen = claimed): string[] => sessionIds.flatMap((sessionId) => {
-    const storedName = parsed.sessionNamesById?.[sessionId]
-    const restored = storedName ? currentByName.get(storedName) : undefined
-    const nextId = restored?.id ?? sessionId
-    if (seen.has(nextId)) return []
-    seen.add(nextId)
-    const name = storedName ?? currentById.get(nextId)?.name
-    if (name) claimedNames.set(nextId, name)
-    return [nextId]
+  // Preferences written before server ids were recorded are treated as this server's.
+  const sameServer = !serverId || !parsed.serverId || parsed.serverId === serverId
+  const storedNames = parsed.sessionNamesById ?? {}
+  const sessionNamesById: Record<string, string> = {}
+  const resolve = (entry: string): string | undefined => {
+    if (entry.startsWith(PENDING_PREFIX)) return currentByName.get(entry.slice(PENDING_PREFIX.length))?.id ?? entry
+    const name = storedNames[entry]
+    const live = name ? currentByName.get(name) : undefined
+    if (live) return live.id
+    if (!sameServer) return name ? PENDING_PREFIX + name : undefined
+    if (currentById.has(entry)) return entry // renamed in tmux
+    // Closed on this server: keep it named, so a restore after a tmux restart can find it.
+    if (name) {
+      sessionNamesById[entry] = name
+      return entry
+    }
+    return serverId ? undefined : entry
+  }
+  const reconcileIds = (sessionIds: readonly string[], claimed: Set<string>): string[] => sessionIds.flatMap((sessionId) => {
+    const next = resolve(sessionId)
+    if (!next || claimed.has(next)) return []
+    claimed.add(next)
+    return [next]
   })
-  const groups = parsed.groups.map((group) => ({
-    ...group,
-    sessionIds: reconcileIds(group.sessionIds),
-  }))
-  const ungroupedSessionIds = reconcileIds(parsed.ungroupedSessionIds)
+
+  const claimed = new Set<string>()
+  const groups = parsed.groups.map((group) => ({ ...group, sessionIds: reconcileIds(group.sessionIds, claimed) }))
+  const ungroupedSessionIds = reconcileIds(parsed.ungroupedSessionIds, claimed)
+  for (const session of currentById.values()) {
+    if (!claimed.has(session.id)) ungroupedSessionIds.push(session.id)
+  }
   const repositorySessionIds = parsed.repositorySessionIds
     ? (() => {
       const seen = new Set<string>()
@@ -230,27 +243,10 @@ export function reconcileSessionTreePreferences(
     })()
     : undefined
   const repositoryClaimed = new Set<string>()
-  const repositoryGroups = parsed.repositoryGroups?.map((group) => ({
-    ...group,
-    sessionIds: reconcileIds(group.sessionIds, repositoryClaimed).filter((sessionId) => {
-      // reconcileIds carries the stored name to the remapped id in claimedNames.
-      const storedName = claimedNames.get(sessionId)
-      const current = currentById.get(sessionId)
-      return !storedName || !current || current.name === storedName || currentByName.has(storedName)
-    }),
-  }))
-  for (const session of currentSessions) {
-    if (!claimed.has(session.id)) {
-      claimed.add(session.id)
-      claimedNames.set(session.id, session.name)
-      ungroupedSessionIds.push(session.id)
-    }
-  }
-  const sessionNamesById: Record<string, string> = {}
-  for (const sessionId of new Set([...claimed, ...repositorySessionIds ?? [], ...repositoryClaimed])) {
-    const name = claimedNames.get(sessionId)
-    if (name) sessionNamesById[sessionId] = name
-  }
+  const repositoryGroups = parsed.repositoryGroups?.map((group) => ({ ...group, sessionIds: reconcileIds(group.sessionIds, repositoryClaimed) }))
+  for (const session of currentById.values()) sessionNamesById[session.id] = session.name
+
+  const resultServerId = serverId ?? parsed.serverId
   return {
     version: 1,
     groups,
@@ -260,20 +256,8 @@ export function reconcileSessionTreePreferences(
     ...(parsed.groupingMode ? { groupingMode: parsed.groupingMode } : {}),
     ...(repositorySessionIds ? { repositorySessionIds } : {}),
     ...(repositoryGroups ? { repositoryGroups } : {}),
+    ...(resultServerId ? { serverId: resultServerId } : {}),
   }
-}
-
-function hasUnresolvedSessionIdReuse(
-  preferences: SessionTreePreferences,
-  currentSessions: readonly TmuxSessionReference[],
-): boolean {
-  if (!preferences.sessionNamesById) return false
-  const currentById = new Map(currentSessions.map((session) => [session.id, session]))
-  const currentNames = new Set(currentSessions.map((session) => session.name))
-  return Object.entries(preferences.sessionNamesById).some(([sessionId, storedName]) => {
-    const current = currentById.get(sessionId)
-    return Boolean(current && current.name !== storedName && !currentNames.has(storedName))
-  })
 }
 
 export function visibleSessionTreePreferences(
@@ -315,19 +299,15 @@ export class SessionPreferenceStore {
   }
 
   /** Reconcile for display without persisting changes from this reader's snapshot. */
-  async loadReadOnly(currentSessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
+  async loadReadOnly(currentSessions: readonly TmuxSessionReference[] = [], serverId?: string | null): Promise<SessionTreePreferences> {
     await this.writes
-    return reconcileSessionTreePreferences(await this.readState(), currentSessions)
+    return reconcileSessionTreePreferences(await this.readState(), currentSessions, serverId)
   }
 
-  async load(currentSessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
+  async load(currentSessions: readonly TmuxSessionReference[] = [], serverId?: string | null): Promise<SessionTreePreferences> {
     return this.update((stored) => {
-      const reconciled = reconcileSessionTreePreferences(stored, currentSessions)
-      return {
-        result: reconciled,
-        state: hasUnresolvedSessionIdReuse(stored, currentSessions)
-          ? { ...stored, sessionIdentities: reconciled.sessionIdentities } : reconciled,
-      }
+      const reconciled = reconcileSessionTreePreferences(stored, currentSessions, serverId)
+      return { result: reconciled, state: reconciled }
     })
   }
 
@@ -348,14 +328,14 @@ export class SessionPreferenceStore {
     return operation.then(() => result!)
   }
 
-  ensureIdentities(names: readonly string[], sessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
+  ensureIdentities(names: readonly string[], sessions: readonly TmuxSessionReference[] = [], serverId?: string | null): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       const state = this.withIdentities(stored, sessions, names)
-      return { state, result: reconcileSessionTreePreferences(state, sessions) }
+      return { state, result: reconcileSessionTreePreferences(state, sessions, serverId) }
     })
   }
 
-  changeIdentity(name: string, glyph: string | null, sessions: readonly TmuxSessionReference[] = []): Promise<SessionTreePreferences> {
+  changeIdentity(name: string, glyph: string | null, sessions: readonly TmuxSessionReference[] = [], serverId?: string | null): Promise<SessionTreePreferences> {
     if (glyph !== null && !isSessionGlyph(glyph)) return Promise.reject(new Error('Glyph must be a single emoji'))
     return this.update((stored) => {
       const state = this.withIdentities(stored, sessions, [name])
@@ -364,11 +344,11 @@ export class SessionPreferenceStore {
       const identity = identities.get(name) ?? deriveSessionIdentity(name, otherCodenames)
       identities.set(name, glyph === null ? deriveSessionIdentity(name, otherCodenames) : { ...identity, glyph, glyphSource: 'user' })
       state.sessionIdentities = normalizeSessionIdentities(Object.fromEntries(identities))
-      return { state, result: reconcileSessionTreePreferences(state, sessions) }
+      return { state, result: reconcileSessionTreePreferences(state, sessions, serverId) }
     })
   }
 
-  /** Follow a rename seen on the same tmux server, so reconcile doesn't mistake the session for a reused id. */
+  /** Record a rename seen on the same tmux server right away, so a tmux restart before the next load still finds the session. */
   recordSessionRename(sessionId: string, previousName: string, name: string): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       if (stored.sessionNamesById?.[sessionId] !== previousName) return { state: stored, result: stored }
@@ -391,51 +371,23 @@ export class SessionPreferenceStore {
   replace(
     preferences: SessionTreePreferences,
     currentSessions: readonly TmuxSessionReference[] = [],
+    serverId?: string | null,
   ): Promise<SessionTreePreferences> {
-    let parsed: SessionTreePreferences
-    try {
-      const candidate = parseSessionTreePreferences(preferences)
-      if (!candidate) throw new Error('Invalid session tree preferences')
-      parsed = candidate
-    } catch (error) {
-      return Promise.reject(error)
-    }
-
-    let validated: SessionTreePreferences
-    const operation = this.writes.then(async () => {
-      const stored = await this.readState()
-      // A session newly placed in a repository group takes its current name, replacing any name
-      // left over from an earlier session with the same id. The client sends the name it displayed
-      // for the session it moved; a stale snapshot's name won't match tmux, so it isn't accepted.
-      // Compare with the reconciled view the client was given: load() can leave stale members on disk.
-      const baseline = reconcileSessionTreePreferences(stored, currentSessions)
-      const storedMembers = new Map((baseline.repositoryGroups ?? []).map((group) => [group.id, new Set(group.sessionIds)]))
-      const currentNames = new Map(currentSessions.map((session) => [session.id, session.name]))
-      const assignedNames: Record<string, string> = {}
-      for (const group of parsed.repositoryGroups ?? []) {
-        for (const sessionId of group.sessionIds) {
-          if (storedMembers.get(group.id)?.has(sessionId)) continue
-          const submitted = parsed.sessionNamesById?.[sessionId]
-          const current = currentNames.get(sessionId)
-          // Not in a tmux snapshot yet (just created): trust the client's name until tmux reports it.
-          if (submitted && (current === undefined || current === submitted)) assignedNames[sessionId] = submitted
-        }
-      }
-      validated = reconcileSessionTreePreferences({
+    const parsed = parseSessionTreePreferences(preferences)
+    if (!parsed) return Promise.reject(new Error('Invalid session tree preferences'))
+    return this.update((stored) => {
+      // The client's ids are read against the tmux server it last loaded from (its `serverId`),
+      // so a view from before a tmux restart can't hand a group to the session now using an old id.
+      const state = reconcileSessionTreePreferences({
         ...parsed,
         // Identity changes use dedicated queued mutations; grouping snapshots may be stale.
         ...(parsed.sessionIdentities || stored.sessionIdentities ? { sessionIdentities: stored.sessionIdentities ?? parsed.sessionIdentities } : {}),
-        // Renames are recorded server-side, so stored names win over a client's possibly stale copy.
-        sessionNamesById: {
-          ...parsed.sessionNamesById,
-          ...stored.sessionNamesById,
-          ...assignedNames,
-        },
-      }, currentSessions)
-      await this.writeState(validated)
+        // Stored names cover ids the client no longer lists; they are only valid on the same server.
+        sessionNamesById: parsed.serverId === stored.serverId
+          ? { ...stored.sessionNamesById, ...parsed.sessionNamesById } : parsed.sessionNamesById,
+      }, currentSessions, serverId)
+      return { state, result: state }
     })
-    this.writes = operation.catch(() => undefined)
-    return operation.then(() => validated!)
   }
 
   private async readState(): Promise<SessionTreePreferences> {
