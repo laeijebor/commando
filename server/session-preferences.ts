@@ -177,6 +177,26 @@ export function parseSessionTreePreferences(value: unknown): SessionTreePreferen
   }
 }
 
+/** Follow a rename into `name:` placeholders, so a session renamed before the next load keeps its place. */
+function renamePlaceholders(preferences: SessionTreePreferences, previousName: string, name: string): SessionTreePreferences {
+  if (previousName === name || !isSessionName(name)) return preferences
+  const from = PENDING_PREFIX + previousName
+  const to = PENDING_PREFIX + name
+  // Each set of lists may hold an entry once; if the new name already has a placeholder, drop the old one.
+  const renameIn = <T extends { sessionIds: string[] }>(lists: T[]): T[] => {
+    const taken = lists.some((list) => list.sessionIds.includes(to))
+    return lists.map((list) => ({ ...list, sessionIds: list.sessionIds.flatMap((id) => id !== from ? [id] : taken ? [] : [to]) }))
+  }
+  const [ungrouped, ...groups] = renameIn([{ sessionIds: preferences.ungroupedSessionIds }, ...preferences.groups])
+  return {
+    ...preferences,
+    groups: groups as SessionPreferenceGroup[],
+    ungroupedSessionIds: ungrouped.sessionIds,
+    ...(preferences.repositorySessionIds ? { repositorySessionIds: renameIn([{ sessionIds: preferences.repositorySessionIds }])[0].sessionIds } : {}),
+    ...(preferences.repositoryGroups ? { repositoryGroups: renameIn(preferences.repositoryGroups) } : {}),
+  }
+}
+
 export function emptySessionTreePreferences(): SessionTreePreferences {
   return { version: 1, groups: [], ungroupedSessionIds: [] }
 }
@@ -358,8 +378,10 @@ export class SessionPreferenceStore {
   /** Record a rename seen on the same tmux server right away, so a tmux restart before the next load still finds the session. */
   recordSessionRename(sessionId: string, previousName: string, name: string, serverId?: string | null): Promise<SessionTreePreferences> {
     return this.update((stored) => {
-      if (stored.sessionNamesById?.[sessionId] !== previousName) return { state: stored, result: stored }
-      const state = { ...stored, sessionNamesById: { ...stored.sessionNamesById, [sessionId]: name } }
+      const renamed = renamePlaceholders(stored, previousName, name)
+      // tmux accepts names the preferences file can't hold; leave those for the next load to skip.
+      if (stored.sessionNamesById?.[sessionId] !== previousName || !isSessionName(name)) return { state: renamed, result: renamed }
+      const state = { ...renamed, sessionNamesById: { ...stored.sessionNamesById, [sessionId]: name } }
       return { state, result: state }
     }, serverId)
   }
@@ -373,7 +395,7 @@ export class SessionPreferenceStore {
       // Before the first load after a tmux restart, the stored ids still belong to the old server.
       const sameIds = !serverId || stored.serverId === serverId || stored.sessionNamesById?.[sessionId] === oldName
       const state = {
-        ...stored,
+        ...renamePlaceholders(stored, oldName, newName),
         sessionIdentities: normalizeSessionIdentities(Object.fromEntries(identities)),
         ...(sameIds ? { sessionNamesById: { ...stored.sessionNamesById, [sessionId]: newName } } : {}),
       }
