@@ -209,17 +209,20 @@ export function reconcileSessionTreePreferences(
 
   // Without a recorded server (preferences from before server ids, or tmux not found yet) ids are trusted.
   const sameServer = !serverId || !parsed.serverId || parsed.serverId === serverId
+  // Only ids known to come from this server outrank names; a client view without one may predate a restart.
+  const idsFromThisServer = Boolean(serverId) && parsed.serverId === serverId
   const storedNames = parsed.sessionNamesById ?? {}
   const sessionNamesById: Record<string, string> = {}
   const resolve = (entry: string): string | undefined => {
     if (entry.startsWith(PENDING_PREFIX)) return currentByName.get(entry.slice(PENDING_PREFIX.length))?.id ?? entry
+    // A server never reuses an id, so a live id is still its own session, even if renamed.
+    if (idsFromThisServer && currentById.has(entry)) return entry
     const name = storedNames[entry]
     const live = name ? currentByName.get(name) : undefined
     if (live) return live.id
     if (!sameServer) return name ? PENDING_PREFIX + name : undefined
-    // Renamed in tmux, closed (its name lets a restore after a tmux restart find it), or created
-    // but not in a tmux snapshot yet. A server never reuses an id, so the entry is still its own.
-    if (name && !currentById.has(entry)) sessionNamesById[entry] = name
+    // Closed (its name lets a restore after a tmux restart find it), or created but not in a tmux snapshot yet.
+    if (name) sessionNamesById[entry] = name
     return entry
   }
   const reconcileIds = (sessionIds: readonly string[], claimed: Set<string>): string[] => sessionIds.flatMap((sessionId) => {
@@ -348,23 +351,29 @@ export class SessionPreferenceStore {
   }
 
   /** Record a rename seen on the same tmux server right away, so a tmux restart before the next load still finds the session. */
-  recordSessionRename(sessionId: string, previousName: string, name: string): Promise<SessionTreePreferences> {
+  recordSessionRename(sessionId: string, previousName: string, name: string, serverId?: string | null): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       if (stored.sessionNamesById?.[sessionId] !== previousName) return { state: stored, result: stored }
       const state = { ...stored, sessionNamesById: { ...stored.sessionNamesById, [sessionId]: name } }
       return { state, result: state }
-    })
+    }, serverId)
   }
 
-  renameIdentity(oldName: string, newName: string, sessionId: string): Promise<SessionTreePreferences> {
+  renameIdentity(oldName: string, newName: string, sessionId: string, serverId?: string | null): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       const identities = new Map(Object.entries(stored.sessionIdentities ?? {}))
       const identity = identities.get(oldName) ?? deriveSessionIdentity(oldName, [...identities.values()].map((entry) => entry.codename))
       identities.delete(oldName)
       identities.set(newName, identity)
-      const state = { ...stored, sessionIdentities: normalizeSessionIdentities(Object.fromEntries(identities)), sessionNamesById: { ...stored.sessionNamesById, [sessionId]: newName } }
+      // Before the first load after a tmux restart, the stored ids still belong to the old server.
+      const sameIds = !serverId || stored.serverId === serverId || stored.sessionNamesById?.[sessionId] === oldName
+      const state = {
+        ...stored,
+        sessionIdentities: normalizeSessionIdentities(Object.fromEntries(identities)),
+        ...(sameIds ? { sessionNamesById: { ...stored.sessionNamesById, [sessionId]: newName } } : {}),
+      }
       return { state, result: state }
-    })
+    }, serverId)
   }
 
   replace(

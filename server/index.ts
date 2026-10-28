@@ -1541,7 +1541,7 @@ async function main(): Promise<void> {
         // Record tmux-side renames before publishing the snapshot, so a grouping save
         // reconciled against the new names keeps repository-group membership.
         for (const { sessionId, previousName, name } of sessionRenames) {
-          await sessionPreferences.recordSessionRename(sessionId, previousName, name).catch((error: unknown) => {
+          await sessionPreferences.recordSessionRename(sessionId, previousName, name, nextServerId).catch((error: unknown) => {
             console.warn('[commando] Session name update failed after tmux rename', error)
           })
         }

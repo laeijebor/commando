@@ -197,7 +197,7 @@ export class SessionManagementApi {
           await this.actions.rename(route.sessionId, name)
           // Tmux has already renamed the session; persistence failures must not hide that success.
           try {
-            await this.preferences.renameIdentity(previousName, name, route.sessionId)
+            await this.preferences.renameIdentity(previousName, name, route.sessionId, this.dependencies.currentServerId?.())
           } catch (error) {
             console.warn('[commando] Session identity move failed after session rename', error)
           }
@@ -329,7 +329,7 @@ export class SessionManagementApi {
     const currentSessions = this.dependencies.currentSessions()
     const serverId = this.dependencies.currentServerId?.()
     if (request.method === 'GET') {
-      await this.preferences.ensureIdentities([], currentSessions)
+      await this.preferences.ensureIdentities([], currentSessions, serverId)
       const preferences = await this.preferences.load(currentSessions, serverId)
       writeJson(response, 200, { preferences })
       return
@@ -339,7 +339,7 @@ export class SessionManagementApi {
     const body = record(await readJson(request))
     const parsed = parseSessionTreePreferences(body.preferences)
     if (!parsed) throw new HttpError(400, 'Invalid session tree preferences')
-    await this.preferences.ensureIdentities([], currentSessions)
+    await this.preferences.ensureIdentities([], currentSessions, serverId)
     const preferences = await this.preferences.replace(parsed, currentSessions, serverId)
     writeJson(response, 200, { preferences })
   }
