@@ -98,6 +98,7 @@ describe('session tree preferences', () => {
         '$3': 'vivi-app',
         '$4': 'scratch',
       },
+      serverId: '1:1',
     }
 
     expect(reconcileSessionTreePreferences(preferences, [
@@ -105,7 +106,7 @@ describe('session tree preferences', () => {
       { id: '$2', name: 'vivi-app' },
       { id: '$3', name: 'gizmo-web' },
       { id: '$4', name: 'gizmo-api' },
-    ])).toEqual({
+    ], '2:2')).toEqual({
       version: 1,
       groups: [
         { id: 'gizmo', name: 'GIZMO', sessionIds: ['$4', '$3'] },
@@ -118,6 +119,7 @@ describe('session tree preferences', () => {
         '$3': 'gizmo-web',
         '$4': 'gizmo-api',
       },
+      serverId: '2:2',
     })
   })
 

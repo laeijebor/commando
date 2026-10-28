@@ -102,7 +102,7 @@ describe('session rename API', () => {
       status: 200, body: { ok: true, sessionId: '$1', name: 'renamed' },
     })
     expect(execute).toHaveBeenCalledOnce()
-    expect(renameIdentity).toHaveBeenCalledWith('original', 'renamed', '$1')
+    expect(renameIdentity).toHaveBeenCalledWith('original', 'renamed', '$1', undefined)
     expect(afterSessionRenamed).toHaveBeenCalledWith('$1', 'original', 'renamed')
     expect(onSessionsChanged).toHaveBeenCalledOnce()
     expect(execute.mock.invocationCallOrder[0]).toBeLessThan(renameIdentity.mock.invocationCallOrder[0]!)
