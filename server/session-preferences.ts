@@ -217,13 +217,10 @@ export function reconcileSessionTreePreferences(
     const live = name ? currentByName.get(name) : undefined
     if (live) return live.id
     if (!sameServer) return name ? PENDING_PREFIX + name : undefined
-    if (currentById.has(entry)) return entry // renamed in tmux
-    // Closed on this server: keep it named, so a restore after a tmux restart can find it.
-    if (name) {
-      sessionNamesById[entry] = name
-      return entry
-    }
-    return serverId ? undefined : entry
+    // Renamed in tmux, closed (its name lets a restore after a tmux restart find it), or created
+    // but not in a tmux snapshot yet. A server never reuses an id, so the entry is still its own.
+    if (name && !currentById.has(entry)) sessionNamesById[entry] = name
+    return entry
   }
   const reconcileIds = (sessionIds: readonly string[], claimed: Set<string>): string[] => sessionIds.flatMap((sessionId) => {
     const next = resolve(sessionId)

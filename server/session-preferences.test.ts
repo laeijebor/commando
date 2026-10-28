@@ -246,6 +246,17 @@ describe('repository sub-groups', () => {
     expect((await store.load([{ id: '$3', name: 'fresh' }])).repositoryGroups).toEqual([{ ...group, sessionIds: ['$3'] }])
   })
 
+  it('keeps a session created into a manual group before tmux reports it', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    const sessions = [{ id: '$1', name: 'work' }]
+    const view = await store.load(sessions, '1:1')
+    const saved = await store.replace({ ...view, groupingMode: 'manual', groups: [{ id: 'g', name: 'G', sessionIds: ['$2'] }] }, sessions, '1:1')
+    expect(saved.groups).toEqual([{ id: 'g', name: 'G', sessionIds: ['$2'] }])
+    const loaded = await store.load([...sessions, { id: '$2', name: 'fresh' }], '1:1')
+    expect(loaded.groups).toEqual([{ id: 'g', name: 'G', sessionIds: ['$2'] }])
+    expect(loaded.ungroupedSessionIds).toEqual(['$1'])
+  })
+
   it('keeps a recorded rename when a stale client snapshot is saved afterwards', async () => {
     const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
     await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'work' }])
