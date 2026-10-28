@@ -339,6 +339,8 @@ export function TmuxCreateControls({
   useEffect(() => {
     setAgentProvider(loadStartWith(repoKey))
     setClaudeProfile(loadChatLaunch(repoKey).configDir)
+    // A model picked for one repository is not a choice for the next.
+    setModelPick(null)
   }, [repoKey])
   useEffect(() => {
     setChatLaunch(loadChatLaunch(repoKey, preferenceProvider))
