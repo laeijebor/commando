@@ -379,6 +379,38 @@ describe('repository sub-groups', () => {
     expect((await store.load([...partial, { id: '$2', name: 'work' }], '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
   })
 
+  it.each(['renameIdentity', 'recordSessionRename'] as const)('follows a rename into placeholders before the next load (%s)', async (method) => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, groups: [{ id: 'g', name: 'G', sessionIds: ['$9'] }], ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$9'] }], repositorySessionIds: ['$9'] }, [{ id: '$9', name: 'work' }], '1:1')
+    expect((await store.load([{ id: '$1', name: 'scratch' }], '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:work'] }])
+    // "work" is restored as $2 and renamed before anything loads the preferences again.
+    if (method === 'renameIdentity') await store.renameIdentity('work', 'renamed', '$2', '2:2')
+    else await store.recordSessionRename('$2', 'work', 'renamed', '2:2')
+    const view = await store.load([{ id: '$1', name: 'scratch' }, { id: '$2', name: 'renamed' }], '2:2')
+    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
+    expect(view.groups).toEqual([{ id: 'g', name: 'G', sessionIds: ['$2'] }])
+    expect(view.repositorySessionIds).toEqual(['$2'])
+  })
+
+  it('drops an old placeholder when the new name already holds one', async () => {
+    const path = join(folder, 'session-tree.json')
+    await writeFile(path, JSON.stringify({ ...base, groups: [{ id: 'g', name: 'G', sessionIds: ['name:a'] }], ungroupedSessionIds: ['name:b'], serverId: '1:1' }))
+    const store = new SessionPreferenceStore(path)
+    await store.renameIdentity('a', 'b', '$5', '1:1')
+    const written = JSON.parse(await readFile(path, 'utf8'))
+    expect(written).toMatchObject({ groups: [{ id: 'g', sessionIds: [] }], ungroupedSessionIds: ['name:b'] })
+    expect(parseSessionTreePreferences(written)).not.toBeNull()
+  })
+
+  it('keeps the file readable when tmux reports a name the preferences can\'t hold', async () => {
+    const path = join(folder, 'session-tree.json')
+    const store = new SessionPreferenceStore(path)
+    await store.replace({ ...base, ungroupedSessionIds: ['$1', 'name:a'] }, [{ id: '$1', name: 'work' }], '1:1')
+    await store.recordSessionRename('$1', 'work', 'x'.repeat(200), '1:1')
+    await store.recordSessionRename('$2', 'a', 'y'.repeat(200), '1:1')
+    expect(parseSessionTreePreferences(JSON.parse(await readFile(path, 'utf8')))).not.toBeNull()
+  })
+
   it('rejects malformed placeholders and server ids', () => {
     expect(parseSessionTreePreferences({ ...base, ungroupedSessionIds: ['name:'] })).toBeNull()
     expect(parseSessionTreePreferences({ ...base, ungroupedSessionIds: ['name:bad\nname'] })).toBeNull()
