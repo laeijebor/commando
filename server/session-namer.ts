@@ -283,20 +283,27 @@ export class SessionNamer {
     const chat: NamerModel | null = input.chat && (input.chat.provider === 'claude' || input.chat.provider === 'codex')
       ? { provider: input.chat.provider, ...(input.chat.model && input.chat.model !== 'default' ? { model: input.chat.model } : {}), ...(input.chat.provider === 'claude' && input.chat.configDir ? { configDir: input.chat.configDir } : {}) }
       : null
+    // Claude is asked in text only: a screenshot alone gives it nothing to go on.
+    const canRead = (model: NamerModel) => Boolean(text) || (model.provider === 'codex' && imagePaths.length > 0)
     const attempts: { model: NamerModel; remember: boolean }[] = []
-    if (settings.mode === 'naming-model' && (await this.status(settings.namingModel)).state === 'available') attempts.push({ model: settings.namingModel, remember: true })
-    if (chat && !attempts.some((attempt) => modelKey(attempt.model) === modelKey(chat))) attempts.push({ model: chat, remember: false })
+    const namingAvailable = (await this.status(settings.namingModel)).state === 'available'
+    if (settings.mode === 'naming-model' && namingAvailable) attempts.push({ model: settings.namingModel, remember: true })
+    // When naming with the naming model, a chat running on that same model is no fallback:
+    // it is already tried, or its remembered failure holds. Naming with the chat's model ignores it.
+    const chatIsFailedNamingModel = settings.mode === 'naming-model' && !namingAvailable && chat !== null && modelKey(chat) === modelKey(settings.namingModel)
+    if (chat && !chatIsFailedNamingModel && !attempts.some((attempt) => modelKey(attempt.model) === modelKey(chat))) {
+      attempts.push({ model: chat, remember: false })
+    }
+    const usable = attempts.filter((attempt) => canRead(attempt.model))
 
     const deadline = this.now() + settings.timeoutSeconds * 1000
-    for (const { model, remember } of attempts) {
+    for (const { model, remember } of usable) {
       if (signal.aborted) return { name: null }
       const images = model.provider === 'codex' ? imagePaths : []
-      // Claude is asked in text only: a screenshot alone gives it nothing to go on.
-      if (!text && !images.length) continue
       const remaining = deadline - this.now()
       if (remaining < 500) break
       // Leave the chat's model time to answer if the naming model is slow.
-      const share = remember && attempts.length > 1 ? Math.min(remaining, settings.timeoutSeconds * 1000 * NAMING_MODEL_SHARE) : remaining
+      const share = model === usable[0]?.model && usable.length > 1 ? Math.min(remaining, settings.timeoutSeconds * 1000 * NAMING_MODEL_SHARE) : remaining
       const timeout = AbortSignal.timeout(share)
       try {
         const name = nameFromReply(await this.run(model, namingPrompt(text, images.length), images, AbortSignal.any([signal, timeout])))

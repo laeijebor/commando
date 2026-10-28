@@ -93,6 +93,34 @@ describe('SessionNamer', () => {
     expect((await subject.describe()).status.state).toBe('available')
   }, 15_000)
 
+  it("gives the naming model the whole wait for a screenshot alone, which Claude can't read", async () => {
+    const started = Date.now()
+    const run = vi.fn<NameRunner>((model, _prompt, _images, abort) => new Promise((resolve, reject) => {
+      // Answers after 1.5s of a 2s wait: more than 60% of it.
+      const timer = setTimeout(() => resolve('screenshot-name'), 1_500)
+      abort.addEventListener('abort', () => { clearTimeout(timer); reject(new Error(`aborted ${model.provider}`)) })
+    }))
+    const { namer: subject } = await namer(run, { now: Date.now })
+    await subject.update({ timeoutSeconds: 2 })
+    expect(await subject.suggest({ images: [image], chat: { provider: 'claude' } }, signal())).toEqual({ name: 'screenshot-name', by: 'GPT-6-Luna' })
+    expect(run).toHaveBeenCalledOnce()
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
+
+  it("doesn't retry a failed naming model through the back door when the chat runs on it", async () => {
+    const run = vi.fn<NameRunner>(async () => { throw new NamingFailure('hard', 'Not logged in') })
+    const { namer: subject } = await namer(run)
+    const chat = { provider: 'codex' as const, model: 'gpt-6-luna' }
+    await subject.suggest({ prompt: 'Go', chat }, signal())
+    expect(run).toHaveBeenCalledOnce()
+    await subject.suggest({ prompt: 'Again', chat }, signal())
+    expect(run).toHaveBeenCalledOnce()
+    // Naming with the chat's model is not held back by the naming model's record.
+    await subject.update({ mode: 'chat-model' })
+    await subject.suggest({ prompt: 'Once more', chat }, signal())
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
   it('learns nothing when the user skips the wait', async () => {
     const skip = new AbortController()
     const run = vi.fn<NameRunner>((_model, _prompt, _images, abort) => new Promise((_, reject) => abort.addEventListener('abort', () => reject(new Error('aborted')))))
