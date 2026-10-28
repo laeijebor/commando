@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { codexCacheModels, ModelCatalog } from './model-catalog.js'
 
 const sonnet = { value: 'sonnet', displayName: 'Sonnet' }
@@ -54,6 +54,16 @@ describe('ModelCatalog', () => {
       models: [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', description: 'Workhorse', efforts: ['low'] }],
       updatedAt: Date.parse('2026-10-20T10:00:00Z'),
     })
+  })
+
+  it('leaves an unreadable catalog file alone rather than replacing every list in it', async () => {
+    const { path, codex } = await catalog()
+    await writeFile(path, '{}')
+    const models = new ModelCatalog(join(path, 'not-a-file'), codex)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await models.record({ provider: 'codex', models: [sonnet] })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('leaving it untouched'), expect.anything())
+    expect(await readFile(path, 'utf8')).toBe('{}')
   })
 
   it('ignores a malformed catalog file or Codex cache', async () => {

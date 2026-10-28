@@ -341,9 +341,12 @@ export function TmuxCreateControls({
     let cancelled = false
     void loadClaudeProfiles().then(
       (profiles) => { if (!cancelled) setClaudeProfiles(profiles) },
-      () => { if (!cancelled) setClaudeProfiles([]) },
+      (cause: unknown) => {
+        console.warn('Unable to load Claude profiles; starting Claude on the remembered or default one', cause)
+        if (!cancelled) setClaudeProfiles([])
+      },
     )
-    // A failed load leaves an empty list; the remembered profile is still sent.
+    // A failed load leaves an empty list; the remembered profile (else the daemon's default) is used.
     return () => { cancelled = true }
   }, [claudeProfiles, loadClaudeProfiles])
   // The parent may pass a new function each render; refetch only when the form (re)opens.
@@ -355,7 +358,10 @@ export function TmuxCreateControls({
     let cancelled = false
     void load().then(
       (catalogs) => { if (!cancelled) setModelCatalogs(catalogs) },
-      () => { if (!cancelled) setModelCatalogs((current) => current ?? {}) },
+      (cause: unknown) => {
+        console.warn('Unable to load model lists; offering the default model', cause)
+        if (!cancelled) setModelCatalogs((current) => current ?? {})
+      },
     )
     return () => { cancelled = true }
   }, [openVersion, sessionCreateRequest?.id])
@@ -368,7 +374,13 @@ export function TmuxCreateControls({
   const modelEntry = modelCatalogFor(modelCatalogs, agentProvider, claudeConfigDir)
   const models = chatProvider ? modelChoices(modelEntry) : []
   const wantedModel = catalogKey && modelPick?.key === catalogKey ? modelPick.value : catalogKey ? loadModelChoice(repoKey, catalogKey) : undefined
-  const selectedModel = models.find((model) => model.value === wantedModel)?.value ?? models[0]?.value ?? 'default'
+  // A remembered model is kept while its list is unknown (not loaded, or never seen for this profile).
+  const listKnown = Boolean(modelEntry)
+  const selectedModel = models.find((model) => model.value === wantedModel)?.value
+    ?? (!listKnown && wantedModel ? wantedModel : models[0]?.value ?? 'default')
+  const modelChoicesShown = !listKnown && wantedModel && !models.some((model) => model.value === wantedModel)
+    ? [...models, { value: wantedModel, displayName: wantedModel }]
+    : models
   const permissionModes = isChatLaunchProvider(agentProvider) ? chatPermissionModes(agentProvider) : []
   const options = agentOptions(claudeProfiles)
 
@@ -514,7 +526,8 @@ export function TmuxCreateControls({
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (partialCreationRef.current || attachments.uploading) return
+    // ⌘↵ submits without the button, so its disabled state is checked here too.
+    if (partialCreationRef.current || attachments.uploading || unavailable || chatProfilesLoading) return
     const formElement = event.currentTarget
     setPending(true)
     setError('')
@@ -541,7 +554,8 @@ export function TmuxCreateControls({
           const remembered = agentProvider === 'claude-chat' ? chatLaunch : loadChatLaunch(repoKey)
           saveChatLaunch(repoKey, { ...(claudeConfigDir ? { configDir: claudeConfigDir } : {}), permissionMode: remembered.permissionMode })
         }
-        if (catalogKey) saveModelChoice(repoKey, catalogKey, selectedModel)
+        // Only what was picked here is remembered, never a fallback to the default.
+        if (catalogKey && modelPick?.key === catalogKey) saveModelChoice(repoKey, catalogKey, selectedModel)
       }
       if (worktreeRequested) {
         request.worktree = {
@@ -601,6 +615,7 @@ export function TmuxCreateControls({
   const onKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
     if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return
     event.preventDefault()
+    if (event.repeat) return
     formRef.current?.requestSubmit()
   }
 
@@ -679,7 +694,7 @@ export function TmuxCreateControls({
         <AgentPicker options={options} provider={agentProvider} configDir={claudeConfigDir} disabled={unavailable} onPick={pickAgent} />
         {chatProvider ? (
           <NewSessionModelPicker
-            models={models}
+            models={modelChoicesShown}
             selected={selectedModel}
             updatedAt={modelEntry?.updatedAt}
             disabled={unavailable}

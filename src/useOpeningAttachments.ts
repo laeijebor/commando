@@ -24,6 +24,8 @@ export function useOpeningAttachments(uploads: AttachmentUploads) {
   const videoUploads = useRef(new Map<string, AbortController>())
   const latest = useRef(attachments)
   latest.current = attachments
+  /** Counted as they are added, so two pastes in one tick can't pass the limit. */
+  const count = useRef(0)
 
   useEffect(() => () => {
     for (const upload of videoUploads.current.values()) upload.abort()
@@ -31,6 +33,7 @@ export function useOpeningAttachments(uploads: AttachmentUploads) {
   }, [])
 
   const release = (attachment: OpeningAttachment) => {
+    count.current = Math.max(0, count.current - 1)
     videoUploads.current.get(attachment.key)?.abort()
     videoUploads.current.delete(attachment.key)
     URL.revokeObjectURL(attachment.previewUrl)
@@ -50,7 +53,8 @@ export function useOpeningAttachments(uploads: AttachmentUploads) {
     if (!incoming.length) return
     const tooBig = incoming.some((file) => isVideoFile(file) && file.size > MAX_CHAT_VIDEO_BYTES)
     const sized = incoming.filter((file) => !isVideoFile(file) || file.size <= MAX_CHAT_VIDEO_BYTES)
-    const fit = fitAttachments(latest.current.length, sized.length)
+    const fit = fitAttachments(count.current, sized.length)
+    count.current += fit.accepted
     setError(tooBig ? `Videos must be ${MAX_CHAT_VIDEO_BYTES / 1024 / 1024} MB or smaller` : fit.error ?? null)
     for (const file of sized.slice(0, fit.accepted)) {
       const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -61,6 +65,8 @@ export function useOpeningAttachments(uploads: AttachmentUploads) {
       setAttachments((current) => [...current, { key, name, previewUrl, video }])
       const settle = (ref: ChatImageRef) => setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: ref.name ?? attachment.name, ref } : attachment)))
       const drop = (message: string) => {
+        // Removed while it uploaded: nothing to report.
+        if (!latest.current.some((attachment) => attachment.key === key)) return
         setAttachments((current) => current.filter((attachment) => {
           if (attachment.key === key) release(attachment)
           return attachment.key !== key
@@ -94,6 +100,7 @@ export function useOpeningAttachments(uploads: AttachmentUploads) {
 
   const clear = () => {
     for (const attachment of latest.current) release(attachment)
+    count.current = 0
     setAttachments([])
     setError(null)
   }

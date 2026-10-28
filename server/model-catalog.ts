@@ -49,6 +49,8 @@ export function codexCacheModels(value: unknown): { models: ChatModelOption[]; u
  */
 export class ModelCatalog {
   private catalogs: ModelCatalogs | null = null
+  /** Set when the file exists but couldn't be read: writing would replace every list in it. */
+  private readFailed = false
   private loading: Promise<ModelCatalogs> | null = null
   private writes: Promise<void> = Promise.resolve()
 
@@ -62,7 +64,14 @@ export class ModelCatalog {
     if (this.catalogs) return Promise.resolve(this.catalogs)
     this.loading ??= readFile(this.path, 'utf8')
       .then((text) => parseCatalogs(JSON.parse(text) as unknown))
-      .catch((): ModelCatalogs => ({}))
+      .catch((error: unknown): ModelCatalogs => {
+        // Missing or garbled is as good as empty; an unreadable file (permissions, say) is left alone.
+        if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.readFailed = true
+          console.warn(`Unable to read the model catalog at ${this.path}; leaving it untouched`, error)
+        }
+        return {}
+      })
       .then((catalogs) => (this.catalogs = catalogs))
     return this.loading
   }
@@ -84,6 +93,7 @@ export class ModelCatalog {
     const now = this.now()
     if (previous && JSON.stringify(previous.models) === JSON.stringify(session.models) && now - previous.updatedAt < UNCHANGED_REWRITE_MS) return
     catalogs[key] = { models: session.models, updatedAt: now }
+    if (this.readFailed) return
     const snapshot = JSON.stringify(catalogs)
     this.writes = this.writes.then(async () => {
       await mkdir(dirname(this.path), { recursive: true })

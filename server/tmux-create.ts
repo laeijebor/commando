@@ -167,8 +167,9 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (model !== undefined && (!isModelValue(model) || (!isChatLaunchProvider(provider) && provider !== 'claude' && provider !== 'codex'))) {
     throw new Error('Only a chat, Claude or Codex accepts a model id')
   }
+  if (images !== undefined && !isChatLaunchProvider(provider)) throw new Error('Only a chat accepts attached images')
   const imageRefs = images === undefined ? undefined : parseChatImageRefs(images)
-  if (images !== undefined && (!imageRefs || !isChatLaunchProvider(provider))) throw new Error('Only a chat accepts up to 10 attached images')
+  if (images !== undefined && !imageRefs) throw new Error('images must be up to 10 uploaded image or video ids')
   if (resume !== undefined && !isChatLaunchProvider(provider) && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (fullAccess !== undefined && (fullAccess !== true || provider !== 'muse-chat' || permissionMode !== 'bypassPermissions')) throw new Error('Only a Muse chat in bypassPermissions can ask for full access')
@@ -482,9 +483,21 @@ export class TmuxCreator {
       ? { agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } }
       : {}
     if (input.worktree === undefined) {
-      const name = autoName ? await this.freeSessionName(names) : names[0]!
-      const created = await this.newSession(name, windowName, cwd, undefined, agentArgv, empty)
-      return { created, ...acknowledgment(created) }
+      if (!autoName) {
+        const created = await this.newSession(names[0]!, windowName, cwd, undefined, agentArgv, empty)
+        return { created, ...acknowledgment(created) }
+      }
+      for (const name of names) {
+        if (await this.sessionExists(name)) continue
+        try {
+          const created = await this.newSession(name, windowName, cwd, undefined, agentArgv, empty)
+          return { created, ...acknowledgment(created) }
+        } catch (error) {
+          // Taken between the check and the create: the next name will do.
+          if (!await this.sessionExists(name)) throw error
+        }
+      }
+      throw new Error(`Every name tried for this session is taken (${names[0]}…)`)
     }
 
     if (!this.worktrees) throw new Error('Worktree creation is not available')
@@ -514,18 +527,14 @@ export class TmuxCreator {
           ...(branchFromName ? { newBranchOnly: true } : {}),
         })
       } catch (error) {
-        const taken = error instanceof GitWorktreeError && (error.kind === 'branch-exists' || error.kind === 'path-exists' || error.kind === 'branch-checked-out')
+        // A path the user typed stays the same whatever the name, so it is not retried.
+        const taken = error instanceof GitWorktreeError && (error.kind === 'branch-exists' || error.kind === 'branch-checked-out' || (error.kind === 'path-exists' && !worktreePath))
         if (branchFromName && taken && index < names.length - 1) continue
         throw error
       }
       const target = await this.sessionInWorktree(name, windowName, created, prepareCommand, agentArgv, empty)
       return { created: target, worktree: created.worktree, ...acknowledgment(target) }
     }
-    throw new Error(`Every name tried for this session is taken (${names[0]}…)`)
-  }
-
-  private async freeSessionName(names: readonly string[]): Promise<string> {
-    for (const name of names) if (!await this.sessionExists(name)) return name
     throw new Error(`Every name tried for this session is taken (${names[0]}…)`)
   }
 
@@ -588,13 +597,15 @@ export class TmuxCreator {
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
     // Without a profile, Claude would sign in with the bare ~/.claude login, which may not be the one in use.
-    const configDir = agent.provider === 'claude-chat' && !agent.configDir ? await this.defaultClaudeConfigDir().catch(() => undefined) : undefined
+    const configDir = (agent.provider === 'claude-chat' || agent.provider === 'claude') && !agent.configDir ? await this.defaultClaudeConfigDir().catch(() => undefined) : undefined
     const argv = sessionAgentArgv(configDir ? { ...agent, configDir } : agent)
     argv[0] = isChatLaunchProvider(agent.provider)
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
     // Terminal Claude picks its login the way `claudep`-style aliases do: from the environment.
-    if (agent.provider === 'claude' && agent.configDir) return ['/usr/bin/env', `CLAUDE_CONFIG_DIR=${agent.configDir}`, ...argv]
+    // The bare ~/.claude profile is Claude's own default, so the variable is cleared rather than set.
+    const profile = agent.provider === 'claude' ? agent.configDir ?? configDir : undefined
+    if (profile) return profile === join(homedir(), '.claude') ? ['/usr/bin/env', '-u', 'CLAUDE_CONFIG_DIR', ...argv] : ['/usr/bin/env', `CLAUDE_CONFIG_DIR=${profile}`, ...argv]
     return argv
   }
 

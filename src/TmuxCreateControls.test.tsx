@@ -763,6 +763,37 @@ describe('opening prompt first', () => {
     expect(screen.getByLabelText('Session name')).toBeRequired()
   })
 
+  it('ignores ⌘↵ while the button is disabled: no double launch, no launch before the repository is known', async () => {
+    let finish!: (value: TmuxCreateResponse) => void
+    const onCreateSession = vi.fn(() => new Promise<TmuxCreateResponse>((resolve) => { finish = resolve }))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} probeRepo={() => new Promise(() => {})} />)
+    const prompt = screen.getByLabelText('Opening prompt')
+    fireEvent.change(prompt, { target: { value: 'Go' } })
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: MAIN } })
+    await screen.findByRole('button', { name: 'Checking repository...' })
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    expect(onCreateSession).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '' } })
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true })
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    fireEvent.keyDown(screen.getByLabelText('Session name'), { key: 'Enter', metaKey: true })
+    fireEvent.keyDown(prompt, { key: 'Enter', metaKey: true, repeat: true })
+    expect(onCreateSession).toHaveBeenCalledOnce()
+    await act(async () => finish({ created, agentLaunch: { version: 1, provider: 'claude-chat', paneId: '%3', mode: 'interactive-pty', state: 'initiated' } }))
+  })
+
+  it('keeps a remembered model while its list is unknown, and never overwrites it with the default', async () => {
+    window.localStorage.setItem('commando.tmux-create.model-by-agent', JSON.stringify({ '*|claude': 'opus' }))
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' } }))
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadModelCatalogs={async () => { throw new Error('offline') }} />)
+    expect(await screen.findByRole('button', { name: 'Model: opus' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Opening prompt'), { target: { value: 'Go' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toMatchObject({ model: 'opus' })
+    expect(JSON.parse(window.localStorage.getItem('commando.tmux-create.model-by-agent')!)).toEqual({ '*|claude': 'opus' })
+  })
+
   it('keeps the workspace folded until something needs attention', async () => {
     render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} probeRepo={probeFor({ [MAIN]: repo })} />)
     const summary = () => screen.getByRole('button', { expanded: false, name: /folder|worktree|repo/ })
