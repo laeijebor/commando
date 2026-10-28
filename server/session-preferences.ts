@@ -1,6 +1,6 @@
 import { assignSessionIdentities, deriveSessionIdentity, isSessionGlyph, normalizeSessionIdentities, type SessionIdentities } from '../shared/session-identity.js'
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 
@@ -48,6 +48,8 @@ const SERVER_ID = /^[A-Za-z0-9:._-]{1,64}$/
  * Session ids are only meaningful on the server that issued them; names survive tmux-resurrect.
  */
 const PENDING_PREFIX = 'name:'
+/** Stands in for the unknown tmux server that wrote preferences saved before server ids were recorded. */
+const PREVIOUS_SERVER_ID = 'previous'
 const MAX_GROUPS = 128
 const MAX_SESSIONS = 4_096
 
@@ -205,7 +207,7 @@ export function reconcileSessionTreePreferences(
     currentByName.set(session.name, session)
   }
 
-  // Preferences written before server ids were recorded are treated as this server's.
+  // Without a recorded server (preferences from before server ids, or tmux not found yet) ids are trusted.
   const sameServer = !serverId || !parsed.serverId || parsed.serverId === serverId
   const storedNames = parsed.sessionNamesById ?? {}
   const sessionNamesById: Record<string, string> = {}
@@ -301,14 +303,14 @@ export class SessionPreferenceStore {
   /** Reconcile for display without persisting changes from this reader's snapshot. */
   async loadReadOnly(currentSessions: readonly TmuxSessionReference[] = [], serverId?: string | null): Promise<SessionTreePreferences> {
     await this.writes
-    return reconcileSessionTreePreferences(await this.readState(), currentSessions, serverId)
+    return reconcileSessionTreePreferences(await this.withServerId(await this.readState(), serverId), currentSessions, serverId)
   }
 
   async load(currentSessions: readonly TmuxSessionReference[] = [], serverId?: string | null): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       const reconciled = reconcileSessionTreePreferences(stored, currentSessions, serverId)
       return { result: reconciled, state: reconciled }
-    })
+    }, serverId)
   }
 
   private withIdentities(preferences: SessionTreePreferences, sessions: readonly TmuxSessionReference[], names: readonly string[] = []): SessionTreePreferences {
@@ -316,11 +318,11 @@ export class SessionPreferenceStore {
   }
 
   /** All identity mutations share the preference write queue, so stale grouping saves cannot undo them. */
-  private update(transform: (stored: SessionTreePreferences) => { result: SessionTreePreferences; state: SessionTreePreferences }): Promise<SessionTreePreferences> {
+  private update(transform: (stored: SessionTreePreferences) => { result: SessionTreePreferences; state: SessionTreePreferences }, serverId?: string | null): Promise<SessionTreePreferences> {
     let result: SessionTreePreferences
     const operation = this.writes.then(async () => {
       const stored = await this.readState()
-      const next = transform(stored)
+      const next = transform(await this.withServerId(stored, serverId))
       result = next.result
       if (JSON.stringify(stored) !== JSON.stringify(next.state)) await this.writeState(next.state)
     })
@@ -332,7 +334,7 @@ export class SessionPreferenceStore {
     return this.update((stored) => {
       const state = this.withIdentities(stored, sessions, names)
       return { state, result: reconcileSessionTreePreferences(state, sessions, serverId) }
-    })
+    }, serverId)
   }
 
   changeIdentity(name: string, glyph: string | null, sessions: readonly TmuxSessionReference[] = [], serverId?: string | null): Promise<SessionTreePreferences> {
@@ -345,7 +347,7 @@ export class SessionPreferenceStore {
       identities.set(name, glyph === null ? deriveSessionIdentity(name, otherCodenames) : { ...identity, glyph, glyphSource: 'user' })
       state.sessionIdentities = normalizeSessionIdentities(Object.fromEntries(identities))
       return { state, result: reconcileSessionTreePreferences(state, sessions, serverId) }
-    })
+    }, serverId)
   }
 
   /** Record a rename seen on the same tmux server right away, so a tmux restart before the next load still finds the session. */
@@ -387,7 +389,20 @@ export class SessionPreferenceStore {
           ? { ...stored.sessionNamesById, ...parsed.sessionNamesById } : parsed.sessionNamesById,
       }, currentSessions, serverId)
       return { state, result: state }
-    })
+    }, serverId)
+  }
+
+  /**
+   * Preferences saved before server ids were recorded belong to the current tmux server only if
+   * they were written after it started (`serverId` is `pid:start_time`); otherwise they predate a
+   * tmux restart and their ids must be matched by name.
+   */
+  private async withServerId(stored: SessionTreePreferences, serverId: string | null | undefined): Promise<SessionTreePreferences> {
+    if (stored.serverId || !serverId) return stored
+    const startedAt = Number(serverId.split(':')[1])
+    const writtenAt = await stat(this.statePath).then((file) => file.mtimeMs / 1000, () => undefined)
+    if (writtenAt === undefined || !Number.isFinite(startedAt) || writtenAt >= startedAt) return { ...stored, serverId }
+    return { ...stored, serverId: PREVIOUS_SERVER_ID }
   }
 
   private async readState(): Promise<SessionTreePreferences> {
