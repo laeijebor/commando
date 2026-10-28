@@ -287,7 +287,7 @@ describe('repository sub-groups', () => {
     expect(after.sessionNamesById).toMatchObject({ $1: 'perf-a', $2: 'perf-b', $3: 'scratch' })
   })
 
-  it('reads preferences saved before server ids were recorded as this server\'s, correcting names from tmux', async () => {
+  it('reads preferences saved before server ids were recorded on this tmux server as its own, correcting names from tmux', async () => {
     const path = join(folder, 'session-tree.json')
     await writeFile(path, JSON.stringify({
       ...base, ungroupedSessionIds: ['$3', '$1'], repositorySessionIds: ['$3', '$1'],
@@ -301,6 +301,19 @@ describe('repository sub-groups', () => {
     // The next restart finds "Battery usage" by its real name.
     const restarted = await store.load([{ id: '$1', name: 'Battery usage' }, { id: '$2', name: 'work' }], '6:6')
     expect(restarted.repositorySessionIds).toEqual(['$1', '$2'])
+  })
+
+  it('reads preferences saved before server ids were recorded by name if tmux started after they were written', async () => {
+    const path = join(folder, 'session-tree.json')
+    await writeFile(path, JSON.stringify({
+      ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$7'] }], sessionNamesById: { $7: 'perf' },
+    }))
+    const writtenAt = Math.floor((await stat(path)).mtimeMs / 1000)
+    // tmux restarted after the save and restore has only reached $7 so far, with another session.
+    const view = await new SessionPreferenceStore(path).load([{ id: '$7', name: 'scratch' }], `9:${writtenAt + 60}`)
+    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: ['name:perf'] }])
+    expect((await new SessionPreferenceStore(path).load([{ id: '$7', name: 'scratch' }, { id: '$8', name: 'perf' }], `9:${writtenAt + 60}`)).repositoryGroups)
+      .toEqual([{ ...group, sessionIds: ['$8'] }])
   })
 
   it('rejects malformed placeholders and server ids', () => {
