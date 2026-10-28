@@ -3,7 +3,7 @@ import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
 import './session-create-dialog.css'
 
-type Props = Pick<TmuxCreateControlsProps, 'token' | 'disabled' | 'onCreateSession' | 'onCreated' | 'probeRepo' | 'loadClaudeProfiles'> & {
+type Props = Pick<TmuxCreateControlsProps, 'token' | 'disabled' | 'onCreateSession' | 'onCreated' | 'probeRepo' | 'loadClaudeProfiles' | 'loadModelCatalogs' | 'naming'> & {
   request: SessionCreateRequest
   onClose: () => void
 }
@@ -17,11 +17,13 @@ export function SessionCreateDialog({ request, onClose, ...form }: Props) {
   useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog || dialog.contains(document.activeElement)) return
-    dialog.querySelector<HTMLInputElement>('input[name="sessionName"]')?.focus()
+    // The prompt comes first: paste a screenshot straight away. Without one, the name.
+    dialog.querySelector<HTMLElement>('textarea[name="openingPrompt"], input[name="sessionName"]')?.focus()
   }, [request.id])
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key !== 'Escape') return
+    // A picker's menu renders outside the dialog and closes itself on Escape.
+    if (event.key !== 'Escape' || !dialogRef.current?.contains(event.target as Node)) return
     event.preventDefault()
     event.stopPropagation()
     if (!pending) onClose()

@@ -41,3 +41,15 @@ describe('the tmux creation client', () => {
     expect(fetcher).toHaveBeenCalledOnce()
   })
 })
+
+describe('the model catalog client', () => {
+  it('keeps only well-formed lists from the daemon', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ catalogs: {
+      codex: { models: [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }, { value: '--bad', displayName: 'x' }], updatedAt: 5 },
+      muse: { models: 'nope', updatedAt: 1 },
+      cursor: { models: [{ value: 'auto', displayName: 'Auto' }] },
+    } })))
+    await expect(createTmuxHttpApi('t', fetcher).models()).resolves.toEqual({ codex: { models: [{ value: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol' }], updatedAt: 5 } })
+    expect(fetcher).toHaveBeenCalledWith('/api/tmux/models', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer t' }) }))
+  })
+})

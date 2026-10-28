@@ -29,7 +29,7 @@ import { shellQuote } from '../../agent-resume-command.js'
 import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from '../provider.js'
 import { applyCodexRateLimits } from '../plan-usage.js'
-import type { AgentSessionSpec } from '../session.js'
+import { hasInitialTurn, type AgentSessionSpec } from '../session.js'
 import { CodexRpcClient, type CodexTransport } from './client.js'
 import { CodexItemMapper, inputQuestions } from './items.js'
 import {
@@ -271,7 +271,7 @@ export class CodexChatSession implements ChatProviderSession {
       this.update({ status: this.activeTurn ? 'running' : 'idle' })
       if (this.spec.returnedFromClaudeCode) this.emitItems(this.mapper.notice('info', 'Returned from Codex TUI'))
       this.switchReady()
-      if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
+      if (hasInitialTurn(this.spec)) this.send(this.spec.initialPrompt ?? '', this.spec.initialImages)
     } catch (error) {
       if (!this.closing) { this.emitItems(this.mapper.notice('error', `Couldn't start Codex: ${errorText(error)}`)); this.update({ status: 'error', error: errorText(error) }) }
       this.close()

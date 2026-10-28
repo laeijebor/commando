@@ -26,7 +26,7 @@ import { shellQuote } from '../../agent-resume-command.js'
 import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from '../provider.js'
 import { RpcError, record, type RpcNotification, type RpcRequest } from '../rpc-client.js'
-import type { AgentSessionSpec } from '../session.js'
+import { hasInitialTurn, type AgentSessionSpec } from '../session.js'
 import { MuseRpcClient, uuidv7, type MuseApprovalMode, type MuseInput, type MuseMethods, type MuseTransport, type MuseUserInputAnswer } from './client.js'
 import { MuseItemMapper, museQuestions } from './items.js'
 
@@ -210,7 +210,7 @@ export class MuseChatSession implements ChatProviderSession {
       this.update({ status: this.activeTurn ? 'running' : 'idle' })
       if (this.spec.returnedFromClaudeCode) this.emitItems(this.mapper.notice('info', 'Returned from the Muse TUI'))
       this.switchReady()
-      if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
+      if (hasInitialTurn(this.spec)) this.send(this.spec.initialPrompt ?? '', this.spec.initialImages)
     } catch (error) {
       if (!this.closing) { this.emitItems(this.mapper.notice('error', `Couldn't start Muse: ${this.describe(error)}`)); this.update({ status: 'error', error: this.describe(error) }) }
       this.close()

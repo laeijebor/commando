@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  autoSessionName,
   CHAT_PERMISSION_MODES,
   chatPermissionModes,
   isChatLaunchProvider,
@@ -25,6 +26,8 @@ import {
   type SessionAgentLaunchAcknowledgment,
 } from '../shared/tmux-create.js'
 import { isChatConversationSessionId } from '../shared/chat-conversations.js'
+import { isModelValue, parseChatImageRefs } from '../shared/agent-chat.js'
+import { SESSION_ADJECTIVES, SESSION_ANIMALS } from '../shared/session-identity.js'
 import { isChatPlanDir } from './chat-plans-dir.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 
@@ -151,16 +154,23 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess, model, images } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown; model?: unknown; images?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
   if (prompt !== undefined && (typeof prompt !== 'string' || Buffer.byteLength(prompt, 'utf8') > 8_192 || SHELL_COMMAND_CONTROL_CHARACTER.test(prompt))) {
     throw new Error('agent prompt must be at most 8192 bytes without unsupported control characters')
   }
-  if (!isChatLaunchProvider(provider) && (configDir !== undefined || permissionMode !== undefined || readableDir !== undefined)) {
-    throw new Error('Only Claude chat accepts a profile, permission mode and readable folder')
+  if (!isChatLaunchProvider(provider) && (permissionMode !== undefined || readableDir !== undefined)) {
+    throw new Error('Only a chat accepts a permission mode and readable folder')
   }
+  if (configDir !== undefined && !isChatLaunchProvider(provider) && provider !== 'claude') throw new Error('Only Claude accepts a profile')
+  if (model !== undefined && (!isModelValue(model) || (!isChatLaunchProvider(provider) && provider !== 'claude' && provider !== 'codex'))) {
+    throw new Error('Only a chat, Claude or Codex accepts a model id')
+  }
+  if (images !== undefined && !isChatLaunchProvider(provider)) throw new Error('Only a chat accepts attached images')
+  const imageRefs = images === undefined ? undefined : parseChatImageRefs(images)
+  if (images !== undefined && !imageRefs) throw new Error('images must be up to 10 uploaded image or video ids')
   if (resume !== undefined && !isChatLaunchProvider(provider) && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (fullAccess !== undefined && (fullAccess !== true || provider !== 'muse-chat' || permissionMode !== 'bypassPermissions')) throw new Error('Only a Muse chat in bypassPermissions can ask for full access')
@@ -181,6 +191,8 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     provider: provider as SessionAgentLaunch['provider'],
     ...(typeof prompt === 'string' ? { prompt } : {}),
     ...(typeof configDir === 'string' ? { configDir } : {}),
+    ...(typeof model === 'string' ? { model } : {}),
+    ...(imageRefs?.length ? { images: imageRefs } : {}),
     ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
     ...(typeof readableDir === 'string' ? { readableDir } : {}),
     ...(typeof resume === 'string' ? { resume } : {}),
@@ -434,6 +446,21 @@ function parseCreatedTarget(output: string, kind: TmuxCreatedTarget['kind']): Tm
   }
 }
 
+const AUTO_NAME_ATTEMPTS = 20
+
+/** For a session with nothing to name it after (a screenshot alone): `amber-fox`, say. */
+export function generatedSessionName(random: () => number = Math.random): string {
+  const pick = <T,>(list: readonly T[]) => list[Math.floor(random() * list.length)]!
+  return `${pick(SESSION_ADJECTIVES)}-${pick(SESSION_ANIMALS)}`.toLowerCase()
+}
+
+/** The names an auto-named session tries in turn: the hint or the prompt's first words, then -2, -3… */
+function autoNameCandidates(hint: unknown, agent: SessionAgentLaunch | undefined): string[] {
+  if (hint !== undefined && typeof hint !== 'string') throw new Error('session name must be a string')
+  const base = autoSessionName(hint ?? '') || autoSessionName(agent?.prompt ?? '') || generatedSessionName()
+  return [base, ...Array.from({ length: AUTO_NAME_ATTEMPTS - 1 }, (_, index) => `${base}-${index + 2}`)]
+}
+
 export class TmuxCreator {
   private readonly launching = new Set<string>()
 
@@ -449,10 +476,12 @@ export class TmuxCreator {
 
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */
   async createSession(input: CreateTmuxSessionRequest, resumeCommand?: string): Promise<TmuxCreateResponse> {
-    const name = validatedName(input.name, 'session name', true)
+    if (input.autoName !== undefined && typeof input.autoName !== 'boolean') throw new Error('autoName must be a boolean')
+    const autoName = input.autoName === true
     const windowName = optionalName(input.windowName, 'window name')
     const cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
+    const names = autoName ? autoNameCandidates(input.name, agent) : [validatedName(input.name, 'session name', true)]
     if (input.empty !== undefined && typeof input.empty !== 'boolean') throw new Error('empty must be a boolean')
     const empty = input.empty === true
     if (empty && (agent || resumeCommand !== undefined)) throw new Error('An empty session cannot also start an agent')
@@ -461,37 +490,72 @@ export class TmuxCreator {
       ? { agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } }
       : {}
     if (input.worktree === undefined) {
-      const created = await this.newSession(name, windowName, cwd, undefined, agentArgv, empty)
-      return { created, ...acknowledgment(created) }
+      if (!autoName) {
+        const created = await this.newSession(names[0]!, windowName, cwd, undefined, agentArgv, empty)
+        return { created, ...acknowledgment(created) }
+      }
+      for (const name of names) {
+        if (await this.sessionExists(name)) continue
+        try {
+          const created = await this.newSession(name, windowName, cwd, undefined, agentArgv, empty)
+          return { created, ...acknowledgment(created) }
+        } catch (error) {
+          // Taken between the check and the create: the next name will do.
+          if (!await this.sessionExists(name)) throw error
+        }
+      }
+      throw new Error(`Every name tried for this session is taken (${names[0]}…)`)
     }
 
     if (!this.worktrees) throw new Error('Worktree creation is not available')
     if (!cwd) throw new Error('A working directory is required to create a worktree')
-    const branch = validatedName(input.worktree.branch, 'branch name')
+    // An auto-named session names its branch too, and must not borrow one that already exists.
+    const branchFromName = autoName && !input.worktree.branch
+    const chosenBranch = branchFromName ? undefined : validatedName(input.worktree.branch, 'branch name')
     const worktreePath = validatedPath(input.worktree.path)
     const prepareCommand = optionalPrepareCommand(input.worktree.prepareCommand)
-    if (await this.sessionExists(name)) throw new Error(`Session ${name} already exists`)
-
     const repo = await this.worktrees.probe(cwd)
     if (!repo.isRepo || !repo.mainRoot) {
       throw new GitWorktreeError('not-repo', `${cwd} is not inside a git repository`)
     }
-    const { worktree, rollback } = await this.worktrees.createWorktree({
-      mainRoot: repo.mainRoot,
-      branch,
-      path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch),
-      ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
-    })
+    for (const [index, name] of names.entries()) {
+      if (await this.sessionExists(name)) {
+        if (!autoName) throw new Error(`Session ${name} already exists`)
+        continue
+      }
+      const branch = chosenBranch ?? name
+      let created: CreateWorktreeResult
+      try {
+        created = await this.worktrees.createWorktree({
+          mainRoot: repo.mainRoot,
+          branch,
+          path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch),
+          ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
+          ...(branchFromName ? { newBranchOnly: true } : {}),
+        })
+      } catch (error) {
+        // A path the user typed stays the same whatever the name, so it is not retried.
+        const taken = error instanceof GitWorktreeError && (error.kind === 'branch-exists' || error.kind === 'branch-checked-out' || (error.kind === 'path-exists' && !worktreePath))
+        if (branchFromName && taken && index < names.length - 1) continue
+        throw error
+      }
+      const target = await this.sessionInWorktree(name, windowName, created, prepareCommand, agentArgv, empty)
+      return { created: target, worktree: created.worktree, ...acknowledgment(target) }
+    }
+    throw new Error(`Every name tried for this session is taken (${names[0]}…)`)
+  }
+
+  /** Starts the session in a worktree just created, removing the worktree again if tmux fails. */
+  private async sessionInWorktree(
+    name: string,
+    windowName: string | undefined,
+    { worktree, rollback }: CreateWorktreeResult,
+    prepareCommand: string | undefined,
+    agentArgv: string[] | undefined,
+    empty: boolean,
+  ): Promise<TmuxCreatedTarget> {
     try {
-      const created = await this.newSession(
-        name,
-        windowName,
-        worktree.path,
-        prepareCommand,
-        agentArgv,
-        empty,
-      )
-      return { created, worktree, ...acknowledgment(created) }
+      return await this.newSession(name, windowName, worktree.path, prepareCommand, agentArgv, empty)
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       if (await this.sessionExists(name)) {
@@ -540,11 +604,15 @@ export class TmuxCreator {
 
   private async agentArgv(agent: SessionAgentLaunch): Promise<string[]> {
     // Without a profile, Claude would sign in with the bare ~/.claude login, which may not be the one in use.
-    const configDir = agent.provider === 'claude-chat' && !agent.configDir ? await this.defaultClaudeConfigDir().catch(() => undefined) : undefined
+    const configDir = (agent.provider === 'claude-chat' || agent.provider === 'claude') && !agent.configDir ? await this.defaultClaudeConfigDir().catch(() => undefined) : undefined
     const argv = sessionAgentArgv(configDir ? { ...agent, configDir } : agent)
     argv[0] = isChatLaunchProvider(agent.provider)
       ? COMMANDO_AGENT_LAUNCHER
       : await this.resolveExecutable(argv[0]!, this.launchEnv)
+    // Terminal Claude picks its login the way `claudep`-style aliases do: from the environment.
+    // The bare ~/.claude profile is Claude's own default, so the variable is cleared rather than set.
+    const profile = agent.provider === 'claude' ? agent.configDir ?? configDir : undefined
+    if (profile) return profile === join(homedir(), '.claude') ? ['/usr/bin/env', '-u', 'CLAUDE_CONFIG_DIR', ...argv] : ['/usr/bin/env', `CLAUDE_CONFIG_DIR=${profile}`, ...argv]
     return argv
   }
 

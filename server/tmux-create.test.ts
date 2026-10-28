@@ -854,6 +854,78 @@ describe('TmuxCreator worktree-backed sessions', () => {
   })
 })
 
+describe('auto-named sessions', () => {
+  /** tmux runner where only the named sessions exist. */
+  const tmuxWith = (existing: string[]) => vi.fn(async (args: readonly string[]): Promise<string> => {
+    if (args.includes('has-session')) {
+      if (existing.includes(String(args.at(-1)).slice(1))) return ''
+      throw new Error("can't find session")
+    }
+    return output()
+  })
+  const sessionName = (run: ReturnType<typeof tmuxWith>) => {
+    const args = run.mock.calls.find(([call]) => call.includes('new-session'))![0]
+    return args[args.indexOf('-s') + 1]
+  }
+
+  it("names a session after the hint, else the prompt's first words, and makes it unique", async () => {
+    const run = tmuxWith(['fix-the-flaky-login-test', 'fix-the-flaky-login-test-2'])
+    const creator = new TmuxCreator(run, [], undefined, async () => '/never', {})
+    await creator.createSession({ name: '', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', prompt: 'Fix the flaky login test. It fails on CI about once a day' } })
+    expect(sessionName(run)).toBe('fix-the-flaky-login-test-3')
+    const hinted = tmuxWith([])
+    await new TmuxCreator(hinted, [], undefined, async () => '/never', {}).createSession({ name: 'Quick chat: v2.0', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', prompt: 'ignored' } })
+    expect(sessionName(hinted)).toBe('quick-chat-v2-0')
+    const imageOnly = tmuxWith([])
+    await new TmuxCreator(imageOnly, [], undefined, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', images: [{ id: `${'e'.repeat(64)}.png` }] } })
+    expect(sessionName(imageOnly)).toMatch(/^[a-z]+-[a-z]+$/u)
+  })
+
+  it('names the worktree branch after the session and never reuses an existing branch', async () => {
+    const run = tmuxWith([])
+    const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => {
+      if (input.branch === 'tidy-readme') throw new GitWorktreeError('branch-exists', 'Branch tidy-readme already exists')
+      return { worktree: { path: input.path, branch: input.branch, base: 'origin/main', reusedBranch: false }, rollback: async () => {} }
+    })
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
+    const result = await new TmuxCreator(run, [], git, async () => '/never', {}).createSession({
+      name: '', autoName: true, cwd: '/repo', worktree: { branch: '' }, agent: { provider: 'claude-chat', prompt: 'Tidy README' },
+    })
+    expect(createWorktree.mock.calls.map(([input]) => [input.branch, input.newBranchOnly])).toEqual([['tidy-readme', true], ['tidy-readme-2', true]])
+    expect(result.worktree?.branch).toBe('tidy-readme-2')
+    expect(sessionName(run)).toBe('tidy-readme-2')
+  })
+
+  it('tries the next name when another session takes it mid-create, but never retries a worktree path the user typed', async () => {
+    const taken = new Set<string>()
+    const run = vi.fn(async (args: readonly string[]): Promise<string> => {
+      const name = String(args.at(-1)).slice(1)
+      if (args.includes('has-session')) { if (taken.has(name)) return ''; throw new Error("can't find session") }
+      const requested = args[args.indexOf('-s') + 1]!
+      if (requested === 'race') { taken.add('race'); throw new Error('duplicate session: race') }
+      return output()
+    })
+    await new TmuxCreator(run, [], undefined, async () => '/never', {}).createSession({ name: 'race', autoName: true, cwd: '/tmp', agent: { provider: 'claude-chat', prompt: 'x' } })
+    const created = run.mock.calls.filter(([args]) => args.includes('new-session')).map(([args]) => args[args.indexOf('-s') + 1])
+    expect(created).toEqual(['race', 'race-2'])
+
+    const createWorktree = vi.fn(async (): Promise<CreateWorktreeResult> => { throw new GitWorktreeError('path-exists', '/mine already exists') })
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
+    await expect(new TmuxCreator(tmuxWith([]), [], git, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/repo', worktree: { branch: '', path: '/mine' }, agent: { provider: 'claude-chat', prompt: 'Go' } })).rejects.toThrow(/already exists/)
+    expect(createWorktree).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a branch the user typed, and refuses a taken name when not auto-named', async () => {
+    const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => ({ worktree: { path: input.path, branch: input.branch, base: '', reusedBranch: true }, rollback: async () => {} }))
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
+    await new TmuxCreator(tmuxWith([]), [], git, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/repo', worktree: { branch: 'mine' }, agent: { provider: 'claude-chat', prompt: 'Go' } })
+    expect(createWorktree).toHaveBeenCalledWith(expect.not.objectContaining({ newBranchOnly: true }))
+    expect(createWorktree.mock.calls[0]![0].branch).toBe('mine')
+    await expect(new TmuxCreator(tmuxWith(['taken']), [], git, async () => '/never', {}).createSession({ name: 'taken', cwd: '/repo', worktree: { branch: 'b' } })).rejects.toThrow(/already exists/)
+    await expect(new TmuxCreator(tmuxWith([]), [], git, async () => '/never', {}).createSession({ name: '', cwd: '/tmp' })).rejects.toThrow(/session name/)
+  })
+})
+
 describe('Claude chat launches', () => {
   const home = process.env.HOME ?? '/Users/test'
 
@@ -904,6 +976,47 @@ describe('Claude chat launches', () => {
     expect(args.at(-1)).toContain(COMMANDO_AGENT_LAUNCHER)
   })
 
+  it('starts a chat on the chosen model with its pasted images, before the prompt', async () => {
+    const run = runner()
+    const image = `${'a'.repeat(64)}.png`
+    await new TmuxCreator(run, [], undefined, async () => '/never', { PATH: '/bin' }).createSession({
+      name: 'quick', cwd: '/tmp',
+      agent: { provider: 'claude-chat', configDir: `${home}/.claudep`, model: 'sonnet', permissionMode: 'default', images: [{ id: image, name: 'shot: one.png' }], prompt: 'What is this?' },
+    })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([
+      COMMANDO_AGENT_LAUNCHER, 'claude', '--config-dir', `${home}/.claudep`, '--model', 'sonnet', '--permission-mode', 'default', '--image', `${image}:shot: one.png`, '--prompt', 'What is this?',
+    ], undefined, { PATH: '/bin' }))
+  })
+
+  it("starts terminal Claude on the bare ~/.claude login by clearing the variable, and on the default profile when none is named", async () => {
+    const run = runner()
+    await new TmuxCreator(run, [], undefined, async () => '/bin/claude', { PATH: '/bin' }).createSession({ name: 'bare', cwd: '/tmp', agent: { provider: 'claude', configDir: join(homedir(), '.claude') } })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand(['/usr/bin/env', '-u', 'CLAUDE_CONFIG_DIR', '/bin/claude'], undefined, { PATH: '/bin' }))
+    const fallback = runner()
+    await new TmuxCreator(fallback, [], undefined, async () => '/bin/claude', { PATH: '/bin' }, async () => `${home}/.claudep`).createSession({ name: 'term', cwd: '/tmp', agent: { provider: 'claude' } })
+    expect(fallback.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand(['/usr/bin/env', `CLAUDE_CONFIG_DIR=${home}/.claudep`, '/bin/claude'], undefined, { PATH: '/bin' }))
+  })
+
+  it('starts terminal Claude on a profile and model the way claudep-style aliases do', async () => {
+    const run = runner()
+    await new TmuxCreator(run, [], undefined, async () => '/bin/claude', { PATH: '/bin' }).createSession({
+      name: 'term', cwd: '/tmp', agent: { provider: 'claude', configDir: `${home}/.claudew`, model: 'opus', prompt: 'Hi' },
+    })
+    expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([
+      '/usr/bin/env', `CLAUDE_CONFIG_DIR=${home}/.claudew`, '/bin/claude', '--model', 'opus', '--', ' Hi',
+    ], undefined, { PATH: '/bin' }))
+  })
+
+  it('refuses images outside chats, malformed images and bad model ids', async () => {
+    const creator = new TmuxCreator(runner(), [], undefined, async () => '/bin/claude', {})
+    const image = { id: `${'b'.repeat(64)}.png` }
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', images: [image] } })).rejects.toThrow(/Only a chat accepts attached images/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', images: [{ id: '../etc/passwd' }] } })).rejects.toThrow(/uploaded image or video ids/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', images: Array.from({ length: 11 }, () => image) } })).rejects.toThrow(/images/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', model: '--yolo' } })).rejects.toThrow(/model/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'opencode', model: 'gpt' } })).rejects.toThrow(/model/)
+  })
+
   it("launches a chat with its stashed plan's folder ahead of the prompt", async () => {
     const run = runner()
     const dir = join(chatPlansDir(), 'f'.repeat(32))
@@ -922,11 +1035,13 @@ describe('Claude chat launches', () => {
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', configDir: '/etc/passwd' } })).rejects.toThrow(/profile/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', configDir: `${home}/../.claudep` } })).rejects.toThrow(/profile/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', permissionMode: 'yolo' as never } })).rejects.toThrow(/permission/)
-    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', configDir: `${home}/.claudep` } })).rejects.toThrow(/Only Claude chat/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'codex', configDir: `${home}/.claudep` } })).rejects.toThrow(/Only Claude accepts a profile/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', configDir: '/etc/passwd' } })).rejects.toThrow(/profile/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', permissionMode: 'plan' } })).rejects.toThrow(/Only a chat/)
     // A chat may be handed one stashed plan's folder, never the plans folder or anything else.
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: chatPlansDir() } })).rejects.toThrow(/stashed plan folder/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', readableDir: home } })).rejects.toThrow(/stashed plan folder/)
-    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', readableDir: join(chatPlansDir(), 'a'.repeat(32)) } })).rejects.toThrow(/Only Claude chat/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', readableDir: join(chatPlansDir(), 'a'.repeat(32)) } })).rejects.toThrow(/Only a chat/)
     expect(validClaudeConfigDir(`${home}/.claudep`)).toBe(true)
     expect(validClaudeConfigDir(`${home}/projects/.claude`)).toBe(false)
   })

@@ -1,18 +1,17 @@
-import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react'
+import { type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { ChevronRight, GitBranch, Paperclip } from 'lucide-react'
 import {
   chatPermissionModes,
   isChatLaunchProvider,
   chatProfileConfigDir,
-  claudeProfileLabel,
   defaultWorktreePath,
+  modelCatalogKey,
   sanitizeBranchName,
-  SESSION_AGENT_CHOICES,
   requireSessionAgentLaunch,
   TmuxAgentLaunchCompatibilityError,
-  type ChatPermissionMode,
   type ClaudeProfile,
-  type SessionAgentProvider,
   type CreateTmuxSessionRequest,
+  type ModelCatalogs,
   type GitRepoInfo,
   type TmuxCreatedTarget,
   type TmuxCreatedWorktree,
@@ -22,6 +21,26 @@ import {
 import { loadChatLaunch, saveChatLaunch, type ChatLaunchPreference } from './chatLaunchPreferences'
 import './tmux-create.css'
 import { createAgentChatsApi } from './agentChatsApi'
+import { ImageViewer, Thumbnail, type ViewableImage } from './chat/ChatImages'
+import { uploadChatImage, uploadChatVideo } from './chatInputApi'
+import {
+  agentOptions,
+  loadModelChoice,
+  modelCatalogFor,
+  modelChoices,
+  modelProvider,
+  saveModelChoice,
+  shortPath,
+  takesImages,
+  takesPrompt,
+  usesClaudeProfile,
+  type AgentOption,
+  type StartWith,
+} from './newSessionAgents'
+import { AgentPicker, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
+import { isAttachableFile, useOpeningAttachments, type AttachmentUploads } from './useOpeningAttachments'
+import type { SessionNamingApi } from './sessionNamingApi'
+import type { SessionNamingResponse } from '../shared/session-naming'
 
 export type SessionCreateRepo = { root: string; name: string; defaultBranch?: string }
 
@@ -54,13 +73,20 @@ export type TmuxCreateControlsProps = {
   probeRepo?: (directory: string) => Promise<GitRepoInfo>
   /** Claude profiles (config dirs) a chat pane can start with. */
   loadClaudeProfiles?: () => Promise<ClaudeProfile[]>
+  /** Each provider's models, remembered by the daemon from earlier chats. */
+  loadModelCatalogs?: () => Promise<ModelCatalogs>
+  /** Where pasted images and videos go; defaults to the daemon's chat uploads. */
+  uploads?: AttachmentUploads
+  /** Names a session from its prompt when no name is given (the daemon's naming model). */
+  naming?: Pick<SessionNamingApi, 'suggest' | 'describe'>
 }
 
 type RepoProbe = { directory: string; info: GitRepoInfo } | null
 
-/** `none` starts the session with an empty pane that offers to launch something later. */
-type StartWith = SessionAgentProvider | 'shell' | 'none'
-const START_WITH_CHOICES: readonly { value: StartWith; label: string }[] = [{ value: 'none', label: 'None' }, ...SESSION_AGENT_CHOICES]
+const START_WITH_VALUES: readonly StartWith[] = ['none', 'shell', 'claude-chat', 'codex-chat', 'muse-chat', 'cursor-chat', 'claude', 'codex', 'opencode', 'cursor']
+/** Before anything is remembered, a new session is a quick Claude chat. */
+const DEFAULT_START_WITH: StartWith = 'claude-chat'
+const LAST_START_WITH = '*'
 
 function knownRepoProbe(request: SessionCreateRequest | null): RepoProbe {
   const repo = request?.repo
@@ -161,25 +187,34 @@ function saveWorktreePrepareCommand(repoRoot: string, command: string): void {
   }
 }
 
+/** What this repository last started with, else what was last started anywhere. */
 function loadStartWith(repoKey: string | undefined): StartWith {
-  if (!repoKey) return 'none'
   try {
-    const stored = (JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY) ?? '{}') as Record<string, unknown> | null)?.[repoKey]
-    return START_WITH_CHOICES.find((choice) => choice.value === stored)?.value ?? 'none'
+    const stored = JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY) ?? '{}') as Record<string, unknown> | null
+    const known = (value: unknown) => START_WITH_VALUES.find((choice) => choice === value)
+    return (repoKey ? known(stored?.[repoKey]) : undefined) ?? known(stored?.[LAST_START_WITH]) ?? DEFAULT_START_WITH
   } catch {
-    return 'none'
+    return DEFAULT_START_WITH
   }
 }
 
 function saveStartWith(repoKey: string | undefined, startWith: StartWith): void {
-  if (!repoKey) return
   try {
     const stored = JSON.parse(window.localStorage.getItem(START_WITH_STORAGE_KEY) ?? '{}') as unknown
     const all = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored as Record<string, unknown> : {}
-    window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ ...all, [repoKey]: startWith }))
+    window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ ...all, ...(repoKey ? { [repoKey]: startWith } : {}), [LAST_START_WITH]: startWith }))
   } catch {
     // Persistence is optional when browser storage is unavailable.
   }
+}
+
+const defaultUploads = (token: string): AttachmentUploads => ({
+  uploadImage: (image) => uploadChatImage(token, image),
+  uploadVideo: (file, signal) => uploadChatVideo(token, file, signal),
+})
+
+function firstLine(text: string): string {
+  return text.trim().split('\n', 1)[0] ?? ''
 }
 
 export function TmuxCreateControls({
@@ -192,12 +227,20 @@ export function TmuxCreateControls({
   onPendingChange,
   probeRepo,
   loadClaudeProfiles,
+  loadModelCatalogs,
+  uploads,
+  naming,
 }: TmuxCreateControlsProps) {
   const prepareEditVersion = useRef(0)
   const [openVersion, setOpenVersion] = useState(0)
   const detailsRef = useRef<HTMLDetailsElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
   const sessionNameRef = useRef<HTMLInputElement>(null)
+  const promptRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const submitRef = useRef<HTMLButtonElement>(null)
   const [sessionName, setSessionName] = useState('')
+  const [windowName, setWindowName] = useState('')
   const [workingDirectoryHistory, setWorkingDirectoryHistory] = useState(loadWorkingDirectoryHistory)
   const [workingDirectory, setWorkingDirectory] = useState(
     sessionCreateRequest?.repo?.root ?? sessionCreateRequest?.suggestedDirectories[0] ?? workingDirectoryHistory[0] ?? '',
@@ -217,10 +260,34 @@ export function TmuxCreateControls({
   const [prepareCommand, setPrepareCommand] = useState('')
   const [prepareEnabled, setPrepareEnabled] = useState(true)
   const [pending, setPending] = useState(false)
-  const [agentProvider, setAgentProvider] = useState<StartWith>('none')
+  // Known on the first render, so focus lands on the prompt only when there will be one.
+  const [agentProvider, setAgentProvider] = useState<StartWith>(() => loadStartWith(
+    (sessionCreateRequest?.repo?.root ?? sessionCreateRequest?.suggestedDirectories[0] ?? workingDirectoryHistory[0]) || undefined,
+  ))
   const [openingPrompt, setOpeningPrompt] = useState('')
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfile[] | null>(null)
+  /** The Claude login, shared by Claude chat and Claude terminal. */
+  const [claudeProfile, setClaudeProfile] = useState<string | undefined>(() => loadChatLaunch(undefined).configDir)
   const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined))
+  const [modelCatalogs, setModelCatalogs] = useState<ModelCatalogs | null>(null)
+  const [modelPick, setModelPick] = useState<{ key: string; value: string } | null>(null)
+  const [namingInfo, setNamingInfo] = useState<SessionNamingResponse | null>(null)
+  /** Set while a model names the session; pressing create again skips the wait. */
+  const namingRef = useRef<AbortController | null>(null)
+  /** Set when the form goes away mid-naming (the dialog closed): the session is then not created. */
+  const unmountedRef = useRef(false)
+  useEffect(() => {
+    unmountedRef.current = false
+    return () => {
+      unmountedRef.current = true
+      namingRef.current?.abort()
+    }
+  }, [])
+  const [namingWith, setNamingWith] = useState<string | null>(null)
+  /** null follows whether something needs attention; true/false is the user's own choice. */
+  const [workspaceChoice, setWorkspaceChoice] = useState<boolean | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const [viewing, setViewing] = useState<ViewableImage | null>(null)
   const [partialCreation, setPartialCreation] = useState<{ response: TmuxCreateResponse; groupId: string } | null>(null)
   const partialCreationRef = useRef<TmuxCreateResponse | null>(null)
   const openingPartialCreationRef = useRef(false)
@@ -231,6 +298,7 @@ export function TmuxCreateControls({
   const probeVersion = useRef(0)
   const probeRepoRef = useRef(probeRepo)
   probeRepoRef.current = probeRepo
+  const attachments = useOpeningAttachments(uploads ?? defaultUploads(token))
   const availableDirectories = [
     ...groupDirectorySuggestions,
     ...workingDirectoryHistory.filter((directory) => !groupDirectorySuggestions.includes(directory)),
@@ -246,12 +314,18 @@ export function TmuxCreateControls({
   const repo = repoProbe && repoProbe.directory === workingDirectory && repoProbe.info.isRepo && repoProbe.info.mainRoot
     ? repoProbe.info
     : null
-  const unavailable = disabled || pending || (probing && !repo)
+  const unavailable = disabled || pending || namingWith !== null || (probing && !repo)
   const notRepo = Boolean(probeRepo && workingDirectory && repoProbe && repoProbe.directory === workingDirectory && !repoProbe.info.isRepo)
+  const promptAccepted = takesPrompt(agentProvider)
+  const imagesAccepted = takesImages(agentProvider)
+  const promptGiven = promptAccepted && (openingPrompt.trim() !== '' || (imagesAccepted && attachments.attachments.length > 0))
+  // With a prompt the name may be left out: the daemon names the session (and its branch) from it.
+  const autoName = !sessionName.trim() && promptGiven
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>') : '')
   const worktreeRequested = Boolean(repo && worktreeEnabled)
   const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
+  const workspaceOpen = workspaceChoice ?? (notRepo || probeTimedOut)
 
   useEffect(() => { syncStoredPrepareCommands(token) }, [token])
 
@@ -269,30 +343,86 @@ export function TmuxCreateControls({
     return () => { cancelled = true }
   }, [repo?.mainRoot, sessionCreateRequest?.id, openVersion, token])
 
-  // The starting pane is remembered per repository; each chat provider keeps its own settings.
+  // The starting agent is remembered per repository; each chat provider keeps its own settings.
   const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
   const preferenceProvider = isChatLaunchProvider(agentProvider) ? agentProvider : 'claude-chat'
   useEffect(() => {
     setAgentProvider(loadStartWith(repoKey))
+    setClaudeProfile(loadChatLaunch(repoKey).configDir)
+    // A model picked for one repository is not a choice for the next.
+    setModelPick(null)
   }, [repoKey])
   useEffect(() => {
     setChatLaunch(loadChatLaunch(repoKey, preferenceProvider))
   }, [repoKey, preferenceProvider])
 
+  // Profiles name the Claude rows of the Agent menu, so they load straight away.
   useEffect(() => {
-    if (agentProvider !== 'claude-chat' || claudeProfiles || !loadClaudeProfiles) return
+    if (claudeProfiles || !loadClaudeProfiles) return
     let cancelled = false
     void loadClaudeProfiles().then(
       (profiles) => { if (!cancelled) setClaudeProfiles(profiles) },
-      () => { if (!cancelled) setClaudeProfiles([]) },
+      (cause: unknown) => {
+        console.warn('Unable to load Claude profiles; starting Claude on the remembered or default one', cause)
+        if (!cancelled) setClaudeProfiles([])
+      },
     )
-    // A failed load leaves an empty list; the remembered profile is still sent.
-
+    // A failed load leaves an empty list; the remembered profile (else the daemon's default) is used.
     return () => { cancelled = true }
-  }, [agentProvider, claudeProfiles, loadClaudeProfiles])
-  // Wait for the profile list so a chat never starts on the wrong login by accident.
-  const chatProfilesLoading = agentProvider === 'claude-chat' && Boolean(loadClaudeProfiles) && claudeProfiles === null
-  const chatConfigDir = claudeProfiles ? chatProfileConfigDir(chatLaunch.configDir, claudeProfiles) : undefined
+  }, [claudeProfiles, loadClaudeProfiles])
+  // The parent may pass a new function each render; refetch only when the form (re)opens.
+  const loadModelCatalogsRef = useRef(loadModelCatalogs)
+  loadModelCatalogsRef.current = loadModelCatalogs
+  const namingRefApi = useRef(naming)
+  namingRefApi.current = naming
+  useEffect(() => {
+    const api = namingRefApi.current
+    if (!api) return
+    let cancelled = false
+    void api.describe().then(
+      (info) => { if (!cancelled) setNamingInfo(info) },
+      (cause: unknown) => console.warn('Unable to load session naming settings', cause),
+    )
+    return () => { cancelled = true }
+  }, [openVersion, sessionCreateRequest?.id])
+  useEffect(() => {
+    const load = loadModelCatalogsRef.current
+    if (!load) return
+    let cancelled = false
+    void load().then(
+      (catalogs) => { if (!cancelled) setModelCatalogs(catalogs) },
+      (cause: unknown) => {
+        console.warn('Unable to load model lists; offering the default model', cause)
+        if (!cancelled) setModelCatalogs((current) => current ?? {})
+      },
+    )
+    return () => { cancelled = true }
+  }, [openVersion, sessionCreateRequest?.id])
+  // Wait for the profile list so Claude never starts on the wrong login by accident.
+  const chatProfilesLoading = usesClaudeProfile(agentProvider) && Boolean(loadClaudeProfiles) && claudeProfiles === null
+  // Keep a remembered profile even when the list could not be loaded this time.
+  const claudeConfigDir = claudeProfiles?.length ? chatProfileConfigDir(claudeProfile, claudeProfiles) : claudeProfile
+  const chatProvider = modelProvider(agentProvider)
+  const catalogKey = chatProvider ? modelCatalogKey(chatProvider, chatProvider === 'claude' ? claudeConfigDir : undefined) : null
+  const modelEntry = modelCatalogFor(modelCatalogs, agentProvider, claudeConfigDir)
+  const models = chatProvider ? modelChoices(modelEntry) : []
+  const wantedModel = catalogKey && modelPick?.key === catalogKey ? modelPick.value : catalogKey ? loadModelChoice(repoKey, catalogKey) : undefined
+  // A remembered model is kept while its list is unknown (not loaded, or never seen for this profile).
+  const listKnown = Boolean(modelEntry)
+  const selectedModel = models.find((model) => model.value === wantedModel)?.value
+    ?? (!listKnown && wantedModel ? wantedModel : models[0]?.value ?? 'default')
+  const modelChoicesShown = !listKnown && wantedModel && !models.some((model) => model.value === wantedModel)
+    ? [...models, { value: wantedModel, displayName: wantedModel }]
+    : models
+  const permissionModes = isChatLaunchProvider(agentProvider) ? chatPermissionModes(agentProvider) : []
+  // Who will name the session: the naming model while it works here, else the chat's own (Claude or Codex).
+  const chatModelLabel = chatProvider === 'claude' || chatProvider === 'codex'
+    ? (selectedModel === 'default' ? (chatProvider === 'claude' ? 'Claude' : 'Codex') : models.find((model) => model.value === selectedModel)?.displayName ?? selectedModel)
+    : null
+  const namingLabel = !naming ? null
+    : namingInfo?.settings.mode !== 'chat-model' && namingInfo?.status.state === 'available' ? namingInfo.label
+      : chatModelLabel
+  const options = agentOptions(claudeProfiles)
 
   useEffect(() => {
     if (!sessionCreateRequest) return
@@ -309,6 +439,7 @@ export function TmuxCreateControls({
     setOpeningPrompt('')
     setBranchEdited(false)
     setWorktreePath(null)
+    setWorkspaceChoice(null)
     setError('')
     setStatus('')
   }, [sessionCreateRequest])
@@ -319,7 +450,7 @@ export function TmuxCreateControls({
       detailsRef.current.open = true
       detailsRef.current.scrollIntoView?.({ block: 'nearest' })
     }
-    sessionNameRef.current?.focus()
+    ;(promptRef.current ?? sessionNameRef.current)?.focus()
   }, [sessionCreateRequest])
 
   useEffect(() => {
@@ -397,10 +528,17 @@ export function TmuxCreateControls({
     }
   }
 
+  const pickAgent = (option: AgentOption) => {
+    setAgentProvider(option.provider)
+    if (option.configDir) setClaudeProfile(option.configDir)
+  }
+
   const resetForm = (formElement: HTMLFormElement) => {
     formElement.reset()
     setSessionName('')
+    setWindowName('')
     setOpeningPrompt('')
+    attachments.clear()
     setBranch('')
     setBranchEdited(false)
     setWorktreePath(null)
@@ -428,41 +566,68 @@ export function TmuxCreateControls({
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (partialCreationRef.current) return
+    // Pressed again while a model names the session: skip the wait.
+    if (namingRef.current) {
+      namingRef.current.abort()
+      return
+    }
+    // ⌘↵ submits without the button, so its disabled state is checked here too.
+    if (partialCreationRef.current || attachments.uploading || unavailable || chatProfilesLoading) return
     const formElement = event.currentTarget
-    const form = new FormData(formElement)
-    setPending(true)
     setError('')
     setStatus('')
-    try {
-      const cwd = String(form.get('cwd') ?? '')
-      const request: CreateTmuxSessionRequest = {
-        name: String(form.get('sessionName') ?? ''),
-        windowName: String(form.get('windowName') ?? ''),
-        cwd,
+    let nameHint = ''
+    if (autoName && naming) {
+      const controller = new AbortController()
+      namingRef.current = controller
+      // The prompt is about to be disabled; keep focus in the form so ⌘↵ can skip.
+      submitRef.current?.focus()
+      setNamingWith(namingLabel)
+      try {
+        nameHint = (await naming.suggest({
+          prompt: openingPrompt,
+          ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
+          ...(chatProvider ? { chat: { provider: chatProvider, ...(chatProvider === 'claude' && claudeConfigDir ? { configDir: claudeConfigDir } : {}), ...(selectedModel !== 'default' ? { model: selectedModel } : {}) } } : {}),
+        }, controller.signal)).name ?? ''
+      } catch (cause) {
+        // Skipped, or the daemon couldn't name it: the daemon falls back to the prompt's first words.
+        if (!controller.signal.aborted) console.warn('Unable to name the session', cause)
+      } finally {
+        namingRef.current = null
+        if (!unmountedRef.current) setNamingWith(null)
       }
+      if (unmountedRef.current) return
+    }
+    setPending(true)
+    try {
+      const cwd = workingDirectory
+      const request: CreateTmuxSessionRequest = { name: autoName ? nameHint : sessionName, windowName, cwd, ...(autoName ? { autoName: true } : {}) }
       if (agentProvider === 'none') {
         request.empty = true
       } else if (agentProvider !== 'shell') {
+        const model = chatProvider && selectedModel !== 'default' ? selectedModel : undefined
         request.agent = {
           provider: agentProvider,
-          ...(agentProvider !== 'opencode' && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
+          ...(promptAccepted && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
+          ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
+          ...(model ? { model } : {}),
           ...(agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat' ? chatLaunchPermission(agentProvider, chatLaunch.permissionMode) : {}),
-          ...(agentProvider === 'claude-chat' ? {
-            ...((chatConfigDir ?? chatLaunch.configDir) ? { configDir: chatConfigDir ?? chatLaunch.configDir } : {}),
-            permissionMode: chatLaunch.permissionMode,
-          } : {}),
+          ...(agentProvider === 'claude-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
+          ...(usesClaudeProfile(agentProvider) && claudeConfigDir ? { configDir: claudeConfigDir } : {}),
         }
         if (agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, agentProvider)
-        if (agentProvider === 'claude-chat') {
+        if (usesClaudeProfile(agentProvider)) {
           // Keep a remembered profile even when the list could not be loaded this time.
-          const configDir = chatConfigDir ?? chatLaunch.configDir
-          saveChatLaunch(repoKey, { ...(configDir ? { configDir } : {}), permissionMode: chatLaunch.permissionMode })
+          const remembered = agentProvider === 'claude-chat' ? chatLaunch : loadChatLaunch(repoKey)
+          saveChatLaunch(repoKey, { ...(claudeConfigDir ? { configDir: claudeConfigDir } : {}), permissionMode: remembered.permissionMode })
         }
+        // Only what was picked here is remembered, never a fallback to the default.
+        if (catalogKey && modelPick?.key === catalogKey) saveModelChoice(repoKey, catalogKey, selectedModel)
       }
       if (worktreeRequested) {
         request.worktree = {
-          branch: effectiveBranch,
+          // Left empty for an auto-named session: the daemon names the branch after it.
+          branch: autoName && !branchEdited ? '' : effectiveBranch,
           ...(worktreePath ? { path: worktreePath } : {}),
           ...(prepareRequested ? { prepareCommand } : {}),
         }
@@ -494,11 +659,126 @@ export function TmuxCreateControls({
     }
   }
 
-  const destination = sessionRepo
+  // ⌘V anywhere in the form attaches images to the prompt; text pastes as usual.
+  const onPaste = (event: ClipboardEvent<HTMLFormElement>) => {
+    const files = [...event.clipboardData.files].filter(isAttachableFile)
+    if (!files.length || !promptAccepted || unavailable) return
+    event.preventDefault()
+    attachments.add(files)
+  }
+  const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes('Files')
+  const onDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (unavailable || !promptAccepted || !hasFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setDragging(true)
+  }
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (unavailable || !promptAccepted || !hasFiles(event)) return
+    event.preventDefault()
+    setDragging(false)
+    attachments.add([...event.dataTransfer.files])
+  }
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLFormElement>) => {
+    if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return
+    event.preventDefault()
+    if (event.repeat) return
+    formRef.current?.requestSubmit()
+  }
+
+  const destination = variant === 'dialog' ? null : sessionRepo
     ? <p className="tmux-create__destination">Repository <strong>{sessionRepo.name}</strong></p>
     : sessionGroupId !== 'ungrouped'
       ? <p className="tmux-create__destination">Session group <strong>{sessionGroupName}</strong></p>
       : null
+
+  const noPromptText = agentProvider === 'none'
+    ? 'Just the tmux session: nothing starts in it.'
+    : agentProvider === 'shell' ? 'A shell starts without an opening prompt.' : 'OpenCode starts without an opening prompt.'
+  const promptBox = (
+    <div
+      className={`tmux-create__prompt${dragging ? ' is-dragging' : ''}${promptAccepted ? '' : ' is-off'}`}
+      onDragOver={onDragOver}
+      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }}
+      onDrop={onDrop}
+    >
+      {promptAccepted && attachments.attachments.length ? (
+        <div className="tmux-create__attachments" aria-label="Attachments">
+          {attachments.attachments.map((attachment) => (
+            <Thumbnail
+              key={attachment.key}
+              size="sm"
+              src={attachment.previewUrl}
+              name={attachment.name}
+              busy={!attachment.ref}
+              video={attachment.video}
+              onOpen={() => setViewing({ src: attachment.previewUrl, name: attachment.name, video: attachment.video })}
+              onRemove={() => attachments.remove(attachment.key)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {promptAccepted ? (
+        <textarea
+          ref={promptRef}
+          name="openingPrompt"
+          aria-label="Opening prompt"
+          value={openingPrompt}
+          onChange={(event) => setOpeningPrompt(event.target.value)}
+          disabled={unavailable}
+          rows={attachments.attachments.length ? 2 : 4}
+          placeholder={imagesAccepted ? 'Paste a screenshot or describe the task…' : 'Describe the task…'}
+        />
+      ) : <p className="tmux-create__no-prompt">{noPromptText}</p>}
+      {promptAccepted && attachments.attachments.length && !imagesAccepted ? (
+        <p className="tmux-create__message is-warning" role="status">Only chats are sent images; pick a chat to include them.</p>
+      ) : null}
+      {attachments.error ? (
+        <p className="tmux-create__message is-error" role="alert">
+          {attachments.error} <button type="button" className="tmux-create__link" onClick={attachments.dismissError}>Dismiss</button>
+        </p>
+      ) : null}
+      <div className="tmux-create__prompt-bar">
+        {imagesAccepted ? (
+          <>
+            <button type="button" className="tmux-create__icon-button" aria-label="Attach images or videos" title="Attach images or videos (or paste / drop them)" disabled={unavailable} onClick={() => fileInputRef.current?.click()}>
+              <Paperclip aria-hidden="true" />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/quicktime,video/webm,.mov,.mp4,.m4v,.webm"
+              multiple
+              hidden
+              data-testid="new-session-image-input"
+              onChange={(event) => {
+                attachments.add([...(event.target.files ?? [])])
+                event.target.value = ''
+              }}
+            />
+          </>
+        ) : null}
+        <AgentPicker options={options} provider={agentProvider} configDir={claudeConfigDir} disabled={unavailable} onPick={pickAgent} />
+        {chatProvider ? (
+          <NewSessionModelPicker
+            models={modelChoicesShown}
+            selected={selectedModel}
+            updatedAt={modelEntry?.updatedAt}
+            disabled={unavailable}
+            onPick={(value) => { if (catalogKey) setModelPick({ key: catalogKey, value }) }}
+          />
+        ) : null}
+        {permissionModes.length ? (
+          <NewSessionPermissionPicker
+            modes={permissionModes}
+            selected={chatLaunch.permissionMode}
+            disabled={unavailable}
+            onPick={(permissionMode) => setChatLaunch((current) => ({ ...current, permissionMode }))}
+          />
+        ) : null}
+      </div>
+    </div>
+  )
 
   const worktreeBlock = repo ? (
     <div className="tmux-create__worktree">
@@ -523,6 +803,7 @@ export function TmuxCreateControls({
               autoComplete="off"
               spellCheck={false}
               disabled={unavailable}
+              placeholder={autoName ? 'Named after the session' : undefined}
               onChange={(event) => {
                 setBranchEdited(true)
                 setBranch(event.target.value)
@@ -605,27 +886,31 @@ export function TmuxCreateControls({
     </p>
   ) : null
 
-  const panel = (
-    <div className="tmux-create__panel">
-      <form onSubmit={submit} aria-busy={pending}>
-        {destination}
-        <label>
-          Session name
-          <input
-            ref={sessionNameRef}
-            name="sessionName"
-            required
-            maxLength={128}
-            autoComplete="off"
-            value={sessionName}
-            onChange={(event) => setSessionName(event.target.value)}
-          />
-        </label>
-        <label>
-          Initial window name <span>optional</span>
-          <input name="windowName" maxLength={128} autoComplete="off" />
-        </label>
+  const place = workingDirectory ? <code>{shortPath(workingDirectory)}</code> : 'the default folder'
+  let workspaceSummary: ReactNode
+  if (probing && !repo) workspaceSummary = <>Checking {place}…</>
+  else if (notRepo) workspaceSummary = <>In {place} · <b className="is-warning">not a git repo</b></>
+  else if (probeTimedOut && !repo) workspaceSummary = <>In {place} · <b className="is-warning">repository check timed out</b></>
+  else if (worktreeRequested && repo) {
+    const base = repo.defaultBranch ? `${repo.remote ?? 'origin'}/${repo.defaultBranch}` : 'HEAD'
+    const branchLabel = effectiveBranch || (autoName ? 'named from the prompt' : 'named after the session')
+    workspaceSummary = <>New worktree <b>{branchLabel}</b> · {base}{prepareRequested ? <> · <code>{firstLine(prepareCommand)}</code></> : null}</>
+  } else workspaceSummary = <>In {place}{repo ? ' · no worktree' : ''}</>
 
+  const workspace = (
+    <div className={`tmux-create__workspace${workspaceOpen ? ' is-open' : ''}`}>
+      <button
+        type="button"
+        className="tmux-create__workspace-summary"
+        aria-expanded={workspaceOpen}
+        aria-controls={`tmux-create-workspace-${variant}`}
+        onClick={() => setWorkspaceChoice(!workspaceOpen)}
+      >
+        <GitBranch aria-hidden="true" />
+        <span>{workspaceSummary}</span>
+        <ChevronRight aria-hidden="true" className="tmux-create__chevron" />
+      </button>
+      <div className="tmux-create__workspace-body" id={`tmux-create-workspace-${variant}`} hidden={!workspaceOpen}>
         <div className="tmux-create__field">
           <label htmlFor={`tmux-create-cwd-${variant}`}>
             Working directory <span>optional, absolute path</span>
@@ -696,60 +981,47 @@ export function TmuxCreateControls({
             ) : null}
           </div>
         </div>
-
         {worktreeBlock}
-
-        <label>
-          Start with
-          <select
-            className="tmux-create__provider"
-            value={agentProvider}
-            disabled={unavailable}
-            onChange={(event) => setAgentProvider(event.target.value as StartWith)}
-          >
-            {START_WITH_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
-          </select>
-        </label>
-        {isChatLaunchProvider(agentProvider) ? (
-          <div className="tmux-create__chat-launch">
-            {agentProvider === 'claude-chat' ? <label>
-              Profile
-              <select
-                value={chatConfigDir ?? ''}
-                disabled={unavailable || !claudeProfiles?.length}
-                onChange={(event) => setChatLaunch((current) => ({ ...current, configDir: event.target.value }))}
-              >
-                {claudeProfiles === null ? <option value="">Loading…</option> : null}
-                {claudeProfiles?.length === 0 ? <option value="">Default Claude login</option> : null}
-                {claudeProfiles?.map((profile) => <option key={profile.configDir} value={profile.configDir}>{claudeProfileLabel(profile)}</option>)}
-              </select>
-            </label> : null}
-            <label>
-              Permissions
-              <select
-                value={chatLaunch.permissionMode}
-                disabled={unavailable}
-                onChange={(event) => setChatLaunch((current) => ({ ...current, permissionMode: event.target.value as ChatPermissionMode }))}
-              >
-                {chatPermissionModes(agentProvider).map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
-              </select>
-            </label>
-          </div>
-        ) : null}
-        {agentProvider !== 'none' && agentProvider !== 'shell' && agentProvider !== 'opencode' ? (
-          <label>
-            Opening prompt <span>optional</span>
-            <textarea value={openingPrompt} onChange={(event) => setOpeningPrompt(event.target.value)} disabled={unavailable} rows={3} />
-          </label>
-        ) : null}
-        {agentProvider === 'cursor' ? <p className="tmux-create__destination">Starts the Cursor CLI agent in the terminal pane.</p> : null}
-        {agentProvider === 'opencode' ? <p className="tmux-create__destination">OpenCode starts without an opening prompt.</p> : null}
-
         {probeTimedOut && (
           <p className="tmux-create__message is-warning" role="status">
             Repository check timed out. You can still create a session, but worktree details may be unavailable.
           </p>
         )}
+        <label>
+          Initial window name <span>optional</span>
+          <input name="windowName" maxLength={128} autoComplete="off" value={windowName} onChange={(event) => setWindowName(event.target.value)} />
+        </label>
+      </div>
+    </div>
+  )
+
+  const chatStart = isChatLaunchProvider(agentProvider)
+  const submitLabel = namingWith ? `Naming with ${namingWith}...` : pending
+    ? partialCreation ? 'Opening...' : 'Creating...'
+    : probing && !repo ? 'Checking repository...'
+      : attachments.uploading ? 'Uploading images...'
+        : chatStart ? 'Start chat' : 'Create session'
+
+  const panel = (
+    <div className="tmux-create__panel">
+      <form ref={formRef} onSubmit={submit} onPaste={onPaste} onKeyDown={onKeyDown} aria-busy={pending}>
+        {destination}
+        {promptBox}
+        <label>
+          Session name <span>{promptGiven ? 'optional' : promptAccepted ? 'required without a prompt' : ''}</span>
+          <input
+            ref={sessionNameRef}
+            aria-label="Session name"
+            name="sessionName"
+            required={!autoName}
+            maxLength={128}
+            autoComplete="off"
+            value={sessionName}
+            placeholder={promptGiven ? (namingLabel ? `Auto · named by ${namingLabel}` : 'Named from the prompt') : undefined}
+            onChange={(event) => setSessionName(event.target.value)}
+          />
+        </label>
+        {workspace}
 
         {error && (
           <p className="tmux-create__message is-error" role="alert">
@@ -769,10 +1041,12 @@ export function TmuxCreateControls({
             Open created session {partialCreation.response.created.paneId}
           </button>
         ) : null}
-        <button className="tmux-create__submit" type="submit" disabled={unavailable || Boolean(partialCreation) || chatProfilesLoading}>
-          {pending ? partialCreation ? 'Opening...' : 'Creating...' : probing && !repo ? 'Checking repository...' : 'Create session'}
+        <button ref={submitRef} className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading}>
+          {submitLabel}
+          {namingWith ? <kbd aria-hidden="true">⌘↵ to skip</kbd> : pending || attachments.uploading ? null : <kbd aria-hidden="true">⌘↵</kbd>}
         </button>
       </form>
+      <ImageViewer image={viewing} onClose={() => setViewing(null)} />
     </div>
   )
 
@@ -790,6 +1064,7 @@ export function TmuxCreateControls({
           setOpenVersion((value) => value + 1)
           const startWith = loadStartWith(repoKey)
           setAgentProvider(startWith)
+          setClaudeProfile(loadChatLaunch(repoKey).configDir)
           setChatLaunch(loadChatLaunch(repoKey, isChatLaunchProvider(startWith) ? startWith : 'claude-chat'))
           return
         }

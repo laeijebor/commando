@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import type { ModelCatalogs } from '../shared/tmux-create'
+import { SessionNamingSection } from './SessionNamingSettings'
+import type { SessionNamingApi } from './sessionNamingApi'
 import { Bot, LogIn, Plus, RefreshCw } from 'lucide-react'
 import { CLAUDE_PROFILE_NAME, type AgentProfilesResponse, type ClaudeLoginStatus, type ClaudeProfileSettings } from '../shared/agent-profiles'
 import type { AgentProfilesApi } from './agentProfilesApi'
@@ -99,10 +102,12 @@ function CommanderSection({ commander, profiles, busy, run }: {
 }
 
 /** Settings: Claude profiles to label, default, hide, log in and add; other agents read-only; Commander's profile. */
-export function SettingsView({ api, onOpenPane, commander }: {
+export function SettingsView({ api, onOpenPane, commander, naming }: {
   api: AgentProfilesApi
   onOpenPane: (paneId: string) => void
   commander?: CommanderProfileSetting
+  /** Settings → Session naming; left out where the daemon offers none. */
+  naming?: { api: SessionNamingApi; loadModels: () => Promise<ModelCatalogs> }
 }) {
   const [data, setData] = useState<AgentProfilesResponse>()
   const [loading, setLoading] = useState(false)
@@ -187,6 +192,8 @@ export function SettingsView({ api, onOpenPane, commander }: {
     </section>
 
     {commander && data ? <CommanderSection commander={commander} profiles={data.claude} busy={busy} run={act} /> : null}
+
+    {naming ? <SessionNamingSection api={naming.api} loadModels={naming.loadModels} profiles={data?.claude ?? []} /> : null}
 
     <section className="settings-section" aria-labelledby="settings-other-agents">
       <h3 id="settings-other-agents">Other agents</h3>

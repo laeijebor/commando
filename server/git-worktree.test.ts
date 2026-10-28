@@ -198,6 +198,13 @@ describe('GitWorktreeService.createWorktree', () => {
     expect(git.calls.some((call) => call.args[0] === 'fetch')).toBe(false)
   })
 
+  it('refuses an existing branch when asked for a new one only, before touching any worktree', async () => {
+    const git = fakeGit([[['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], 'abc123\n']])
+    const service = new GitWorktreeService(git.execute, { pathExists: async () => false })
+    await expect(service.createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target, newBranchOnly: true })).rejects.toMatchObject({ kind: 'branch-exists' })
+    expect(git.calls.map((call) => call.args[0])).toEqual(['rev-parse'])
+  })
+
   it('refuses a branch that is checked out in another worktree', async () => {
     const git = fakeGit([
       [['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], 'abc123\n'],

@@ -60,6 +60,8 @@ export interface AgentSessionSpec {
   env: Record<string, string | undefined>
   /** Sent as the first turn once the session starts. */
   initialPrompt?: string
+  /** Uploaded images or videos sent with the first turn. */
+  initialImages?: ChatImageRef[]
   /** Resumes this conversation as a chat pane, without the session id (hooks append it). */
   resumeCommand?: string
   hostBuild?: string
@@ -251,6 +253,11 @@ export interface AgentSessionEvents extends ChatProviderSessionEvents {
 }
 
 type HeldSend = { text: string; images: ChatImageRef[]; options: ChatSendOptions }
+
+/** A launch sends a first turn when it was given a prompt, images, or both. */
+export function hasInitialTurn(spec: Pick<AgentSessionSpec, 'initialPrompt' | 'initialImages'>): boolean {
+  return Boolean(spec.initialPrompt?.trim() || spec.initialImages?.length)
+}
 
 type PendingRequest = {
   requestKind: 'approval' | 'question'
@@ -506,7 +513,7 @@ export class AgentSession implements ChatProviderSession {
     this.planUsageTimer.unref?.()
     const held = this.heldSends ?? []
     this.heldSends = null
-    if (this.spec.initialPrompt) this.send(this.spec.initialPrompt)
+    if (hasInitialTurn(this.spec)) this.send(this.spec.initialPrompt ?? '', this.spec.initialImages)
     for (const send of held) this.send(send.text, send.images, send.options)
     // A switch asked for while the earlier turns replayed can go now.
     this.checkSwitch()

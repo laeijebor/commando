@@ -3,6 +3,8 @@ import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { AgentLoginProber, AgentProfilePreferences, handleAgentProfilesApi } from './agent-profiles.js'
+import { ModelCatalog } from './model-catalog.js'
+import { handleSessionNamingApi, loginFingerprint, SessionNamer } from './session-namer.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
 import { CanvasPush } from './canvas-push.js'
 import { ChatTileEvents, defaultChatTileEventsPath } from './chat-tile-events.js'
@@ -963,7 +965,14 @@ async function main(): Promise<void> {
   const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
+  const modelCatalog = new ModelCatalog()
+  const sessionNamer = new SessionNamer({
+    catalogs: () => modelCatalog.list(),
+    imagePath: (image) => chatImages.path(image.id),
+    fingerprint: (model) => loginFingerprint(model),
+  })
   const agentHosts: AgentHostHub = new AgentHostHub({
+    onSessionInfo: (session) => void modelCatalog.record(session),
     currentHostBuild,
     paneExists,
     targetIdFor: (paneId) => paneForId(paneId)?.targetId,
@@ -2944,6 +2953,7 @@ async function main(): Promise<void> {
           sessionNames: () => snapshot.sessions.map((session) => session.name),
           refreshSnapshot: async () => { await refreshSnapshotFresh() },
         })) return
+        if (await handleSessionNamingApi(request, response, url, sessionNamer)) return
         if (await handleUsageApi(request, response, url, providerUsage)) return
         if (await sessionManagement.handle(request, response, url)) return
         if (await sessionIdeApi.handle(request, response, url)) return
@@ -2966,6 +2976,7 @@ async function main(): Promise<void> {
             await refreshSnapshot()
           },
           () => agentProfilePreferences.claudeProfiles({ includeHidden: false }),
+          () => modelCatalog.list(),
         )) return
         writeJson(response, 404, { error: 'Not found' })
         return

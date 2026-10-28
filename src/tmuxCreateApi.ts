@@ -7,9 +7,11 @@ import {
   type ClaudeProfile,
   type CreateTmuxWindowRequest,
   type LaunchTmuxPaneRequest,
+  type ModelCatalogs,
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
 } from '../shared/tmux-create'
+import { parseChatModelOptions } from '../shared/agent-chat'
 
 export type TmuxCreateApi = {
   createSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
@@ -19,6 +21,8 @@ export type TmuxCreateApi = {
   launchInEmptyPane: (input: LaunchTmuxPaneRequest) => Promise<void>
   /** Claude config dirs (profiles) that chat panes can use. */
   claudeProfiles: () => Promise<ClaudeProfile[]>
+  /** Each provider's model list, remembered by the daemon from earlier chats. */
+  models: () => Promise<ModelCatalogs>
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -64,6 +68,20 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
     createWindow: async (input) => (await post(TMUX_CREATE_ROUTES.window, input)).created,
     createPane: async (input) => (await post(TMUX_CREATE_ROUTES.pane, input)).created,
     launchInEmptyPane: async (input) => { await send(TMUX_CREATE_ROUTES.launch, input) },
+    models: async () => {
+      const response = await fetcher(TMUX_CREATE_ROUTES.models, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      })
+      if (!response.ok) throw new Error(await responseError(response))
+      const body = await response.json() as { catalogs?: unknown }
+      const catalogs = body.catalogs && typeof body.catalogs === 'object' && !Array.isArray(body.catalogs) ? body.catalogs as Record<string, unknown> : {}
+      return Object.fromEntries(Object.entries(catalogs).flatMap(([key, entry]) => {
+        const { models, updatedAt } = (entry ?? {}) as { models?: unknown; updatedAt?: unknown }
+        const parsed = parseChatModelOptions(models)
+        return parsed?.length && typeof updatedAt === 'number' ? [[key, { models: parsed, updatedAt }]] : []
+      }))
+    },
     claudeProfiles: async () => {
       const response = await fetcher(TMUX_CREATE_ROUTES.claudeProfiles, {
         credentials: 'same-origin',

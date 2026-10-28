@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionCreateDialog } from './SessionCreateDialog'
+import { agentPill, chooseAgent, choosePermission, menuLabels, permissionPill } from './newSessionTestHelpers'
 import { loadChatLaunch, saveChatLaunch } from './chatLaunchPreferences'
 import type { CreateTmuxSessionRequest, TmuxCreateResponse } from '../shared/tmux-create'
 
@@ -17,17 +18,14 @@ describe('Codex chat creation dialog', () => {
     }))
     const profiles = vi.fn(async () => [])
     render(<SessionCreateDialog request={request} onClose={vi.fn()} onCreateSession={onCreateSession} loadClaudeProfiles={profiles} />)
-    expect(screen.getByRole('option', { name: 'Codex chat' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Claude chat' })).toBeInTheDocument()
+    expect(menuLabels(agentPill()).map((label) => label.replace(/^\*/u, ''))).toEqual(expect.arrayContaining(['Codex chat', 'Claude chat']))
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'codex' } })
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/tmp' } })
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'codex-chat' } })
-    expect(screen.queryByLabelText('Profile')).not.toBeInTheDocument()
-    expect(profiles).not.toHaveBeenCalled()
-    expect(screen.queryByRole('option', { name: 'Accept edits' })).not.toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Permissions'), { target: { value: 'plan' } })
+    chooseAgent('codex-chat')
+    expect(menuLabels(permissionPill())).toEqual(['*Workspace access', 'Read only', 'Full access'])
+    choosePermission('Read only')
     fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: 'Hello Codex' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
     expect(onCreateSession.mock.calls[0]![0]).toMatchObject({ name: 'codex', cwd: '/tmp', agent: { provider: 'codex-chat', permissionMode: 'plan', prompt: 'Hello Codex' } })
     expect(onCreateSession.mock.calls[0]![0].agent).not.toHaveProperty('configDir')
@@ -53,16 +51,12 @@ describe('Cursor chat creation dialog', () => {
     render(<SessionCreateDialog request={request} onClose={vi.fn()} onCreateSession={onCreateSession} loadClaudeProfiles={profiles} />)
     fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cursor' } })
     fireEvent.change(screen.getByLabelText(/Working directory/), { target: { value: '/tmp' } })
-    expect(screen.getByRole('option', { name: 'Cursor chat' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Cursor' })).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Start with'), { target: { value: 'cursor-chat' } })
-    expect(screen.getByLabelText('Permissions')).toHaveValue('bypassPermissions')
-    expect(Array.from((screen.getByLabelText('Permissions') as HTMLSelectElement).options).map((option) => option.text)).toEqual(['Full access', 'Sandboxed', 'Auto-review', 'Plan'])
-    expect(screen.queryByLabelText('Profile')).not.toBeInTheDocument()
-    expect(profiles).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByLabelText('Permissions'), { target: { value: 'auto' } })
+    expect(menuLabels(agentPill()).map((label) => label.replace(/^\*/u, ''))).toEqual(expect.arrayContaining(['Cursor chat', 'Cursor']))
+    chooseAgent('cursor-chat')
+    expect(menuLabels(permissionPill())).toEqual(['*Full access', 'Sandboxed', 'Auto-review', 'Plan'])
+    choosePermission('Auto-review')
     fireEvent.change(screen.getByLabelText(/Opening prompt/), { target: { value: 'Hello Cursor' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
     expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'cursor-chat', permissionMode: 'auto', prompt: 'Hello Cursor' })
     expect(loadChatLaunch('/tmp', 'cursor-chat')).toEqual({ permissionMode: 'auto' })
