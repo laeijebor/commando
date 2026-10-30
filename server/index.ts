@@ -1,4 +1,8 @@
 import { AgentChatsApi } from './agent-chats-api.js'
+import { HostRegistry } from './hosts.js'
+import { HostsApi } from './hosts-api.js'
+import { HostsHealthMonitor } from './hosts-health.js'
+import { HostsProxy } from './hosts-proxy.js'
 import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
@@ -785,6 +789,10 @@ async function main(): Promise<void> {
     () => requestHasValidToken(request, url, digest) || pairingAuth.authorize(request, url),
     async () => (await auth?.hasSession(request)) === true,
   )
+  const hosts = new HostRegistry()
+  const hostsHealth = new HostsHealthMonitor(hosts)
+  const hostsApi = new HostsApi(hosts, hostsHealth, requestIsOwnerAuthorized)
+  const hostsProxy = new HostsProxy(hosts, requestIsOwnerAuthorized)
   const pairingApi = new PairingApi(pairing, requestIsOwnerAuthorized, () => pairingAddresses(port, networkAccess.listeners), (request, url) => (
     requestHasValidToken(request, url, digest) || (typeof request.headers.origin === 'string' && networkAccess.trustedOrigins.includes(request.headers.origin))
   ))
@@ -2855,6 +2863,8 @@ async function main(): Promise<void> {
         return
       }
 
+      if (await hostsProxy.handle(request, response, url)) return
+
       const ideId = idePathId(url.pathname)
       if (ideId) {
         if (requestSuppliesBearer(request, url) && !(await requestIsAuthorized(request, url))) {
@@ -2931,9 +2941,12 @@ async function main(): Promise<void> {
       if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/sims/')) {
         if (!(await requestIsAuthorized(request, url))) {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
-          writeJson(response, 401, { error: 'Unauthorized' })
+          writeJson(response, 401, { error: 'Unauthorized',
+            ...((url.pathname === '/api/hosts' || url.pathname.startsWith('/api/hosts/')) ? { code: 'unauthorized' } : {}),
+          })
           return
         }
+        if (await hostsApi.handle(request, response, url)) return
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
@@ -3012,6 +3025,10 @@ async function main(): Promise<void> {
           return
         }
         const url = requestUrl(request)
+        if (url?.pathname.startsWith('/h/')) {
+          await hostsProxy.upgrade(request, socket, head, url)
+          return
+        }
         const ideId = url ? idePathId(url.pathname) : null
         if (url && ideId) {
           if (requestSuppliesBearer(request, url) && !(await requestIsAuthorized(request, url))) {
@@ -3104,6 +3121,7 @@ async function main(): Promise<void> {
   })))
   listening = true
 
+  hostsHealth.start()
   externalAgents.start()
   prAutofix.start()
   const snapshotTimer = setInterval(() => {
@@ -3130,6 +3148,8 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (shuttingDown) return
     shuttingDown = true
+    hostsHealth.stop()
+    hostsProxy.close()
     clearInterval(snapshotTimer)
     if (simPoolReaperTimer) clearInterval(simPoolReaperTimer)
     externalAgents.close()
