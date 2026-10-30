@@ -10,22 +10,31 @@ export const canvasRepoRoot = fileURLToPath(new URL('../', import.meta.url))
 export const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')
 export const clip = (text: string, limit: number) => text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
 
+/** A canvas-level question answer: sent from a question note, so it has no frame or thread. */
+const isCanvasAnswer = (note: WebPaneFeedbackNote) => !note.canvas && note.response !== undefined
+
 export function canvasPushPrompt(title: string, id: string, notes: readonly WebPaneFeedbackNote[], repoRoot = canvasRepoRoot): string {
   id = singleLine(id)
   const feedbackScript = JSON.stringify(singleLine(resolve(repoRoot, 'scripts/commando-feedback')))
   const canvasScript = JSON.stringify(singleLine(resolve(repoRoot, 'scripts/commando-canvas')))
-  const header = `Canvas feedback on "${clip(singleLine(title), 180)}" (${notes.length} comment(s)) — webPaneId ${id}.`
-  const footer = `Run ${feedbackScript} ${id} to collect them (this also acknowledges them), apply the changes, and reply in each thread with ${canvasScript} reply ${id} <threadId> "<text>" [--resolve].`
+  const answers = notes.filter(isCanvasAnswer).length, comments = notes.length - answers
+  const counts = [...(comments ? [`${comments} comment(s)`] : []), ...(answers ? [`${answers} answer(s)`] : [])].join(', ')
+  const header = `Canvas feedback on "${clip(singleLine(title), 180)}" (${counts}) — webPaneId ${id}.`
+  const footer = comments
+    ? `Run ${feedbackScript} ${id} to collect them (this also acknowledges them), apply the changes, and reply in each thread with ${canvasScript} reply ${id} <threadId> "<text>" [--resolve].`
+    : `Run ${feedbackScript} ${id} to collect them (this also acknowledges them), then act on the answers.`
   const lines: string[] = []
   let length = header.length + footer.length + 2
   for (const note of notes) {
     const canvas = note.canvas
-    const line = `- [${clip(singleLine(canvas?.frameTitle ?? canvas?.frameId ?? 'Frame'), 100)} › ${clip(singleLine(canvas?.label ?? 'unlabelled'), 100)}] ${clip(singleLine(note.comment), 350)}  (thread ${singleLine(canvas?.threadId ?? 'unknown')})`
+    const line = isCanvasAnswer(note)
+      ? `- [Answer] ${clip(singleLine(note.comment), 450)}`
+      : `- [${clip(singleLine(canvas?.frameTitle ?? canvas?.frameId ?? 'Frame'), 100)} › ${clip(singleLine(canvas?.label ?? 'unlabelled'), 100)}] ${clip(singleLine(note.comment), 350)}  (thread ${singleLine(canvas?.threadId ?? 'unknown')})`
     if (length + line.length + 1 > 1_900) break
     lines.push(line); length += line.length + 1
   }
   const omitted = notes.length - lines.length
-  return [header, ...lines, ...(omitted ? [`… ${omitted} comment(s) omitted; collect the journal for all comments.`] : []), footer].join('\n')
+  return [header, ...lines, ...(omitted ? [`… ${omitted} item(s) omitted; collect the journal for all of them.`] : []), footer].join('\n')
 }
 
 /** Typed into an idle chat when redline answers arrive and the agent isn't polling. */
@@ -77,7 +86,7 @@ export class CanvasPush {
     this.pushed.set(webPaneId, pushed)
     const owed = this.owed.get(webPaneId) ?? new Map<string, WebPaneFeedbackNote>()
     this.owed.set(webPaneId, owed)
-    for (const note of notes) if ((note.canvas || !canvas) && note.deliveryKey && !pushed.has(note.deliveryKey)) owed.set(note.deliveryKey, note)
+    for (const note of notes) if ((!canvas || note.canvas || isCanvasAnswer(note)) && note.deliveryKey && !pushed.has(note.deliveryKey)) owed.set(note.deliveryKey, note)
     await this.flush(webPaneId)
   }
 
