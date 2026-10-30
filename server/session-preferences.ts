@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
+import { tmuxSocketStateSuffix } from './tmux-socket-scope.js'
 
 export type SessionPreferenceGroup = {
   id: string
@@ -302,7 +303,7 @@ export function visibleSessionTreePreferences(
 export function defaultSessionPreferencesPath(): string {
   return (
     process.env.COMMANDO_SESSION_PREFERENCES_PATH ??
-    join(homedir(), '.commando', 'session-tree.json')
+    join(homedir(), '.commando', `session-tree${tmuxSocketStateSuffix()}.json`)
   )
 }
 

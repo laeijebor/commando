@@ -1,8 +1,8 @@
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseSessionTreePreferences, reconcileSessionTreePreferences, SessionPreferenceStore, visibleSessionTreePreferences } from './session-preferences.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defaultSessionPreferencesPath, parseSessionTreePreferences, reconcileSessionTreePreferences, SessionPreferenceStore, visibleSessionTreePreferences } from './session-preferences.js'
 
 let folder: string
 beforeEach(async () => { folder = await mkdtemp(join(tmpdir(), 'commando-preferences-')) })
@@ -269,5 +269,29 @@ describe('repository sub-groups', () => {
     expect(restored.groups).toEqual([{ id: 'manual', name: 'Manual', sessionIds: ['$8'] }])
     expect(await store.load(sessions)).toEqual(restored)
     expect(await new SessionPreferenceStore(store.statePath).loadReadOnly(sessions)).toEqual(restored)
+  })
+})
+
+describe('defaultSessionPreferencesPath', () => {
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  it('gives a daemon on its own tmux socket its own file, so it cannot rewrite the user\'s groups', () => {
+    vi.stubEnv('COMMANDO_SESSION_PREFERENCES_PATH', undefined)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_PATH', '')
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', '')
+    const standard = defaultSessionPreferencesPath()
+    expect(standard).toMatch(/[/]\.commando[/]session-tree\.json$/)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', 'default')
+    expect(defaultSessionPreferencesPath()).toBe(standard)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', 'sg-e2e')
+    const named = defaultSessionPreferencesPath()
+    expect(named).toMatch(/[/]session-tree-[0-9a-f]{16}\.json$/)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', 'other')
+    expect(defaultSessionPreferencesPath()).not.toBe(named)
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_NAME', '')
+    vi.stubEnv('COMMANDO_TMUX_SOCKET_PATH', '/tmp/commando-test.sock')
+    expect(defaultSessionPreferencesPath()).not.toBe(standard)
+    vi.stubEnv('COMMANDO_SESSION_PREFERENCES_PATH', '/tmp/explicit.json')
+    expect(defaultSessionPreferencesPath()).toBe('/tmp/explicit.json')
   })
 })
