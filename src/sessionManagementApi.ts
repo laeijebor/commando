@@ -27,6 +27,8 @@ export type SessionTreePreferences = {
   /** Top-level repository order: loose session ids and `group:<groupId>` tokens, independent of manual grouping. */
   repositorySessionIds?: string[]
   repositoryGroups?: RepositorySessionGroup[]
+  /** The tmux server whose session ids these are; sent back with saves. */
+  serverId?: string
 }
 
 export interface SessionManagementApiClient {

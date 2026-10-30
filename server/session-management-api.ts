@@ -23,6 +23,8 @@ type SessionManagementDependencies = {
   actions?: TmuxSessionActions
   archives?: SessionArchives
   currentSessions: () => readonly { id: string; name: string }[]
+  /** The tmux server the current sessions belong to; null before tmux is discovered. */
+  currentServerId?: () => string | null
   currentWindowIds: () => readonly string[]
   prepareSessionWorktreeDeletion?: (sessionId: string) => Promise<SessionWorktreeDeletionPlan>
   afterSessionDeleted?: (sessionId: string) => void
@@ -161,7 +163,7 @@ export class SessionManagementApi {
         if (!Array.isArray(body.names) || body.names.length > MAX_SESSION_IDENTITIES || !body.names.every(isSessionName)) {
           throw new HttpError(400, 'Expected up to 500 session names')
         }
-        const preferences = await this.preferences.ensureIdentities(body.names, this.dependencies.currentSessions())
+        const preferences = await this.preferences.ensureIdentities(body.names, this.dependencies.currentSessions(), this.dependencies.currentServerId?.())
         writeJson(response, 200, { preferences })
         return true
       }
@@ -177,7 +179,7 @@ export class SessionManagementApi {
           const body = record(await readJson(request))
           if (body.reset !== true && !isSessionGlyph(body.glyph)) throw new HttpError(400, 'Glyph must be a single emoji')
           const session = this.dependencies.currentSessions().find((entry) => entry.id === route.sessionId)!
-          const preferences = await this.preferences.changeIdentity(session.name, body.reset === true ? null : body.glyph as string, this.dependencies.currentSessions())
+          const preferences = await this.preferences.changeIdentity(session.name, body.reset === true ? null : body.glyph as string, this.dependencies.currentSessions(), this.dependencies.currentServerId?.())
           writeJson(response, 200, { preferences })
           return true
         }
@@ -195,7 +197,7 @@ export class SessionManagementApi {
           await this.actions.rename(route.sessionId, name)
           // Tmux has already renamed the session; persistence failures must not hide that success.
           try {
-            await this.preferences.renameIdentity(previousName, name, route.sessionId)
+            await this.preferences.renameIdentity(previousName, name, route.sessionId, this.dependencies.currentServerId?.())
           } catch (error) {
             console.warn('[commando] Session identity move failed after session rename', error)
           }
@@ -325,9 +327,10 @@ export class SessionManagementApi {
     response: ServerResponse,
   ): Promise<void> {
     const currentSessions = this.dependencies.currentSessions()
+    const serverId = this.dependencies.currentServerId?.()
     if (request.method === 'GET') {
-      await this.preferences.ensureIdentities([], currentSessions)
-      const preferences = await this.preferences.load(currentSessions)
+      await this.preferences.ensureIdentities([], currentSessions, serverId)
+      const preferences = await this.preferences.load(currentSessions, serverId)
       writeJson(response, 200, { preferences })
       return
     }
@@ -336,8 +339,8 @@ export class SessionManagementApi {
     const body = record(await readJson(request))
     const parsed = parseSessionTreePreferences(body.preferences)
     if (!parsed) throw new HttpError(400, 'Invalid session tree preferences')
-    await this.preferences.ensureIdentities([], currentSessions)
-    const preferences = await this.preferences.replace(parsed, currentSessions)
+    await this.preferences.ensureIdentities([], currentSessions, serverId)
+    const preferences = await this.preferences.replace(parsed, currentSessions, serverId)
     writeJson(response, 200, { preferences })
   }
 

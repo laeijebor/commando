@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -17,13 +17,13 @@ describe('SessionPreferenceStore.loadReadOnly', () => {
       groups: [{ id: 'g1', name: 'Work', sessionIds: ['$1'] }],
       ungroupedSessionIds: [],
       repositorySessionIds: ['$1'],
-    }, [{ id: '$1', name: 'project' }])
+    }, [{ id: '$1', name: 'project' }], '1:1')
     const stored = await readFile(path, 'utf8')
     const before = await stat(path)
 
     const preferences = await new SessionPreferenceStore(path).loadReadOnly([
       { id: '$8', name: 'project' }, { id: '$1', name: 'scratch' },
-    ])
+    ], '2:2')
 
     expect(preferences).toEqual({
       version: 1,
@@ -32,6 +32,7 @@ describe('SessionPreferenceStore.loadReadOnly', () => {
       ungroupedSessionIds: ['$1'],
       repositorySessionIds: ['$8'],
       sessionNamesById: { $8: 'project', $1: 'scratch' },
+      serverId: '2:2',
     })
     expect(await readFile(path, 'utf8')).toBe(stored)
     expect(await stat(path)).toMatchObject({ mtimeMs: before.mtimeMs, ino: before.ino })
@@ -153,13 +154,13 @@ describe('repository sub-groups', () => {
     expect(parseSessionTreePreferences({ ...base, repositorySessionIds })).toBeNull()
   })
 
-  it('remaps member ids on reuse with separate claims and preserves group tokens and names of absent members', () => {
-    const preferences = { ...base, repositoryGroups: [group, { ...group, id: 'later', sessionIds: ['$9'] }], repositorySessionIds: ['group:landing', '$1'], sessionNamesById: { $1: 'work', $9: 'returning' } }
-    const reconciled = reconcileSessionTreePreferences(preferences, [{ id: '$8', name: 'work' }, { id: '$1', name: 'scratch' }])
+  it('remaps member ids on reuse with separate claims and keeps absent members as placeholders', () => {
+    const preferences = { ...base, repositoryGroups: [group, { ...group, id: 'later', sessionIds: ['$9'] }], repositorySessionIds: ['group:landing', '$1'], sessionNamesById: { $1: 'work', $9: 'returning' }, serverId: '1:1' }
+    const reconciled = reconcileSessionTreePreferences(preferences, [{ id: '$8', name: 'work' }, { id: '$1', name: 'scratch' }], '2:2')
     expect(reconciled.repositorySessionIds).toEqual(['group:landing', '$8'])
-    expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: ['$8'] }, { ...group, id: 'later', sessionIds: ['$9'] }])
+    expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: ['$8'] }, { ...group, id: 'later', sessionIds: ['name:returning'] }])
     expect(reconciled.ungroupedSessionIds).toEqual(['$8', '$1'])
-    expect(reconciled.sessionNamesById).toEqual({ $8: 'work', $1: 'scratch', $9: 'returning' })
+    expect(reconciled.sessionNamesById).toEqual({ $8: 'work', $1: 'scratch' })
   })
 
   it('keeps empty groups and order tokens in visible preferences', () => {
@@ -169,7 +170,10 @@ describe('repository sub-groups', () => {
     })
   })
 
-  it.each([['$5', '$6', '$7', '$9'], ['$5']].map((sessionIds) => ({ sessionIds })))('drops a deleted repository member when its id is reused, keeping other members and empty groups ($sessionIds)', ({ sessionIds }) => {
+  it.each([
+    { sessionIds: ['$5', '$6', '$7', '$9'], expected: ['name:foo', '$6', 'name:absent'] },
+    { sessionIds: ['$5'], expected: ['name:foo'] },
+  ])('after a tmux restart, holds a member\'s place by name instead of giving it to the session that reused its id ($sessionIds)', ({ sessionIds, expected }) => {
     const manualGroup = { id: 'manual', name: 'Manual', sessionIds: ['$5'] }
     const preferences = {
       ...base,
@@ -177,13 +181,15 @@ describe('repository sub-groups', () => {
       repositoryGroups: [{ ...group, sessionIds }],
       repositorySessionIds: ['group:landing'],
       sessionNamesById: { $5: 'foo', $6: 'kept', $9: 'absent' },
+      serverId: '1:1',
     }
     const reconciled = reconcileSessionTreePreferences(preferences, [
       { id: '$5', name: 'bar' }, { id: '$6', name: 'kept' }, { id: '$7', name: 'no stored name' },
-    ])
-    expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: sessionIds.filter((id) => id !== '$5') }])
+    ], '2:2')
+    expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: expected }])
     expect(reconciled.repositorySessionIds).toEqual(['group:landing'])
-    expect(reconciled.groups).toEqual([manualGroup])
+    expect(reconciled.groups).toEqual([{ ...manualGroup, sessionIds: ['name:foo'] }])
+    expect(reconciled.ungroupedSessionIds).toEqual(['$5', '$6', '$7'])
   })
 
   it('keeps a member renamed in tmux once the rename is recorded, and ignores stale rename events', async () => {
@@ -199,36 +205,37 @@ describe('repository sub-groups', () => {
   it('accepts a deliberate group assignment for a reused id, but still drops stale membership', async () => {
     const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
     const empty = { ...group, sessionIds: [] }
-    await store.replace({ ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, id: 'stale', sessionIds: ['$2'] }, empty], repositorySessionIds: ['group:stale', 'group:landing'] }, [{ id: '$1', name: 'old' }, { id: '$2', name: 'gone' }])
+    await store.replace({ ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, id: 'stale', sessionIds: ['$2'] }, empty], repositorySessionIds: ['group:stale', 'group:landing'] }, [{ id: '$1', name: 'old' }, { id: '$2', name: 'gone' }], '1:1')
     // After a tmux restart, $1 and $2 belong to new sessions; the old names are not live.
     const sessions = [{ id: '$1', name: 'new' }, { id: '$2', name: 'other' }]
-    const view = await store.load(sessions)
-    expect(view.repositoryGroups?.find((item) => item.id === 'stale')?.sessionIds).toEqual([])
-    const saved = await store.replace({ ...view, repositoryGroups: view.repositoryGroups?.map((item) => item.id === 'landing' ? { ...item, sessionIds: ['$1'] } : item), sessionNamesById: { ...view.sessionNamesById, $1: 'new' } }, sessions)
+    const view = await store.load(sessions, '2:2')
+    expect(view.repositoryGroups?.find((item) => item.id === 'stale')?.sessionIds).toEqual(['name:gone'])
+    const saved = await store.replace({ ...view, repositoryGroups: view.repositoryGroups?.map((item) => item.id === 'landing' ? { ...item, sessionIds: ['$1'] } : item) }, sessions, '2:2')
     expect(saved.repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
     expect(saved.sessionNamesById?.$1).toBe('new')
-    expect((await store.load(sessions)).repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
+    expect((await store.load(sessions, '2:2')).repositoryGroups?.find((item) => item.id === 'landing')?.sessionIds).toEqual(['$1'])
   })
 
   it('accepts a reused id moved back into the group its old session was in, on the first save', async () => {
     const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
-    await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'old' }])
+    await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'old' }], '1:1')
     const sessions = [{ id: '$1', name: 'new' }]
-    const view = await store.load(sessions)
-    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: [] }])
-    const saved = await store.replace({ ...view, repositoryGroups: [group], sessionNamesById: { ...view.sessionNamesById, $1: 'new' } }, sessions)
+    const view = await store.load(sessions, '2:2')
+    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: ['name:old'] }])
+    const saved = await store.replace({ ...view, repositoryGroups: [group] }, sessions, '2:2')
     expect(saved.repositoryGroups).toEqual([group])
     expect(saved.sessionNamesById?.$1).toBe('new')
   })
 
   it('does not hand an old session\'s group to its id\'s new session when a stale snapshot is saved', async () => {
     const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
-    const before = await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'old' }])
+    const before = await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'old' }], '1:1')
     const sessions = [{ id: '$1', name: 'new' }]
-    expect((await store.load(sessions)).repositoryGroups).toEqual([{ ...group, sessionIds: [] }])
+    expect((await store.load(sessions, '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:old'] }])
     // A client still holding the pre-restart view saves an unrelated change.
-    const saved = await store.replace({ ...before, repositoryGroups: [{ ...group, collapsed: false }] }, sessions)
-    expect(saved.repositoryGroups).toEqual([{ ...group, collapsed: false, sessionIds: [] }])
+    const saved = await store.replace({ ...before, repositoryGroups: [{ ...group, collapsed: false }] }, sessions, '2:2')
+    expect(saved.repositoryGroups).toEqual([{ ...group, collapsed: false, sessionIds: ['name:old'] }])
+    expect(saved.ungroupedSessionIds).toEqual(['name:old', '$1'])
   })
 
   it('names a newly created group member from the client until tmux reports it', async () => {
@@ -238,6 +245,17 @@ describe('repository sub-groups', () => {
     expect(view.sessionNamesById?.$3).toBe('deleted')
     await store.replace({ ...view, repositoryGroups: [{ ...group, sessionIds: ['$3'] }], sessionNamesById: { ...view.sessionNamesById, $3: 'fresh' } }, [])
     expect((await store.load([{ id: '$3', name: 'fresh' }])).repositoryGroups).toEqual([{ ...group, sessionIds: ['$3'] }])
+  })
+
+  it('keeps a session created into a manual group before tmux reports it', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    const sessions = [{ id: '$1', name: 'work' }]
+    const view = await store.load(sessions, '1:1')
+    const saved = await store.replace({ ...view, groupingMode: 'manual', groups: [{ id: 'g', name: 'G', sessionIds: ['$2'] }] }, sessions, '1:1')
+    expect(saved.groups).toEqual([{ id: 'g', name: 'G', sessionIds: ['$2'] }])
+    const loaded = await store.load([...sessions, { id: '$2', name: 'fresh' }], '1:1')
+    expect(loaded.groups).toEqual([{ id: 'g', name: 'G', sessionIds: ['$2'] }])
+    expect(loaded.ungroupedSessionIds).toEqual(['$1'])
   })
 
   it('keeps a recorded rename when a stale client snapshot is saved afterwards', async () => {
@@ -255,8 +273,150 @@ describe('repository sub-groups', () => {
       ...base,
       repositoryGroups: [group],
       sessionNamesById: { $1: 'work', $8: 'deleted' },
-    }, [{ id: '$8', name: 'work' }, { id: '$1', name: 'scratch' }])
+      serverId: '1:1',
+    }, [{ id: '$8', name: 'work' }, { id: '$1', name: 'scratch' }], '2:2')
     expect(reconciled.repositoryGroups).toEqual([{ ...group, sessionIds: ['$8'] }])
+  })
+
+  it('keeps groups and order through a tmux-resurrect restore that hands out ids one session at a time', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    const before = [{ id: '$40', name: 'perf-a' }, { id: '$41', name: 'scratch' }, { id: '$42', name: 'perf-b' }]
+    await store.replace({
+      ...base, ungroupedSessionIds: [], groupingMode: 'repository',
+      // $1 and $2 are long-closed sessions; their ids will be reused after the restart.
+      repositorySessionIds: ['$1', '$41', 'group:landing', '$2'],
+      repositoryGroups: [{ ...group, sessionIds: ['$42', '$40'] }],
+      sessionNamesById: { $1: 'closed-1', $2: 'closed-2' },
+    }, before, '1:1')
+
+    const restored: { id: string; name: string }[] = [{ id: '$0', name: 'tmr-bootstrap' }]
+    for (const name of ['perf-a', 'perf-b', 'scratch']) {
+      restored.push({ id: `$${restored.length}`, name })
+      await store.load(restored, '2:2')
+    }
+    const after = await new SessionPreferenceStore(store.statePath).load(restored.slice(1), '2:2')
+    expect(after.repositoryGroups).toEqual([{ ...group, sessionIds: ['$2', '$1'] }])
+    expect(after.repositorySessionIds).toEqual(['name:closed-1', '$3', 'group:landing', 'name:closed-2'])
+    expect(after.sessionNamesById).toMatchObject({ $1: 'perf-a', $2: 'perf-b', $3: 'scratch' })
+  })
+
+  it('reads preferences saved before server ids were recorded on this tmux server as its own, correcting names from tmux', async () => {
+    const path = join(folder, 'session-tree.json')
+    await writeFile(path, JSON.stringify({
+      ...base, ungroupedSessionIds: ['$3', '$1'], repositorySessionIds: ['$3', '$1'],
+      sessionNamesById: { $3: 'closed long ago', $1: 'work' },
+    }))
+    const store = new SessionPreferenceStore(path)
+    const view = await store.load([{ id: '$1', name: 'work' }, { id: '$3', name: 'Battery usage' }], '5:5')
+    expect(view.repositorySessionIds).toEqual(['$3', '$1'])
+    expect(view.sessionNamesById).toEqual({ $1: 'work', $3: 'Battery usage' })
+    expect(view.serverId).toBe('5:5')
+    // The next restart finds "Battery usage" by its real name.
+    const restarted = await store.load([{ id: '$1', name: 'Battery usage' }, { id: '$2', name: 'work' }], '6:6')
+    expect(restarted.repositorySessionIds).toEqual(['$1', '$2'])
+  })
+
+  it('reads preferences saved before server ids were recorded by name if tmux started after they were written', async () => {
+    const path = join(folder, 'session-tree.json')
+    await writeFile(path, JSON.stringify({
+      ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$7'] }], sessionNamesById: { $7: 'perf' },
+    }))
+    const writtenAt = Math.floor((await stat(path)).mtimeMs / 1000)
+    // tmux restarted after the save and restore has only reached $7 so far, with another session.
+    const view = await new SessionPreferenceStore(path).load([{ id: '$7', name: 'scratch' }], `9:${writtenAt + 60}`)
+    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: ['name:perf'] }])
+    expect((await new SessionPreferenceStore(path).load([{ id: '$7', name: 'scratch' }, { id: '$8', name: 'perf' }], `9:${writtenAt + 60}`)).repositoryGroups)
+      .toEqual([{ ...group, sessionIds: ['$8'] }])
+  })
+
+  it('judges an old preferences file before an identity write on the same request updates its write time', async () => {
+    const path = join(folder, 'session-tree.json')
+    await writeFile(path, JSON.stringify({ ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$7'] }], sessionNamesById: { $7: 'perf' } }))
+    const now = Math.floor(Date.now() / 1000)
+    await utimes(path, now - 120, now - 120)
+    const serverId = `9:${now - 60}`
+    const sessions = [{ id: '$7', name: 'scratch' }]
+    const store = new SessionPreferenceStore(path)
+    // The preferences GET assigns identities (a write) before it loads.
+    await store.ensureIdentities([], sessions, serverId)
+    expect((await store.load(sessions, serverId)).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:perf'] }])
+  })
+
+  it('keeps a renamed member in place when a stale client still names it as a session that now exists', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, repositoryGroups: [group], repositorySessionIds: ['group:landing'] }, [{ id: '$1', name: 'work' }], '1:1')
+    const clientView = await store.load([{ id: '$1', name: 'work' }], '1:1')
+    await store.recordSessionRename('$1', 'work', 'renamed', '1:1')
+    const sessions = [{ id: '$1', name: 'renamed' }, { id: '$2', name: 'work' }]
+    const saved = await store.replace({ ...clientView, repositoryGroups: [{ ...group, collapsed: false }] }, sessions, '1:1')
+    expect(saved.repositoryGroups).toEqual([{ ...group, collapsed: false, sessionIds: ['$1'] }])
+    expect(saved.sessionNamesById).toEqual({ $1: 'renamed', $2: 'work' })
+  })
+
+  it('does not rename an old server\'s entry when a session is renamed before the first load after a restart', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, ungroupedSessionIds: [], repositoryGroups: [group] }, [{ id: '$1', name: 'api' }, { id: '$2', name: 'scratch' }], '1:1')
+    await store.renameIdentity('scratch', 'notes', '$1', '2:2')
+    const view = await store.load([{ id: '$1', name: 'notes' }, { id: '$2', name: 'api' }], '2:2')
+    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
+  })
+
+  it('matches a client view without a server id by name, as it may predate a tmux restart', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, ungroupedSessionIds: [], repositoryGroups: [group] }, [{ id: '$1', name: 'api' }], '1:1')
+    const legacyView = { ...base, ungroupedSessionIds: [], repositoryGroups: [group], sessionNamesById: { $1: 'api' } }
+    const saved = await store.replace(legacyView, [{ id: '$1', name: 'scratch' }, { id: '$2', name: 'api' }], '2:2')
+    expect(saved.repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
+  })
+
+  it('keeps a placeholder when a client view without a server id is saved during a partial restore', async () => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$9'] }] }, [{ id: '$9', name: 'work' }], '1:1')
+    const partial = [{ id: '$1', name: 'scratch' }]
+    expect((await store.load(partial, '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:work'] }])
+    const legacyView = { ...base, ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$1'] }], sessionNamesById: { $1: 'work' } }
+    expect((await store.replace(legacyView, partial, '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:work'] }])
+    expect((await store.load([...partial, { id: '$2', name: 'work' }], '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
+  })
+
+  it.each(['renameIdentity', 'recordSessionRename'] as const)('follows a rename into placeholders before the next load (%s)', async (method) => {
+    const store = new SessionPreferenceStore(join(folder, 'session-tree.json'))
+    await store.replace({ ...base, groups: [{ id: 'g', name: 'G', sessionIds: ['$9'] }], ungroupedSessionIds: [], repositoryGroups: [{ ...group, sessionIds: ['$9'] }], repositorySessionIds: ['$9'] }, [{ id: '$9', name: 'work' }], '1:1')
+    expect((await store.load([{ id: '$1', name: 'scratch' }], '2:2')).repositoryGroups).toEqual([{ ...group, sessionIds: ['name:work'] }])
+    // "work" is restored as $2 and renamed before anything loads the preferences again.
+    if (method === 'renameIdentity') await store.renameIdentity('work', 'renamed', '$2', '2:2')
+    else await store.recordSessionRename('$2', 'work', 'renamed', '2:2')
+    const view = await store.load([{ id: '$1', name: 'scratch' }, { id: '$2', name: 'renamed' }], '2:2')
+    expect(view.repositoryGroups).toEqual([{ ...group, sessionIds: ['$2'] }])
+    expect(view.groups).toEqual([{ id: 'g', name: 'G', sessionIds: ['$2'] }])
+    expect(view.repositorySessionIds).toEqual(['$2'])
+  })
+
+  it('drops an old placeholder when the new name already holds one', async () => {
+    const path = join(folder, 'session-tree.json')
+    await writeFile(path, JSON.stringify({ ...base, groups: [{ id: 'g', name: 'G', sessionIds: ['name:a'] }], ungroupedSessionIds: ['name:b'], serverId: '1:1' }))
+    const store = new SessionPreferenceStore(path)
+    await store.renameIdentity('a', 'b', '$5', '1:1')
+    const written = JSON.parse(await readFile(path, 'utf8'))
+    expect(written).toMatchObject({ groups: [{ id: 'g', sessionIds: [] }], ungroupedSessionIds: ['name:b'] })
+    expect(parseSessionTreePreferences(written)).not.toBeNull()
+  })
+
+  it('keeps the file readable when tmux reports a name the preferences can\'t hold', async () => {
+    const path = join(folder, 'session-tree.json')
+    const store = new SessionPreferenceStore(path)
+    await store.replace({ ...base, ungroupedSessionIds: ['$1', 'name:a'] }, [{ id: '$1', name: 'work' }], '1:1')
+    await store.recordSessionRename('$1', 'work', 'x'.repeat(200), '1:1')
+    await store.recordSessionRename('$2', 'a', 'y'.repeat(200), '1:1')
+    expect(parseSessionTreePreferences(JSON.parse(await readFile(path, 'utf8')))).not.toBeNull()
+  })
+
+  it('rejects malformed placeholders and server ids', () => {
+    expect(parseSessionTreePreferences({ ...base, ungroupedSessionIds: ['name:'] })).toBeNull()
+    expect(parseSessionTreePreferences({ ...base, ungroupedSessionIds: ['name:bad\nname'] })).toBeNull()
+    expect(parseSessionTreePreferences({ ...base, serverId: '' })).toBeNull()
+    expect(parseSessionTreePreferences({ ...base, serverId: 7 })).toBeNull()
+    expect(parseSessionTreePreferences({ ...base, ungroupedSessionIds: ['name:Battery usage'], serverId: '1:1' })).toMatchObject({ ungroupedSessionIds: ['name:Battery usage'], serverId: '1:1' })
   })
 
   it('round-trips groups through replace, load and read-only loads without changing manual groups', async () => {

@@ -1550,7 +1550,7 @@ async function main(): Promise<void> {
         // Record tmux-side renames before publishing the snapshot, so a grouping save
         // reconciled against the new names keeps repository-group membership.
         for (const { sessionId, previousName, name } of sessionRenames) {
-          await sessionPreferences.recordSessionRename(sessionId, previousName, name).catch((error: unknown) => {
+          await sessionPreferences.recordSessionRename(sessionId, previousName, name, nextServerId).catch((error: unknown) => {
             console.warn('[commando] Session name update failed after tmux rename', error)
           })
         }
@@ -1751,6 +1751,7 @@ async function main(): Promise<void> {
     preferences: sessionPreferences,
     archives: new SessionArchives({ agents: agentResume }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
+    currentServerId: () => snapshotServerId,
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
     afterSessionRenamed: async (sessionId, previousName, name) => {
       if (await sessionBriefs.renameSession(sessionId, previousName, name)) {
@@ -2126,6 +2127,7 @@ async function main(): Promise<void> {
     briefs: sessionBriefs,
     sessionPreferences,
     snapshot: () => snapshot,
+    serverId: () => snapshotServerId,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
