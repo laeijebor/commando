@@ -54,6 +54,7 @@
 
 - Preserve ongoing tmux and Commando sessions whenever possible. Do not attach to, kill, restart, or reconfigure a shared tmux server or Commando daemon unless explicitly requested.
 - When testing Commando, use a separate tmux server/socket and separate ports. Set `COMMANDO_TMUX_SOCKET_NAME` and `COMMANDO_PORT` to feature-specific values, and pass a separate Vite port with `vite --port` (for example, daemon `4410` and web `5273`).
+- A daemon on a non-default tmux socket keeps its own sidebar preferences and pane identities (`~/.commando/session-tree-<hash>.json`, `pane-identities-<hash>.json`), so it can't rewrite the user's groups.
 - Daemons on a non-default port skip GitHub (PR lists, quick look, branch PR badges) so test daemons don't drain the user's shared API budget. Set `COMMANDO_GITHUB=on` only when the feature under test needs GitHub, and stop that daemon when done.
 - Avoid broad cleanup commands such as `tmux kill-server`, `pkill`, or stopping shared dev servers. Clean up only processes and resources launched by the agent.
 

@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 import { parseStoredPaneTarget, type PaneTargetObservation } from './tmux-pane-targets.js'
+import { tmuxSocketStateSuffix } from './tmux-socket-scope.js'
 
 export type PaneIdentityObservation = PaneTargetObservation & {
   sessionName: string
@@ -16,12 +17,7 @@ const MAX_BINDINGS = 1024
 
 export function defaultPaneIdentityPath(): string {
   if (process.env.COMMANDO_PANE_IDENTITIES_PATH) return process.env.COMMANDO_PANE_IDENTITIES_PATH
-  const socket = process.env.COMMANDO_TMUX_SOCKET_PATH
-    ? `path:${process.env.COMMANDO_TMUX_SOCKET_PATH}`
-    : process.env.COMMANDO_TMUX_SOCKET_NAME && process.env.COMMANDO_TMUX_SOCKET_NAME !== 'default'
-      ? `name:${process.env.COMMANDO_TMUX_SOCKET_NAME}` : undefined
-  const suffix = socket ? `-${createHash('sha256').update(socket).digest('hex').slice(0, 16)}` : ''
-  return join(homedir(), '.commando', `pane-identities${suffix}.json`)
+  return join(homedir(), '.commando', `pane-identities${tmuxSocketStateSuffix()}.json`)
 }
 
 function slot(pane: Pick<Binding, 'sessionName' | 'windowIndex' | 'paneIndex'>): string {
