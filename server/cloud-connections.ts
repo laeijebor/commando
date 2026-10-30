@@ -47,7 +47,9 @@ export function createCloudConnections({ env = process.env, home = homedir(), ru
     new ClaudeCloudAdapter({
       runner, executable: claude, label: 'Claude Team',
       credentialContextId: env.COMMANDO_CLOUD_CLAUDE_TEAM_CONTEXT ?? 'claude:team',
-      configDir: null,
+      // Unset by default: the child gets no CLAUDE_CONFIG_DIR. Set this when the
+      // Team login lives in its own directory (e.g. ~/.claudew).
+      configDir: env.COMMANDO_CLOUD_CLAUDE_TEAM_CONFIG_DIR ?? null,
       verifiedVersion: env.COMMANDO_CLOUD_CLAUDE_TEAM_VERIFIED_VERSION ?? '',
     }),
     new ClaudeCloudAdapter({

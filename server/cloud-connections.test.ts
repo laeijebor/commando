@@ -77,4 +77,11 @@ describe('configured Claude connections', () => {
     await Promise.all(connections.slice(0, 2).map((connection) => connection.info()))
     expect(runner.mock.calls.map(([request]) => request.claudeConfigDir)).toEqual([null, '/custom/max'])
   })
+  it('passes an explicit Team directory when the Team login lives in its own config dir', async () => {
+    const root = home()
+    const runner = vi.fn<CloudCliRunner>(async () => success('2.1.270 (Claude Code)\n'))
+    const connections = createCloudConnections({ home: root, runner, env: { PATH: '', COMMANDO_CLOUD_CLAUDE_TEAM_CONFIG_DIR: '/custom/team' } })
+    await Promise.all(connections.slice(0, 2).map((connection) => connection.info()))
+    expect(runner.mock.calls.map(([request]) => request.claudeConfigDir)).toEqual(['/custom/team', join(root, '.claudep')])
+  })
 })

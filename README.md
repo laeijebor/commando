@@ -371,6 +371,8 @@ COMMANDO_CLOUD_CLAUDE_MAX_VERIFIED_VERSION='<verified-max-semver>'
 COMMANDO_CLOUD_CLAUDE_TEAM_CONTEXT=claude:team
 COMMANDO_CLOUD_CLAUDE_MAX_CONTEXT=claude:max
 COMMANDO_CLOUD_CLAUDE_MAX_CONFIG_DIR="$HOME/.claudep"
+# Optional: only when the Team login lives in its own directory.
+COMMANDO_CLOUD_CLAUDE_TEAM_CONFIG_DIR="$HOME/.claudew"
 ```
 
 Pass these variables to the daemon's launch environment. Executable overrides
@@ -387,8 +389,9 @@ Context labels are local identity namespaces, not credentials. Use a new context
 when changing accounts; the app checks declared context changes and requires
 confirmation when the provider's actual account identity cannot be inspected.
 
-Team explicitly removes `CLAUDE_CONFIG_DIR` from its child environment even if
-the daemon inherited it. It is important not to replace this with an explicit
+By default Team explicitly removes `CLAUDE_CONFIG_DIR` from its child environment
+even if the daemon inherited it. Set `COMMANDO_CLOUD_CLAUDE_TEAM_CONFIG_DIR` (an
+absolute path) when the Team login lives in its own directory instead. It is important not to replace this with an explicit
 `~/.claude` value: those selections can resolve different saved credentials.
 Max's directory override must be an absolute path. The parent environment and
 other local agent processes are unchanged.
