@@ -81,8 +81,30 @@ describe('CanvasPush (injected senders only)', () => {
     const many = Array.from({ length: 200 }, (_, i) => ({ ...note(String(i)), comment: 'x'.repeat(4096), canvas: { ...note().canvas!, frameTitle: 't'.repeat(1024), label: 'l'.repeat(256) } }))
     const long = canvasPushPrompt('t'.repeat(1024), id, many)
     expect(long.length).toBeLessThanOrEqual(2000)
-    expect(long).toContain('…'); expect(long).toMatch(/\d+ comment\(s\) omitted/)
+    expect(long).toContain('…'); expect(long).toMatch(/\d+ item\(s\) omitted/)
     expect(long).toContain('scripts/commando-feedback'); expect(long).toContain('[--resolve]')
+  })
+})
+
+const answer = (key = 'a1'): WebPaneFeedbackNote => ({ deliveryKey: key, comment: 'Who gets the ping?: All group chats\n\nNote: for now', selector: '[data-canvas-note="q1"]', tag: 'redline',
+  rect: { x: 0, y: 0, width: 0, height: 0 }, pageUrl: 'http://localhost/canvas.json', capturedAt: 1, response: { question: 'Who gets the ping?', answer: 'All group chats', note: 'for now' } })
+describe('canvas question answers', () => {
+  it('pushes sent answers, which carry no frame or thread, to the agent', async () => {
+    const f = fixture(true)
+    await f.push.deliver(id, [answer(), answer('a2')])
+    expect(f.sendChat).toHaveBeenCalledExactlyOnceWith('%1', `Canvas feedback on "Board" (2 answer(s)) — webPaneId ${id}.\n- [Answer] Who gets the ping?: All group chats  Note: for now\n- [Answer] Who gets the ping?: All group chats  Note: for now\nRun "${canvasRepoRoot}scripts/commando-feedback" ${id} to collect them (this also acknowledges them), then act on the answers.`, expect.stringMatching(/^canvas-/))
+  })
+  it('lists answers beside comments and keeps the thread reply instructions', () => {
+    const prompt = canvasPushPrompt('Board', id, [note(), answer()])
+    expect(prompt).toContain('(1 comment(s), 1 answer(s))')
+    expect(prompt).toContain('- [Settings › Row] Fix this row')
+    expect(prompt).toContain('- [Answer] Who gets the ping?: All group chats')
+    expect(prompt).toContain('reply in each thread')
+  })
+  it('still skips canvas notes that are neither comments nor answers', async () => {
+    const f = fixture(true)
+    await f.push.deliver(id, [{ ...note(), canvas: undefined }])
+    expect(f.sendChat).not.toHaveBeenCalled()
   })
 })
 
