@@ -1,3 +1,5 @@
+import { randomUuid } from './randomId'
+
 export const SESSION_TOKEN_CHANNEL_NAME = 'commando.session-token.v1'
 export const MAX_SESSION_TOKEN_BYTES = 8 * 1_024
 export const DEFAULT_TOKEN_REQUEST_TIMEOUT_MS = 750
@@ -38,12 +40,6 @@ export function isBoundedSessionToken(value: unknown): value is string {
     new TextEncoder().encode(value).byteLength <= MAX_SESSION_TOKEN_BYTES
 }
 
-function defaultIdentifier(): string {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
 function defaultChannelFactory(name: string): SessionTokenChannel {
   return new BroadcastChannel(name) as SessionTokenChannel
 }
@@ -61,7 +57,7 @@ export class SessionTokenBroker {
 
   constructor(
     channelFactory: SessionTokenChannelFactory = defaultChannelFactory,
-    private readonly identifierFactory: () => string = defaultIdentifier,
+    private readonly identifierFactory: () => string = randomUuid,
   ) {
     this.peerId = identifierFactory()
     try {

@@ -80,6 +80,10 @@ import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
 import { defaultPanePrRecordsPath } from './pane-pr-records.js'
+import { CloudTaskStore } from './cloud-task-store.js'
+import { CloudTaskService } from './cloud-task-service.js'
+import { handleCloudTasksApi } from './cloud-tasks-api.js'
+import { createCloudConnections } from './cloud-connections.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
@@ -673,6 +677,17 @@ async function main(): Promise<void> {
   const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
   if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
   const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
+  let cloudTaskStore: CloudTaskStore | undefined
+  let cloudTasks: CloudTaskService | undefined
+  try {
+    cloudTaskStore = new CloudTaskStore(resolve(process.env.COMMANDO_CLOUD_TASKS_PATH ?? `${homedir()}/.commando/cloud-tasks.sqlite`))
+    cloudTasks = new CloudTaskService({ store: cloudTaskStore, providers: createCloudConnections() })
+  } catch {
+    cloudTaskStore?.close()
+    cloudTaskStore = undefined
+    // Storage failure must not reset task history or take local tmux offline.
+    console.error('[commando] Cloud task storage unavailable; cloud routes are disabled')
+  }
   const gitWorktrees = new GitWorktreeService()
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   // The profile store is set up further down; this only runs when a pane starts.
@@ -2936,6 +2951,13 @@ async function main(): Promise<void> {
         }
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
+        if (/^\/api\/(?:cloud-tasks|cloud-providers|cloud-operations)(?:\/|$)/.test(url.pathname)) {
+          if (!cloudTasks) {
+            writeJson(response, 503, { code: 'cloud_storage_unavailable', error: 'Cloud task storage is unavailable. Saved history has not been reset.' })
+            return
+          }
+          if (await handleCloudTasksApi(request, response, url, cloudTasks)) return
+        }
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return
@@ -3135,6 +3157,11 @@ async function main(): Promise<void> {
     externalAgents.close()
     prAutofix.stop()
     resurrectSaver.stop()
+    void cloudTasks?.stop().catch(() => {
+      console.error('[commando] Cloud dispatcher stopped with uncertain delivery; saved tasks require reconciliation')
+    })
+    // Keep SQLite available to late CLI receipts while shutdown drains children.
+    process.once('beforeExit', () => cloudTaskStore?.close())
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     // Agent hosts keep their turns running and reconnect to the next daemon.

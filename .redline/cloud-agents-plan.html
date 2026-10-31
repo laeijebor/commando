@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en" data-redline-theme="commando">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cloud agents · implementation review</title>
+  <link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/default.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { min-width: 0; margin: 0; }
+    .redline-layout, .redline-shell, section, details, figure { min-width: 0; }
+    .redline-shell { width: 100%; max-width: 1280px; }
+    p, li, td, th, code, summary { overflow-wrap: anywhere; }
+    section { scroll-margin-top: 70px; }
+    h1 { font-size: clamp(30px, 4.7vw, 44px); line-height: 1.12; letter-spacing: -.035em; }
+    h2 { letter-spacing: -.025em; }
+    h3 { margin: 1.1em 0 .45em; }
+    p, li { line-height: 1.6; }
+    li + li { margin-top: .4em; }
+    .lede { font-size: 1.12em; }
+    .subtle, figcaption { color: #aaa4bd; font-size: .9em; }
+    .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+    .fact { padding: 12px; border: 1px solid #363048; border-radius: 8px; }
+    .fact strong, .fact span { display: block; }
+    .fact span { margin-top: 5px; color: #c6c0d6; font-size: .9em; }
+    details { margin-top: 14px; padding-top: 12px; border-top: 1px solid #363048; }
+    summary { cursor: pointer; font-weight: 650; }
+    summary:focus-visible, a:focus-visible { outline: 2px solid #b9a3ff; outline-offset: 3px; }
+    .redline-table-wrap { max-width: 100%; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: .9em; }
+    th, td { vertical-align: top; text-align: left; padding: 12px 10px; border-bottom: 1px solid #363048; }
+    th { color: #f5f3fa; }
+    .decision-column { color: #b9a3ff; font-weight: 650; }
+    caption { text-align: left; padding-bottom: 10px; color: #aaa4bd; }
+    .tag { display: inline-block; padding: 3px 7px; border: 1px solid #443a63; border-radius: 6px; font-size: .8em; }
+    .pending { color: #f3c66b; }
+    pre, pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .mermaid { background: #100d1a; padding: 14px; border-radius: 8px; text-align: center; }
+    .mermaid svg { max-width: 100%; height: auto; }
+    .diagram-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .diagram-pair figure { margin: 0; }
+    iframe { display: block; width: 100%; height: 780px; border: 1px solid #443a63; border-radius: 10px; background: #0c0a14; }
+    figure { margin: 18px 0 0; }
+    figcaption { margin-top: 10px; line-height: 1.55; }
+    .preview-link { display: inline-block; margin: 4px 0 12px; }
+    .gate-list { padding-left: 22px; }
+    redline-question label { display: grid; gap: 6px; margin: 10px 0; }
+    redline-question input, redline-question select { width: 100%; min-width: 0; }
+    .ownership td:first-child { width: 18%; }
+    @media (max-width: 760px) {
+      .facts, .diagram-pair { grid-template-columns: minmax(0, 1fr); }
+      th, td { padding: 9px 6px; font-size: 12px; }
+      iframe { height: 850px; }
+    }
+  </style>
+</head>
+<body>
+<div class="redline-layout">
+  <redline-nav eyebrow="Commando · planned feature" heading="Provider-hosted agents" summary="Submit here. Continue in the cloud. Keep delivery honest." status="Revised · awaiting approval" status-tone="warn"></redline-nav>
+  <main class="redline-shell redline-stack">
+    <section id="decision-summary" data-redline-section data-redline-label="Decision" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-callout">
+      <span class="tag">Implementation plan · skeptical review incorporated · round 2</span>
+      <h1>Cloud work that survives a closed laptop</h1>
+      <p class="lede">Add a durable <strong>Cloud tasks</strong> area using the official, subscription-backed Claude Code and Codex CLIs. After a provider accepts a task, execution no longer depends on Commando or the laptop staying awake.</p>
+      <p><strong>Approval means start implementing this plan</strong> with parallel subagents, fixture-based verification and dependency setup in the isolated feature worktree. Live provider tasks need a separately identified authenticated provider and disposable target.</p>
+      <div class="facts">
+        <div class="fact"><strong>One new cloud domain</strong><span>Saved tasks beside local tmux sessions, never synthetic panes.</span></div>
+        <div class="fact"><strong>Receipt before reassurance</strong><span>Local 202 means recorded; only a provider receipt means submitted.</span></div>
+        <div class="fact"><strong>Provider gates still open</strong><span>Documented commands are not installed-account verification.</span></div>
+      </div>
+      <p class="subtle">Canonical source: <code>~/.commando/notes-vaults/default/provider-hosted-agents.md</code>, “Implementation plan — draft for Redline approval.” Product implementation has not started. <a href="#review-decisions">Round 2 corrections</a> are incorporated; overall approval and live target selection remain open.</p>
+    </section>
+
+    <section id="scope" data-redline-section data-redline-label="Scope" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>01 · A focused first release</h2>
+      <ul>
+        <li><strong>Cloud tasks beside Workspace, Linear and Notes:</strong> create, list/detail, explicit linking, archive/unarchive, provider link, refresh, delivery diagnostics and supported results. Available with zero tmux sessions.</li>
+        <li><strong>Codex:</strong> configured environment/ref, tracked-task reconciliation with official list/status, on-demand read-only unified diff. Follow-up stays in the provider UI.</li>
+        <li><strong>Claude:</strong> supported repository-context submission, receipt-acknowledged follow-up, provider UI for live status. No native transcript or authoritative background status.</li>
+        <li><strong>Workspace HUD:</strong> a compact separate Cloud tasks group. Existing local filters/counts and workspace selection stay intact.</li>
+        <li><strong>Durability:</strong> local task/operation journal, restart/wake recovery, independent execution and observation health, capability/readiness checks per provider.</li>
+      </ul>
+      <p id="milestones"><strong>Milestone 1:</strong> prove one enabled provider’s create → receipt → detached execution → recovered detail/link. <strong>Milestone 2:</strong> HUD, archive, diff polish and the second provider. These remain release scope, not prerequisites to proving the core path.</p>
+      <details id="scope-deferred">
+        <summary>Deferred boundaries</summary>
+        <p>SSH/Herdr, an owned always-on machine, managed-agent APIs and API billing, mobile/Island changes, arbitrary cloud tiles, full transcripts, unsupported cancellation, local patch apply/checkout/merge, automatic upload/push, scheduled multi-step orchestration, importing all account tasks, and multi-account/profile management.</p>
+        <p>Store only tasks submitted or explicitly linked through Commando. Closing a tile or archiving a task changes local presentation, never remote execution. No publishing, merging or applying provider changes accompanies submission.</p>
+        <p>Claude Routines’ limited trigger API and the separate managed-agent APIs remain research context, not this release’s integration. Claude teleport/resume and local Remote Control do not establish ongoing cloud execution.</p>
+      </details>
+    </section>
+
+    <section id="capabilities" data-redline-section data-redline-label="Provider reality" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>02 · Capabilities are asymmetric</h2>
+      <p><span class="tag pending">P0b evidence pending · real provider capabilities disabled</span></p>
+      <p><strong>P0a freezes neutral contracts, not provider claims.</strong> Synthetic fixtures let storage and disabled-provider UI proceed. <strong>P0b verifies each real capability</strong> against the approved CLI/account; parsers and provider fixtures remain provisional, with runtime actions disabled until evidence is recorded. Linked-session follow-up needs its own evidence, independently of creation.</p>
+      <div class="redline-table-wrap">
+        <table>
+          <caption>Ordered by the task lifecycle. “Documented” is not a claim of a successful authenticated probe.</caption>
+          <thead><tr><th scope="col">Capability</th><th scope="col">Claude Code Cloud</th><th scope="col">Codex Cloud</th><th scope="col">V1 decision</th></tr></thead>
+          <tbody>
+            <tr id="cap-create"><th scope="row">Create</th><td><code>claude --cloud</code>; provisioning, receipt/detach and enforceable no-bundle source selection unverified.</td><td><code>cloud exec --env … --branch …</code>; experimental CLI.</td><td class="decision-column">P0b gates receipt, detach and enforceable source policy.</td></tr>
+            <tr id="cap-status"><th scope="row">List / inspect</th><td>No general documented headless list/status surface established. <code>/tasks</code> is interactive.</td><td><code>cloud list --json</code> and <code>status</code>; parse versioned fixtures, retain bounded raw state.</td><td class="decision-column">Claude receipt-only; Codex evidence-based observation.</td></tr>
+            <tr id="cap-message"><th scope="row">Follow-up</th><td><code>-p … --cloud &lt;id&gt; --output-format json</code> acknowledges message delivery, not completion. No streaming JSON here.</td><td>No follow-up command in the reviewed official command enum.</td><td class="decision-column">Claude journaled messages; Codex provider UI.</td></tr>
+            <tr id="cap-diff"><th scope="row">Results / diff</th><td>Provider UI. No native transcript promise.</td><td><code>cloud diff</code>; result-ready does not prove success or passed tests.</td><td class="decision-column">Read-only plaintext, capped at 256 KiB or 5,000 lines.</td></tr>
+            <tr id="cap-link"><th scope="row">Explicit link / account</th><td>Session ID may be user-supplied; a link is not a message receipt. Account exposure unverified.</td><td>Validate exact task identity where supported; account exposure needs probing.</td><td class="decision-column">No similarity matching or path-as-account identity. Confirm unverified contexts explicitly.</td></tr>
+            <tr id="cap-cancel"><th scope="row">Cancel / apply</th><td>No verified cancellation surface in scope.</td><td>No cancel in reviewed enum. <code>apply</code> exists, but is deferred.</td><td class="decision-column">No cancellation or local patch application in v1.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details id="provider-probe">
+        <summary>P0a neutral interfaces → P0b capability evidence</summary>
+        <ul>
+          <li>P0a freezes provider-neutral types, store/service transitions and runner interface using clearly synthetic fixtures. It does not enable any real provider action.</li>
+          <li>The planning shell had neither CLI discoverable on PATH and the worktree had no <code>node_modules</code>. Inspect version/help using a user-approved executable; no silent global install/update. Executable overrides are daemon config, never an HTTP field.</li>
+          <li>Confirm subscription/account policy, selected source/environment, stable ID/URL receipt, machine-readable outputs and distinguishable auth/permission/rate errors. Capture sanitized output shapes and tested version.</li>
+          <li>Confirm how creation terminates/detaches; close the local submitter and independently verify remote completion. A remote-looking URL alone is insufficient.</li>
+          <li>If Claude needs interactive provisioning or cannot expose a reliable receipt/detach, disable embedded creation with a precise provider-UI fallback. Separately verified follow-up to an explicitly linked session may remain enabled. No terminal scraping or substitute local execution.</li>
+          <li>Codex parsers must handle tested list pagination and status/diff formats. Unsupported output becomes unavailable, not a guessed state.</li>
+          <li>One blocked provider must not break the other or local Commando. Do not call both-provider acceptance complete. A materially different integration returns to Redline review.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section id="product-preview" data-redline-section data-redline-label="Product concept" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>03 · Review the difficult states, at actual size</h2>
+      <p><strong>CONCEPT · source-derived DOM with fixture data.</strong> This is a proposed cloud surface, not a running feature or a capture of current UI. The isolated iframe uses Commando’s purple tokens and compact source dimensions; document styling does not cross into it.</p>
+      <a class="preview-link" href="cloud-agents-preview.html" target="_blank" rel="noopener">Open standalone focused preview ↗</a>
+      <figure id="preview-frame">
+        <iframe src="cloud-agents-preview.html" title="Concept Cloud tasks — interactive local fixtures at 1:1 scale" loading="lazy"></iframe>
+        <figcaption>Select the Claude receipt with a separate uncertain follow-up, stale Codex result, or uncertain create. User-supplied linking recovers identity only; it never proves acceptance or message delivery. The preview includes both milestones. All demo changes are in-memory and reset on reload; narrow layouts use Back without scaling.</figcaption>
+      </figure>
+      <details id="design-evidence">
+        <summary>Source design evidence and implementation expectations</summary>
+        <p><code>src/styles.css:1–32</code> supplies tokens/font stacks; <code>:187–215</code> the 44px titlebar; <code>:550–595</code> the 31px navigation; <code>:2914–2964</code> 8px card padding, 9px radius and 27px CL/CX avatars. <code>src/App.tsx:2372–2386</code> supplies the actual area labels and selection pattern; <code>src/AgentHudCard.tsx:28–39,119–134</code> supplies initials and card structure.</p>
+        <p><code>src/session-create-dialog.css</code>, <code>src/SessionCreateDialog.tsx</code> and <code>src/tmux-create.css</code> ground the 360px dialog, fields, backdrop and occlusion. Production adds a complete focus trap, Escape/backdrop dismissal and focus restoration. <code>src/git-diff.css</code> supplies plaintext-output typography. <code>src/theme.ts</code> selects purple by default; <code>src/main.tsx</code> loads terminal fonts. This concept uses the source system/monospace fallback stacks without fetching fonts.</p>
+        <p>No current-UI screenshot was available; this remains a source-derived concept. Verified in the actual Chromium review tile at 800 × 600 and a 390 × 844 narrow viewport: no horizontal overflow, both Mermaid diagrams and review controls loaded, and no application runtime errors were observed. Exercised fixture task selection, offline controls, identity-only linking, uncertain-message acknowledgement, new-task dialog/focus restoration and the separate HUD. This validates the review artifact, not provider execution.</p>
+      </details>
+    </section>
+
+    <section id="delivery" data-redline-section data-redline-label="Delivery & recovery" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>04 · Local intent is not cloud acceptance</h2>
+      <p><strong>Recorded locally → Sending → Submitted to Claude/Codex.</strong> Only the final state has a valid provider receipt. Until then, do not tell the user it is safe to close the laptop. An HTTP 202 is only a durable local acknowledgement.</p>
+      <div class="redline-table-wrap">
+        <table>
+          <thead><tr><th scope="col">Situation</th><th scope="col">What the interface says and does</th></tr></thead>
+          <tbody>
+            <tr id="truth-claude"><th scope="row">Claude accepted</th><td>“Submitted · Live status in Claude.” Restore receipt/link on wake; no pretend polling or completion state. A valid follow-up acknowledgement says “Message sent.”</td></tr>
+            <tr id="truth-codex"><th scope="row">Codex observed</th><td>Map queued/running/needs-input/result-ready only from supported evidence. Keep raw bounded status. “Result ready” is review availability, never a claim of passed tests.</td></tr>
+            <tr id="truth-unknown"><th scope="row">Create may have happened</th><td>“Delivery unknown — check provider before retrying.” Explicit linking can recover task identity, labelled user-supplied if unverifiable. No replay; a list miss or prompt/time similarity proves nothing.</td></tr>
+            <tr id="truth-message-unknown"><th scope="row">Follow-up may have arrived</th><td>Keep that message <code>delivery_unknown</code> until message-specific receipt evidence exists. Linking its session never proves message delivery. “I checked” is separate user metadata, not provider confirmation.</td></tr>
+            <tr id="truth-offline"><th scope="row">Client offline / stale</th><td>Keep cached status and last-checked time. Disable daemon mutations, retain provider links. Reconnect without focus theft; a sleeping client is not an agent failure.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details id="source-preparation">
+        <summary>Source preparation is explicit</summary>
+        <p>Provider → repository context/environment + branch → prompt → destination summary → submit. Codex uses an existing configured environment; allow manual environment ID when no documented machine-readable discovery exists.</p>
+        <p>Claude requires a clean, pushed GitHub source, but <strong>clean git status or a scratch checkout does not prove no bundle upload</strong>. Creation stays disabled unless P0b establishes a supported, enforceable source-selection/no-bundle path. No automatic push. Record requested ref/commit where knowable without claiming an immutable remote commit for a moving branch.</p>
+        <p>Freeze the confirmed repository/remote/ref with the intent; revalidate immediately before dispatch. Drift or unenforceable policy means <strong>no dispatch and reconfirmation</strong>. Test ignored/untracked secret-like files and alternate remotes.</p>
+        <p>P0 chooses scratch ownership or a short-lived preparation lease only for checkout lifetime, not upload-policy proof. After acceptance, neither checkout nor local submitter is required. Origin deletion and recycled pane IDs cannot delete or rebind cloud identity.</p>
+      </details>
+      <details id="delivery-journal">
+        <summary>Journal ordering, duplicate handling and restart rules</summary>
+        <ol>
+          <li>Validate capability, source, bounds and key. Record an immutable canonical intent before spawn.</li>
+          <li>Same key/hash returns the original operation; same key/different hash returns 409. Claim with a dispatcher runtime UUID and live-owner lease/heartbeat; another service cannot recover active work.</li>
+          <li>Persist <code>dispatching</code> before invoking the CLI. Capture a valid receipt early and persist receipt + remote task identity atomically. A receipt remains acceptance evidence even if a later local step fails.</li>
+          <li>Only proven pre-dispatch validation/spawn failure can be rejected outright. After possible dispatch, timeout/nonzero exit/malformed receipt may mean <code>delivery_unknown</code>.</li>
+          <li>Only abandoned <code>dispatching</code> becomes unknown, conditionally on owner-liveness/epoch checks. Lease expiry never permits redispatch. Restarted prepared intents await user account/source reconfirmation.</li>
+          <li>Append late receipts as evidence and reconcile conditionally: a matching identity upgrades verified state; a conflict with manual linking is surfaced without overwriting either identity.</li>
+          <li>Create recovery may verify/link identity; a new create requires a new intent and duplicate-risk acknowledgement. Message recovery requires its own receipt evidence, never a session link or user acknowledgement.</li>
+        </ol>
+        <p><strong>Guarantee:</strong> durable local deduplication and no blind replay. Exactly-once remote creation needs provider cooperation and is not promised.</p>
+      </details>
+      <details id="browser-intent-recovery">
+        <summary>Browser recovery · retain the key before POST</summary>
+        <p>Generate a UUID key and freeze the payload in memory before POST. Persist <strong>only key + canonical request digest + installation scope</strong> in a small pending-intent index—no prompt or credentials. Transport retries use the same key and frozen payload.</p>
+        <p>After reload, look up the operation by key before enabling resubmission. If received, the daemon’s immutable payload is authoritative. If not found, do not replay: restore/re-enter and reconfirm; reuse the key only with a matching digest. A changed draft explicitly creates a new intent.</p>
+        <p>Accepted/unknown operations remain discoverable in a recovery view after browser-storage loss. Clear pending keys only after outcome reconciliation; never silently hide unknown operations.</p>
+      </details>
+    </section>
+
+    <section id="architecture" data-redline-section data-redline-label="Architecture" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>05 · Separate identity, shared observation</h2>
+      <p>Typed HTTP operations and a shared stale-aware client store feed detail and HUD. A protected service owns delivery; provider execution continues independently of polling. No expansion of tmux snapshots or new WebSocket event family in v1.</p>
+      <div class="diagram-pair">
+        <figure id="architecture-diagram">
+          <h3>Runtime boundary</h3>
+          <pre class="mermaid">
+flowchart TD
+  UI["Cloud area + HUD"] --> CS["Shared client store"]
+  CS --> HTTP["Owner-authorized HTTP"]
+  HTTP --> SVC["Cloud service"]
+  SVC --> DB["SQLite intent journal"]
+  SVC --> RUN["Bounded CLI adapters"]
+  RUN --> HOST["Provider-hosted work"]
+  HOST -. "receipt / supported reads" .-> SVC
+          </pre>
+          <figcaption>Cloud identity lives in its own journal. No edge to pane pruning; the provider runs accepted work.</figcaption>
+        </figure>
+        <figure id="dependency-diagram">
+          <h3>Build dependency path</h3>
+          <pre class="mermaid">
+flowchart TD
+  P0A["P0a: neutral interfaces"] --> WORK["A / B / C / D parallel"]
+  P0B["P0b: provider evidence"] -->|"enable per capability"| E["E: integration"]
+  WORK --> E
+  E --> M1["M1: one provider core path"]
+  M1 --> M2["M2: HUD / archive / diff / provider 2"]
+  M2 --> F["F + live gates"]
+  F --> END["Final checks"]
+          </pre>
+          <figcaption>P0a includes the runner interface, so C need not wait for B’s implementation. P0b proceeds alongside fixture work; each real capability stays disabled until evidenced.</figcaption>
+        </figure>
+      </div>
+      <details id="architecture-reuse">
+        <summary>Reuse boundaries and observation policy</summary>
+        <ul>
+          <li>Reuse named-client/stale-data patterns in <code>src/prsApi.ts</code> / <code>src/prStore.ts</code>, injected runner/single-flight patterns in <code>server/prs.ts</code>, and <code>AuthService</code> / <code>createNetworkAccess</code> boundaries. Do not use <code>runCommand</code>: shell spawn is not remote acceptance.</li>
+          <li><code>TmuxSession</code>, <code>AgentStatus</code>, <code>SessionBrief</code> and <code>CompanionSession</code> remain local. Cloud records stay outside <code>refreshSnapshot()</code> pruning and <code>removeMissingSessions</code>.</li>
+          <li>One server-side single-flight observer per provider/context caps CLI work across viewers. Codex active tasks refresh at roughly 30-second foreground intervals, immediately on focus/online/reconnect, with exponential backoff/jitter and no wake catch-up burst. Selected detail and HUD share one client store.</li>
+          <li>Claude observation restores its receipt/link only until a read capability is verified. Do not make execution dependent on polling.</li>
+          <li>Diff is escaped, on-demand plaintext, capped at 256 KiB or 5,000 lines, with truncation and provider link. Reuse <code>git-diff.css</code> typography, not pane-bound <code>GitDiffModal</code> fetching.</li>
+        </ul>
+      </details>
+      <details id="contracts">
+        <summary>Proposed contracts, persistence and routes</summary>
+        <p><code>shared/cloud-tasks.ts</code> defines capability flags for create/link/list/inspect/sendMessage/diff/accountIdentity, readiness reason and tested CLI version. Task records include local UUID, provider/context/account identity when verified, remote ID/URL, prompt/title, source/ref/commit, historical origin, remote/raw state, observation health/timestamps, revision, results and archive time.</p>
+        <p>Operations hold UUID/task ID, create/message/link kind, key + canonical request hash, immutable payload, safe receipt, timestamps and bounded error code. States: <code>prepared / dispatching / accepted / rejected / delivery_unknown</code>. Execution, observation, process exit and provider outcome are distinct.</p>
+        <p>Dedicated private-permission <code>~/.commando/cloud-tasks.sqlite</code>, test override <code>COMMANDO_CLOUD_TASKS_PATH</code>. Reuse <code>DatabaseSync</code> from <code>server/auth.ts</code>, separate from auth DB. Migrations and transactional updates; corruption blocks mutations, never resets. Keys persist with operations, scoped by installation/owner; remote IDs by provider/context. An unverified context is only a local namespace, not cross-account deduplication. No destructive history cleanup.</p>
+        <h3>Proposed route contract · new <code>server/cloud-tasks-api.ts</code></h3>
+        <pre class="redline-code"><code>GET   /api/cloud-providers                 readiness / capabilities
+GET   /api/cloud-tasks                     local summaries, no full prompts
+POST  /api/cloud-tasks                     Idempotency-Key; durable 202
+POST  /api/cloud-tasks/link                track existing ID; no launch; journal link
+GET   /api/cloud-tasks/:id                 detail
+GET   /api/cloud-operations/:id            authoritative delivery
+GET   /api/cloud-operations/by-key/:key    owner-protected lost-response recovery
+POST  /api/cloud-tasks/:id/refresh         deduplicated read
+POST  /api/cloud-tasks/:id/messages        capability-gated, journaled
+POST  /api/cloud-tasks/:id/link            explicit identity recovery
+GET   /api/cloud-tasks/:id/diff            bounded text
+PATCH /api/cloud-tasks/:id                 local title / archive only</code></pre>
+      </details>
+      <details id="security">
+        <summary>Owner authorization and subprocess boundary</summary>
+        <p>All cloud routes sit behind <code>requestIsAuthorized</code> using the owner cookie or daemon token; hook-only access gains no cloud mutations. Preserve provider auth stores and store only a non-secret context ID plus official account identity where exposed. <strong>An unchanged config path is not account identity.</strong></p>
+        <p>If inspectable, recheck identity immediately before mutations and block mismatches. Otherwise label it unverified and require explicit current-account/context confirmation for <strong>each saved-task mutation and recovered prepared intent</strong>; no automatic resume after restart. User-declared account changes create a new local context generation, suspending old tasks until reconfirmed. This user check does not promise detection of external switches.</p>
+        <p>Fixed executable/argv, <code>shell:false</code>, bounded output/timeouts, sanitized errors and deliberately constructed subprocess environment. Preserve required auth/config/PATH behavior while stripping unrelated Commando credentials. No HTTP executable/argv/env/URL-to-fetch fields, OAuth-token copying or private task APIs. Validate provider links against documented origins and encode route IDs. No automatic login on discovery failure.</p>
+        <p>Prompts/history receive owner-level access protection. Raw credential output never enters storage; detailed diagnostics are bounded and demand-loaded. Provider HTML and raw diagnostics never go directly into the DOM.</p>
+      </details>
+    </section>
+
+    <section id="ownership" data-redline-section data-redline-label="Agent ownership" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>06 · File ownership makes parallel work safe</h2>
+      <p>Each role reports changed files and tests against the approved contract. One integrator owns composition and cherry-picks focused stage commits; separate feature worktrees/branches where phases overlap. Workers do not merge to main or edit another worker’s files.</p>
+      <div class="redline-table-wrap">
+        <table class="ownership">
+          <caption>Dependency order. Paths below are proposed new files unless listed as existing integration points.</caption>
+          <thead><tr><th scope="col">Role / waits for</th><th scope="col">Owned files</th><th scope="col">Exit evidence</th></tr></thead>
+          <tbody>
+            <tr id="owner-p0"><th scope="row">P0 · lead + specialists</th><td><code>shared/cloud-tasks.ts</code><br><code>server/cloud-provider.ts</code><br>Runner + store/service transition interfaces.</td><td class="decision-column">P0a: neutral contract, synthetic fixtures. P0b: sanitized versioned capability evidence; disabled until proven.</td></tr>
+            <tr id="owner-a"><th scope="row">A · after P0a</th><td><code>server/cloud-task-store.ts</code> + <code>.test.ts</code></td><td class="decision-column">Transaction primitives, owner-liveness claims, conditional recovery, restart invariants and no tmux cascades. E owns cross-layer faults.</td></tr>
+            <tr id="owner-b"><th scope="row">B · after P0a</th><td><code>server/cloud-cli-runner.ts</code>, <code>server/cloud-providers/claude-cli.ts</code>, tests; <code>server/cloud-providers/fixtures/claude/</code>.</td><td class="decision-column">Implement frozen runner interface, bounded invocation, receipts/follow-up. Enable each capability only with P0b evidence.</td></tr>
+            <tr id="owner-c"><th scope="row">C · after P0a runner interface</th><td><code>server/cloud-providers/codex-cli.ts</code>, tests; <code>server/cloud-providers/fixtures/codex/</code>.</td><td class="decision-column">Exec/list/status/diff, identity, pagination, result-ready. Reuse B’s runner; P0b-gated enablement.</td></tr>
+            <tr id="owner-d"><th scope="row">D · after P0a</th><td><code>src/cloudTasksApi.ts</code>, <code>src/cloudTaskStore.ts</code>, <code>src/CloudTasksSection.tsx</code>, <code>src/CloudTaskCreateDialog.tsx</code>, <code>src/CloudTaskCard.tsx</code>, <code>src/CloudTaskDiff.tsx</code>, <code>src/cloud-tasks.css</code>; colocated tests.</td><td class="decision-column">Synthetic/disabled-provider UI, pending-key recovery, detail/HUD state and narrow/keyboard cases. No App edits.</td></tr>
+            <tr id="owner-e"><th scope="row">E · integrator; stubs early, composes workers by milestone</th><td><code>server/cloud-task-service.ts</code>, <code>server/cloud-tasks-api.ts</code> + tests; <code>server/cloud-test-fixtures/</code> fake executables. Sole edits to <code>server/index.ts</code>, <code>src/App.tsx</code>, <code>src/styles.css</code>, app integration tests and <code>README.md</code>.</td><td class="decision-column">Cross-layer dispatch/recovery fault suites; source/account/auth, idempotency, shutdown/wake, then HUD composition.</td></tr>
+            <tr id="owner-f"><th scope="row">F · independent QA after integration</th><td><code>e2e/cloud-tasks.pw.ts</code>, <code>e2e/fixtures/cloud-tasks/</code>, screenshots only. Pattern: <code>e2e/pr-session-label.pw.ts</code>.</td><td class="decision-column">Real App/CSS, fail-closed browser fixtures and independent race/security review. Defects return to file owners.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="acceptance" data-redline-section data-redline-label="Acceptance gates" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>07 · Verify the failure paths before release</h2>
+      <p><strong>All implementation and release gates remain open.</strong> Fixture success establishes local behavior; live evidence establishes provider support.</p>
+      <ol class="gate-list">
+        <li><strong>Real subprocess fixtures:</strong> assert argv/cwd/env, bounds/timeouts and parsing through fake executables. Unit/e2e never reach real providers or read actual credentials.</li>
+        <li><strong>Durable delivery:</strong> crash windows and lost-202 + browser reload recover the same key/operation without duplicate dispatch. Concurrent keys dispatch once locally; ambiguous creates/messages are not replayed.</li>
+        <li><strong>Owner races + message evidence:</strong> a second daemon cannot recover a live dispatcher; late receipts confirm identity or expose linking conflicts without overwrite. Session linking and “I checked” never mark an uncertain message accepted.</li>
+        <li><strong>Source + account:</strong> ignored/untracked secret-like files, alternate remotes and post-confirmation drift block dispatch when policy is unenforceable. Account replacement at the same config path invokes verified mismatch handling or explicit unverified-context reconfirmation.</li>
+        <li><strong>Failure + lifecycle:</strong> malformed/large output, missing CLI, auth expiry and rate limiting retain cached truth. Zero tmux, worktree deletion and recycled IDs never delete/rebind cloud records.</li>
+        <li><strong>Real authorization:</strong> owner/token/Origin cases through actual route composition; hook credentials cannot create/message/link. Corruption blocks mutations.</li>
+        <li><strong>Shared observations:</strong> clock jumps, focus, visibility, online/reconnect and multiple viewers remain bounded. No catch-up burst, focus theft, phantom completion or offline failure.</li>
+        <li><strong>Real App/CSS browser flow:</strong> desktop, 390px and breakpoint edges; modal focus trap/restoration, keyboard, reload, unknown recovery, escaped/truncated diff, provider links, archive and local navigation regression.</li>
+      </ol>
+      <details id="verification-commands">
+        <summary>Commands and isolated environment</summary>
+        <p>After approval: <code>npm ci</code> in the feature worktree and establish baseline. Required checks: <code>npm run typecheck</code>, <code>npm test</code>, <code>npm run build</code>, <code>npx playwright test e2e/cloud-tasks.pw.ts --workers=1</code>. Supply a real test browser through <code>COMMANDO_CHROMIUM</code> where required. Broad e2e needs seeded environments; do not run blindly.</p>
+        <p>Dedicated <code>COMMANDO_TMUX_SOCKET_NAME=commando-cloud-qa</code>; check daemon 4410 / Vite 5273 are unused. Separate task DB, auth/state/hook/notes/web-pane stores. No shared daemon/tmux reuse or global hooks. Clean up owned test resources only.</p>
+        <p>No feature merge until required checks and practical e2e pass. Integrator reviews current main/worktree status, preserves other work, and keeps blocked provider acceptance visibly pending.</p>
+      </details>
+      <div id="live-verification">
+        <h3>Live verification · optional target selection now</h3>
+        <p>One explicitly chosen disposable task per provider: capture the receipt, close the local client/submitter (and isolated daemon where applicable), independently confirm provider completion, relaunch and find the same task, inspect supported results, then exercise Claude follow-up. A user-performed lid-close check can additionally prove actual sleep; simulated disconnect is recorded only as a proxy.</p>
+        <p>Approval does not select or upload an arbitrary private repository. Leaving the fields below blank allows fixture-driven implementation while the live gate remains pending. Provide identifiers only, never credentials.</p>
+        <redline-question key="cloud-agents-live-target" prompt="Optional live smoke target: which authenticated provider and disposable repository/environment may be used?" resolved answer="provider: Both — specify a target for each; repository: ; environment: " answered-in="Build approval" note="Both providers selected. Disposable repository/branch and Codex environment remain unspecified; fixture-based implementation is proceeding.">
+          <label>Provider (optional)
+            <select name="provider"><option value="">Choose later — live gate pending</option><option>Claude Code Cloud</option><option>Codex Cloud</option><option>Both — specify a target for each</option></select>
+          </label>
+          <label>Disposable repository / checkout and branch (optional)<input name="repository" placeholder="Disposable target only; no secrets" autocomplete="off"></label>
+          <label>Codex environment ID / provider-specific target notes (optional)<input name="environment" placeholder="Existing configured environment, if applicable" autocomplete="off"></label>
+        </redline-question>
+        <p class="subtle">Typing changes local form state. <strong>Queue answer</strong> adds a draft to the review queue; only <strong>Send this / Send all</strong> delivers it to the agent.</p>
+      </div>
+    </section>
+
+    <section id="risks" data-redline-section data-redline-label="Risks & evidence" data-redline-status="open" data-redline-round="2" data-redline-changed="2" class="redline-panel">
+      <h2>08 · Uncertainty is a release condition</h2>
+      <div class="redline-table-wrap">
+        <table>
+          <thead><tr><th scope="col">Risk / likelihood</th><th scope="col">Impact</th><th scope="col">Response</th></tr></thead>
+          <tbody>
+            <tr id="risk-cli"><th scope="row">CLI/account behavior · unmeasured</th><td>Embedded creation may not be viable, especially Claude receipt/detach.</td><td class="decision-column">P0b evidence or disabled action. Material redesign returns to review.</td></tr>
+            <tr id="risk-duplicate"><th scope="row">Ambiguous dispatch · expected failure case</th><td>Blind retry could create duplicate work or messages.</td><td class="decision-column">Durable intents, no replay, explicit identity recovery and duplicate-risk acknowledgement.</td></tr>
+            <tr id="risk-format"><th scope="row">CLI format drift · plausible, Codex experimental</th><td>Incorrect status or receipt parsing.</td><td class="decision-column">Versioned fixtures; unknown means unavailable. Preserve bounded raw evidence.</td></tr>
+            <tr id="risk-source"><th scope="row">Source/account drift · possible</th><td>Wrong target, unexpected bundle or incompatible credentials.</td><td class="decision-column">Enforceable source policy; revalidation and explicit unverified-account checks.</td></tr>
+            <tr id="risk-observer"><th scope="row">Sleep / observation loss · expected</th><td>Misleading task failure or false completion.</td><td class="decision-column">Separate observation health, saved timestamps, no Claude pseudo-status or wake bursts.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details id="research-sources">
+        <summary>Canonical research references · documentation, not authenticated tests</summary>
+        <ul>
+          <li><a href="https://code.claude.com/docs/en/claude-code-on-the-web" target="_blank" rel="noopener">Claude Code on the web</a> — submission, follow-up, monitoring and teleport distinctions.</li>
+          <li><a href="https://developers.openai.com/codex/cli/reference/" target="_blank" rel="noopener">Codex CLI reference</a>, <a href="https://developers.openai.com/codex/cloud.md" target="_blank" rel="noopener">cloud</a>, <a href="https://developers.openai.com/codex/auth.md" target="_blank" rel="noopener">auth</a> and <a href="https://github.com/openai/codex/blob/main/codex-rs/cloud-tasks/src/cli.rs" target="_blank" rel="noopener">official cloud command source</a>.</li>
+          <li>Supporting architecture: <code>shared/protocol.ts</code>, <code>server/index.ts</code>, <code>server/auth.ts</code>, <code>server/prs.ts</code>, <code>server/tmux-create.ts</code>, <code>server/session-briefs.ts</code>, <code>src/prsApi.ts</code>, <code>src/prStore.ts</code>. Full research, including deferred API/Herdr alternatives, remains in the canonical note.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section id="review-decisions" data-redline-section data-redline-label="Review changes" data-redline-status="decided" data-redline-round="2" data-redline-changed="2" class="redline-log">
+      <details>
+        <summary>Round 2 · skeptical-review corrections incorporated</summary>
+        <ul>
+          <li><a href="#capabilities">Provider gate</a>: neutral P0a versus evidenced, disabled-until-proven P0b.</li>
+          <li><a href="#delivery">Source and recovery</a>: enforceable no-bundle policy, frozen-source checks, browser key recovery, separate message evidence, owner-liveness and late-receipt conflicts.</li>
+          <li><a href="#security">Accounts and routes</a>: config path is not identity; explicit unverified-context checks, standalone link and by-key lookup.</li>
+          <li><a href="#ownership">Ownership</a>: A transaction tests versus E cross-layer faults; separate provider/service/browser fixture directories.</li>
+          <li><a href="#milestones">Sequence</a>: prove one provider’s core path before HUD/archive/diff and provider two.</li>
+        </ul>
+        <p class="subtle">Source: reviewer must-fixes incorporated in the canonical draft. These corrections do not constitute overall plan approval.</p>
+      </details>
+    </section>
+
+    <section id="approval" data-redline-section data-redline-label="Approve to build" data-redline-status="open" data-redline-round="2" class="redline-callout">
+      <h2>Approve this plan to start implementation</h2>
+      <p>This is the single overall build gate: subscription-backed CLI adapters, the durable delivery model, scoped UI, file ownership and acceptance gates above. Approval authorizes parallel implementation and fixture/dependency setup in the existing isolated feature worktree; live tasks remain subject to explicit provider/target selection.</p>
+      <p>Annotate any section for changes. Queueing a verdict does not send it: use <strong>Send this</strong> or <strong>Send all</strong> to deliver your review.</p>
+      <redline-approve key="cloud-agents-plan-approval" prompt="Approve this cloud-agents plan and start implementing the approved plan?" resolved answer="approve" answered-in="Build approval" note="Approved in Redline and chat. Implementation started with parallel subagents."></redline-approve>
+    </section>
+  </main>
+</div>
+<script src="http://127.0.0.1:4310/redline/sdk.js"></script>
+<script type="module">
+  try {
+    const { default: mermaid } = await import('http://127.0.0.1:4310/redline/design/mermaid/mermaid.esm.min.mjs');
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark', flowchart: { useMaxWidth: true }, themeVariables: { fontFamily: 'ui-sans-serif, system-ui, sans-serif', fontSize: '14px' } });
+    await mermaid.run({ querySelector: '.mermaid' });
+  } catch (error) {
+    const note = document.createElement('p');
+    note.textContent = 'Diagram rendering unavailable. The readable Mermaid source above preserves the architecture and dependencies.';
+    document.querySelector('#architecture').append(note);
+    console.error('Redline diagram render failed', error);
+  }
+</script>
+</body>
+</html>
