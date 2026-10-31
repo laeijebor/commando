@@ -42,6 +42,21 @@ COMMANDO_OWNER_EMAIL=leo@ijebor.com npm start
 
 The production daemon serves the compiled app and prints its `127.0.0.1` URL.
 
+## Remote hosts
+
+A local daemon can proxy another Commando daemon on the same Tailscale tailnet. This is daemon support for a future multi-machine UI; no client UI is included yet. Enable Tailscale listening on the remote daemon (`COMMANDO_TAILSCALE=1`). When using a MagicDNS hostname, add its origin to the remote daemon's `COMMANDO_TRUSTED_ORIGINS` so its Host check accepts that name.
+
+Host management and proxy access require the owner's session cookie or the local daemon's bearer token. Paired-device and agent hook tokens cannot use either route; phones connect to the hub directly.
+
+- `GET /api/hosts` returns `{ hosts }`, each with health (`online`, `offline`, `unauthorized`, or `unknown`).
+- `POST /api/hosts` accepts `{ name, baseUrl, token }` and returns `{ host }` after probing `/api/health` and the protected `/api/snapshot` endpoint.
+- `PATCH /api/hosts/:id` accepts `{ name?, token? }`; replacing a token requires a successful probe. `DELETE /api/hosts/:id` removes it.
+- `/h/:id/api/...` proxies HTTP methods and `/h/:id/ws` proxies WebSockets. Other host paths return 404. Both require local owner authorization; paired-device and agent hook tokens are rejected.
+
+Credentials remain in `~/.commando/hosts.json` (atomic writes, mode `0600`; override with `COMMANDO_HOSTS_PATH`). Registry responses never include tokens. A corrupt file returns `hosts_corrupt` and blocks mutations until repaired and the daemon restarted. Only HTTP(S) loopback, Tailscale IP addresses, and `.ts.net` names are allowed. MagicDNS addresses are checked again during every new connection; any DNS answer outside loopback/Tailscale ranges is rejected. Incoming credentials, cookies, Origin, Referer, and hop-by-hop headers are removed; the remote token is injected server-side, and remote Set-Cookie is removed. Redirects are returned without following them. Every proxied HTTP response overrides CSP with `sandbox; default-src 'none'` and sets `X-Content-Type-Options: nosniff`, preventing hub content from executing scripts in the local origin. Treat registered hosts as trusted owner-equivalent daemons and protect the registry and remote tokens accordingly; HTTPS or the encrypted tailnet protects credentials in transit.
+
+Health checks run about every 30 seconds, backing off to five minutes on failures. HTTP connections have a five-second connect timeout and a 30-second idle timeout. WS handshakes time out after five seconds and use 30-second heartbeats, deferred while forwarding is paused for backpressure. HTTP bodies stream with backpressure without a response size cap, including video and Range responses. Only buffered health probes are capped (64 KiB). Hub WS messages may be up to 80 MiB to accommodate chat replay; client messages use the daemon's own input limit. WS forwarding pauses the sender above the daemon's 32 MiB backlog threshold and resumes after draining below 16 MiB, with a 256 MiB absolute backlog safety limit. JSON errors include a stable `code`, such as `invalid_host`, `host_unreachable`, or `host_unauthorized`.
+
 ### Desktop release build
 
 For everyday use, run the desktop app as a Release build against a production daemon instead of `npm run desktop:dev`. The dev setup loads the Vite dev server (React's development build) and, in Debug, draws terminals without Metal; both cost noticeably more CPU.
