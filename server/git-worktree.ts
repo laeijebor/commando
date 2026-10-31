@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
-import { access } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { access, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
@@ -51,6 +51,9 @@ export type GitWorktreeServiceOptions = {
   environment?: NodeJS.ProcessEnv
   /** Absolute folder new `<repo>-worktrees` folders go under; see `worktreesParentFromEnv`. */
   worktreesParent?: string
+  /** Filesystem steps of worktree removal; tests replace them. */
+  renamePath?: (from: string, to: string) => Promise<void>
+  removeTree?: (target: string) => Promise<void>
 }
 
 /**
@@ -65,6 +68,17 @@ export function worktreesParentFromEnv(environment: NodeJS.ProcessEnv): string |
   }
   return path.normalize(value).replace(/\/+$/u, '') || '/'
 }
+
+/** Names a removed worktree folder while a background process deletes it. */
+const DELETING_MARKER = '.commando-deleting-'
+
+/** Delete `target` in a detached `rm -rf` that outlives the daemon; resolves when it exits. */
+const defaultRemoveTree = (target: string) => new Promise<void>((resolve, reject) => {
+  const child = spawn('rm', ['-rf', '--', target], { detached: true, stdio: 'ignore' })
+  child.unref()
+  child.once('error', reject)
+  child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`rm -rf exited with ${code}`)))
+})
 
 const defaultExecutor: GitProcessExecutor = (file, args, options) =>
   new Promise((resolve, reject) => {
@@ -106,17 +120,18 @@ export function validateBranchName(value: unknown): string {
   return value
 }
 
-function parseWorktreeList(output: string): Array<{ path: string; branch?: string; head?: string }> {
+function parseWorktreeList(output: string): Array<{ path: string; branch?: string; head?: string; locked?: boolean }> {
   return output
     .split(/\n\s*\n/u)
     .map((block) => block.trim())
     .filter(Boolean)
     .map((block) => {
-      const entry: { path: string; branch?: string; head?: string } = { path: '' }
+      const entry: { path: string; branch?: string; head?: string; locked?: boolean } = { path: '' }
       for (const line of block.split('\n')) {
         if (line.startsWith('worktree ')) entry.path = line.slice('worktree '.length)
         else if (line.startsWith('HEAD ')) entry.head = line.slice('HEAD '.length)
         else if (line.startsWith('branch ')) entry.branch = line.slice('branch '.length).replace(/^refs\/heads\//u, '')
+        else if (line === 'locked' || line.startsWith('locked ')) entry.locked = true
       }
       return entry
     })
@@ -128,6 +143,8 @@ export class GitWorktreeService {
   private readonly fetchTimeoutMs: number
   private readonly environment: NodeJS.ProcessEnv
   private readonly worktreesParent: string | undefined
+  private readonly renamePath: (from: string, to: string) => Promise<void>
+  private readonly removeTree: (target: string) => Promise<void>
 
   constructor(
     private readonly execute: GitProcessExecutor = defaultExecutor,
@@ -137,6 +154,8 @@ export class GitWorktreeService {
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
     this.environment = options.environment ?? process.env
     this.worktreesParent = options.worktreesParent
+    this.renamePath = options.renamePath ?? rename
+    this.removeTree = options.removeTree ?? defaultRemoveTree
   }
 
   /** Describe the repository containing `directory`, or `{ isRepo: false }`. */
@@ -231,25 +250,57 @@ export class GitWorktreeService {
     }
   }
 
+  /**
+   * Remove a linked worktree without waiting for its files to be deleted.
+   *
+   * `git worktree remove` deletes every file (node_modules included) before it
+   * unregisters the worktree, which can take minutes. Cut short, it leaves a
+   * half-deleted folder that git still lists. Instead the folder is renamed
+   * aside, which is instant within one directory, `git worktree prune` drops
+   * the registration, and a detached process deletes the renamed folder, so a
+   * daemon restart does not interrupt it.
+   */
   async removeWorktree(worktree: GitWorktreeIdentity): Promise<void> {
     const root = path.normalize(worktree.root)
     const mainRoot = path.normalize(worktree.mainRoot)
     if (!path.isAbsolute(root) || !path.isAbsolute(mainRoot) || root === mainRoot) {
       throw new GitWorktreeError('bad-path', 'Refusing to remove the main repository checkout')
     }
+    const aside = path.join(path.dirname(root), `.${path.basename(root)}${DELETING_MARKER}${Date.now()}`)
     try {
-      const registered = parseWorktreeList((await this.git(mainRoot, ['worktree', 'list', '--porcelain'])).stdout)
-        .find((entry) => path.normalize(entry.path) === root)
+      const registered = await this.registeredWorktree(mainRoot, root)
       if (!registered) throw new GitWorktreeError('bad-path', `${root} is not a registered git worktree`)
       const sameBranch = registered.branch === worktree.branch || (registered.branch === undefined && worktree.branch === 'HEAD')
       if (!sameBranch || registered.head !== worktree.head) {
         throw new GitWorktreeError('bad-path', `Worktree identity changed at ${root}; refusing to remove it`)
       }
-      await this.git(mainRoot, ['worktree', 'remove', '--force', root], WORKTREE_TIMEOUT_MS)
+      if (registered.locked) throw new GitWorktreeError('bad-path', `Worktree ${root} is locked; unlock it before deleting it`)
+
+      try {
+        await this.renamePath(root, aside)
+      } catch (error) {
+        throw new GitWorktreeError('exec', `Could not move ${root} aside for deletion: ${error instanceof Error ? error.message : 'rename failed'}`)
+      }
+      try {
+        await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS)
+      } catch (error) {
+        // Prune may have finished before failing; only restore a folder git still knows.
+        if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
+          await this.renamePath(aside, root).catch(() => undefined)
+          throw error
+        }
+      }
     } catch (error) {
       if (error instanceof GitWorktreeError) throw error
       throw new GitWorktreeError('exec', `git worktree remove failed: ${failureDetail(error)}`)
     }
+    void this.removeTree(aside)
+      .catch((error) => console.warn(`[commando] Could not delete removed worktree folder ${aside}`, error))
+  }
+
+  private async registeredWorktree(mainRoot: string, root: string) {
+    return parseWorktreeList((await this.git(mainRoot, ['worktree', 'list', '--porcelain'])).stdout)
+      .find((entry) => path.normalize(entry.path) === root)
   }
 
   private async repositoryIdentity(directory: string): Promise<Omit<GitWorktreeIdentity, 'head'> | undefined> {
