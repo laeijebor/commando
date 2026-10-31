@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GitExecutorOptions } from './git-diff.js'
 import { GitWorktreeError, GitWorktreeService } from './git-worktree.js'
 
@@ -310,7 +310,7 @@ describe('GitWorktreeService.removeWorktree', () => {
   const listing = (extra = '') => `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${target}\nHEAD def\nbranch refs/heads/bot-rematch-flow\n${extra}\n`
   const aside = `${MAIN}-worktrees/.bot-rematch-flow.commando-deleting-1700`
 
-  function fakeFiles(names: string[] = []) {
+  function fakeFiles() {
     const renames: Array<[string, string]> = []
     const removed: string[] = []
     return {
@@ -318,11 +318,12 @@ describe('GitWorktreeService.removeWorktree', () => {
       removed,
       options: {
         renamePath: vi.fn(async (from: string, to: string) => { renames.push([from, to]) }),
-        listDirectory: vi.fn(async () => names),
         removeTree: vi.fn(async (folder: string) => { removed.push(folder) }),
       },
     }
   }
+
+  afterEach(() => { vi.restoreAllMocks() })
 
   it('moves the worktree aside, unregisters it, then deletes its files in the background', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700)
@@ -330,19 +331,29 @@ describe('GitWorktreeService.removeWorktree', () => {
       [['worktree', 'list', '--porcelain'], listing()],
       [['worktree', 'prune'], ''],
     ])
-    const files = fakeFiles([
-      '.bot-rematch-flow.commando-deleting-1700',
-      '.older.commando-deleting-1600',
-      'chat-hydration',
-    ])
+    const files = fakeFiles()
 
     await new GitWorktreeService(git.execute, files.options).removeWorktree(identity)
 
     expect(files.renames).toEqual([[target, aside]])
     expect(git.calls.at(-1)).toMatchObject({ args: ['worktree', 'prune'], cwd: MAIN })
     expect(git.calls.some((call) => call.args[1] === 'remove')).toBe(false)
-    await vi.waitFor(() => expect(files.removed).toEqual([aside, `${MAIN}-worktrees/.older.commando-deleting-1600`]))
-    vi.restoreAllMocks()
+    expect(files.removed).toEqual([aside])
+  })
+
+  it('carries on when prune fails after git has already dropped the worktree', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700)
+    const listings = [listing(), `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\n`]
+    const execute = vi.fn(async (_file: string, args: readonly string[]) => {
+      if (args[1] === 'prune') throw exit(128, 'git timed out')
+      return { stdout: listings.shift() ?? '', stderr: '' }
+    })
+    const files = fakeFiles()
+
+    await new GitWorktreeService(execute, files.options).removeWorktree(identity)
+
+    expect(files.renames).toEqual([[target, aside]])
+    expect(files.removed).toEqual([aside])
   })
 
   it('refuses a locked worktree without touching it', async () => {
@@ -366,7 +377,6 @@ describe('GitWorktreeService.removeWorktree', () => {
       .rejects.toMatchObject({ kind: 'exec', message: expect.stringMatching(/unable to lock/) })
     expect(files.renames).toEqual([[target, aside], [aside, target]])
     expect(files.removed).toEqual([])
-    vi.restoreAllMocks()
   })
 
   it('removes a real worktree and its ignored files', async () => {

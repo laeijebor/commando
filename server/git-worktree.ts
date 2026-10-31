@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
-import { access, readdir, rename, rm } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { access, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
@@ -51,14 +51,19 @@ export type GitWorktreeServiceOptions = {
   environment?: NodeJS.ProcessEnv
   /** Filesystem steps of worktree removal; tests replace them. */
   renamePath?: (from: string, to: string) => Promise<void>
-  listDirectory?: (directory: string) => Promise<string[]>
   removeTree?: (target: string) => Promise<void>
 }
 
-/** Marks a removed worktree folder that is still being deleted in the background. */
+/** Names a removed worktree folder while a background process deletes it. */
 const DELETING_MARKER = '.commando-deleting-'
 
-const defaultRemoveTree = (target: string) => rm(target, { recursive: true, force: true, maxRetries: 3 })
+/** Delete `target` in a detached `rm -rf` that outlives the daemon; resolves when it exits. */
+const defaultRemoveTree = (target: string) => new Promise<void>((resolve, reject) => {
+  const child = spawn('rm', ['-rf', '--', target], { detached: true, stdio: 'ignore' })
+  child.unref()
+  child.once('error', reject)
+  child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`rm -rf exited with ${code}`)))
+})
 
 const defaultExecutor: GitProcessExecutor = (file, args, options) =>
   new Promise((resolve, reject) => {
@@ -123,7 +128,6 @@ export class GitWorktreeService {
   private readonly fetchTimeoutMs: number
   private readonly environment: NodeJS.ProcessEnv
   private readonly renamePath: (from: string, to: string) => Promise<void>
-  private readonly listDirectory: (directory: string) => Promise<string[]>
   private readonly removeTree: (target: string) => Promise<void>
 
   constructor(
@@ -134,7 +138,6 @@ export class GitWorktreeService {
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
     this.environment = options.environment ?? process.env
     this.renamePath = options.renamePath ?? rename
-    this.listDirectory = options.listDirectory ?? ((directory) => readdir(directory))
     this.removeTree = options.removeTree ?? defaultRemoveTree
   }
 
@@ -236,7 +239,8 @@ export class GitWorktreeService {
    * unregisters the worktree, which can take minutes. Cut short, it leaves a
    * half-deleted folder that git still lists. Instead the folder is renamed
    * aside, which is instant within one directory, `git worktree prune` drops
-   * the registration, and the renamed folder is deleted in the background.
+   * the registration, and a detached process deletes the renamed folder, so a
+   * daemon restart does not interrupt it.
    */
   async removeWorktree(worktree: GitWorktreeIdentity): Promise<void> {
     const root = path.normalize(worktree.root)
@@ -244,10 +248,9 @@ export class GitWorktreeService {
     if (!path.isAbsolute(root) || !path.isAbsolute(mainRoot) || root === mainRoot) {
       throw new GitWorktreeError('bad-path', 'Refusing to remove the main repository checkout')
     }
-    const parent = path.dirname(root)
+    const aside = path.join(path.dirname(root), `.${path.basename(root)}${DELETING_MARKER}${Date.now()}`)
     try {
-      const registered = parseWorktreeList((await this.git(mainRoot, ['worktree', 'list', '--porcelain'])).stdout)
-        .find((entry) => path.normalize(entry.path) === root)
+      const registered = await this.registeredWorktree(mainRoot, root)
       if (!registered) throw new GitWorktreeError('bad-path', `${root} is not a registered git worktree`)
       const sameBranch = registered.branch === worktree.branch || (registered.branch === undefined && worktree.branch === 'HEAD')
       if (!sameBranch || registered.head !== worktree.head) {
@@ -255,45 +258,31 @@ export class GitWorktreeService {
       }
       if (registered.locked) throw new GitWorktreeError('bad-path', `Worktree ${root} is locked; unlock it before deleting it`)
 
-      const aside = path.join(parent, `.${path.basename(root)}${DELETING_MARKER}${Date.now()}`)
       try {
         await this.renamePath(root, aside)
       } catch (error) {
         throw new GitWorktreeError('exec', `Could not move ${root} aside for deletion: ${error instanceof Error ? error.message : 'rename failed'}`)
       }
       try {
-        await this.git(mainRoot, ['worktree', 'prune'])
+        await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS)
       } catch (error) {
-        await this.renamePath(aside, root).catch(() => undefined)
-        throw error
+        // Prune may have finished before failing; only restore a folder git still knows.
+        if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
+          await this.renamePath(aside, root).catch(() => undefined)
+          throw error
+        }
       }
     } catch (error) {
       if (error instanceof GitWorktreeError) throw error
       throw new GitWorktreeError('exec', `git worktree remove failed: ${failureDetail(error)}`)
     }
-    this.deleteAsideFolders(parent)
+    void this.removeTree(aside)
+      .catch((error) => console.warn(`[commando] Could not delete removed worktree folder ${aside}`, error))
   }
 
-  private readonly deletingFolders = new Set<string>()
-
-  /**
-   * Delete, in the background, every folder in `parent` that removeWorktree
-   * moved aside. This also finishes deletions a daemon restart interrupted.
-   */
-  private deleteAsideFolders(parent: string): void {
-    void this.listDirectory(parent).then((names) => Promise.all(names
-      .filter((name) => name.startsWith('.') && name.includes(DELETING_MARKER))
-      .map((name) => path.join(parent, name))
-      .filter((folder) => !this.deletingFolders.has(folder))
-      .map(async (folder) => {
-        this.deletingFolders.add(folder)
-        try {
-          await this.removeTree(folder)
-        } finally {
-          this.deletingFolders.delete(folder)
-        }
-      })))
-      .catch((error) => console.warn('[commando] Could not finish deleting a removed worktree folder', error))
+  private async registeredWorktree(mainRoot: string, root: string) {
+    return parseWorktreeList((await this.git(mainRoot, ['worktree', 'list', '--porcelain'])).stdout)
+      .find((entry) => path.normalize(entry.path) === root)
   }
 
   private async repositoryIdentity(directory: string): Promise<Omit<GitWorktreeIdentity, 'head'> | undefined> {
