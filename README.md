@@ -584,6 +584,13 @@ If Tailscale Serve or another reverse proxy terminates HTTPS and forwards to the
 
 Email delivery, address verification, password-reset emails, invitations, and additional owners are intentionally deferred. The database schema and Better Auth integration can support those flows later without replacing existing accounts or sessions.
 
+## Always-on hub
+
+Use a second Mac on your Tailscale tailnet to run Commando and agents while your
+main MacBook is closed. [Hub setup](docs/hub.md) checks prerequisites, installs
+separate daemon and power-aware keep-awake login items, and documents removal.
+Multi-host UI and daemon proxy support will follow in a separate change.
+
 ## Push Notifications
 
 The companion app registers its Expo push token with the daemon, and the daemon posts a notification to Expo's push service (`https://exp.host/--/api/v2/push/send`, batched at 100 messages, 5 second timeout) when an agent needs input, finishes, or fails. Completion and failure pushes come only from hook-reported lifecycle events (Claude Code, OpenCode, Codex and Cursor bridges), never from heuristic status, so an idle prompt does not read as a finished turn. Cursor supports completion/failure lifecycle pushes; cancelled turns are excluded, and rich needs-input/answer support is unavailable. Devices are persisted at `~/.commando/push-devices.json` with mode `0600`; at most 16 are kept. Set `EXPO_ACCESS_TOKEN` to send with an Expo access token. A device Expo reports as `DeviceNotRegistered` is dropped from the registry automatically.

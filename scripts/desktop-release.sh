@@ -18,6 +18,15 @@ label="${COMMANDO_RELEASE_LABEL:-dev.commando.daemon}"
 state_dir="${COMMANDO_RELEASE_STATE_DIR:-$HOME/.commando}"
 env_file="${COMMANDO_RELEASE_ENV_FILE:-$state_dir/desktop-release.env}"
 log_dir="$state_dir/logs"
+# Hub overrides apply only to the headless entry points. Desktop commands must
+# ignore them, including values sourced later from desktop-release.env.
+hub_command=0
+case "${1:-}" in
+    agent-plist|daemon-install|daemon-uninstall)
+        hub_command=1
+        log_dir="${COMMANDO_HUB_LOG_DIR:-$log_dir}"
+        ;;
+esac
 install_dir="${COMMANDO_DESKTOP_INSTALL_DIR:-/Applications}"
 icon_dir="${COMMANDO_RELEASE_ICON_DIR:-$HOME/Desktop}"
 app="$install_dir/Commando.app"
@@ -54,6 +63,7 @@ load_env() {
     # shellcheck disable=SC1090
     source "$env_file"
     set +a
+    if (( hub_command )); then log_dir="${COMMANDO_HUB_LOG_DIR:-$log_dir}"; fi
     port="${COMMANDO_PORT:-4310}"
     [[ -n "${COMMANDO_TOKEN:-}" ]] || fail "COMMANDO_TOKEN is not set in $env_file"
 }
@@ -157,20 +167,30 @@ xml_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# Renders and lints the agent into $agent_plist.new, so a bad plist fails before
-# the running agent is unloaded.
-write_agent() {
-    mkdir -p "$log_dir" "$(dirname "$agent_plist")"
+# Shared by desktop installation and hub setup's read-only preview. Defaults
+# render the same desktop plist; the hub can also point it at its power watcher.
+render_agent() {
     local label_xml script_xml env_file_xml state_dir_xml launchd_log_xml
+    local agent_script="$script" daemon_command='exec "$0" daemon' log_argument=""
+    if (( hub_command )); then
+        agent_script="${COMMANDO_HUB_AGENT_SCRIPT:-$script}"
+        if [[ -n "${COMMANDO_HUB_LOG_DIR:-}" && -z "${COMMANDO_HUB_AGENT_SCRIPT:-}" ]]; then
+            # Carry the hub log path as an explicit daemon argument, so daemon
+            # mode need not honour hub environment overrides itself.
+            daemon_command='exec "$0" daemon --log-dir "$1"'
+            log_argument="
+        <string>$(xml_escape "$log_dir")</string>"
+        fi
+    fi
     label_xml="$(xml_escape "$label")"
-    script_xml="$(xml_escape "$script")"
+    script_xml="$(xml_escape "$agent_script")"
     env_file_xml="$(xml_escape "$env_file")"
     state_dir_xml="$(xml_escape "$state_dir")"
     launchd_log_xml="$(xml_escape "$log_dir/daemon-launchd.log")"
     # A login, interactive zsh gives the daemon (and the agents it launches) the
     # same PATH and environment as a terminal. Without ProcessType launchd
     # applies background CPU and I/O limits.
-    cat >"$agent_plist.new" <<PLIST
+    cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -181,8 +201,8 @@ write_agent() {
     <array>
         <string>/bin/zsh</string>
         <string>-lic</string>
-        <string>exec "\$0" daemon</string>
-        <string>$script_xml</string>
+        <string>$daemon_command</string>
+        <string>$script_xml</string>$log_argument
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -209,6 +229,12 @@ write_agent() {
 </dict>
 </plist>
 PLIST
+}
+
+# Render and lint before the running agent is unloaded.
+write_agent() {
+    mkdir -p "$log_dir" "$(dirname "$agent_plist")"
+    render_agent >"$agent_plist.new"
     plutil -lint "$agent_plist.new" >/dev/null || { rm -f "$agent_plist.new"; fail "Generated an invalid $agent_plist"; }
 }
 
@@ -316,6 +342,7 @@ rebuild() {
 
 run_daemon() {
     load_env
+    local log_dir="${1:-$log_dir}"
     mkdir -p "$log_dir"
     local log_file="$log_dir/daemon.log"
     if [[ -f "$log_file" ]] && (( $(stat -f %z "$log_file") > 20 * 1024 * 1024 )); then
@@ -330,6 +357,28 @@ run_daemon() {
 }
 
 case "${1:-}" in
+    agent-plist) render_agent ;;
+    daemon-install)
+        # Headless release: reuse the web build, plist and restart machinery,
+        # without building, quitting, installing or opening a desktop app.
+        require_main_checkout
+        take_release_lock
+        load_env
+        agent_loaded || ensure_port_free
+        build_web
+        rm -rf "$root/dist"
+        mv "$web_staging" "$root/dist"
+        write_agent
+        unload_agent
+        mv -f "$agent_plist.new" "$agent_plist"
+        restart_daemon
+        ;;
+    daemon-uninstall)
+        take_release_lock
+        launchctl disable "$service"
+        unload_agent
+        rm -f "$agent_plist" "$agent_plist.new"
+        ;;
     install)
         require_main_checkout
         ensure_env_file
@@ -353,7 +402,14 @@ case "${1:-}" in
         unload_agent
         log "Stopped the release daemon and app"
         ;;
-    daemon) run_daemon ;;
+    daemon)
+        if (( $# > 1 )); then
+            [[ $# == 3 && "$2" == --log-dir ]] || fail "Usage: $script daemon [--log-dir <path>]"
+            run_daemon "$3"
+        else
+            run_daemon
+        fi
+        ;;
     *)
         sed -n '2,12p' "$script" | sed 's/^# \{0,1\}//'
         exit 2
