@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if ! command -v node >/dev/null 2>&1; then
+    printf 'hub-setup: Node is missing from PATH. Install Node 20.19+ or 22.12+ yourself; nothing installed.\n' >&2
+    exit 1
+fi
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec node "$script_dir/hub-setup.mjs" "$@"
