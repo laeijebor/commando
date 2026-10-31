@@ -263,14 +263,12 @@ export class GitWorktreeService {
       } catch (error) {
         throw new GitWorktreeError('exec', `Could not move ${root} aside for deletion: ${error instanceof Error ? error.message : 'rename failed'}`)
       }
-      try {
-        await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS)
-      } catch (error) {
-        // Prune may have finished before failing; only restore a folder git still knows.
-        if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
-          await this.renamePath(aside, root).catch(() => undefined)
-          throw error
-        }
+      // Prune can exit 0 without dropping the entry (e.g. its admin dir is not
+      // writable) or fail after dropping it, so trust only the worktree list.
+      const pruneError = await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS).then(() => undefined, (error: unknown) => error)
+      if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
+        await this.renamePath(aside, root).catch(() => undefined)
+        throw pruneError ?? new GitWorktreeError('exec', `git worktree prune left ${root} registered; the folder was put back`)
       }
     } catch (error) {
       if (error instanceof GitWorktreeError) throw error

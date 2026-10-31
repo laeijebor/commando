@@ -309,6 +309,7 @@ describe('GitWorktreeService.removeWorktree', () => {
   const identity = { root: target, mainRoot: MAIN, branch: 'bot-rematch-flow', head: 'def' }
   const listing = (extra = '') => `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${target}\nHEAD def\nbranch refs/heads/bot-rematch-flow\n${extra}\n`
   const aside = `${MAIN}-worktrees/.bot-rematch-flow.commando-deleting-1700`
+  const mainOnly = `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\n`
 
   function fakeFiles() {
     const renames: Array<[string, string]> = []
@@ -327,23 +328,39 @@ describe('GitWorktreeService.removeWorktree', () => {
 
   it('moves the worktree aside, unregisters it, then deletes its files in the background', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700)
+    const listings = [listing(), mainOnly]
+    const git = fakeGit([])
+    git.execute.mockImplementation(async (_file, args, options) => {
+      git.calls.push({ args: [...args], cwd: options.cwd, timeout: options.timeout })
+      return { stdout: args[1] === 'list' ? listings.shift() ?? '' : '', stderr: '' }
+    })
+    const files = fakeFiles()
+
+    await new GitWorktreeService(git.execute, files.options).removeWorktree(identity)
+
+    expect(files.renames).toEqual([[target, aside]])
+    expect(git.calls.map((call) => call.args[1])).toEqual(['list', 'prune', 'list'])
+    expect(git.calls.some((call) => call.args[1] === 'remove')).toBe(false)
+    expect(files.removed).toEqual([aside])
+  })
+
+  it('puts the folder back when prune exits cleanly but leaves the worktree registered', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700)
     const git = fakeGit([
       [['worktree', 'list', '--porcelain'], listing()],
       [['worktree', 'prune'], ''],
     ])
     const files = fakeFiles()
 
-    await new GitWorktreeService(git.execute, files.options).removeWorktree(identity)
-
-    expect(files.renames).toEqual([[target, aside]])
-    expect(git.calls.at(-1)).toMatchObject({ args: ['worktree', 'prune'], cwd: MAIN })
-    expect(git.calls.some((call) => call.args[1] === 'remove')).toBe(false)
-    expect(files.removed).toEqual([aside])
+    await expect(new GitWorktreeService(git.execute, files.options).removeWorktree(identity))
+      .rejects.toMatchObject({ kind: 'exec', message: expect.stringMatching(/left .* registered/) })
+    expect(files.renames).toEqual([[target, aside], [aside, target]])
+    expect(files.removed).toEqual([])
   })
 
   it('carries on when prune fails after git has already dropped the worktree', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700)
-    const listings = [listing(), `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\n`]
+    const listings = [listing(), mainOnly]
     const execute = vi.fn(async (_file: string, args: readonly string[]) => {
       if (args[1] === 'prune') throw exit(128, 'git timed out')
       return { stdout: listings.shift() ?? '', stderr: '' }
