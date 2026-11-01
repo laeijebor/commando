@@ -1,4 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtemp, realpath } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GitExecutorOptions } from './git-diff.js'
 import { GitWorktreeError, GitWorktreeService } from './git-worktree.js'
 
@@ -301,24 +306,120 @@ describe('GitWorktreeService.createWorktree', () => {
 describe('GitWorktreeService.removeWorktree', () => {
   const target = `${MAIN}-worktrees/bot-rematch-flow`
 
-  it('force-removes a linked worktree from its main checkout', async () => {
+  const identity = { root: target, mainRoot: MAIN, branch: 'bot-rematch-flow', head: 'def' }
+  const listing = (extra = '') => `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${target}\nHEAD def\nbranch refs/heads/bot-rematch-flow\n${extra}\n`
+  const aside = `${MAIN}-worktrees/.bot-rematch-flow.commando-deleting-1700`
+  const mainOnly = `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\n`
+
+  function fakeFiles() {
+    const renames: Array<[string, string]> = []
+    const removed: string[] = []
+    return {
+      renames,
+      removed,
+      options: {
+        renamePath: vi.fn(async (from: string, to: string) => { renames.push([from, to]) }),
+        removeTree: vi.fn(async (folder: string) => { removed.push(folder) }),
+      },
+    }
+  }
+
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('moves the worktree aside, unregisters it, then deletes its files in the background', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700)
+    const listings = [listing(), mainOnly]
+    const git = fakeGit([])
+    git.execute.mockImplementation(async (_file, args, options) => {
+      git.calls.push({ args: [...args], cwd: options.cwd, timeout: options.timeout })
+      return { stdout: args[1] === 'list' ? listings.shift() ?? '' : '', stderr: '' }
+    })
+    const files = fakeFiles()
+
+    await new GitWorktreeService(git.execute, files.options).removeWorktree(identity)
+
+    expect(files.renames).toEqual([[target, aside]])
+    expect(git.calls.map((call) => call.args[1])).toEqual(['list', 'prune', 'list'])
+    expect(git.calls.some((call) => call.args[1] === 'remove')).toBe(false)
+    expect(files.removed).toEqual([aside])
+  })
+
+  it('puts the folder back when prune exits cleanly but leaves the worktree registered', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700)
     const git = fakeGit([
-      [['worktree', 'list', '--porcelain'], `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\nworktree ${target}\nHEAD def\nbranch refs/heads/bot-rematch-flow\n\n`],
-      [['worktree', 'remove', '--force', target], ''],
+      [['worktree', 'list', '--porcelain'], listing()],
+      [['worktree', 'prune'], ''],
     ])
+    const files = fakeFiles()
 
-    await new GitWorktreeService(git.execute).removeWorktree({
-      root: target,
-      mainRoot: MAIN,
-      branch: 'bot-rematch-flow',
-      head: 'def',
-    })
+    await expect(new GitWorktreeService(git.execute, files.options).removeWorktree(identity))
+      .rejects.toMatchObject({ kind: 'exec', message: expect.stringMatching(/left .* registered/) })
+    expect(files.renames).toEqual([[target, aside], [aside, target]])
+    expect(files.removed).toEqual([])
+  })
 
-    expect(git.calls.at(-1)).toEqual({
-      args: ['worktree', 'remove', '--force', target],
-      cwd: MAIN,
-      timeout: 30_000,
+  it('carries on when prune fails after git has already dropped the worktree', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700)
+    const listings = [listing(), mainOnly]
+    const execute = vi.fn(async (_file: string, args: readonly string[]) => {
+      if (args[1] === 'prune') throw exit(128, 'git timed out')
+      return { stdout: listings.shift() ?? '', stderr: '' }
     })
+    const files = fakeFiles()
+
+    await new GitWorktreeService(execute, files.options).removeWorktree(identity)
+
+    expect(files.renames).toEqual([[target, aside]])
+    expect(files.removed).toEqual([aside])
+  })
+
+  it('refuses a locked worktree without touching it', async () => {
+    const git = fakeGit([[['worktree', 'list', '--porcelain'], listing('locked\n')]])
+    const files = fakeFiles()
+
+    await expect(new GitWorktreeService(git.execute, files.options).removeWorktree(identity))
+      .rejects.toMatchObject({ kind: 'bad-path', message: expect.stringMatching(/locked/i) })
+    expect(files.renames).toEqual([])
+  })
+
+  it('puts the folder back when git cannot unregister it', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700)
+    const git = fakeGit([
+      [['worktree', 'list', '--porcelain'], listing()],
+      [['worktree', 'prune'], exit(128, 'fatal: unable to lock')],
+    ])
+    const files = fakeFiles()
+
+    await expect(new GitWorktreeService(git.execute, files.options).removeWorktree(identity))
+      .rejects.toMatchObject({ kind: 'exec', message: expect.stringMatching(/unable to lock/) })
+    expect(files.renames).toEqual([[target, aside], [aside, target]])
+    expect(files.removed).toEqual([])
+  })
+
+  it('removes a real worktree and its ignored files', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    try {
+      run(base, 'init', '-q', main)
+      writeFileSync(path.join(main, '.gitignore'), 'node_modules\n')
+      run(main, 'add', '.gitignore')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      mkdirSync(path.join(linked, 'node_modules', 'pkg'), { recursive: true })
+      writeFileSync(path.join(linked, 'node_modules', 'pkg', 'index.js'), '')
+      writeFileSync(path.join(linked, 'notes.txt'), 'uncommitted')
+
+      const head = run(linked, 'rev-parse', 'HEAD').trim()
+      await new GitWorktreeService().removeWorktree({ root: linked, mainRoot: main, branch: 'feature', head })
+
+      expect(run(main, 'worktree', 'list', '--porcelain')).not.toContain(linked)
+      await vi.waitFor(() => expect(readdirSync(path.dirname(linked))).toEqual([]))
+      expect(run(main, 'branch', '--list', 'feature')).toContain('feature')
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 
   it('refuses to remove the main checkout', async () => {
