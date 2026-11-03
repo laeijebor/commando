@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import type { PrAutofixStatus, PrSummary } from '../../shared/pr-types'
-import { DISMISSED_PRS_STORAGE_KEY, MINIMISED_PR_STRIPS_STORAGE_KEY, PrStrip } from './PrStrip'
+import { DISMISSED_PRS_STORAGE_KEY, fixConflictsPrompt, MINIMISED_PR_STRIPS_STORAGE_KEY, PrStrip } from './PrStrip'
 
 const targetId = '123e4567-e89b-42d3-a456-426614174000'
 function pr(number: number, state: PanePrSummary['state'] = 'open'): PanePrSummary {
@@ -22,7 +22,7 @@ function mergeable(number: number, patch: Partial<PrSummary> = {}): PanePrSummar
   return { ...base, preview }
 }
 const status = (patch: Partial<PrAutofixStatus> = {}): PrAutofixStatus => ({ repo: 'acme/widgets', number: 12, targetId, enabled: true, status: 'watching', rounds: 0, lastEventAt: null, ...patch })
-function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number, tab: string) => void) {
+function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number, tab: string) => void, agent: { onSend?: (text: string) => void; agentConnected?: boolean } = {}) {
   const api = {
     pane: vi.fn(async () => ({ targetId, totalCount: prs.length, pullRequests: prs, truncated: false, fetchedAt: Date.now() })),
     autofixStatus: vi.fn(async () => current),
@@ -30,7 +30,7 @@ function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?
     list: vi.fn(async () => { throw new Error('unused') }),
     merge: vi.fn(async (_repo: string, _number: number, _head: string, _base?: string) => ({ merged: true as const })),
   } satisfies Pick<PrsApiClient, 'pane' | 'list' | 'merge' | 'autofixStatus' | 'setAutofix'>
-  const view = render(<PrStrip paneId="%1" api={api} connected {...(onOpenPr ? { onOpenPr } : {})} />)
+  const view = render(<PrStrip paneId="%1" api={api} connected {...(onOpenPr ? { onOpenPr } : {})} {...agent} />)
   return Object.assign(api, { view })
 }
 afterEach(() => { cleanup(); window.localStorage.clear() })
@@ -217,6 +217,54 @@ describe('chat PR strip', () => {
     expect(screen.getByText(reason)).toBeInTheDocument()
     fireEvent.click(button)
     expect(api.merge).not.toHaveBeenCalled()
+  })
+
+  it('asks the chat\'s agent to fix merge conflicts, once per head commit', async () => {
+    const onSend = vi.fn()
+    setup([mergeable(12, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' })], null, undefined, { onSend })
+    const dialog = await openCi()
+    const merge = within(dialog).getByRole('button', { name: 'Merge PR' })
+    const fix = within(dialog).getByRole('button', { name: 'Fix conflicts' })
+    // Directly below Merge PR, above the reason merging is blocked.
+    expect(merge.compareDocumentPosition(fix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(fix.compareDocumentPosition(within(dialog).getByText('Resolve merge conflicts on GitHub first')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(fix)
+    expect(onSend).toHaveBeenCalledWith(fixConflictsPrompt({ repo: 'acme/widgets', number: 12, url: 'https://github.com/acme/widgets/pull/12', baseRefName: 'main' }))
+    expect(within(dialog).getByRole('button', { name: 'Fix requested' })).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Fix requested' }))
+    expect(onSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers Fix conflicts from the pane\'s own conflict status before GitHub\'s preview loads', async () => {
+    const onSend = vi.fn()
+    setup([{ ...pr(12), conflicting: true }], null, undefined, { onSend })
+    await openCi()
+    fireEvent.click(screen.getByRole('button', { name: 'Fix conflicts' }))
+    expect(onSend.mock.calls[0]![0]).toContain('Resolve the merge conflicts on acme/widgets#12: https://github.com/acme/widgets/pull/12')
+  })
+
+  it.each([
+    ['without conflicts', [mergeable(12)], { onSend: vi.fn() }],
+    ['outside a chat', [mergeable(12, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' })], {}],
+  ] as const)('hides Fix conflicts %s', async (_label, prs, agent) => {
+    setup([...prs], null, undefined, agent)
+    await openCi()
+    expect(screen.queryByRole('button', { name: 'Fix conflicts' })).not.toBeInTheDocument()
+  })
+
+  it('disables Fix conflicts while the agent is disconnected', async () => {
+    const onSend = vi.fn()
+    setup([mergeable(12, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' })], null, undefined, { onSend, agentConnected: false })
+    await openCi()
+    expect(screen.getByRole('button', { name: 'Fix conflicts' })).toBeDisabled()
+  })
+
+  it('names the base branch and rules out rebasing and merging in the prompt', () => {
+    expect(fixConflictsPrompt({ repo: 'acme/widgets', number: 12, url: 'https://github.com/acme/widgets/pull/12', baseRefName: 'main' })).toBe([
+      'Resolve the merge conflicts on acme/widgets#12: https://github.com/acme/widgets/pull/12',
+      'Merge the base branch `main` into the PR branch, resolve each conflict keeping the intent of both sides, run the checks, and push.',
+      'Do not rebase or force-push, and do not merge the PR.',
+    ].join('\n'))
   })
 
   it('shows merge failures in the CI menu', async () => {
