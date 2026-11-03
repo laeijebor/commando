@@ -22,7 +22,7 @@ function mergeable(number: number, patch: Partial<PrSummary> = {}): PanePrSummar
   return { ...base, preview }
 }
 const status = (patch: Partial<PrAutofixStatus> = {}): PrAutofixStatus => ({ repo: 'acme/widgets', number: 12, targetId, enabled: true, status: 'watching', rounds: 0, lastEventAt: null, ...patch })
-function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number, tab: string) => void, agent: { onSend?: (text: string) => void; agentConnected?: boolean } = {}) {
+function setup(prs = [pr(12)], current: PrAutofixStatus | null = null, onOpenPr?: (repo: string, number: number, tab: string) => void, agent: { onSend?: (text: string) => string | void; agentConnected?: boolean } = {}) {
   const api = {
     pane: vi.fn(async () => ({ targetId, totalCount: prs.length, pullRequests: prs, truncated: false, fetchedAt: Date.now() })),
     autofixStatus: vi.fn(async () => current),
@@ -250,6 +250,21 @@ describe('chat PR strip', () => {
     setup([...prs], null, undefined, agent)
     await openCi()
     expect(screen.queryByRole('button', { name: 'Fix conflicts' })).not.toBeInTheDocument()
+  })
+
+  it('lets Fix conflicts be tried again when the daemon refuses the send', async () => {
+    const onSend = vi.fn(() => 'chat-send-7')
+    const api = setup([mergeable(12, { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' })], null, undefined, { onSend })
+    await openCi()
+    fireEvent.click(screen.getByRole('button', { name: 'Fix conflicts' }))
+    expect(screen.getByRole('button', { name: 'Fix requested' })).toBeDisabled()
+    // An unrelated refusal leaves the request in place.
+    api.view.rerender(<PrStrip paneId="%1" api={api} connected onSend={onSend} sendError={{ message: 'Not connected', refused: [{ requestId: 'chat-send-1' }] }} />)
+    expect(screen.getByRole('button', { name: 'Fix requested' })).toBeDisabled()
+    api.view.rerender(<PrStrip paneId="%1" api={api} connected onSend={onSend} sendError={{ message: 'Not connected', refused: [{ requestId: 'chat-send-7' }] }} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Fix conflicts' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Fix conflicts' }))
+    expect(onSend).toHaveBeenCalledTimes(2)
   })
 
   it('disables Fix conflicts while the agent is disconnected', async () => {

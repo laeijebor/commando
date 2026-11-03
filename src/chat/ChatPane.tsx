@@ -391,7 +391,7 @@ function ChatColumn({
         />
       ) : null}
       {chat.session.login ? <CursorLoginBanner login={chat.session.login} disabled={!connected || !chat.hostConnected} onSend={onSend} /> : null}
-      {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
+      {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} sendError={sendError} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
       <ChatComposer
         session={chat.session}
         hostConnected={connected && chat.hostConnected}
