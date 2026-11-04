@@ -9,7 +9,7 @@ import type { CommandoSnapshot, LayoutSpec, ServerMessage, SessionBrief, TmuxPan
 import { App, AuthGate, PANE_JUMP_HIGHLIGHT_MS, PR_PANE_LOOKUP_TIMEOUT_MS, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { createPrsApi } from './prsApi'
 import { refreshPanePrs } from './prStore'
-import { getAuthBootstrap, getAuthUser } from './authClient'
+import { getAuthBootstrap, getAuthUser, signInWithEmail } from './authClient'
 import type { ConnectionState } from './useDaemon'
 import { NARROW_PANEL_QUERY } from './sidePanelState'
 import * as nativeWebViewBridge from './nativeWebViewBridge'
@@ -3260,6 +3260,34 @@ describe('remote host workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close api' }))
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/h/hub/api/pane-management/panes/${encodeURIComponent(pane.id)}/delete`, expect.anything()))
   })
+  it.each(['local', 'host'] as const)('routes an expired %s credential to the correct owner-login or host-token UI', async (authSource) => {
+    localStorage.setItem('commando.active-host', 'hub')
+    vi.mocked(getAuthBootstrap).mockResolvedValue({ enabled: true, needsOwner: false, ownerEmail: 'owner@example.com' })
+    const owner = { id: 'owner', name: 'Owner', email: 'owner@example.com' }
+    vi.mocked(getAuthUser).mockResolvedValue(owner)
+    const view = render(<App />)
+    await screen.findByRole('combobox', { name: 'Active host' })
+    daemonConnection = { phase: 'unauthorized', authSource, detail: 'Credential rejected', attempt: 0 }
+    view.rerender(<App />)
+
+    if (authSource === 'local') {
+      const signIn = await screen.findByRole('button', { name: 'Sign in' })
+      expect(document.querySelector('.host-connection-banner')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Hosts settings' })).toBeNull()
+      vi.mocked(signInWithEmail).mockResolvedValue(owner)
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'new-local-password' } })
+      daemonConnection = { phase: 'live', detail: 'Authenticated remote stream', attempt: 0 }
+      fireEvent.click(signIn)
+      await screen.findByRole('combobox', { name: 'Active host' })
+      expect(signInWithEmail).toHaveBeenCalledWith('owner@example.com', 'new-local-password')
+    } else {
+      expect(screen.getByRole('alert')).toHaveTextContent('rejected the saved token — update it in Settings → Hosts')
+      expect(screen.getByRole('button', { name: 'Hosts settings' })).toBeVisible()
+      expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull()
+    }
+    expect(localStorage.getItem('commando.active-host')).toBe('hub')
+  })
+
   function stubHubHealth(state: 'online' | 'offline' | 'unauthorized', name = 'Hub') {
     const fallback = vi.mocked(fetch).getMockImplementation()!
     vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === '/api/hosts'

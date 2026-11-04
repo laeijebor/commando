@@ -1748,6 +1748,7 @@ function HostApp() {
 
   const { connection, send } = useDaemon(token, authUser !== null, handleServerMessage)
   const connected = connection.phase === 'live'
+  const localAuthRejected = connection.phase === 'unauthorized' && (local || connection.authSource === 'local')
   const hostHealth = hosts.find((host) => host.id === activeHost)?.health.state
   // A live stream is fresher evidence than the registry's periodic health probe.
   const hostConnectionState = local || connected ? null
@@ -1758,17 +1759,17 @@ function HostApp() {
   resizeAuthorityActiveRef.current = resizeAuthorityActive
 
   useEffect(() => {
-    if (local && !token && connection.phase === 'unauthorized') setAuthUser(null)
-  }, [connection.phase, token])
+    if (localAuthRejected && !token) setAuthUser(null)
+  }, [localAuthRejected, token])
   useEffect(() => {
     const broker = tokenBrokerRef.current
     if (!broker) return
-    if (token && (!local || connection.phase !== 'unauthorized')) {
+    if (token && !localAuthRejected) {
       broker.setToken(token)
     } else {
       broker.forgetToken()
     }
-  }, [connection.phase, token])
+  }, [localAuthRejected, token])
   const maximizedTmuxPaneId =
     maximizedPaneId && !isWebPaneLeafId(maximizedPaneId) ? maximizedPaneId : null
   const activeResizePaneId = resizeAuthorityActive
@@ -3688,7 +3689,7 @@ function HostApp() {
     contextRendererControl?.manualXterm || contextRendererControl?.actual === 'xterm',
   )
 
-  if (authPending && (!token || (local && connection.phase === 'unauthorized'))) {
+  if (authPending && (!token || localAuthRejected)) {
     return (
       <main className="auth-screen">
         <div className="auth-ambient" aria-hidden="true" />
@@ -3702,7 +3703,7 @@ function HostApp() {
     )
   }
 
-  if ((!token && !authUser) || (local && connection.phase === 'unauthorized')) {
+  if ((!token && !authUser) || localAuthRejected) {
     return (
       <AuthGate
         bootstrap={authBootstrap ?? { enabled: false, needsOwner: false, ownerEmail: null }}

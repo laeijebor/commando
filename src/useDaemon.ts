@@ -18,6 +18,8 @@ export type ConnectionState = {
   detail: string
   attempt: number
   retryAt?: number
+  /** Which credential failed: this Mac's owner login, or the saved host token. */
+  authSource?: 'local' | 'host'
 }
 
 const INITIAL_CONNECTION: ConnectionState = {
@@ -69,6 +71,25 @@ export function useDaemon(
     let attempt = 0
     const abortController = new AbortController()
 
+    const authFailure = async (response: Response): Promise<'local' | 'host' | null> => {
+      if (response.ok) return null
+      if (!local) {
+        const body = await response.clone().json().catch(() => ({})) as { code?: string }
+        if (body.code === 'host_unauthorized') return 'host'
+        if (body.code === 'unauthorized') return 'local'
+      }
+      // Upstream 401/403 responses are normalized by the proxy. An unlabelled
+      // rejection therefore requires refreshing this Mac's owner credentials.
+      return response.status === 401 || response.status === 403 ? 'local' : null
+    }
+    const rejectAuth = (authSource: 'local' | 'host') => {
+      if (cancelled) return
+      setConnection({
+        phase: 'unauthorized', authSource, attempt,
+        detail: authSource === 'local' ? 'This Mac requires a new owner login or daemon token' : 'The remote host rejected its saved token',
+      })
+    }
+
     const connect = (isReconnect: boolean) => {
       if (cancelled) return
 
@@ -117,35 +138,41 @@ export function useDaemon(
         if (cancelled) return
         if (socketRef.current === socket) socketRef.current = null
 
-        if (event.code === 4401 || event.code === 4403) {
-          setConnection({
-            phase: 'unauthorized',
-            detail: 'The daemon rejected this session token',
-            attempt,
-          })
+        const authClose = event.code === 4401 || event.code === 4403
+        if (local && authClose) {
+          rejectAuth('local')
           return
+        }
+        if (!local) {
+          setConnection({ phase: 'reconnecting', detail: 'Checking the closed remote stream', attempt })
         }
 
         const assessAndReconnect = async () => {
-          if (event.code === 1006) {
+          if (event.code === 1006 || !local) {
             try {
               const response = await daemonFetch('/api/health', {
                 credentials: 'same-origin',
                 headers: token ? { Authorization: `Bearer ${token}` } : undefined,
                 signal: abortController.signal,
               })
+              const healthAuth = await authFailure(response)
               if (cancelled) return
-              const remoteFailure = !local && !response.ok ? await response.clone().json().catch(() => ({})) as { code?: string } : null
-              if (response.status === 401 || response.status === 403 || remoteFailure?.code === 'host_unauthorized') {
-                setConnection({
-                  phase: 'unauthorized',
-                  detail: 'The restarted daemon requires a new session token',
-                  attempt,
+              if (healthAuth) { rejectAuth(healthAuth); return }
+              if (!local && response.ok) {
+                // Health may be public on the hub. Probe a protected route too:
+                // the browser cannot expose the body of a rejected WS upgrade.
+                const protectedResponse = await daemonFetch('/api/snapshot', {
+                  credentials: 'same-origin',
+                  headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                  signal: abortController.signal,
                 })
-                return
+                const snapshotAuth = await authFailure(protectedResponse)
+                if (cancelled) return
+                if (snapshotAuth) { rejectAuth(snapshotAuth); return }
+                if (protectedResponse.ok && authClose) { rejectAuth('host'); return }
               }
             } catch {
-              // The daemon may still be offline; the bounded reconnect loop handles it.
+              // Unreachable probes cannot identify a bad credential; retry the stream.
             }
           }
 
@@ -186,15 +213,9 @@ export function useDaemon(
         })
 
         if (cancelled) return
-        const remoteFailure = !local && !response.ok ? await response.clone().json().catch(() => ({})) as { code?: string } : null
-        if (response.status === 401 || response.status === 403 || remoteFailure?.code === 'host_unauthorized') {
-          setConnection({
-            phase: 'unauthorized',
-            detail: 'The daemon rejected this session token',
-            attempt: 0,
-          })
-          return
-        }
+        const snapshotAuth = await authFailure(response)
+        if (cancelled) return
+        if (snapshotAuth) { rejectAuth(snapshotAuth); return }
         if (!response.ok) throw new Error(`Snapshot request returned ${response.status}`)
 
         const snapshot = snapshotFromResponse(await response.json())
