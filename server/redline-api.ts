@@ -1,4 +1,4 @@
-import { isDeckPath, parseCanvasSource } from '../shared/deck.js'
+import { parseCanvasSource } from '../shared/deck.js'
 import { deckThemes, exportDeck } from './deck-export.js'
 import { encodeCanvasPath } from '../shared/canvas-manifest.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -258,8 +258,7 @@ export class RedlineApi {
   private async handleApi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const png = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/frames\/([A-Za-z0-9_-]{1,64})\.png$/.exec(url.pathname)
     if (png) {
-      if (isDeckPath(url.searchParams.get('manifest'))) await this.authenticate(request, url)
-      else if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
+      if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
       const manifestPath = canvasRelativePath(url.searchParams.get('manifest') ?? 'canvas.json')
       if (!manifestPath) throw new HttpError(400, 'Invalid manifest path')
@@ -291,6 +290,7 @@ export class RedlineApi {
         if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
         this.writeJson(response, 200, deckThemes(this.dependencies.artifacts, deckRoute[1], url.searchParams.get('deck')))
       } else {
+        if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         await exportDeck(this.dependencies.artifacts, deckRoute[1], await this.readJson(request), response)
       }

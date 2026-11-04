@@ -17,7 +17,7 @@ import { canvasFrameUrl, useCanvasFrameBridge } from './canvasFrameBridge'
 import { canvasNoteContext } from './canvasComments'
 import { labelKey, labelsForFrame, type CanvasLabelRef } from './canvasLabels'
 import { canvasRequest } from './canvasWrite'
-import { useSlidesReview } from './useSlidesReview'
+import { useCanvasReviewAdapter } from './useCanvasReviewAdapter'
 import './canvas-pane.css'
 import './slides-pane.css'
 
@@ -40,14 +40,19 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const [result, setResult] = useState(EMPTY), [snapshot, setSnapshot] = useState<CanvasSnapshot | null>(null)
   const [loaded, setLoaded] = useState(false), [revisions, setRevisions] = useState<Record<string, number>>({})
   const [choice, setChoice] = useState(''), [grid, setGrid] = useState(false), [notes, setNotes] = useState(false), [commentMode, setCommentMode] = useState(false)
-  const [menu, setMenu] = useState<'theme' | 'export' | null>(null), [themes, setThemes] = useState<string[]>([]), [brand, setBrand] = useState('')
+  const [menu, setMenu] = useState<'theme' | 'export' | null>(null), [themes, setThemes] = useState<string[] | null>(null), [brand, setBrand] = useState('')
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [presenting, setPresenting] = useState(false)
   const [spotlight, setSpotlight] = useState<CanvasSpotlightRequest | null>(null), [selected, setSelected] = useState<CanvasLabelRef | null>(null)
   const pane = useRef<HTMLDivElement>(null), stage = useRef<HTMLDivElement>(null), screen = useRef<HTMLDivElement>(null)
   const hitSequence = useRef(0), readOnly = !!snapshot
   const themeKey = `commando:slides-theme:${artifactId}:${manifestPath}`
   const [themeChoice, setThemeChoice] = useState(() => { try { return localStorage.getItem(themeKey) ?? '' } catch { return '' } })
-  const theme = themeChoice || result.deck?.theme || 'ink'
+  const theme = (themes === null || themes.includes(themeChoice) ? themeChoice : '') || result.deck?.theme || 'ink'
+  useEffect(() => {
+    if (themes === null || !themeChoice || themes.includes(themeChoice)) return
+    setThemeChoice('')
+    try { localStorage.removeItem(themeKey) } catch { /* private mode */ }
+  }, [themes, themeChoice, themeKey])
   const resourceUrl = (path: string) => artifactUrl ? new URL(path, artifactUrl).toString() : path
   const baseUrl = resourceUrl(snapshot ? `/redline/canvas-snapshots/${artifactId}/${snapshot.id}/` : `/redline/artifacts/${artifactId}/`)
   const apiUrl = `/api/redline/artifacts/${artifactId}`
@@ -63,7 +68,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   useEffect(() => {
     const abort = new AbortController()
     void canvasRequest(`${apiUrl}/deck-themes?${new URLSearchParams({ deck: manifestPath })}`, token, { signal: abort.signal }, 'Could not load themes')
-      .then((response) => response.json()).then((data: { themes: string[] }) => setThemes(data.themes)).catch((reason: Error) => { if (!abort.signal.aborted) setError(reason.message) })
+      .then((response) => response.json()).then((data: { themes: string[] }) => { if (!abort.signal.aborted) setThemes(data.themes) }).catch((reason: Error) => { if (!abort.signal.aborted) setError(reason.message) })
     return () => abort.abort()
   }, [apiUrl, manifestPath, token, result.deck?.theme, revisions])
   const go = (next: number) => { ++hitSequence.current; comments.close(); setChoice(frames[Math.max(0, Math.min(frames.length - 1, next))]?.id ?? ''); setSelected(null); setSpotlight(null) }
@@ -102,13 +107,11 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
     const i = labels.findIndex((label) => label.rect.w > 0 && label.rect.h > 0 && (spotlight.labelId ? label.id === spotlight.labelId : label.name === spotlight.label))
     if (i >= 0) setSelected({ frameId: frame.id, key: labelKey(labels[i], i) })
   }, [spotlight, frame, reports])
-  const review = useSlidesReview(webPaneId, token, questionsPage, annotations, comments, (selector) => {
-    const note = annotations.find((note) => selector === `[data-canvas-note="${note.id}"]`)
-    const pending = comments.queued.find((note) => note.selector === selector)
+  const review = useCanvasReviewAdapter(webPaneId, token, questionsPage, annotations, comments, (note, pending) => {
     const id = note?.target?.frame ?? pending?.canvas?.frameId
     if (id) pick(id)
     if (pending) comments.open(`pending:${pending.id}`)
-  })
+  }, !readOnly && !!webPaneId)
   const pins = readOnly ? [] : canvasPins(comments.draft, comments.queued, comments.threads).filter((pin) => pin.canvas.frameId === frame?.id)
   const activePin = pins.find((pin) => pin.id === comments.active), activePoint = activePin ? canvasPinPoint(activePin, current, camera) : null
   const activeNote = comments.queued.find((note) => `pending:${note.id}` === comments.active), activeThread = comments.threads.find((thread) => thread.id === comments.active)
@@ -161,7 +164,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
     {loaded && !!result.warnings?.length && <details className="slides-warnings"><summary>Deck warnings ({result.warnings.length})</summary>{result.warnings.map((warning, i) => <div key={i}>{warning}</div>)}</details>}
     {comments.error && <div className="canvas-errors" role="alert">{comments.error}</div>}{layout.error && <div role="alert">{layout.error}</div>}
     {menu && <div className="slides-menu canvas-menu-items" role="menu" aria-label={menu === 'theme' ? 'Deck theme' : 'Export deck'}>
-      {menu === 'theme' ? <><div className="slides-theme-options">{[...new Set([result.deck?.theme ?? 'ink', ...themes])].map((name) => <button type="button" role="menuitemradio" aria-label={`${name}${name === result.deck?.theme ? ' (default)' : ''}`} aria-checked={theme === name} key={name} onClick={() => { setThemeChoice(name); try { localStorage.setItem(themeKey, name) } catch { /* private mode */ } setMenu(null) }}>{frame && <Thumbnail frame={frame} src={thumbUrl(frame, name)} />}{name}{name === result.deck?.theme ? ' (default)' : ''}</button>)}</div>
+      {menu === 'theme' ? <><div className="slides-theme-options">{[...new Set([result.deck?.theme ?? 'ink', ...(themes ?? [])])].map((name) => <button type="button" role="menuitemradio" aria-label={`${name}${name === result.deck?.theme ? ' (default)' : ''}`} aria-checked={theme === name} key={name} onClick={() => { setThemeChoice(name); try { localStorage.setItem(themeKey, name) } catch { /* private mode */ } setMenu(null) }}>{frame && <Thumbnail frame={frame} src={thumbUrl(frame, name)} />}{name}{name === result.deck?.theme ? ' (default)' : ''}</button>)}</div>
         {!readOnly && <form onSubmit={(event) => { event.preventDefault(); if (!brand.trim() || !review.queue || !frame) return; setBusy(true); void review.queue.add({ selector: 'html', tag: 'section', rect: { x: 0, y: 0, width: 0, height: 0 }, comment: `Make a brand theme for this deck from: ${brand.trim()}`, pageUrl: questionsPage, canvas: canvasNoteContext(frame, [], { x: 0, y: 0 }) }).then(() => { setBrand(''); setMenu(null) }).catch((reason: Error) => setError(reason.message)).finally(() => setBusy(false)) }}>
           <label>Ask agent for a brand theme…<input aria-label="Brand source" placeholder="Website, tokens or brand brief" value={brand} onChange={(event) => setBrand(event.target.value)} /></label><button type="submit" disabled={busy || !webPaneId || !brand.trim()}>Queue request</button></form>}</>
         : <>{(['pdf', 'pptx', 'png', 'html'] as const).map((format) => <button type="button" role="menuitem" disabled={busy} key={format} onClick={() => void download(format)}>{format === 'png' ? 'PNG · current slide' : format === 'html' ? 'Single HTML file' : format.toUpperCase()}</button>)}{busy && <span role="status">Exporting…</span>}</>}

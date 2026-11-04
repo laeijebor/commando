@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RedlineApi } from './redline-api.js'
 import { RedlineArtifactRegistry } from './redline-artifacts.js'
 import { CanvasSnapshotsStore } from './canvas-snapshots.js'
-import { deckExportArgs } from './deck-export.js'
+import { deckExportArgs, deckExportFailure } from './deck-export.js'
 import { writeCanvas } from './canvas-write.js'
 
 let dir: string, artifacts: RedlineArtifactRegistry, id: string, api: RedlineApi
@@ -22,7 +22,7 @@ beforeEach(async () => {
   screenshot.mockClear()
 })
 afterEach(async () => { vi.unstubAllEnvs(); await rm(dir, { recursive: true, force: true }) })
-async function request(path: string, body?: unknown, auth: 'agent' | 'owner' | 'none' = 'agent') {
+async function request(path: string, body?: unknown, auth: 'agent' | 'owner' | 'none' = path === 'deck-export' ? 'owner' : 'agent') {
   const req = Readable.from(body ? [JSON.stringify(body)] : []) as unknown as IncomingMessage
   req.method = body ? 'POST' : 'GET'; req.headers = { 'content-type': 'application/json', ...(auth === 'agent' ? { authorization: `Bearer ${token}` } : auth === 'owner' ? { 'x-owner': 'yes' } : {}) }
   const chunks: Buffer[] = [], writeHead = vi.fn(), setHeader = vi.fn()
@@ -53,11 +53,41 @@ describe('deck-aware canvas API', () => {
     } finally { await rm(outside, { recursive: true, force: true }) }
   })
   it('exports a selected slide PNG with theme and hash through the existing route', async () => {
-    expect((await request('canvas/frames/end.png?manifest=deck.html&theme=paper')).status).toBe(200)
+    expect((await request('canvas/frames/end.png?manifest=deck.html&theme=paper', undefined, 'owner')).status).toBe(200)
     expect(screenshot).toHaveBeenCalledWith(`http://localhost/redline/artifacts/${id}/deck.html?theme=paper#end`, 1280, 720)
   })
 })
 describe('deck export', () => {
+  it('requires owner auth for deck exports and deck frame PNGs', async () => {
+    for (const auth of ['agent', 'none'] as const) {
+      expect((await request('deck-export', { deck: 'deck.html', format: 'pdf' }, auth)).status).toBe(401)
+      expect((await request('canvas/frames/end.png?manifest=deck.html', undefined, auth)).status).toBe(401)
+    }
+    expect(screenshot).not.toHaveBeenCalled()
+    expect((await request('deck-themes?deck=deck.html', undefined, 'agent')).status).toBe(200)
+  })
+  it.each([
+    { stdout: 'Preparing...\n{"ok":false,"error":"Font Acme could not be loaded"}\n', stderr: 'Other diagnostic\n', expected: 'Font Acme could not be loaded' },
+    { stdout: '{"ok":false,"error":123}\n', stderr: 'First diagnostic\nFinal renderer failure\n\n', expected: 'Final renderer failure' },
+    { stdout: 'No JSON here\n', stderr: '', expected: 'Slide export failed. Check the slides CLI installation and deck assets.' },
+  ])('surfaces CLI failure details: $expected', async ({ stdout, stderr, expected }) => {
+    const cli = join(dir, 'failure.mjs')
+    await writeFile(cli, `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)}); process.exitCode=1;`)
+    vi.stubEnv('COMMANDO_SLIDES_CLI', cli); vi.stubEnv('COMMANDO_CHROMIUM_PATH', process.execPath)
+    const result = await request('deck-export', { deck: 'deck.html', format: 'pdf' })
+    expect(result.status).toBe(503); expect(JSON.parse(result.text).error).toBe(expected)
+  })
+  it('distinguishes output overflow from a real signal timeout', async () => {
+    expect(deckExportFailure({ killed: true, signal: 'SIGTERM', code: null }, '', '')).toContain('timed out')
+    expect(deckExportFailure({ killed: true, signal: 'SIGTERM', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }, '', '')).toContain('buffer limit')
+    expect(deckExportFailure({ killed: true, signal: undefined, code: 1 }, '', 'Failed')).toBe('Failed')
+    expect(deckExportFailure({ killed: false, signal: 'SIGTERM', code: 1 }, '', 'Stopped')).toBe('Stopped')
+    const cli = join(dir, 'overflow.mjs')
+    await writeFile(cli, "process.stdout.write('x'.repeat(1024 * 1024 + 1));")
+    vi.stubEnv('COMMANDO_SLIDES_CLI', cli); vi.stubEnv('COMMANDO_CHROMIUM_PATH', process.execPath)
+    const result = await request('deck-export', { deck: 'deck.html', format: 'pdf' })
+    expect(result.status).toBe(503); expect(result.text).toContain('buffer limit'); expect(result.text).not.toContain('timed out')
+  })
   it('builds literal CLI arguments', () => {
     expect(deckExportArgs('pdf', '/a deck/deck.html', '/out/file.pdf', '/Chrome path', 'paper')).toEqual(['pdf', '/a deck/deck.html', '--json', '--out', '/out/file.pdf', '--browser', '/Chrome path', '--theme', 'paper'])
   })

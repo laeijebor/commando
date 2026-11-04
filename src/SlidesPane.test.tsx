@@ -62,6 +62,18 @@ describe('SlidesPane', () => {
     await waitFor(() => expect(calls.some((call) => (call.body?.note as { comment?: string })?.comment === 'Make a brand theme for this deck from: https://brand.example')).toBe(true))
     unmount(); mount(); expect((await screen.findByTitle('Opening')).getAttribute('src')).toContain('theme=paper')
   })
+  it('drops a remembered theme that no longer exists and falls back to the deck default', async () => {
+    const key = `commando:slides-theme:${artifactId}:deck.html`
+    localStorage.setItem(key, 'retired-theme')
+    html = html.replace('themes/ink.css', 'themes/paper.css')
+    const { container } = mount()
+    await waitFor(() => expect(screen.getByTitle('Opening').getAttribute('src')).toContain('theme=paper'))
+    expect(container.querySelector('.slides-filmstrip iframe')?.getAttribute('src')).toContain('theme=paper')
+    await waitFor(() => expect(localStorage.getItem(key)).toBeNull())
+    fireEvent.click(screen.getByLabelText('Theme'))
+    expect(await screen.findByRole('menuitemradio', { name: 'paper (default)' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('menuitemradio', { name: 'retired-theme' })).not.toBeInTheDocument()
+  })
   it('queues slide questions through the canvas answer queue without navigating while typing', async () => {
     mount(); await screen.findByTitle('Opening')
     fireEvent.click(screen.getByRole('button', { name: 'Slide 2: Evidence' }))

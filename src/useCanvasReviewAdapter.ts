@@ -1,16 +1,17 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef } from 'react'
 import type { CanvasAnnotation } from '../shared/canvas-manifest'
-import type { WebPanePendingSnapshot } from '../shared/protocol'
+import type { WebPanePendingNote, WebPanePendingSnapshot } from '../shared/protocol'
 import type { RedlinePageQuestionSnapshot } from '../shared/redline-response'
-import { openCanvasQuestions } from './canvasQuestions'
+import { canvasNoteIdFromSelector, openCanvasQuestions } from './canvasQuestions'
 import type { PendingQueueApi } from './pendingQueueApi'
 import type { TileReviewSurface } from './TileReviewLayer'
 import type { useCanvasComments } from './useCanvasComments'
 import { createWebPanesApi } from './webPanesApi'
 
-/** Same canvas queue adapter: answers belong to the manifest, even while a different slide is shown. */
-export function useSlidesReview(webPaneId: string | undefined, token: string, page: string, annotations: CanvasAnnotation[], comments: ReturnType<typeof useCanvasComments>, reveal: (selector: string) => void) {
-  const questions = useMemo(() => openCanvasQuestions(annotations), [annotations])
+/** Shared canvas/deck queue: answers and sent receipts always belong to the manifest page. */
+export function useCanvasReviewAdapter(webPaneId: string | undefined, token: string, page: string, annotations: CanvasAnnotation[], comments: Pick<ReturnType<typeof useCanvasComments>, 'snapshot' | 'questionSent' | 'queued'>,
+  reveal: (note: CanvasAnnotation | undefined, pending: WebPanePendingNote | undefined) => void, answerable = !!webPaneId) {
+  const questions = useMemo(() => answerable ? openCanvasQuestions(annotations) : [], [answerable, annotations])
   const state = useRef({ questions, page, sent: comments.questionSent })
   const listeners = useRef({ pending: new Set<(snapshot: WebPanePendingSnapshot) => void>(), questions: new Set<(page: string, snapshot: RedlinePageQuestionSnapshot) => void>() })
   useLayoutEffect(() => { state.current = { questions, page, sent: comments.questionSent } })
@@ -20,7 +21,10 @@ export function useSlidesReview(webPaneId: string | undefined, token: string, pa
     if (!comments.snapshot.revision && !comments.snapshot.notes.length) return
     for (const listener of listeners.current.pending) listener({ ...comments.snapshot, sent: comments.questionSent })
   }, [comments.snapshot, comments.questionSent])
-  const onReveal = useEffectEvent(reveal)
+  const onReveal = useEffectEvent((selector: string) => {
+    const note = annotations.find((note) => note.id === canvasNoteIdFromSelector(selector))
+    reveal(note, note ? undefined : comments.queued.find((pending) => pending.selector === selector))
+  })
   const surface = useMemo<TileReviewSurface>(() => ({
     inspect: () => {}, resolveSelectors: (_items, receive) => receive([]),
     subscribePending: (listener) => { listeners.current.pending.add(listener); return () => { listeners.current.pending.delete(listener) } },

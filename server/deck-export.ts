@@ -1,5 +1,5 @@
 import { isDeckPath, parseDeck } from '../shared/deck.js'
-import { execFile } from 'node:child_process'
+import { execFile, type ExecFileException } from 'node:child_process'
 import { existsSync, createReadStream, readFileSync, readdirSync } from 'node:fs'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import type { ServerResponse } from 'node:http'
@@ -36,6 +36,18 @@ export function findSlidesCli(env: NodeJS.ProcessEnv = process.env): string | nu
 export function deckExportArgs(format: string, deck: string, out: string, browser: string, theme?: string): string[] {
   return [format, deck, '--json', '--out', out, '--browser', browser, ...(theme ? ['--theme', theme] : [])]
 }
+export function deckExportFailure(error: Pick<ExecFileException, 'code' | 'killed' | 'signal'>, stdout: string, stderr: string): string {
+  if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return 'Slide export failed: CLI output exceeded the 1 MiB buffer limit'
+  if (error.killed && error.signal) return 'Slide export timed out after 120 seconds'
+  for (const line of stdout.trim().split(/\r?\n/).reverse()) {
+    try {
+      const result: unknown = JSON.parse(line)
+      if (result && typeof result === 'object' && 'error' in result && typeof result.error === 'string') return result.error
+      break
+    } catch { /* CLI diagnostics can surround its final JSON line. */ }
+  }
+  return stderr.trim().split(/\r?\n/).at(-1)?.trim() || 'Slide export failed. Check the slides CLI installation and deck assets.'
+}
 let activeExports = 0
 const mime = { pdf: 'application/pdf', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', png: 'image/png', html: 'text/html; charset=utf-8' }
 export async function exportDeck(artifacts: RedlineArtifactRegistry, id: string, body: Record<string, unknown>, response: ServerResponse): Promise<void> {
@@ -56,8 +68,8 @@ export async function exportDeck(artifacts: RedlineArtifactRegistry, id: string,
     temp = await mkdtemp(join(tmpdir(), 'commando-deck-export-'))
     const out = format === 'png' ? temp : join(temp, `deck.${format}`)
     const stdout = await new Promise<string>((resolve, reject) => {
-      execFile(process.execPath, [cli, ...deckExportArgs(format, file, out, browser, body.theme as string | undefined)], { timeout: 120_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
-        if (error) reject(new RedlineArtifactError(503, error.killed ? 'Slide export timed out after 120 seconds' : 'Slide export failed. Check the slides CLI installation and deck assets.'))
+      execFile(process.execPath, [cli, ...deckExportArgs(format, file, out, browser, body.theme as string | undefined)], { timeout: 120_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) reject(new RedlineArtifactError(503, deckExportFailure(error, stdout, stderr)))
         else resolve(stdout)
       })
     })
