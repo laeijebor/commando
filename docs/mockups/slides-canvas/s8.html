@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/ink.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 8 · Takeaways -->
+<section class="slide" data-n="8" data-total="8" data-canvas-group="Slide 8 · Takeaways">
+  <p class="kicker">Takeaways</p>
+  <h2 data-canvas-label="Headline">What to remember</h2>
+  <div class="body cols c2" style="align-items:start">
+    <ul class="checks" data-canvas-label="Takeaway list">
+      <li><span class="ic good">✓</span><span><b>Never make an input read-only for a network state.</b> iOS takes the keyboard away.</span></li>
+      <li><span class="ic good">✓</span><span><b>Reset backoff on a healthy connection,</b> not on open.</span></li>
+      <li><span class="ic good">✓</span><span><b>Replay what the screen needs.</b> “Load earlier” fetches the rest.</span></li>
+    </ul>
+    <div class="card" data-canvas-label="Residual risk"><span class="tag" style="color:var(--warn)">Residual risk</span><h3>A client that never reads is still dropped</h3><p>After about 60 s: 30 s with no drain plus ws's close timeout. That is the intended backstop.</p></div>
+  </div>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>

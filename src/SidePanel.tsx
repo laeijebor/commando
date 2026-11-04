@@ -1,6 +1,6 @@
 import { useHost } from './HostContext'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { FileDiff, GitPullRequest, LayoutDashboard, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X, type LucideIcon } from 'lucide-react'
+import { FileDiff, GitPullRequest, LayoutDashboard, Presentation, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X, type LucideIcon } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
 import type { TmuxPane, WebPane, WebPaneEngine } from '../shared/protocol'
 import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, panelScrimClipPath, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
@@ -8,6 +8,7 @@ import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrList, PrsApiClient } from './prsApi'
 import { usePaneGitSummary } from './paneGitStore'
 import { usePanePrs } from './prStore'
+import { isDeckPath } from '../shared/deck'
 
 export type PanePanelData = { summary: GitDiffSummary | null; prs: PanePrList | null }
 function PanePanelSource({ pane, gitApi, prsApi, connected, onData }: {
@@ -45,14 +46,14 @@ function loadDrawerHeight(windowId: string): number {
 /** A panel tab's icon, shared with Commander's reading pane. */
 export function panelTabIcon(tab: PanelTab): LucideIcon {
   if (isBuiltinTab(tab)) return tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
-  return tab.content?.kind === 'canvas' ? LayoutDashboard : tab.content?.kind === 'guide' ? ListChecks : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
+  return tab.content?.kind === 'canvas' ? (isDeckPath(tab.content.manifest) ? Presentation : LayoutDashboard) : tab.content?.kind === 'guide' ? ListChecks : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
 }
 
 export function tabLabel(tab: WebPane, title?: string, simulatorName?: string): string {
   if (tab.title) return tab.title
   if (title) return title
   if (tab.content?.kind === 'simulator') return simulatorName ?? 'Simulator'
-  if (tab.content?.kind === 'canvas') return 'Canvas'
+  if (tab.content?.kind === 'canvas') return isDeckPath(tab.content.manifest) ? 'Slides' : 'Canvas'
   if (tab.content?.kind === 'guide') return 'Guide'
   try {
     const url = new URL(tab.url)

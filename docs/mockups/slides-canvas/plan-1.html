@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Where things live</title>
+<meta name="deck:title" content="Slides for agents · proposal">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/ink.css" id="theme">
+<style>
+  .home { font: 600 15px/1 var(--font-mono); color: var(--muted); margin-bottom: 12px; display: block; }
+  .card ul { font-size: 16.5px; } .card li { margin: 5px 0; }
+  .card h3 { font-size: 26px; }
+</style></head>
+<body><main class="deck">
+<section class="slide" data-n="1" data-total="2" data-canvas-group="Plan · where things live">
+  <p class="kicker">Proposal · where things live</p>
+  <h2 data-canvas-label="Headline">Anything an agent can do without Commando goes in the skills repo</h2>
+  <div class="body cols c2">
+    <div class="card" data-canvas-label="Skills repo card"><span class="home">laeijebor/skills → slides/</span><h3>Make good slides, anywhere</h3>
+      <ul>
+        <li><b>Deck format:</b> one <code>deck.html</code>, a <code>&lt;section&gt;</code> per 1280×720 slide, notes inline</li>
+        <li><b>Layouts + themes:</b> title, stat, flow, chart, screenshots, compare; Ink, Paper, brand themes from a product's tokens</li>
+        <li><b>Writing guide:</b> the headline states the finding, one idea per slide, real screenshots first, charts rebuilt from data</li>
+        <li><b>CLI:</b> <code>slides check · pdf · pptx · png · html · publish</code></li></ul><p class="muted" style="font-size:15px;margin:14px 0 0">Works in Claude Code, Codex and OpenCode. Needs Node + Playwright.</p><ul style="display:none">
+      </ul></div>
+    <div class="card" data-canvas-label="Commando card" style="border-color:color-mix(in srgb, var(--accent) 45%, transparent)"><span class="home">commando → skills/commando-slides/ + daemon</span><h3>See, steer and share it beside the chat</h3>
+      <ul>
+        <li><b>Slides tab:</b> filmstrip, grid, keys, present mode with notes</li>
+        <li><b>Agent controls:</b> go to or spotlight a slide, “edited since last round”</li>
+        <li><b>Feedback:</b> pins and per-slide questions through the answer queue; Send all + Build</li>
+        <li><b>Menus</b> for theme, export and publish that call the same CLI; deck card in chat; add to PR</li></ul><p class="muted" style="font-size:15px;margin:14px 0 0">Needs the Commando daemon. Falls back to the plain CLI without it.</p><ul style="display:none">
+      </ul></div>
+  </div>
+</section>
+</main><script src="deck/deck.js"></script></body></html>

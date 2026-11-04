@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/ink.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 6 · What changed -->
+<section class="slide" data-n="6" data-total="8" data-canvas-group="Slide 6 · What changed">
+  <p class="kicker">What changed</p>
+  <h2 data-canvas-label="Headline">Three changes, each one enough to break the loop</h2>
+  <div class="body cols c3">
+    <div class="card" data-canvas-label="Change: drain progress"><span class="tag">daemon · ws-backlog.ts</span><h3>Judge drain progress, not size</h3><ul><li>Drop a client only after 30 s with nothing drained</li><li>256 MiB hard cap still bounds memory</li><li>Large messages go out in fragments</li></ul></div>
+    <div class="card" data-canvas-label="Change: bounded replay"><span class="tag">daemon · chat-replay.ts</span><h3>Bounded replay on request</h3><ul><li><code>/ws?chatHistory=&lt;bytes&gt;</code></li><li>Newest items per chat + anything still running</li><li>Desktop asks for nothing and keeps full history</li></ul></div>
+    <div class="card" data-canvas-label="Change: mobile composer"><span class="tag">mobile</span><h3>Keep typing while offline</h3><ul><li>Composer stays editable; only Send waits</li><li>“Reconnecting…” banner waits 2 s</li><li>Backoff resets after 10 s open, not on open</li></ul></div>
+  </div>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>

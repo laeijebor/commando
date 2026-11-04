@@ -1,8 +1,9 @@
+import { parseCanvasSource } from '../shared/deck.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, opendirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
-import { canvasRelativePath, parseCanvasManifest } from '../shared/canvas-manifest.js'
+import { canvasRelativePath } from '../shared/canvas-manifest.js'
 import type { CanvasSnapshot } from '../shared/canvas-snapshot.js'
 import type { WebPane, WebPaneFeedbackNote } from '../shared/protocol.js'
 import type { RedlineArtifactRegistry } from './redline-artifacts.js'
@@ -67,7 +68,7 @@ export class CanvasSnapshotsStore {
     const budget = { remaining: this.limits.inputBytes, partial: false }
     const manifestBytes = readBounded(dir, manifestPath, budget)
     if (!manifestBytes) return null
-    const { manifest } = parseCanvasManifest(manifestBytes.toString('utf8'))
+    const { manifest } = parseCanvasSource(manifestBytes.toString('utf8'), manifestPath)
     const core = new Set(['canvas.json', manifestPath, ...manifest.frames.map((frame) => frame.src)])
     const paths: string[] = []
     let visited = 0
