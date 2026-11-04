@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  DeviceLockError, MAX_SKIPS, type DeviceHolder, type DeviceLockRegistry, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
+  DeviceLockError, MAX_SKIPS, type BusyCheck, type DeviceHolder, type DeviceLockRegistry, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
 } from './device-locks.js'
 
 const PANE_ID = /^%\d+$/
@@ -167,6 +167,8 @@ export class DeviceLockApi {
   /** Tells agents whose offer lapsed, withdrawing the offer message if it never arrived. */
   private lapsed(events: SweepEvents): void {
     const { registry, cli, message, cancelMessage } = this.dependencies
+    // A request whose pane or process is gone can't claim; its queued offer message must not go out either.
+    for (const entry of events.dropped) if (entry.offer?.messageId) void cancelMessage?.(entry.offer.messageId).catch(() => {})
     for (const entry of events.expired) {
       const resource = entry.offer && registry.resource(entry.offer.resourceId)
       if (!resource) continue
@@ -210,16 +212,37 @@ export class DeviceLockApi {
       }
       const owner = await this.owner(request, body)
       const busy = await this.busyCheck()
-      if (path === '/api/device-locks/lock') writeJson(response, 200, this.describe(registry.lock({ ...body, ...owner }, busy)))
-      else if (path === '/api/device-locks/claim') writeJson(response, 200, this.describe(registry.claim(owner, optionalText(body.request))))
-      else if (path === '/api/device-locks/release') writeJson(response, 200, { released: registry.release(owner, optionalText(body.request), busy) })
-      else if (typeof body.entryId === 'string') writeJson(response, 200, { withdrawn: registry.withdraw(owner.paneId, body.entryId, busy) })
-      else writeJson(response, 200, { cancelled: registry.cancel(owner, optionalText(body.request), busy) })
+      // Claiming, cancelling or withdrawing ends an offer; its "is yours" message must not go out afterwards.
+      const announced = this.announcedOffers()
+      try { this.agentRequest(path, body, owner, busy, response) }
+      finally { this.withdrawEndedOffers(announced) }
     } catch (error) {
       if (!(error instanceof DeviceLockError)) console.warn('[device-locks] request failed', error)
       writeJson(response, error instanceof DeviceLockError ? error.status : 500, { error: error instanceof DeviceLockError ? error.message : 'Device lock request failed' })
     }
     return true
+  }
+
+  /** The owner comes from the pane header plus `as`/`pid` from the body; the registry validates it. */
+  private agentRequest(path: string, body: Record<string, unknown>, owner: Record<string, unknown> & { paneId: string }, busy: BusyCheck, response: ServerResponse): void {
+    const { registry } = this.dependencies
+    if (path === '/api/device-locks/lock') writeJson(response, 200, this.describe(registry.lock({ ...body, ...owner }, busy)))
+    else if (path === '/api/device-locks/claim') writeJson(response, 200, this.describe(registry.claim(owner, optionalText(body.request))))
+    else if (path === '/api/device-locks/release') writeJson(response, 200, { released: registry.release(owner, optionalText(body.request), busy) })
+    else if (typeof body.entryId === 'string') writeJson(response, 200, { withdrawn: registry.withdraw(owner.paneId, body.entryId, busy) })
+    else writeJson(response, 200, { cancelled: registry.cancel(owner, optionalText(body.request), busy) })
+  }
+
+  /** Offer messages already queued, by the entry and offer they announce. */
+  private announcedOffers(): Array<{ entryId: string; at: number; messageId: string }> {
+    return this.dependencies.registry.snapshot().queue.flatMap((entry) => entry.offer?.messageId ? [{ entryId: entry.id, at: entry.offer.at, messageId: entry.offer.messageId }] : [])
+  }
+
+  private withdrawEndedOffers(before: Array<{ entryId: string; at: number; messageId: string }>): void {
+    for (const offer of before) {
+      if (this.dependencies.registry.entry(offer.entryId)?.offer?.at === offer.at) continue
+      void this.dependencies.cancelMessage?.(offer.messageId).catch(() => {})
+    }
   }
 
   /** Everything an agent or the CLI needs to show the current state. */
