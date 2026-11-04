@@ -10,7 +10,7 @@ function setup(ps = '') {
   let now = 1_000
   const registry = new DeviceLockRegistry({ now: () => now })
   registry.addResource({ id: 'pixel', name: 'Pixel 5', kind: 'android', release: 'restore a2' })
-  const message = vi.fn(async () => {})
+  const message = vi.fn(async (_paneId: string, _text: string) => {})
   const processes = new BusyProcessWatch(async () => ps)
   const api = new DeviceLockApi({ token, registry, processes, message, cli: 'node ~/.commando/hooks/commando-device.mjs',
     paneExists: (pane) => ['%1', '%2', '%3'].includes(pane), sessionName: async (pane) => `session ${pane}`, pidAlive: () => true })

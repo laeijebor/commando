@@ -125,6 +125,8 @@ import {
   disabledAuthBootstrap,
 } from './auth.js'
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
+import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
+import { DeviceLockRegistry, defaultDeviceLockStatePath } from './device-locks.js'
 import { SimLeaseApi, SimLeaseRegistry, SimPoolRegistry, defaultSimPoolStatePath, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimLiveService, simLiveUdid } from './sim-live.js'
 import { SimLogsService, simLogsUdid } from './sim-logs.js'
@@ -2142,6 +2144,21 @@ async function main(): Promise<void> {
   turnBriefs.start()
   commanderRelays.start()
   commanderStalls.start()
+  const deviceLockRegistry = new DeviceLockRegistry({ statePath: defaultDeviceLockStatePath(port) })
+  const deviceLockApi = new DeviceLockApi({
+    token: agentHookToken,
+    registry: deviceLockRegistry,
+    paneExists: leasePaneExists,
+    sessionName: async (paneId) => {
+      const pane = paneForId(paneId)
+      return (pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)?.name) ?? null
+    },
+    processes: new BusyProcessWatch(),
+    // Delivered like a Commander relay: queued until the agent's turn ends.
+    message: async (paneId, text) => { await commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text }) },
+    cli: `node ${JSON.stringify(join(homedir(), '.commando', 'hooks', 'commando-device.mjs'))}`,
+  })
+  deviceLockApi.start()
   const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
   conversationTitles.start()
   const chatConversationsApi = new ChatConversationsApi({
@@ -2918,6 +2935,7 @@ async function main(): Promise<void> {
       if (await agentStatusHooks.handle(request, response, url)) return
       if (await sessionBriefApi.handle(request, response, url)) return
       if (await simLeaseApi.handle(request, response, url)) return
+      if (await deviceLockApi.handle(request, response, url)) return
       if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
       if (await commanderApi.handle(request, response, url)) return
@@ -3190,6 +3208,7 @@ async function main(): Promise<void> {
     turnBriefs.stop()
     commanderRelays.stop()
     commanderStalls.stop()
+    deviceLockApi.stop()
     conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()
