@@ -541,6 +541,26 @@ async function profileFixture(initial = fixtureTask(), extra: CloudTask[] = []) 
 }
 
 describe('multiple provider connections', () => {
+  it('uses the Claude connection terminal budget for UTF-8 validation', async () => {
+    const { api, team } = await profileFixture()
+    team.createPromptByteLimit = 12_000
+    const dialog = await openCreate(api)
+    fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey(team.id, team.credentialContextId) } })
+    fireEvent.change(dialog.getByLabelText('Existing checkout path'), { target: { value: '/disposable/source' } })
+    fireEvent.change(dialog.getByLabelText('Requested branch'), { target: { value: 'main' } })
+    const prompt = dialog.getByLabelText('Task prompt')
+    expect(prompt).toHaveAttribute('maxlength', '12000')
+    fireEvent.change(prompt, { target: { value: '界'.repeat(4000) + 'x' } })
+    expect(prompt).toHaveAttribute('aria-invalid', 'true')
+    expect(prompt).toHaveAccessibleDescription(/12,000-byte UTF-8 limit/)
+    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
+    fireEvent.change(prompt, { target: { value: '界'.repeat(4000) } })
+    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    expect(prompt).toHaveAttribute('aria-invalid', 'false')
+    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeEnabled()
+    expect(api.create).not.toHaveBeenCalled()
+  })
+
   it('offers exact Team/Max/Codex keys and gates creation independently while clearing switched confirmation', async () => {
     const { api, team, max, codex } = await profileFixture()
     const dialog = await openCreate(api)

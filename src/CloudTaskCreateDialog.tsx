@@ -67,7 +67,8 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
   const { confirmed, credentialContextId, contextChanged, setConfirmed } = useCloudAccountConfirmation(info)
   const linking = kind === 'link'
   const messaging = kind === 'message'
-  const promptTooLong = !linking && new TextEncoder().encode(prompt).byteLength > CLOUD_PROMPT_LIMIT
+  const promptLimit = provider === 'claude' && kind === 'create' ? Math.min(CLOUD_PROMPT_LIMIT, info?.createPromptByteLimit ?? CLOUD_PROMPT_LIMIT) : CLOUD_PROMPT_LIMIT
+  const promptTooLong = !linking && new TextEncoder().encode(prompt).byteLength > promptLimit
   const capability = linking ? info?.capabilities.link : info?.readiness === 'ready' && (messaging ? info.capabilities.sendMessage : info.capabilities.create)
   const uncertainIntents = pending.some((item) => item.status !== 'recorded' || item.operation?.state === 'delivery_unknown')
   const createUnavailable = kind === 'create' && !capability
@@ -185,10 +186,10 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
           </> : <>
             <label>{provider === 'codex' ? 'Existing environment ID' : 'Existing checkout path'}<input required value={target} maxLength={provider === 'codex' ? 160 : 1_024} onChange={(event) => setTarget(event.target.value)} /></label>
             <label>Requested branch<input required value={branch} maxLength={240} onChange={(event) => setBranch(event.target.value)} /></label>
-            <label>Task prompt<textarea required rows={4} value={prompt} maxLength={CLOUD_PROMPT_LIMIT} aria-invalid={promptTooLong} aria-describedby={promptTooLong ? promptErrorId : undefined} onChange={(event) => setPrompt(event.target.value)} /></label>
+            <label>Task prompt<textarea required rows={4} value={prompt} maxLength={promptLimit} aria-invalid={promptTooLong} aria-describedby={promptTooLong ? promptErrorId : undefined} onChange={(event) => setPrompt(event.target.value)} /></label>
             <p className="cloud-destination"><strong>Destination: {connectionLabel}</strong><br />{target || 'Choose a source'} · {branch || 'Choose a branch'}</p>
           </>}
-          {promptTooLong && <p id={promptErrorId} role="alert">{messaging ? 'Message' : 'Task prompt'} exceeds the {CLOUD_PROMPT_LIMIT.toLocaleString('en-US')}-byte UTF-8 limit. Shorten it before submitting.</p>}
+          {promptTooLong && <p id={promptErrorId} role="alert">{messaging ? 'Message' : 'Task prompt'} exceeds the {promptLimit.toLocaleString('en-US')}-byte UTF-8 limit. Shorten it before submitting.</p>}
           <label className="cloud-check"><input type="checkbox" required checked={confirmed} disabled={!info} onChange={(event) => setConfirmed(event.target.checked)} />
             I confirm the current CLI account/context and this destination{linking ? ' belong to this task' : ''}.
           </label>

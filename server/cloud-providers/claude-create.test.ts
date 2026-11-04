@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CloudSource } from '../../shared/cloud-tasks.js'
 import { runCloudCli } from '../cloud-cli-runner.js'
 import type { CloudCliRequest, CloudCliResult, CloudCliRunner } from '../cloud-provider.js'
-import { claudeCreateReceipt, createClaudeSession, githubRemote, resolveClaudeSource, TRUST_PROMPT } from './claude-create.js'
+import { claudeCreatePromptByteLimit, claudeCreateReceipt, createClaudeSession, githubRemote, resolveClaudeSource, TMUX_CREATE_ARGV_LIMIT, TRUST_PROMPT } from './claude-create.js'
 import { meetsVerifiedVersion } from './verified-version.js'
 
 const sha = 'a'.repeat(40)
@@ -23,9 +23,12 @@ const trust = ` Accessing workspace:
 `
 const ok = (stdout = '', patch: Partial<CloudCliResult> = {}): CloudCliResult => ({ stdout, stderr: '', exitCode: 0, signal: null, spawned: true, timedOut: false, truncated: false, ...patch })
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => {
+  vi.unstubAllEnvs()
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
 
-function setup({ screen = receipt, cloneFails = false, wrongCwd = false, aliasCwd = false, dead = true, missingTmux = false, throwAfterStart = false, timeoutMs = 1000 } = {}) {
+function setup({ screen = receipt, cloneFails = false, wrongCwd = false, aliasCwd = false, dead = true, missingTmux = false, launchFails = false, throwAfterStart = false, timeoutMs = 1000 } = {}) {
   let checkout = ''
   let reportedCheckout = ''
   let trusted = false
@@ -44,6 +47,11 @@ function setup({ screen = receipt, cloneFails = false, wrongCwd = false, aliasCw
       return ok(`${sha}\n`)
     }
     const command = args[4]
+    if (command === 'new-session') {
+      // Model tmux leaving its socket file even after kill-server succeeds.
+      await writeFile(args[1], 'synthetic socket')
+      return ok('', { exitCode: launchFails ? 1 : 0 })
+    }
     if (command === '-V' && missingTmux) return ok('', { spawned: false, exitCode: null })
     if (command === 'capture-pane') {
       if (throwAfterStart) throw new Error('Synthetic crash')
@@ -97,7 +105,75 @@ describe('private Claude creation', () => {
     const calls = runner.mock.calls.map(([r]) => r.args)
     expect(calls.at(-2)?.slice(4)).toEqual(['kill-session', '-t', 'create'])
     expect(calls.at(-1)?.slice(4)).toEqual(['kill-server'])
-    expect(new Set(calls.filter((a) => a[0] === '-L').map((a) => a[1])).size).toBe(1)
+    expect(new Set(calls.filter((a) => a[0] === '-S').map((a) => a[1])).size).toBe(1)
+    await expect(stat(launch.args[1])).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+  it.each([
+    { screen: receipt, launchFails: false, expected: 'accepted' },
+    { screen: 'unexpected output', launchFails: false, expected: 'delivery_unknown' },
+    { screen: receipt, launchFails: true, expected: 'delivery_unknown' },
+    { screen: receipt, cloneFails: true, expected: 'rejected' },
+  ])('removes scratch and socket after success/failure/launch failure %#', async ({ expected, ...options }) => {
+    const test = setup(options)
+    expect(await test.create()).toMatchObject({ state: expected })
+    const socket = test.runner.mock.calls[0][0].args[1]
+    expect(socket).toBe(join(dirname(test.checkout()), 't.sock'))
+    expect(Buffer.byteLength(socket)).toBeLessThan(104)
+    await expect(stat(socket)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(dirname(socket))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+  it('falls back to a short private socket path when TMPDIR is too long', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cc-test-'))
+    roots.push(root)
+    const longTmp = join(root, 'x'.repeat(110))
+    await mkdir(longTmp)
+    vi.stubEnv('TMPDIR', longTmp)
+    const test = setup()
+    expect(await test.create()).toMatchObject({ state: 'accepted' })
+    const socket = test.runner.mock.calls[0][0].args[1]
+    expect(Buffer.byteLength(socket)).toBeLessThan(104)
+    expect(socket).not.toContain(longTmp)
+    expect(await readdir(longTmp)).toEqual([])
+    await expect(stat(dirname(socket))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+  it.each(['x'.repeat(15_000), 'é'.repeat(8000)])('rejects oversized full argv before launch %#', async (prompt) => {
+    const test = setup()
+    expect(await test.create(prompt)).toMatchObject({ state: 'rejected', issue: { code: 'prompt_too_long_for_terminal' } })
+    expect(test.runner.mock.calls.some(([r]) => r.args.includes('new-session'))).toBe(false)
+    await expect(stat(dirname(test.checkout()))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+  it('counts environment bytes and argv framing, accepting exactly the safe bound', async () => {
+    const baseline = setup()
+    expect(await baseline.create('work')).toMatchObject({ state: 'accepted' })
+    const launch = baseline.runner.mock.calls.find(([r]) => r.args.includes('new-session'))![0]
+    const overhead = [launch.executable, ...launch.args].reduce((size, arg) => size + Buffer.byteLength(arg) + 1, 0) - Buffer.byteLength('work')
+    const atLimit = setup()
+    expect(await atLimit.create('x'.repeat(TMUX_CREATE_ARGV_LIMIT - overhead))).toMatchObject({ state: 'accepted' })
+    const over = setup()
+    expect(await over.create('x'.repeat(TMUX_CREATE_ARGV_LIMIT - overhead + 1))).toMatchObject({ state: 'rejected', issue: { code: 'prompt_too_long_for_terminal' } })
+    expect(over.runner.mock.calls.some(([r]) => r.args.includes('new-session'))).toBe(false)
+    vi.stubEnv('HTTPS_PROXY', 'https://proxy.example/' + 'x'.repeat(15_000))
+    const largeEnv = setup()
+    expect(await largeEnv.create('short prompt')).toMatchObject({ state: 'rejected', issue: { code: 'prompt_too_long_for_terminal' } })
+    expect(largeEnv.runner.mock.calls.some(([r]) => r.args.includes('new-session'))).toBe(false)
+  })
+  it('advertises a conservative per-connection prompt budget including environment/config', async () => {
+    const configDir = '/synthetic/claude-profile'
+    const limit = claudeCreatePromptByteLimit('/fake/claude', configDir)
+    const bareLimit = claudeCreatePromptByteLimit('/fake/claude', null)
+    expect(limit).toBeLessThan(bareLimit)
+    expect(limit).toBeGreaterThan(0)
+    const test = setup()
+    expect(await createClaudeSession(source, 'x'.repeat(limit), '/fake/claude', configDir, undefined, { runner: test.runner })).toMatchObject({ state: 'accepted' })
+    const launch = test.runner.mock.calls.find(([r]) => r.args.includes('new-session'))![0]
+    expect([launch.executable, ...launch.args].reduce((size, arg) => size + Buffer.byteLength(arg) + 1, 0)).toBeLessThanOrEqual(TMUX_CREATE_ARGV_LIMIT)
+    vi.stubEnv('HTTPS_PROXY', 'https://proxy.example/' + 'x'.repeat(15_000))
+    expect(claudeCreatePromptByteLimit('/fake/claude', configDir)).toBe(0)
+  })
+  it.each(['--settings=evil', ' \n\t--help', receipt, 'Quote: View: https://claude.ai/code/session_ABCDEFGHIJ1234', 'Resume with: claude --teleport session_ABCDEFGHIJ1234'])('rejects option-like or forged-receipt input without starting tmux %#', async (prompt) => {
+    const test = setup()
+    expect(await test.create(prompt)).toMatchObject({ state: 'rejected' })
+    expect(test.runner).not.toHaveBeenCalled()
   })
   it.each([false, true])('accepts the real long trust line only in the owned checkout (path alias: %s)', async (aliasCwd) => {
     const test = setup({ screen: trust, dead: false, aliasCwd })
@@ -175,12 +251,12 @@ describe('synthetic executable with real private tmux', () => {
   })
   it('handles trust, literal argv, receipt and cleanup without any provider call', async (context) => {
     // Probe sockets, not just tmux -V: sandboxed hosts may install tmux but deny sockets.
-    const root = await mkdtemp(join(tmpdir(), 'commando-fake-cloud-'))
+    const root = await mkdtemp(join('/tmp', 'cc-test-'))
     roots.push(root)
-    const probeSocket = `commando-cloud-test-${process.pid}-${root.split('-').at(-1)}`
-    const probe = await runCloudCli({ executable: 'tmux', args: ['-L', probeSocket, '-f', '/dev/null', 'new-session', '-d', '-s', 'probe', '/bin/sleep', '10'] })
-    const alive = await runCloudCli({ executable: 'tmux', args: ['-L', probeSocket, 'has-session', '-t', 'probe'] })
-    await runCloudCli({ executable: 'tmux', args: ['-L', probeSocket, 'kill-server'] })
+    const probeSocket = join(root, 'p.sock')
+    const probe = await runCloudCli({ executable: 'tmux', args: ['-S', probeSocket, '-f', '/dev/null', 'new-session', '-d', '-s', 'probe', '/bin/sleep', '10'] })
+    const alive = await runCloudCli({ executable: 'tmux', args: ['-S', probeSocket, 'has-session', '-t', 'probe'] })
+    await runCloudCli({ executable: 'tmux', args: ['-S', probeSocket, 'kill-server'] })
     if (!probe.spawned || probe.exitCode !== 0 || alive.exitCode !== 0) { context.skip('Private tmux sockets are unavailable in this environment'); return }
     const executable = join(root, 'fake-claude')
     await writeFile(executable, `#!${process.execPath}\n${await readFile(new URL('./fixtures/claude/create.cjs', import.meta.url), 'utf8')}`)
@@ -200,6 +276,7 @@ describe('synthetic executable with real private tmux', () => {
     expect(await readFile(join(root, 'trusted'), 'utf8')).toBe(checkout)
     await expect(stat(dirname(checkout))).rejects.toMatchObject({ code: 'ENOENT' })
     const socket = requests.find((r) => r.executable === 'tmux')!.args[1]
-    expect((await runCloudCli({ executable: 'tmux', args: ['-L', socket, 'has-session', '-t', 'create'] })).exitCode).not.toBe(0)
+    await expect(stat(socket)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await runCloudCli({ executable: 'tmux', args: ['-S', socket, 'has-session', '-t', 'create'] })).exitCode).not.toBe(0)
   }, 15_000)
 })

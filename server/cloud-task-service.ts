@@ -29,6 +29,9 @@ type ConfiguredConnection = Readonly<{ id: CloudProviderId; credentialContextId:
 
 /** Only service-owned text is exposed, never an adapter exception or process diagnostic. */
 const ISSUES: Record<string, string> = {
+  prompt_too_long_for_terminal: 'The prompt and launch environment exceed Claude’s private terminal limit. Shorten the prompt before submitting.',
+  unsafe_prompt_option: 'Claude prompts and messages cannot start with a dash. Start with a plain-language instruction.',
+  unsafe_prompt_receipt: 'Claude prompts and messages cannot contain cloud-session receipt lines. Remove those lines before submitting.',
   provider_unavailable: 'The provider is unavailable. Check its local configuration.',
   capability_unavailable: 'This action is not verified for the configured provider.',
   auth_required: 'Sign in using the provider application, then try again.',
@@ -229,6 +232,8 @@ export class CloudTaskService {
         id: connection.id, label: connection.label, homeUrl: cloudProviderHome(connection.id),
         readiness: value.readiness, reason: this.readinessReason(value),
         version: typeof value.version === 'string' && /^[A-Za-z0-9_.+ -]{1,80}$/.test(value.version) ? value.version : null,
+        ...(typeof value.createPromptByteLimit === 'number' && Number.isSafeInteger(value.createPromptByteLimit)
+          && value.createPromptByteLimit >= 0 && value.createPromptByteLimit <= CLOUD_PROMPT_LIMIT ? { createPromptByteLimit: value.createPromptByteLimit } : {}),
         credentialContextId: connection.credentialContextId, verifiedAccountRef: value.capabilities.accountIdentity ? value.verifiedAccountRef : null,
         capabilities: Object.fromEntries(Object.entries(value.capabilities).filter(([key]) => ['create', 'link', 'list', 'inspect', 'sendMessage', 'diff', 'accountIdentity'].includes(key))) as CloudProviderInfo['capabilities'],
       }

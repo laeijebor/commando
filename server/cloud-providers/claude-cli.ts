@@ -10,7 +10,7 @@ import {
 } from '../cloud-provider.js'
 import { runCloudCli } from '../cloud-cli-runner.js'
 import { meetsVerifiedVersion } from './verified-version.js'
-import { createClaudeSession, resolveClaudeSource, type ClaudeCreateOptions } from './claude-create.js'
+import { claudeCreatePromptByteLimit, claudePromptIssue, createClaudeSession, resolveClaudeSource, type ClaudeCreateOptions } from './claude-create.js'
 
 const VERSION_CACHE_MS = 5_000
 const SOURCE_POLICY_REASON = 'Creation uses a fresh clone of a pushed GitHub branch; local working files are never included.'
@@ -119,6 +119,7 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
       id: this.id, label: this.label, homeUrl: cloudProviderHome(this.id),
       readiness: probe.readiness, reason: `${probe.reason} Local links are user-supplied, not provider-verified. ${SOURCE_POLICY_REASON}`,
       version: probe.version, credentialContextId: this.credentialContextId, verifiedAccountRef: null,
+      createPromptByteLimit: claudeCreatePromptByteLimit(this.executable, this.configDir),
       capabilities: { create: probe.readiness === 'ready', link: true, list: false, inspect: false,
         sendMessage: probe.readiness === 'ready', diff: false, accountIdentity: false },
     }
@@ -133,6 +134,8 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
     if (input.credentialContextId !== this.credentialContextId) return rejected('credential_context_mismatch', 'Reconfirm this draft in the current Claude context.')
     if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.includes('\0')
       || Buffer.byteLength(input.prompt) > CLOUD_PROMPT_LIMIT) return rejected('invalid_prompt', 'A bounded nonempty task prompt is required.')
+    const promptIssue = claudePromptIssue(input.prompt)
+    if (promptIssue) return { state: 'rejected', issue: promptIssue }
     if (signal?.aborted) return rejected('dispatch_aborted', 'Cancelled before dispatch.')
     const info = await this.info()
     if (!info.capabilities.create) return rejected('capability_unverified', info.reason)
@@ -147,9 +150,11 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
       || task.verifiedAccountRef !== null) {
       return rejected('credential_context_mismatch', 'Reconfirm this task in the current unverified Claude account context before sending.')
     }
-    if (typeof message !== 'string' || !message.trim() || message.length > CLOUD_PROMPT_LIMIT || message.includes('\0')) {
+    if (typeof message !== 'string' || !message.trim() || Buffer.byteLength(message) > CLOUD_PROMPT_LIMIT || message.includes('\0')) {
       return rejected('invalid_message', 'Provide a nonempty message within the cloud prompt limit.')
     }
+    const promptIssue = claudePromptIssue(message)
+    if (promptIssue) return { state: 'rejected', issue: promptIssue }
     if (signal?.aborted) return rejected('aborted', 'Message cancelled before dispatch.')
     const info = await this.info()
     if (!info.capabilities.sendMessage) return rejected(info.readiness === 'missing_cli' ? 'missing_cli' : 'capability_unverified', info.reason)

@@ -13,6 +13,8 @@ export type CloudProviderInfo = {
   readiness: 'ready' | 'missing_cli' | 'unverified' | 'error'
   reason: string
   version: string | null
+  /** Optional per-connection create budget; may be lower than CLOUD_PROMPT_LIMIT. */
+  createPromptByteLimit?: number
   credentialContextId: string
   verifiedAccountRef: string | null
   capabilities: CloudProviderCapabilities
