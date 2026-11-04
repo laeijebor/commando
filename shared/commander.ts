@@ -34,8 +34,8 @@ export const TURN_BRIEF_MAX_CHARS = 160
 /** A message Commander (or the user from the inbox) asked the daemon to deliver to an agent pane. */
 export type CommanderRelay = {
   id: string
-  /** Who asked: the Commander agent, the daemon's stall watcher, or the user from the inbox. */
-  origin: 'commander' | 'inbox'
+  /** Who asked: the Commander agent, the daemon's stall watcher, the user from the inbox, or the device-lock queue. */
+  origin: 'commander' | 'inbox' | 'devices'
   /** `nudge` = Commander poking a stalled agent on its own; `relay` = the user's words. */
   kind: 'relay' | 'nudge'
   toPaneId: string
