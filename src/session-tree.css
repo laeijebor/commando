@@ -62,7 +62,10 @@
 .managed-session.selected { background: var(--surface-soft); }
 .managed-session.dragging { opacity: .45; }
 .managed-session.drop-before, .repository-session-group > header.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
-.managed-session.drop-after, .repository-session-group > header.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.managed-session.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* Drawn on top so a selected or hovered last member can't hide it. */
+.repository-session-group.drop-after { position: relative; }
+.repository-session-group.drop-after::after { content: ''; position: absolute; right: 0; bottom: 0; left: 0; height: 2px; background: var(--accent); pointer-events: none; }
 .repository-session-group > header { display: flex; align-items: center; gap: 2px; padding: 0 2px; border-radius: 4px; }
 .repository-session-group > header.drop-target { outline: 1px dashed var(--accent); }
 .repository-session-group > header.dragging { opacity: .45; }

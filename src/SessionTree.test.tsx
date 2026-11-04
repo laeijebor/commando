@@ -1246,7 +1246,7 @@ describe('repository sub-groups', () => {
     await screen.findByRole('button', { name: 'Collapse Landing' })
     fireEvent.dragStart(header())
     dragAt('dragOver', header('Empty'), 'lower')
-    expect(header('Empty')).toHaveClass('drop-after')
+    expect(header('Empty').parentElement).toHaveClass('drop-after')
     expect(header('Empty')).not.toHaveClass('drop-target')
     dragAt('drop', header('Empty'), 'lower')
     await waitFor(() => expect(saved().repositorySessionIds).toEqual(['$1', '$4', 'group:empty', 'group:landing']))

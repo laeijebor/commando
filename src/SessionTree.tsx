@@ -570,9 +570,11 @@ export function SessionTree(props: Props) {
                 const current = preferencesRef.current
                 save({ ...current, repositoryGroups: current.repositoryGroups?.map((candidate) => candidate.id === group.id ? { ...candidate, ...change } : candidate) })
               }
-              return <div className="repository-session-group" key={`group:${group.id}`}>
+              // A group dropped below this one lands after its members, so the line goes under the whole group.
+              const groupDropAfter = dropMarker?.id === `group:${group.id}` && dropMarker.position === 'after'
+              return <div className={`repository-session-group${groupDropAfter ? ' drop-after' : ''}`} key={`group:${group.id}`}>
                 <header
-                  className={`${dropGroupId === group.id ? 'drop-target' : ''}${draggedSessionId === `group:${group.id}` ? ' dragging' : ''}${dropMarkerClass(`group:${group.id}`)}`}
+                  className={`${dropGroupId === group.id ? 'drop-target' : ''}${draggedSessionId === `group:${group.id}` ? ' dragging' : ''}${dropMarker?.id === `group:${group.id}` && !groupDropAfter ? ' drop-before' : ''}`}
                   draggable
                   onDragStart={(event) => { event.stopPropagation(); event.dataTransfer?.setData('text/plain', `group:${group.id}`); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; setDraggedSessionId(`group:${group.id}`) }}
                   onDragEnd={endDrag}
