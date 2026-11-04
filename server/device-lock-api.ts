@@ -37,9 +37,12 @@ export function pidAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' }
 }
 
+/** The `--as`/`--pid` flags that name a request's owner; later commands only match with the same ones. */
+const ownerFlags = (entry: QueueEntry): string => (entry.as ? ` --as ${JSON.stringify(entry.as)}` : '') + (entry.pid ? ` --pid ${entry.pid}` : '')
+
 /** The texts Commando posts into an agent's pane when its place in the queue changes. */
 export function offerMessage(entry: QueueEntry, resource: DeviceResource, cli: string): string {
-  const as = entry.as ? ` --as ${JSON.stringify(entry.as)}` : ''
+  const as = ownerFlags(entry)
   return [
     `[Commando device lock] ${resource.name} is yours for "${entry.task}".`,
     `Claim it within 5 minutes with: ${cli} claim ${resource.id}${as} — otherwise it passes to the next task.`,
@@ -49,7 +52,7 @@ export function offerMessage(entry: QueueEntry, resource: DeviceResource, cli: s
 }
 
 export function expiredMessage(entry: QueueEntry & { dropped: boolean }, resource: DeviceResource, cli: string, position: number): string {
-  const as = entry.as ? ` --as ${JSON.stringify(entry.as)}` : ''
+  const as = ownerFlags(entry)
   if (entry.dropped) {
     return `[Commando device lock] Your turn on ${resource.name} passed ${MAX_SKIPS} times without a claim, so your request left the queue. ` +
       `To queue again: ${cli} lock ${entry.request}${as} --task ${JSON.stringify(entry.task)}`
