@@ -4,7 +4,7 @@ import { PassThrough, Readable } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry } from './device-locks.js'
-import { DeviceDiscovery, DeviceWallApi } from './device-wall.js'
+import { DeviceDiscovery, DeviceWallApi, deviceLockAlerts } from './device-wall.js'
 
 function setup() {
   const registry = new DeviceLockRegistry()
@@ -108,5 +108,35 @@ describe('DeviceDiscovery', () => {
     expect(discovery.connection({ id: 'h', name: 'h', kind: 'host' })).toBe('connected')
     expect(discovery.connection({ id: 'u', name: 'u', kind: 'ios', serial: '00008130-001a' })).toBe('connected')
     expect(discovery.connection({ id: 'n', name: 'n', kind: 'android' })).toBe('no-serial')
+  })
+})
+
+describe('deviceLockAlerts', () => {
+  const MIN = 60_000
+  const base = { resources: [{ id: 'pixel', name: 'Pixel 5', kind: 'android' as const }], paused: [] }
+  const holder = { paneId: '%1', sessionName: 'battery', as: 'MASCOT', resourceId: 'pixel', task: 'Rive', acquiredAt: 0, estimateMs: 25 * MIN, entryId: 'h1' }
+  const waiter = { id: 'w1', paneId: '%2', sessionName: 'battery', as: 'LOTTIE', request: 'pixel', resourceIds: ['pixel'], task: 'Redraw', mode: 'notify' as const, enqueuedAt: 0 }
+
+  it('stays quiet when nobody is waiting, however long the lock is held', () => {
+    expect(deviceLockAlerts({ ...base, holders: [holder], queue: [] }, 300 * MIN, () => 0)).toEqual([])
+  })
+
+  it('alerts on an overrunning or idle holder others wait for, and on a long wait', () => {
+    const alerts = deviceLockAlerts({ ...base, holders: [holder], queue: [{ ...waiter, enqueuedAt: 50 * MIN }] }, 80 * MIN, (pane) => pane === '%1' ? 65 * MIN : undefined)
+    expect(alerts).toEqual([
+      { paneId: '%1', ref: 'h1', dedupeKey: 'device-overrun:h1', title: 'Pixel 5 held for 1h 20m', body: 'MASCOT estimated 25m for "Rive". 1 waiting.' },
+      { paneId: '%1', ref: 'h1', dedupeKey: `device-idle:h1:${65 * MIN}`, title: 'Pixel 5 held by an idle agent', body: 'MASCOT has been idle for 15m while holding it. 1 waiting.' },
+      { paneId: '%2', ref: 'w1', dedupeKey: 'device-wait:w1', title: 'LOTTIE has waited 30m', body: 'Queued for Pixel 5: "Redraw".' },
+    ])
+  })
+
+  it('ignores requests offered another device, and waits on devices the user paused', () => {
+    const elsewhere = { ...waiter, request: 'any-android', resourceIds: ['pixel', 'moto'], offer: { resourceId: 'moto', at: 0 } }
+    expect(deviceLockAlerts({ ...base, holders: [holder], queue: [elsewhere] }, 20 * MIN, () => 0).filter((alert) => alert.ref === 'h1')).toEqual([])
+    expect(deviceLockAlerts({ ...base, paused: ['pixel'], holders: [], queue: [waiter] }, 60 * MIN, () => undefined)).toEqual([])
+  })
+
+  it('does not call a script holder idle', () => {
+    expect(deviceLockAlerts({ ...base, holders: [{ ...holder, pid: 9, estimateMs: undefined }], queue: [{ ...waiter, enqueuedAt: 70 * MIN }] }, 80 * MIN, () => 0)).toEqual([])
   })
 })

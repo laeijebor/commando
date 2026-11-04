@@ -45,6 +45,7 @@ import type {
   AgentStatus,
   ClientMessage,
   CommandoSnapshot,
+  DeviceLockClaim,
   PaneMark,
   SavedWorkspace,
   ServerMessage,
@@ -126,8 +127,8 @@ import {
 } from './auth.js'
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
-import { DeviceLockRegistry, defaultDeviceLockStatePath } from './device-locks.js'
-import { DeviceDiscovery, DeviceWallApi } from './device-wall.js'
+import { DeviceLockRegistry, defaultDeviceLockStatePath, deviceLockClaimsByPane } from './device-locks.js'
+import { DeviceDiscovery, DeviceWallApi, deviceLockAlerts } from './device-wall.js'
 import { SimLeaseApi, SimLeaseRegistry, SimPoolRegistry, defaultSimPoolStatePath, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimLiveService, simLiveUdid } from './sim-live.js'
 import { SimLogsService, simLogsUdid } from './sim-logs.js'
@@ -844,10 +845,13 @@ async function main(): Promise<void> {
     return briefPublication
   }
 
+  // Set once the device lock queue exists (it needs Commander relays, created later).
+  let deviceClaims: (() => Map<string, { sessionName: string; claims: DeviceLockClaim[] }>) | undefined
   const clientBriefDependencies = () => ({
     panes: snapshot.panes,
     leases: () => simLeaseRegistry.list(leasePaneExists),
     resolveRepos: (paths: string[]) => paneRepos.resolve(paths),
+    devices: () => deviceClaims?.() ?? new Map(),
   })
   const clientSessionBrief = async (brief: SessionBrief): Promise<SessionBrief> => (
     await assembleClientSessionBriefs([brief], clientBriefDependencies(), false)
@@ -2151,6 +2155,11 @@ async function main(): Promise<void> {
   commanderRelays.start()
   commanderStalls.start()
   const deviceLockRegistry = new DeviceLockRegistry({ statePath: defaultDeviceLockStatePath(port) })
+  // A finished turn means the agent is idle; `settledAt` marks when that run began.
+  const deviceIdleSince = (paneId: string): number | undefined => {
+    const status = agentStatuses.get(paneId)
+    return status?.status === 'done' ? status.settledAt ?? status.updatedAt : undefined
+  }
   deviceLockApi = new DeviceLockApi({
     token: agentHookToken,
     registry: deviceLockRegistry,
@@ -2166,13 +2175,40 @@ async function main(): Promise<void> {
     cli: `node ${JSON.stringify(join(homedir(), '.commando', 'hooks', 'commando-device.mjs'))}`,
   })
   deviceLockApi.start()
+  // Every brief publish reads the claims, so build them once per change rather than per brief.
+  let cachedDeviceClaims: ReturnType<typeof deviceLockClaimsByPane> | undefined
+  deviceClaims = () => (cachedDeviceClaims ??= deviceLockClaimsByPane(deviceLockRegistry))
+  // Pushes to the companion app when a device queue needs the owner (idle or overrunning holder, long wait).
+  const deviceAlertTimer = setInterval(() => {
+    if (!pushNotifier) return
+    for (const alert of deviceLockAlerts(deviceLockRegistry.snapshot(), Date.now(), deviceIdleSince)) {
+      if (deviceLockRegistry.alertSent(alert.dedupeKey)) continue
+      if (pushNotifier.alert({ ...alert, provider: agentStatuses.get(alert.paneId)?.provider ?? 'unknown' })) deviceLockRegistry.recordAlert(alert.dedupeKey, alert.ref)
+    }
+  }, 30_000)
+  deviceAlertTimer.unref()
+  // Each pane's worklog shows its locks: republish the panes whose locks changed (debounced; queues change in bursts).
+  const claimsText = (claims: ReturnType<typeof deviceLockClaimsByPane>) => new Map([...claims].map(([paneId, entry]) => [paneId, JSON.stringify(entry.claims)]))
+  let publishedClaims = claimsText(deviceClaims())
+  let devicePublish: ReturnType<typeof setTimeout> | undefined
+  deviceLockRegistry.onChange(() => {
+    cachedDeviceClaims = undefined
+    devicePublish ??= setTimeout(() => {
+      devicePublish = undefined
+      const current = claimsText(deviceClaims!())
+      for (const paneId of new Set([...publishedClaims.keys(), ...current.keys()])) {
+        if (publishedClaims.get(paneId) === current.get(paneId)) continue
+        const pane = paneForId(paneId)
+        const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+        if (pane && session) void publishSessionBrief(withSimulatorClaim(sessionBriefs.get(paneId), pane, session.name))
+      }
+      publishedClaims = current
+    }, 200)
+    devicePublish.unref()
+  })
   const deviceWallApi = new DeviceWallApi({
     registry: deviceLockRegistry, locks: deviceLockApi, discovery: new DeviceDiscovery(),
-    // A finished turn means the agent is idle; `settledAt` marks when that run began.
-    idleSince: (paneId) => {
-      const status = agentStatuses.get(paneId)
-      return status?.status === 'done' ? status.settledAt ?? status.updatedAt : undefined
-    },
+    idleSince: deviceIdleSince,
     message: (paneId, text) => commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text }),
   })
   const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
@@ -3226,6 +3262,8 @@ async function main(): Promise<void> {
     commanderRelays.stop()
     commanderStalls.stop()
     deviceLockApi?.stop()
+    clearInterval(deviceAlertTimer)
+    clearTimeout(devicePublish)
     conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()

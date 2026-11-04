@@ -179,6 +179,17 @@ export type SessionReference = {
   url?: string
 }
 
+/** A device lock this pane holds, has been offered, or is queued for (derived, never persisted). */
+export type DeviceLockClaim = {
+  resourceId: string
+  name: string
+  state: 'held' | 'offered' | 'queued'
+  /** Place in line when queued (1-based). */
+  position?: number
+  as?: string
+  task: string
+}
+
 export type SimulatorClaim = {
   originalName?: string
   udid: string
@@ -229,6 +240,8 @@ export type SessionBrief = {
   references?: SessionReference[]
   /** Derived from the current lease; never persisted as a reference. */
   simulator?: SimulatorClaim
+  /** Derived from the device lock queue; never persisted. */
+  devices?: DeviceLockClaim[]
   updates: SessionBriefUpdate[]
   next?: string
   /** The conversation the worklog currently shows; absent until a hook names one. */

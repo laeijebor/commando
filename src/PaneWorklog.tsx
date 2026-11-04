@@ -22,6 +22,7 @@ import {
   MessageSquareText,
   Minus,
   Smartphone,
+  SmartphoneCharging,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -349,6 +350,7 @@ export function PaneWorklog({
     })()
   ), 0)
   const simulator = brief.simulator
+  const devices = brief.devices ?? []
   const tasks = brief.tasks ?? []
   const activeTasks = tasks.filter((task) => task.status !== 'cancelled')
   const completedTasks = activeTasks.filter((task) => task.status === 'completed').length
@@ -504,10 +506,19 @@ export function PaneWorklog({
           />
         </section>
 
-        {(brief.references?.length || simulator) ? (
+        {(brief.references?.length || simulator || devices.length) ? (
           <section className="pane-worklog-references" aria-label={`Important terms for ${paneLabel}`}>
-            <header><strong>Important terms</strong><small>{(brief.references?.length ?? 0) + (simulator ? 1 : 0)}</small></header>
+            <header><strong>Important terms</strong><small>{(brief.references?.length ?? 0) + (simulator ? 1 : 0) + devices.length}</small></header>
             <div className="pane-worklog-reference-list">
+              {devices.map((device) => (
+                <div key={`${device.resourceId}:${device.as ?? ''}:${device.state}`} className={`pane-worklog-reference pane-worklog-device ${device.state}`}>
+                  <span className="pane-worklog-reference-icon"><SmartphoneCharging aria-hidden="true" /></span>
+                  <div>
+                    <strong title={device.task}>{device.state === 'held' ? `Holding ${device.name}` : device.state === 'offered' ? `${device.name} is offered: claim it` : `Waiting for ${device.name} · #${device.position}`}</strong>
+                    <small title={device.task}>{device.as ? `${device.as} · ` : ''}{device.task}</small>
+                  </div>
+                </div>
+              ))}
               {simulator ? (
                 <div className="pane-worklog-reference pane-worklog-simulator">
                   <span className="pane-worklog-reference-icon"><Smartphone aria-hidden="true" /></span>

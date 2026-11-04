@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import type { DeviceLockClaim } from '../shared/protocol.js'
 
 /**
  * Locks on shared physical devices (phones, the emulator) and on heavy host jobs (builds, exports).
@@ -39,7 +40,7 @@ export type QueueEntry = LockOwner & {
   mode: LockMode
   enqueuedAt: number
   /** Set while the lock is offered; the claim window starts when the agent receives the message. */
-  offer?: { resourceId: string; at: number; deliveredAt?: number }
+  offer?: { resourceId: string; at: number; deliveredAt?: number; /** The pane message announcing it, once queued. */ messageId?: string }
   /** How many offers this request has let lapse. */
   skips?: number
 }
@@ -75,6 +76,27 @@ const PANE_ID = /^%\d+$/
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u
 const KINDS: DeviceKind[] = ['android', 'ios', 'emulator', 'host']
 const MAX_QUEUE = 200
+
+/** Identifies one hold across restarts, for alerts about it. */
+export const holderRef = (holder: DeviceHolder): string => holder.entryId ?? `${holder.paneId}:${holder.resourceId}:${holder.acquiredAt}`
+
+/** What each pane holds, has been offered or waits for, for its worklog. */
+export function deviceLockClaimsByPane(registry: Pick<DeviceLockRegistry, 'snapshot' | 'position'>): Map<string, { sessionName: string; claims: DeviceLockClaim[] }> {
+  const { resources, holders, queue } = registry.snapshot()
+  const name = (id: string) => resources.find((resource) => resource.id === id)?.name ?? id
+  const byPane = new Map<string, { sessionName: string; claims: DeviceLockClaim[] }>()
+  const add = (owner: LockOwner, claim: DeviceLockClaim) => {
+    const entry = byPane.get(owner.paneId) ?? { sessionName: owner.sessionName, claims: [] }
+    entry.claims.push({ ...claim, ...(owner.as ? { as: owner.as } : {}) })
+    byPane.set(owner.paneId, entry)
+  }
+  for (const holder of holders) add(holder, { resourceId: holder.resourceId, name: name(holder.resourceId), state: 'held', task: holder.task })
+  for (const entry of queue) {
+    if (entry.offer) add(entry, { resourceId: entry.offer.resourceId, name: name(entry.offer.resourceId), state: 'offered', task: entry.task })
+    else add(entry, { resourceId: entry.request, name: entry.resourceIds.length === 1 ? name(entry.resourceIds[0]) : entry.request, state: 'queued', position: registry.position(entry), task: entry.task })
+  }
+  return byPane
+}
 
 export class DeviceLockError extends Error {
   constructor(readonly status: number, message: string) { super(message) }
@@ -137,6 +159,8 @@ export class DeviceLockRegistry {
   private readonly statePath?: string
   private readonly listeners = new Set<() => void>()
   private readonly offerListeners = new Set<(entries: QueueEntry[]) => void>()
+  /** Owner alerts already pushed, kept with the state so a daemon restart doesn't repeat them. */
+  private alerts: Array<{ key: string; ref: string }> = []
 
   constructor(options: { statePath?: string; now?: () => number } = {}) {
     this.now = options.now ?? Date.now
@@ -250,11 +274,34 @@ export class DeviceLockRegistry {
     return entry ? 'cancelled' : 'released'
   }
 
-  /** Starts the claim window once the agent has actually been given the offer message. */
-  offerDelivered(entryId: string, at = this.now()): void {
+  /**
+   * Records the message that announces an offer. Returns false when that offer is already gone (claimed,
+   * lapsed, skipped or paused while the message was being queued), so the caller can withdraw the message.
+   */
+  offerMessage(entryId: string, offerAt: number, messageId: string): boolean {
     const entry = this.state.queue.find((candidate) => candidate.id === entryId)
+    if (!entry?.offer || entry.offer.at !== offerAt) return false
+    this.commit({ ...this.state, queue: this.state.queue.map((candidate) => candidate === entry ? { ...entry, offer: { ...entry.offer!, messageId } } : candidate) })
+    return true
+  }
+
+  /**
+   * Starts the claim window once the agent has actually been given the offer message (by entry, or by the
+   * message id saved with the offer, which survives a daemon restart).
+   */
+  offerDelivered(target: { entryId: string } | { messageId: string }, at = this.now()): void {
+    const entry = this.state.queue.find((candidate) => 'entryId' in target ? candidate.id === target.entryId : candidate.offer?.messageId === target.messageId)
     if (!entry?.offer || entry.offer.deliveredAt !== undefined) return
     this.commit({ ...this.state, queue: this.state.queue.map((candidate) => candidate === entry ? { ...entry, offer: { ...entry.offer!, deliveredAt: at } } : candidate) })
+  }
+
+  alertSent(key: string): boolean { return this.alerts.some((alert) => alert.key === key) }
+
+  /** Remembers a pushed alert about a hold or request (`ref`); forgets alerts whose hold or request has ended. */
+  recordAlert(key: string, ref: string): void {
+    const live = new Set([...this.state.holders.map(holderRef), ...this.state.queue.map((entry) => entry.id)])
+    this.alerts = [...this.alerts.filter((alert) => live.has(alert.ref) && alert.key !== key), { key, ref }]
+    this.commit(this.state)
   }
 
   /** A queue entry's place among the requests that compete for any of its resources (1-based). */
@@ -416,7 +463,8 @@ export class DeviceLockRegistry {
           const resourceIds = value.resourceIds.filter((id: unknown) => typeof id === 'string' && known.has(id))
           if (!resourceIds.length) continue
           const offer = value.offer && known.has(value.offer.resourceId) && Number.isFinite(value.offer.at) ? { resourceId: value.offer.resourceId as string, at: Math.min(value.offer.at, this.now()),
-            ...(Number.isFinite(value.offer.deliveredAt) ? { deliveredAt: Math.min(value.offer.deliveredAt, this.now()) } : {}) } : undefined
+            ...(Number.isFinite(value.offer.deliveredAt) ? { deliveredAt: Math.min(value.offer.deliveredAt, this.now()) } : {}),
+            ...(typeof value.offer.messageId === 'string' ? { messageId: value.offer.messageId } : {}) } : undefined
           queue.push({ ...parseOwner(value), id: value.id, request: value.request, resourceIds, task: text(value.task, 'task', 300)!,
             ...(parseEstimate(value.estimateMs) ? { estimateMs: parseEstimate(value.estimateMs) } : {}), mode: value.mode === 'wait' ? 'wait' : 'notify',
             enqueuedAt: Math.min(value.enqueuedAt, this.now()), ...(offer ? { offer } : {}),
@@ -424,6 +472,8 @@ export class DeviceLockRegistry {
         } catch { /* skip */ }
       }
       const paused = (Array.isArray(parsed.paused) ? parsed.paused : []).filter((id: unknown): id is string => typeof id === 'string' && known.has(id))
+      this.alerts = (Array.isArray(parsed.alerts) ? parsed.alerts : []).filter((alert: { key?: unknown; ref?: unknown }) => typeof alert?.key === 'string' && typeof alert.ref === 'string')
+        .map((alert: { key: string; ref: string }) => ({ key: alert.key, ref: alert.ref }))
       this.state = { resources, holders, queue, paused }
     } catch { /* Missing or corrupt state starts empty. */ }
   }
@@ -432,7 +482,7 @@ export class DeviceLockRegistry {
     if (this.statePath) {
       mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 })
       const temporary = `${this.statePath}.${process.pid}.tmp`
-      writeFileSync(temporary, JSON.stringify({ version: 1, ...state }, null, 2), { mode: 0o600 })
+      writeFileSync(temporary, JSON.stringify({ version: 1, ...state, alerts: this.alerts }, null, 2), { mode: 0o600 })
       renameSync(temporary, this.statePath)
     }
     this.state = state

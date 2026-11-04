@@ -1,9 +1,9 @@
 import type { CommanderState } from '../shared/commander'
 import { isSessionGlyph, sessionIdentityForName } from '../shared/session-identity'
 import { SessionAvatar } from './SessionAvatar'
-import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, Trash2, X } from 'lucide-react'
+import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, SmartphoneCharging, Trash2, X } from 'lucide-react'
 import { type KeyboardEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import type { AgentStatus, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
+import type { AgentStatus, DeviceLockClaim, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
 import { createSessionManagementApi, type RepositorySessionGroup, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
@@ -58,6 +58,9 @@ type Props = {
   agentChatRequests?: Record<string, AgentChatRequest>
   /** Leased simulators keyed by pane id. */
   simulators?: Record<string, SimulatorClaim>
+  /** Device locks each pane holds or waits for, keyed by pane id. */
+  devices?: Record<string, DeviceLockClaim[]>
+  onShowDevices?: () => void
   selectedSessionId: string | null
   onSelectSession: (id: string) => void
   onSelectPane: (id: string) => void
@@ -463,6 +466,8 @@ export function SessionTree(props: Props) {
           }).join('; ')
           const simulatorPane = sessionPanes.find((pane) => props.simulators?.[pane.id])
           const simulator = simulatorPane && props.simulators?.[simulatorPane.id]
+          const devices = sessionPanes.flatMap((pane) => props.devices?.[pane.id] ?? [])
+          const holding = devices.filter((device) => device.state === 'held')
           return <article
             className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`}
             draggable={container.kind !== 'auxiliary'}
@@ -495,6 +500,10 @@ export function SessionTree(props: Props) {
                 {ide ? <button type="button" className={`session-ide-glyph state-${ide.state}`} aria-pressed={props.ideSessionId === session.id} aria-label={`Open attached IDE for ${session.name}`} title={`${ide.state === 'ready' ? 'IDE attached' : ide.state === 'starting' ? 'IDE starting' : 'IDE failed'} · ${ide.workspacePath}`} onClick={() => props.onOpenIde?.(session.id)}><Code2 /></button> : null}
                 {Object.values(props.agentChatRequests ?? {}).filter((request) => sessionPanes.some((pane) => pane.id === request.callerPaneId && pane.targetId === request.callerTargetId)).map((request) => <AgentChatRequestBadge key={request.id} request={request} onSelect={props.onSelectPane} />)}
                 {sessionPanes[0] ? <OpenedByMarker pane={sessionPanes[0]} snapshot={lineageSnapshot} statuses={props.statuses} onSelect={props.onSelectPane} /> : null}
+                {devices.length ? <button type="button" className={`session-device-glyph${holding.length ? ' held' : ' waiting'}`}
+                  aria-label={`Device locks for ${session.name}`}
+                  title={devices.map((device) => device.state === 'held' ? `Holding ${device.name}` : device.state === 'offered' ? `${device.name} offered` : `Waiting for ${device.name} (#${device.position})`).join(' · ')}
+                  onClick={() => props.onShowDevices?.()}><SmartphoneCharging /></button> : null}
                 {simulator && simulatorPane ? <button type="button" className={`session-sim-glyph${simulator.idle ? ' idle' : ''}`} aria-label={`Show leased simulator for ${session.name}`} title={`Simulator · ${simulator.label}${simulator.task ? ` · ${simulator.task}` : ''}`} onClick={() => props.onShowSimulator?.(simulator.udid, simulatorPane.id)}><Smartphone /></button> : null}
               </span>
               <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>

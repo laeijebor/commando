@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DeviceLockRegistry, OFFER_TIMEOUT_MS, UNDELIVERED_OFFER_TIMEOUT_MS, type QueueEntry } from './device-locks.js'
+import { DeviceLockRegistry, deviceLockClaimsByPane, holderRef, OFFER_TIMEOUT_MS, UNDELIVERED_OFFER_TIMEOUT_MS, type QueueEntry } from './device-locks.js'
 
 const directories: string[] = []
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }) })
@@ -78,7 +78,7 @@ describe('DeviceLockRegistry', () => {
     const [offer] = offered()
     advance(10 * 60_000) // The agent is busy; the message has not been delivered yet.
     expect(registry.sweep(live).expired).toEqual([])
-    registry.offerDelivered(offer.id)
+    registry.offerDelivered({ entryId: offer.id })
     advance(OFFER_TIMEOUT_MS - 1)
     expect(registry.sweep(live).expired).toEqual([])
     advance(1)
@@ -214,12 +214,46 @@ describe('DeviceLockRegistry', () => {
     expect(registry.withdraw('%3', queued.entry.id)).toBe('gone')
   })
 
+  it('lists each pane\'s locks for its worklog', () => {
+    const { registry } = setup()
+    registry.lock({ ...a, request: 'pixel', task: 'one' })
+    registry.lock({ ...b, request: 'pixel', task: 'two' })
+    registry.lock({ ...b, request: 'any-android', task: 'smoke' })
+    registry.lock({ ...c, request: 'pixel', task: 'three' })
+    registry.release(a, 'pixel')
+    const claims = deviceLockClaimsByPane(registry)
+    expect(claims.get('%1')).toBeUndefined()
+    expect(claims.get('%2')).toEqual({ sessionName: 'memleak', claims: [
+      { resourceId: 'moto', name: 'moto e13', state: 'held', task: 'smoke', as: 'MEMLEAK' },
+      { resourceId: 'pixel', name: 'Pixel 5', state: 'offered', task: 'two', as: 'MEMLEAK' },
+    ] })
+    expect(claims.get('%3')?.claims).toEqual([{ resourceId: 'pixel', name: 'Pixel 5', state: 'queued', position: 2, task: 'three' }])
+  })
+
   it('refuses to remove a resource that is in use', () => {
     const { registry } = setup()
     registry.lock({ ...a, request: 'pixel', task: 'one' })
     expect(() => registry.removeResource('pixel')).toThrow(/held or has a queue/)
     registry.removeResource('moto')
     expect(() => registry.lock({ ...b, request: 'moto', task: 'x' })).toThrow(/No device lock named moto/)
+  })
+
+  it('remembers pushed alerts across a restart and forgets them when the hold or request ends', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'device-locks-'))
+    directories.push(directory)
+    const statePath = join(directory, 'locks.json')
+    const first = new DeviceLockRegistry({ statePath })
+    first.addResource({ id: 'pixel', name: 'Pixel 5', kind: 'android' })
+    first.lock({ ...a, request: 'pixel', task: 'one' })
+    const queued = first.lock({ ...b, request: 'pixel', task: 'two' })
+    if (queued.status !== 'queued') throw new Error('expected queued')
+    first.recordAlert('device-wait:' + queued.entry.id, queued.entry.id)
+    const second = new DeviceLockRegistry({ statePath })
+    expect(second.alertSent('device-wait:' + queued.entry.id)).toBe(true)
+    second.cancel(b, 'pixel')
+    second.recordAlert('other', holderRef(second.holdersOf('pixel')[0]))
+    expect(second.alertSent('device-wait:' + queued.entry.id)).toBe(false)
+    expect(second.alertSent('other')).toBe(true)
   })
 
   it('persists and reloads state', () => {
