@@ -1,4 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { BusyProcessWatch, DeviceLockApi, expiredMessage, offerMessage } from './device-lock-api.js'
@@ -67,6 +70,48 @@ describe('DeviceLockApi', () => {
     await api.sweep()
     expect(message).toHaveBeenCalledWith('%2', expect.stringContaining('You are still queued (#2)'))
     expect(message).toHaveBeenCalledWith('%3', expect.stringContaining('Pixel 5 is yours for "three"'))
+  })
+
+  it('keeps the claim window working across a daemon restart', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'device-lock-api-'))
+    try {
+      let now = 1_000
+      const statePath = join(directory, 'locks.json')
+      const build = () => {
+        const registry = new DeviceLockRegistry({ statePath, now: () => now })
+        const message = vi.fn(async (_paneId: string, _text: string): Promise<string | undefined> => 'relay-1')
+        const api = new DeviceLockApi({ token, registry, processes: new BusyProcessWatch(async () => ''), message, cli: 'cli',
+          paneExists: () => true, sessionName: async () => 's', pidAlive: () => true })
+        return { registry, api }
+      }
+      const first = build()
+      first.registry.addResource({ id: 'pixel', name: 'Pixel 5', kind: 'android' })
+      await call(first.api, 'POST', '/lock', { request: 'pixel', task: 'one' })
+      await call(first.api, 'POST', '/lock', { request: 'pixel', task: 'two' }, { 'x-commando-pane': '%2' })
+      await call(first.api, 'POST', '/release', { request: 'pixel' })
+      await new Promise((resolve) => setTimeout(resolve))
+      const second = build() // The daemon restarted; the relay is delivered afterwards.
+      now += 14 * 60_000
+      second.api.messageSettled('relay-1', 'delivered', now)
+      now += 4 * 60_000
+      await second.api.sweep()
+      expect(second.registry.snapshot().queue[0].offer).toMatchObject({ messageId: 'relay-1', deliveredAt: 1_000 + 14 * 60_000 })
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('withdraws an offer message that was still being queued when the offer went away', async () => {
+    const { registry, cancelMessage } = setup()
+    let resolve: (id: string) => void = () => {}
+    const message = vi.fn(() => new Promise<string | undefined>((done) => { resolve = done }))
+    const api = new DeviceLockApi({ token, registry, processes: new BusyProcessWatch(async () => ''), message, cancelMessage, cli: 'cli',
+      paneExists: () => true, sessionName: async () => 's', pidAlive: () => true })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'one' })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'two' }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/release', { request: 'pixel' })
+    await call(api, 'POST', '/cancel', { request: 'pixel' }, { 'x-commando-pane': '%2' })
+    resolve('late-relay')
+    await new Promise((done) => setTimeout(done))
+    expect(cancelMessage).toHaveBeenCalledWith('late-relay')
   })
 
   it('withdraws an undelivered offer message when the offer lapses', async () => {

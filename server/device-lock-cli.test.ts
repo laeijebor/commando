@@ -44,6 +44,13 @@ describe('generated device CLI', () => {
     expect(out.mock.calls[0][0]).toBe('held Pixel 5 (pixel) · serial 25121FDD4S00H7\nBefore releasing: restore a2.\nRelease with: cd release pixel --as "MASCOT"')
   })
 
+  it('tells a script to release with its pid', async () => {
+    const cli = await load(), out = vi.fn()
+    const request = vi.fn(async () => ({ status: 200, result: { status: 'held', holder: { ...holder, as: 'SWEEP', pid: 4242 }, resource: pixel } }))
+    await cli.runDeviceCli(['lock', 'pixel', '--task', 'sweep', '--as', 'SWEEP', '--pid', '4242'], request, { out, cli: 'cd' })
+    expect(out.mock.calls[0][0]).toContain('Release with: cd release pixel --as "SWEEP" --pid 4242')
+  })
+
   it('exits 3 and explains the queue when the device is busy', async () => {
     const cli = await load(), out = vi.fn()
     const entry = { id: 'e1', paneId: '%2', sessionName: 'memleak', request: 'pixel', resourceIds: ['pixel'], task: 'Allocations', mode: 'notify', enqueuedAt: 0 }

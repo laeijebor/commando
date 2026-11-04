@@ -40,7 +40,7 @@ export type QueueEntry = LockOwner & {
   mode: LockMode
   enqueuedAt: number
   /** Set while the lock is offered; the claim window starts when the agent receives the message. */
-  offer?: { resourceId: string; at: number; deliveredAt?: number }
+  offer?: { resourceId: string; at: number; deliveredAt?: number; /** The pane message announcing it, once queued. */ messageId?: string }
   /** How many offers this request has let lapse. */
   skips?: number
 }
@@ -269,9 +269,23 @@ export class DeviceLockRegistry {
     return entry ? 'cancelled' : 'released'
   }
 
-  /** Starts the claim window once the agent has actually been given the offer message. */
-  offerDelivered(entryId: string, at = this.now()): void {
+  /**
+   * Records the message that announces an offer. Returns false when that offer is already gone (claimed,
+   * lapsed, skipped or paused while the message was being queued), so the caller can withdraw the message.
+   */
+  offerMessage(entryId: string, offerAt: number, messageId: string): boolean {
     const entry = this.state.queue.find((candidate) => candidate.id === entryId)
+    if (!entry?.offer || entry.offer.at !== offerAt) return false
+    this.commit({ ...this.state, queue: this.state.queue.map((candidate) => candidate === entry ? { ...entry, offer: { ...entry.offer!, messageId } } : candidate) })
+    return true
+  }
+
+  /**
+   * Starts the claim window once the agent has actually been given the offer message (by entry, or by the
+   * message id saved with the offer, which survives a daemon restart).
+   */
+  offerDelivered(target: { entryId: string } | { messageId: string }, at = this.now()): void {
+    const entry = this.state.queue.find((candidate) => 'entryId' in target ? candidate.id === target.entryId : candidate.offer?.messageId === target.messageId)
     if (!entry?.offer || entry.offer.deliveredAt !== undefined) return
     this.commit({ ...this.state, queue: this.state.queue.map((candidate) => candidate === entry ? { ...entry, offer: { ...entry.offer!, deliveredAt: at } } : candidate) })
   }
@@ -435,7 +449,8 @@ export class DeviceLockRegistry {
           const resourceIds = value.resourceIds.filter((id: unknown) => typeof id === 'string' && known.has(id))
           if (!resourceIds.length) continue
           const offer = value.offer && known.has(value.offer.resourceId) && Number.isFinite(value.offer.at) ? { resourceId: value.offer.resourceId as string, at: Math.min(value.offer.at, this.now()),
-            ...(Number.isFinite(value.offer.deliveredAt) ? { deliveredAt: Math.min(value.offer.deliveredAt, this.now()) } : {}) } : undefined
+            ...(Number.isFinite(value.offer.deliveredAt) ? { deliveredAt: Math.min(value.offer.deliveredAt, this.now()) } : {}),
+            ...(typeof value.offer.messageId === 'string' ? { messageId: value.offer.messageId } : {}) } : undefined
           queue.push({ ...parseOwner(value), id: value.id, request: value.request, resourceIds, task: text(value.task, 'task', 300)!,
             ...(parseEstimate(value.estimateMs) ? { estimateMs: parseEstimate(value.estimateMs) } : {}), mode: value.mode === 'wait' ? 'wait' : 'notify',
             enqueuedAt: Math.min(value.enqueuedAt, this.now()), ...(offer ? { offer } : {}),
