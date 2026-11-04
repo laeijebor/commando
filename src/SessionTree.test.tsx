@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
@@ -87,6 +87,14 @@ function agentStatus(paneId: string, provider: AgentStatus['provider'], status: 
     reason: '',
     updatedAt: 1,
   }
+}
+
+// jsdom has no layout or DragEvent, so give the row a height and set the pointer position by hand.
+function dragAt(type: 'dragOver' | 'drop', element: HTMLElement, half: 'upper' | 'lower') {
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({ top: 0, height: 20, bottom: 20, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
+  const event = createEvent[type](element)
+  Object.defineProperty(event, 'clientY', { value: half === 'lower' ? 15 : 5 })
+  fireEvent(element, event)
 }
 
 describe('SessionTree', () => {
@@ -301,6 +309,45 @@ describe('SessionTree', () => {
       ungroupedSessionIds: [],
       groupingMode: 'manual',
     })
+  })
+
+  it('drops a session below the last row of a manual group and of the unsaved ungrouped list', async () => {
+    sessionApi.loadPreferences.mockResolvedValue({
+      version: 1,
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$1', '$2', '$3'] }],
+      ungroupedSessionIds: [],
+      groupingMode: 'manual',
+    })
+    render(
+      <SessionTree
+        token="token"
+        sessions={['first', 'second', 'third', 'fourth'].map((name, index) => ({ id: `$${index + 1}`, name, attached: false, activeWindowId: null, windowIds: [] }))}
+        panes={[]}
+        displayedPaneIds={[]}
+        statuses={{}}
+        selectedSessionId={null}
+        onSelectSession={vi.fn()}
+        onSelectPane={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+    await screen.findByText('GIZMO')
+    const article = (name: string) => screen.getByText(name).closest('article')!
+
+    fireEvent.dragStart(article('first'))
+    dragAt('drop', article('third'), 'lower')
+    await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenLastCalledWith(expect.objectContaining({
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$2', '$3', '$1'] }],
+    })))
+
+    // "fourth" is shown as ungrouped but not saved yet; dropping below it must still land below it.
+    fireEvent.dragStart(article('second'))
+    dragAt('drop', article('fourth'), 'lower')
+    await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenLastCalledWith(expect.objectContaining({
+      groups: [{ id: 'gizmo', name: 'GIZMO', sessionIds: ['$3', '$1'] }],
+      ungroupedSessionIds: ['$4', '$2'],
+    })))
   })
 
   it('collapses and expands every session group from its title', async () => {
@@ -1190,6 +1237,48 @@ describe('repository sub-groups', () => {
     fireEvent.drop(header())
     await waitFor(() => expect(saved().repositorySessionIds).toEqual(['group:empty', 'group:landing', '$1', '$4']))
     expect(saved().repositoryGroups).toEqual([landing, empty])
+  })
+
+
+  it('drops sessions below a row, including after the last member of a group', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    fireEvent.dragStart(row('four'))
+    dragAt('drop', row('three'), 'lower')
+    await waitFor(() => expect(saved().repositoryGroups?.[0].sessionIds).toEqual(['$2', '$3', '$4']))
+    expect(saved().repositorySessionIds).toEqual(['$1', 'group:landing'])
+    fireEvent.dragStart(row('two'))
+    dragAt('drop', row('one'), 'lower')
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['$1', '$2', 'group:landing']))
+    expect(order()).toEqual(['one', 'two', 'three', 'four'])
+  })
+
+  it('marks the drop position above or below the hovered row', async () => {
+    setup()
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    fireEvent.dragStart(row('four'))
+    dragAt('dragOver', row('one'), 'lower')
+    expect(row('one')).toHaveClass('drop-after')
+    dragAt('dragOver', row('one'), 'upper')
+    expect(row('one')).toHaveClass('drop-before')
+    expect(row('one')).not.toHaveClass('drop-after')
+    dragAt('drop', row('one'), 'upper')
+    await waitFor(() => expect(row('one')).not.toHaveClass('drop-before'))
+  })
+
+  it('drops a group header below loose sessions and other groups', async () => {
+    const empty = { id: 'empty', name: 'Empty', repoRoot: repo.root, sessionIds: [] }
+    setup({}, { ...initial, repositoryGroups: [landing, empty], repositorySessionIds: ['$1', 'group:landing', '$4', 'group:empty'] })
+    await screen.findByRole('button', { name: 'Collapse Landing' })
+    fireEvent.dragStart(header())
+    dragAt('dragOver', header('Empty'), 'lower')
+    expect(header('Empty').parentElement).toHaveClass('drop-after')
+    expect(header('Empty')).not.toHaveClass('drop-target')
+    dragAt('drop', header('Empty'), 'lower')
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['$1', '$4', 'group:empty', 'group:landing']))
+    fireEvent.dragStart(header())
+    dragAt('drop', row('one'), 'lower')
+    await waitFor(() => expect(saved().repositorySessionIds).toEqual(['$1', 'group:landing', '$4', 'group:empty']))
   })
 
   it('rejects session and group drags across repositories', async () => {
