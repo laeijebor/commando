@@ -114,6 +114,37 @@ describe('DeviceLockApi', () => {
     expect(cancelMessage).toHaveBeenCalledWith('late-relay')
   })
 
+  it('withdraws a queued offer message when the agent cancels or claims first', async () => {
+    const { api, cancelMessage } = setup()
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'one' })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'two' }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'three' }, { 'x-commando-pane': '%3' })
+    await call(api, 'POST', '/release', { request: 'pixel' })
+    await new Promise((done) => setTimeout(done))
+    await call(api, 'POST', '/cancel', { request: 'pixel' }, { 'x-commando-pane': '%2' })
+    expect(cancelMessage).toHaveBeenCalledWith('m1')
+    await new Promise((done) => setTimeout(done))
+    await call(api, 'POST', '/claim', { request: 'pixel' }, { 'x-commando-pane': '%3' })
+    expect(cancelMessage).toHaveBeenCalledWith('m2')
+    expect(cancelMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('withdraws a queued offer message when its requester\'s process exits', async () => {
+    let alive = true
+    const registry = new DeviceLockRegistry()
+    registry.addResource({ id: 'pixel', name: 'Pixel 5', kind: 'android' })
+    const cancelMessage = vi.fn(async (_id: string) => {})
+    const api = new DeviceLockApi({ token, registry, processes: new BusyProcessWatch(async () => ''), message: async () => 'm1', cancelMessage, cli: 'cli',
+      paneExists: () => true, sessionName: async () => 's', pidAlive: () => alive })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'one' })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'script', pid: 4242 }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/release', { request: 'pixel' })
+    await new Promise((done) => setTimeout(done))
+    alive = false
+    await api.sweep()
+    expect(cancelMessage).toHaveBeenCalledWith('m1')
+  })
+
   it('withdraws an undelivered offer message when the offer lapses', async () => {
     const { api, cancelMessage, advance } = setup()
     await call(api, 'POST', '/lock', { request: 'pixel', task: 'one' })
