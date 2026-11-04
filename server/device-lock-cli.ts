@@ -68,7 +68,9 @@ const describeHolder = (holder, now) => who(holder) + ': ' + holder.task + ' (' 
 
 export function formatResult(result, cli, now = Date.now()) {
   const as = result.holder?.as ?? result.entry?.as
-  const asFlag = as ? ' --as ' + JSON.stringify(as) : ''
+  const pid = result.holder?.pid ?? result.entry?.pid
+  // A script's lock belongs to its process, so its release command must name it too.
+  const asFlag = (as ? ' --as ' + JSON.stringify(as) : '') + (pid ? ' --pid ' + pid : '')
   if (result.status === 'held') {
     const { resource } = result
     return ['held ' + resource.name + ' (' + resource.id + ')' + (resource.serial ? ' · serial ' + resource.serial : ''),

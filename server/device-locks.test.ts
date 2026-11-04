@@ -78,7 +78,7 @@ describe('DeviceLockRegistry', () => {
     const [offer] = offered()
     advance(10 * 60_000) // The agent is busy; the message has not been delivered yet.
     expect(registry.sweep(live).expired).toEqual([])
-    registry.offerDelivered(offer.id)
+    registry.offerDelivered({ entryId: offer.id })
     advance(OFFER_TIMEOUT_MS - 1)
     expect(registry.sweep(live).expired).toEqual([])
     advance(1)

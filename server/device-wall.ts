@@ -94,13 +94,13 @@ export class DeviceWallApi {
         if (action === 'release') {
           const resource = registry.resource(id)
           for (const holder of registry.forceRelease(id, await locks.busyCheck())) this.send(holder.paneId, releasedByUserMessage(holder, resource!))
-        } else for (const entry of registry.setPaused(id, action === 'pause', await locks.busyCheck())) locks.withdrawOffer(entry.id)
+        } else for (const entry of registry.setPaused(id, action === 'pause', await locks.busyCheck())) locks.withdrawOffer(entry)
       } else if (queueAction && queueAction[2] && request.method === 'POST') {
         const body = await readJson(request)
         registry.reorder(queueAction[1], typeof body.before === 'string' ? body.before : undefined)
       } else if (queueAction && !queueAction[2] && request.method === 'DELETE') {
         const removed = registry.remove(queueAction[1], await locks.busyCheck())
-        locks.withdrawOffer(removed.id)
+        locks.withdrawOffer(removed)
         const resource = registry.resource(removed.offer?.resourceId ?? removed.resourceIds[0])
         if (resource && removed.mode === 'notify') this.send(removed.paneId, removedByUserMessage(removed, resource))
       } else throw new DeviceLockError(404, 'Not found')

@@ -110,8 +110,6 @@ export class DeviceLockApi {
   private readonly tokenDigest: Buffer
   private sweeping?: Promise<void>
   private timer?: ReturnType<typeof setInterval>
-  /** Offer messages still on their way, by message id → queue entry id. */
-  private readonly offerMessages = new Map<string, string>()
 
   constructor(private readonly dependencies: DeviceLockApiDependencies) {
     if (dependencies.token.length < 32) throw new Error('Agent hook token must contain at least 32 characters')
@@ -125,12 +123,14 @@ export class DeviceLockApi {
     for (const entry of entries) {
       const resource = entry.offer && registry.resource(entry.offer.resourceId)
       if (!resource || entry.mode !== 'notify') continue
+      const offerAt = entry.offer!.at
       void message(entry.paneId, offerMessage(entry, resource, cli)).then((id) => {
-        if (id) this.offerMessages.set(id, entry.id)
-        else registry.offerDelivered(entry.id)
+        if (!id) registry.offerDelivered({ entryId: entry.id })
+        // The offer may have gone while the message was being queued; then the message must not go out.
+        else if (!registry.offerMessage(entry.id, offerAt, id)) void this.dependencies.cancelMessage?.(id).catch(() => {})
       }, (error) => {
         console.warn('[device-locks] could not message', entry.paneId, error)
-        registry.offerDelivered(entry.id)
+        registry.offerDelivered({ entryId: entry.id })
       })
     }
   }
@@ -140,10 +140,7 @@ export class DeviceLockApi {
    * can't be delivered (the pane isn't an agent, or it failed) starts the window too.
    */
   messageSettled(id: string, status: 'delivered' | 'failed' | 'cancelled', at?: number): void {
-    const entryId = this.offerMessages.get(id)
-    if (!entryId) return
-    this.offerMessages.delete(id)
-    if (status !== 'cancelled') this.dependencies.registry.offerDelivered(entryId, at)
+    if (status !== 'cancelled') this.dependencies.registry.offerDelivered({ messageId: id }, at)
   }
 
   start(intervalMs = 5_000): void {
@@ -168,13 +165,10 @@ export class DeviceLockApi {
   }
 
   /** Withdraws an offer message that hasn't reached the agent yet (the offer lapsed or was taken back). */
-  withdrawOffer(entryId: string): void {
-    for (const [id, offered] of this.offerMessages) {
-      if (offered !== entryId) continue
-      this.offerMessages.delete(id)
-      void this.dependencies.cancelMessage?.(id).catch(() => {})
-    }
+  withdrawOffer(entry: QueueEntry): void {
+    if (entry.offer?.messageId) void this.dependencies.cancelMessage?.(entry.offer.messageId).catch(() => {})
   }
+
 
   /** Tells agents whose offer lapsed, withdrawing the offer message if it never arrived. */
   private lapsed(events: SweepEvents): void {
@@ -182,7 +176,7 @@ export class DeviceLockApi {
     for (const entry of events.expired) {
       const resource = entry.offer && registry.resource(entry.offer.resourceId)
       if (!resource) continue
-      this.withdrawOffer(entry.id)
+      this.withdrawOffer(entry)
       const queued = registry.entry(entry.id)
       void message(entry.paneId, expiredMessage(entry, resource, cli, queued ? registry.position(queued) : 0))
         .catch((error) => console.warn('[device-locks] could not message', entry.paneId, error))
