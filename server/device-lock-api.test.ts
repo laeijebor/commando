@@ -193,6 +193,9 @@ describe('DeviceLockApi', () => {
     const entry = { id: 'e', paneId: '%1', sessionName: 's', as: 'MEMLEAK', request: 'any-android', resourceIds: ['pixel'], task: 'Allocations', mode: 'notify' as const, enqueuedAt: 0 }
     const resource = { id: 'pixel', name: 'Pixel 5', kind: 'android' as const }
     expect(offerMessage(entry, resource, 'cli')).toContain('cli claim pixel --as "MEMLEAK"')
+    expect(offerMessage({ ...entry, pid: 4242 }, resource, 'cli')).toContain('cli claim pixel --as "MEMLEAK" --pid 4242')
+    expect(offerMessage({ ...entry, pid: 4242 }, resource, 'cli')).toContain('cli release pixel --as "MEMLEAK" --pid 4242')
+    expect(expiredMessage({ ...entry, pid: 4242, dropped: true }, resource, 'cli', 0)).toContain('cli lock any-android --as "MEMLEAK" --pid 4242 --task')
     expect(expiredMessage({ ...entry, dropped: true }, resource, 'cli', 0)).toContain('cli lock any-android --as "MEMLEAK" --task "Allocations"')
     expect(expiredMessage({ ...entry, dropped: false }, resource, 'cli', 2)).toContain('still queued (#2)')
   })
