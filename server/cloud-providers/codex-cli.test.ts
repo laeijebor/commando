@@ -6,7 +6,7 @@ import type { CloudCliRequest, CloudCliResult } from '../cloud-provider.js'
 import { runCloudCli } from '../cloud-cli-runner.js'
 import { CodexCloudAdapter } from './codex-cli.js'
 
-const version = '0.0.0-synthetic'
+const version = '1.0.0'
 const versionOutput = `codex-cli ${version}`
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/codex/${name}`, import.meta.url), 'utf8')
 const receipt = fixture('create.stdout.txt')
@@ -57,7 +57,7 @@ describe('Codex capability gate', () => {
     expect(runner.mock.calls.every(([r]) => r.args[0] === '--version')).toBe(true)
   })
 
-  it.each(['', versionOutput, '0.0.1', `${version} `, '^0.0.0', '*'])('requires exact semantic version %j', async verifiedVersion => {
+  it.each(['', versionOutput, '99.0.0', `${version} `, '^0.0.0', '*', '9.9', `${version}-beta`])('requires stable minimum semantic version %j', async verifiedVersion => {
     const { adapter } = setup([], verifiedVersion)
     expect((await adapter.info()).capabilities.create).toBe(false)
   })
@@ -95,9 +95,14 @@ describe('Codex capability gate', () => {
     expect(runner.mock.calls.filter(([r]) => r.args[0] === 'cloud')).toHaveLength(0)
   })
 
+  it.each(['1.0.1', '1.1.0', '2.0.0', '10.0.0'])('enables a newer installed version %s', async (detected) => {
+    const adapter = new CodexCloudAdapter({ runner: async () => result(`codex-cli ${detected}\n`), verifiedVersion: '1.0.0' })
+    expect(await adapter.info()).toMatchObject({ readiness: 'ready', capabilities: { create: true, inspect: true } })
+  })
+
   it.each(['1.2.3', '1.2.3-alpha.4', '1.2.3-alpha.4+build.5'])('reports and gates on parsed semantic version %s', async detected => {
     const adapter = new CodexCloudAdapter({ runner: async () => result(`codex-cli ${detected}\n`), verifiedVersion: detected })
-    expect(await adapter.info()).toMatchObject({ version: detected, readiness: 'ready', capabilities: { create: true, list: true, inspect: true, diff: true } })
+    expect(await adapter.info()).toMatchObject({ version: detected, readiness: detected.includes('-') ? 'unverified' : 'ready', capabilities: { create: !detected.includes('-'), list: !detected.includes('-'), inspect: !detected.includes('-'), diff: !detected.includes('-') } })
   })
 })
 

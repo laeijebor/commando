@@ -9,7 +9,7 @@ assert.equal(process.env.COMMANDO_TOKEN, undefined)
 assert.notEqual(process.cwd(), '/must/not/use')
 
 if (args.length === 1 && args[0] === '--version') {
-  console.log('codex-cli 0.0.0-synthetic')
+  console.log('codex-cli 1.0.0')
 } else if (args[0] === 'cloud' && args[1] === 'exec') {
   assert.equal(args.length, 8)
   assert.deepEqual(args.slice(2, 7), ['--env', 'env_synthetic', '--branch', 'feature/synthetic', '--'])

@@ -5,6 +5,7 @@ import {
   type CloudCreateInput, type CloudDiff, type CloudProviderInfo, type CloudReceipt, type CloudTask,
 } from '../../shared/cloud-tasks.js'
 import runCloudCli from '../cloud-cli-runner.js'
+import { meetsVerifiedVersion } from './verified-version.js'
 import {
   CloudTaskError, type CloudCliResult, type CloudCliRunner, type CloudDispatchResult,
   type CloudInspection, type CloudProviderAdapter,
@@ -135,10 +136,10 @@ export class CodexCloudAdapter implements CloudProviderAdapter {
       } else if (successful(result) && Buffer.byteLength(result.stdout) <= VERSION_BYTES) {
         version = VERSION_PATTERN.exec(result.stdout.trim())?.[1] ?? null
         if (version !== null) {
-          readiness = this.verifiedVersion === version ? 'ready' : 'unverified'
+          readiness = meetsVerifiedVersion(version, this.verifiedVersion) ? 'ready' : 'unverified'
           reason = readiness === 'ready'
-            ? 'CLI version matches the configured verification gate. Account identity is unverified; confirm the current Codex account before submission.'
-            : 'Codex cloud capabilities require P0 verification and an exact configured CLI version match.'
+            ? `CLI matches or exceeds the verified version ${this.verifiedVersion}. Account identity is unverified; confirm the current Codex account before submission.`
+            : 'Codex cloud capabilities require a stable CLI version at or above the configured minimum verified version.'
         }
       }
     } catch { /* Do not expose runner diagnostics or credential output. */ }

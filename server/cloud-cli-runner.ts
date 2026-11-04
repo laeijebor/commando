@@ -23,7 +23,7 @@ const ENV_KEYS = [
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
 ] as const
 
-function cliEnvironment(request: CloudCliRequest): NodeJS.ProcessEnv {
+export function cliEnvironment(request: CloudCliRequest): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const key of ENV_KEYS) {
     if (process.env[key] !== undefined) env[key] = process.env[key]
@@ -32,6 +32,12 @@ function cliEnvironment(request: CloudCliRequest): NodeJS.ProcessEnv {
   // Apply the per-instance selection only to this child's fresh environment.
   if (request.claudeConfigDir === null) delete env.CLAUDE_CONFIG_DIR
   else if (request.claudeConfigDir !== undefined) env.CLAUDE_CONFIG_DIR = request.claudeConfigDir
+  if (request.executable === 'git') {
+    // Private GitHub origins can use the daemon's existing SSH agent. Git must
+    // fail rather than open an interactive credential prompt in the dispatcher.
+    if (process.env.SSH_AUTH_SOCK) env.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK
+    env.GIT_TERMINAL_PROMPT = '0'
+  }
   return env
 }
 

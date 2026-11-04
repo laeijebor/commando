@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CLOUD_PROMPT_LIMIT, cloudConnectionKey, type CloudOperation, type CloudProviderInfo, type CloudTask, type CloudTaskDetail } from '../shared/cloud-tasks'
 import { CloudTasksHttpError, type CloudTasksApi } from './cloudTasksApi'
 import { CloudTasksHud, CloudTasksSection } from './CloudTasksSection'
-import { CLAUDE_CREATE_DISABLED_REASON, CloudTaskCreateDialog } from './CloudTaskCreateDialog'
+import { CloudTaskCreateDialog } from './CloudTaskCreateDialog'
 import { boundCloudDiff, CloudTaskDiff } from './CloudTaskDiff'
 import { CLOUD_PENDING_STORAGE_KEY, cloudTaskStoreFor, digestCloudIntent } from './cloudTaskStore'
 
@@ -350,13 +350,13 @@ describe('cloud task dialog and browser-intent UX', () => {
     const api = fixtureApi()
     const dialog = await openCreate(api)
     fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('claude', 'fixture-context') } })
-    expect(dialog.getByText(new RegExp('receipt/detach'))).toHaveTextContent(CLAUDE_CREATE_DISABLED_REASON)
-    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
-    fireEvent.mouseDown(screen.getByRole('dialog').parentElement!)
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Link existing' }))
+    expect(dialog.getByText('Claude CLI is not installed.')).toBeInTheDocument()
+    expect(dialog.queryByLabelText('Task prompt')).not.toBeInTheDocument()
+    expect(dialog.queryByRole('button', { name: 'Record cloud task' })).not.toBeInTheDocument()
+    expect(dialog.getByRole('button', { name: 'Link existing' })).toBeEnabled()
+    fireEvent.click(dialog.getByRole('button', { name: 'Link existing' }))
     const linkDialog = within(screen.getByRole('dialog'))
-    fireEvent.change(linkDialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('claude', 'fixture-context') } })
+    expect(linkDialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('claude', 'fixture-context'))
     fireEvent.change(linkDialog.getByLabelText('Provider task or session ID'), { target: { value: 'session_known' } })
     fireEvent.click(linkDialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
     expect(linkDialog.getByRole('button', { name: 'Link identity only' })).toBeEnabled()
@@ -377,6 +377,22 @@ describe('cloud task dialog and browser-intent UX', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.getAllByText('Recorded locally').length).toBeGreaterThan(0)
     expect(screen.getByText(/A local acknowledgement is not cloud acceptance/)).toBeInTheDocument()
+  })
+
+  it('offers a short reason and direct linking when Codex creation has no environment', async () => {
+    const api = fixtureApi()
+    const response = await api.providers()
+    response.providers[0].capabilities.create = false
+    response.providers[0].reason = 'No Codex environment is configured. Extra diagnostics should not fill this dialog.'
+    const dialog = await openCreate(api)
+    expect(dialog.getByText('No Codex environment is configured.')).toBeInTheDocument()
+    expect(dialog.queryByLabelText('Existing environment ID')).not.toBeInTheDocument()
+    expect(dialog.queryByLabelText('Task prompt')).not.toBeInTheDocument()
+    expect(dialog.queryByText(/Extra diagnostics/)).not.toBeInTheDocument()
+    expect(dialog.getByRole('link', { name: 'Open Codex ↗' })).toHaveAttribute('href', 'https://chatgpt.com/codex')
+    fireEvent.click(dialog.getByRole('button', { name: 'Link existing' }))
+    expect(dialog.getByLabelText('Provider task or session ID')).toBeInTheDocument()
+    expect(api.create).not.toHaveBeenCalled()
   })
 
   it('re-enters an unknown reload draft under its original key after explicit digest-matching reconfirmation', async () => {
@@ -440,12 +456,11 @@ describe('cloud task dialog and browser-intent UX', () => {
     const available = await api.providers()
     available.providers[0] = { ...available.providers[0], credentialContextId: 'replacement-context' }
     await act(async () => { await cloudTaskStoreFor(api).refresh() })
-    expect(dialog.getByRole('alert')).toHaveTextContent('Provider account/context changed')
-    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
-    fireEvent.click(dialog.getByRole('button', { name: 'Record cloud task' }))
+    expect(dialog.getByText('This connection is unavailable.')).toBeInTheDocument()
+    expect(dialog.queryByRole('button', { name: 'Record cloud task' })).not.toBeInTheDocument()
     expect(api.create).not.toHaveBeenCalled()
     expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('codex', 'fixture-context'))
-    expect(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })).toBeDisabled()
+    expect(dialog.queryByRole('checkbox', { name: /confirm the current CLI account/ })).not.toBeInTheDocument()
     fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('codex', 'replacement-context') } })
     fillCreate(dialog)
     fireEvent.click(dialog.getByRole('button', { name: 'Record cloud task' }))
@@ -540,9 +555,11 @@ describe('multiple provider connections', () => {
     fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
     expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeEnabled()
     fireEvent.change(select, { target: { value: cloudConnectionKey(max.id, max.credentialContextId) } })
+    expect(dialog.queryByRole('checkbox', { name: /confirm the current CLI account/ })).not.toBeInTheDocument()
+    expect(dialog.queryByLabelText('Task prompt')).not.toBeInTheDocument()
+    expect(dialog.getByText('This CLI version has not been verified for cloud tasks.')).toBeInTheDocument()
+    fireEvent.change(select, { target: { value: cloudConnectionKey(team.id, team.credentialContextId) } })
     expect(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })).not.toBeChecked()
-    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
-    expect(dialog.getByText(/Max capability not verified/)).toBeInTheDocument()
     expect(api.create).not.toHaveBeenCalled()
   })
 
@@ -567,13 +584,13 @@ describe('multiple provider connections', () => {
     const { api, response, team, codex } = await profileFixture()
     const dialog = await openCreate(api)
     fireEvent.change(dialog.getByLabelText('Connection'), { target: { value: cloudConnectionKey('claude', 'claude:max') } })
-    fireEvent.click(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ }))
+    expect(dialog.queryByLabelText('Task prompt')).not.toBeInTheDocument()
     response.providers.splice(0, response.providers.length, team, codex)
     await act(async () => { await cloudTaskStoreFor(api).refresh() })
     expect(dialog.getByLabelText('Connection')).toHaveValue(cloudConnectionKey('claude', 'claude:max'))
     expect(dialog.getByRole('option', { name: 'Claude · claude:max (unavailable)' })).toBeDisabled()
-    expect(dialog.getByRole('checkbox', { name: /confirm the current CLI account/ })).toBeDisabled()
-    expect(dialog.getByRole('button', { name: 'Record cloud task' })).toBeDisabled()
+    expect(dialog.queryByRole('checkbox', { name: /confirm the current CLI account/ })).not.toBeInTheDocument()
+    expect(dialog.queryByRole('button', { name: 'Record cloud task' })).not.toBeInTheDocument()
     expect(api.create).not.toHaveBeenCalled()
   })
 

@@ -11,6 +11,8 @@ import type {
 } from '../shared/cloud-tasks.js'
 import { CloudTaskError, type CloudInspection, type CloudProviderAdapter } from './cloud-provider.js'
 import type { CloudTaskRepository } from './cloud-task-repository.js'
+import { ClaudeCloudAdapter } from './cloud-providers/claude-cli.js'
+import { githubRemote } from './cloud-providers/claude-create.js'
 
 const LEASE_MS = 30_000
 const HEARTBEAT_MS = 5_000
@@ -70,12 +72,13 @@ function resumeInput(value: unknown): CloudResumeInput {
   return { credentialContextId: contextId(record.credentialContextId), accountConfirmed: confirmed(record.accountConfirmed) }
 }
 function source(value: unknown): CloudSource {
-  const record = object(value, ['repository', 'environmentId', 'branch', 'checkoutPath', 'commit'])
+  const record = object(value, ['repository', 'remoteUrl', 'environmentId', 'branch', 'checkoutPath', 'commit'])
   const result: CloudSource = {}
-  for (const key of ['repository', 'environmentId', 'branch', 'checkoutPath', 'commit'] as const) {
+  for (const key of ['repository', 'remoteUrl', 'environmentId', 'branch', 'checkoutPath', 'commit'] as const) {
     if (record[key] === undefined) continue
     const field = text(record[key], key, key === 'checkoutPath' ? 4096 : 256)
     if (key === 'repository' && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(field)) invalid('Repository must be owner/name')
+    if (key === 'remoteUrl' && !githubRemote(field)) invalid('Invalid GitHub remote URL')
     if (key === 'environmentId' && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(field)) invalid('Invalid environment ID')
     if (key === 'branch' && (field.startsWith('-') || /[\s~^:?*\[\\]/.test(field) || field.includes('..') || field.includes('@{'))) invalid('Invalid branch')
     if (key === 'checkoutPath' && !isAbsolute(field)) invalid('Checkout path must be absolute')
@@ -235,14 +238,15 @@ export class CloudTaskService {
     }
   }
   private readinessReason(info: CloudProviderInfo): string {
-    const readiness = info.readiness === 'ready' ? 'The CLI matches its locally verified version.'
+    const readiness = info.readiness === 'ready' ? 'The CLI matches or exceeds the verified version minimum.'
       : info.readiness === 'missing_cli' ? 'The configured CLI is not installed.'
       : info.readiness === 'unverified' ? 'The installed CLI version requires local capability verification.'
       : ISSUES.provider_unavailable
     // Synthesize precise capability explanations instead of reflecting diagnostic text
     // from an injected adapter. Source safety is independent of CLI version readiness.
     const creation = info.id === 'claude' && !info.capabilities.create
-      ? ' Claude creation is disabled: no verified enforceable no-bundle source-selection path is available. Create in Claude, then link the session here.' : ''
+      ? ' Claude creation is unavailable for this connection. Link an existing session.'
+      : info.id === 'claude' ? ' Creation uses a fresh clone of the pushed GitHub branch; local working files are never included.' : ''
     const followUp = info.id === 'claude' && info.capabilities.sendMessage
       ? ' Cloud follow-up is enabled for the verified CLI version.' : ''
     const account = !info.capabilities.accountIdentity || info.verifiedAccountRef === null
@@ -320,6 +324,8 @@ export class CloudTaskService {
     const intent = this.intent('create', input, key, null)
     if (intent.reused) return intent.reused
     const info = await this.ready(input.provider, 'create', input.accountConfirmed, undefined, input.credentialContextId)
+    const adapter = this.connection(input.provider, input.credentialContextId).adapter
+    if (adapter instanceof ClaudeCloudAdapter) input.source = await adapter.prepareSource(input.source)
     return this.prepare(this.newTask(input, info), 'create', input, key, intent.hash)
   }
   async linkTask(value: unknown, key: string, taskId?: string): Promise<CloudTaskAction> {

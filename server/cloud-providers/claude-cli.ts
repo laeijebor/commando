@@ -9,9 +9,11 @@ import {
   type CloudInspection, type CloudProviderAdapter,
 } from '../cloud-provider.js'
 import { runCloudCli } from '../cloud-cli-runner.js'
+import { meetsVerifiedVersion } from './verified-version.js'
+import { createClaudeSession, resolveClaudeSource, type ClaudeCreateOptions } from './claude-create.js'
 
 const VERSION_CACHE_MS = 5_000
-const SOURCE_POLICY_REASON = 'Claude creation is disabled: no documented enforceable no-bundle source policy has been verified. Create in Claude, then link the session locally.'
+const SOURCE_POLICY_REASON = 'Creation uses a fresh clone of a pushed GitHub branch; local working files are never included.'
 const CONTEXT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
 const VERSION_PATTERN = /^(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)(?: \(Claude Code\))?$/
 
@@ -22,6 +24,7 @@ type Options = {
   credentialContextId?: string
   configDir?: string | null
   label?: string
+  createOptions?: ClaudeCreateOptions
 }
 type Probe = { version: string | null; readiness: CloudProviderInfo['readiness']; reason: string }
 
@@ -67,6 +70,7 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
   private readonly executable: string
   private readonly verifiedVersion: string | undefined
   private readonly configDir: string | null | undefined
+  private readonly createOptions: ClaudeCreateOptions
   private probeCache?: { expiresAt: number; value: Probe }
   private probeFlight?: Promise<Probe>
 
@@ -76,6 +80,7 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
     this.verifiedVersion = options.verifiedVersion ?? process.env.COMMANDO_CLOUD_CLAUDE_VERIFIED_VERSION
     this.credentialContextId = options.credentialContextId ?? process.env.COMMANDO_CLOUD_CLAUDE_CONTEXT ?? 'claude-default'
     this.configDir = options.configDir
+    this.createOptions = options.createOptions ?? {}
     this.label = options.label ?? 'Claude'
   }
 
@@ -102,10 +107,10 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
       ? VERSION_PATTERN.exec(result.stdout.trim())?.[1] ?? null : null
     if (!version) return { version: null, readiness: 'error', reason: 'Claude CLI version probe did not return a recognized version.' }
     if (!CONTEXT_PATTERN.test(this.credentialContextId)) return { version, readiness: 'error', reason: 'Configure a valid non-secret Claude credential-context identifier.' }
-    if (!this.verifiedVersion || this.verifiedVersion !== version) return {
-      version, readiness: 'unverified', reason: 'Installed Claude CLI version has not been explicitly verified for cloud follow-up. Linking is user-supplied and unverified.',
+    if (!meetsVerifiedVersion(version, this.verifiedVersion)) return {
+      version, readiness: 'unverified', reason: 'Claude cloud capabilities require a stable CLI version at or above the configured minimum verified version. Linking is user-supplied and unverified.',
     }
-    return { version, readiness: 'ready', reason: 'Cloud follow-up is enabled for the exact locally verified CLI version. Confirm the current subscription account before every message; account identity is unverified.' }
+    return { version, readiness: 'ready', reason: `CLI matches or exceeds the verified version ${this.verifiedVersion}. Confirm the current subscription account before every submission or message; account identity is unverified.` }
   }
 
   async info(): Promise<CloudProviderInfo> {
@@ -114,13 +119,24 @@ export class ClaudeCloudAdapter implements CloudProviderAdapter {
       id: this.id, label: this.label, homeUrl: cloudProviderHome(this.id),
       readiness: probe.readiness, reason: `${probe.reason} Local links are user-supplied, not provider-verified. ${SOURCE_POLICY_REASON}`,
       version: probe.version, credentialContextId: this.credentialContextId, verifiedAccountRef: null,
-      capabilities: { create: false, link: true, list: false, inspect: false,
+      capabilities: { create: probe.readiness === 'ready', link: true, list: false, inspect: false,
         sendMessage: probe.readiness === 'ready', diff: false, accountIdentity: false },
     }
   }
 
-  async create(_input: CloudCreateInput, _signal?: AbortSignal): Promise<CloudDispatchResult> {
-    return rejected('source_policy_unverified', SOURCE_POLICY_REASON)
+  async prepareSource(source: CloudCreateInput['source']): Promise<CloudCreateInput['source']> {
+    return resolveClaudeSource(source, this.createOptions.runner)
+  }
+
+  async create(input: CloudCreateInput, signal?: AbortSignal): Promise<CloudDispatchResult> {
+    if (input.provider !== this.id || !input.accountConfirmed) return rejected('account_confirmation_required', 'Confirm the current Claude account before submitting.')
+    if (input.credentialContextId !== this.credentialContextId) return rejected('credential_context_mismatch', 'Reconfirm this draft in the current Claude context.')
+    if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.includes('\0')
+      || Buffer.byteLength(input.prompt) > CLOUD_PROMPT_LIMIT) return rejected('invalid_prompt', 'A bounded nonempty task prompt is required.')
+    if (signal?.aborted) return rejected('dispatch_aborted', 'Cancelled before dispatch.')
+    const info = await this.info()
+    if (!info.capabilities.create) return rejected('capability_unverified', info.reason)
+    return createClaudeSession(input.source, input.prompt, this.executable, this.configDir, signal, this.createOptions)
   }
 
   async sendMessage(task: CloudTask, message: string, signal?: AbortSignal): Promise<CloudDispatchResult> {
