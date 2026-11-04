@@ -1,3 +1,4 @@
+import { useHost } from '../HostContext'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Rabbit } from 'lucide-react'
 import {
@@ -384,7 +385,9 @@ export function ChatComposer({
   /** An image is still uploading: a switch now would leave it behind. */
   onUploadingChange?: (uploading: boolean) => void
 }) {
-  const [initial] = useState(() => loadDraft(session.sessionId))
+  const { activeHost } = useHost()
+  const hostDraftId = session.sessionId && (activeHost === 'local' ? session.sessionId : `${activeHost}:${session.sessionId}`)
+  const [initial] = useState(() => loadDraft(hostDraftId))
   const [draft, setDraft] = useState(initial.text)
   const [attachments, setAttachments] = useState<Attachment[]>(() => savedAttachments(initial.images))
   const [draftSessionId, setDraftSessionId] = useState(session.sessionId)
@@ -392,7 +395,7 @@ export function ChatComposer({
   // The session id can arrive after mount; restore before an effect saves an empty draft.
   if (session.sessionId !== draftSessionId) {
     setDraftSessionId(session.sessionId)
-    const late = draft && attachments.length ? null : loadDraft(session.sessionId)
+    const late = draft && attachments.length ? null : loadDraft(hostDraftId)
     if (late && !draft) {
       restoredDraft.current = late.text
       setDraft(late.text)
@@ -406,7 +409,7 @@ export function ChatComposer({
     storedDraft.images = images
   }, [storedDraft, draft, images])
   useEffect(() => {
-    const flush = () => saveDraft(session.sessionId, storedDraft.text, storedDraft.images)
+    const flush = () => saveDraft(hostDraftId, storedDraft.text, storedDraft.images)
     window.addEventListener('pagehide', flush)
     return () => {
       window.removeEventListener('pagehide', flush)
@@ -415,10 +418,10 @@ export function ChatComposer({
   }, [session.sessionId, storedDraft])
   useEffect(() => {
     if (!draft && !images.length) {
-      saveDraft(session.sessionId, '')
+      saveDraft(hostDraftId, '')
       return
     }
-    const timeout = window.setTimeout(() => saveDraft(session.sessionId, draft, images), 300)
+    const timeout = window.setTimeout(() => saveDraft(hostDraftId, draft, images), 300)
     return () => window.clearTimeout(timeout)
   }, [session.sessionId, draft, images])
   const textarea = useRef<HTMLTextAreaElement>(null)
@@ -593,7 +596,7 @@ export function ChatComposer({
     // A send or stash can unmount the composer before its empty state commits.
     storedDraft.text = ''
     storedDraft.images = []
-    saveDraft(session.sessionId, '')
+    saveDraft(hostDraftId, '')
     restoredDraft.current = ''
     setDraft('')
     updateTrigger(null)

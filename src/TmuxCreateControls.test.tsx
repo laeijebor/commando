@@ -11,6 +11,8 @@ import {
   WORKTREE_PREPARE_COMMANDS_STORAGE_KEY,
 } from './TmuxCreateControls'
 import { agentPill, chooseAgent, choosePermission, expectAgent, menuLabels, openWorkspace, permissionPill } from './newSessionTestHelpers'
+import { HostProvider } from './HostContext'
+import { CHAT_LAUNCH_STORAGE_KEY } from './chatLaunchPreferences'
 
 const created: TmuxCreatedTarget = {
   kind: 'session',
@@ -979,13 +981,17 @@ describe('prepare-command daemon sync', () => {
 })
 
 
-it('creates a DeepSeek chat with its own permissions and no Claude profile', async () => {
+it.each(['local', 'hub'])('creates a DeepSeek chat with permissions scoped to %s and no Claude profile', async (host) => {
+  window.localStorage.setItem('commando.active-host', host)
   const onCreateSession = vi.fn(async () => ({ created, agentLaunch: { version: 1 as const, provider: 'deepseek-chat' as const, paneId: created.paneId, mode: 'interactive-pty' as const, state: 'initiated' as const } }))
   const loadClaudeProfiles = vi.fn(async () => [{ name: 'claudew', configDir: '/home/.claudew' }])
-  render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadClaudeProfiles={loadClaudeProfiles} />)
+  render(<HostProvider><TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadClaudeProfiles={loadClaudeProfiles} /></HostProvider>)
   fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'deepseek' } })
   chooseAgent('deepseek-chat')
   fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
   // Claude profiles name the Agent menu's Claude rows, but a DeepSeek chat is never sent one.
   await waitFor(() => expect(onCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agent: { provider: 'deepseek-chat', permissionMode: 'default' } })))
+  const storageKey = host === 'local' ? CHAT_LAUNCH_STORAGE_KEY : `${CHAT_LAUNCH_STORAGE_KEY}.${host}`
+  expect(JSON.parse(window.localStorage.getItem(storageKey)!)).toMatchObject({ 'deepseek:*': { permissionMode: 'default' } })
+  if (host !== 'local') expect(window.localStorage.getItem(CHAT_LAUNCH_STORAGE_KEY)).toBeNull()
 })

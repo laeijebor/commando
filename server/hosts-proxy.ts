@@ -63,6 +63,13 @@ export class HostsProxy {
       remote.once('error', () => hostFailure(response, new HostError(502, 'host_unreachable', 'Remote host is unavailable')))
       remote.once('response', (upstream) => {
         upstream.once('error', () => hostFailure(response, new HostError(502, 'host_unreachable', 'Remote response interrupted')))
+        // Keep remote credential failures distinct from this daemon's owner auth,
+        // using the same status/code as a rejected remote WebSocket upgrade.
+        if (upstream.statusCode === 401 || upstream.statusCode === 403) {
+          upstream.destroy()
+          hostFailure(response, new HostError(502, 'host_unauthorized', 'Remote host rejected the saved token'))
+          return
+        }
         response.writeHead(upstream.statusCode ?? 502, { ...cleanHeaders(upstream.headers, false), ...HOST_RESPONSE_SECURITY })
         upstream.pipe(response)
         response.once('close', () => upstream.destroy())

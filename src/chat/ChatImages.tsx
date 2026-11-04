@@ -1,3 +1,4 @@
+import { useHost } from '../HostContext'
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Dialog } from '@base-ui/react/dialog'
 import { Film, ImageOff, LoaderCircle, Play, X, ZoomIn, ZoomOut } from 'lucide-react'
@@ -16,6 +17,8 @@ export interface ViewableImage {
 
 /** The full-size image over the app; Esc or a click outside closes it. It zooms and pans, or plays a video. */
 export function ImageViewer({ image, onClose }: { image: ViewableImage | null; onClose: () => void }) {
+  const { local } = useHost()
+  if (!local && image?.src.startsWith('/chat-images/')) return <span>Only on this Mac for now</span>
   return (
     <Dialog.Root open={image !== null} onOpenChange={(open) => { if (!open) onClose() }}>
       <Dialog.Portal>
@@ -228,12 +231,13 @@ export function Thumbnail({ src, name, onOpen, onRemove, busy, video, size = 'md
   size?: 'sm' | 'md'
 }) {
   // Pruned after 30 days, or never stored: say so instead of showing a broken image.
+  const { local } = useHost()
   const [missing, setMissing] = useState(false)
   // A video this browser can't decode (HEVC in Chromium, say) fails the same way as a pruned one, so it keeps a plain tile.
   const [noFrame, setNoFrame] = useState(false)
   return (
     <span className={cn('relative inline-flex shrink-0', size === 'sm' ? 'size-12' : 'size-16')}>
-      {missing && !video ? (
+      {!local && src.startsWith('/chat-images/') ? <span title="Only on this Mac for now">Only on this Mac for now</span> : missing && !video ? (
         <span className="flex size-full items-center justify-center rounded-md border border-dashed border-border text-icon-muted" role="img" aria-label={`${name} is no longer available`} title={`${name} is no longer available`}>
           <ImageOff className="size-4" aria-hidden="true" />
         </span>

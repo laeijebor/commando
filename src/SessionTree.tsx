@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import type { CommanderState } from '../shared/commander'
 import { isSessionGlyph, sessionIdentityForName } from '../shared/session-identity'
 import { SessionAvatar } from './SessionAvatar'
@@ -126,7 +127,8 @@ function suggestedDirectories(sessionIds: readonly string[], panes: readonly Tmu
 }
 
 export function SessionTree(props: Props) {
-  const api = useRef(createSessionManagementApi(props.token)).current
+  const { daemonFetch } = useHost()
+  const api = useRef(createSessionManagementApi(props.token, daemonFetch)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const preferencesRef = useRef(preferences)
   const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number; groupsExpanded?: boolean } | null>(null)

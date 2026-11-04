@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { NativeTerminalPane } from './NativeTerminalPane'
@@ -37,7 +38,8 @@ export function TerminalPaneRenderer({
   onRendererChange,
   ...xtermProps
 }: TerminalPaneRendererProps) {
-  const bridge = getNativeTerminalBridge()
+  const { local } = useHost()
+  const bridge = local ? getNativeTerminalBridge() : null
   const [nativeBridge, setNativeBridge] = useState<NativeTerminalBridge | null>(null)
   const connectedRef = useRef(xtermProps.connected)
   const requestResetRef = useRef(onRequestReset)

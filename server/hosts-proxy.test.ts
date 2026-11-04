@@ -37,11 +37,11 @@ async function setup() {
   let redirectHits = 0
   let wsHeaders: IncomingHttpHeaders = {}
   let wsPath = ''
-  const behavior = { publicHealth: false, redirectHealth: false }
+  const behavior = { publicHealth: false, redirectHealth: false, authStatus: 401 }
   const remoteWs = new WebSocketServer({ noServer: true })
   const remote = createServer((request, response) => {
     const url = new URL(request.url!, 'http://localhost')
-    if (request.headers.authorization !== 'Bearer remote-secret' && !(behavior.publicHealth && url.pathname === '/api/health')) { response.writeHead(401); response.end(); return }
+    if (request.headers.authorization !== 'Bearer remote-secret' && !(behavior.publicHealth && url.pathname === '/api/health')) { response.writeHead(behavior.authStatus); response.end(); return }
     if (url.pathname === '/api/health' && behavior.redirectHealth) { response.writeHead(302, { Location: '/api/redirected' }); response.end(); return }
     if (url.pathname === '/api/health') { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ ok: true, version: 'test-version' })); return }
     if (url.pathname === '/api/snapshot') { response.end('{}'); return }
@@ -71,7 +71,7 @@ async function setup() {
     })
   })
   remote.on('upgrade', (request, socket, head) => {
-    if (request.headers.authorization !== 'Bearer remote-secret') { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
+    if (request.headers.authorization !== 'Bearer remote-secret') { socket.end(`HTTP/1.1 ${behavior.authStatus} ${behavior.authStatus === 403 ? 'Forbidden' : 'Unauthorized'}\r\nConnection: close\r\n\r\n`); return }
     wsHeaders = request.headers; wsPath = request.url!
     remoteWs.handleUpgrade(request, socket, head, (ws) => remoteWs.emit('connection', ws, request))
   })
@@ -186,6 +186,28 @@ describe('remote host HTTP and WebSocket integration', () => {
     expect(response.headers.get('content-length')).toBe('10')
     expect(response.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'")
     expect(await response.text()).toBe('v'.repeat(10))
+  })
+  it.each([401, 403])('distinguishes upstream %s from expired local owner auth consistently for HTTP and WS', async (authStatus) => {
+    context.behavior.authStatus = authStatus
+    context.registry.update(context.host.id, { token: 'expired-remote-token' })
+    const response = await context.fetchProxy('/api/snapshot')
+    expect(response.status).toBe(502)
+    expect(await response.json()).toMatchObject({ code: 'host_unauthorized' })
+
+    const ws = new WebSocket(`${context.origin.replace('http', 'ws')}/h/${context.host.id}/ws`, { headers: { Authorization: 'Bearer owner-token' } })
+    ws.on('error', () => {})
+    cleanup.push(() => ws.terminate())
+    const rejection = await new Promise<{ status: number; body: string }>((resolve) => ws.once('unexpected-response', (_request, upstream) => {
+      let body = ''
+      upstream.on('data', (chunk) => { body += chunk })
+      upstream.on('end', () => resolve({ status: upstream.statusCode!, body }))
+    }))
+    expect(rejection.status).toBe(502)
+    expect(JSON.parse(rejection.body)).toMatchObject({ code: 'host_unauthorized' })
+
+    const localRejection = await fetch(`${context.origin}/h/${context.host.id}/api/snapshot`, { headers: { Cookie: 'owner=expired' } })
+    expect(localRejection.status).toBe(401)
+    expect(await localRejection.json()).toMatchObject({ code: 'unauthorized' })
   })
   it('maps a down host to a JSON 502', async () => {
     await new Promise<void>((resolve) => context.remote.close(() => resolve()))

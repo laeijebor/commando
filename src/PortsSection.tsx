@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { ChevronDown, ChevronRight, RadioTower, Trash2 } from 'lucide-react'
 import { type KeyboardEvent, useRef, useState } from 'react'
 import type { OpenPort, TmuxSession } from '../shared/protocol'
@@ -23,7 +24,8 @@ export function openPortUrl(port: number): string {
 }
 
 export function PortsSection({ token, sessions, ports, selectedSessionId, onSelectSession, onSelectPane, onOpenAsTile }: Props) {
-  const api = useRef(createPortManagementApi(token)).current
+  const { daemonFetch, local } = useHost()
+  const api = useRef(createPortManagementApi(token, daemonFetch)).current
   const [collapsed, setCollapsed] = useState(false)
   const [menu, setMenu] = useState<{ port: OpenPort; x: number; y: number } | null>(null)
   const [pending, setPending] = useState(false)
@@ -122,21 +124,28 @@ export function PortsSection({ token, sessions, ports, selectedSessionId, onSele
               {sessionPorts.map((port) => (
                 <a
                   className="sidebar-port-link"
-                  href={openPortUrl(port.port)}
+                  href={local ? openPortUrl(port.port) : undefined}
                   target="_blank"
                   rel="noreferrer"
                   aria-label={`Focus pane for ${port.processName} on port ${port.port}`}
-                  title={`${port.processName} listening on port ${port.port}. Click to focus its pane; Command-click to open the service. Option-right-click for process actions.`}
+                  title={local ? `${port.processName} listening on port ${port.port}. Click to focus its pane; Command-click to open the service. Option-right-click for process actions.` : 'Port links — Only on this Mac for now'}
+                  role={!local ? 'button' : undefined}
+                  tabIndex={!local ? 0 : undefined}
                   onClick={(event) => {
                     onSelectPane(port.paneId)
-                    if (!event.metaKey && !event.ctrlKey && !event.shiftKey) event.preventDefault()
+                    if (!local || (!event.metaKey && !event.ctrlKey && !event.shiftKey)) event.preventDefault()
                   }}
                   onContextMenu={(event) => {
                     if (!event.altKey) return
                     event.preventDefault()
                     setMenu({ port, x: event.clientX, y: event.clientY })
                   }}
-                  onKeyDown={(event) => openMenuFromKeyboard(event, port)}
+                  onKeyDown={(event) => {
+                    if (!local && (event.key === 'Enter' || event.key === ' ')) {
+                      event.preventDefault()
+                      onSelectPane(port.paneId)
+                    } else openMenuFromKeyboard(event, port)
+                  }}
                   key={`${port.paneId}:${port.port}`}
                 >
                   {port.port}

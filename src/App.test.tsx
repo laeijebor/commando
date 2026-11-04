@@ -9,7 +9,7 @@ import type { CommandoSnapshot, LayoutSpec, ServerMessage, SessionBrief, TmuxPan
 import { App, AuthGate, PANE_JUMP_HIGHLIGHT_MS, PR_PANE_LOOKUP_TIMEOUT_MS, PaneActionErrorFeedback, TerminalPaneCard } from './App'
 import { createPrsApi } from './prsApi'
 import { refreshPanePrs } from './prStore'
-import { getAuthBootstrap, getAuthUser } from './authClient'
+import { getAuthBootstrap, getAuthUser, signInWithEmail } from './authClient'
 import type { ConnectionState } from './useDaemon'
 import { NARROW_PANEL_QUERY } from './sidePanelState'
 import * as nativeWebViewBridge from './nativeWebViewBridge'
@@ -126,6 +126,8 @@ let daemonConnection: ConnectionState = {
 }
 
 beforeEach(() => {
+  // jsdom has no scrolling implementation; focus can land after a delayed frame.
+  HTMLElement.prototype.scrollIntoView = vi.fn()
   vi.clearAllMocks()
   window.sessionStorage.clear()
   window.localStorage.clear()
@@ -146,6 +148,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url === '/api/hosts') return json({ hosts: [] })
     if (url.includes('/api/prs/prefs')) {
       return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
     }
@@ -3235,5 +3238,155 @@ describe('Commander integration', () => {
     }
     await waitFor(() => expect(document.querySelector(`[data-pane-id="${remotePane.id}"]`)).toHaveClass('is-focused', 'is-jump-highlighted'))
     expect(fetcher).toHaveBeenCalledWith('/api/commander', expect.objectContaining({ method: 'POST', credentials: 'same-origin', headers: expect.objectContaining({ Authorization: 'Bearer test-token' }) }))
+  })
+})
+
+
+describe('remote host workspace', () => {
+  it('gates machine-local controls and ignores remote web tiles and IDE frames', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    localStorage.setItem('commando.active-host', 'hub')
+    await renderAppWithSnapshot()
+    expect(appMocks.nativeConnect).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Pair a phone' })).toBeNull()
+    expect(screen.getByRole('button', { name: /Simulators/ })).toBeDisabled()
+    const devices = screen.getByRole('button', { name: /Devices/ })
+    expect(devices).toBeDisabled()
+    expect(devices).toHaveAttribute('title', 'Only on this Mac for now')
+    fireEvent.click(devices)
+    expect(screen.queryByRole('region', { name: 'Devices' })).toBeNull()
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: 'work',
+      state: 'working', headline: 'Device work', headlineSource: 'agent', updates: [], updatedAt: 1,
+      devices: [{ resourceId: 'pixel', name: 'Pixel 5', state: 'held', task: 'Smoke test' }],
+    } }))
+    expect(appMocks.sessionTree.mock.lastCall![0]).toMatchObject({ devices: {}, onShowDevices: undefined })
+    expect(screen.getByRole('button', { name: /Open IDE/ })).toBeDisabled()
+    const addWebTab = screen.queryByRole('button', { name: 'Add web tab' })
+    if (addWebTab) expect(addWebTab).toBeDisabled()
+    act(() => daemonMessage?.({ type: 'session_ides', ides: [{ id: 'remote-ide', state: 'ready', url: '/ide/remote', generation: 1, sessionIds: ['$3'], workspacePath: '/repo' }] } as unknown as ServerMessage))
+    expect(document.querySelector('iframe[src^="/ide/"]')).toBeNull()
+    const calls = vi.mocked(fetch).mock.calls.map(([url]) => String(url))
+    expect(calls.some((url) => /^(?:\/h\/hub)?\/api\/(?:sims|devices|ides|web-panes)/.test(url))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Close api' }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/h/hub/api/pane-management/panes/${encodeURIComponent(pane.id)}/delete`, expect.anything()))
+  })
+  it.each(['local', 'host'] as const)('routes an expired %s credential to the correct owner-login or host-token UI', async (authSource) => {
+    localStorage.setItem('commando.active-host', 'hub')
+    vi.mocked(getAuthBootstrap).mockResolvedValue({ enabled: true, needsOwner: false, ownerEmail: 'owner@example.com' })
+    const owner = { id: 'owner', name: 'Owner', email: 'owner@example.com' }
+    vi.mocked(getAuthUser).mockResolvedValue(owner)
+    const view = render(<App />)
+    await screen.findByRole('combobox', { name: 'Active host' })
+    daemonConnection = { phase: 'unauthorized', authSource, detail: 'Credential rejected', attempt: 0 }
+    view.rerender(<App />)
+
+    if (authSource === 'local') {
+      const signIn = await screen.findByRole('button', { name: 'Sign in' })
+      expect(document.querySelector('.host-connection-banner')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Hosts settings' })).toBeNull()
+      vi.mocked(signInWithEmail).mockResolvedValue(owner)
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'new-local-password' } })
+      daemonConnection = { phase: 'live', detail: 'Authenticated remote stream', attempt: 0 }
+      fireEvent.click(signIn)
+      await screen.findByRole('combobox', { name: 'Active host' })
+      expect(signInWithEmail).toHaveBeenCalledWith('owner@example.com', 'new-local-password')
+    } else {
+      expect(screen.getByRole('alert')).toHaveTextContent('rejected the saved token — update it in Settings → Hosts')
+      expect(screen.getByRole('button', { name: 'Hosts settings' })).toBeVisible()
+      expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull()
+    }
+    expect(localStorage.getItem('commando.active-host')).toBe('hub')
+  })
+
+  function stubHubHealth(state: 'online' | 'offline' | 'unauthorized', name = 'Hub') {
+    const fallback = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === '/api/hosts'
+      ? new Response(JSON.stringify({ hosts: [{ id: 'hub', name, baseUrl: 'http://hub.ts.net:4310', addedAt: 1, health: { state, checkedAt: 1 } }] }))
+      : fallback(input, init))
+  }
+
+  it('shows the configured host name in the breadcrumb and restores local when switching back', async () => {
+    stubHubHealth('online', 'Studio Hub')
+    await renderAppWithSnapshot()
+    expect(screen.getByText('commando://local')).toBeInTheDocument()
+    await screen.findByRole('option', { name: /Studio Hub · online/ })
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Active host' }), { target: { value: 'hub' } })
+    act(() => daemonMessage?.({ type: 'snapshot', snapshot: snapshotWith([pane, adjacentPane]) }))
+    const breadcrumb = screen.getByText('commando://Studio Hub').closest<HTMLElement>('.location-readout')!
+    expect(within(breadcrumb).getByText('work', { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.queryByText('commando://local')).toBeNull()
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Active host' }), { target: { value: 'local' } })
+    expect(screen.getByText('commando://local')).toBeInTheDocument()
+    expect(screen.queryByText('commando://Studio Hub')).toBeNull()
+  })
+
+  it.each(['loading-snapshot', 'connecting'] as const)('shows a connecting notice in the main column while a healthy host is %s', async (phase) => {
+    stubHubHealth('online')
+    const view = await renderAppWithSnapshot()
+    await screen.findByRole('option', { name: /Hub · online/ })
+    daemonConnection = { phase, detail: 'Opening live channel', attempt: 0 }
+    fireEvent.change(screen.getByRole('combobox', { name: 'Active host' }), { target: { value: 'hub' } })
+
+    const main = document.getElementById('workspace-main')!
+    const banner = screen.getByText('Connecting to Hub…').closest('.host-connection-banner')!
+    const sidebar = screen.getByRole('combobox', { name: 'Active host' }).closest('.session-sidebar')!
+    expect(banner).toHaveAttribute('role', 'status')
+    expect(banner.parentElement).toBe(main)
+    expect(sidebar.parentElement).toBe(main.parentElement)
+    expect(main.parentElement?.querySelector(':scope > .host-connection-banner')).toBeNull()
+    expect(main).toBeVisible()
+    expect(sidebar).toBeVisible()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByText(/Port links, IDE, web tiles and screenshots/)).toBeNull()
+
+    daemonConnection = { phase: 'live', detail: 'Authenticated remote stream', attempt: 0 }
+    view.rerender(<App />)
+    expect(screen.queryByText('Connecting to Hub…')).toBeNull()
+    expect(main).not.toHaveAttribute('data-host-connection')
+  })
+
+  it.each([
+    ['reconnecting', 'online', 'offline'],
+    ['connecting', 'offline', 'offline'],
+    ['unauthorized', 'online', 'unauthorized'],
+    ['connecting', 'unauthorized', 'unauthorized'],
+  ] as const)('reports %s / health %s as %s and keeps the switcher reachable', async (phase, health, state) => {
+    stubHubHealth(health)
+    localStorage.setItem('commando.active-host', 'hub')
+    const view = await renderAppWithSnapshot()
+    await screen.findByRole('option', { name: new RegExp(`Hub · ${health}`) })
+    daemonConnection = { phase, detail: 'Remote unavailable', attempt: phase === 'reconnecting' ? 1 : 0 }
+    view.rerender(<App />)
+
+    const banner = screen.getByRole('alert')
+    expect(banner).toHaveTextContent(state === 'unauthorized'
+      ? 'Hub rejected the saved token — update it in Settings → Hosts'
+      : 'Hub offline — showing nothing; switch back to This Mac')
+    expect(banner).not.toHaveTextContent('Connecting')
+    const main = document.getElementById('workspace-main')!
+    expect(banner.parentElement).toBe(main)
+    expect(main).toBeVisible()
+    expect(main.querySelector('.workspace-canvas')).not.toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Active host' })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Active host' })).toHaveValue('hub')
+    if (state === 'unauthorized') {
+      fireEvent.click(screen.getByRole('button', { name: 'Hosts settings' }))
+      expect(await screen.findByRole('region', { name: 'Hosts' })).toBeVisible()
+      expect(banner).toBeVisible()
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'This Mac' }))
+    expect(localStorage.getItem('commando.active-host')).toBe('local')
+  })
+
+  it('trusts a live stream over a stale offline health probe', async () => {
+    stubHubHealth('offline')
+    localStorage.setItem('commando.active-host', 'hub')
+    await renderAppWithSnapshot()
+    await screen.findByRole('option', { name: /Hub · offline/ })
+    expect(document.querySelector('.host-connection-banner')).toBeNull()
+    expect(document.getElementById('workspace-main')).not.toHaveAttribute('data-host-connection')
   })
 })

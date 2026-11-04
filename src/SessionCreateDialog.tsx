@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { X } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { TmuxCreateControls, type SessionCreateRequest, type TmuxCreateControlsProps } from './TmuxCreateControls'
@@ -10,6 +11,7 @@ type Props = Pick<TmuxCreateControlsProps, 'token' | 'disabled' | 'onCreateSessi
 
 /** The new-session form in a modal, opened from a group's "+" in the session tree. */
 export function SessionCreateDialog({ request, onClose, ...form }: Props) {
+  const { hostName } = useHost()
   const dialogRef = useRef<HTMLElement>(null)
   const [pending, setPending] = useState(false)
   const eyebrow = request.repo ? `Repository · ${request.repo.name}` : `Session group · ${request.groupName}`
@@ -47,7 +49,7 @@ export function SessionCreateDialog({ request, onClose, ...form }: Props) {
         <header>
           <div className="session-create-heading">
             <span>{eyebrow}</span>
-            <strong id="session-create-title">New session</strong>
+            <strong id="session-create-title">New session</strong><span>Runs on {hostName}</span>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" disabled={pending}><X /></button>
         </header>

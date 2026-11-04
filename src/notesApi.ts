@@ -75,7 +75,7 @@ export type NotesApi = {
   resolveImageUrl(url: string, vaultId: string): string
 }
 
-export function createNotesApi(token: string, fetcher: typeof fetch = fetch): NotesApi {
+export function createNotesApi(token: string, fetcher: typeof fetch = fetch, mapPath: (path: string) => string = (path) => path): NotesApi {
   const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const response = await fetcher(path, {
       ...init,
@@ -153,7 +153,7 @@ export function createNotesApi(token: string, fetcher: typeof fetch = fetch): No
       if (!match) return url
       const parameters = new URLSearchParams({ vault: vaultId })
       if (token) parameters.set('token', token)
-      return `/api/notes/${encodeURIComponent(match[1])}/images/${encodeURIComponent(match[2])}?${parameters}`
+      return mapPath(`/api/notes/${encodeURIComponent(match[1])}/images/${encodeURIComponent(match[2])}?${parameters}`)
     },
   }
 }

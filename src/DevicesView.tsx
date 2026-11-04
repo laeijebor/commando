@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useHost } from './HostContext'
 import './sims-view.css'
 import './devices-view.css'
 
@@ -172,7 +173,8 @@ function DeviceCard({ resource, snapshot, api, run, onOpenPane }: {
 }
 
 export function DevicesView({ token, onOpenPane, api: injected }: { token: string; onOpenPane?: (paneId: string) => void; api?: DevicesApi }) {
-  const api = useMemo(() => injected ?? createDevicesApi(token), [injected, token])
+  const { daemonFetch } = useHost()
+  const api = useMemo(() => injected ?? createDevicesApi(token, daemonFetch), [injected, token, daemonFetch])
   const [snapshot, setSnapshot] = useState<DevicesSnapshot>()
   const [error, setError] = useState('')
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible')
