@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>How a deck flows</title>
+<meta name="deck:title" content="Slides for agents · proposal">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/ink.css" id="theme">
+<style>
+  .node .who { display: inline-block; margin-top: 12px; font: 700 11px/1 var(--font-mono); padding: 4px 7px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--line); color: var(--muted); }
+  .node .who.cmd { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+  .loop { border-color: var(--accent); margin-left: calc(20% + 18px); margin-right: calc(20% + 18px); }
+  .loop span { color: var(--accent); }
+</style></head>
+<body><main class="deck">
+<section class="slide" data-n="2" data-total="2" data-canvas-group="Plan · flow">
+  <p class="kicker">Proposal · how a deck flows</p>
+  <h2 data-canvas-label="Headline">The same deck.html goes from draft to PDF, PPTX and a gallery link</h2>
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center">
+    <div class="flow" data-canvas-label="Flow diagram">
+      <div class="node"><div class="n">01</div><h3>Draft</h3><p>Agent picks layouts, captures real screenshots, writes <code>deck.html</code></p><span class="who">skills/slides</span></div>
+      <div class="node"><div class="n">02</div><h3>Check</h3><p>Renders every slide; flags overflow, contrast, tiny text</p><span class="who">slides check</span></div>
+      <div class="node"><div class="n">03</div><h3>Show</h3><p>Opens as a Slides tab beside the chat</p><span class="who cmd">commando-slides</span></div>
+      <div class="node"><div class="n">04</div><h3>Review</h3><p>You pin comments and answer questions; the agent edits</p><span class="who cmd">answer queue</span></div>
+      <div class="node"><div class="n">05</div><h3>Ship</h3><p>PDF, PPTX, PNGs, one HTML file, or a gallery link</p><span class="who">slides publish</span></div>
+    </div>
+    <div class="loop"><span>↺ round 2, 3… “edited since last round” badges</span></div>
+  </div>
+</section>
+</main><script src="deck/deck.js"></script></body></html>

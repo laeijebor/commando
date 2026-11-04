@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/ink.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 2 · Problem, with real screenshots -->
+<section class="slide" data-n="2" data-total="8" data-canvas-group="Slide 2 · Problem">
+  <p class="kicker">The problem</p>
+  <h2 data-canvas-label="Headline">Every reconnect closed the keyboard and dropped your draft</h2>
+  <div class="body cols split">
+    <div style="display:flex;flex-direction:column;gap:30px">
+      <div class="stat" data-canvas-label="Stat: every 4 s"><b class="bad">~4 s</b><span>between reconnects, on WiFi as well as 4G</span></div>
+      <div class="stat" data-canvas-label="Stat: draft lost"><b style="font-size:64px">“Hal”</b><span>was all that survived of <i>“Half a thought about the…”</i></span></div>
+    </div>
+    <div class="shots" data-canvas-label="Before screenshots">
+      <figure class="shot" style="margin:0"><div class="device"><img src="deck/img/before-keyboard.png" alt=""><span class="pill bad badge">before</span></div><figcaption>Reconnect at 17:38:25 dismissed the keyboard</figcaption></figure>
+      <figure class="shot" style="margin:0"><div class="device"><img src="deck/img/before-draft.png" alt=""><span class="callout" style="left:-18px;top:306px">1</span><span class="pill bad badge">before</span></div><figcaption><b>①</b> The typed sentence cut off after “Hal”</figcaption></figure>
+    </div>
+  </div>
+  <aside class="notes">Both are real simulator captures from the evidence folder.</aside>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>

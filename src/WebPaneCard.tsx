@@ -6,9 +6,11 @@ import { NativeWebViewTile } from './NativeWebViewTile'
 import { ChromiumTileCard } from './ChromiumTileCard'
 import './web-pane.css'
 import { CanvasPane } from './CanvasPane'
+import { SlidesPane } from './SlidesPane'
 import { GuidePane } from './GuidePane'
 import { SimLiveView } from './SimLiveView'
 import type { PendingQueueApi } from './pendingQueueApi'
+import { isDeckPath } from '../shared/deck'
 
 const ATTRIBUTION_VISIBLE_MS = 8_000
 const LOAD_WATCHDOG_MS = 8_000
@@ -243,9 +245,10 @@ export function WebPaneCard({
     </button>
   ) : null
 
+  const CanvasView = webPane.content?.kind === 'canvas' && isDeckPath(webPane.content.manifest) ? SlidesPane : CanvasPane
   if (webPane.content?.kind === 'canvas') return (
     <article className="web-pane" data-web-pane-id={webPane.id}>
-      <CanvasPane key={`${webPane.content.artifactId}/${webPane.content.manifest}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
+      <CanvasView key={`${webPane.content.artifactId}/${webPane.content.manifest}`} webPaneId={webPane.id} token={wsToken} artifactId={webPane.content.artifactId} manifest={webPane.content.manifest} artifactUrl={webPane.url} onTitle={onTitle} onClose={onClose} />
     </article>
   )
 

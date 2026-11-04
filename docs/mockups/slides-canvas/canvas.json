@@ -1,0 +1,665 @@
+{
+  "title": "Slides for agents — tile, deck and themes",
+  "pages": [
+    {
+      "id": "tile",
+      "title": "Slides tab in Commando",
+      "sections": [
+        {
+          "id": "s-tile",
+          "title": "Slides tab",
+          "status": "idea",
+          "frames": [
+            "chat",
+            "tile",
+            "grid",
+            "theme",
+            "export",
+            "present"
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "id": "chat",
+          "title": "Agent posts the deck in chat",
+          "platform": "Commando chat",
+          "src": "chat-card.html",
+          "x": -700,
+          "y": 0,
+          "w": 600,
+          "h": 260,
+          "focus": 6
+        },
+        {
+          "id": "tile",
+          "title": "Slides tab — slide view",
+          "platform": "Commando side panel",
+          "src": "tile.html",
+          "x": 0,
+          "y": 0,
+          "w": 1200,
+          "h": 820,
+          "focus": 1,
+          "interactive": true,
+          "interactiveNote": "←/→, the arrow buttons and the filmstrip change slides. Try the theme picker, Notes, Show me on the agent toast, and answering the slide 1 question."
+        },
+        {
+          "id": "grid",
+          "title": "Grid view — badges and reorder",
+          "platform": "Commando side panel",
+          "src": "grid.html",
+          "x": 1320,
+          "y": 0,
+          "w": 1200,
+          "h": 820,
+          "focus": 2
+        },
+        {
+          "id": "theme",
+          "title": "Theme picker and Match a brand",
+          "platform": "Commando side panel",
+          "src": "theme.html",
+          "x": 0,
+          "y": 1060,
+          "w": 1200,
+          "h": 820,
+          "focus": 3
+        },
+        {
+          "id": "export",
+          "title": "Export and publish",
+          "platform": "Commando side panel",
+          "src": "export.html",
+          "x": 1320,
+          "y": 1060,
+          "w": 1200,
+          "h": 820,
+          "focus": 4
+        },
+        {
+          "id": "present",
+          "title": "Presenter view",
+          "platform": "Full screen",
+          "src": "present.html",
+          "x": 0,
+          "y": 2120,
+          "w": 1440,
+          "h": 900,
+          "focus": 5
+        }
+      ],
+      "annotations": [
+        {
+          "id": "n-tile-render",
+          "kind": "development",
+          "title": "Rendering",
+          "target": {
+            "frame": "tile",
+            "label": "Current slide"
+          },
+          "text": "The tab loads deck.html in a sandboxed iframe, like canvas frames. The canvas frame bridge then gives labels, pins, spotlight and history snapshots without new plumbing.",
+          "x": -700,
+          "y": 340,
+          "w": 560
+        },
+        {
+          "id": "n-tile-question",
+          "kind": "design",
+          "title": "Questions belong to a slide",
+          "target": {
+            "frame": "tile",
+            "label": "Slide question"
+          },
+          "text": "The agent attaches a question to a slide. Picking an option queues it in the same answer queue as canvas and redline.",
+          "x": -700,
+          "y": 560,
+          "w": 560
+        },
+        {
+          "id": "n-tile-round",
+          "kind": "design",
+          "title": "Rounds",
+          "target": {
+            "frame": "grid",
+            "label": "Slide 5 card"
+          },
+          "text": "Each Send makes a snapshot, as canvas does. Slides changed since the last round get a green badge and a diff toggle.",
+          "x": 2640,
+          "y": 120,
+          "w": 420
+        },
+        {
+          "id": "n-grid-reorder",
+          "kind": "development",
+          "title": "Reorder",
+          "target": {
+            "frame": "grid",
+            "label": "Dragged slide"
+          },
+          "text": "Dragging writes the new order to deck.html and sends a note, the same way canvas layout drags work.",
+          "x": 2640,
+          "y": 400,
+          "w": 420
+        },
+        {
+          "id": "n-theme",
+          "kind": "design",
+          "title": "Themes are token files",
+          "target": {
+            "frame": "theme",
+            "label": "Match a brand"
+          },
+          "text": "A theme is a ~25-line CSS file of tokens. Match a brand sends the source to the agent, which writes a new theme file and checks contrast.",
+          "x": -700,
+          "y": 1360,
+          "w": 560
+        },
+        {
+          "id": "n-pptx",
+          "kind": "important",
+          "title": "PPTX trade-off",
+          "target": {
+            "frame": "export",
+            "label": "Export PowerPoint"
+          },
+          "items": [
+            "v1 as one picture per slide + notes: looks identical, but text can't be edited in PowerPoint.",
+            "Editable PPTX means rebuilding every layout with native shapes."
+          ],
+          "x": 2640,
+          "y": 1120,
+          "w": 420
+        },
+        {
+          "id": "q-gallery",
+          "kind": "question",
+          "title": "Need from you",
+          "target": {
+            "frame": "export",
+            "label": "Publish to evidence gallery"
+          },
+          "text": "How does your evidence gallery worker take uploads (URL, auth and folder layout)? I couldn't find its code locally, and a note mentions a 403 on its auth.",
+          "x": 2640,
+          "y": 1420,
+          "w": 420,
+          "answer": "We can move the evidence worker to v2"
+        },
+        {
+          "id": "q-tile",
+          "kind": "question",
+          "title": "Your call",
+          "target": {
+            "frame": "tile",
+            "label": "Slides tab"
+          },
+          "text": "How should Commando show a deck?",
+          "options": [
+            "New Slides tab type, reusing canvas comments, queue and history (recommended)",
+            "A canvas page with one frame per slide",
+            "A plain web tab"
+          ],
+          "x": 0,
+          "y": -330,
+          "w": 560,
+          "answer": "New Slides tab type, reusing canvas comments, queue and history (recommended)"
+        },
+        {
+          "id": "n-present",
+          "kind": "design",
+          "title": "Present",
+          "target": {
+            "frame": "present"
+          },
+          "text": "Opens a browser window on the chosen display. The audience window shows only the slide; this one shows next slide, notes and a timer.",
+          "x": 1560,
+          "y": 2160,
+          "w": 420
+        }
+      ]
+    },
+    {
+      "id": "deck",
+      "title": "Example deck — reconnect loop fix",
+      "sections": [
+        {
+          "id": "s-deck",
+          "title": "Example deck · Ink theme · real PR #156 evidence",
+          "status": "idea",
+          "frames": [
+            "s1",
+            "s2",
+            "s3",
+            "s4",
+            "s5",
+            "s6",
+            "s7",
+            "s8"
+          ]
+        },
+        {
+          "id": "s-onepager",
+          "title": "One-pager · Paper theme · A4",
+          "status": "idea",
+          "frames": [
+            "onepager"
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "id": "s1",
+          "title": "1 · Title",
+          "platform": "Slide 16:9",
+          "src": "s1.html",
+          "x": 0,
+          "y": 0,
+          "w": 1280,
+          "h": 720,
+          "focus": 7
+        },
+        {
+          "id": "s2",
+          "title": "2 · Problem with real screenshots",
+          "platform": "Slide 16:9",
+          "src": "s2.html",
+          "x": 1400,
+          "y": 0,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "s3",
+          "title": "3 · Root cause flow",
+          "platform": "Slide 16:9",
+          "src": "s3.html",
+          "x": 2800,
+          "y": 0,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "s4",
+          "title": "4 · Big numbers",
+          "platform": "Slide 16:9",
+          "src": "s4.html",
+          "x": 4200,
+          "y": 0,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "s5",
+          "title": "5 · Chart rebuilt from data",
+          "platform": "Slide 16:9",
+          "src": "s5.html",
+          "x": 0,
+          "y": 860,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "s6",
+          "title": "6 · Three changes",
+          "platform": "Slide 16:9",
+          "src": "s6.html",
+          "x": 1400,
+          "y": 860,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "s7",
+          "title": "7 · Before and after",
+          "platform": "Slide 16:9",
+          "src": "s7.html",
+          "x": 2800,
+          "y": 860,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "s8",
+          "title": "8 · Takeaways and risk",
+          "platform": "Slide 16:9",
+          "src": "s8.html",
+          "x": 4200,
+          "y": 860,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "onepager",
+          "title": "One-pager (A4)",
+          "platform": "A4 portrait",
+          "src": "onepager.html",
+          "x": 5640,
+          "y": 0,
+          "w": 794,
+          "h": 1123,
+          "focus": 8
+        }
+      ],
+      "annotations": [
+        {
+          "id": "n-deck-source",
+          "kind": "design",
+          "title": "Real content",
+          "target": {
+            "frame": "s1"
+          },
+          "text": "Every number and screenshot comes from PR #156 and docs/evidence/mobile-reconnect-focus, so you can judge the format on a real topic.",
+          "x": 0,
+          "y": -260,
+          "w": 600
+        },
+        {
+          "id": "n-shots",
+          "kind": "design",
+          "title": "Screenshot slide",
+          "target": {
+            "frame": "s2",
+            "label": "Before screenshots"
+          },
+          "text": "Real captures in a device frame, with a before/after badge and a numbered callout tied to the caption.",
+          "x": 1400,
+          "y": -260,
+          "w": 520
+        },
+        {
+          "id": "n-headlines",
+          "kind": "design",
+          "title": "Headlines state the finding",
+          "target": {
+            "frame": "s3",
+            "label": "Headline"
+          },
+          "items": [
+            "Not “Root cause” but “The daemon sent more than its own limit allowed”.",
+            "Reading only the headlines tells the whole story."
+          ],
+          "x": 2800,
+          "y": -260,
+          "w": 600
+        },
+        {
+          "id": "n-chart",
+          "kind": "design",
+          "title": "Charts follow the theme",
+          "target": {
+            "frame": "s5",
+            "label": "Reconnects chart"
+          },
+          "text": "Rebuilt in HTML from the PR's table instead of pasting the PNG, so it re-themes and stays sharp in PDF.",
+          "x": 0,
+          "y": 1640,
+          "w": 520
+        },
+        {
+          "id": "n-onepager",
+          "kind": "design",
+          "title": "One-pager",
+          "target": {
+            "frame": "onepager"
+          },
+          "text": "Same story, same tokens, for reading rather than presenting. Exports as an A4 PDF.",
+          "x": 6500,
+          "y": 0,
+          "w": 360
+        }
+      ]
+    },
+    {
+      "id": "themes",
+      "title": "Themes — same slides, three themes",
+      "sections": [
+        {
+          "id": "s-ink",
+          "title": "Ink — Commando default (dark)",
+          "status": "idea",
+          "frames": [
+            "t-ink-1",
+            "t-ink-4",
+            "t-ink-7"
+          ]
+        },
+        {
+          "id": "s-paper",
+          "title": "Paper — light, for print",
+          "status": "idea",
+          "frames": [
+            "t-paper-1",
+            "t-paper-4",
+            "t-paper-7"
+          ]
+        },
+        {
+          "id": "s-harbor",
+          "title": "Harbor — brand example (made-up client)",
+          "status": "idea",
+          "frames": [
+            "t-harbor-1",
+            "t-harbor-4",
+            "t-harbor-7"
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "id": "t-ink-1",
+          "title": "Ink · title",
+          "src": "s1.html",
+          "x": 0,
+          "y": 0,
+          "w": 1280,
+          "h": 720,
+          "focus": 9
+        },
+        {
+          "id": "t-ink-4",
+          "title": "Ink · numbers",
+          "src": "s4.html",
+          "x": 1400,
+          "y": 0,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "t-ink-7",
+          "title": "Ink · screenshots",
+          "src": "s7.html",
+          "x": 2800,
+          "y": 0,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "t-paper-1",
+          "title": "Paper · title",
+          "src": "paper-1.html",
+          "x": 0,
+          "y": 900,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "t-paper-4",
+          "title": "Paper · numbers",
+          "src": "paper-4.html",
+          "x": 1400,
+          "y": 900,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "t-paper-7",
+          "title": "Paper · screenshots",
+          "src": "paper-7.html",
+          "x": 2800,
+          "y": 900,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "t-harbor-1",
+          "title": "Harbor · title",
+          "src": "harbor-1.html",
+          "x": 0,
+          "y": 1800,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "t-harbor-4",
+          "title": "Harbor · numbers",
+          "src": "harbor-4.html",
+          "x": 1400,
+          "y": 1800,
+          "w": 1280,
+          "h": 720
+        },
+        {
+          "id": "t-harbor-7",
+          "title": "Harbor · screenshots",
+          "src": "harbor-7.html",
+          "x": 2800,
+          "y": 1800,
+          "w": 1280,
+          "h": 720
+        }
+      ],
+      "annotations": [
+        {
+          "id": "n-tokens",
+          "kind": "development",
+          "title": "Only tokens change",
+          "target": {
+            "frame": "t-harbor-1"
+          },
+          "items": [
+            "Colours, display and body fonts, weight, tracking, corner radius, background glow and logo mark.",
+            "Layouts never read raw colours, so any theme works with every layout."
+          ],
+          "x": 4200,
+          "y": 1800,
+          "w": 460
+        },
+        {
+          "id": "q-default-theme",
+          "kind": "question",
+          "title": "Your call",
+          "target": {
+            "frame": "t-ink-1"
+          },
+          "text": "Which theme should decks use when nothing else is asked for?",
+          "options": [
+            "Ink, dark like Commando (recommended)",
+            "Paper, light and print-friendly",
+            "Ink on screen, Paper for PDF exports"
+          ],
+          "x": 4200,
+          "y": 0,
+          "w": 460,
+          "answer": "Ink, dark like Commando (recommended)"
+        }
+      ]
+    },
+    {
+      "id": "plan",
+      "title": "Proposal — skills repo vs Commando",
+      "sections": [
+        {
+          "id": "s-plan",
+          "title": "Where things live",
+          "status": "idea",
+          "frames": [
+            "plan-1",
+            "plan-2"
+          ]
+        }
+      ],
+      "frames": [
+        {
+          "id": "plan-1",
+          "title": "Where things live",
+          "platform": "Slide 16:9",
+          "src": "plan-1.html",
+          "x": 0,
+          "y": 0,
+          "w": 1280,
+          "h": 720,
+          "focus": 10
+        },
+        {
+          "id": "plan-2",
+          "title": "How a deck flows",
+          "platform": "Slide 16:9",
+          "src": "plan-2.html",
+          "x": 1400,
+          "y": 0,
+          "w": 1280,
+          "h": 720,
+          "focus": 11
+        }
+      ],
+      "annotations": [
+        {
+          "id": "q-format",
+          "kind": "question",
+          "title": "Your call",
+          "target": {
+            "frame": "plan-1",
+            "label": "Skills repo card"
+          },
+          "text": "What should an agent write a deck as?",
+          "options": [
+            "One deck.html with a section per slide (recommended)",
+            "Markdown or JSON rendered through a template",
+            "One HTML file per slide"
+          ],
+          "x": 0,
+          "y": 820,
+          "w": 560,
+          "answer": "One deck.html with a section per slide (recommended)"
+        },
+        {
+          "id": "q-pptx",
+          "kind": "question",
+          "title": "Your call",
+          "target": {
+            "frame": "plan-2",
+            "label": "Flow diagram"
+          },
+          "text": "What should PowerPoint export produce in v1?",
+          "options": [
+            "One picture per slide + speaker notes (recommended)",
+            "Editable text and shapes",
+            "No PPTX yet, PDF only"
+          ],
+          "x": 1400,
+          "y": 820,
+          "w": 560,
+          "answer": "One picture per slide + speaker notes (recommended)"
+        },
+        {
+          "id": "q-publish",
+          "kind": "question",
+          "title": "Your call",
+          "target": {
+            "frame": "plan-1",
+            "label": "Commando card"
+          },
+          "text": "Where should Publish to the evidence gallery live?",
+          "options": [
+            "Skills repo CLI; Commando's menu calls it (recommended)",
+            "Commando only, with the daemon holding the credentials"
+          ],
+          "x": 640,
+          "y": 820,
+          "w": 560,
+          "answer": "Skills repo CLI; Commando's menu calls it (recommended)"
+        }
+      ]
+    }
+  ]
+}
