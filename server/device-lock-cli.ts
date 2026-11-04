@@ -98,7 +98,7 @@ export function formatList(view, now = Date.now()) {
   }).join('\n')
 }
 
-export async function runDeviceCli(args, request, { out = (text) => console.log(text), err = (text) => console.error(text), cli = 'node ~/.commando/hooks/commando-device.mjs', now = Date.now, onSignal = (handler) => { process.once('SIGINT', handler); process.once('SIGTERM', handler) } } = {}) {
+export async function runDeviceCli(args, request, { out = (text) => console.log(text), err = (text) => console.error(text), cli = 'node ~/.commando/hooks/commando-device.mjs', now = Date.now, reconnectMs = 120_000, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), onSignal = (handler) => { for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(signal, handler) } } = {}) {
   const input = parseDeviceArgs(args)
   const print = (value, text) => out(input.json ? JSON.stringify(value) : text)
   const call = async (method, path, body) => {
@@ -123,20 +123,34 @@ export async function runDeviceCli(args, request, { out = (text) => console.log(
   if (!input.wait || result.status === 'held') { print(result, formatResult(result, cli, now())); return result.status === 'held' ? 0 : 3 }
   // Block until granted, telling the caller when its place changes.
   const started = now()
-  let cancelled = false
-  const cancel = async () => { if (!cancelled) { cancelled = true; await call('POST', '/cancel', { request: input.body.request, ...(input.body.as ? { as: input.body.as } : {}) }).catch(() => {}) } }
-  onSignal(() => { void cancel().finally(() => process.exit(130)) })
+  const entryId = result.entry.id
+  let settled = false
+  // Withdraw by id: if the lock was granted just as we gave up, that releases it rather than leaving it held.
+  const withdraw = async () => { if (!settled) { settled = true; await call('POST', '/cancel', { entryId }).catch(() => {}) } }
+  onSignal(() => { void withdraw().finally(() => process.exit(130)) })
   let last = ''
-  while (result.status !== 'held') {
-    if (result.status === 'gone') { err('The request left the queue (cancelled or removed by the user).'); return 3 }
-    const progress = formatResult(result, cli, now()).split('\n').join(' · ')
-    if (progress !== last) { err('waiting: ' + progress); last = progress }
-    const remaining = input.maxWaitMs === undefined ? 55_000 : input.maxWaitMs - (now() - started)
-    if (remaining <= 0) { await cancel(); err('Gave up waiting after ' + minutes(input.maxWaitMs) + '.'); return 3 }
-    const id = result.entry?.id
-    const next = await call('GET', '/entry?id=' + encodeURIComponent(id) + '&wait=' + Math.max(1, Math.min(55, Math.ceil(remaining / 1_000))))
-    result = next
-  }
+  let failingSince
+  try {
+    while (result.status !== 'held') {
+      if (result.status === 'gone') { settled = true; err('The request left the queue (cancelled or removed by the user).'); return 3 }
+      if (result.status === 'offered') { result = await call('POST', '/claim', { request: input.body.request, ...(input.body.as ? { as: input.body.as } : {}), ...(input.body.pid ? { pid: input.body.pid } : {}) }); continue }
+      const progress = formatResult(result, cli, now()).split('\n').join(' · ')
+      if (progress !== last) { err('waiting: ' + progress); last = progress }
+      const remaining = input.maxWaitMs === undefined ? 55_000 : input.maxWaitMs - (now() - started)
+      if (remaining <= 0) { await withdraw(); err('Gave up waiting after ' + minutes(input.maxWaitMs) + '.'); return 3 }
+      try {
+        result = await call('GET', '/entry?id=' + encodeURIComponent(entryId) + '&wait=' + Math.max(1, Math.min(55, Math.ceil(remaining / 1_000))))
+        failingSince = undefined
+      } catch (error) {
+        // The daemon restarts now and then (e.g. after a merge); keep the place in line while it comes back.
+        failingSince ??= now()
+        if (now() - failingSince > reconnectMs) throw error
+        err('Commando is unreachable (' + (error instanceof Error ? error.message : error) + '); retrying…')
+        await pause(Math.min(10_000, 1_000 + (now() - failingSince) / 4))
+      }
+    }
+    settled = true
+  } finally { await withdraw() }
   print(result, formatResult(result, cli, now()))
   return 0
 }

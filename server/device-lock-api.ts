@@ -2,11 +2,13 @@ import { execFile } from 'node:child_process'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  DeviceLockError, type DeviceHolder, type DeviceLockRegistry, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
+  DeviceLockError, MAX_SKIPS, type DeviceHolder, type DeviceLockRegistry, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
 } from './device-locks.js'
 
 const PANE_ID = /^%\d+$/
 const MAX_WAIT_SECONDS = 55
+/** Commands that merely mention a build (searching logs, reading or editing files) without running one. */
+const READERS = new Set(['grep', 'egrep', 'rg', 'ag', 'tail', 'head', 'less', 'more', 'cat', 'bat', 'vi', 'vim', 'nvim', 'nano', 'code', 'cursor', 'ps', 'pgrep', 'man', 'open'])
 
 /** Watches the process table for builds that make the host busy outside the lock (`busyProcesses`). */
 export class BusyProcessWatch {
@@ -18,7 +20,7 @@ export class BusyProcessWatch {
   async refresh(): Promise<void> {
     this.lines = (await this.list()).split('\n').map((line) => /^\s*(\d+)\s+(.*)$/.exec(line)).filter((match) => match !== null)
       .map((match) => ({ pid: Number(match[1]), command: match[2] }))
-      .filter((entry) => entry.pid !== process.pid && !entry.command.includes('commando-device'))
+      .filter((entry) => entry.pid !== process.pid && !entry.command.includes('commando-device') && !READERS.has(entry.command.split(/\s+/, 1)[0].split('/').pop()!))
   }
 
   busy = (resource: DeviceResource): string | undefined => {
@@ -46,10 +48,18 @@ export function offerMessage(entry: QueueEntry, resource: DeviceResource, cli: s
   ].join('\n')
 }
 
-export function expiredMessage(entry: QueueEntry, resource: DeviceResource, cli: string): string {
+export function expiredMessage(entry: QueueEntry & { dropped: boolean }, resource: DeviceResource, cli: string, position: number): string {
   const as = entry.as ? ` --as ${JSON.stringify(entry.as)}` : ''
-  return `[Commando device lock] Your turn on ${resource.name} passed: the offer wasn't claimed within 5 minutes. ` +
-    `To queue again: ${cli} lock ${entry.request}${as} --task ${JSON.stringify(entry.task)}`
+  if (entry.dropped) {
+    return `[Commando device lock] Your turn on ${resource.name} passed ${MAX_SKIPS} times without a claim, so your request left the queue. ` +
+      `To queue again: ${cli} lock ${entry.request}${as} --task ${JSON.stringify(entry.task)}`
+  }
+  return `[Commando device lock] Your turn on ${resource.name} passed: the offer wasn't claimed in time, so the next task went first. ` +
+    `You are still queued (#${position}); Commando will message you again when it is your turn.`
+}
+
+export function removedByUserMessage(entry: QueueEntry, resource: DeviceResource): string {
+  return `[Commando device lock] The user removed your request for ${resource.name} ("${entry.task}") from the queue. Don't use the device.`
 }
 
 export function releasedByUserMessage(holder: DeviceHolder, resource: DeviceResource): string {
@@ -86,8 +96,10 @@ export type DeviceLockApiDependencies = {
   paneExists: (paneId: string) => boolean
   sessionName: (paneId: string) => Promise<string | null>
   processes: BusyProcessWatch
-  /** Queues a message for an agent pane; delivered when its turn ends. */
-  message: (paneId: string, text: string) => Promise<void>
+  /** Queues a message for an agent pane, delivered when its turn ends; returns an id to follow it. */
+  message: (paneId: string, text: string) => Promise<string | undefined>
+  /** Withdraws a message that has not been delivered yet. */
+  cancelMessage?: (id: string) => Promise<void>
   /** How agents run the CLI, quoted into messages. */
   cli: string
   pidAlive?: (pid: number) => boolean
@@ -98,10 +110,40 @@ export class DeviceLockApi {
   private readonly tokenDigest: Buffer
   private sweeping?: Promise<void>
   private timer?: ReturnType<typeof setInterval>
+  /** Offer messages still on their way, by message id → queue entry id. */
+  private readonly offerMessages = new Map<string, string>()
 
   constructor(private readonly dependencies: DeviceLockApiDependencies) {
     if (dependencies.token.length < 32) throw new Error('Agent hook token must contain at least 32 characters')
     this.tokenDigest = createHash('sha256').update(dependencies.token).digest()
+    dependencies.registry.onOffered((entries) => this.offered(entries))
+  }
+
+  /** Tells each agent offered a lock; scripts that block are granted directly and need no message. */
+  private offered(entries: QueueEntry[]): void {
+    const { registry, cli, message } = this.dependencies
+    for (const entry of entries) {
+      const resource = entry.offer && registry.resource(entry.offer.resourceId)
+      if (!resource || entry.mode !== 'notify') continue
+      void message(entry.paneId, offerMessage(entry, resource, cli)).then((id) => {
+        if (id) this.offerMessages.set(id, entry.id)
+        else registry.offerDelivered(entry.id)
+      }, (error) => {
+        console.warn('[device-locks] could not message', entry.paneId, error)
+        registry.offerDelivered(entry.id)
+      })
+    }
+  }
+
+  /**
+   * Follows offer messages: the claim window starts once the agent has the message. A message that
+   * can't be delivered (the pane isn't an agent, or it failed) starts the window too.
+   */
+  messageSettled(id: string, status: 'delivered' | 'failed' | 'cancelled', at?: number): void {
+    const entryId = this.offerMessages.get(id)
+    if (!entryId) return
+    this.offerMessages.delete(id)
+    if (status !== 'cancelled') this.dependencies.registry.offerDelivered(entryId, at)
   }
 
   start(intervalMs = 5_000): void {
@@ -118,24 +160,27 @@ export class DeviceLockApi {
       try {
         await this.refreshProcesses()
         const { registry, paneExists } = this.dependencies
-        this.announce(registry.sweep({ paneExists, pidAlive: this.dependencies.pidAlive ?? pidAlive, busy: this.dependencies.processes.busy }))
+        this.lapsed(registry.sweep({ paneExists, pidAlive: this.dependencies.pidAlive ?? pidAlive, busy: this.dependencies.processes.busy }))
       } catch (error) { console.warn('[device-locks] sweep failed', error) }
       finally { this.sweeping = undefined }
     })()
     return this.sweeping
   }
 
-  /** Messages each newly offered or expired request's pane. */
-  announce(events: Partial<SweepEvents>): void {
-    const { registry, cli, message } = this.dependencies
-    const send = (paneId: string, text: string) => void message(paneId, text).catch((error) => console.warn('[device-locks] could not message', paneId, error))
-    for (const entry of events.offered ?? []) {
+  /** Tells agents whose offer lapsed, withdrawing the offer message if it never arrived. */
+  private lapsed(events: SweepEvents): void {
+    const { registry, cli, message, cancelMessage } = this.dependencies
+    for (const entry of events.expired) {
       const resource = entry.offer && registry.resource(entry.offer.resourceId)
-      if (resource && entry.mode === 'notify') send(entry.paneId, offerMessage(entry, resource, cli))
-    }
-    for (const entry of events.expired ?? []) {
-      const resource = entry.offer && registry.resource(entry.offer.resourceId)
-      if (resource) send(entry.paneId, expiredMessage(entry, resource, cli))
+      if (!resource) continue
+      for (const [id, entryId] of this.offerMessages) {
+        if (entryId !== entry.id) continue
+        this.offerMessages.delete(id)
+        void cancelMessage?.(id).catch(() => {})
+      }
+      const queued = registry.entry(entry.id)
+      void message(entry.paneId, expiredMessage(entry, resource, cli, queued ? registry.position(queued) : 0))
+        .catch((error) => console.warn('[device-locks] could not message', entry.paneId, error))
     }
   }
 
@@ -166,7 +211,7 @@ export class DeviceLockApi {
       }
       const body = await readJson(request)
       if (path === '/api/device-locks/resources') {
-        if (request.method === 'POST') writeJson(response, 200, { resource: registry.addResource(body) })
+        if (request.method === 'POST') writeJson(response, 200, { resource: registry.addResource(body, await this.busyCheck()) })
         else { registry.removeResource(String(body.id ?? '')); writeJson(response, 200, { ok: true }) }
         return true
       }
@@ -174,15 +219,9 @@ export class DeviceLockApi {
       const busy = await this.busyCheck()
       if (path === '/api/device-locks/lock') writeJson(response, 200, this.describe(registry.lock({ ...body, ...owner }, busy)))
       else if (path === '/api/device-locks/claim') writeJson(response, 200, this.describe(registry.claim(owner, optionalText(body.request))))
-      else if (path === '/api/device-locks/release') {
-        const result = registry.release({ ...owner, ...(body.pid !== undefined ? { pid: body.pid } : {}) }, optionalText(body.request), busy)
-        this.announce({ offered: result.offered })
-        writeJson(response, 200, { released: result.released })
-      } else {
-        const result = registry.cancel(owner, optionalText(body.request), busy)
-        this.announce({ offered: result.offered })
-        writeJson(response, 200, { cancelled: result.cancelled })
-      }
+      else if (path === '/api/device-locks/release') writeJson(response, 200, { released: registry.release(owner, optionalText(body.request), busy) })
+      else if (typeof body.entryId === 'string') writeJson(response, 200, { withdrawn: registry.withdraw(owner.paneId, body.entryId, busy) })
+      else writeJson(response, 200, { cancelled: registry.cancel(owner, optionalText(body.request), busy) })
     } catch (error) {
       if (!(error instanceof DeviceLockError)) console.warn('[device-locks] request failed', error)
       writeJson(response, error instanceof DeviceLockError ? error.status : 500, { error: error instanceof DeviceLockError ? error.message : 'Device lock request failed' })
@@ -222,7 +261,7 @@ export class DeviceLockApi {
     }
   }
 
-  private async busyCheck() {
+  async busyCheck() {
     await this.refreshProcesses()
     return this.dependencies.processes.busy
   }

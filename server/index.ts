@@ -2079,6 +2079,8 @@ async function main(): Promise<void> {
     },
   })
   await commander.load()
+  // Assigned once relays exist; relay updates report offer deliveries to it.
+  let deviceLockApi: DeviceLockApi | undefined
   const commanderRelays = new CommanderRelays({
     statePath: `${sessionBriefs.statePath}.commander-relays.json`, pane: paneForId,
     chatStatus: (id) => agentHosts.states().find((state) => state.paneId === id)?.session.status,
@@ -2089,7 +2091,10 @@ async function main(): Promise<void> {
       agentPushes.add(id)
       try { await sendAgentTerminal(id, text) } finally { agentPushes.delete(id) }
     },
-    changed: (relay) => broadcast({ type: 'commander_relay', relay }),
+    changed: (relay) => {
+      broadcast({ type: 'commander_relay', relay })
+      if (relay.origin === 'devices' && relay.status !== 'queued') deviceLockApi?.messageSettled(relay.id, relay.status, relay.deliveredAt)
+    },
   })
   await commanderRelays.load()
   const commanderError = (error: unknown): void => console.warn('[commando] Commander observer failed', error)
@@ -2145,7 +2150,7 @@ async function main(): Promise<void> {
   commanderRelays.start()
   commanderStalls.start()
   const deviceLockRegistry = new DeviceLockRegistry({ statePath: defaultDeviceLockStatePath(port) })
-  const deviceLockApi = new DeviceLockApi({
+  deviceLockApi = new DeviceLockApi({
     token: agentHookToken,
     registry: deviceLockRegistry,
     paneExists: leasePaneExists,
@@ -2155,7 +2160,8 @@ async function main(): Promise<void> {
     },
     processes: new BusyProcessWatch(),
     // Delivered like a Commander relay: queued until the agent's turn ends.
-    message: async (paneId, text) => { await commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text }) },
+    message: async (paneId, text) => (await commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text })).id,
+    cancelMessage: async (id) => { await commanderRelays.cancel(id) },
     cli: `node ${JSON.stringify(join(homedir(), '.commando', 'hooks', 'commando-device.mjs'))}`,
   })
   deviceLockApi.start()
@@ -2935,7 +2941,7 @@ async function main(): Promise<void> {
       if (await agentStatusHooks.handle(request, response, url)) return
       if (await sessionBriefApi.handle(request, response, url)) return
       if (await simLeaseApi.handle(request, response, url)) return
-      if (await deviceLockApi.handle(request, response, url)) return
+      if (await deviceLockApi?.handle(request, response, url)) return
       if (paneTargetApi.handle(request, response, url)) return
       if (await webPanesApi.handle(request, response, url)) return
       if (await commanderApi.handle(request, response, url)) return
@@ -3208,7 +3214,7 @@ async function main(): Promise<void> {
     turnBriefs.stop()
     commanderRelays.stop()
     commanderStalls.stop()
-    deviceLockApi.stop()
+    deviceLockApi?.stop()
     conversationTitles.stop()
     pushNotifier?.close()
     simLive.close()

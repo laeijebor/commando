@@ -10,11 +10,13 @@ function setup(ps = '') {
   let now = 1_000
   const registry = new DeviceLockRegistry({ now: () => now })
   registry.addResource({ id: 'pixel', name: 'Pixel 5', kind: 'android', release: 'restore a2' })
-  const message = vi.fn(async (_paneId: string, _text: string) => {})
+  let messages = 0
+  const message = vi.fn(async (_paneId: string, _text: string): Promise<string | undefined> => `m${++messages}`)
+  const cancelMessage = vi.fn(async (_id: string) => {})
   const processes = new BusyProcessWatch(async () => ps)
-  const api = new DeviceLockApi({ token, registry, processes, message, cli: 'node ~/.commando/hooks/commando-device.mjs',
+  const api = new DeviceLockApi({ token, registry, processes, message, cancelMessage, cli: 'node ~/.commando/hooks/commando-device.mjs',
     paneExists: (pane) => ['%1', '%2', '%3'].includes(pane), sessionName: async (pane) => `session ${pane}`, pidAlive: () => true })
-  return { api, registry, message, advance: (ms: number) => { now += ms } }
+  return { api, registry, message, cancelMessage, advance: (ms: number) => { now += ms } }
 }
 
 async function call(api: DeviceLockApi, method: string, suffix = '', body?: unknown, headers: Record<string, string> = {}) {
@@ -50,14 +52,41 @@ describe('DeviceLockApi', () => {
     expect((await call(api, 'POST', '/claim', { request: 'pixel' }, { 'x-commando-pane': '%2' })).body).toMatchObject({ status: 'held' })
   })
 
-  it('tells an agent when its offer expired', async () => {
+  it('starts the claim window when the offer message is delivered, and tells the agent when it lapses', async () => {
     const { api, message, advance } = setup()
     await call(api, 'POST', '/lock', { request: 'pixel', task: 'one' })
     await call(api, 'POST', '/lock', { request: 'pixel', task: 'two' }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'three' }, { 'x-commando-pane': '%3' })
     await call(api, 'POST', '/release', { request: 'pixel' })
+    await Promise.resolve()
     advance(OFFER_TIMEOUT_MS)
     await api.sweep()
-    expect(message).toHaveBeenLastCalledWith('%2', expect.stringContaining('offer wasn\'t claimed within 5 minutes'))
+    expect(message).toHaveBeenCalledTimes(1) // Not delivered yet, so the offer stands.
+    api.messageSettled('m1', 'delivered')
+    advance(OFFER_TIMEOUT_MS)
+    await api.sweep()
+    expect(message).toHaveBeenCalledWith('%2', expect.stringContaining('You are still queued (#2)'))
+    expect(message).toHaveBeenCalledWith('%3', expect.stringContaining('Pixel 5 is yours for "three"'))
+  })
+
+  it('withdraws an undelivered offer message when the offer lapses', async () => {
+    const { api, cancelMessage, advance } = setup()
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'one' })
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'two' }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/release', { request: 'pixel' })
+    await Promise.resolve()
+    advance(15 * 60_000)
+    await api.sweep()
+    expect(cancelMessage).toHaveBeenCalledWith('m1')
+  })
+
+  it('cancels by request id, releasing a lock granted in the meantime', async () => {
+    const { api, registry } = setup()
+    await call(api, 'POST', '/lock', { request: 'pixel', task: 'one' })
+    const queued = await call(api, 'POST', '/lock', { request: 'pixel', task: 'script', mode: 'wait', pid: 9 }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/release', { request: 'pixel' })
+    expect((await call(api, 'POST', '/cancel', { entryId: queued.body.entry.id }, { 'x-commando-pane': '%2' })).body).toEqual({ withdrawn: 'released' })
+    expect(registry.holdersOf('pixel')).toEqual([])
   })
 
   it('wakes a blocked script when its request is granted', async () => {
@@ -70,7 +99,7 @@ describe('DeviceLockApi', () => {
   })
 
   it('reports a build running outside the heavy-job lock', async () => {
-    const { api, registry } = setup('  17 /bin/bash ./gradlew assembleRelease\n  18 node commando-device.mjs lock heavy --task gradlew\n')
+    const { api, registry } = setup('  17 /bin/bash ./gradlew assembleRelease\n  18 node commando-device.mjs lock heavy --task gradlew\n  19 tail -f xcodebuild.log\n  20 /usr/bin/grep -r gradlew .\n')
     registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['xcodebuild', 'gradlew'] })
     const queued = await call(api, 'POST', '/lock', { request: 'heavy', task: 'pod install', mode: 'wait' })
     expect(queued.body).toMatchObject({ status: 'queued', waitingFor: 'gradlew (pid 17)' })
@@ -88,6 +117,7 @@ describe('DeviceLockApi', () => {
     const entry = { id: 'e', paneId: '%1', sessionName: 's', as: 'MEMLEAK', request: 'any-android', resourceIds: ['pixel'], task: 'Allocations', mode: 'notify' as const, enqueuedAt: 0 }
     const resource = { id: 'pixel', name: 'Pixel 5', kind: 'android' as const }
     expect(offerMessage(entry, resource, 'cli')).toContain('cli claim pixel --as "MEMLEAK"')
-    expect(expiredMessage(entry, resource, 'cli')).toContain('cli lock any-android --as "MEMLEAK" --task "Allocations"')
+    expect(expiredMessage({ ...entry, dropped: true }, resource, 'cli', 0)).toContain('cli lock any-android --as "MEMLEAK" --task "Allocations"')
+    expect(expiredMessage({ ...entry, dropped: false }, resource, 'cli', 2)).toContain('still queued (#2)')
   })
 })

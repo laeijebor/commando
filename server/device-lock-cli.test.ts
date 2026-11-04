@@ -76,8 +76,36 @@ describe('generated device CLI', () => {
       return { status: 200, result: method === 'POST' && path === '/cancel' ? { cancelled: [entry] } : { status: 'queued', entry, position: 1, holders: [] } }
     })
     expect(await cli.runDeviceCli(['lock', 'pixel', '--task', 't', '--wait', '1m'], request, { err, now: () => now, onSignal: () => {} })).toBe(3)
-    expect(request).toHaveBeenLastCalledWith('POST', '/cancel', { request: 'pixel' })
+    expect(request).toHaveBeenLastCalledWith('POST', '/cancel', { entryId: 'e1' })
     expect(err).toHaveBeenLastCalledWith('Gave up waiting after 1m.')
+  })
+
+  it('claims an offer while waiting, and rides out a daemon restart', async () => {
+    const cli = await load(), out = vi.fn(), err = vi.fn()
+    const entry = { id: 'e1', paneId: '%2', sessionName: 's', request: 'pixel', resourceIds: ['pixel'], task: 't', mode: 'wait', enqueuedAt: 0 }
+    const steps: Array<() => any> = [
+      () => ({ status: 'queued', entry, position: 1, holders: [holder] }),
+      () => { throw new Error('fetch failed') },
+      () => ({ status: 'offered', entry, resource: pixel }),
+      () => ({ status: 'held', holder: { ...holder, as: undefined }, resource: pixel }),
+    ]
+    const request = vi.fn(async () => ({ status: 200, result: steps.shift()!() }))
+    expect(await cli.runDeviceCli(['lock', 'pixel', '--task', 't', '--wait'], request, { out, err, pause: async () => {}, onSignal: () => {} })).toBe(0)
+    expect(request.mock.calls.map((call: unknown[]) => call[1])).toEqual(['/lock', '/entry?id=e1&wait=55', '/entry?id=e1&wait=55', '/claim'])
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('Commando is unreachable'))
+  })
+
+  it('gives up and withdraws when the daemon stays down', async () => {
+    const cli = await load(), err = vi.fn()
+    let now = 0
+    const entry = { id: 'e1', request: 'pixel', resourceIds: ['pixel'], task: 't', mode: 'wait', enqueuedAt: 0, sessionName: 's' }
+    const request = vi.fn(async (method: string, path: string) => {
+      if (path === '/lock') return { status: 200, result: { status: 'queued', entry, position: 1, holders: [] } }
+      if (method === 'GET') { now += 30_000; throw new Error('fetch failed') }
+      return { status: 200, result: { withdrawn: 'cancelled' } }
+    })
+    await expect(cli.runDeviceCli(['lock', 'pixel', '--task', 't', '--wait'], request, { err, now: () => now, pause: async () => {}, onSignal: () => {} })).rejects.toThrow('fetch failed')
+    expect(request).toHaveBeenLastCalledWith('POST', '/cancel', { entryId: 'e1' })
   })
 
   it('lists holders and queues per device', async () => {

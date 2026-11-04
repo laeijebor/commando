@@ -38,7 +38,10 @@ export type QueueEntry = LockOwner & {
   estimateMs?: number
   mode: LockMode
   enqueuedAt: number
-  offer?: { resourceId: string; at: number }
+  /** Set while the lock is offered; the claim window starts when the agent receives the message. */
+  offer?: { resourceId: string; at: number; deliveredAt?: number }
+  /** How many offers this request has let lapse. */
+  skips?: number
 }
 export type DeviceLockSnapshot = { resources: DeviceResource[]; holders: DeviceHolder[]; queue: QueueEntry[]; paused: string[] }
 export type LockResult =
@@ -46,15 +49,27 @@ export type LockResult =
   | { status: 'offered'; entry: QueueEntry; resource: DeviceResource }
   | { status: 'queued'; entry: QueueEntry; position: number }
 /** What a sweep changed, so the daemon can message the affected panes. */
-export type SweepEvents = { offered: QueueEntry[]; expired: QueueEntry[]; ended: Array<DeviceHolder & { reason: 'pane-closed' | 'process-exited' }>; dropped: QueueEntry[] }
+export type SweepEvents = {
+  /** Offers that lapsed; `dropped` when the request missed too many turns and left the queue. */
+  expired: Array<QueueEntry & { dropped: boolean }>
+  ended: Array<DeviceHolder & { reason: 'pane-closed' | 'process-exited' }>
+  /** Requests whose pane closed or process exited. */
+  dropped: QueueEntry[]
+}
 export type SweepContext = { paneExists: (paneId: string) => boolean; pidAlive: (pid: number) => boolean; busy?: BusyCheck }
 /** Returns a short description of what is keeping the resource busy outside the lock, if anything. */
 export type BusyCheck = (resource: DeviceResource) => string | undefined
 
+/** How long an agent has to claim an offer once it has received the message. */
 export const OFFER_TIMEOUT_MS = 5 * 60_000
+/** A busy agent may not see the message for a long time; the device shouldn't sit idle meanwhile. */
+export const UNDELIVERED_OFFER_TIMEOUT_MS = 15 * 60_000
+/** After this many lapsed offers a request leaves the queue. */
+export const MAX_SKIPS = 3
 export const ANY_SELECTORS: Record<string, DeviceKind[]> = {
   any: ['android', 'ios', 'emulator'], 'any-phone': ['android', 'ios'], 'any-android': ['android'], 'any-ios': ['ios'],
 }
+type Served = { offered: QueueEntry[]; granted: Map<string, DeviceHolder> }
 const RESOURCE_ID = /^[a-z][a-z0-9-]{0,31}$/
 const PANE_ID = /^%\d+$/
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u
@@ -106,8 +121,11 @@ function parseEstimate(value: unknown): number | undefined {
   return Math.round(value as number)
 }
 
-/** Same owner: same pane and, when either side names one, the same `--as` name. */
-const sameOwner = (a: LockOwner, b: LockOwner): boolean => a.paneId === b.paneId && (a.as ?? '') === (b.as ?? '')
+/**
+ * Same owner: same pane, same `--as` name, and same process when either side gives one, so a
+ * script (`--pid $$`) never shares a lock or a queue place with the agent that started it.
+ */
+const sameOwner = (a: LockOwner, b: LockOwner): boolean => a.paneId === b.paneId && (a.as ?? '') === (b.as ?? '') && (a.pid ?? 0) === (b.pid ?? 0)
 
 export function ownerLabel(owner: LockOwner): string {
   return owner.as ? `${owner.as} (${owner.sessionName})` : owner.sessionName
@@ -117,9 +135,8 @@ export class DeviceLockRegistry {
   private state: DeviceLockSnapshot = { resources: [], holders: [], queue: [], paused: [] }
   private readonly now: () => number
   private readonly statePath?: string
-  /** Bumped on every change so long-polls can wake. */
-  private revision = 0
   private readonly listeners = new Set<() => void>()
+  private readonly offerListeners = new Set<(entries: QueueEntry[]) => void>()
 
   constructor(options: { statePath?: string; now?: () => number } = {}) {
     this.now = options.now ?? Date.now
@@ -128,13 +145,17 @@ export class DeviceLockRegistry {
   }
 
   snapshot(): DeviceLockSnapshot { return structuredClone(this.state) }
-  get version(): number { return this.revision }
   onChange(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
+  /** Called with every new offer, whichever operation made it, so the agent can be told. */
+  onOffered(listener: (entries: QueueEntry[]) => void): () => void { this.offerListeners.add(listener); return () => this.offerListeners.delete(listener) }
   resource(id: string): DeviceResource | undefined { return this.state.resources.find((entry) => entry.id === id) }
 
-  addResource(input: Record<string, unknown>): DeviceResource {
+  addResource(input: Record<string, unknown>, busy?: BusyCheck): DeviceResource {
     const resource = parseResource(input)
-    this.commit({ ...this.state, resources: [...this.state.resources.filter((entry) => entry.id !== resource.id), resource] })
+    // Waiting "any" requests that cover the new device can use it straight away.
+    const queue = this.state.queue.map((entry) => ANY_SELECTORS[entry.request]?.includes(resource.kind) && !entry.resourceIds.includes(resource.id)
+      ? { ...entry, resourceIds: [...entry.resourceIds, resource.id] } : entry)
+    this.serve({ ...this.state, resources: [...this.state.resources.filter((entry) => entry.id !== resource.id), resource], queue }, busy)
     return { ...resource }
   }
 
@@ -159,7 +180,7 @@ export class DeviceLockRegistry {
 
   /**
    * Takes a lock now if it is free, else joins the queue. Asking again is idempotent: a holder keeps
-   * its lock, a queued request keeps its place, and an offered request is claimed.
+   * its lock, a queued request keeps its place (switching to `wait` if asked), and an offer is claimed.
    */
   lock(input: Record<string, unknown>, busy?: BusyCheck): LockResult {
     const owner = parseOwner(input)
@@ -172,13 +193,15 @@ export class DeviceLockRegistry {
     if (held) return { status: 'held', holder: { ...held }, resource: this.resource(held.resourceId)! }
     const existing = this.state.queue.find((entry) => sameOwner(entry, owner) && entry.request === input.request)
     if (existing?.offer) return this.claim(owner, existing.offer.resourceId)
-    if (existing) return this.queued(existing)
+    if (existing && mode === 'wait' && existing.mode === 'notify') {
+      this.commit({ ...this.state, queue: this.state.queue.map((entry) => entry.id === existing.id ? { ...entry, mode } : entry) })
+    }
+    if (existing) return this.queued(this.state.queue.find((entry) => entry.id === existing.id)!)
     if (this.state.queue.length >= MAX_QUEUE) throw new DeviceLockError(429, 'The device queue is full')
     const entry: QueueEntry = { ...owner, id: randomUUID(), request: input.request, resourceIds: resources.map((resource) => resource.id),
       task, ...(estimateMs ? { estimateMs } : {}), mode, enqueuedAt: this.now() }
-    const served = this.pump({ ...this.state, queue: [...this.state.queue, entry] }, new Set([entry.id]), busy)
-    this.commit(served.state)
-    const holder = served.granted.get(entry.id)
+    const { granted } = this.serve({ ...this.state, queue: [...this.state.queue, entry] }, busy, entry.id)
+    const holder = granted.get(entry.id)
     if (holder) return { status: 'held', holder: { ...holder }, resource: this.resource(holder.resourceId)! }
     return this.queued(this.state.queue.find((candidate) => candidate.id === entry.id)!)
   }
@@ -198,23 +221,40 @@ export class DeviceLockRegistry {
   }
 
   /** Releases what the owner holds (one resource, or all of them), then serves the queue. */
-  release(ownerInput: LockOwner | Record<string, unknown>, resourceId?: string, busy?: BusyCheck): { released: DeviceHolder[]; offered: QueueEntry[] } {
+  release(ownerInput: LockOwner | Record<string, unknown>, resourceId?: string, busy?: BusyCheck): DeviceHolder[] {
     const owner = parseOwner(ownerInput as Record<string, unknown>)
-    const released = this.state.holders.filter((entry) => sameOwner(entry, owner) && (!resourceId || entry.resourceId === resourceId) && (!owner.pid || !entry.pid || entry.pid === owner.pid))
+    const released = this.state.holders.filter((entry) => sameOwner(entry, owner) && (!resourceId || entry.resourceId === resourceId))
     if (!released.length) throw new DeviceLockError(404, resourceId ? `You don't hold ${resourceId}` : 'You hold no device locks')
-    const served = this.pump({ ...this.state, holders: this.state.holders.filter((entry) => !released.includes(entry)) }, new Set(), busy)
-    this.commit(served.state)
-    return { released: released.map((entry) => ({ ...entry })), offered: served.offered }
+    this.serve({ ...this.state, holders: this.state.holders.filter((entry) => !released.includes(entry)) }, busy)
+    return released.map((entry) => ({ ...entry }))
   }
 
   /** Leaves the queue (one request, or every request of this owner). */
-  cancel(ownerInput: LockOwner | Record<string, unknown>, request?: string, busy?: BusyCheck): { cancelled: QueueEntry[]; offered: QueueEntry[] } {
+  cancel(ownerInput: LockOwner | Record<string, unknown>, request?: string, busy?: BusyCheck): QueueEntry[] {
     const owner = parseOwner(ownerInput as Record<string, unknown>)
     const cancelled = this.state.queue.filter((entry) => sameOwner(entry, owner) && (!request || entry.request === request || entry.resourceIds.includes(request)))
     if (!cancelled.length) throw new DeviceLockError(404, request ? `You are not queued for ${request}` : 'You are not queued for any device')
-    const served = this.pump({ ...this.state, queue: this.state.queue.filter((entry) => !cancelled.includes(entry)) }, new Set(), busy)
-    this.commit(served.state)
-    return { cancelled: cancelled.map((entry) => ({ ...entry })), offered: served.offered }
+    this.serve({ ...this.state, queue: this.state.queue.filter((entry) => !cancelled.includes(entry)) }, busy)
+    return cancelled.map((entry) => ({ ...entry }))
+  }
+
+  /**
+   * Withdraws one request from this pane by id. If it was granted in the meantime (a blocked CLI
+   * giving up just as its turn came), releases that lock instead, so nothing is left held by mistake.
+   */
+  withdraw(paneId: string, entryId: string, busy?: BusyCheck): 'cancelled' | 'released' | 'gone' {
+    const entry = this.state.queue.find((candidate) => candidate.id === entryId && candidate.paneId === paneId)
+    const holder = this.state.holders.find((candidate) => candidate.entryId === entryId && candidate.paneId === paneId)
+    if (!entry && !holder) return 'gone'
+    this.serve({ ...this.state, queue: this.state.queue.filter((candidate) => candidate !== entry), holders: this.state.holders.filter((candidate) => candidate !== holder) }, busy)
+    return entry ? 'cancelled' : 'released'
+  }
+
+  /** Starts the claim window once the agent has actually been given the offer message. */
+  offerDelivered(entryId: string, at = this.now()): void {
+    const entry = this.state.queue.find((candidate) => candidate.id === entryId)
+    if (!entry?.offer || entry.offer.deliveredAt !== undefined) return
+    this.commit({ ...this.state, queue: this.state.queue.map((candidate) => candidate === entry ? { ...entry, offer: { ...entry.offer!, deliveredAt: at } } : candidate) })
   }
 
   /** A queue entry's place among the requests that compete for any of its resources (1-based). */
@@ -234,8 +274,8 @@ export class DeviceLockRegistry {
   }
 
   /**
-   * Housekeeping: ends locks whose pane closed or whose process exited, drops requests in the same
-   * position, expires unclaimed offers, then serves the queue.
+   * Housekeeping: ends locks whose pane closed or whose process exited, drops their requests, lets
+   * unclaimed offers lapse (the request moves back one place, or leaves after MAX_SKIPS), then serves the queue.
    */
   sweep(context: SweepContext): SweepEvents {
     const now = this.now()
@@ -243,12 +283,25 @@ export class DeviceLockRegistry {
     const ended = this.state.holders.filter((entry) => !alive(entry))
       .map((entry) => ({ ...entry, reason: context.paneExists(entry.paneId) ? 'process-exited' as const : 'pane-closed' as const }))
     const dropped = this.state.queue.filter((entry) => !alive(entry))
-    const expired = this.state.queue.filter((entry) => alive(entry) && entry.offer && now - entry.offer.at >= OFFER_TIMEOUT_MS)
-    const gone = new Set([...dropped, ...expired].map((entry) => entry.id))
-    const served = this.pump({ ...this.state, holders: this.state.holders.filter((entry) => alive(entry)),
-      queue: this.state.queue.filter((entry) => !gone.has(entry.id)) }, new Set(), context.busy)
-    if (ended.length || gone.size || served.offered.length || served.granted.size) this.commit(served.state)
-    return { offered: served.offered, expired, ended, dropped }
+    const lapsed = (entry: QueueEntry) => entry.offer !== undefined && (entry.offer.deliveredAt !== undefined
+      ? now - entry.offer.deliveredAt >= OFFER_TIMEOUT_MS : now - entry.offer.at >= UNDELIVERED_OFFER_TIMEOUT_MS)
+    let queue = this.state.queue.filter((entry) => alive(entry))
+    const expired: SweepEvents['expired'] = []
+    for (const entry of queue.filter(lapsed)) {
+      const skips = (entry.skips ?? 0) + 1
+      const { offer: _, ...rest } = entry
+      queue = queue.filter((candidate) => candidate.id !== entry.id)
+      if (skips >= MAX_SKIPS) { expired.push({ ...entry, dropped: true }); continue }
+      // Step back behind the next request that wants the same device, so that one goes first.
+      const at = queue.findIndex((candidate) => candidate.resourceIds.includes(entry.offer!.resourceId) && !candidate.offer &&
+        this.state.queue.indexOf(candidate) > this.state.queue.indexOf(entry))
+      const moved = { ...rest, skips }
+      queue = at < 0 ? [...queue, moved] : [...queue.slice(0, at + 1), moved, ...queue.slice(at + 1)]
+      expired.push({ ...moved, offer: entry.offer, dropped: false })
+    }
+    const changed = ended.length > 0 || dropped.length > 0 || expired.length > 0
+    this.serve({ ...this.state, holders: this.state.holders.filter((entry) => alive(entry)), queue }, context.busy, undefined, changed)
+    return { expired, ended, dropped }
   }
 
   // ---- Owner (Devices view) actions ----
@@ -263,34 +316,42 @@ export class DeviceLockRegistry {
     this.commit({ ...this.state, queue: [...rest.slice(0, index), entry, ...rest.slice(index)] })
   }
 
-  setPaused(resourceId: string, paused: boolean, busy?: BusyCheck): QueueEntry[] {
+  setPaused(resourceId: string, paused: boolean, busy?: BusyCheck): void {
     if (!this.resource(resourceId)) throw new DeviceLockError(404, `No device lock named ${resourceId}`)
     const others = this.state.paused.filter((entry) => entry !== resourceId)
-    const served = this.pump({ ...this.state, paused: paused ? [...others, resourceId] : others }, new Set(), busy)
-    this.commit(served.state)
-    return served.offered
+    this.serve({ ...this.state, paused: paused ? [...others, resourceId] : others }, busy)
   }
 
   /** Ends someone else's lock (the user's Release button). */
-  forceRelease(resourceId: string, busy?: BusyCheck): { released: DeviceHolder[]; offered: QueueEntry[] } {
+  forceRelease(resourceId: string, busy?: BusyCheck): DeviceHolder[] {
     const released = this.state.holders.filter((entry) => entry.resourceId === resourceId)
     if (!released.length) throw new DeviceLockError(404, `${resourceId} is not held`)
-    const served = this.pump({ ...this.state, holders: this.state.holders.filter((entry) => !released.includes(entry)) }, new Set(), busy)
-    this.commit(served.state)
-    return { released, offered: served.offered }
+    this.serve({ ...this.state, holders: this.state.holders.filter((entry) => !released.includes(entry)) }, busy)
+    return released
   }
 
   /** Removes a request (or withdraws its offer) from the queue. */
-  remove(entryId: string, busy?: BusyCheck): { removed: QueueEntry; offered: QueueEntry[] } {
+  remove(entryId: string, busy?: BusyCheck): QueueEntry {
     const removed = this.state.queue.find((entry) => entry.id === entryId)
     if (!removed) throw new DeviceLockError(404, 'That request is no longer queued')
-    const served = this.pump({ ...this.state, queue: this.state.queue.filter((entry) => entry !== removed) }, new Set(), busy)
-    this.commit(served.state)
-    return { removed, offered: served.offered }
+    this.serve({ ...this.state, queue: this.state.queue.filter((entry) => entry !== removed) }, busy)
+    return removed
   }
 
-  /** Serves the queue: each free, unpaused resource goes to the first request that wants it. */
-  private pump(state: DeviceLockSnapshot, grantNow: Set<string>, busy: BusyCheck | undefined): { state: DeviceLockSnapshot; offered: QueueEntry[]; granted: Map<string, DeviceHolder> } {
+  /** Serves the queue on `state`, commits it when anything changed, and announces new offers. */
+  private serve(state: DeviceLockSnapshot, busy?: BusyCheck, grantNow?: string, changed = true): Served {
+    const served = this.pump(state, grantNow, busy)
+    if (changed || served.offered.length || served.granted.size) this.commit(served.state)
+    if (served.offered.length) {
+      for (const listener of this.offerListeners) {
+        try { listener(served.offered.map((entry) => ({ ...entry }))) } catch (error) { console.warn('[device-locks] offer listener failed', error) }
+      }
+    }
+    return served
+  }
+
+  /** Each free, unpaused resource goes to the first request that wants it. */
+  private pump(state: DeviceLockSnapshot, grantNow: string | undefined, busy: BusyCheck | undefined): Served & { state: DeviceLockSnapshot } {
     let { holders, queue } = state
     const offered: QueueEntry[] = [], granted = new Map<string, DeviceHolder>()
     for (const resource of state.resources) {
@@ -298,7 +359,7 @@ export class DeviceLockRegistry {
         queue.some((entry) => entry.offer?.resourceId === resource.id)) continue
       const next = queue.find((entry) => !entry.offer && entry.resourceIds.includes(resource.id))
       if (!next || busy?.(resource)) continue
-      if (next.mode === 'wait' || grantNow.has(next.id)) {
+      if (next.mode === 'wait' || next.id === grantNow) {
         const holder = this.holderFor(next, resource.id)
         holders = [...holders, holder]
         granted.set(next.id, holder)
@@ -346,10 +407,12 @@ export class DeviceLockRegistry {
           if (typeof value.id !== 'string' || typeof value.request !== 'string' || !Array.isArray(value.resourceIds) || !Number.isFinite(value.enqueuedAt)) continue
           const resourceIds = value.resourceIds.filter((id: unknown) => typeof id === 'string' && known.has(id))
           if (!resourceIds.length) continue
-          const offer = value.offer && known.has(value.offer.resourceId) && Number.isFinite(value.offer.at) ? { resourceId: value.offer.resourceId as string, at: Math.min(value.offer.at, this.now()) } : undefined
+          const offer = value.offer && known.has(value.offer.resourceId) && Number.isFinite(value.offer.at) ? { resourceId: value.offer.resourceId as string, at: Math.min(value.offer.at, this.now()),
+            ...(Number.isFinite(value.offer.deliveredAt) ? { deliveredAt: Math.min(value.offer.deliveredAt, this.now()) } : {}) } : undefined
           queue.push({ ...parseOwner(value), id: value.id, request: value.request, resourceIds, task: text(value.task, 'task', 300)!,
             ...(parseEstimate(value.estimateMs) ? { estimateMs: parseEstimate(value.estimateMs) } : {}), mode: value.mode === 'wait' ? 'wait' : 'notify',
-            enqueuedAt: Math.min(value.enqueuedAt, this.now()), ...(offer ? { offer } : {}) })
+            enqueuedAt: Math.min(value.enqueuedAt, this.now()), ...(offer ? { offer } : {}),
+            ...(Number.isInteger(value.skips) && value.skips > 0 ? { skips: value.skips } : {}) })
         } catch { /* skip */ }
       }
       const paused = (Array.isArray(parsed.paused) ? parsed.paused : []).filter((id: unknown): id is string => typeof id === 'string' && known.has(id))
@@ -365,7 +428,6 @@ export class DeviceLockRegistry {
       renameSync(temporary, this.statePath)
     }
     this.state = state
-    this.revision++
     for (const listener of this.listeners) {
       try { listener() } catch (error) { console.warn('[device-locks] change listener failed', error) }
     }
