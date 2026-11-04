@@ -1,3 +1,5 @@
+import { isDeckPath, parseCanvasSource } from '../shared/deck.js'
+import { deckThemes, exportDeck } from './deck-export.js'
 import { encodeCanvasPath } from '../shared/canvas-manifest.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -256,16 +258,19 @@ export class RedlineApi {
   private async handleApi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     const png = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/frames\/([A-Za-z0-9_-]{1,64})\.png$/.exec(url.pathname)
     if (png) {
-      if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
+      if (isDeckPath(url.searchParams.get('manifest'))) await this.authenticate(request, url)
+      else if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
       const manifestPath = canvasRelativePath(url.searchParams.get('manifest') ?? 'canvas.json')
       if (!manifestPath) throw new HttpError(400, 'Invalid manifest path')
       const file = this.dependencies.artifacts.resolve(png[1], encodeCanvasPath(manifestPath))
       if (!file) throw new HttpError(404, 'Canvas manifest not found')
-      const frame = parseCanvasManifest(readFileSync(file, 'utf8')).manifest.frames.find((f) => f.id === png[2])
+      const frame = parseCanvasSource(readFileSync(file, 'utf8'), manifestPath).manifest.frames.find((f) => f.id === png[2])
       if (!frame || !this.dependencies.artifacts.resolve(png[1], encodeCanvasPath(frame.src))) throw new HttpError(404, 'Canvas frame not found')
       if (!this.dependencies.screenshot) throw new HttpError(503, 'Chromium engine is not available for PNG export')
-      const frameUrl = `${this.dependencies.baseUrl}/redline/artifacts/${png[1]}/${encodeCanvasPath(frame.src)}`
+      const theme = url.searchParams.get('theme')
+      if (theme !== null && !/^[a-z0-9-]{1,40}$/.test(theme)) throw new HttpError(400, 'Invalid theme')
+      const frameUrl = `${this.dependencies.baseUrl}/redline/artifacts/${png[1]}/${encodeCanvasPath(frame.src)}${theme ? `?theme=${theme}` : ''}${frame.slide ? `#${frame.slide}` : ''}`
       const body = await this.dependencies.screenshot(frameUrl, frame.w, frame.h)
       response.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store', 'Content-Length': body.length, 'X-Content-Type-Options': 'nosniff' })
       response.end(body)
@@ -280,6 +285,17 @@ export class RedlineApi {
       return
     }
     await this.authenticate(request, url)
+    const deckRoute = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/(deck-themes|deck-export)$/.exec(url.pathname)
+    if (deckRoute) {
+      if (deckRoute[2] === 'deck-themes') {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        this.writeJson(response, 200, deckThemes(this.dependencies.artifacts, deckRoute[1], url.searchParams.get('deck')))
+      } else {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        await exportDeck(this.dependencies.artifacts, deckRoute[1], await this.readJson(request), response)
+      }
+      return
+    }
     const snapshots = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/canvas\/snapshots$/.exec(url.pathname)
     if (snapshots) {
       if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
@@ -310,7 +326,7 @@ export class RedlineApi {
         return
       }
       const text = readFileSync(file, 'utf8')
-      this.writeJson(response, 200, { ...parseCanvasManifest(text), contentHash: canvasContentHash(text) })
+      this.writeJson(response, 200, { ...parseCanvasSource(text, manifestPath), contentHash: canvasContentHash(text) })
       return
     }
     const single = /^\/api\/redline\/artifacts\/([0-9a-f]{16})$/.exec(url.pathname)
