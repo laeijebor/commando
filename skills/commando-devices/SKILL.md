@@ -33,14 +33,16 @@ node "$D" lock pixel --as MASCOT --task "Rive round: cold launch x5" --estimate 
   start and finish, …), then `node "$D" release pixel --as MASCOT`.
 
 Use `--as NAME` (your task name, e.g. MASCOT) so several agents or subagents in
-one pane queue separately. Use the same name for claim and release.
+one pane queue separately. Pass the same `--as` (and, in scripts, the same
+`--pid`) to every later command: `claim`, `release` and `cancel` only find
+locks and requests with the owner they were made with.
 
 Ask for `any-android`, `any-ios`, `any-phone` or `any` instead of a device
 name when any matching device will do, for example to check that a new native
 module loads. Name the device when results must be comparable (profiling).
 
-`cancel [device]` leaves the queue. Running `lock` again is safe: you keep your
-lock or your place.
+`node "$D" cancel pixel --as MASCOT` leaves the queue. Running `lock` again is
+safe: you keep your lock or your place.
 
 ## Scripts
 

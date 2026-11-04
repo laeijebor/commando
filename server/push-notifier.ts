@@ -310,11 +310,13 @@ export class PushNotifier {
    * Pushes something that needs the owner outside an agent's own status (e.g. a device lock held by an idle
    * agent while others wait). Uses the needs-input rules and category; each key is sent at most once.
    */
-  alert(input: { paneId: string; provider: AgentProvider; title: string; body: string; dedupeKey: string }): void {
+  /** Returns false when the pane has no session yet, so the caller can try again later. */
+  alert(input: { paneId: string; provider: AgentProvider; title: string; body: string; dedupeKey: string }): boolean {
     const context = this.options.paneContext(input.paneId)
-    if (!context) return
+    if (!context) return false
     this.deliver({ kind: 'needs_input', categoryId: 'needs_input', title: input.title, body: trim(input.body, input.title), dedupeKey: input.dedupeKey,
       data: { paneId: input.paneId, sessionId: context.sessionId, sessionName: context.sessionName, provider: input.provider, kind: 'needs_input' } })
+    return true
   }
 
   private dispatch(status: AgentStatus): void {

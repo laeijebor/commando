@@ -77,6 +77,9 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u
 const KINDS: DeviceKind[] = ['android', 'ios', 'emulator', 'host']
 const MAX_QUEUE = 200
 
+/** Identifies one hold across restarts, for alerts about it. */
+export const holderRef = (holder: DeviceHolder): string => holder.entryId ?? `${holder.paneId}:${holder.resourceId}:${holder.acquiredAt}`
+
 /** What each pane holds, has been offered or waits for, for its worklog. */
 export function deviceLockClaimsByPane(registry: Pick<DeviceLockRegistry, 'snapshot' | 'position'>): Map<string, { sessionName: string; claims: DeviceLockClaim[] }> {
   const { resources, holders, queue } = registry.snapshot()
@@ -156,6 +159,8 @@ export class DeviceLockRegistry {
   private readonly statePath?: string
   private readonly listeners = new Set<() => void>()
   private readonly offerListeners = new Set<(entries: QueueEntry[]) => void>()
+  /** Owner alerts already pushed, kept with the state so a daemon restart doesn't repeat them. */
+  private alerts: Array<{ key: string; ref: string }> = []
 
   constructor(options: { statePath?: string; now?: () => number } = {}) {
     this.now = options.now ?? Date.now
@@ -288,6 +293,15 @@ export class DeviceLockRegistry {
     const entry = this.state.queue.find((candidate) => 'entryId' in target ? candidate.id === target.entryId : candidate.offer?.messageId === target.messageId)
     if (!entry?.offer || entry.offer.deliveredAt !== undefined) return
     this.commit({ ...this.state, queue: this.state.queue.map((candidate) => candidate === entry ? { ...entry, offer: { ...entry.offer!, deliveredAt: at } } : candidate) })
+  }
+
+  alertSent(key: string): boolean { return this.alerts.some((alert) => alert.key === key) }
+
+  /** Remembers a pushed alert about a hold or request (`ref`); forgets alerts whose hold or request has ended. */
+  recordAlert(key: string, ref: string): void {
+    const live = new Set([...this.state.holders.map(holderRef), ...this.state.queue.map((entry) => entry.id)])
+    this.alerts = [...this.alerts.filter((alert) => live.has(alert.ref) && alert.key !== key), { key, ref }]
+    this.commit(this.state)
   }
 
   /** A queue entry's place among the requests that compete for any of its resources (1-based). */
@@ -458,6 +472,8 @@ export class DeviceLockRegistry {
         } catch { /* skip */ }
       }
       const paused = (Array.isArray(parsed.paused) ? parsed.paused : []).filter((id: unknown): id is string => typeof id === 'string' && known.has(id))
+      this.alerts = (Array.isArray(parsed.alerts) ? parsed.alerts : []).filter((alert: { key?: unknown; ref?: unknown }) => typeof alert?.key === 'string' && typeof alert.ref === 'string')
+        .map((alert: { key: string; ref: string }) => ({ key: alert.key, ref: alert.ref }))
       this.state = { resources, holders, queue, paused }
     } catch { /* Missing or corrupt state starts empty. */ }
   }
@@ -466,7 +482,7 @@ export class DeviceLockRegistry {
     if (this.statePath) {
       mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 })
       const temporary = `${this.statePath}.${process.pid}.tmp`
-      writeFileSync(temporary, JSON.stringify({ version: 1, ...state }, null, 2), { mode: 0o600 })
+      writeFileSync(temporary, JSON.stringify({ version: 1, ...state, alerts: this.alerts }, null, 2), { mode: 0o600 })
       renameSync(temporary, this.statePath)
     }
     this.state = state
