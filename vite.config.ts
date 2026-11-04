@@ -24,6 +24,7 @@ export default defineConfig({
       '/screenshots': daemonHttpTarget,
       '/chat-images': daemonHttpTarget,
       '/ide': { target: daemonHttpTarget, ws: true },
+      '/h': { target: daemonHttpTarget, ws: true },
       '/ws': {
         target: daemonWebSocketTarget,
         ws: true,

@@ -1,3 +1,4 @@
+import { useHost } from '../HostContext'
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, Undo2, X, XCircle } from 'lucide-react'
 import type { PrAutofixStatus } from '../../shared/pr-types'
@@ -163,10 +164,13 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
 }
 
 export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; api: StripApi; connected: boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void }) {
+  const { activeHost } = useHost()
+  const dismissedKey = activeHost === 'local' ? DISMISSED_PRS_STORAGE_KEY : `${DISMISSED_PRS_STORAGE_KEY}.${activeHost}`
+  const minimisedKey = activeHost === 'local' ? MINIMISED_PR_STRIPS_STORAGE_KEY : `${MINIMISED_PR_STRIPS_STORAGE_KEY}.${activeHost}`
   const list = usePanePullRequests(paneId, api, connected)
   const [expanded, setExpanded] = useState(false)
-  const [dismissed, setDismissed] = useState(() => storedKeys(DISMISSED_PRS_STORAGE_KEY))
-  const [minimisedStrips, setMinimisedStrips] = useState(() => storedKeys(MINIMISED_PR_STRIPS_STORAGE_KEY))
+  const [dismissed, setDismissed] = useState(() => storedKeys(dismissedKey))
+  const [minimisedStrips, setMinimisedStrips] = useState(() => storedKeys(minimisedKey))
   if (!list?.pullRequests.length) return null
   const openInPanel = (event: MouseEvent<HTMLAnchorElement>, pr: PanePrSummary, tab: PrQuickLookTab) => {
     // Modified clicks keep the browser's open-in-new-tab behaviour.
@@ -176,12 +180,12 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
   }
   // Keyed by the pane's stable target so a reused tmux pane id starts clean.
   const dismissKey = (pr: PanePrSummary) => `${list.targetId}:${pr.repo}#${pr.number}`
-  const setDismissedPr = (pr: PanePrSummary, isDismissed: boolean) => setDismissed(setStoredKey(DISMISSED_PRS_STORAGE_KEY, dismissed, dismissKey(pr), isDismissed))
+  const setDismissedPr = (pr: PanePrSummary, isDismissed: boolean) => setDismissed(setStoredKey(dismissedKey, dismissed, dismissKey(pr), isDismissed))
   const prs = [...list.pullRequests].sort((left, right) => Number(right.state === 'open') - Number(left.state === 'open'))
   // A single PR is already one line, so only longer lists get the minimise header.
   const minimisable = prs.length > 1
   const minimised = minimisable && minimisedStrips.includes(list.targetId)
-  const toggleMinimised = () => setMinimisedStrips(setStoredKey(MINIMISED_PR_STRIPS_STORAGE_KEY, minimisedStrips, list.targetId, !minimised))
+  const toggleMinimised = () => setMinimisedStrips(setStoredKey(minimisedKey, minimisedStrips, list.targetId, !minimised))
   const shown = prs.filter((pr) => !dismissed.includes(dismissKey(pr)))
   const hidden = prs.filter((pr) => dismissed.includes(dismissKey(pr)))
   const restore = (pr: PanePrSummary) => {

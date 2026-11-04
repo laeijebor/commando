@@ -8,9 +8,9 @@ export type ChatLaunchPreference = { configDir?: string; permissionMode: ChatPer
 
 const DEFAULT_PREFERENCE: ChatLaunchPreference = { permissionMode: 'default' }
 
-function readAll(): Record<string, ChatLaunchPreference> {
+function readAll(host = 'local'): Record<string, ChatLaunchPreference> {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(CHAT_LAUNCH_STORAGE_KEY) ?? '{}') as unknown
+    const parsed = JSON.parse(window.localStorage.getItem(host === 'local' ? CHAT_LAUNCH_STORAGE_KEY : `${CHAT_LAUNCH_STORAGE_KEY}.${host}`) ?? '{}') as unknown
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, ChatLaunchPreference> : {}
   } catch {
     return {}
@@ -29,22 +29,22 @@ function storageKeys(repoKey: string | undefined, provider: ChatLaunchProvider):
 }
 
 /** The preference remembered for a repository (or folder), else the last one used anywhere. */
-export function loadChatLaunch(repoKey: string | undefined, provider: ChatLaunchProvider = 'claude-chat'): ChatLaunchPreference {
+export function loadChatLaunch(repoKey: string | undefined, provider: ChatLaunchProvider = 'claude-chat', host = 'local'): ChatLaunchPreference {
   const { key, lastKey } = storageKeys(repoKey, provider)
-  const all = readAll()
+  const all = readAll(host)
   const stored = (key && all[key]) || all[lastKey]
   if (provider !== 'claude-chat') return { permissionMode: chatPermissionModes(provider).some((mode) => mode.value === stored?.permissionMode) ? stored.permissionMode : provider === 'cursor-chat' ? 'bypassPermissions' : 'default' }
   return stored && typeof stored === 'object' ? { ...DEFAULT_PREFERENCE, ...stored } : DEFAULT_PREFERENCE
 }
 
-export function saveChatLaunch(repoKey: string | undefined, preference: ChatLaunchPreference, provider: ChatLaunchProvider = 'claude-chat'): void {
+export function saveChatLaunch(repoKey: string | undefined, preference: ChatLaunchPreference, provider: ChatLaunchProvider = 'claude-chat', host = 'local'): void {
   try {
-    const all = readAll()
+    const all = readAll(host)
     const { key, lastKey } = storageKeys(repoKey, provider)
     const saved = provider === 'claude-chat' ? preference : { permissionMode: preference.permissionMode }
     if (key) all[key] = saved
     all[lastKey] = saved
-    window.localStorage.setItem(CHAT_LAUNCH_STORAGE_KEY, JSON.stringify(all))
+    window.localStorage.setItem(host === 'local' ? CHAT_LAUNCH_STORAGE_KEY : `${CHAT_LAUNCH_STORAGE_KEY}.${host}`, JSON.stringify(all))
   } catch {
     // Remembering is a convenience; launching still works without storage.
   }

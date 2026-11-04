@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { ArrowUpRight, Check, ChevronDown, ChevronsUp, CircleAlert, CirclePlus, Equal, Link, LoaderCircle, MessageSquareReply, Minus, Plug, Trash2, X } from 'lucide-react'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
@@ -51,7 +52,8 @@ function CommentThread({ comment, onReply }: { comment: LinearComment; onReply: 
 }
 
 export function LinearSection({ token }: { token: string }) {
-  const api = useRef(createLinearApi(token)).current
+  const { daemonFetch } = useHost()
+  const api = useRef(createLinearApi(token, daemonFetch)).current
   const [accounts, setAccounts] = useState<LinearAccount[]>([])
   const [accountId, setAccountId] = useState('')
   const [projects, setProjects] = useState<LinearProject[]>([])

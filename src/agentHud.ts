@@ -96,9 +96,9 @@ export function agentHudGroups(
   })
 }
 
-export function storedAgentHudDismissals(): AgentHudDismissals {
+export function storedAgentHudDismissals(host = 'local'): AgentHudDismissals {
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(AGENT_HUD_DISMISSALS_STORAGE_KEY) ?? '{}')
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(host === 'local' ? AGENT_HUD_DISMISSALS_STORAGE_KEY : `${AGENT_HUD_DISMISSALS_STORAGE_KEY}.${host}`) ?? '{}')
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
     return Object.fromEntries(
       Object.entries(parsed)
@@ -112,10 +112,10 @@ export function storedAgentHudDismissals(): AgentHudDismissals {
   }
 }
 
-export function storeAgentHudDismissals(dismissals: AgentHudDismissals): void {
+export function storeAgentHudDismissals(dismissals: AgentHudDismissals, host = 'local'): void {
   try {
     const bounded = Object.fromEntries(Object.entries(dismissals).slice(-MAX_DISMISSALS))
-    window.localStorage.setItem(AGENT_HUD_DISMISSALS_STORAGE_KEY, JSON.stringify(bounded))
+    window.localStorage.setItem(host === 'local' ? AGENT_HUD_DISMISSALS_STORAGE_KEY : `${AGENT_HUD_DISMISSALS_STORAGE_KEY}.${host}`, JSON.stringify(bounded))
   } catch {
     // Dismissal still works in memory when storage is unavailable.
   }

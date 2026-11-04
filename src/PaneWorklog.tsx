@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import {
   Check,
   ChevronDown,
@@ -59,14 +60,14 @@ const markdownComponents: Components = {
   },
 }
 
-function preferenceKey(brief: SessionBrief): string {
-  return `${PREFERENCE_PREFIX}${brief.targetId ?? `${brief.sessionId}:${brief.paneId}`}`
+function preferenceKey(brief: SessionBrief, host = 'local'): string {
+  return `${PREFERENCE_PREFIX}${host === 'local' ? '' : `${host}:`}${brief.targetId ?? `${brief.sessionId}:${brief.paneId}`}`
 }
 
-function storedPreferences(brief: SessionBrief): WorklogPreferences {
+function storedPreferences(brief: SessionBrief, host = 'local'): WorklogPreferences {
   try {
-    const value = JSON.parse(window.localStorage.getItem(preferenceKey(brief))
-      ?? window.localStorage.getItem(`${PREFERENCE_PREFIX}${brief.sessionId}:${brief.paneId}`) ?? '{}') as Partial<WorklogPreferences>
+    const value = JSON.parse(window.localStorage.getItem(preferenceKey(brief, host))
+      ?? window.localStorage.getItem(`${PREFERENCE_PREFIX}${host === 'local' ? '' : `${host}:`}${brief.sessionId}:${brief.paneId}`) ?? '{}') as Partial<WorklogPreferences>
     const visibilitySet = value.visibilitySet === true
     return {
       minimized: visibilitySet ? value.minimized !== false : true,
@@ -83,10 +84,10 @@ function storedPreferences(brief: SessionBrief): WorklogPreferences {
   }
 }
 
-function storePreferences(brief: SessionBrief, preferences: WorklogPreferences): void {
+function storePreferences(brief: SessionBrief, preferences: WorklogPreferences, host = 'local'): void {
   try {
-    window.localStorage.setItem(preferenceKey(brief), JSON.stringify(preferences))
-    if (brief.targetId) window.localStorage.removeItem(`${PREFERENCE_PREFIX}${brief.sessionId}:${brief.paneId}`)
+    window.localStorage.setItem(preferenceKey(brief, host), JSON.stringify(preferences))
+    if (brief.targetId) window.localStorage.removeItem(`${PREFERENCE_PREFIX}${host === 'local' ? '' : `${host}:`}${brief.sessionId}:${brief.paneId}`)
   } catch {
     // Worklog controls still function in memory when storage is unavailable.
   }
@@ -322,7 +323,8 @@ export function PaneWorklog({
   /** Asks the daemon to resume the agent again after a failed attempt. */
   onRetryResume?: () => void
 }) {
-  const [preferences, setPreferences] = useState(() => storedPreferences(brief))
+  const { local, activeHost } = useHost()
+  const [preferences, setPreferences] = useState(() => storedPreferences(brief, activeHost))
   const displayState = !hookConnected && !empty ? 'stale' : brief.state
   const [simPending, setSimPending] = useState(false)
   const [simError, setSimError] = useState('')
@@ -339,7 +341,7 @@ export function PaneWorklog({
   )
   const prList = !brief.targetId || fetchedPrList?.targetId === brief.targetId ? fetchedPrList : null
   const hasOpenPr = Boolean(prList?.pullRequests.some((pullRequest) => pullRequest.state === 'open'))
-  const screenshotFolders = brief.screenshots ?? []
+  const screenshotFolders = local ? brief.screenshots ?? [] : []
   const unseenScreenshots = screenshotFolders.reduce((count, folder) => (
     count + (() => {
       const previewCount = folder.preview.filter((file) => file.modifiedAt > preferences.screenshotsSeenAt).length
@@ -348,7 +350,7 @@ export function PaneWorklog({
         : previewCount
     })()
   ), 0)
-  const simulator = brief.simulator
+  const simulator = local ? brief.simulator : undefined
   const tasks = brief.tasks ?? []
   const activeTasks = tasks.filter((task) => task.status !== 'cancelled')
   const completedTasks = activeTasks.filter((task) => task.status === 'completed').length
@@ -362,7 +364,7 @@ export function PaneWorklog({
 
   // A different conversation brings a different update list, so its length says nothing about new updates.
   useEffect(() => {
-    setPreferences(storedPreferences(brief))
+    setPreferences(storedPreferences(brief, activeHost))
     setFollowing(true)
     setUnread(0)
     previousUpdateCount.current = brief.updates.length
@@ -379,7 +381,7 @@ export function PaneWorklog({
   }, [])
 
   useEffect(() => {
-    storePreferences(brief, preferences)
+    storePreferences(brief, preferences, activeHost)
   }, [brief, preferences])
 
   useEffect(() => {

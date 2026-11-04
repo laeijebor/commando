@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Eye, GitPullRequest, GitPullRequestArrow, Pin, PinOff, Plus, RefreshCw } from 'lucide-react'
@@ -455,7 +456,8 @@ export function PrsSection({
   onOpenQuickLook?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
   onOpenDiff?: (pr: PrSummary) => boolean | Promise<boolean | undefined>
 }) {
-  const defaultApi = useMemo(() => createPrsApi(token), [token])
+  const { daemonFetch } = useHost()
+  const defaultApi = useMemo(() => createPrsApi(token, daemonFetch), [token])
   const api = suppliedApi ?? defaultApi
   const repoRef = useRef('')
   const manualPaneContext = useRef<string | null>(null)
