@@ -10,12 +10,14 @@ function setup() {
   const registry = new DeviceLockRegistry()
   registry.addResource({ id: 'pixel', name: 'Pixel 5', kind: 'android', serial: 'PIX' })
   registry.addResource({ id: 'iphone', name: 'iPhone 15 Pro', kind: 'ios', serial: 'd7608d6b-bc05' })
-  const message = vi.fn(async (_paneId: string, _text: string): Promise<string | undefined> => undefined)
-  const locks = new DeviceLockApi({ token: 't'.repeat(32), registry, processes: new BusyProcessWatch(async () => ''), message, cli: 'cli',
+  let messages = 0
+  const message = vi.fn(async (_paneId: string, _text: string): Promise<string | undefined> => `m${++messages}`)
+  const cancelMessage = vi.fn(async (_id: string) => {})
+  const locks = new DeviceLockApi({ token: 't'.repeat(32), registry, processes: new BusyProcessWatch(async () => ''), message, cancelMessage, cli: 'cli',
     paneExists: () => true, sessionName: async () => 'session', pidAlive: () => true })
   const discovery = new DeviceDiscovery(async () => '')
   const wall = new DeviceWallApi({ registry, locks, discovery, message, idleSince: (pane) => pane === '%1' ? 5 : undefined })
-  return { registry, wall, message }
+  return { registry, wall, message, cancelMessage }
 }
 
 async function call(wall: DeviceWallApi, method: string, path: string, body?: unknown) {
@@ -67,12 +69,31 @@ describe('DeviceWallApi', () => {
   })
 })
 
+describe('DeviceWallApi offers', () => {
+  it('pausing withdraws an outstanding offer and its message; skipping does too', async () => {
+    const { registry, wall, cancelMessage } = setup()
+    registry.lock({ ...owner('%1', 'A'), request: 'pixel', task: 'a' })
+    registry.lock({ ...owner('%2', 'B'), request: 'pixel', task: 'b' })
+    registry.lock({ ...owner('%3', 'C'), request: 'pixel', task: 'c' })
+    registry.release(owner('%1', 'A'), 'pixel')
+    await Promise.resolve()
+    const paused = (await call(wall, 'POST', '/api/devices/pixel/pause')).body
+    expect(paused.queue.map((entry: { as: string; offer?: unknown }) => [entry.as, Boolean(entry.offer)])).toEqual([['B', false], ['C', false]])
+    expect(cancelMessage).toHaveBeenCalledWith('m1')
+    const resumed = (await call(wall, 'POST', '/api/devices/pixel/resume')).body
+    expect(resumed.queue[0]).toMatchObject({ as: 'B', offer: { resourceId: 'pixel' }, claimBy: expect.any(Number) })
+    await Promise.resolve()
+    await call(wall, 'DELETE', `/api/devices/queue/${resumed.queue[0].id}`)
+    expect(cancelMessage).toHaveBeenCalledWith('m2')
+  })
+})
+
 describe('DeviceDiscovery', () => {
   it('reads adb and devicectl output', async () => {
     const runner = vi.fn(async (command: string, args: string[]) => {
       if (command === 'adb') return 'List of devices attached\nPIX\tdevice\nemulator-5554\tdevice\nOFF\toffline\n'
       writeFileSync(args.at(-1)!, JSON.stringify({ result: { devices: [
-        { identifier: 'D7608D6B-BC05', connectionProperties: { transportType: 'wired', tunnelState: 'connected' } },
+        { identifier: 'D7608D6B-BC05', hardwareProperties: { udid: '00008130-001A' }, connectionProperties: { transportType: 'wired', tunnelState: 'connected' } },
         { identifier: 'WATCH', connectionProperties: { tunnelState: 'unavailable' } },
       ] } }))
       return ''
@@ -85,5 +106,7 @@ describe('DeviceDiscovery', () => {
     expect(discovery.connection({ id: 'i', name: 'i', kind: 'ios', serial: 'd7608d6b-bc05' })).toBe('connected')
     expect(discovery.connection({ id: 'w', name: 'w', kind: 'ios', serial: 'WATCH' })).toBe('missing')
     expect(discovery.connection({ id: 'h', name: 'h', kind: 'host' })).toBe('connected')
+    expect(discovery.connection({ id: 'u', name: 'u', kind: 'ios', serial: '00008130-001a' })).toBe('connected')
+    expect(discovery.connection({ id: 'n', name: 'n', kind: 'android' })).toBe('no-serial')
   })
 })

@@ -37,8 +37,12 @@
 .devices-entry-main .devices-task { margin-top: 1px; font-size: 11px; }
 .devices-entry-side { color: var(--muted-dim); font-family: var(--mono); font-size: 10px; text-align: right; white-space: nowrap; }
 .devices-entry-side span { display: block; margin-top: 3px; color: var(--text-dim); }
-.devices-entry-actions { grid-column: 3 / -1; justify-content: flex-end; margin-top: 0; }
-.devices-entry:not(:hover):not(:focus-within) .devices-entry-actions { display: none; }
+.devices-entry-actions { position: absolute; top: 50%; right: 6px; margin: 0; padding-left: 10px; transform: translateY(-50%); background: linear-gradient(90deg, transparent, var(--surface) 10px); }
+.devices-entry:not(:hover):not(:focus-within) .devices-entry-actions { opacity: 0; }
+/* Touch screens have no hover: keep the buttons visible, on their own row. */
+@media (hover: none) {
+  .devices-entry .devices-entry-actions { position: static; grid-column: 3 / -1; justify-content: flex-end; padding: 0; transform: none; background: none; opacity: 1; }
+}
 .devices-busy { margin: 8px 0 0; color: var(--amber); font-size: 11px; overflow-wrap: anywhere; }
 .devices-empty { margin: 8px 2px 0; color: var(--muted-dim); font-size: 11px; }
 .devices-release { margin: 8px 0 0; color: var(--muted); font-family: var(--mono); font-size: 10.5px; overflow-wrap: anywhere; }

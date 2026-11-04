@@ -3,11 +3,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DeviceLockApi } from './device-lock-api.js'
-import { releasedByUserMessage, removedByUserMessage } from './device-lock-api.js'
+import { readJson, releasedByUserMessage, removedByUserMessage, writeJson, type DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockError, type DeviceLockRegistry, type DeviceResource } from './device-locks.js'
 
-export type DeviceConnection = 'connected' | 'missing' | 'unknown'
+/** `unknown`: the tool isn't available or hasn't answered yet; `no-serial`: the lock has no serial to look for. */
+export type DeviceConnection = 'connected' | 'missing' | 'unknown' | 'no-serial'
 type Run = (command: string, args: string[]) => Promise<string>
 const run: Run = (command, args) => new Promise((resolve, reject) => {
   execFile(command, args, { timeout: 20_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout))
@@ -38,12 +38,13 @@ export class DeviceDiscovery {
   connection(resource: DeviceResource): DeviceConnection {
     if (resource.kind === 'host') return 'connected'
     if (resource.kind === 'ios') {
-      if (!this.ios || !resource.serial) return 'unknown'
+      if (!resource.serial) return 'no-serial'
+      if (!this.ios) return 'unknown'
       return this.ios.get(resource.serial.toUpperCase()) ? 'connected' : 'missing'
     }
     if (!this.android) return 'unknown'
     if (resource.kind === 'emulator') return [...this.android].some((serial) => serial.startsWith('emulator-') && (!resource.serial || serial === resource.serial)) ? 'connected' : 'missing'
-    return resource.serial ? (this.android.has(resource.serial) ? 'connected' : 'missing') : 'unknown'
+    return resource.serial ? (this.android.has(resource.serial) ? 'connected' : 'missing') : 'no-serial'
   }
 
   private async listAndroid(): Promise<Set<string>> {
@@ -56,32 +57,14 @@ export class DeviceDiscovery {
     try {
       const path = join(directory, 'devices.json')
       await this.runner('xcrun', ['devicectl', 'list', 'devices', '--quiet', '--json-output', path])
-      const parsed = JSON.parse(await readFile(path, 'utf8')) as { result?: { devices?: Array<{ identifier?: string; connectionProperties?: { tunnelState?: string; transportType?: string } }> } }
-      return new Map((parsed.result?.devices ?? []).filter((device) => typeof device.identifier === 'string').map((device) => [device.identifier!.toUpperCase(),
-        Boolean(device.connectionProperties?.transportType) && device.connectionProperties?.tunnelState !== 'unavailable']))
+      const parsed = JSON.parse(await readFile(path, 'utf8')) as { result?: { devices?: Array<{ identifier?: string; hardwareProperties?: { udid?: string }; connectionProperties?: { tunnelState?: string; transportType?: string } }> } }
+      // A lock may name the CoreDevice identifier or the device UDID (what xcodebuild's -destination id= takes).
+      return new Map((parsed.result?.devices ?? []).flatMap((device) => {
+        const connected = Boolean(device.connectionProperties?.transportType) && device.connectionProperties?.tunnelState !== 'unavailable'
+        return [device.identifier, device.hardwareProperties?.udid].filter((id): id is string => typeof id === 'string').map((id) => [id.toUpperCase(), connected] as const)
+      }))
     } finally { await rm(directory, { recursive: true, force: true }) }
   }
-}
-
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
-  const body = `${JSON.stringify(value)}\n`
-  response.writeHead(status, { 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) })
-  response.end(body)
-}
-
-async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    bytes += (chunk as Buffer).length
-    if (bytes > 8 * 1024) throw new DeviceLockError(413, 'Request body is too large')
-    chunks.push(Buffer.from(chunk))
-  }
-  try {
-    const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('not an object')
-    return value as Record<string, unknown>
-  } catch { throw new DeviceLockError(400, 'Request body must be a JSON object') }
 }
 
 /**
@@ -111,12 +94,13 @@ export class DeviceWallApi {
         if (action === 'release') {
           const resource = registry.resource(id)
           for (const holder of registry.forceRelease(id, await locks.busyCheck())) this.send(holder.paneId, releasedByUserMessage(holder, resource!))
-        } else registry.setPaused(id, action === 'pause', await locks.busyCheck())
+        } else for (const entry of registry.setPaused(id, action === 'pause', await locks.busyCheck())) locks.withdrawOffer(entry.id)
       } else if (queueAction && queueAction[2] && request.method === 'POST') {
         const body = await readJson(request)
         registry.reorder(queueAction[1], typeof body.before === 'string' ? body.before : undefined)
       } else if (queueAction && !queueAction[2] && request.method === 'DELETE') {
         const removed = registry.remove(queueAction[1], await locks.busyCheck())
+        locks.withdrawOffer(removed.id)
         const resource = registry.resource(removed.offer?.resourceId ?? removed.resourceIds[0])
         if (resource && removed.mode === 'notify') this.send(removed.paneId, removedByUserMessage(removed, resource))
       } else throw new DeviceLockError(404, 'Not found')

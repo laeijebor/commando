@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  DeviceLockError, MAX_SKIPS, type DeviceHolder, type DeviceLockRegistry, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
+  DeviceLockError, MAX_SKIPS, OFFER_TIMEOUT_MS, UNDELIVERED_OFFER_TIMEOUT_MS, type DeviceHolder, type DeviceLockRegistry, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
 } from './device-locks.js'
 
 const PANE_ID = /^%\d+$/
@@ -66,14 +66,14 @@ export function releasedByUserMessage(holder: DeviceHolder, resource: DeviceReso
   return `[Commando device lock] The user released your lock on ${resource.name} ("${holder.task}"). Stop using the device.`
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
+export function writeJson(response: ServerResponse, status: number, value: unknown): void {
   const body = `${JSON.stringify(value)}\n`
   response.writeHead(status, { 'Cache-Control': 'no-store', 'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body), 'X-Content-Type-Options': 'nosniff' })
   response.end(body)
 }
 
-async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+export async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
   if (request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') throw new DeviceLockError(415, 'Content-Type must be application/json')
   let bytes = 0
   const chunks: Buffer[] = []
@@ -167,17 +167,22 @@ export class DeviceLockApi {
     return this.sweeping
   }
 
+  /** Withdraws an offer message that hasn't reached the agent yet (the offer lapsed or was taken back). */
+  withdrawOffer(entryId: string): void {
+    for (const [id, offered] of this.offerMessages) {
+      if (offered !== entryId) continue
+      this.offerMessages.delete(id)
+      void this.dependencies.cancelMessage?.(id).catch(() => {})
+    }
+  }
+
   /** Tells agents whose offer lapsed, withdrawing the offer message if it never arrived. */
   private lapsed(events: SweepEvents): void {
-    const { registry, cli, message, cancelMessage } = this.dependencies
+    const { registry, cli, message } = this.dependencies
     for (const entry of events.expired) {
       const resource = entry.offer && registry.resource(entry.offer.resourceId)
       if (!resource) continue
-      for (const [id, entryId] of this.offerMessages) {
-        if (entryId !== entry.id) continue
-        this.offerMessages.delete(id)
-        void cancelMessage?.(id).catch(() => {})
-      }
+      this.withdrawOffer(entry.id)
       const queued = registry.entry(entry.id)
       void message(entry.paneId, expiredMessage(entry, resource, cli, queued ? registry.position(queued) : 0))
         .catch((error) => console.warn('[device-locks] could not message', entry.paneId, error))
@@ -232,7 +237,9 @@ export class DeviceLockApi {
   /** Everything an agent or the CLI needs to show the current state. */
   view() {
     const snapshot = this.dependencies.registry.snapshot()
-    return { ...snapshot, queue: snapshot.queue.map((entry) => ({ ...entry, position: this.dependencies.registry.position(entry) })),
+    // claimBy: when an offer lapses — 5 minutes after the agent got the message, or 15 if it never arrives.
+    return { ...snapshot, queue: snapshot.queue.map((entry) => ({ ...entry, position: this.dependencies.registry.position(entry),
+      ...(entry.offer ? { claimBy: entry.offer.deliveredAt !== undefined ? entry.offer.deliveredAt + OFFER_TIMEOUT_MS : entry.offer.at + UNDELIVERED_OFFER_TIMEOUT_MS } : {}) })),
       waitingFor: Object.fromEntries(snapshot.resources.map((resource) => [resource.id, this.dependencies.processes.busy(resource)]).filter(([, busy]) => busy)) }
   }
 

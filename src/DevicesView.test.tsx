@@ -56,10 +56,16 @@ describe('DevicesView', () => {
   it('reorders, removes, pauses and opens panes', async () => {
     const { api, onOpenPane } = await renderView()
     const pixel = screen.getByRole('article', { name: 'Pixel 5' })
+    const settle = () => act(async () => { for (let i = 0; i < 5; i++) await Promise.resolve() })
     fireEvent.click(within(pixel).getByRole('button', { name: 'Move SWEEP up' }))
+    // Buttons stay disabled until the action answers, so a double click can't send it twice.
+    fireEvent.click(within(pixel).getByRole('button', { name: 'Remove LOTTIE from the queue' }))
+    expect(api.remove).not.toHaveBeenCalled()
+    await settle()
     expect(api.move).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111')
     fireEvent.click(within(pixel).getByRole('button', { name: 'Remove LOTTIE from the queue' }))
     expect(api.remove).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111')
+    await settle()
     fireEvent.click(within(pixel).getByRole('button', { name: /Pause queue/ }))
     expect(api.pause).toHaveBeenCalledWith('pixel', true)
     fireEvent.click(within(pixel).getByRole('button', { name: 'Open pane' }))
@@ -81,7 +87,7 @@ describe('DevicesView', () => {
     const { api } = await renderView()
     const [first, second] = within(screen.getByRole('article', { name: 'Pixel 5' })).getAllByRole('listitem')
     vi.spyOn(first, 'getBoundingClientRect').mockReturnValue({ top: 0, height: 40 } as DOMRect)
-    fireEvent.dragStart(second, { dataTransfer: { effectAllowed: '' } })
+    fireEvent.dragStart(second, { dataTransfer: { effectAllowed: '', setData: () => {} } })
     // jsdom has no DragEvent, so clientY must be set by hand.
     const over = createEvent.dragOver(first)
     Object.defineProperty(over, 'clientY', { value: 5 })
@@ -91,7 +97,7 @@ describe('DevicesView', () => {
   })
 
   it('shows an offer with a skip button', async () => {
-    const offered = snapshot({ holders: [], queue: [{ ...snapshot().queue[0], offer: { resourceId: 'pixel', at: NOW - 60_000 } }] })
+    const offered = snapshot({ holders: [], queue: [{ ...snapshot().queue[0], offer: { resourceId: 'pixel', at: NOW - 3 * 60_000, deliveredAt: NOW - 60_000 }, claimBy: NOW + 4 * 60_000 }] })
     const { api } = await renderView(fakeApi(offered))
     const pixel = screen.getByRole('article', { name: 'Pixel 5' })
     expect(within(pixel).getByText('offered')).toBeInTheDocument()
@@ -100,11 +106,56 @@ describe('DevicesView', () => {
     expect(api.remove).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111')
   })
 
+  it('says when the offer message has not reached the agent yet', async () => {
+    const offered = snapshot({ holders: [], queue: [{ ...snapshot().queue[0], offer: { resourceId: 'pixel', at: NOW - 6 * 60_000 }, claimBy: NOW + 9 * 60_000 }] })
+    await renderView(fakeApi(offered))
+    expect(screen.getByText(/message not delivered yet · lapses in 9m/)).toBeInTheDocument()
+  })
+
+  it('leaves out a request that was offered another device', async () => {
+    const elsewhere = snapshot({ queue: [{ ...snapshot().queue[0], request: 'any-android', resourceIds: ['pixel', 'moto'], offer: { resourceId: 'moto', at: NOW } }] })
+    await renderView(fakeApi(elsewhere))
+    expect(within(screen.getByRole('article', { name: 'Pixel 5' })).queryAllByRole('listitem')).toEqual([])
+  })
+
+  it('drops below the last request of a card before the next request in the shared queue', async () => {
+    const shared = snapshot({ queue: [...snapshot().queue, { id: '33333333-3333-3333-3333-333333333333', paneId: '%4', sessionName: 'x', request: 'iphone', resourceIds: ['iphone'], task: 'other device', mode: 'notify', enqueuedAt: NOW, position: 1 }] })
+    const { api } = await renderView(fakeApi(shared))
+    const [first, second] = within(screen.getByRole('article', { name: 'Pixel 5' })).getAllByRole('listitem')
+    vi.spyOn(second, 'getBoundingClientRect').mockReturnValue({ top: 0, height: 40 } as DOMRect)
+    fireEvent.dragStart(first, { dataTransfer: { effectAllowed: '', setData: () => {} } })
+    const over = createEvent.dragOver(second)
+    Object.defineProperty(over, 'clientY', { value: 35 })
+    fireEvent(second, over)
+    fireEvent.drop(second)
+    expect(api.move).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333333333')
+  })
+
+  it('ignores a poll answer that started before an action it overtook', async () => {
+    let resolvePoll: (value: DevicesSnapshot) => void = () => {}
+    const api = fakeApi()
+    const released = snapshot({ holders: [] })
+    api.list.mockResolvedValueOnce(snapshot()).mockImplementationOnce(() => new Promise((resolve) => { resolvePoll = resolve }))
+    api.release.mockResolvedValue(released)
+    vi.useFakeTimers()
+    try {
+      render(<DevicesView token="t" api={api} />)
+      await act(async () => { for (let i = 0; i < 5; i++) await Promise.resolve() })
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000) }) // A second poll starts and hangs.
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      fireEvent.click(within(screen.getByRole('article', { name: 'Pixel 5' })).getByRole('button', { name: 'Release' }))
+      await act(async () => { for (let i = 0; i < 5; i++) await Promise.resolve() })
+      await act(async () => { resolvePoll(snapshot()); for (let i = 0; i < 5; i++) await Promise.resolve() })
+      expect(within(screen.getByRole('article', { name: 'Pixel 5' })).queryByRole('region', { name: /Held by/ })).toBeNull()
+    } finally { vi.useRealTimers() }
+  })
+
   it('flags idle and long-running holders', () => {
     const holder = snapshot().holders[0]
     expect(holderFlag(holder, NOW)).toBeUndefined()
     expect(holderFlag(holder, NOW, NOW - 12 * 60_000)).toEqual({ tone: 'amber', text: 'agent idle 12m' })
     expect(holderFlag({ ...holder, acquiredAt: NOW - 80 * 60_000 }, NOW)).toEqual({ tone: 'red', text: '1h 20m held · est. 25m' })
+    expect(holderFlag({ ...holder, pid: 42 }, NOW, NOW - 12 * 60_000)).toBeUndefined()
   })
 
   it('explains how to add the first device', async () => {

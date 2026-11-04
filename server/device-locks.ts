@@ -316,10 +316,18 @@ export class DeviceLockRegistry {
     this.commit({ ...this.state, queue: [...rest.slice(0, index), entry, ...rest.slice(index)] })
   }
 
-  setPaused(resourceId: string, paused: boolean, busy?: BusyCheck): void {
+  /** Pausing also withdraws an outstanding offer (the request keeps its place); returns withdrawn offers. */
+  setPaused(resourceId: string, paused: boolean, busy?: BusyCheck): QueueEntry[] {
     if (!this.resource(resourceId)) throw new DeviceLockError(404, `No device lock named ${resourceId}`)
     const others = this.state.paused.filter((entry) => entry !== resourceId)
-    this.serve({ ...this.state, paused: paused ? [...others, resourceId] : others }, busy)
+    const withdrawn = paused ? this.state.queue.filter((entry) => entry.offer?.resourceId === resourceId) : []
+    const queue = this.state.queue.map((entry) => {
+      if (!withdrawn.includes(entry)) return entry
+      const { offer: _, ...rest } = entry
+      return rest
+    })
+    this.serve({ ...this.state, queue, paused: paused ? [...others, resourceId] : others }, busy)
+    return withdrawn.map((entry) => ({ ...entry }))
   }
 
   /** Ends someone else's lock (the user's Release button). */
