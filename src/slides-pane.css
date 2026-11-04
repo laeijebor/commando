@@ -1,0 +1,44 @@
+.slides-pane { position: relative; min-width: 0; outline: none; container-type: inline-size; background: var(--surface-deep); }
+.slides-toolbar { gap: 7px; flex-shrink: 0; }
+.slides-toolbar > button, .slides-view-switch button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+.slides-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 30px; font-size: 13px; }
+.slides-toolbar output { color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
+.slides-view-switch { display: flex; border: 1px solid var(--border); border-radius: 7px; padding: 2px; background: var(--surface-deep); }
+.slides-toolbar button[aria-pressed="true"] { color: var(--accent); background: var(--surface-hover); }
+.slides-stage { position: relative; flex: 1; min-height: 80px; display: grid; place-items: center; background: radial-gradient(800px 400px at 50% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent), var(--surface-deep); }
+.slides-screen { position: relative; background: #000; border-radius: 8px; box-shadow: 0 0 0 1px var(--border), 0 24px 70px #0006; overflow: hidden; }
+.slides-screen iframe, .slides-thumb-screen iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; pointer-events: none; }
+.slides-stage.is-commenting .slides-screen { cursor: crosshair; }
+.slides-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface-raised); color: var(--text-soft); display: grid; place-items: center; cursor: pointer; }
+.slides-nav:disabled { opacity: .3; cursor: default; }
+.slides-nav.is-prev { left: 12px; } .slides-nav.is-next { right: 12px; }
+.slides-details { flex-shrink: 0; max-height: 36%; overflow: auto; }
+.slides-notes, .slides-question { margin: 8px 56px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-soft); font-size: 12px; }
+.slides-notes { display: flex; gap: 10px; }.slides-notes b { color: var(--muted); text-transform: uppercase; font-size: 10px; }
+.slides-question { border-color: color-mix(in srgb, var(--cyan) 35%, transparent); background: color-mix(in srgb, var(--cyan) 6%, var(--surface)); }
+.slides-question > strong { color: var(--cyan); margin-right: 12px; }.slides-question > span { color: var(--text-soft); }
+.slides-filmstrip { display: flex; flex-shrink: 0; gap: 10px; overflow-x: auto; padding: 12px; background: var(--surface); border-top: 1px solid var(--border); }
+.slides-thumb { position: relative; flex: none; width: 128px; border: 0; padding: 0; background: transparent; color: var(--text-soft); text-align: left; cursor: pointer; }
+.slides-thumb-screen { position: relative; width: 100%; overflow: hidden; border-radius: 6px; background: #000; box-shadow: 0 0 0 1px var(--border); }
+.slides-thumb.is-current .slides-thumb-screen { box-shadow: 0 0 0 2px var(--accent); }
+.slides-thumb-number { position: absolute; top: 4px; left: 4px; padding: 2px 4px; border-radius: 3px; color: #fff; background: #0009; font: 10px var(--mono); }
+.slides-thumb-badge { position: absolute; top: 4px; right: 4px; border-radius: 999px; padding: 2px 5px; background: var(--accent); color: var(--accent-ink); font-size: 10px; }
+.slides-grid { flex: 1; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 22px 18px; padding: 22px; align-content: start; }
+.slides-grid .slides-thumb { width: 100%; }.slides-thumb-title { display: block; padding: 8px 2px; font-size: 12px; }
+.slides-menu { position: absolute; right: 12px; top: 44px; width: 280px; max-height: calc(100% - 50px); overflow: auto; padding: 8px; z-index: 30; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 24px 70px #0006; }
+.slides-menu form { padding: 8px; border-top: 1px solid var(--border); }.slides-menu input { display: block; width: 100%; margin: 8px 0; padding: 6px; color: var(--text); background: var(--surface-deep); border: 1px solid var(--border); border-radius: 5px; }.slides-menu [role="alert"] { display: block; color: var(--red); padding: 8px; }
+.slides-pane:fullscreen { width: 100vw; height: 100vh; background: #000; }
+.slides-pane.is-presenting > :not(.slides-stage) { display: none; }.slides-pane.is-presenting .slides-stage { background: #000; }.slides-pane.is-presenting .slides-nav { display: none; }.slides-pane.is-presenting .slides-screen { border-radius: 0; box-shadow: none; }
+@container (max-width: 720px) { .slides-toolbar { gap: 3px; padding: 6px; }.slides-toolbar button span { display: none; }.slides-toolbar .canvas-history > button { font-size: 0; }.slides-title { font-size: 12px; }.slides-notes, .slides-question { margin-inline: 12px; } }
+.slides-pane > .canvas-spotlight { top: 52px; }
+.slides-theme-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 4px; }
+.slides-theme-options > button { min-width: 0; padding: 5px; border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.slides-theme-options > button[aria-checked="true"] { border-color: var(--accent); }.slides-theme-options .slides-thumb-screen { margin-bottom: 7px; }
+.slides-warnings { color: var(--muted); padding: 5px 10px; flex: none; max-height: 90px; overflow: auto; }
+.slides-pane[data-review-summary] .slides-filmstrip { margin-bottom: calc(var(--tile-review-strip-height, 30px) + 8px); }
+.slides-question .canvas-q, .slides-question .canvas-q-settled { border-color: var(--border-mid); color: var(--text-soft); }
+.slides-question .canvas-q-options button { background: transparent; color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 40%, transparent); font-size: 12px; }
+.slides-question .canvas-q-options button:hover:not(:disabled) { background: var(--surface-hover); }
+.slides-question .canvas-q-options button.is-picked { background: var(--cyan); color: var(--bg); }
+.slides-question .canvas-q textarea { color: var(--text); background: var(--surface-deep); border-color: var(--border-mid); font-size: 12px; }
+.slides-question .canvas-q-link { color: var(--cyan); font-size: 12px; }
