@@ -127,6 +127,7 @@ import {
 import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry, defaultDeviceLockStatePath } from './device-locks.js'
+import { DeviceDiscovery, DeviceWallApi } from './device-wall.js'
 import { SimLeaseApi, SimLeaseRegistry, SimPoolRegistry, defaultSimPoolStatePath, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimLiveService, simLiveUdid } from './sim-live.js'
 import { SimLogsService, simLogsUdid } from './sim-logs.js'
@@ -2165,6 +2166,15 @@ async function main(): Promise<void> {
     cli: `node ${JSON.stringify(join(homedir(), '.commando', 'hooks', 'commando-device.mjs'))}`,
   })
   deviceLockApi.start()
+  const deviceWallApi = new DeviceWallApi({
+    registry: deviceLockRegistry, locks: deviceLockApi, discovery: new DeviceDiscovery(),
+    // A finished turn means the agent is idle; `settledAt` marks when that run began.
+    idleSince: (paneId) => {
+      const status = agentStatuses.get(paneId)
+      return status?.status === 'done' ? status.settledAt ?? status.updatedAt : undefined
+    },
+    message: (paneId, text) => commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text }),
+  })
   const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
   conversationTitles.start()
   const chatConversationsApi = new ChatConversationsApi({
@@ -2988,6 +2998,7 @@ async function main(): Promise<void> {
         if (await hostsApi.handle(request, response, url)) return
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
+        if (await deviceWallApi.handle(request, response, url)) return
         if (/^\/api\/(?:cloud-tasks|cloud-providers|cloud-operations)(?:\/|$)/.test(url.pathname)) {
           if (!cloudTasks) {
             writeJson(response, 503, { code: 'cloud_storage_unavailable', error: 'Cloud task storage is unavailable. Saved history has not been reset.' })
