@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Chat card</title>
+<link rel="stylesheet" href="assets/tile.css">
+<style>
+  body { padding: 18px; background: var(--bg); overflow: hidden; }
+  .msg { font-size: 14px; color: var(--text-soft); line-height: 1.55; }
+  .msg p { margin: 0 0 12px; }
+  .deck-card { display: grid; grid-template-columns: 224px 1fr; gap: 14px; border: 1px solid var(--border-mid); border-radius: 12px; background: var(--surface); padding: 10px; }
+  .cover { position: relative; width: 224px; height: 126px; border-radius: 8px; overflow: hidden; }
+  .cover iframe { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; border: 0; transform: scale(.175); transform-origin: 0 0; pointer-events: none; }
+  .info { display: flex; flex-direction: column; gap: 6px; padding: 4px 4px 2px 0; }
+  .info b { font-size: 15px; color: var(--text); }
+  .info small { color: var(--muted); font-size: 12px; }
+  .acts { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; }
+</style></head>
+<body>
+<div class="msg">
+  <p>I wrote up the reconnect fix as an 8-slide deck with the real simulator captures. It's open in your side panel. Slide 1 has one question for you.</p>
+  <div class="deck-card" data-canvas-label="Deck card">
+    <div class="cover"><iframe src="s1.html"></iframe></div>
+    <div class="info">
+      <b>Reconnect loop fix</b>
+      <small>8 slides · Ink theme · round 2 · 1 question open</small>
+      <div style="display:flex;gap:6px"><span class="chip q">? 1</span><span class="chip c">💬 1 queued</span></div>
+      <div class="acts"><button class="btn primary" data-canvas-label="Open in tile">Open in tile</button><button class="btn">PDF</button><button class="btn">PPTX</button><button class="btn">Publish</button></div>
+    </div>
+  </div>
+</div>
+</body></html>
