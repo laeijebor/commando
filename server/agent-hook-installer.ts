@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
+import { generatedDeviceCli } from './device-lock-cli.js'
 
 export const CLAUDE_HOOK_EVENTS = [
   'SessionStart',
@@ -62,6 +63,7 @@ const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
 const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
 const SIM_CLI_FILENAME = 'commando-sim.mjs'
+const DEVICE_CLI_FILENAME = 'commando-device.mjs'
 const CHAT_CLI_FILENAME = 'commando-chat.mjs'
 const AGENTS_CLI_FILENAME = 'commando-agents.mjs'
 const PR_MARKER_CLI_FILENAME = 'commando-pr-marker.mjs'
@@ -81,6 +83,7 @@ export type AgentHookInstallerOptions = {
   openCodePluginPath?: string
   prMarkerCliPath?: string
   simCliPath?: string
+  deviceCliPath?: string
   agentsCliPath?: string
   chatCliPath?: string
   sessionBriefCliPath?: string
@@ -111,6 +114,7 @@ export type AgentHookInstallResult = {
   openCodePluginPath: string
   prMarkerCliPath: string
   simCliPath: string
+  deviceCliPath: string
   agentsCliPath: string
   chatCliPath: string
   sessionBriefCliPath: string
@@ -166,7 +170,7 @@ async function writeAtomically(path: string, content: string, mode: number): Pro
   }
 }
 
-function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string, simCliPath: string, chatCliPath: string): string {
+function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string, simCliPath: string, chatCliPath: string, deviceCliPath: string): string {
   return [
     'Commando pane integration (this agent runs inside a tmux pane):',
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
@@ -175,6 +179,7 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     'After the first substantive exchange, set a 3–6 word title naming the conversation topic with --title, and change it only if the topic genuinely changes.',
     'When everything the user asked for in this conversation is finished (work committed, and PRs opened or merged where requested) so the conversation may be ready to close, make the last line of your final message start with 🟢 followed by a short summary. Commando shows the session as finished. Do not use 🟢 while anything is left to do or verify.',
     `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. If the user asks to use an already-running simulator, use node ${JSON.stringify(simCliPath)} adopt <udid> instead; it does not reboot or slim the device, and release leaves it running. Otherwise always lease. Run node ${JSON.stringify(simCliPath)} update when purpose, ports, or branch change. Release them with node ${JSON.stringify(simCliPath)} release when done. Commando shows a leased simulator in this pane's tabs, so keep it headless: never open Simulator.app, and pass headless: true if you call Argent boot-device. expo run:ios always opens Simulator.app; install builds with xcrun simctl install instead.`,
+    `Before using a physical phone, the Android emulator, or running a heavy Mac build or export that a device lock covers, take its lock with node ${JSON.stringify(deviceCliPath)} lock <device|any-android|any-ios> --task "what you are doing" [--as YOUR-NAME] [--estimate 15m] (list shows the locks). If you are queued, do other work or end your turn: Commando messages this pane when it is your turn, and you then run claim within 5 minutes. Never touch a device you do not hold. Follow its release steps, then run release when done. In scripts use lock --wait --pid $$ and release on exit.`,
     `When the user asks you to open or start another chat or agent (for example to fix something you found), run node ${JSON.stringify(chatCliPath)} open --title "<short title>" --prompt-file <brief.md> [--location pane] — default location is a new session on its own worktree; use --location pane only when the user asks for it beside you. Write a self-contained brief (goal, context, files, repo rules). Never open chats the user did not ask for. Use list to check chats you opened.`,
     'These instructions do not authorize creating or editing a PR unless requested by the user.',
   ].join('\n')
@@ -2507,6 +2512,7 @@ export class AgentHookInstaller {
       simCliPath: resolve(
         options.simCliPath ?? resolve(resolvedHome, '.commando', 'hooks', SIM_CLI_FILENAME),
       ),
+      deviceCliPath: resolve(options.deviceCliPath ?? resolve(resolvedHome, '.commando', 'hooks', DEVICE_CLI_FILENAME)),
       sessionBriefCliPath: resolve(
         options.sessionBriefCliPath
           ?? resolve(resolvedHome, '.commando', 'hooks', SESSION_BRIEF_CLI_FILENAME),
@@ -2617,7 +2623,7 @@ export class AgentHookInstaller {
     }, [this.paths.cursorBridgePath, this.paths.cursorHooksPath])
     const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex, ...staleCursor, ...staleMuse])].sort()
     if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
-    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.agentsCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
+    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.deviceCliPath, this.paths.chatCliPath, this.paths.agentsCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
     await this.installGeneratedScripts({ claude: staleClaude.length > 0, openCode: false, muse: staleMuse.length > 0 })
     if (staleCursor.length > 0) await this.installCursorHooks(true)
     if (staleCodex.length > 0) await this.installCodexNotify()
@@ -2645,7 +2651,7 @@ export class AgentHookInstaller {
 
   private async installCursorHooks(repair = false): Promise<void> {
     const { settings, mode } = await readClaudeSettings(this.paths.cursorHooksPath)
-    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.deviceCliPath)
     await writeAtomically(this.paths.cursorBridgePath, generatedCursorBridge(this.paths.tokenPath, instructions), 0o600)
     await writeAtomically(this.paths.cursorHooksPath, `${JSON.stringify(mergeCursorHooks(settings, this.paths.cursorBridgePath, repair), null, 2)}\n`, mode)
     // Explicit install upgrades the healthy managed Claude bridge as well. Repair
@@ -2655,7 +2661,7 @@ export class AgentHookInstaller {
   private async installGeneratedScripts(
     providers = { claude: true, openCode: true, muse: true },
   ): Promise<void> {
-    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.deviceCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
     if (providers.claude) {
       await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
@@ -2686,6 +2692,7 @@ export class AgentHookInstaller {
     await writeAtomically(this.paths.chatCliPath, generatedChatCli(this.paths.tokenPath), 0o700)
     await writeAtomically(this.paths.agentsCliPath, generatedAgentsCli(this.paths.tokenPath), 0o700)
     await writeAtomically(this.paths.simCliPath, generatedSimCli(this.paths.tokenPath), 0o700)
+    await writeAtomically(this.paths.deviceCliPath, generatedDeviceCli(this.paths.tokenPath), 0o700)
     await writeAtomically(
       this.paths.prMarkerCliPath,
       generatedPrMarkerCli(this.paths.tokenPath),

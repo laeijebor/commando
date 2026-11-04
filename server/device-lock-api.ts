@@ -144,7 +144,7 @@ export class DeviceLockApi {
     if (path !== '/api/device-locks' && !path.startsWith('/api/device-locks/')) return false
     const routes: Record<string, string[]> = {
       '/api/device-locks': ['GET'], '/api/device-locks/lock': ['POST'], '/api/device-locks/claim': ['POST'], '/api/device-locks/release': ['POST'],
-      '/api/device-locks/cancel': ['POST'], '/api/device-locks/entry': ['GET'], '/api/device-locks/resources': ['POST', 'DELETE'],
+      '/api/device-locks/cancel': ['POST'], '/api/device-locks/entry': ['GET'], '/api/device-locks/mine': ['GET'], '/api/device-locks/resources': ['POST', 'DELETE'],
     }
     try {
       const token = /^Bearer\s+([^\s]+)$/i.exec(request.headers.authorization ?? '')?.[1]
@@ -158,6 +158,12 @@ export class DeviceLockApi {
       const { registry } = this.dependencies
       if (path === '/api/device-locks') { writeJson(response, 200, this.view()); return true }
       if (path === '/api/device-locks/entry') { writeJson(response, 200, await this.waitForEntry(url)); return true }
+      if (path === '/api/device-locks/mine') {
+        const { paneId } = await this.owner(request, {})
+        const view = this.view()
+        writeJson(response, 200, { holders: view.holders.filter((entry) => entry.paneId === paneId), queue: view.queue.filter((entry) => entry.paneId === paneId) })
+        return true
+      }
       const body = await readJson(request)
       if (path === '/api/device-locks/resources') {
         if (request.method === 'POST') writeJson(response, 200, { resource: registry.addResource(body) })
@@ -228,7 +234,8 @@ export class DeviceLockApi {
     const { registry } = this.dependencies
     const state = () => {
       const entry = registry.entry(id)
-      if (entry) return { status: entry.offer ? 'offered' : 'queued', entry, position: registry.position(entry) }
+      if (entry?.offer) return { status: 'offered', entry, resource: registry.resource(entry.offer.resourceId) }
+      if (entry) return this.describe({ status: 'queued', entry, position: registry.position(entry) })
       const holder = id ? registry.snapshot().holders.find((candidate) => candidate.entryId === id) : undefined
       return holder ? { status: 'held', holder, resource: registry.resource(holder.resourceId) } : { status: 'gone' }
     }
