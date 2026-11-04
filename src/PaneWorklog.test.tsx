@@ -112,6 +112,21 @@ describe('PaneWorklog', () => {
     expect(onOpenScreenshot).toHaveBeenCalledWith(expect.objectContaining({ id: 'shots' }), undefined, expect.anything())
   })
 
+  it('lists the pane\'s device locks among the important terms', () => {
+    const devices = [
+      { resourceId: 'pixel', name: 'Pixel 5', state: 'held' as const, task: 'Rive round', as: 'MASCOT' },
+      { resourceId: 'iphone', name: 'iPhone 15 Pro', state: 'queued' as const, position: 2, task: 'Allocations' },
+      { resourceId: 'moto', name: 'moto e13', state: 'offered' as const, task: 'Smoke test' },
+    ]
+    render(<PaneWorklog brief={{ ...brief, devices }} paneLabel="Tests" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    const section = screen.getByLabelText('Important terms for Tests')
+    expect(section.querySelector('header small')).toHaveTextContent('3')
+    expect([...section.querySelectorAll('.pane-worklog-device')].map((row) => row.textContent)).toEqual([
+      'Holding Pixel 5MASCOT · Rive round', 'Waiting for iPhone 15 Pro · #2Allocations', 'moto e13 is offered: claim itSmoke test',
+    ])
+  })
+
   it('renders a simulator first, counts it with references and handles both actions', async () => {
     const simulator = { udid: 'sim-uuid', originalName: 'iPhone 17 Pro', label: 'Session · Check checkout', task: 'Check checkout', sessionName: 'Session', branch: 'feature/checkout', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }], idle: true }
     const simsApi = { open: vi.fn().mockResolvedValue({ ok: true, raised: true }) }

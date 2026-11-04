@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import type { DeviceLockClaim } from '../shared/protocol.js'
 
 /**
  * Locks on shared physical devices (phones, the emulator) and on heavy host jobs (builds, exports).
@@ -75,6 +76,24 @@ const PANE_ID = /^%\d+$/
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u
 const KINDS: DeviceKind[] = ['android', 'ios', 'emulator', 'host']
 const MAX_QUEUE = 200
+
+/** What each pane holds, has been offered or waits for, for its worklog. */
+export function deviceLockClaimsByPane(registry: Pick<DeviceLockRegistry, 'snapshot' | 'position'>): Map<string, { sessionName: string; claims: DeviceLockClaim[] }> {
+  const { resources, holders, queue } = registry.snapshot()
+  const name = (id: string) => resources.find((resource) => resource.id === id)?.name ?? id
+  const byPane = new Map<string, { sessionName: string; claims: DeviceLockClaim[] }>()
+  const add = (owner: LockOwner, claim: DeviceLockClaim) => {
+    const entry = byPane.get(owner.paneId) ?? { sessionName: owner.sessionName, claims: [] }
+    entry.claims.push({ ...claim, ...(owner.as ? { as: owner.as } : {}) })
+    byPane.set(owner.paneId, entry)
+  }
+  for (const holder of holders) add(holder, { resourceId: holder.resourceId, name: name(holder.resourceId), state: 'held', task: holder.task })
+  for (const entry of queue) {
+    if (entry.offer) add(entry, { resourceId: entry.offer.resourceId, name: name(entry.offer.resourceId), state: 'offered', task: entry.task })
+    else add(entry, { resourceId: entry.request, name: entry.resourceIds.length === 1 ? name(entry.resourceIds[0]) : entry.request, state: 'queued', position: registry.position(entry), task: entry.task })
+  }
+  return byPane
+}
 
 export class DeviceLockError extends Error {
   constructor(readonly status: number, message: string) { super(message) }

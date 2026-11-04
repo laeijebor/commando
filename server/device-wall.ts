@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readJson, releasedByUserMessage, removedByUserMessage, writeJson, type DeviceLockApi } from './device-lock-api.js'
-import { DeviceLockError, type DeviceLockRegistry, type DeviceResource } from './device-locks.js'
+import { DeviceLockError, type DeviceLockRegistry, type DeviceLockSnapshot, type DeviceResource } from './device-locks.js'
 
 /** `unknown`: the tool isn't available or hasn't answered yet; `no-serial`: the lock has no serial to look for. */
 export type DeviceConnection = 'connected' | 'missing' | 'unknown' | 'no-serial'
@@ -65,6 +65,44 @@ export class DeviceDiscovery {
       }))
     } finally { await rm(directory, { recursive: true, force: true }) }
   }
+}
+
+export type DeviceLockAlert = { paneId: string; title: string; body: string; dedupeKey: string }
+const IDLE_ALERT_MS = 10 * 60_000
+const WAIT_ALERT_MS = 30 * 60_000
+const minutes = (ms: number) => ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m` : `${Math.floor(ms / 3_600_000)}h ${Math.floor(ms / 60_000) % 60}m`
+
+/**
+ * When a queue needs the owner: a holder others wait for is far past its estimate or its agent has gone idle,
+ * or a request has waited half an hour. Each alert has a stable key, so it is pushed once.
+ */
+export function deviceLockAlerts(snapshot: DeviceLockSnapshot, now: number, idleSince: (paneId: string) => number | undefined): DeviceLockAlert[] {
+  const alerts: DeviceLockAlert[] = []
+  const name = (id: string) => snapshot.resources.find((resource) => resource.id === id)?.name ?? id
+  const who = (owner: { as?: string; sessionName: string }) => owner.as ?? owner.sessionName
+  for (const holder of snapshot.holders) {
+    const waiting = snapshot.queue.filter((entry) => entry.resourceIds.includes(holder.resourceId)).length
+    if (!waiting) continue
+    const key = holder.entryId ?? `${holder.paneId}:${holder.resourceId}:${holder.acquiredAt}`
+    const held = now - holder.acquiredAt
+    const queue = `${waiting} waiting`
+    if (holder.estimateMs && held >= 3 * holder.estimateMs) {
+      alerts.push({ paneId: holder.paneId, dedupeKey: `device-overrun:${key}`, title: `${name(holder.resourceId)} held for ${minutes(held)}`,
+        body: `${who(holder)} estimated ${minutes(holder.estimateMs)} for "${holder.task}". ${queue}.` })
+    }
+    const idle = holder.pid ? undefined : idleSince(holder.paneId)
+    if (idle !== undefined && now - idle >= IDLE_ALERT_MS) {
+      alerts.push({ paneId: holder.paneId, dedupeKey: `device-idle:${key}:${idle}`, title: `${name(holder.resourceId)} held by an idle agent`,
+        body: `${who(holder)} has been idle for ${minutes(now - idle)} while holding it. ${queue}.` })
+    }
+  }
+  for (const entry of snapshot.queue) {
+    if (now - entry.enqueuedAt < WAIT_ALERT_MS) continue
+    const target = entry.offer ? name(entry.offer.resourceId) : entry.resourceIds.length === 1 ? name(entry.resourceIds[0]) : entry.request
+    alerts.push({ paneId: entry.paneId, dedupeKey: `device-wait:${entry.id}`, title: `${who(entry)} has waited ${minutes(now - entry.enqueuedAt)}`,
+      body: `Queued for ${target}: "${entry.task}".` })
+  }
+  return alerts
 }
 
 /**

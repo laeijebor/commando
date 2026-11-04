@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DeviceLockRegistry, OFFER_TIMEOUT_MS, UNDELIVERED_OFFER_TIMEOUT_MS, type QueueEntry } from './device-locks.js'
+import { DeviceLockRegistry, deviceLockClaimsByPane, OFFER_TIMEOUT_MS, UNDELIVERED_OFFER_TIMEOUT_MS, type QueueEntry } from './device-locks.js'
 
 const directories: string[] = []
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }) })
@@ -212,6 +212,22 @@ describe('DeviceLockRegistry', () => {
     expect(registry.withdraw('%3', queued.entry.id)).toBe('released')
     expect(registry.holdersOf('pixel')).toEqual([])
     expect(registry.withdraw('%3', queued.entry.id)).toBe('gone')
+  })
+
+  it('lists each pane\'s locks for its worklog', () => {
+    const { registry } = setup()
+    registry.lock({ ...a, request: 'pixel', task: 'one' })
+    registry.lock({ ...b, request: 'pixel', task: 'two' })
+    registry.lock({ ...b, request: 'any-android', task: 'smoke' })
+    registry.lock({ ...c, request: 'pixel', task: 'three' })
+    registry.release(a, 'pixel')
+    const claims = deviceLockClaimsByPane(registry)
+    expect(claims.get('%1')).toBeUndefined()
+    expect(claims.get('%2')).toEqual({ sessionName: 'memleak', claims: [
+      { resourceId: 'moto', name: 'moto e13', state: 'held', task: 'smoke', as: 'MEMLEAK' },
+      { resourceId: 'pixel', name: 'Pixel 5', state: 'offered', task: 'two', as: 'MEMLEAK' },
+    ] })
+    expect(claims.get('%3')?.claims).toEqual([{ resourceId: 'pixel', name: 'Pixel 5', state: 'queued', position: 2, task: 'three' }])
   })
 
   it('refuses to remove a resource that is in use', () => {

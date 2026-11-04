@@ -2953,6 +2953,10 @@ export function App() {
     const brief = paneBriefs[pane.id]
     return brief?.simulator && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.simulator]] : []
   })), [snapshot?.panes, paneBriefs])
+  const paneDevices = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
+    const brief = paneBriefs[pane.id]
+    return brief?.devices?.length && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.devices]] : []
+  })), [snapshot?.panes, paneBriefs])
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
     try {
@@ -4060,6 +4064,8 @@ export function App() {
               marks={paneMarks}
               seen={paneSeen}
               simulators={paneSimulators}
+              devices={paneDevices}
+              onShowDevices={() => { setArea('devices'); setLeftPanelOpen(false) }}
               selectedSessionId={selectedSessionId}
               onSelectSession={selectSession}
               onSelectPane={jumpToPane}
