@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="slides.css">
+<link rel="stylesheet" href="themes/ink.css" id="theme">
+</head>
+<body>
+<main class="deck">
+
+<!-- 1 · Title -->
+<section class="slide" data-layout="title" data-canvas-group="Slide 1 · Title">
+  <p class="kicker" data-canvas-label="Kicker">Ship review · 24 Oct 2026</p>
+  <h1 data-canvas-label="Headline">The phone stopped throwing away what you type</h1>
+  <p class="lede" data-canvas-label="Lede">The companion app reconnected every ~4 seconds, closing the keyboard each time. It now holds one connection for minutes, on WiFi and 4G.</p>
+  <div class="meta-row" data-canvas-label="Meta pills">
+    <span class="pill"><span class="dot accent"></span>PR #156 · merged</span>
+    <span class="pill">daemon + mobile</span>
+    <span class="pill good"><span class="dot"></span>0 reconnects/min after</span>
+  </div>
+  <aside class="notes">Open with the user-visible symptom, not the socket detail.</aside>
+</section>
+
+<!-- 2 · Problem, with real screenshots -->
+<section class="slide" data-canvas-group="Slide 2 · Problem">
+  <p class="kicker">The problem</p>
+  <h2 data-canvas-label="Headline">Every reconnect closed the keyboard and dropped your draft</h2>
+  <div class="body cols split">
+    <div style="display:flex;flex-direction:column;gap:30px">
+      <div class="stat" data-canvas-label="Stat: every 4 s"><b class="bad">~4 s</b><span>between reconnects, on WiFi as well as 4G</span></div>
+      <div class="stat" data-canvas-label="Stat: draft lost"><b style="font-size:64px">“Hal”</b><span>was all that survived of <i>“Half a thought about the…”</i></span></div>
+    </div>
+    <div class="shots" data-canvas-label="Before screenshots">
+      <figure class="shot" style="margin:0"><div class="device"><img src="img/before-keyboard.png" alt=""><span class="pill bad badge">before</span></div><figcaption>Reconnect at 17:38:25 dismissed the keyboard</figcaption></figure>
+      <figure class="shot" style="margin:0"><div class="device"><img src="img/before-draft.png" alt=""><span class="callout" style="left:-18px;top:306px">1</span><span class="pill bad badge">before</span></div><figcaption><b>①</b> The typed sentence cut off after “Hal”</figcaption></figure>
+    </div>
+  </div>
+  <aside class="notes">Both are real simulator captures from the evidence folder.</aside>
+</section>
+
+<!-- 3 · Root cause flow -->
+<section class="slide" data-canvas-group="Slide 3 · Root cause">
+  <p class="kicker">Root cause</p>
+  <h2 data-canvas-label="Headline">The daemon sent more than its own limit allowed, then hung up</h2>
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center">
+    <div class="flow" data-canvas-label="Reconnect loop diagram">
+      <div class="node"><div class="n">01</div><h3>Phone connects</h3><p><code>/ws</code> opens; backoff resets on open</p></div>
+      <div class="node"><div class="n">02</div><h3>34 MB replay</h3><p>Every chat's full history, sent at once</p></div>
+      <div class="node hot"><div class="n">03</div><h3>Over 32 MiB</h3><p>Next broadcast trips the <code>bufferedAmount</code> cap</p></div>
+      <div class="node hot"><div class="n">04</div><h3>Close 1013</h3><p>“Client is not consuming output”</p></div>
+      <div class="node"><div class="n">05</div><h3>Field goes read-only</h3><p>iOS resigns the input → keyboard closes</p></div>
+    </div>
+    <div class="loop"><span>↺ reconnect after 500 ms — every ~4 s at ~10 MB/s</span></div>
+  </div>
+  <aside class="notes">On loopback the same daemon closes it within 80 ms.</aside>
+</section>
+
+<!-- 4 · Big numbers -->
+<section class="slide" data-canvas-group="Slide 4 · Impact">
+  <p class="kicker">Impact</p>
+  <h2 data-canvas-label="Headline">The phone now downloads 0.6 MB once, not 34 MB on a loop</h2>
+  <div class="body" style="display:grid;grid-template-columns:1fr auto 1fr 1.15fr;gap:28px;align-items:center">
+    <div class="card stat" data-canvas-label="Stat: replay before"><b class="bad">34 MB</b><span>replay on every connect, before</span></div>
+    <div class="arrow-big">→</div>
+    <div class="card stat" data-canvas-label="Stat: replay after"><b class="good">0.6 MB</b><span>once, newest 256 KiB per chat</span></div>
+    <div class="card stat" data-canvas-label="Stat: data per minute"><b class="accent">587→0</b><span>MB per minute over the WiFi proxy</span></div>
+  </div>
+  <aside class="notes">Desktop still gets full history: 34.6 MB once, no loop.</aside>
+</section>
+
+<!-- 5 · Chart -->
+<section class="slide" data-canvas-group="Slide 5 · Evidence chart">
+  <p class="kicker">Evidence · 60 s per run, two fake 18 MB chats</p>
+  <h2 data-canvas-label="Headline">Reconnects per minute dropped to zero on every link</h2>
+  <div class="body bars" data-canvas-label="Reconnects chart">
+    <div class="lbl">Loopback<small>no shaping</small></div>
+    <div class="row"><div class="b before" style="width:62%"><em>49/min</em></div><div class="b after"><em>0/min after</em></div></div>
+    <div class="lbl">WiFi proxy<small>8–25 ms · 12 MB/s</small></div>
+    <div class="row"><div class="b before" style="width:21.5%"><em>17/min</em></div><div class="b after"><em>0/min</em></div></div>
+    <div class="lbl">4G / DERP proxy<small>80–300 ms · stalls</small></div>
+    <div class="row"><div class="b before" style="width:3.8%"><em>3/min</em></div><div class="b after"><em>0/min</em></div></div>
+    <div class="lbl">Simulator app<small>over WiFi proxy</small></div>
+    <div class="row"><div class="b before" style="width:19%"><em>15/min</em></div><div class="b after"><em>0 over 3+ min</em></div></div>
+  </div>
+  <aside class="notes">Rebuilt from the table in the PR so it re-themes; the original PNG is in the evidence folder.</aside>
+</section>
+
+<!-- 6 · What changed -->
+<section class="slide" data-canvas-group="Slide 6 · What changed">
+  <p class="kicker">What changed</p>
+  <h2 data-canvas-label="Headline">Three changes, each one enough to break the loop</h2>
+  <div class="body cols c3">
+    <div class="card" data-canvas-label="Change: drain progress"><span class="tag">daemon · ws-backlog.ts</span><h3>Judge drain progress, not size</h3><ul><li>Drop a client only after 30 s with nothing drained</li><li>256 MiB hard cap still bounds memory</li><li>Large messages go out in fragments</li></ul></div>
+    <div class="card" data-canvas-label="Change: bounded replay"><span class="tag">daemon · chat-replay.ts</span><h3>Bounded replay on request</h3><ul><li><code>/ws?chatHistory=&lt;bytes&gt;</code></li><li>Newest items per chat + anything still running</li><li>Desktop asks for nothing and keeps full history</li></ul></div>
+    <div class="card" data-canvas-label="Change: mobile composer"><span class="tag">mobile</span><h3>Keep typing while offline</h3><ul><li>Composer stays editable; only Send waits</li><li>“Reconnecting…” banner waits 2 s</li><li>Backoff resets after 10 s open, not on open</li></ul></div>
+  </div>
+</section>
+
+<!-- 7 · After screenshots -->
+<section class="slide" data-canvas-group="Slide 7 · After">
+  <p class="kicker">After</p>
+  <h2 data-canvas-label="Headline">Kill the connection mid-sentence and keep typing</h2>
+  <div class="body shots" data-canvas-label="After screenshots">
+    <figure class="shot" style="margin:0"><div class="device"><img src="img/before-draft.png" alt="" style="height:360px;filter:saturate(.6)"><span class="pill bad badge">before</span></div><figcaption>Draft lost on reconnect</figcaption></figure>
+    <div class="arrow-big" style="align-self:center">→</div>
+    <figure class="shot" style="margin:0"><div class="device"><img src="img/after-reconnect.png" alt="" style="height:360px"><span class="pill good badge">after</span></div><figcaption>0.3 s after a forced reconnect: keyboard and draft kept</figcaption></figure>
+    <figure class="shot" style="margin:0"><div class="device"><img src="img/after-daemon-down.png" alt="" style="height:360px"><span class="pill good badge">after</span></div><figcaption>Daemon down for 8 s: banner shows, still typing</figcaption></figure>
+  </div>
+</section>
+
+<!-- 8 · Takeaways -->
+<section class="slide" data-canvas-group="Slide 8 · Takeaways">
+  <p class="kicker">Takeaways</p>
+  <h2 data-canvas-label="Headline">What to remember</h2>
+  <div class="body cols c2" style="align-items:start">
+    <ul class="checks" data-canvas-label="Takeaway list">
+      <li><span class="ic good">✓</span><span><b>Never make an input read-only for a network state.</b> iOS takes the keyboard away.</span></li>
+      <li><span class="ic good">✓</span><span><b>Reset backoff on a healthy connection,</b> not on open.</span></li>
+      <li><span class="ic good">✓</span><span><b>Replay what the screen needs.</b> “Load earlier” fetches the rest.</span></li>
+    </ul>
+    <div class="card" data-canvas-label="Residual risk"><span class="tag" style="color:var(--warn)">Residual risk</span><h3>A client that never reads is still dropped</h3><p>After about 60 s: 30 s with no drain plus ws's close timeout. That is the intended backstop.</p></div>
+  </div>
+</section>
+
+</main>
+<script src="deck.js"></script>
+</body>
+</html>

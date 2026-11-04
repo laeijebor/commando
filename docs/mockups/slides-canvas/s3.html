@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/ink.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 3 · Root cause flow -->
+<section class="slide" data-n="3" data-total="8" data-canvas-group="Slide 3 · Root cause">
+  <p class="kicker">Root cause</p>
+  <h2 data-canvas-label="Headline">The daemon sent more than its own limit allowed, then hung up</h2>
+  <div class="body" style="display:flex;flex-direction:column;justify-content:center">
+    <div class="flow" data-canvas-label="Reconnect loop diagram">
+      <div class="node"><div class="n">01</div><h3>Phone connects</h3><p><code>/ws</code> opens; backoff resets on open</p></div>
+      <div class="node"><div class="n">02</div><h3>34 MB replay</h3><p>Every chat's full history, sent at once</p></div>
+      <div class="node hot"><div class="n">03</div><h3>Over 32 MiB</h3><p>Next broadcast trips the <code>bufferedAmount</code> cap</p></div>
+      <div class="node hot"><div class="n">04</div><h3>Close 1013</h3><p>“Client is not consuming output”</p></div>
+      <div class="node"><div class="n">05</div><h3>Field goes read-only</h3><p>iOS resigns the input → keyboard closes</p></div>
+    </div>
+    <div class="loop"><span>↺ reconnect after 500 ms — every ~4 s at ~10 MB/s</span></div>
+  </div>
+  <aside class="notes">On loopback the same daemon closes it within 80 ms.</aside>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>

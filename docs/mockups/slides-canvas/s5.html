@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/ink.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 5 · Chart -->
+<section class="slide" data-n="5" data-total="8" data-canvas-group="Slide 5 · Evidence chart">
+  <p class="kicker">Evidence · 60 s per run, two fake 18 MB chats</p>
+  <h2 data-canvas-label="Headline">Reconnects per minute dropped to zero on every link</h2>
+  <div class="body bars" data-canvas-label="Reconnects chart">
+    <div class="lbl">Loopback<small>no shaping</small></div>
+    <div class="row"><div class="b before" style="width:62%"><em>49/min</em></div><div class="b after"><em>0/min after</em></div></div>
+    <div class="lbl">WiFi proxy<small>8–25 ms · 12 MB/s</small></div>
+    <div class="row"><div class="b before" style="width:21.5%"><em>17/min</em></div><div class="b after"><em>0/min</em></div></div>
+    <div class="lbl">4G / DERP proxy<small>80–300 ms · stalls</small></div>
+    <div class="row"><div class="b before" style="width:3.8%"><em>3/min</em></div><div class="b after"><em>0/min</em></div></div>
+    <div class="lbl">Simulator app<small>over WiFi proxy</small></div>
+    <div class="row"><div class="b before" style="width:19%"><em>15/min</em></div><div class="b after"><em>0 over 3+ min</em></div></div>
+  </div>
+  <aside class="notes">Rebuilt from the table in the PR so it re-themes; the original PNG is in the evidence folder.</aside>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>
