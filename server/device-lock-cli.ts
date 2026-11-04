@@ -12,7 +12,7 @@ const defaultTokenPath = ${JSON.stringify(tokenPath)}
 const USAGE = [
   'Usage: commando-device.mjs list | status',
   '  lock <device|any|any-phone|any-android|any-ios> --task "what you are doing" [--as NAME] [--estimate 15m] [--wait [max]] [--pid PID]',
-  '  claim [device] [--as NAME] | release [device] [--as NAME] [--pid PID] | cancel [device] [--as NAME]',
+  '  claim [device] | release [device] | cancel [device]   (each with the same --as NAME / --pid PID as the lock)',
   '  resource add <id> --name "Pixel 5" --kind android|ios|emulator|host [--serial S] [--release "steps"] [--busy "xcodebuild"]...',
   '  resource remove <id>',
   'Add --json for machine-readable output.',
