@@ -11,6 +11,8 @@ import type {
 } from '../shared/cloud-tasks.js'
 import { CloudTaskError, type CloudInspection, type CloudProviderAdapter } from './cloud-provider.js'
 import type { CloudTaskRepository } from './cloud-task-repository.js'
+import { ClaudeCloudAdapter } from './cloud-providers/claude-cli.js'
+import { githubRemote } from './cloud-providers/claude-create.js'
 
 const LEASE_MS = 30_000
 const HEARTBEAT_MS = 5_000
@@ -27,6 +29,9 @@ type ConfiguredConnection = Readonly<{ id: CloudProviderId; credentialContextId:
 
 /** Only service-owned text is exposed, never an adapter exception or process diagnostic. */
 const ISSUES: Record<string, string> = {
+  prompt_too_long_for_terminal: 'The prompt and launch environment exceed Claude’s private terminal limit. Shorten the prompt before submitting.',
+  unsafe_prompt_option: 'Claude prompts and messages cannot start with a dash. Start with a plain-language instruction.',
+  unsafe_prompt_receipt: 'Claude prompts and messages cannot contain cloud-session receipt lines. Remove those lines before submitting.',
   provider_unavailable: 'The provider is unavailable. Check its local configuration.',
   capability_unavailable: 'This action is not verified for the configured provider.',
   auth_required: 'Sign in using the provider application, then try again.',
@@ -70,12 +75,13 @@ function resumeInput(value: unknown): CloudResumeInput {
   return { credentialContextId: contextId(record.credentialContextId), accountConfirmed: confirmed(record.accountConfirmed) }
 }
 function source(value: unknown): CloudSource {
-  const record = object(value, ['repository', 'environmentId', 'branch', 'checkoutPath', 'commit'])
+  const record = object(value, ['repository', 'remoteUrl', 'environmentId', 'branch', 'checkoutPath', 'commit'])
   const result: CloudSource = {}
-  for (const key of ['repository', 'environmentId', 'branch', 'checkoutPath', 'commit'] as const) {
+  for (const key of ['repository', 'remoteUrl', 'environmentId', 'branch', 'checkoutPath', 'commit'] as const) {
     if (record[key] === undefined) continue
     const field = text(record[key], key, key === 'checkoutPath' ? 4096 : 256)
     if (key === 'repository' && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(field)) invalid('Repository must be owner/name')
+    if (key === 'remoteUrl' && !githubRemote(field)) invalid('Invalid GitHub remote URL')
     if (key === 'environmentId' && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(field)) invalid('Invalid environment ID')
     if (key === 'branch' && (field.startsWith('-') || /[\s~^:?*\[\\]/.test(field) || field.includes('..') || field.includes('@{'))) invalid('Invalid branch')
     if (key === 'checkoutPath' && !isAbsolute(field)) invalid('Checkout path must be absolute')
@@ -226,6 +232,8 @@ export class CloudTaskService {
         id: connection.id, label: connection.label, homeUrl: cloudProviderHome(connection.id),
         readiness: value.readiness, reason: this.readinessReason(value),
         version: typeof value.version === 'string' && /^[A-Za-z0-9_.+ -]{1,80}$/.test(value.version) ? value.version : null,
+        ...(typeof value.createPromptByteLimit === 'number' && Number.isSafeInteger(value.createPromptByteLimit)
+          && value.createPromptByteLimit >= 0 && value.createPromptByteLimit <= CLOUD_PROMPT_LIMIT ? { createPromptByteLimit: value.createPromptByteLimit } : {}),
         credentialContextId: connection.credentialContextId, verifiedAccountRef: value.capabilities.accountIdentity ? value.verifiedAccountRef : null,
         capabilities: Object.fromEntries(Object.entries(value.capabilities).filter(([key]) => ['create', 'link', 'list', 'inspect', 'sendMessage', 'diff', 'accountIdentity'].includes(key))) as CloudProviderInfo['capabilities'],
       }
@@ -235,14 +243,15 @@ export class CloudTaskService {
     }
   }
   private readinessReason(info: CloudProviderInfo): string {
-    const readiness = info.readiness === 'ready' ? 'The CLI matches its locally verified version.'
+    const readiness = info.readiness === 'ready' ? 'The CLI matches or exceeds the verified version minimum.'
       : info.readiness === 'missing_cli' ? 'The configured CLI is not installed.'
       : info.readiness === 'unverified' ? 'The installed CLI version requires local capability verification.'
       : ISSUES.provider_unavailable
     // Synthesize precise capability explanations instead of reflecting diagnostic text
     // from an injected adapter. Source safety is independent of CLI version readiness.
     const creation = info.id === 'claude' && !info.capabilities.create
-      ? ' Claude creation is disabled: no verified enforceable no-bundle source-selection path is available. Create in Claude, then link the session here.' : ''
+      ? ' Claude creation is unavailable for this connection. Link an existing session.'
+      : info.id === 'claude' ? ' Creation uses a fresh clone of the pushed GitHub branch; local working files are never included.' : ''
     const followUp = info.id === 'claude' && info.capabilities.sendMessage
       ? ' Cloud follow-up is enabled for the verified CLI version.' : ''
     const account = !info.capabilities.accountIdentity || info.verifiedAccountRef === null
@@ -320,6 +329,8 @@ export class CloudTaskService {
     const intent = this.intent('create', input, key, null)
     if (intent.reused) return intent.reused
     const info = await this.ready(input.provider, 'create', input.accountConfirmed, undefined, input.credentialContextId)
+    const adapter = this.connection(input.provider, input.credentialContextId).adapter
+    if (adapter instanceof ClaudeCloudAdapter) input.source = await adapter.prepareSource(input.source)
     return this.prepare(this.newTask(input, info), 'create', input, key, intent.hash)
   }
   async linkTask(value: unknown, key: string, taskId?: string): Promise<CloudTaskAction> {

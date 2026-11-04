@@ -4,7 +4,7 @@ export type CloudRemoteState = 'unknown' | 'queued' | 'running' | 'needs_input' 
 export type CloudDeliveryState = 'prepared' | 'dispatching' | 'accepted' | 'rejected' | 'delivery_unknown'
 export type CloudObservationState = 'unavailable' | 'fresh' | 'stale' | 'auth_required' | 'error'
 export type CloudIssue = { code: string; message: string }
-export type CloudSource = { repository?: string; environmentId?: string; branch?: string; checkoutPath?: string; commit?: string }
+export type CloudSource = { repository?: string; remoteUrl?: string; environmentId?: string; branch?: string; checkoutPath?: string; commit?: string }
 export type CloudProviderCapabilities = { create: boolean; link: boolean; list: boolean; inspect: boolean; sendMessage: boolean; diff: boolean; accountIdentity: boolean }
 export type CloudProviderInfo = {
   id: CloudProviderId
@@ -13,6 +13,8 @@ export type CloudProviderInfo = {
   readiness: 'ready' | 'missing_cli' | 'unverified' | 'error'
   reason: string
   version: string | null
+  /** Optional per-connection create budget; may be lower than CLOUD_PROMPT_LIMIT. */
+  createPromptByteLimit?: number
   credentialContextId: string
   verifiedAccountRef: string | null
   capabilities: CloudProviderCapabilities

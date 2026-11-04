@@ -1,7 +1,7 @@
 # Codex cloud: synthetic, provisional fixtures
 
 These fixtures are hand-authored from official source, **not authenticated CLI
-captures**. `codex-cli 0.0.0-synthetic` is a test-only version. P0b (installed
+captures**. `codex-cli 1.0.0` is a test-only version. P0b (installed
 version/help, account, selected disposable environment, receipt/detachment/live
 completion) remains pending. No default verified version is configured.
 
@@ -35,8 +35,8 @@ Source reviewed 2026-09-13, OpenAI commit
 Constructor options override `COMMANDO_CODEX_CLI` (default `codex`),
 `COMMANDO_CLOUD_CODEX_VERIFIED_VERSION` (unset by default), and
 `COMMANDO_CLOUD_CODEX_CONTEXT` (default `codex:default`). The verified version is
-the **parsed semantic version**, e.g. `0.0.0-synthetic` from the test CLI output
-`codex-cli 0.0.0-synthetic`; it must match exactly, not a label or semver range.
+the **parsed semantic version**, e.g. `1.0.0` from the test CLI output
+`codex-cli 1.0.0`; it is a minimum stable version, not a label or semver range.
 `CloudProviderInfo.version` also returns that semantic version. Setting it asserts external P0
 verification, not account detection. Creation still requires account confirmation.
 User-supplied local links remain possible when the CLI is missing or unverified.

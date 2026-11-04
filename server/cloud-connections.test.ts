@@ -67,7 +67,7 @@ describe('configured Claude connections', () => {
       PATH: '', COMMANDO_CLOUD_CLAUDE_TEAM_VERIFIED_VERSION: '2.1.270',
       COMMANDO_CLOUD_CLAUDE_TEAM_CONTEXT: 'team:test', COMMANDO_CLOUD_CLAUDE_MAX_CONTEXT: 'max:test',
     } })
-    expect(await connections[0].info()).toMatchObject({ credentialContextId: 'team:test', capabilities: { create: false, sendMessage: true } })
+    expect(await connections[0].info()).toMatchObject({ credentialContextId: 'team:test', capabilities: { create: true, sendMessage: true } })
     expect(await connections[1].info()).toMatchObject({ credentialContextId: 'max:test', capabilities: { create: false, sendMessage: false } })
   })
   it('passes an explicit Max directory without changing the Team default semantics', async () => {

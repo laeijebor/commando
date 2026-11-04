@@ -353,25 +353,38 @@ reordering and recovery; an unavailable Max connection never falls back to Team.
 | Action | Claude Code Cloud | Codex Cloud |
 | --- | --- | --- |
 | Link an existing ID | Yes, explicitly user-supplied | Yes, explicitly user-supplied |
-| Create from Commando | Unavailable until source-selection/no-bundle behavior is verified | Version-gated CLI submission |
+| Create from Commando | Version-gated interactive CLI in a private scratch clone | Version-gated CLI submission |
 | Live status | Open the session in Claude | Version-gated, exact-ID CLI lookup |
 | Follow-up | Version-gated CLI message acknowledgement | Open the task in Codex |
 | Diff | Open the session in Claude | Version-gated, bounded read-only preview |
 
 Linking records an identity; it does not prove provider acceptance or delivery of
-an earlier message. Claude creation is deliberately unavailable: a clean checkout
-does not establish whether the CLI will upload a repository bundle. Existing
-Claude sessions can still be linked and, with verified CLI support, messaged.
+an earlier message. Claude creation resolves the selected checkout's GitHub origin
+and verifies the requested branch on that remote. Commando records the remote URL,
+branch and commit, then shallow-clones the branch into a fresh private directory
+(mode 0700). The cloned commit must still match before Claude starts. Claude runs
+only in that clone, so unpushed changes, ignored files and untracked files from the
+user's checkout cannot be uploaded. The CLI may upload the pushed clone itself;
+Commando never runs it in the user's working checkout.
 
-Cloud CLI execution is **off by default until its installed version is explicitly
-verified**. Missing binaries and unsupported capabilities appear in the task
+Creation runs `claude --cloud "<prompt>"` interactively on a unique private tmux
+socket, with the prompt passed as one literal argv element. Only the exact known
+folder-trust prompt in that owned scratch checkout is auto-accepted. A complete
+matching session URL/resume receipt records `provider_receipt` evidence. Clone or
+tmux setup failures reject the request; any uncertainty after launch (including
+timeouts, unexpected output or a killed pane) becomes `delivery_unknown`, with no
+automatic retry. The private session and scratch directory are cleaned up after
+every attempt. Provider work continues independently after acceptance.
+
+Cloud CLI execution is **off by default until a minimum verified version is
+configured**. Missing binaries and unsupported capabilities appear in the task
 dialog. This implementation's automated tests use synthetic executables and API
 fixtures; they are not evidence of an authenticated provider smoke test.
 
 On the daemon host, sign in through the official CLI using the subscription
 account that owns the cloud environment/session. After checking that version's
 cloud commands, receipt output, and detach behavior against a disposable target,
-configure the exact semantic version you verified:
+configure the minimum stable semantic version you verified:
 
 ```sh
 COMMANDO_CODEX_CLI=/absolute/path/to/codex
@@ -395,10 +408,12 @@ are optional: discovery checks PATH, then `~/.local/bin`, and for Codex checks
 installed NVM Node versions newest-first. An explicit override always wins,
 including an invalid one; it never silently falls back to a different binary.
 Discovery does not execute shell aliases or install/update software. Version values are
-the exact version numbers, not the full `codex-cli …` or `… (Claude Code)` label,
-and ranges are not accepted. A version mismatch disables CLI capabilities again.
-Each Claude version setting enables only its own supported follow-up delivery,
-not creation; verifying Team does not enable Max. The former singular
+minimum numeric `major.minor.patch` versions, not the full `codex-cli …` or
+`… (Claude Code)` label. Installed versions equal to or newer than the configured
+minimum enable capabilities; older, prerelease, malformed, label-formatted and
+ranged values remain unverified. Strict receipt parsers still fail closed if a
+new CLI changes its output. Each Claude setting enables creation and follow-up
+only for its own connection; verifying Team does not enable Max. The former singular
 `COMMANDO_CLOUD_CLAUDE_VERIFIED_VERSION` is not used by the two-connection factory.
 Context labels are local identity namespaces, not credentials. Use a new context
 when changing accounts; the app checks declared context changes and requires
