@@ -1,13 +1,14 @@
 import { useHost } from '../HostContext'
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
-import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, Undo2, X, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, CircleMinus, ExternalLink, GitMerge, GitPullRequest, GitPullRequestArrow, Undo2, X, XCircle } from 'lucide-react'
 import type { PrAutofixStatus } from '../../shared/pr-types'
-import { prMergeDisabledReason } from '../../shared/pr-merge'
+import { prHasMergeConflicts, prMergeDisabledReason } from '../../shared/pr-merge'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { usePanePullRequests } from '../PanePullRequests'
 import { PrBadges } from '../PrBadges'
 import type { PrQuickLookTab } from '../PrQuickLook'
 import { cachedPrSummary, markPrMerged, refreshPanePrs } from '../prStore'
+import type { ChatSendError } from './ChatComposer'
 import { Button } from './ui/button'
 import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
@@ -60,7 +61,19 @@ export function autofixStatusText(status: PrAutofixStatus | null): string {
   return `Stopped${status.reason ? ` · ${status.reason}` : ''}`
 }
 
-function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: string; api: StripApi; connected: boolean }) {
+/** What the Fix conflicts button asks the pane's agent to do. */
+export function fixConflictsPrompt(pr: { repo: string; number: number; url: string; baseRefName?: string }): string {
+  const base = pr.baseRefName ? ` \`${pr.baseRefName}\`` : ''
+  return [
+    `Resolve the merge conflicts on ${pr.repo}#${pr.number}: ${pr.url}`,
+    `Merge the base branch${base} into the PR branch, resolve each conflict keeping the intent of both sides, run the checks, and push.`,
+    'Do not rebase or force-push, and do not merge the PR.',
+  ].join('\n')
+}
+
+type SendToAgent = (text: string) => string | void
+
+function CiPopover({ pr, paneId, api, connected, onSend, agentConnected, sendError }: { pr: PanePrSummary; paneId: string; api: StripApi; connected: boolean; onSend?: SendToAgent | undefined; agentConnected: boolean; sendError?: ChatSendError | undefined }) {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<PrAutofixStatus | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -104,6 +117,20 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
   const full = pr.preview ?? cachedPrSummary(api, pr.repo, pr.number)
   const mergeTarget = full ? { ...full, ...pr } : undefined
   const mergeBlocked = !connected ? 'Disconnected' : mergeTarget ? prMergeDisabledReason(mergeTarget) : 'Checking merge readiness'
+  const conflicts = prHasMergeConflicts(mergeTarget ?? pr)
+  // Sent once per head commit: a push by the agent makes a fresh request possible.
+  const [fixRequest, setFixRequest] = useState<{ head: string; requestId: string | null } | null>(null)
+  const head = mergeTarget?.headRefOid ?? ''
+  const fixRequested = fixRequest?.head === head
+  // A send the daemon refused never reached the agent, so it can be tried again.
+  useEffect(() => {
+    if (fixRequest?.requestId && sendError?.refused.some((refusal) => refusal.requestId === fixRequest.requestId)) setFixRequest(null)
+  }, [sendError, fixRequest])
+  const fixConflicts = () => {
+    if (!onSend || fixRequested) return
+    const requestId = onSend(fixConflictsPrompt({ repo: pr.repo, number: pr.number, url: pr.url, ...(mergeTarget?.baseRefName ? { baseRefName: mergeTarget.baseRefName } : {}) }))
+    setFixRequest({ head, requestId: requestId ?? null })
+  }
   const merge = async () => {
     if (!mergeTarget || mergeInFlight.current || mergeBlocked) return
     mergeInFlight.current = true
@@ -155,6 +182,12 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
         <div className="border-t mt-3 pt-3">
           <Button size="sm" className="w-full" disabled={merging || Boolean(mergeBlocked)} title={mergeBlocked ?? 'Merge this pull request on GitHub'}
             onClick={() => { void merge() }}><GitMerge className="size-4" />{merging ? 'Merging…' : 'Merge PR'}</Button>
+          {conflicts && onSend ? (
+            <Button size="sm" variant="outline" className="w-full mt-2" disabled={!connected || !agentConnected || fixRequested}
+              title="Ask this chat's agent to resolve the conflicts and push" onClick={fixConflicts}>
+              <GitPullRequestArrow className="size-4" />{fixRequested ? 'Fix requested' : 'Fix conflicts'}
+            </Button>
+          ) : null}
           {mergeBlocked && !merging ? <p className="mt-2 text-xs text-muted-foreground">{mergeBlocked}</p> : null}
           {mergeError ? <p className="mt-2 text-xs text-destructive" role="alert">{mergeError}</p> : null}
         </div>
@@ -163,7 +196,17 @@ function CiPopover({ pr, paneId, api, connected }: { pr: PanePrSummary; paneId: 
   )
 }
 
-export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; api: StripApi; connected: boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void }) {
+export function PrStrip({ paneId, api, connected, onOpenPr, onSend, agentConnected = true, sendError }: {
+  paneId: string
+  api: StripApi
+  connected: boolean
+  onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
+  /** Sends a message to this pane's agent, as if typed in the chat. */
+  onSend?: SendToAgent | undefined
+  agentConnected?: boolean
+  /** Sends the daemon refused, by the request ids `onSend` returned. */
+  sendError?: ChatSendError | undefined
+}) {
   const { activeHost } = useHost()
   const dismissedKey = activeHost === 'local' ? DISMISSED_PRS_STORAGE_KEY : `${DISMISSED_PRS_STORAGE_KEY}.${activeHost}`
   const minimisedKey = activeHost === 'local' ? MINIMISED_PR_STRIPS_STORAGE_KEY : `${MINIMISED_PR_STRIPS_STORAGE_KEY}.${activeHost}`
@@ -217,7 +260,7 @@ export function PrStrip({ paneId, api, connected, onOpenPr }: { paneId: string; 
                 {/* The same shared PR status the HUD shows, updated as any view refreshes it. */}
                 <span className="chat-pr-badges">
                   <PrBadges pr={pr} number={pr.number} {...(onOpenPr ? { links: { url: pr.url, onClick: (tab, event) => openInPanel(event, pr, tab) } } : {})} />
-                  <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} />
+                  <CiPopover pr={pr} paneId={paneId} api={api} connected={connected} onSend={onSend} agentConnected={agentConnected} sendError={sendError} />
                 </span>
               </> : <>
                 <span className="chat-pr-diff"><span className="text-success">+{pr.additions.toLocaleString('en-US')}</span> <span className="text-destructive">−{pr.deletions.toLocaleString('en-US')}</span></span>

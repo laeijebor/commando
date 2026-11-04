@@ -1009,7 +1009,6 @@ export function TmuxCreateControls({
       <form ref={formRef} onSubmit={submit} onPaste={onPaste} onKeyDown={onKeyDown} aria-busy={pending}>
         <p className="tmux-create__message">Runs on {hostName}</p>
         {destination}
-        {promptBox}
         <label>
           Session name <span>{promptGiven ? 'optional' : promptAccepted ? 'required without a prompt' : ''}</span>
           <input
@@ -1024,6 +1023,7 @@ export function TmuxCreateControls({
             onChange={(event) => setSessionName(event.target.value)}
           />
         </label>
+        {promptBox}
         {workspace}
 
         {error && (
