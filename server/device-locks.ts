@@ -23,7 +23,11 @@ export type DeviceResource = {
   busyProcesses?: string[]
 }
 export type LockOwner = { paneId: string; sessionName: string; as?: string; pid?: number }
-export type DeviceHolder = LockOwner & { resourceId: string; task: string; estimateMs?: number; acquiredAt: number }
+export type DeviceHolder = LockOwner & {
+  resourceId: string; task: string; estimateMs?: number; acquiredAt: number
+  /** The queue request this lock was granted from, so a blocked CLI can find it. */
+  entryId?: string
+}
 export type LockMode = 'notify' | 'wait'
 export type QueueEntry = LockOwner & {
   id: string
@@ -310,7 +314,7 @@ export class DeviceLockRegistry {
 
   private holderFor(entry: QueueEntry, resourceId: string): DeviceHolder {
     return { paneId: entry.paneId, sessionName: entry.sessionName, ...(entry.as ? { as: entry.as } : {}), ...(entry.pid ? { pid: entry.pid } : {}),
-      resourceId, task: entry.task, ...(entry.estimateMs ? { estimateMs: entry.estimateMs } : {}), acquiredAt: this.now() }
+      resourceId, task: entry.task, ...(entry.estimateMs ? { estimateMs: entry.estimateMs } : {}), acquiredAt: this.now(), entryId: entry.id }
   }
 
   private queued(entry: QueueEntry): LockResult {
@@ -332,7 +336,8 @@ export class DeviceLockRegistry {
         try {
           if (!known.has(value.resourceId) || !Number.isFinite(value.acquiredAt)) continue
           holders.push({ ...parseOwner(value), resourceId: value.resourceId, task: text(value.task, 'task', 300)!,
-            ...(parseEstimate(value.estimateMs) ? { estimateMs: parseEstimate(value.estimateMs) } : {}), acquiredAt: Math.min(value.acquiredAt, this.now()) })
+            ...(parseEstimate(value.estimateMs) ? { estimateMs: parseEstimate(value.estimateMs) } : {}), acquiredAt: Math.min(value.acquiredAt, this.now()),
+            ...(typeof value.entryId === 'string' ? { entryId: value.entryId } : {}) })
         } catch { /* skip */ }
       }
       const queue: QueueEntry[] = []
