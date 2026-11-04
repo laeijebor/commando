@@ -142,6 +142,16 @@ describe('shared cloud task store', () => {
     expect(api.byKey).not.toHaveBeenCalled()
   })
 
+  it('clears a fresh create rejected for an unverifiable source so it can be corrected', async () => {
+    const api = apiFixture()
+    const store = new CloudTaskStore(api)
+    await store.refresh()
+    vi.mocked(api.create).mockRejectedValueOnce(new CloudTasksHttpError(400, 'source_unverified', 'Push the branch first'))
+    await expect(store.create(input)).rejects.toThrow('Push the branch first')
+    expect(store.getSnapshot().pending).toEqual([])
+    expect(JSON.parse(localStorage.getItem(CLOUD_PENDING_STORAGE_KEY)!)).toEqual([])
+  })
+
   it.each([
     [400, 'invalid_request'], [413, 'invalid_request'], [415, 'invalid_request'], [401, ''], [403, ''],
   ] as const)('clears fresh create, link, and message intents after %s/%s', async (status, code) => {

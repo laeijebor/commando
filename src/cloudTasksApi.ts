@@ -33,6 +33,8 @@ export class CloudTasksHttpError extends Error {
     return ((this.status === 400 || this.status === 413 || this.status === 415) && this.code === 'invalid_request')
       || ((this.status === 401 || this.status === 403) && this.code === '')
       || (kind === 'message' && this.status === 404 && this.code === 'task_not_found')
+      // Claude source preparation (prepareSource) runs before the service records the intent.
+      || (kind === 'create' && this.status === 400 && this.code === 'source_unverified')
   }
 }
 
@@ -54,7 +56,7 @@ export function createCloudTasksApi(token: string, fetcher: typeof fetch = fetch
         `Cloud request failed (${response.status}). Check provider readiness and reconnect before retrying.`)
       // These are daemon-owned validation/auth messages. Keep arbitrary provider
       // diagnostics and other failures behind the generic message.
-      if (error.rejectedBeforeRecord('message') && typeof body?.error === 'string') error.message = body.error
+      if ((error.rejectedBeforeRecord('message') || error.rejectedBeforeRecord('create')) && typeof body?.error === 'string') error.message = body.error
       throw error
     }
     return await response.json() as T

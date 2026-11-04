@@ -9,11 +9,19 @@ describe('cloud task HTTP client', () => {
     [401, undefined, 'Unauthorized'],
     [403, undefined, 'Invalid host or origin'],
     [404, 'task_not_found', 'Cloud task not found'],
+    [400, 'source_unverified', 'The selected checkout needs a credential-free GitHub origin URL.'],
   ] as const)('exposes daemon-owned %s/%s rejection text while retaining status and code', async (status, code, message) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ code, error: message }), { status }))
     const api = createCloudTasksApi('owner', fetcher)
     await expect(api.create({ provider: 'codex', credentialContextId: 'ctx', prompt: '日'.repeat(6_000), source: { environmentId: 'env', branch: 'main' }, accountConfirmed: true }, 'key'))
       .rejects.toMatchObject({ name: 'CloudTasksHttpError', status, code: code ?? '', message })
+  })
+
+  it('treats source_unverified as definite only for creates', () => {
+    const error = new CloudTasksHttpError(400, 'source_unverified', 'x')
+    expect(error.rejectedBeforeRecord('create')).toBe(true)
+    expect(error.rejectedBeforeRecord('link')).toBe(false)
+    expect(error.rejectedBeforeRecord('message')).toBe(false)
   })
 
   it.each([[500, 'invalid_request'], [409, 'idempotency_conflict'], [401, 'auth_required'], [400, 'invalid_receipt']] as const)(
