@@ -45,6 +45,7 @@ import {
   SidebarOpen,
   Settings,
   Smartphone,
+  SmartphoneCharging,
   Terminal,
   UserRound,
   WifiOff,
@@ -232,6 +233,7 @@ export const PR_PANE_LOOKUP_TIMEOUT_MS = 5_000
 
 const NotesSection = lazy(() => import('./NotesSection').then((module) => ({ default: module.NotesSection })))
 const SimsView = lazy(() => import('./SimsView').then((module) => ({ default: module.SimsView })))
+const DevicesView = lazy(() => import('./DevicesView').then((module) => ({ default: module.DevicesView })))
 const SettingsView = lazy(() => import('./SettingsView').then((module) => ({ default: module.SettingsView })))
 
 const PRESETS: Array<{
@@ -972,7 +974,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'settings' | 'cloud'
+type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'devices' | 'settings' | 'cloud'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -2951,6 +2953,10 @@ export function App() {
     const brief = paneBriefs[pane.id]
     return brief?.simulator && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.simulator]] : []
   })), [snapshot?.panes, paneBriefs])
+  const paneDevices = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
+    const brief = paneBriefs[pane.id]
+    return brief?.devices?.length && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.devices]] : []
+  })), [snapshot?.panes, paneBriefs])
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
     try {
@@ -4015,6 +4021,10 @@ export function App() {
               <Smartphone aria-hidden="true" />
               <span>Simulators</span>
             </button>
+            <button type="button" className={area === 'devices' ? 'active' : ''} aria-current={area === 'devices' ? 'page' : undefined} onClick={() => { setArea('devices'); setLeftPanelOpen(false) }}>
+              <SmartphoneCharging aria-hidden="true" />
+              <span>Devices</span>
+            </button>
             <button type="button" className={area === 'settings' ? 'active' : ''} aria-current={area === 'settings' ? 'page' : undefined} onClick={() => { setArea('settings'); setLeftPanelOpen(false) }}>
               <Settings aria-hidden="true" />
               <span>Settings</span>
@@ -4054,6 +4064,8 @@ export function App() {
               marks={paneMarks}
               seen={paneSeen}
               simulators={paneSimulators}
+              devices={paneDevices}
+              onShowDevices={() => { setArea('devices'); setLeftPanelOpen(false) }}
               selectedSessionId={selectedSessionId}
               onSelectSession={selectSession}
               onSelectPane={jumpToPane}
@@ -4535,6 +4547,11 @@ export function App() {
           {area === 'sims' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening simulators...</p></section>}>
               <SimsView token={token} />
+            </Suspense>
+          ) : null}
+          {area === 'devices' ? (
+            <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening devices...</p></section>}>
+              <DevicesView token={token} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: false }) }} />
             </Suspense>
           ) : null}
           {area === 'settings' ? (

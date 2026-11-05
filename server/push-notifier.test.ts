@@ -438,3 +438,24 @@ it('skips revoked principals at delivery time, including notifications queued be
   expect(send).toHaveBeenCalledOnce()
   expect((await notifier.sendTest(device({ principalId }))).accepted).toBe(0)
 })
+
+describe('owner alerts', () => {
+  it('sends an alert once through the needs-input rules', async () => {
+    const { notifier, messages } = harness()
+    notifiers.push(notifier)
+    const alert = { paneId: '%1', provider: 'claude' as const, title: 'Pixel 5 held for 1h 20m', body: 'MASCOT estimated 25m. 2 waiting.', dedupeKey: 'device-overrun:e1' }
+    notifier.alert(alert)
+    notifier.alert(alert)
+    notifier.alert({ ...alert, paneId: '%9', dedupeKey: 'other' })
+    await notifier.flush()
+    expect(messages()).toMatchObject([{ title: 'Pixel 5 held for 1h 20m', categoryId: 'needs_input', data: { paneId: '%1', sessionName: 'island', kind: 'needs_input' } }])
+  })
+
+  it('respects a device that turned needs-input pushes off', async () => {
+    const { notifier, messages } = harness([device({}, { needsInput: false })])
+    notifiers.push(notifier)
+    notifier.alert({ paneId: '%1', provider: 'claude', title: 't', body: 'b', dedupeKey: 'k' })
+    await notifier.flush()
+    expect(messages()).toEqual([])
+  })
+})

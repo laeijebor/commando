@@ -1,10 +1,10 @@
-.cockpit-body.area-sims { grid-template-columns: min(var(--left-panel-width, 230px), calc(100vw - 320px)) minmax(0, 1fr); }
-.workspace-main.area-sims { grid-template-rows: minmax(0, 1fr); background: var(--surface-deep); }
+.cockpit-body.area-sims, .cockpit-body.area-devices { grid-template-columns: min(var(--left-panel-width, 230px), calc(100vw - 320px)) minmax(0, 1fr); }
+.workspace-main.area-sims, .workspace-main.area-devices { grid-template-rows: minmax(0, 1fr); background: var(--surface-deep); }
 @media (min-width: 1181px) {
-  .cockpit-body.area-sims.left-panel-hidden { grid-template-columns: minmax(0, 1fr); }
+  .cockpit-body.area-sims.left-panel-hidden, .cockpit-body.area-devices.left-panel-hidden { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 840px) {
-  .cockpit-body.area-sims { grid-template-columns: minmax(0, 1fr); }
+  .cockpit-body.area-sims, .cockpit-body.area-devices { grid-template-columns: minmax(0, 1fr); }
 }
 .sims-view { min-width: 0; min-height: 0; padding: 16px; overflow-y: auto; overscroll-behavior: contain; scrollbar-color: var(--border-mid) transparent; color: var(--text); background: var(--surface-deep); }
 .sims-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }

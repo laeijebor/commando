@@ -1,4 +1,4 @@
-import type { PaneRepo, SessionBrief, TmuxPane } from '../shared/protocol.js'
+import type { DeviceLockClaim, PaneRepo, SessionBrief, TmuxPane } from '../shared/protocol.js'
 import type { SimLease } from './sim-leases.js'
 
 /** Client-only projection: neither claims nor empty fallback briefs enter the store. */
@@ -29,23 +29,32 @@ export async function assembleClientSessionBriefs(
     panes: TmuxPane[]
     leases: () => Array<SimLease & { idle: boolean }>
     resolveRepos: (paths: string[]) => Promise<Map<string, PaneRepo | undefined>>
+    /** Device locks by pane; panes absent from the map have none. */
+    devices?: () => Map<string, { sessionName: string; claims: DeviceLockClaim[] }>
   },
   includeLeaseOnly = true,
 ): Promise<SessionBrief[]> {
   const { panes, resolveRepos } = dependencies
   const repos = await resolveRepos(panes.map((pane) => pane.path))
   const leases = dependencies.leases()
+  const devices = dependencies.devices?.() ?? new Map<string, { sessionName: string; claims: DeviceLockClaim[] }>()
   const briefs = new Map(storedBriefs.map((brief) => [brief.paneId, brief]))
   if (includeLeaseOnly) {
     for (const lease of leases) {
       const pane = panes.find((candidate) => candidate.id === lease.paneId)
       if (pane && !briefs.has(pane.id)) briefs.set(pane.id, withSimulatorClaim(null, pane, lease.sessionName))
     }
+    for (const [paneId, { sessionName }] of devices) {
+      const pane = panes.find((candidate) => candidate.id === paneId)
+      if (pane && !briefs.has(pane.id)) briefs.set(pane.id, withSimulatorClaim(null, pane, sessionName))
+    }
   }
   return [...briefs.values()].map((brief) => {
     const pane = panes.find((candidate) => candidate.id === brief.paneId)
     if (!pane) return brief
     const lease = leases.find((entry) => entry.paneId === pane.id)
-    return withSimulatorClaim(brief, pane, brief.sessionName, lease, repos.get(pane.path) ?? pane.repo)
+    const { devices: _previous, ...withClaim } = withSimulatorClaim(brief, pane, brief.sessionName, lease, repos.get(pane.path) ?? pane.repo)
+    const claims = devices.get(pane.id)?.claims
+    return claims?.length ? { ...withClaim, devices: claims } : withClaim
   })
 }

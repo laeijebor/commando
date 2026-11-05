@@ -94,3 +94,23 @@ describe('client brief assembly', () => {
     expect((await assembleClientSessionBriefs([brief], dependencies, false))[0].simulator).not.toHaveProperty('branch')
   })
 })
+
+describe('client device lock claims', () => {
+  const panes = [{ ...pane, path: '/repo', id: '%1' }, { ...pane, path: '/repo', id: '%2', targetId: '650e8400-e29b-41d4-a716-446655440000' }] as unknown as TmuxPane[]
+  const dependencies = (claims: Map<string, { sessionName: string; claims: Array<{ resourceId: string; name: string; state: 'held' | 'queued'; task: string; position?: number }> }>) => ({
+    panes, leases: () => [], resolveRepos: async () => new Map(), devices: () => claims,
+  })
+
+  it('adds each pane\'s locks, and a worklog for a pane that only has locks', async () => {
+    const claims = new Map([['%2', { sessionName: 'Battery', claims: [{ resourceId: 'pixel', name: 'Pixel 5', state: 'queued' as const, position: 2, task: 'sweep' }] }]])
+    const [first, second] = await assembleClientSessionBriefs([brief], dependencies(claims))
+    expect(first.devices).toBeUndefined()
+    expect(second).toMatchObject({ paneId: '%2', sessionName: 'Battery', devices: [{ name: 'Pixel 5', state: 'queued', position: 2 }] })
+    expect(parseSessionBrief({ ...brief, devices: second.devices })).not.toHaveProperty('devices')
+  })
+
+  it('drops locks the pane no longer has', async () => {
+    const [only] = await assembleClientSessionBriefs([{ ...brief, devices: [{ resourceId: 'pixel', name: 'Pixel 5', state: 'held', task: 'x' }] }], dependencies(new Map()))
+    expect(only.devices).toBeUndefined()
+  })
+})

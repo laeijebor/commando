@@ -2471,6 +2471,8 @@ a.pane-worklog-reference:hover { border-color: var(--border-strong); background:
 .pane-worklog-reference strong { display: block; overflow: hidden; color: inherit; font: 700 8px/1.25 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
 .pane-worklog-reference small { display: block; margin-top: 3px; overflow: hidden; color: var(--muted-dim); font: 600 6px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .pane-worklog-simulator-chips, .pane-worklog-simulator-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.pane-worklog-device.offered .pane-worklog-reference-icon, .pane-worklog-device.queued .pane-worklog-reference-icon { color: var(--amber); }
+.pane-worklog-device.held .pane-worklog-reference-icon { color: var(--green); }
 .pane-worklog-simulator-chips small { margin: 0; padding: 3px 4px; border: 1px solid var(--border-mid); border-radius: 4px; }
 .pane-worklog-simulator-actions button { padding: 3px 4px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text-soft); background: var(--surface-soft); font: 600 6px/1 var(--mono); }
 .pane-worklog-simulator-actions button:hover { border-color: var(--border-strong); background: var(--surface-hover); }

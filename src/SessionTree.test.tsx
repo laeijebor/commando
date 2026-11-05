@@ -543,6 +543,32 @@ describe('SessionTree', () => {
     expect(onShowSimulator).toHaveBeenCalledWith('SIM-1', '%2')
   })
 
+  it('shows a device lock glyph that opens the Devices view', () => {
+    const onShowDevices = vi.fn()
+    render(
+      <SessionTree
+        token="token"
+        sessions={[{ id: '$1', name: 'work', attached: true, activeWindowId: '@1', windowIds: ['@1'] }, { id: '$2', name: 'other', attached: false, activeWindowId: null, windowIds: [] }]}
+        panes={[pane('%1', 0, 'Shell'), pane('%2', 1, 'Agent')]}
+        displayedPaneIds={['%1', '%2']}
+        statuses={{}}
+        devices={{ '%2': [{ resourceId: 'pixel', name: 'Pixel 5', state: 'held', task: 'Rive' }, { resourceId: 'iphone', name: 'iPhone 15 Pro', state: 'queued', position: 1, task: 'x' }] }}
+        onShowDevices={onShowDevices}
+        selectedSessionId={null}
+        onSelectSession={vi.fn()}
+        onSelectPane={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+    const glyph = screen.getByRole('button', { name: 'Device locks for work' })
+    expect(glyph).toHaveClass('held')
+    expect(glyph).toHaveAttribute('title', 'Holding Pixel 5 · Waiting for iPhone 15 Pro (#1)')
+    expect(screen.queryByRole('button', { name: 'Device locks for other' })).not.toBeInTheDocument()
+    fireEvent.click(glyph)
+    expect(onShowDevices).toHaveBeenCalled()
+  })
+
   it('shows one status indicator for the most urgent pane', () => {
     const panes = [
       pane('%1', 0, 'Claude pane'),

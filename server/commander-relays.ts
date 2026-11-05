@@ -29,7 +29,7 @@ export class CommanderRelays {
       if (!Array.isArray(value)) throw new Error('Invalid relay state')
       this.relays = value.filter((r) => r && typeof r.id === 'string' && typeof r.toPaneId === 'string' && typeof r.toTargetId === 'string'
         && typeof r.text === 'string' && ['queued', 'delivered', 'failed', 'cancelled'].includes(r.status)
-        && ['queue', 'steer'].includes(r.delivery) && ['commander', 'inbox'].includes(r.origin) && ['relay', 'nudge'].includes(r.kind) && Number.isFinite(r.createdAt)
+        && ['queue', 'steer'].includes(r.delivery) && ['commander', 'inbox', 'devices'].includes(r.origin) && ['relay', 'nudge'].includes(r.kind) && Number.isFinite(r.createdAt)
         && (r.toChat === undefined || typeof r.toChat === 'boolean'))
       this.prune()
     } catch (error) {

@@ -95,6 +95,8 @@
 .session-ide-glyph[aria-pressed='true'] { color: var(--accent) !important; }
 .session-ide-glyph.state-starting, .session-sim-glyph.idle { opacity: .55; }
 .session-ide-glyph.state-failed { color: color-mix(in srgb, var(--red) 70%, var(--text-faint)) !important; }
+.session-device-glyph.held { color: color-mix(in srgb, var(--green) 55%, var(--text-faint)) !important; }
+.session-device-glyph.waiting { color: color-mix(in srgb, var(--amber) 65%, var(--text-faint)) !important; }
 .session-row-actions { width: 0; flex: 0 0 auto; display: flex; overflow: hidden; opacity: 0; }
 .managed-session:hover .session-row-actions, .managed-session:focus-within .session-row-actions { width: 20px; opacity: 1; }
 .session-row-actions button { width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--text-faint); }
