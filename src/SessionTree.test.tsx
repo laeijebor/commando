@@ -899,6 +899,8 @@ describe('SessionTree', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
       const dialog = await screen.findByRole('dialog', { name: 'New session' })
       expect(within(dialog).getByText('Repository · Save-All')).toBeVisible()
+      // The name is the first field, so it takes the cursor.
+      expect(within(dialog).getByLabelText('Session name')).toHaveFocus()
       openWorkspace(dialog)
       const directory = within(dialog).getByRole('combobox', { name: /Working directory/ })
       expect(directory).toHaveValue(SAVE_ALL.root)

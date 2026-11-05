@@ -758,6 +758,17 @@ describe('opening prompt first', () => {
     })
   })
 
+  it('starts in the session name, and still attaches a screenshot pasted there', async () => {
+    const uploadImage = vi.fn(async () => ({ id: `${'a'.repeat(64)}.png`, name: 'shot.png' }))
+    render(<TmuxCreateControls variant="dialog" sessionCreateRequest={{ id: 1, groupId: 'gizmo', groupName: 'GIZMO', suggestedDirectories: [] }}
+      onCreateSession={vi.fn(respond)} uploads={{ uploadImage, uploadVideo: vi.fn() }} />)
+    const name = screen.getByLabelText('Session name')
+    await waitFor(() => expect(name).toHaveFocus())
+    expect(screen.getByLabelText('Opening prompt')).not.toHaveFocus()
+    fireEvent.paste(name, { clipboardData: { files: [png()] } })
+    await waitFor(() => expect(uploadImage).toHaveBeenCalledOnce())
+  })
+
   it('asks the naming model for a name, says so on the button, and lets ⌘↵ skip the wait', async () => {
     const onCreateSession = vi.fn(respond)
     let answer!: (value: { name: string | null; by?: string }) => void
