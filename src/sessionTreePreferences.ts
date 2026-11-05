@@ -31,6 +31,8 @@ export type SessionTreeContainer = {
 export type SessionTreeContainerOptions = {
   mode: SessionGroupingMode
   panes: readonly TmuxPane[]
+  /** Repositories for sessions without live panes, such as paused ones. */
+  knownRepos?: Readonly<Record<string, PaneRepo>>
 }
 
 function manualContainers(
@@ -67,6 +69,6 @@ export function sessionTreeContainers(
   options: SessionTreeContainerOptions = { mode: 'manual', panes: [] },
 ): SessionTreeContainer[] {
   return options.mode === 'repository'
-    ? repositoryContainers(preferences, sessions, options.panes)
+    ? repositoryContainers(preferences, sessions, options.panes, options.knownRepos)
     : manualContainers(preferences, sessions)
 }

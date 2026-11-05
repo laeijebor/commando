@@ -1,6 +1,7 @@
 import type { TmuxPane } from '../shared/protocol'
 
-export const ARCHIVE_RESTORE_NOTE = 'Restore will recreate its windows and panes as fresh shells in their saved directories; the worktree is kept.'
+export const ARCHIVE_RESTORE_NOTE = 'If it has a worktree, uncommitted changes are saved as a wip commit on its branch, then the worktree is removed with its ignored files (node_modules, .env and the like) and its background sessions stop. The branch is kept: Restore checks it out again and reopens its windows and chats.'
+export const PAUSE_RESUME_NOTE = 'Its worktree is kept and it stays in the session tree; Resume reopens its windows and chats.'
 
 export type SessionProcess = { paneId: string; label: string; kind: 'chat' | 'terminal' }
 

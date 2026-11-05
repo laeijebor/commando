@@ -2,12 +2,12 @@ import { useHost } from './HostContext'
 import type { CommanderState } from '../shared/commander'
 import { isSessionGlyph, sessionIdentityForName } from '../shared/session-identity'
 import { SessionAvatar } from './SessionAvatar'
-import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, SmartphoneCharging, Trash2, X } from 'lucide-react'
+import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pause, Pencil, Play, Plus, RotateCcw, Smartphone, SmartphoneCharging, Trash2, X } from 'lucide-react'
 import { type DragEvent, type KeyboardEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import type { AgentStatus, DeviceLockClaim, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
+import type { AgentStatus, DeviceLockClaim, PaneMark, PaneRepo, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
-import { createSessionManagementApi, type RepositorySessionGroup, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
+import { createSessionManagementApi, type RepositorySessionGroup, type SessionArchiveResult, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import { moveRepositoryItem, repositoryContainers, repositoryItemId, ungroupRepositoryItem } from '../shared/session-repositories'
 import { sessionShortcutIndex } from './sessionShortcuts'
 import { DEFAULT_GROUPING_MODE, EMPTY_SESSION_TREE_PREFERENCES, sessionTreeContainers, type SessionTreeContainer } from './sessionTreePreferences'
@@ -22,7 +22,7 @@ import './session-ide.css'
 import type { PrsApiClient } from './prsApi'
 import { SessionPrCount } from './SessionPrCount'
 import { paneAttention, paneAttentionLabels, sessionIndicator } from './sessionIndicator'
-import { ARCHIVE_RESTORE_NOTE } from './sessionProcesses'
+import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE } from './sessionProcesses'
 
 type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles' | 'loadModelCatalogs' | 'naming'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
@@ -38,6 +38,7 @@ export type SessionActions = {
   renameSession: (sessionId: string, onError?: (message: string) => void) => Promise<void>
   changeIdentity: (sessionId: string, reset?: boolean, onError?: (message: string) => void) => Promise<void>
   archiveSession: (sessionId: string, confirmation?: string | null, onError?: (message: string) => void) => Promise<void>
+  pauseSession: (sessionId: string, confirmation?: string | null, onError?: (message: string) => void) => Promise<void>
   deleteSession: (sessionId: string, deleteWorktree?: boolean, confirmation?: string | null, onError?: (message: string) => void) => Promise<void>
 }
 
@@ -102,6 +103,25 @@ function markLabel(mark: PaneMark, pane: TmuxPane): string {
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
 
+/**
+ * Paused sessions shown in the tree. Each holds its place as a `name:` preference entry; one whose
+ * name a live (or another paused) session already uses is keyed by its archive and listed at the end.
+ */
+function pausedTreeSessions(archives: readonly SessionArchiveSummary[], sessions: readonly TmuxSession[]) {
+  const taken = new Set(sessions.map((session) => session.name))
+  const byId = new Map<string, SessionArchiveSummary>()
+  const knownRepos: Record<string, PaneRepo> = {}
+  for (const archive of archives) {
+    if (!archive.paused) continue
+    const id = taken.has(archive.name) ? `paused:${archive.id}` : `name:${archive.name}`
+    taken.add(archive.name)
+    byId.set(id, archive)
+    if (archive.repo) knownRepos[id] = { root: archive.repo.root, name: archive.repo.name, branch: archive.repo.branch ?? '', isWorktree: false, ...(archive.repo.defaultBranch ? { defaultBranch: archive.repo.defaultBranch } : {}) }
+  }
+  const treeSessions: TmuxSession[] = [...byId].map(([id, archive]) => ({ id, name: archive.name, attached: false, activeWindowId: null, windowIds: [] }))
+  return { byId, treeSessions, knownRepos }
+}
+
 type DropPosition = 'before' | 'after'
 
 /** The bottom half of a row drops below it; the top half drops above it. */
@@ -126,12 +146,26 @@ function suggestedDirectories(sessionIds: readonly string[], panes: readonly Tmu
     .map(([directory]) => directory)
 }
 
+/** A paused row keyed by its archive (`paused:…`) has no place the daemon can store; ordering around it saves without it. */
+function withoutUnsavedPausedIds(preferences: SessionTreePreferences): SessionTreePreferences {
+  const saved = (ids: readonly string[]) => ids.filter((id) => !id.startsWith('paused:'))
+  return {
+    ...preferences,
+    groups: preferences.groups.map((group) => ({ ...group, sessionIds: saved(group.sessionIds) })),
+    ungroupedSessionIds: saved(preferences.ungroupedSessionIds),
+    ...(preferences.repositorySessionIds ? { repositorySessionIds: saved(preferences.repositorySessionIds) } : {}),
+    ...(preferences.repositoryGroups ? { repositoryGroups: preferences.repositoryGroups.map((group) => ({ ...group, sessionIds: saved(group.sessionIds) })) } : {}),
+  }
+}
+
 export function SessionTree(props: Props) {
   const { daemonFetch } = useHost()
   const api = useRef(createSessionManagementApi(props.token, daemonFetch)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const preferencesRef = useRef(preferences)
-  const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number; groupsExpanded?: boolean } | null>(null)
+  /** `archiveId` marks a paused session's menu. */
+  const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number; groupsExpanded?: boolean; archiveId?: string } | null>(null)
+  const [resumingIds, setResumingIds] = useState<ReadonlySet<string>>(() => new Set())
   const [draggedSessionId, setDraggedSessionId] = useState<string | null>(null)
   const [dropGroupId, setDropGroupId] = useState<string | null>(null)
   const [dropMarker, setDropMarker] = useState<{ id: string; position: DropPosition } | null>(null)
@@ -167,12 +201,13 @@ export function SessionTree(props: Props) {
     }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load session order'))
     return () => { active = false }
   }, [api, props.onPreferencesChanged, sessionNamesKey])
+  // Sessions changing may mean another client paused, archived or resumed one.
   useEffect(() => {
     let active = true
     api.listArchives().then((items) => { if (active) setArchives(items) })
       .catch((cause: unknown) => { if (active) setError(cause instanceof Error ? cause.message : 'Unable to load archives') })
     return () => { active = false }
-  }, [api])
+  }, [api, sessionNamesKey])
   useEffect(() => {
     if (!menu) return
     const close = () => setMenu(null)
@@ -181,7 +216,8 @@ export function SessionTree(props: Props) {
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('blur', close) }
   }, [menu])
 
-  const save = (next: SessionTreePreferences) => {
+  const save = (unsaved: SessionTreePreferences) => {
+    const next = withoutUnsavedPausedIds(unsaved)
     const saveVersion = ++preferenceSaveVersion.current
     preferencesRef.current = next
     setPreferences(next)
@@ -198,8 +234,10 @@ export function SessionTree(props: Props) {
     ? props.commanderState.sessionId : undefined
   const auxiliaryIds = auxiliarySessionIds(props.sessions, props.panes, commanderSessionId)
   const auxiliarySessions = props.sessions.filter((session) => auxiliaryIds.has(session.id))
+  const paused = pausedTreeSessions(archives, props.sessions)
+  const treeSessions = [...props.sessions.filter((session) => !auxiliaryIds.has(session.id) && session.id !== commanderSessionId), ...paused.treeSessions]
   const containers: SessionTreeContainer[] = [
-    ...sessionTreeContainers(preferences, props.sessions.filter((session) => !auxiliaryIds.has(session.id) && session.id !== commanderSessionId), { mode, panes: props.panes })
+    ...sessionTreeContainers(preferences, treeSessions, { mode, panes: props.panes, knownRepos: paused.knownRepos })
       .map((container) => ({ ...container, sessionIds: container.sessionIds.filter((id) => !auxiliaryIds.has(id) && id !== commanderSessionId) })),
     ...(auxiliarySessions.length ? [{ id: 'auxiliary', kind: 'auxiliary' as const, name: 'Background sessions', sessionIds: auxiliarySessions.map((session) => session.id), group: null }] : []),
   ]
@@ -247,7 +285,7 @@ export function SessionTree(props: Props) {
     const currentPreferences = preferencesRef.current
     if (beforeId === sessionId) return
     if (!manual) {
-      const container = repositoryContainers(currentPreferences, props.sessions.filter((session) => !auxiliaryIds.has(session.id) && session.id !== commanderSessionId), props.panes)
+      const container = repositoryContainers(currentPreferences, treeSessions, props.panes, paused.knownRepos)
         .find((candidate) => candidate.id === destinationId)
       if (!container) return
       const next = moveRepositoryItem(currentPreferences, container, sessionId, beforeId, repositoryGroupId)
@@ -381,26 +419,52 @@ export function SessionTree(props: Props) {
     catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to delete session') }
   }
 
-  const archiveSession = async (sessionId: string, confirmation?: string | null, onError: (message: string) => void = setError) => {
-    const label = sessionMap.get(sessionId)?.name ?? sessionId
-    const prompt = confirmation === undefined ? `Archive tmux session “${label}”? Its running processes will stop. ${ARCHIVE_RESTORE_NOTE}` : confirmation
-    if (prompt !== null && !window.confirm(prompt)) return
+  /** Runs an archive or pause, then reports a worktree it had to keep. */
+  const stash = async (label: string, run: () => Promise<SessionArchiveResult>, onError: (message: string) => void, failure: string) => {
     try {
-      await api.archiveSession(sessionId)
+      const { archive, worktreeKept } = await run()
       setArchives(await api.listArchives())
-      setArchivesExpanded(true)
+      if (!archive.paused) setArchivesExpanded(true)
       props.onSessionsChanged()
-    } catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to archive session') }
+      if (worktreeKept) onError(`Archived “${label}” but kept its worktree: ${worktreeKept}`)
+    } catch (cause) { onError(cause instanceof Error ? cause.message : failure) }
   }
 
-  useImperativeHandle(props.actionsRef, () => ({ renameSession, changeIdentity, archiveSession, deleteSession }))
+  const archiveSession = async (sessionId: string, confirmation?: string | null, onError: (message: string) => void = setError) => {
+    const label = sessionMap.get(sessionId)?.name ?? sessionId
+    const fallback = `Archive tmux session “${label}”? Its running processes will stop. ${ARCHIVE_RESTORE_NOTE}`
+    // Removing a worktree deletes its ignored files, so that is always confirmed.
+    const inWorktree = props.panes.some((pane) => pane.sessionId === sessionId && pane.repo?.isWorktree)
+    const prompt = confirmation === undefined || (confirmation === null && inWorktree) ? fallback : confirmation
+    if (prompt !== null && !window.confirm(prompt)) return
+    await stash(label, () => api.archiveSession(sessionId), onError, 'Unable to archive session')
+  }
 
+  const pauseSession = async (sessionId: string, confirmation?: string | null, onError: (message: string) => void = setError) => {
+    const label = sessionMap.get(sessionId)?.name ?? sessionId
+    const prompt = confirmation === undefined ? `Pause “${label}”? Its chats and processes will stop and its simulators are released. ${PAUSE_RESUME_NOTE}` : confirmation
+    if (prompt !== null && !window.confirm(prompt)) return
+    await stash(label, () => api.pauseSession(sessionId), onError, 'Unable to pause session')
+  }
+
+  const archivePausedSession = async (archive: SessionArchiveSummary) => {
+    if (!window.confirm(`Archive paused session “${archive.name}”? ${ARCHIVE_RESTORE_NOTE}`)) return
+    await stash(archive.name, () => api.archivePausedSession(archive.id), setError, 'Unable to archive session')
+  }
+
+  useImperativeHandle(props.actionsRef, () => ({ renameSession, changeIdentity, archiveSession, pauseSession, deleteSession }))
+
+  /** Restores an archived session, or resumes a paused one and opens it. */
   const restoreSession = async (archive: SessionArchiveSummary) => {
+    if (resumingIds.has(archive.id)) return
+    setResumingIds((current) => new Set([...current, archive.id]))
     try {
-      await api.restoreSession(archive.id)
+      const sessionId = await api.restoreSession(archive.id)
       setArchives(await api.listArchives())
       props.onSessionsChanged()
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to restore session') }
+      if (archive.paused) props.onSelectSession(sessionId)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : `Unable to ${archive.paused ? 'resume' : 'restore'} session`) }
+    finally { setResumingIds((current) => new Set([...current].filter((id) => id !== archive.id))) }
   }
 
   const finishCreated = (created: TmuxCreatedTarget, sessionGroupId: string | undefined, worktree: TmuxCreatedWorktree | undefined) => {
@@ -430,7 +494,9 @@ export function SessionTree(props: Props) {
     }
   }
 
-  const menuContainer = !manual && menu && !auxiliaryIds.has(menu.sessionId)
+  const archivedSessions = archives.filter((archive) => !archive.paused)
+  const menuArchive = menu?.archiveId ? archives.find((archive) => archive.id === menu.archiveId) : undefined
+  const menuContainer = !menu?.archiveId && !manual && menu && !auxiliaryIds.has(menu.sessionId)
     ? containers.find((container) => container.kind === 'repository' && container.sessionIds.includes(menu.sessionId)) : undefined
   const menuGroup = menuContainer?.items?.find((item) => item.kind === 'group' && item.sessionIds.includes(menu?.sessionId ?? ''))
 
@@ -463,11 +529,61 @@ export function SessionTree(props: Props) {
         const groupIndex = container.group ? preferences.groups.findIndex((group) => group.id === container.id) : -1
         const collapsed = collapsedContainerIds.has(container.id)
         const groupBodyId = `session-group-${container.id.replace(/[^A-Za-z0-9_-]/gu, '_')}`
-        const sessionCount = container.sessionIds.filter((id) => sessionMap.has(id)).length
+        const sessionCount = container.sessionIds.filter((id) => sessionMap.has(id) || paused.byId.has(id)).length
         const droppable = container.kind !== 'auxiliary' && Boolean(draggedSessionId && (manual || container.sessionIds.includes(draggedSessionId) || container.items?.some((item) => repositoryItemId(item) === draggedSessionId)))
+        const dropHandlers = (sessionId: string, nextId: string | undefined, repositoryGroupId?: string) => ({
+          onDragOver: droppable ? (event: DragEvent<HTMLElement>) => {
+            event.stopPropagation()
+            if (repositoryGroupId && draggedSessionId?.startsWith('group:')) return
+            event.preventDefault()
+            markDrop(sessionId, dropPosition(event))
+          } : undefined,
+          onDragLeave: (event: DragEvent<HTMLElement>) => clearDropMarker(event, sessionId),
+          onDrop: droppable ? (event: DragEvent<HTMLElement>) => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (draggedSessionId && !(repositoryGroupId && draggedSessionId.startsWith('group:'))) {
+              moveToContainer(draggedSessionId, container.id, dropPosition(event) === 'after' ? nextId : sessionId, repositoryGroupId)
+            }
+            endDrag()
+          } : undefined,
+        })
+        const renderPausedSession = (sessionId: string, archive: SessionArchiveSummary, nextId: string | undefined, repositoryGroupId?: string) => {
+          const identity = sessionIdentityForName(preferences.sessionIdentities ?? {}, archive.name)
+          const resuming = resumingIds.has(archive.id)
+          // Only a `name:` place can be saved in the preferences; a duplicate name stays where it is listed.
+          const draggable = sessionId.startsWith('name:')
+          return <article
+            className={`managed-session paused${draggedSessionId === sessionId ? ' dragging' : ''}${dropMarkerClass(sessionId)}`}
+            draggable={draggable}
+            onDragStart={draggable ? (event) => {
+              event.dataTransfer?.setData('text/plain', sessionId)
+              if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+              setDraggedSessionId(sessionId)
+            } : undefined}
+            onDragEnd={endDrag}
+            {...dropHandlers(sessionId, nextId, repositoryGroupId)}
+            key={sessionId}
+          >
+            <div className="managed-session-row">
+              <span className="session-indicator" aria-hidden="true" />
+              <button type="button" className="managed-session-main" disabled={resuming || props.connected === false}
+                onClick={() => void restoreSession(archive)}
+                onContextMenu={(event) => { event.preventDefault(); setMenu({ sessionId, archiveId: archive.id, x: event.clientX, y: event.clientY }) }}
+                aria-label={`Resume paused session ${archive.name}`}
+                title={[`${archive.name} — paused ${new Date(archive.createdAt).toLocaleString()}`, archive.repo?.branch, `${plural(archive.windowCount, 'window')} / ${plural(archive.paneCount, 'pane')}`, 'Click to resume'].filter(Boolean).join(' · ')}>
+                <SessionAvatar identity={identity} /><span className="session-identity-name">{archive.name}</span>
+              </button>
+              <span className="session-row-meta"><span className="session-paused-badge">{resuming ? 'Resuming…' : <><Pause aria-hidden="true" />Paused</>}</span></span>
+              <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setMenu({ sessionId, archiveId: archive.id, x: bounds.left, y: bounds.bottom }) }} aria-label={`Actions for ${archive.name}`}><MoreHorizontal /></button></span>
+            </div>
+          </article>
+        }
         // nextId is the item after this row in its list, so a drop below the row inserts before it.
         const renderSession = (sessionId: string, nextId: string | undefined, repositoryGroupId?: string) => {
           const session = sessionMap.get(sessionId)
+          const pausedArchive = session ? undefined : paused.byId.get(sessionId)
+          if (pausedArchive) return renderPausedSession(sessionId, pausedArchive, nextId, repositoryGroupId)
           if (!session) return null
           const selected = session.id === props.selectedSessionId
           const ide = props.ides?.find((item) => item.sessionIds.includes(session.id))
@@ -495,21 +611,7 @@ export function SessionTree(props: Props) {
               setDraggedSessionId(session.id)
             }}
             onDragEnd={endDrag}
-            onDragOver={droppable ? (event) => {
-              event.stopPropagation()
-              if (repositoryGroupId && draggedSessionId?.startsWith('group:')) return
-              event.preventDefault()
-              markDrop(session.id, dropPosition(event))
-            } : undefined}
-            onDragLeave={(event) => clearDropMarker(event, session.id)}
-            onDrop={droppable ? (event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              if (draggedSessionId && !(repositoryGroupId && draggedSessionId.startsWith('group:'))) {
-                moveToContainer(draggedSessionId, container.id, dropPosition(event) === 'after' ? nextId : session.id, repositoryGroupId)
-              }
-              endDrag()
-            } : undefined}
+            {...dropHandlers(session.id, nextId, repositoryGroupId)}
             key={session.id}
           >
             <div className="managed-session-row">
@@ -624,18 +726,21 @@ export function SessionTree(props: Props) {
                 </div>
               </div>
             }) : container.sessionIds.map((id, index) => renderSession(id, container.sessionIds[index + 1]))}
-            {manual && !container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}
+            {manual && !container.sessionIds.some((id) => sessionMap.has(id) || paused.byId.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}
           </div>
         </section>
         )
       })}
-      {archives.length ? <section className="session-pref-group session-archives">
+      {archivedSessions.length ? <section className="session-pref-group session-archives">
         <header><button type="button" className="session-pref-toggle" aria-expanded={archivesExpanded} onClick={() => setArchivesExpanded((open) => !open)}>
-          {archivesExpanded ? <ChevronDown /> : <ChevronRight />}<Archive /><strong>Archived</strong><small>{archives.length}</small>
+          {archivesExpanded ? <ChevronDown /> : <ChevronRight />}<Archive /><strong>Archived</strong><small>{archivedSessions.length}</small>
         </button></header>
-        {archivesExpanded ? <div>{archives.map((archive) => <div className="session-archive-row" key={archive.id}>
-          <span title={new Date(archive.createdAt).toLocaleString()}><strong>{archive.name}</strong><small>{archive.windowCount} windows / {archive.paneCount} panes</small></span>
-          <button type="button" onClick={() => void restoreSession(archive)} aria-label={`Restore ${archive.name}`} title="Restore session as fresh shells"><RotateCcw /> Restore</button>
+        {archivesExpanded ? <div>{archivedSessions.map((archive) => <div className="session-archive-row" key={archive.id}>
+          <span title={[new Date(archive.createdAt).toLocaleString(), archive.worktree ? `worktree removed: ${archive.worktree.path}` : undefined].filter(Boolean).join(' · ')}>
+            <strong>{archive.name}</strong><small>{archive.worktree ? `${archive.worktree.branch} · ` : ''}{archive.windowCount} windows / {archive.paneCount} panes</small>
+          </span>
+          <button type="button" disabled={resumingIds.has(archive.id)} onClick={() => void restoreSession(archive)} aria-label={`Restore ${archive.name}`}
+            title={archive.worktree ? `Check out ${archive.worktree.branch} again at ${archive.worktree.path} and reopen the session` : 'Reopen the session and its chats'}><RotateCcw /> {resumingIds.has(archive.id) ? 'Restoring…' : 'Restore'}</button>
         </div>)}</div> : null}
       </section> : null}
       {props.creation ? <TmuxCreateControls
@@ -660,7 +765,10 @@ export function SessionTree(props: Props) {
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
         onClose={closeSessionDialog}
       /> : null}
-      {menu ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setMenu(null) }}>
+      {menu && menuArchive ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setMenu(null) }}>
+        <button type="button" role="menuitem" disabled={props.connected === false} onClick={() => { void restoreSession(menuArchive); setMenu(null) }}><Play /> Resume session</button>
+        <button type="button" role="menuitem" onClick={() => { void archivePausedSession(menuArchive); setMenu(null) }}><Archive /> Archive session</button>
+      </div> : menu && !menu.archiveId ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setMenu(null) }}>
         {props.onOpenIde ? <button type="button" role="menuitem" onClick={() => { props.onOpenIde?.(menu.sessionId); setMenu(null) }}><Code2 /> Open IDE</button> : null}<button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId); setMenu(null) }}><Pencil /> Change glyph…</button><button type="button" role="menuitem" onClick={() => { void changeIdentity(menu.sessionId, true); setMenu(null) }}><RotateCcw /> Reset identity</button><button type="button" role="menuitem" onClick={() => { void renameSession(menu.sessionId); setMenu(null) }}><Pencil /> Rename</button>
         {menuContainer ? <>
           <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={Boolean(menu.groupsExpanded)} aria-controls="repository-move-menu" onClick={() => setMenu({ ...menu, groupsExpanded: !menu.groupsExpanded })}><FolderPlus /> Move to group{menu.groupsExpanded ? <ChevronDown /> : <ChevronRight />}</button>
@@ -671,7 +779,7 @@ export function SessionTree(props: Props) {
           </div> : null}
           {menuGroup ? <button type="button" role="menuitem" onClick={() => { removeFromRepositoryGroup(menu.sessionId, menuContainer); setMenu(null) }}><X /> Remove from group</button> : null}
         </> : null}
-        {props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}
+        {props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <><button type="button" role="menuitem" onClick={() => { void pauseSession(menu.sessionId); setMenu(null) }}><Pause /> Pause session</button><button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button></> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}
       </div> : null}
     </div>
   )

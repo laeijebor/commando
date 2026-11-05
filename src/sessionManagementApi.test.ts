@@ -40,4 +40,18 @@ describe('session management API client', () => {
     }))
     expect(fetcher).toHaveBeenNthCalledWith(2, '/api/session-management/archives/archive-id/restore', expect.objectContaining({ method: 'POST' }))
   })
+
+  it('pauses a session and archives a paused one, returning any kept worktree', async () => {
+    const archive = { id: 'archive-id', name: 'work', createdAt: 1, windowCount: 1, paneCount: 1 }
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, archive: { ...archive, paused: true } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, archive, worktreeKept: 'locked' }))
+    const api = createSessionManagementApi('token', fetcher)
+    await expect(api.pauseSession('$1')).resolves.toMatchObject({ archive: { paused: true } })
+    await expect(api.archivePausedSession('archive-id')).resolves.toMatchObject({ worktreeKept: 'locked' })
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/session-management/sessions/%241/pause', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ confirmSessionId: '$1' }),
+    }))
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/session-management/archives/archive-id/archive', expect.objectContaining({ method: 'POST' }))
+  })
 })

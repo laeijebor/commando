@@ -35,6 +35,7 @@ import {
   Minimize2,
   NotebookPen,
   PanelLeft,
+  Pause,
   PanelRightOpen,
   PanelTop,
   PanelsTopLeft,
@@ -121,7 +122,7 @@ import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { createAgentProfilesApi } from './agentProfilesApi'
 import { SessionTree, type SessionActions } from './SessionTree'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
-import { ARCHIVE_RESTORE_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
+import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
 import type { AgentChatRequest } from '../shared/agent-chats'
 import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
@@ -2918,7 +2919,10 @@ function HostApp() {
       { label: 'Reset identity', icon: RotateCcw, onSelect: run((actions) => actions.changeIdentity(sessionId, true, setPaneActionError)) },
       { label: 'Rename', icon: Pencil, onSelect: run((actions) => actions.renameSession(sessionId, setPaneActionError)) },
       { label: 'Resume a chat…', icon: RotateCcw, disabled: !connected, onSelect: () => resumeSessionChat(sessionId) },
-      ...auxiliary ? [] : [{ label: 'Archive session', icon: Archive, onSelect: run((actions) => {
+      ...auxiliary ? [] : [{ label: 'Pause session', icon: Pause, onSelect: run((actions) => {
+        const text = warning()
+        return actions.pauseSession(sessionId, text ? `Pause session “${session.name}”?\n\n${text}\n\n${PAUSE_RESUME_NOTE}` : null, setPaneActionError)
+      }) }, { label: 'Archive session', icon: Archive, onSelect: run((actions) => {
         const text = warning()
         return actions.archiveSession(sessionId, text ? `Archive session “${session.name}”?\n\n${text}\n\n${ARCHIVE_RESTORE_NOTE}` : null, setPaneActionError)
       }) }],
