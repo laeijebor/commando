@@ -422,6 +422,46 @@ describe('GitWorktreeService.removeWorktree', () => {
     }
   })
 
+  it('saves uncommitted work on the branch, removes the worktree, then checks the branch out again', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    const identity = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+    const service = new GitWorktreeService(undefined, { environment: { ...process.env, ...identity } })
+    try {
+      run(base, 'init', '-q', main)
+      writeFileSync(path.join(main, '.gitignore'), 'node_modules\n')
+      run(main, 'add', '.gitignore')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).resolves.toEqual(worktree)
+
+      mkdirSync(path.join(linked, 'node_modules'))
+      writeFileSync(path.join(linked, 'node_modules', 'big.js'), '')
+      writeFileSync(path.join(linked, 'notes.txt'), 'uncommitted')
+      const saved = await service.commitWorkInProgress(worktree, 'wip: archived session')
+      expect(saved.head).not.toBe(worktree.head)
+      expect(run(linked, 'log', '-1', '--format=%s')).toBe('wip: archived session\n')
+      expect(run(linked, 'show', '--name-only', '--format=', 'HEAD').trim()).toBe('notes.txt')
+
+      await service.removeWorktree(saved)
+      await vi.waitFor(() => expect(readdirSync(path.dirname(linked))).toEqual([]))
+      await expect(service.createWorktree({ mainRoot: main, branch: 'gone', path: linked, existingBranchOnly: true }))
+        .rejects.toMatchObject({ message: 'Branch gone no longer exists' })
+      await service.createWorktree({ mainRoot: main, branch: 'feature', path: linked, existingBranchOnly: true })
+      expect(readdirSync(linked).sort()).toEqual(['.git', '.gitignore', 'notes.txt'])
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a work-in-progress commit on a detached HEAD', async () => {
+    await expect(new GitWorktreeService(fakeGit([]).execute).commitWorkInProgress({ root: '/w', mainRoot: '/m', branch: 'HEAD', head: 'abc' }, 'wip'))
+      .rejects.toMatchObject({ message: expect.stringMatching(/detached HEAD/) })
+  })
+
   it('refuses to remove the main checkout', async () => {
     const git = fakeGit([])
 

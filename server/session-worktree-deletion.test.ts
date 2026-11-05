@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { GitWorktreeIdentity } from './git-worktree.js'
-import { prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
+import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
 import { isAuxiliarySession } from '../shared/auxiliary-session.js'
 
 const WORKTREE: GitWorktreeIdentity = {
@@ -132,5 +132,23 @@ describe('prepareSessionWorktreeDeletion', () => {
       removeWorktree,
     })).rejects.toThrow(/Another tmux session/i)
     expect(removeWorktree).not.toHaveBeenCalled()
+  })
+})
+
+describe('prepareDirectoriesWorktreeDeletion', () => {
+  it('plans a paused session’s worktree from its saved directories, refusing one a live session uses', async () => {
+    const removeWorktree = vi.fn().mockResolvedValue(undefined)
+    const dependencies = (panes: { sessionId: string; path: string }[]) => ({
+      currentPanes: async () => panes,
+      currentSessions: () => [{ id: '$2', name: 'tilt-cleanup' }, { id: '$3', name: 'other' }],
+      worktreeForDirectory: resolver,
+      removeWorktree,
+    })
+    const plan = await prepareDirectoriesWorktreeDeletion([`${WORKTREE.root}/apps/web`], dependencies([{ sessionId: '$2', path: WORKTREE.root }]))
+    expect(plan.worktree).toEqual(WORKTREE)
+    expect(plan.auxiliarySessions).toEqual([{ id: '$2', name: 'tilt-cleanup' }])
+    await expect(prepareDirectoriesWorktreeDeletion(['/elsewhere'], dependencies([]))).rejects.toMatchObject({ reason: 'no-worktree' })
+    await expect(prepareDirectoriesWorktreeDeletion([WORKTREE.root], dependencies([{ sessionId: '$3', path: WORKTREE.root }])))
+      .rejects.toMatchObject({ reason: 'conflict' })
   })
 })

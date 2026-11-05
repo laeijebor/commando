@@ -15,12 +15,15 @@ export type SessionWorktreeDeletionDependencies = {
 }
 
 export type SessionWorktreeDeletionPlan = {
+  worktree: GitWorktreeIdentity
   auxiliarySessions: { id: string; name: string }[]
-  remove: () => Promise<void>
+  /** Removes the worktree; pass its identity again if a commit has moved its head since planning. */
+  remove: (current?: GitWorktreeIdentity) => Promise<void>
 }
 
 export class SessionWorktreeConflictError extends Error {
-  constructor(message: string) {
+  /** `no-worktree`: the session simply isn't in a linked worktree, which is not a problem to report. */
+  constructor(message: string, readonly reason: 'no-worktree' | 'conflict' = 'conflict') {
     super(message)
     this.name = 'SessionWorktreeConflictError'
   }
@@ -30,8 +33,24 @@ export async function prepareSessionWorktreeDeletion(
   sessionId: string,
   dependencies: SessionWorktreeDeletionDependencies,
 ): Promise<SessionWorktreeDeletionPlan> {
-  const worktreesForPanes = async (panes: readonly SessionPaneLocation[]) => {
-    const directories = [...new Set(panes.map((pane) => pane.path))]
+  return prepareWorktreeDeletion(sessionId, async (panes) => panes.filter((pane) => pane.sessionId === sessionId).map((pane) => pane.path), dependencies)
+}
+
+/** Plans removing the one worktree a paused session's saved pane directories sit in; no live session owns it. */
+export async function prepareDirectoriesWorktreeDeletion(
+  directories: readonly string[],
+  dependencies: SessionWorktreeDeletionDependencies,
+): Promise<SessionWorktreeDeletionPlan> {
+  return prepareWorktreeDeletion(undefined, async () => [...directories], dependencies)
+}
+
+async function prepareWorktreeDeletion(
+  sessionId: string | undefined,
+  ownDirectories: (panes: readonly SessionPaneLocation[]) => Promise<string[]>,
+  dependencies: SessionWorktreeDeletionDependencies,
+): Promise<SessionWorktreeDeletionPlan> {
+  const worktreesForDirectories = async (paths: readonly string[]) => {
+    const directories = [...new Set(paths)]
     const worktrees = await Promise.all(directories.map(dependencies.worktreeForDirectory))
     return new Map(worktrees.filter((worktree) => worktree !== undefined).map((worktree) => [worktree.root, worktree]))
   }
@@ -59,18 +78,19 @@ export async function prepareSessionWorktreeDeletion(
   }
 
   const currentPanes = await dependencies.currentPanes()
-  const worktrees = await worktreesForPanes(currentPanes.filter((pane) => pane.sessionId === sessionId))
-  if (worktrees.size === 0) throw new SessionWorktreeConflictError('Tmux session is not tied to a git worktree')
+  const worktrees = await worktreesForDirectories(await ownDirectories(currentPanes))
+  if (worktrees.size === 0) throw new SessionWorktreeConflictError('Tmux session is not tied to a git worktree', 'no-worktree')
   if (worktrees.size > 1) throw new SessionWorktreeConflictError('Tmux session spans multiple git worktrees; remove them manually')
   const [worktree] = worktrees.values()
   const auxiliarySessions = await classifyOtherSessions(worktree.root, currentPanes)
 
   return {
+    worktree,
     auxiliarySessions,
-    remove: async () => {
+    remove: async (current = worktree) => {
       const remaining = await classifyOtherSessions(worktree.root, await dependencies.currentPanes())
       if (remaining.length) throw new SessionWorktreeConflictError('Another tmux session is still using this worktree; close it before deleting the worktree')
-      await dependencies.removeWorktree(worktree)
+      await dependencies.removeWorktree(current)
     },
   }
 }

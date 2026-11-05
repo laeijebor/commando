@@ -387,6 +387,33 @@ export class SessionPreferenceStore {
     }, serverId)
   }
 
+  /**
+   * Keep a closed session's place under its name, so a paused session stays where it was in the tree
+   * and takes that place again when a session with its name comes back.
+   */
+  holdPlaceByName(sessionId: string, name: string, serverId?: string | null): Promise<SessionTreePreferences> {
+    return this.update((stored) => {
+      if (!SESSION_ID.test(sessionId) || !isSessionName(name)) return { state: stored, result: stored }
+      const placeholder = PENDING_PREFIX + name
+      // Each set of lists holds an entry once, so an older placeholder for the name gives way to this one.
+      const holdIn = (lists: readonly string[][]): string[][] => lists.some((ids) => ids.includes(sessionId))
+        ? lists.map((ids) => ids.flatMap((id) => id === sessionId ? [placeholder] : id === placeholder ? [] : [id]))
+        : lists.map((ids) => [...ids])
+      const [ungroupedSessionIds, ...groupIds] = holdIn([stored.ungroupedSessionIds, ...stored.groups.map((group) => group.sessionIds)])
+      const repositoryGroupIds = holdIn((stored.repositoryGroups ?? []).map((group) => group.sessionIds))
+      const { [sessionId]: _closed, ...sessionNamesById } = stored.sessionNamesById ?? {}
+      const state: SessionTreePreferences = {
+        ...stored,
+        groups: stored.groups.map((group, index) => ({ ...group, sessionIds: groupIds[index] })),
+        ungroupedSessionIds,
+        sessionNamesById,
+        ...(stored.repositorySessionIds ? { repositorySessionIds: holdIn([stored.repositorySessionIds])[0] } : {}),
+        ...(stored.repositoryGroups ? { repositoryGroups: stored.repositoryGroups.map((group, index) => ({ ...group, sessionIds: repositoryGroupIds[index] })) } : {}),
+      }
+      return { state, result: state }
+    }, serverId)
+  }
+
   renameIdentity(oldName: string, newName: string, sessionId: string, serverId?: string | null): Promise<SessionTreePreferences> {
     return this.update((stored) => {
       const identities = new Map(Object.entries(stored.sessionIdentities ?? {}))

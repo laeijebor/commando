@@ -66,6 +66,25 @@ describe('session tree preferences', () => {
     expect(visibleSessionTreePreferences(partial, [{ id: '$8', name: 'alpha' }]).repositorySessionIds).toEqual(['$8'])
   })
 
+  it('holds a paused session’s place by name until a session with its name returns', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-paused-place-'))
+    directories.push(directory)
+    const store = new SessionPreferenceStore(join(directory, 'sessions.json'))
+    const sessions = [{ id: '$1', name: 'alpha' }, { id: '$2', name: 'beta' }]
+    await store.replace({
+      version: 1, groups: [{ id: 'work', name: 'Work', sessionIds: ['$1', '$2'] }], ungroupedSessionIds: [],
+      repositorySessionIds: ['$2', '$1'], repositoryGroups: [{ id: 'g', name: 'G', repoRoot: '/repo', sessionIds: ['$1'] }],
+    }, sessions)
+    await store.holdPlaceByName('$1', 'alpha')
+    const paused = await store.load([{ id: '$2', name: 'beta' }])
+    expect(paused.groups[0].sessionIds).toEqual(['name:alpha', '$2'])
+    expect(paused.repositorySessionIds).toEqual(['$2', 'name:alpha'])
+    expect(paused.repositoryGroups?.[0].sessionIds).toEqual(['name:alpha'])
+    const resumed = await store.load([{ id: '$7', name: 'alpha' }, { id: '$2', name: 'beta' }])
+    expect(resumed.groups[0].sessionIds).toEqual(['$7', '$2'])
+    expect(resumed.repositoryGroups?.[0].sessionIds).toEqual(['$7'])
+  })
+
   it('validates uniqueness and reconciles new sessions without discarding hidden history', () => {
     const preferences = {
       version: 1 as const,
@@ -216,12 +235,83 @@ describe('session management API', () => {
     expect(vi.mocked(archives.archive)).not.toHaveBeenCalled()
     const archived = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmSessionId: '$1' }) })
     expect(archived.status).toBe(200)
-    expect(vi.mocked(archives.archive)).toHaveBeenCalledWith('$1', 'other')
+    expect(vi.mocked(archives.archive)).toHaveBeenCalledWith('$1', 'other', { paused: false })
     const restored = await fetch(`${baseUrl}/api/session-management/archives/archive-id/restore`, { method: 'POST' })
     expect(restored.status).toBe(200)
     await expect(restored.json()).resolves.toMatchObject({ sessionId: '$9' })
     expect(afterSessionRestored).toHaveBeenCalledWith('$9')
     expect(onSessionsChanged).toHaveBeenCalledTimes(2)
+  })
+
+  const worktree = { root: '/repo-worktrees/feature', mainRoot: '/repo', branch: 'feature', head: 'a'.repeat(40) }
+  const post = (url: string, body: unknown) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  const archiveHarness = (options: { commit?: () => Promise<typeof worktree>; paused?: boolean } = {}) => {
+    const summary = { id: '11111111-1111-4111-8111-111111111111', name: 'work', createdAt: 1, windowCount: 1, paneCount: 1, ...(options.paused ? { paused: true } : {}) }
+    const archives = {
+      list: vi.fn().mockResolvedValue([summary]),
+      get: vi.fn().mockResolvedValue({ ...summary, windows: [{ panes: [{ path: '/repo-worktrees/feature/app' }] }] }),
+      archive: vi.fn().mockResolvedValue(summary),
+      update: vi.fn(async (_id: string, change: object) => ({ ...summary, paused: undefined, ...change })),
+    } as unknown as SessionArchives
+    const remove = vi.fn().mockResolvedValue(undefined)
+    const plan = { worktree, auxiliarySessions: [{ id: '$2', name: 'tilt-feature' }], remove }
+    const actions = { delete: vi.fn().mockResolvedValue(undefined) } as unknown as TmuxSessionActions
+    const preferences = { holdPlaceByName: vi.fn().mockResolvedValue(undefined) } as unknown as SessionPreferenceStore
+    const commitWorkInProgress = vi.fn(options.commit ?? (async () => ({ ...worktree, head: 'b'.repeat(40) })))
+    const prepareDirectoriesWorktreeDeletion = vi.fn().mockResolvedValue(plan)
+    const api = new SessionManagementApi({
+      archives, actions, preferences, commitWorkInProgress, prepareDirectoriesWorktreeDeletion,
+      currentSessions: () => [{ id: '$1', name: 'work' }, { id: '$2', name: 'tilt-feature' }],
+      currentWindowIds: () => [],
+      prepareSessionWorktreeDeletion: vi.fn().mockResolvedValue(plan),
+      sessionRepo: () => ({ root: '/repo', name: 'repo', branch: 'feature' }),
+    })
+    return { api, archives, remove, actions, preferences, commitWorkInProgress, prepareDirectoriesWorktreeDeletion, summary }
+  }
+
+  it('archives a session by saving uncommitted work, closing its helpers and removing its worktree', async () => {
+    const { api, archives, remove, actions, commitWorkInProgress } = archiveHarness()
+    const response = await post(`${await startApi(api)}/api/session-management/sessions/%241/archive`, { confirmSessionId: '$1' })
+    expect(response.status).toBe(200)
+    expect(vi.mocked(archives.archive)).toHaveBeenCalledWith('$1', 'work', { paused: false, repo: { root: '/repo', name: 'repo', branch: 'feature' } })
+    expect(vi.mocked(actions.delete)).toHaveBeenCalledWith('$2')
+    expect(commitWorkInProgress).toHaveBeenCalledWith(worktree, 'wip: archived session “work”')
+    const removed = { path: worktree.root, mainRoot: '/repo', branch: 'feature', wipCommit: 'b'.repeat(40) }
+    expect(vi.mocked(archives.update)).toHaveBeenCalledWith(expect.any(String), { worktree: removed })
+    expect(remove).toHaveBeenCalledWith({ ...worktree, head: 'b'.repeat(40) })
+    const body = await response.json()
+    expect(body.archive.worktree).toEqual(removed)
+    expect(body.worktreeKept).toBeUndefined()
+  })
+
+  it('keeps the worktree and says why when the work-in-progress commit fails', async () => {
+    const { api, archives, remove } = archiveHarness({ commit: async () => { throw new Error('Worktree has unresolved merge conflicts') } })
+    const response = await post(`${await startApi(api)}/api/session-management/sessions/%241/archive`, { confirmSessionId: '$1' })
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ worktreeKept: 'Worktree has unresolved merge conflicts' })
+    expect(remove).not.toHaveBeenCalled()
+    expect(vi.mocked(archives.update)).toHaveBeenLastCalledWith(expect.any(String), {})
+  })
+
+  it('pauses a session: stops it and its helpers, holds its place and keeps the worktree', async () => {
+    const { api, archives, remove, actions, preferences, commitWorkInProgress } = archiveHarness()
+    const response = await post(`${await startApi(api)}/api/session-management/sessions/%241/pause`, { confirmSessionId: '$1' })
+    expect(response.status).toBe(200)
+    expect(vi.mocked(archives.archive)).toHaveBeenCalledWith('$1', 'work', { paused: true, repo: { root: '/repo', name: 'repo', branch: 'feature' } })
+    expect(vi.mocked(actions.delete)).toHaveBeenCalledWith('$2')
+    expect(vi.mocked(preferences.holdPlaceByName)).toHaveBeenCalledWith('$1', 'work')
+    expect(commitWorkInProgress).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('archives a paused session from its saved directories', async () => {
+    const { api, remove, prepareDirectoriesWorktreeDeletion, summary } = archiveHarness({ paused: true })
+    const baseUrl = await startApi(api)
+    const response = await post(`${baseUrl}/api/session-management/archives/${summary.id}/archive`, {})
+    expect(response.status).toBe(200)
+    expect(prepareDirectoriesWorktreeDeletion).toHaveBeenCalledWith(['/repo-worktrees/feature/app'])
+    expect(remove).toHaveBeenCalled()
+    expect((await response.json()).archive.paused).toBeUndefined()
   })
 
   it('enqueues a save after deleting a session, including the final session', async () => {

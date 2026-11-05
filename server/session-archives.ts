@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { layoutTreePanes, parseWindowLayout, type WindowLayoutNode } from '../shared/window-layout.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 import { validArchivedAgent, type ArchivedAgent } from './agent-resume.js'
@@ -29,8 +29,23 @@ export type ArchivedAgentStore = {
   restoreArchived(agents: Readonly<Record<string, ArchivedAgent>>): void
 }
 export type ArchivedWindow = { index: number; name: string; layout: WindowLayoutNode; panes: ArchivedPane[]; active: boolean }
-export type SessionArchive = { version: 1; id: string; name: string; createdAt: number; windows: ArchivedWindow[] }
-export type ArchiveSummary = { id: string; name: string; createdAt: number; windowCount: number; paneCount: number }
+/** The repository a session belonged to, so a paused session keeps its place when grouped by repository. */
+export type ArchivedRepo = { root: string; name: string; branch?: string; defaultBranch?: string }
+/** A worktree removed on archive; restore checks the branch out at `path` again. */
+export type ArchivedWorktree = { path: string; mainRoot: string; branch: string; wipCommit?: string }
+export type SessionArchive = {
+  version: 1; id: string; name: string; createdAt: number; windows: ArchivedWindow[]
+  /** Paused sessions stay in the session tree and keep their worktree. */
+  paused?: true
+  repo?: ArchivedRepo
+  worktree?: ArchivedWorktree
+}
+export type ArchiveSummary = {
+  id: string; name: string; createdAt: number; windowCount: number; paneCount: number
+  paused?: true
+  repo?: ArchivedRepo
+  worktree?: ArchivedWorktree
+}
 
 const defaultExecutor: TmuxProcessExecutor = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], options, (error, stdout, stderr) => {
@@ -61,10 +76,36 @@ function restoredLayout(node: WindowLayoutNode, paneNumbers: Map<string, number>
   return `${geometry}${open}${node.children.map((child) => restoredLayout(child, paneNumbers)).join(',')}${close}`
 }
 
+const absolutePath = (value: unknown): value is string => typeof value === 'string' && isAbsolute(value) && !value.includes('\0')
+const optionalString = (value: unknown) => value === undefined || (typeof value === 'string' && value.length > 0 && value.length <= 256)
+
+function validRepo(value: unknown): value is ArchivedRepo {
+  const repo = value as ArchivedRepo
+  return Boolean(repo) && typeof repo === 'object' && absolutePath(repo.root) && typeof repo.name === 'string' && repo.name.length > 0 &&
+    optionalString(repo.branch) && optionalString(repo.defaultBranch)
+}
+
+function validWorktree(value: unknown): value is ArchivedWorktree {
+  const worktree = value as ArchivedWorktree
+  return Boolean(worktree) && typeof worktree === 'object' && absolutePath(worktree.path) && absolutePath(worktree.mainRoot) &&
+    worktree.path !== worktree.mainRoot && typeof worktree.branch === 'string' && worktree.branch.length > 0 && worktree.branch !== 'HEAD' &&
+    (worktree.wipCommit === undefined || (typeof worktree.wipCommit === 'string' && /^[0-9a-f]{40,64}$/.test(worktree.wipCommit)))
+}
+
+function summary(archive: SessionArchive): ArchiveSummary {
+  const { id, name, createdAt, windows, paused, repo, worktree } = archive
+  return {
+    id, name, createdAt, windowCount: windows.length, paneCount: windows.reduce((count, window) => count + window.panes.length, 0),
+    ...(paused ? { paused } : {}), ...(repo ? { repo } : {}), ...(worktree ? { worktree } : {}),
+  }
+}
+
 function validArchive(value: unknown): value is SessionArchive {
   if (!value || typeof value !== 'object') return false
   const archive = value as SessionArchive
   if (archive.version !== 1 || !ARCHIVE_ID.test(archive.id) || !Number.isFinite(archive.createdAt)) return false
+  if ((archive.paused !== undefined && archive.paused !== true) || (archive.repo !== undefined && !validRepo(archive.repo)) ||
+    (archive.worktree !== undefined && (archive.paused || !validWorktree(archive.worktree)))) return false
   try { validateTmuxSessionName(archive.name) } catch { return false }
   if (!Array.isArray(archive.windows) || archive.windows.length === 0 || archive.windows.length > 128) return false
   return archive.windows.every((window) =>
@@ -86,11 +127,18 @@ export class SessionArchives {
   private readonly execute: TmuxProcessExecutor
   private readonly agents: ArchivedAgentStore | undefined
 
-  constructor(options: { directory?: string; execute?: TmuxProcessExecutor; environment?: TmuxSocketEnvironment; agents?: ArchivedAgentStore } = {}) {
+  private readonly recreateWorktree: ((worktree: ArchivedWorktree) => Promise<void>) | undefined
+
+  constructor(options: {
+    directory?: string; execute?: TmuxProcessExecutor; environment?: TmuxSocketEnvironment; agents?: ArchivedAgentStore
+    /** Checks an archived worktree's branch out again before its session is restored. */
+    recreateWorktree?: (worktree: ArchivedWorktree) => Promise<void>
+  } = {}) {
     this.socketArgs = tmuxSocketArgs(options.environment ?? process.env)
     this.directory = options.directory ?? process.env.COMMANDO_SESSION_ARCHIVES_DIR ?? join(homedir(), '.commando', 'session-archives')
     this.execute = options.execute ?? defaultExecutor
     this.agents = options.agents
+    this.recreateWorktree = options.recreateWorktree
   }
 
   private async run(args: string[]): Promise<string> {
@@ -111,9 +159,26 @@ export class SessionArchives {
     }
     const archives = await Promise.all(files.filter((file) => file.endsWith('.json') && ARCHIVE_ID.test(file.slice(0, -5)))
       .map(async (file) => this.read(file.slice(0, -5))))
-    return archives.map(({ id, name, createdAt, windows }) => ({
-      id, name, createdAt, windowCount: windows.length, paneCount: windows.reduce((count, window) => count + window.panes.length, 0),
-    })).sort((a, b) => b.createdAt - a.createdAt)
+    return archives.map(summary).sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  async get(id: string): Promise<SessionArchive> {
+    return this.read(id)
+  }
+
+  /** Rewrites an archive's paused flag and removed worktree; a field left out is cleared. */
+  async update(id: string, change: { paused?: true; worktree?: ArchivedWorktree }): Promise<ArchiveSummary> {
+    const { paused: _paused, worktree: _worktree, ...current } = await this.read(id)
+    const next: SessionArchive = { ...current, ...change }
+    if (!validArchive(next)) throw new Error('Invalid session archive update')
+    const path = this.path(id)
+    const temporary = `${path}.${randomUUID()}.tmp`
+    const handle = await open(temporary, 'wx', 0o600)
+    try { await handle.writeFile(`${JSON.stringify(next)}\n`); await handle.sync() }
+    catch (error) { await handle.close(); await rm(temporary, { force: true }); throw error }
+    await handle.close()
+    await rename(temporary, path).catch(async (error: unknown) => { await rm(temporary, { force: true }); throw error })
+    return summary(next)
   }
 
   private async read(id: string): Promise<SessionArchive> {
@@ -122,7 +187,7 @@ export class SessionArchives {
     return value
   }
 
-  async archive(sessionId: string, name: string): Promise<ArchiveSummary> {
+  async archive(sessionId: string, name: string, options: { paused?: boolean; repo?: ArchivedRepo } = {}): Promise<ArchiveSummary> {
     validateTmuxSessionId(sessionId)
     validateTmuxSessionName(name)
     const windows: ArchivedWindow[] = []
@@ -144,7 +209,10 @@ export class SessionArchives {
       const agent = pane.targetId ? agents[pane.targetId] : undefined
       if (agent) pane.agent = agent
     }
-    const archive: SessionArchive = { version: 1, id: randomUUID(), name, createdAt: Date.now(), windows }
+    const archive: SessionArchive = {
+      version: 1, id: randomUUID(), name, createdAt: Date.now(), windows,
+      ...(options.paused ? { paused: true as const } : {}), ...(options.repo && validRepo(options.repo) ? { repo: options.repo } : {}),
+    }
     if (!validArchive(archive)) throw new Error('Could not capture a complete session archive')
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
     const path = this.path(archive.id)
@@ -155,7 +223,7 @@ export class SessionArchives {
     try { await this.run(['kill-session', '-t', sessionId]) }
     catch (error) { await rm(path, { force: true }); throw error }
     this.agents?.forgetTargets(targetIds)
-    return { id: archive.id, name, createdAt: archive.createdAt, windowCount: windows.length, paneCount: windows.reduce((count, window) => count + window.panes.length, 0) }
+    return summary(archive)
   }
 
   async restore(id: string): Promise<string> {
@@ -167,10 +235,20 @@ export class SessionArchives {
     } catch (error) {
       if (error instanceof Error && error.message.includes('already exists')) throw error
     }
-    // Verify all directories before creating anything; tmux cannot restore a deleted worktree.
+    const directoryExists = (path: string) => stat(path).then((value) => value.isDirectory(), () => false)
+    if (archive.worktree && !await directoryExists(archive.worktree.path)) {
+      if (!this.recreateWorktree) throw new Error(`Worktree ${archive.worktree.path} was removed and cannot be recreated here`)
+      await this.recreateWorktree(archive.worktree)
+    }
+    // tmux records resolved paths, which may differ from git's through a symlink such as /tmp.
+    const worktreeRoots = archive.worktree
+      ? [...new Set([archive.worktree.path, await realpath(archive.worktree.path).catch(() => archive.worktree!.path)])] : []
+    // Verify all directories before creating anything; tmux cannot restore a deleted directory.
     for (const window of archive.windows) for (const pane of window.panes) {
-      const exists = await stat(pane.path).then((value) => value.isDirectory(), () => false)
-      if (!exists) throw new Error(`Pane directory no longer exists: ${pane.path}`)
+      if (await directoryExists(pane.path)) continue
+      // An ignored folder (a build output, say) doesn't come back with the branch; open the pane at the worktree instead.
+      if (worktreeRoots.some((root) => pane.path.startsWith(`${root}/`))) pane.path = archive.worktree!.path
+      else throw new Error(`Pane directory no longer exists: ${pane.path}`)
     }
 
     let sessionId: string | null = null
