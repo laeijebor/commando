@@ -40,11 +40,29 @@ export interface SessionManagementApiClient {
   previewWorktreeDeletion(sessionId: string): Promise<{ auxiliarySessions: { id: string; name: string }[] }>
   deleteSession(sessionId: string, deleteWorktree?: boolean, confirmAuxiliarySessionIds?: string[]): Promise<void>
   listArchives(): Promise<SessionArchiveSummary[]>
-  archiveSession(sessionId: string): Promise<void>
+  archiveSession(sessionId: string): Promise<SessionArchiveResult>
+  pauseSession(sessionId: string): Promise<SessionArchiveResult>
+  /** Archives a paused session, removing the worktree it kept. */
+  archivePausedSession(archiveId: string): Promise<SessionArchiveResult>
+  /** Restores an archived session, or resumes a paused one. */
   restoreSession(archiveId: string): Promise<string>
 }
 
-export type SessionArchiveSummary = { id: string; name: string; createdAt: number; windowCount: number; paneCount: number }
+export type SessionArchiveSummary = {
+  id: string
+  name: string
+  createdAt: number
+  windowCount: number
+  paneCount: number
+  /** Paused sessions stay in the session tree with their worktree. */
+  paused?: true
+  repo?: { root: string; name: string; branch?: string; defaultBranch?: string }
+  /** The worktree removed on archive, checked out again on restore. */
+  worktree?: { path: string; mainRoot: string; branch: string; wipCommit?: string }
+}
+
+/** `worktreeKept` says why an archive left its worktree in place. */
+export type SessionArchiveResult = { archive: SessionArchiveSummary; worktreeKept?: string }
 
 type ApiErrorBody = { error?: unknown }
 
@@ -123,9 +141,17 @@ export function createSessionManagementApi(
       return result.archives
     },
     async archiveSession(sessionId) {
-      await request(`/sessions/${encodeURIComponent(sessionId)}/archive`, {
+      return request<SessionArchiveResult>(`/sessions/${encodeURIComponent(sessionId)}/archive`, {
         method: 'POST', body: JSON.stringify({ confirmSessionId: sessionId }),
       })
+    },
+    async pauseSession(sessionId) {
+      return request<SessionArchiveResult>(`/sessions/${encodeURIComponent(sessionId)}/pause`, {
+        method: 'POST', body: JSON.stringify({ confirmSessionId: sessionId }),
+      })
+    },
+    async archivePausedSession(archiveId) {
+      return request<SessionArchiveResult>(`/archives/${encodeURIComponent(archiveId)}/archive`, { method: 'POST' })
     },
     async restoreSession(archiveId) {
       const result = await request<{ sessionId: string }>(`/archives/${encodeURIComponent(archiveId)}/restore`, { method: 'POST' })

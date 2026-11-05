@@ -43,12 +43,14 @@ export function repositoryContainers(
   preferences: RepositoryPreferences,
   sessions: readonly TmuxSession[],
   panes: readonly TmuxPane[],
+  /** Repositories for sessions without live panes, such as paused ones. */
+  knownRepos: Readonly<Record<string, PaneRepo>> = {},
 ): RepositorySessionContainer[] {
   const byRoot = new Map<string, RepositorySessionContainer>()
   const noRepo: RepositorySessionContainer = { id: 'no-repo', kind: 'no-repo', name: 'No repository', sessionIds: [], items: [], group: null }
   const sorted = [...sessions].sort((left, right) => byName(left.name, right.name))
   for (const session of sorted) {
-    const repo = sessionRepo(session, panes)
+    const repo = knownRepos[session.id] ?? sessionRepo(session, panes)
     if (!repo) {
       noRepo.sessionIds.push(session.id)
       continue
