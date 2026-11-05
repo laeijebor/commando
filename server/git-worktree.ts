@@ -259,11 +259,16 @@ export class GitWorktreeService {
     }
     const status = async () => (await this.git(worktree.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).stdout
     try {
+      // Lines read `<tag> <mode> <object> <stage>\t<path>`, one per tracked file, so a large repository
+      // needs far more room than other commands.
+      const index = (await this.git(worktree.root, ['ls-files', '-v', '--stage'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\n')
       // A gitlink (submodule, or a nested repository someone staged) keeps only a commit id: its files and
       // objects live in the folder that removal deletes, so such a worktree is never saved this way.
-      // One line per tracked file, so a large repository needs far more room than other commands.
-      const gitlink = (await this.git(worktree.root, ['ls-files', '--stage'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\n').find((line) => line.startsWith('160000 '))
+      const gitlink = index.find((line) => line.split(' ')[1] === '160000')
       if (gitlink) throw new GitWorktreeError('exec', `Worktree contains a submodule or nested repository at ${gitlink.split('\t')[1]}`)
+      // assume-unchanged (a lowercase tag) and skip-worktree (S) hide a file's edits from status and add.
+      const hidden = index.find((line) => /^(?:[a-z]|S) /u.test(line))
+      if (hidden) throw new GitWorktreeError('exec', `Worktree has a file git is told to ignore changes to (assume-unchanged or skip-worktree) at ${hidden.split('\t')[1]}`)
       // Found on disk: started inside a tracked folder, a repository looks like ordinary files to the outer one.
       const nestedRepository = await this.nestedRepository(worktree.root)
       if (nestedRepository) throw new GitWorktreeError('exec', `Worktree contains another git repository at ${nestedRepository}`)
