@@ -19,8 +19,8 @@ export function SessionCreateDialog({ request, onClose, ...form }: Props) {
   useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog || dialog.contains(document.activeElement)) return
-    // The prompt comes first: paste a screenshot straight away. Without one, the name.
-    dialog.querySelector<HTMLElement>('textarea[name="openingPrompt"], input[name="sessionName"]')?.focus()
+    // The name comes first; a screenshot pasted from there still attaches, as the form handles pastes.
+    dialog.querySelector<HTMLElement>('input[name="sessionName"]')?.focus()
   }, [request.id])
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
