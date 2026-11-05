@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { access, rename } from 'node:fs/promises'
+import { access, readdir, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
@@ -282,15 +282,14 @@ export class GitWorktreeService {
       // One line per tracked file, so a large repository needs far more room than other commands.
       const gitlink = (await this.git(worktree.root, ['ls-files', '--stage'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\n').find((line) => line.startsWith('160000 '))
       if (gitlink) throw new GitWorktreeError('exec', `Worktree contains a submodule or nested repository at ${gitlink.split('\t')[1]}`)
+      // Found on disk: started inside a tracked folder, a repository looks like ordinary files to the outer one.
+      const nestedRepository = await this.nestedRepository(worktree.root)
+      if (nestedRepository) throw new GitWorktreeError('exec', `Worktree contains another git repository at ${nestedRepository}`)
       const before = await status()
       if (!before.trim()) return worktree
-      const lines = before.split('\n')
-      if (lines.some((line) => /^(?:DD|AU|UD|UA|DU|AA|UU) /u.test(line))) {
+      if (before.split('\n').some((line) => /^(?:DD|AU|UD|UA|DU|AA|UU) /u.test(line))) {
         throw new GitWorktreeError('exec', 'Worktree has unresolved merge conflicts')
       }
-      // git lists an untracked folder holding its own repository as one path ending in a slash, and would commit only a pointer to it.
-      const nested = lines.find((line) => /^\?\? .*\/"?$/u.test(line))
-      if (nested) throw new GitWorktreeError('exec', `Worktree contains another git repository at ${nested.slice(3)}`)
       await this.git(worktree.root, ['add', '--all'], WORKTREE_TIMEOUT_MS)
       // No hooks or signing: either could block or prompt with nobody watching.
       await this.git(worktree.root, ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '--quiet', '-m', message], WORKTREE_TIMEOUT_MS)
@@ -338,6 +337,27 @@ export class GitWorktreeService {
     }
     void this.removeTree(aside)
       .catch((error) => console.warn(`[commando] Could not delete removed worktree folder ${aside}`, error))
+  }
+
+  /**
+   * The first folder below `root` holding its own `.git`, skipping gitignored folders: their contents
+   * (node_modules and the like) go with the worktree by design, and are never walked.
+   */
+  private async nestedRepository(root: string): Promise<string | undefined> {
+    const listing = (await this.git(root, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout
+    const ignored = new Set(listing.split('\0').filter((entry) => entry.endsWith('/')).map((entry) => path.join(root, entry.slice(0, -1))))
+    const walk = async (directory: string): Promise<string | undefined> => {
+      const entries = await readdir(directory, { withFileTypes: true })
+      if (directory !== root && entries.some((entry) => entry.name === '.git')) return path.relative(root, directory)
+      for (const entry of entries) {
+        const child = path.join(directory, entry.name)
+        if (!entry.isDirectory() || entry.name === '.git' || ignored.has(child)) continue
+        const found = await walk(child)
+        if (found) return found
+      }
+      return undefined
+    }
+    return walk(root)
   }
 
   private async validateExistingBranchName(cwd: string, value: unknown): Promise<string> {

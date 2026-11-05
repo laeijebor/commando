@@ -458,7 +458,7 @@ describe('GitWorktreeService.removeWorktree', () => {
       const worktree = (await service.worktreeForDirectory(linked))!
       await expect(service.commitWorkInProgress(worktree, 'wip')).resolves.toEqual(worktree)
 
-      mkdirSync(path.join(linked, 'node_modules'))
+      mkdirSync(path.join(linked, 'node_modules', 'from-git', '.git'), { recursive: true })
       writeFileSync(path.join(linked, 'node_modules', 'big.js'), '')
       writeFileSync(path.join(linked, 'notes.txt'), 'uncommitted')
       const saved = await service.commitWorkInProgress(worktree, 'wip: archived session')
@@ -489,13 +489,35 @@ describe('GitWorktreeService.removeWorktree', () => {
       run(linked, 'init', '-q', 'vendor clone')
       const service = new GitWorktreeService()
       const worktree = (await service.worktreeForDirectory(linked))!
-      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: expect.stringContaining('another git repository at "vendor clone/"') })
+      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: 'Worktree contains another git repository at vendor clone' })
       expect(run(linked, 'rev-parse', 'HEAD').trim()).toBe(worktree.head)
       // Once staged it is a gitlink, which keeps none of its files.
       run(linked, '-c', 'user.name=t', '-c', 'user.email=t@t', '-C', 'vendor clone', 'commit', '-q', '--allow-empty', '-m', 'inner')
       execFileSync('git', ['add', 'vendor clone'], { cwd: linked, stdio: 'ignore' })
       await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: 'Worktree contains a submodule or nested repository at vendor clone' })
       expect(run(linked, 'rev-parse', 'HEAD').trim()).toBe(worktree.head)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a work-in-progress commit when a repository was started inside a tracked folder', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    try {
+      run(base, 'init', '-q', main)
+      mkdirSync(path.join(main, 'vendor'))
+      writeFileSync(path.join(main, 'vendor', 'lib.js'), 'x')
+      run(main, 'add', '.')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      run(path.join(linked, 'vendor'), 'init', '-q')
+      expect(run(linked, 'status', '--porcelain').trim()).toBe('')
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: 'Worktree contains another git repository at vendor' })
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
