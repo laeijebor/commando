@@ -8,6 +8,7 @@
 .slides-stage { position: relative; flex: 1; min-height: 80px; display: grid; place-items: center; background: radial-gradient(800px 400px at 50% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent), var(--surface-deep); }
 .slides-screen { position: relative; background: #000; border-radius: 8px; box-shadow: 0 0 0 1px var(--border), 0 24px 70px #0006; overflow: hidden; }
 .slides-screen iframe, .slides-thumb-screen iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; pointer-events: none; }
+.slides-screen iframe { will-change: transform; }
 .slides-stage.is-commenting .slides-screen { cursor: crosshair; }
 .slides-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface-raised); color: var(--text-soft); display: grid; place-items: center; cursor: pointer; }
 .slides-nav:disabled { opacity: .3; cursor: default; }
@@ -23,12 +24,14 @@
 .slides-thumb.is-current .slides-thumb-screen { box-shadow: 0 0 0 2px var(--accent); }
 .slides-thumb-number { position: absolute; top: 4px; left: 4px; padding: 2px 4px; border-radius: 3px; color: #fff; background: #0009; font: 10px var(--mono); }
 .slides-thumb-badge { position: absolute; top: 4px; right: 4px; border-radius: 999px; padding: 2px 5px; background: var(--accent); color: var(--accent-ink); font-size: 10px; }
-.slides-grid { flex: 1; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 22px 18px; padding: 22px; align-content: start; }
+.slides-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* The grid covers the stage instead of replacing it, so the stage iframe is never re-created. */
+.slides-grid { position: absolute; inset: 0; z-index: 3; background: var(--surface-deep); overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 22px 18px; padding: 22px; align-content: start; }
 .slides-grid .slides-thumb { width: 100%; }.slides-thumb-title { display: block; padding: 8px 2px; font-size: 12px; }
 .slides-menu { position: absolute; right: 12px; top: 44px; width: 280px; max-height: calc(100% - 50px); overflow: auto; padding: 8px; z-index: 30; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 24px 70px #0006; }
 .slides-menu form { padding: 8px; border-top: 1px solid var(--border); }.slides-menu input { display: block; width: 100%; margin: 8px 0; padding: 6px; color: var(--text); background: var(--surface-deep); border: 1px solid var(--border); border-radius: 5px; }.slides-menu [role="alert"] { display: block; color: var(--red); padding: 8px; }
 .slides-pane:fullscreen { width: 100vw; height: 100vh; background: #000; }
-.slides-pane.is-presenting > :not(.slides-stage) { display: none; }.slides-pane.is-presenting .slides-stage { background: #000; }.slides-pane.is-presenting .slides-nav { display: none; }.slides-pane.is-presenting .slides-screen { border-radius: 0; box-shadow: none; }
+.slides-pane.is-presenting > :not(.slides-body), .slides-pane.is-presenting .slides-body > :not(.slides-stage) { display: none; }.slides-pane.is-presenting .slides-stage { background: #000; }.slides-pane.is-presenting .slides-nav { display: none; }.slides-pane.is-presenting .slides-screen { border-radius: 0; box-shadow: none; }
 @container (max-width: 720px) { .slides-toolbar { gap: 3px; padding: 6px; }.slides-toolbar button span { display: none; }.slides-toolbar .canvas-history > button { font-size: 0; }.slides-title { font-size: 12px; }.slides-notes, .slides-question { margin-inline: 12px; } }
 .slides-pane > .canvas-spotlight { top: 52px; }
 .slides-theme-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 4px; }
@@ -42,3 +45,6 @@
 .slides-question .canvas-q-options button.is-picked { background: var(--cyan); color: var(--bg); }
 .slides-question .canvas-q textarea { color: var(--text); background: var(--surface-deep); border-color: var(--border-mid); font-size: 12px; }
 .slides-question .canvas-q-link { color: var(--cyan); font-size: 12px; }
+
+/* Present without the Fullscreen API (e.g. the desktop app's WKWebView): cover the window instead. */
+.slides-pane.is-presenting:not(:fullscreen) { position: fixed; inset: 0; z-index: 10000; background: #000; }
