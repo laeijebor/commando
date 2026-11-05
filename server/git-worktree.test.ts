@@ -471,6 +471,30 @@ describe('GitWorktreeService.removeWorktree', () => {
       const worktree = (await service.worktreeForDirectory(linked))!
       await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: expect.stringContaining('another git repository at "vendor clone/"') })
       expect(run(linked, 'rev-parse', 'HEAD').trim()).toBe(worktree.head)
+      // Once staged it is a gitlink, which keeps none of its files.
+      run(linked, '-c', 'user.name=t', '-c', 'user.email=t@t', '-C', 'vendor clone', 'commit', '-q', '--allow-empty', '-m', 'inner')
+      execFileSync('git', ['add', 'vendor clone'], { cwd: linked, stdio: 'ignore' })
+      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: 'Worktree contains a submodule or nested repository at vendor clone' })
+      expect(run(linked, 'rev-parse', 'HEAD').trim()).toBe(worktree.head)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('checks out an existing branch again under any name git accepts', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'cpp')
+    const service = new GitWorktreeService()
+    try {
+      run(base, 'init', '-q', main)
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init')
+      run(main, 'branch', 'feature/c++')
+      await service.createWorktree({ mainRoot: main, branch: 'feature/c++', path: linked, existingBranchOnly: true })
+      expect(run(linked, 'branch', '--show-current').trim()).toBe('feature/c++')
+      await expect(service.createWorktree({ mainRoot: main, branch: 'bad..name', path: path.join(base, 'x'), existingBranchOnly: true }))
+        .rejects.toMatchObject({ kind: 'bad-branch' })
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
