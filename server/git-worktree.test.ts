@@ -502,6 +502,17 @@ describe('GitWorktreeService.removeWorktree', () => {
         run(linked, 'update-index', flag.replace('--', '--no-'), 'config.json')
         run(linked, 'checkout', '--', 'config.json')
       }
+      // Sparse checkout marks files outside its cone skip-worktree, but they aren't on disk to lose.
+      for (const folder of ['app', 'docs']) {
+        mkdirSync(path.join(linked, folder))
+        writeFileSync(path.join(linked, folder, 'file.md'), '')
+      }
+      run(linked, 'add', '.')
+      run(linked, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'folders')
+      run(linked, 'sparse-checkout', 'set', 'app')
+      expect(run(linked, 'ls-files', '-v')).toContain('S docs/file.md')
+      const sparse = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(sparse, 'wip')).resolves.toEqual(sparse)
     } finally {
       rmSync(base, { recursive: true, force: true })
     }

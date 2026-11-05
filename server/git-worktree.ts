@@ -261,13 +261,18 @@ export class GitWorktreeService {
     try {
       // Lines read `<tag> <mode> <object> <stage>\t<path>`, one per tracked file, so a large repository
       // needs far more room than other commands.
-      const index = (await this.git(worktree.root, ['ls-files', '-v', '--stage'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\n')
+      const index = (await this.git(worktree.root, ['ls-files', '-v', '--stage', '-z'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\0')
       // A gitlink (submodule, or a nested repository someone staged) keeps only a commit id: its files and
       // objects live in the folder that removal deletes, so such a worktree is never saved this way.
       const gitlink = index.find((line) => line.split(' ')[1] === '160000')
       if (gitlink) throw new GitWorktreeError('exec', `Worktree contains a submodule or nested repository at ${gitlink.split('\t')[1]}`)
-      // assume-unchanged (a lowercase tag) and skip-worktree (S) hide a file's edits from status and add.
-      const hidden = index.find((line) => /^(?:[a-z]|S) /u.test(line))
+      // assume-unchanged (a lowercase tag) and skip-worktree (S) hide a file's edits from status and add. Sparse
+      // checkout marks every file outside its cone S, but those are not on disk, so there is nothing to lose.
+      let hidden = index.find((line) => /^[a-z] /u.test(line))
+      for (const line of index) {
+        if (hidden) break
+        if (line.startsWith('S ') && await this.pathExists(path.join(worktree.root, line.split('\t')[1]))) hidden = line
+      }
       if (hidden) throw new GitWorktreeError('exec', `Worktree has a file git is told to ignore changes to (assume-unchanged or skip-worktree) at ${hidden.split('\t')[1]}`)
       // Found on disk: started inside a tracked folder, a repository looks like ordinary files to the outer one.
       const nestedRepository = await this.nestedRepository(worktree.root)
