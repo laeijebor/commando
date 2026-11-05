@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/paper.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 7 · After screenshots -->
+<section class="slide" data-n="7" data-total="8" data-canvas-group="Slide 7 · After">
+  <p class="kicker">After</p>
+  <h2 data-canvas-label="Headline">Kill the connection mid-sentence and keep typing</h2>
+  <div class="body shots" data-canvas-label="After screenshots">
+    <figure class="shot" style="margin:0"><div class="device"><img src="deck/img/before-draft.png" alt="" style="height:360px;filter:saturate(.6)"><span class="pill bad badge">before</span></div><figcaption>Draft lost on reconnect</figcaption></figure>
+    <div class="arrow-big" style="align-self:center">→</div>
+    <figure class="shot" style="margin:0"><div class="device"><img src="deck/img/after-reconnect.png" alt="" style="height:360px"><span class="pill good badge">after</span></div><figcaption>0.3 s after a forced reconnect: keyboard and draft kept</figcaption></figure>
+    <figure class="shot" style="margin:0"><div class="device"><img src="deck/img/after-daemon-down.png" alt="" style="height:360px"><span class="pill good badge">after</span></div><figcaption>Daemon down for 8 s: banner shows, still typing</figcaption></figure>
+  </div>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>One-pager · reconnect loop fix</title>
+<link rel="stylesheet" href="deck/themes/paper.css">
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { width: 794px; min-height: 1123px; background: var(--bg); color: var(--ink); font: 13px/1.5 var(--font-body); -webkit-font-smoothing: antialiased; }
+  .page { padding: 40px 52px 30px; display: flex; flex-direction: column; gap: 18px; min-height: 1123px; }
+  .bad { color: var(--bad); } .good { color: var(--good); } .accent { color: var(--accent); }
+  header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid var(--ink); padding-bottom: 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  header b { color: var(--accent); }
+  h1 { font: var(--display-weight) 38px/1.08 var(--font-display); letter-spacing: var(--display-tracking); margin: 0; }
+  .lede { font-size: 15px; color: var(--ink-soft); margin: 10px 0 0; max-width: 620px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stat { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 14px 16px; }
+  .stat b { display: block; white-space: nowrap; margin-bottom: 4px; font: 700 30px/1 var(--font-display); letter-spacing: -0.02em; }
+  .stat span { color: var(--ink-soft); font-size: 12px; }
+  h2 { font: 700 11px/1 var(--font-body); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
+  .two { display: grid; grid-template-columns: 1.15fr .85fr; gap: 22px; }
+  .flow { display: grid; gap: 6px; counter-reset: s; }
+  .flow div { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--ink-soft); }
+  .flow div::before { counter-increment: s; content: counter(s); font: 700 10px/18px var(--font-mono); text-align: center; border-radius: 50%; background: var(--bg-2); border: 1px solid var(--line); color: var(--ink); }
+  .flow div.hot::before { background: var(--bad); color: #fff; border-color: var(--bad); }
+  .flow b { color: var(--ink); }
+  .loopnote { margin-top: 6px; font-size: 12px; color: var(--bad); font-weight: 600; }
+  .shots { display: flex; gap: 10px; }
+  .shots figure { margin: 0; text-align: center; font-size: 10.5px; color: var(--muted); }
+  .shots img { height: 190px; border-radius: 12px; border: 4px solid #000; display: block; margin-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; font-weight: 700; color: var(--muted); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; border-bottom: 1px solid var(--line); padding: 6px 4px; }
+  td { padding: 6px 4px; border-bottom: 1px solid var(--line); color: var(--ink-soft); }
+  td.bad { color: var(--bad); font-weight: 600; } td.good { color: var(--good); font-weight: 600; }
+  .changes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .changes div { border-top: 3px solid var(--accent); padding-top: 8px; font-size: 12px; color: var(--ink-soft); }
+  .changes b { display: block; color: var(--ink); font-size: 13px; margin-bottom: 3px; }
+  .risk { border: 1px solid var(--line); border-left: 4px solid var(--warn); border-radius: 6px; padding: 10px 14px; font-size: 12.5px; color: var(--ink-soft); background: var(--surface); }
+  footer { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; margin-top: auto; }
+</style></head>
+<body><div class="page">
+  <header data-canvas-label="Header"><span><b>Ship review</b> · Companion app</span><span>PR #156 · 24 Oct 2026</span></header>
+  <div data-canvas-label="Headline">
+    <h1>The phone stopped throwing away what you type</h1>
+    <p class="lede">The companion app reconnected every ~4 seconds and closed the keyboard each time. The daemon now judges drain progress, the phone asks for a bounded replay, and the composer stays editable offline.</p>
+  </div>
+  <div class="stats" data-canvas-label="Stats row">
+    <div class="stat"><b class="bad">~4 s → 0</b><span>reconnect cycle; 0 per minute on every link tested</span></div>
+    <div class="stat"><b class="good">34 → 0.6 MB</b><span>replay to the phone, once per connection</span></div>
+    <div class="stat"><b class="accent">587 → 0</b><span>MB per minute wasted over the WiFi proxy</span></div>
+  </div>
+  <div class="two">
+    <div data-canvas-label="Root cause">
+      <h2>Root cause</h2>
+      <div class="flow">
+        <div><span><b>Phone connects</b> — backoff resets on open</span></div>
+        <div><span><b>Daemon replays 34 MB</b> — every chat's full history</span></div>
+        <div class="hot"><span><b>Next broadcast trips the 32 MiB cap</b> on <code>bufferedAmount</code></span></div>
+        <div class="hot"><span><b>Close 1013</b> “Client is not consuming output”</span></div>
+        <div><span><b>Composer turns read-only</b> — iOS dismisses the keyboard</span></div>
+      </div>
+      <div class="loopnote">↺ reconnect after 500 ms, every ~4 s at ~10 MB/s</div>
+    </div>
+    <div class="shots" data-canvas-label="Before and after screenshots">
+      <figure><img src="deck/img/before-draft.png" alt="">Before: draft cut to “Hal”</figure>
+      <figure><img src="deck/img/after-reconnect.png" alt="">After: draft and keyboard kept</figure>
+    </div>
+  </div>
+  <div data-canvas-label="Evidence table">
+    <h2>Evidence · reconnects per minute, 60 s runs</h2>
+    <table>
+      <tr><th>Link</th><th>Before</th><th>After · desktop (full)</th><th>After · phone (bounded)</th></tr>
+      <tr><td>Loopback</td><td class="bad">49/min · 1,725 MB/min</td><td class="good">0 · 34.6 MB once</td><td class="good">0 · 0.6 MB once</td></tr>
+      <tr><td>WiFi proxy</td><td class="bad">17/min · 587 MB/min</td><td class="good">0</td><td class="good">0</td></tr>
+      <tr><td>4G / DERP proxy</td><td class="bad">3/min · 104 MB/min</td><td class="good">0</td><td class="good">0</td></tr>
+      <tr><td>Simulator app via WiFi</td><td class="bad">15/min</td><td class="good">0 over 3+ min</td><td>—</td></tr>
+    </table>
+  </div>
+  <div data-canvas-label="What changed">
+    <h2>What changed</h2>
+    <div class="changes">
+      <div><b>Drain progress, not size</b>Drop a client only after 30 s with nothing drained; 256 MiB hard cap.</div>
+      <div><b>Bounded replay</b><code>/ws?chatHistory=</code> keeps the newest items per chat; desktop keeps full history.</div>
+      <div><b>Type while offline</b>Composer stays editable; banner waits 2 s; backoff resets after 10 s open.</div>
+    </div>
+  </div>
+  <div class="risk" data-canvas-label="Residual risk"><b>Residual risk:</b> a client that never reads is still dropped after about 60 s (30 s with no drain plus ws's close timeout). That is the intended backstop.</div>
+  <footer><span>commando · Paper theme</span><span>Full deck: 8 slides · evidence in docs/evidence/mobile-reconnect-focus</span></footer>
+</div></body></html>

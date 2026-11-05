@@ -236,7 +236,6 @@ export function TmuxCreateControls({
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const sessionNameRef = useRef<HTMLInputElement>(null)
-  const promptRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const submitRef = useRef<HTMLButtonElement>(null)
   const [sessionName, setSessionName] = useState('')
@@ -450,7 +449,8 @@ export function TmuxCreateControls({
       detailsRef.current.open = true
       detailsRef.current.scrollIntoView?.({ block: 'nearest' })
     }
-    ;(promptRef.current ?? sessionNameRef.current)?.focus()
+    // The name comes first; a screenshot pasted from there still attaches, as the form handles pastes.
+    sessionNameRef.current?.focus()
   }, [sessionCreateRequest])
 
   useEffect(() => {
@@ -720,7 +720,6 @@ export function TmuxCreateControls({
       ) : null}
       {promptAccepted ? (
         <textarea
-          ref={promptRef}
           name="openingPrompt"
           aria-label="Opening prompt"
           value={openingPrompt}
@@ -1006,7 +1005,6 @@ export function TmuxCreateControls({
     <div className="tmux-create__panel">
       <form ref={formRef} onSubmit={submit} onPaste={onPaste} onKeyDown={onKeyDown} aria-busy={pending}>
         {destination}
-        {promptBox}
         <label>
           Session name <span>{promptGiven ? 'optional' : promptAccepted ? 'required without a prompt' : ''}</span>
           <input
@@ -1021,6 +1019,7 @@ export function TmuxCreateControls({
             onChange={(event) => setSessionName(event.target.value)}
           />
         </label>
+        {promptBox}
         {workspace}
 
         {error && (

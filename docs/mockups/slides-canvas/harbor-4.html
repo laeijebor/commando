@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/brand-harbor.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 4 · Big numbers -->
+<section class="slide" data-n="4" data-total="8" data-canvas-group="Slide 4 · Impact">
+  <p class="kicker">Impact</p>
+  <h2 data-canvas-label="Headline">The phone now downloads 0.6 MB once, not 34 MB on a loop</h2>
+  <div class="body" style="display:grid;grid-template-columns:1fr auto 1fr 1.15fr;gap:28px;align-items:center">
+    <div class="card stat" data-canvas-label="Stat: replay before"><b class="bad">34 MB</b><span>replay on every connect, before</span></div>
+    <div class="arrow-big">→</div>
+    <div class="card stat" data-canvas-label="Stat: replay after"><b class="good">0.6 MB</b><span>once, newest 256 KiB per chat</span></div>
+    <div class="card stat" data-canvas-label="Stat: data per minute"><b class="accent">587→0</b><span>MB per minute over the WiFi proxy</span></div>
+  </div>
+  <aside class="notes">Desktop still gets full history: 34.6 MB once, no loop.</aside>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import { parseCanvasSource } from '../shared/deck.js'
 import { AgentChatsApi } from './agent-chats-api.js'
 import { HostRegistry } from './hosts.js'
 import { HostsApi } from './hosts-api.js'
@@ -14,7 +15,6 @@ import { CanvasPush } from './canvas-push.js'
 import { ChatTileEvents, defaultChatTileEventsPath } from './chat-tile-events.js'
 import { CanvasSnapshotsStore, defaultCanvasSnapshotsPath } from './canvas-snapshots.js'
 import { CanvasSpotlightStore } from './canvas-spotlight.js'
-import { parseCanvasManifest } from '../shared/canvas-manifest.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
 import { Commander } from './commander.js'
@@ -2010,7 +2010,7 @@ async function main(): Promise<void> {
   const tileTitle = (pane: WebPane): string | undefined => {
     if (pane.content?.kind === 'canvas') {
       const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
-      try { if (path) return parseCanvasManifest(readFileSync(path, 'utf8')).manifest.title || undefined } catch { /* The journal still works without a manifest. */ }
+      try { if (path) return parseCanvasSource(readFileSync(path, 'utf8'), pane.content.manifest).manifest.title || undefined } catch { /* The journal still works without a manifest. */ }
       return undefined
     }
     return pane.title?.trim() || undefined
