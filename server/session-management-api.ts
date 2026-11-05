@@ -13,7 +13,7 @@ import {
 } from './tmux-session-actions.js'
 import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
 import type { SessionWorktreeDeletionPlan } from './session-worktree-deletion.js'
-import { SessionArchives, type ArchivedRepo, type ArchiveSummary } from './session-archives.js'
+import { SessionArchives, type ArchivedRepo, type ArchiveSummary, type SessionArchive } from './session-archives.js'
 import type { GitWorktreeIdentity } from './git-worktree.js'
 
 const API_ROOT = '/api/session-management'
@@ -308,6 +308,7 @@ export class SessionManagementApi {
         this.dependencies.afterSessionDeleted?.(route.sessionId)
         let worktreeError: unknown
         try {
+          if (deleteWorktree) await this.recordWorktreeOnOtherArchives(deleteWorktree.worktree)
           await deleteWorktree?.remove()
         } catch (error) {
           worktreeError = error
@@ -360,16 +361,30 @@ export class SessionManagementApi {
     }
   }
 
-  /** Why a worktree must stay: a paused session will reopen in it. Pane paths are resolved by tmux, as the worktree root is by git. */
-  private async pausedSessionUsing(worktreeRoot: string, exceptArchiveId?: string): Promise<string | undefined> {
+  /** Archives with a pane in the worktree. Pane paths are resolved by tmux, as the worktree root is by git. */
+  private async archivesUsing(worktreeRoot: string, exceptArchiveId?: string): Promise<SessionArchive[]> {
+    const using: SessionArchive[] = []
     for (const summary of await this.archives.list()) {
-      if (!summary.paused || summary.id === exceptArchiveId) continue
+      if (summary.id === exceptArchiveId) continue
       const archive = await this.archives.get(summary.id).catch(() => undefined)
-      if (archive?.windows.some((window) => window.panes.some((pane) => pane.path === worktreeRoot || pane.path.startsWith(`${worktreeRoot}/`)))) {
-        return `Paused session “${summary.name}” still uses this worktree`
-      }
+      if (archive?.windows.some((window) => window.panes.some((pane) => pane.path === worktreeRoot || pane.path.startsWith(`${worktreeRoot}/`)))) using.push(archive)
     }
-    return undefined
+    return using
+  }
+
+  /** Why a worktree must stay: a paused session will reopen in it. */
+  private async pausedSessionUsing(worktreeRoot: string, exceptArchiveId?: string): Promise<string | undefined> {
+    const paused = (await this.archivesUsing(worktreeRoot, exceptArchiveId)).find((archive) => archive.paused)
+    return paused ? `Paused session “${paused.name}” still uses this worktree` : undefined
+  }
+
+  /** Lets other archived sessions in a worktree about to go check its branch out again when they are restored. */
+  private async recordWorktreeOnOtherArchives(worktree: GitWorktreeIdentity, exceptArchiveId?: string): Promise<void> {
+    for (const archive of await this.archivesUsing(worktree.root, exceptArchiveId)) {
+      if (archive.paused || archive.worktree) continue
+      await this.archives.update(archive.id, { worktree: { path: worktree.root, mainRoot: worktree.mainRoot, branch: worktree.branch } })
+        .catch((error: unknown) => console.warn(`[commando] Could not record the removed worktree on archive ${archive.name}`, error))
+    }
   }
 
   /** Helper sessions (dev servers and the like) for a worktree stop with the session that owns it. */
@@ -412,6 +427,7 @@ export class SessionManagementApi {
         path: current.root, mainRoot: current.mainRoot, branch: current.branch,
         ...(current.head !== removal.worktree.head ? { wipCommit: current.head } : {}),
       } })
+      await this.recordWorktreeOnOtherArchives(current, archive.id)
       await removal.remove(current)
       return { archive: recorded }
     } catch (error) {
