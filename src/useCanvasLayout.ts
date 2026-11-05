@@ -1,7 +1,8 @@
+import { isDeckPath, parseCanvasSource } from '../shared/deck'
 import { encodeCanvasPath } from '../shared/canvas-manifest'
 import { subscribeCanvasChanges } from './webPanesApi'
 import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { parseCanvasManifest, type CanvasFrame, type CanvasManifest, type CanvasManifestResult, type CanvasMove, type CanvasSection } from '../shared/canvas-manifest'
+import { type CanvasFrame, type CanvasManifest, type CanvasManifestResult, type CanvasMove, type CanvasSection } from '../shared/canvas-manifest'
 import { writeCanvasLayout, type CanvasLayoutChange } from './canvasWrite'
 
 /** Applies a frame or note move; a moved note is fixed unless the move says otherwise. */
@@ -46,7 +47,7 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
       try {
         const response = await fetch(baseUrl + encodeCanvasPath(manifest), { cache: 'no-store', signal: abort.signal })
         if (!response.ok) throw new Error(`${manifest}: could not load (${response.status})`)
-        const parsed = parseCanvasManifest(await response.text())
+        const parsed = parseCanvasSource(await response.text(), manifest)
         if (!disposed && request === sequence && epoch === loadEpoch.current) {
           if (!readOnly) contentHash.current = response.headers?.get('ETag')?.replaceAll('"', '') ?? ''
           const move = readOnly ? null : overlay.current
@@ -65,10 +66,10 @@ export function useCanvasLayout(artifactId: string, manifest: string, token: str
       const frames = manifestRef.current.frames
       const unknown = other.some((path) => !frames.some((frame) => frame.src === path))
       if (changed.includes(manifest) || unknown) void load()
-      if (!other.length) return
+      if (!other.length && !isDeckPath(manifest)) return
       setRevisions((current) => {
         const next = { ...current }
-        for (const frame of frames) if (unknown || other.includes(frame.src)) next[frame.id] = (next[frame.id] ?? 0) + 1
+        for (const frame of frames) if (unknown || other.includes(frame.src) || (isDeckPath(manifest) && changed.includes(manifest))) next[frame.id] = (next[frame.id] ?? 0) + 1
         return next
       })
     })

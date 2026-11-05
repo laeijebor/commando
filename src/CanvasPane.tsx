@@ -1,3 +1,4 @@
+import { useCanvasReviewAdapter } from './useCanvasReviewAdapter'
 import { CanvasHistory, canvasSnapshotTime } from './CanvasHistory'
 import { CanvasFrameExport } from './CanvasFrameExport'
 import type { CanvasSnapshot } from '../shared/canvas-snapshot'
@@ -25,12 +26,8 @@ import { useCanvasFrameDrag } from './useCanvasFrameDrag'
 import { canvasNoteConnector, canvasNoteGutterX, layoutCanvasNotes, type CanvasNotePlacement } from './canvasNoteLayout'
 import { CanvasSectionStatus } from './CanvasSectionStatus'
 import { CanvasQuestionControls } from './CanvasQuestionControls'
-import { canvasNoteIdFromSelector, canvasQuestion, canvasQuestionsPage, openCanvasQuestions } from './canvasQuestions'
-import { pendingForQuestion, sentForQuestion, TileReviewLayer, type TileReviewSurface } from './TileReviewLayer'
-import { createWebPanesApi } from './webPanesApi'
-import type { PendingQueueApi } from './pendingQueueApi'
-import type { WebPanePendingSnapshot } from '../shared/protocol'
-import type { RedlinePageQuestionSnapshot } from '../shared/redline-response'
+import { canvasQuestion, canvasQuestionsPage } from './canvasQuestions'
+import { pendingForQuestion, sentForQuestion, TileReviewLayer } from './TileReviewLayer'
 
 const EMPTY = parseCanvasManifest({ title: '', frames: [] })
 const KIND_LABELS = { development: 'Development', important: 'Important', design: 'Design', question: 'Question' }
@@ -303,7 +300,6 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     }
   }, [spotlightTarget, loaded, reports, frames, allFrames, page, flyTo])
   const answerable = !readOnly && !!webPaneId
-  const questions = useMemo(() => answerable ? openCanvasQuestions(allAnnotations) : [], [answerable, allAnnotations])
   const questionState = (note: CanvasAnnotation) => {
     const question = canvasQuestion(note)
     if (!question) return null
@@ -320,55 +316,14 @@ export function CanvasPane({ artifactId, manifest: manifestPath, artifactUrl, on
     questions: questionRows.filter(({ note, state }) => state === 'open' && note.page === p.id).length,
     comments: openPins.filter((frameId) => framePage(frameId) === p.id).length,
   }))
-  const reviewListeners = useRef({ pending: new Set<(snapshot: WebPanePendingSnapshot) => void>(), questions: new Set<(page: string, snapshot: RedlinePageQuestionSnapshot) => void>() })
-  const reviewState = useRef({ questions, questionsPage, sent: comments.questionSent })
-  useLayoutEffect(() => { reviewState.current = { questions, questionsPage, sent: comments.questionSent } })
-  const questionSnapshot = (): RedlinePageQuestionSnapshot => ({ type: 'questions', version: 1, questions: reviewState.current.questions })
-  useEffect(() => { for (const listener of reviewListeners.current.questions) listener(questionsPage, questionSnapshot()) }, [questions, questionsPage])
-  useEffect(() => {
-    // A fresh pane's empty first snapshot would only race the drawer's own load.
-    if (!comments.snapshot.revision && !comments.snapshot.notes.length) return
-    for (const listener of reviewListeners.current.pending) listener({ ...comments.snapshot, sent: comments.questionSent })
-  }, [comments.snapshot, comments.questionSent])
-  const reveal = useEffectEvent((selector: string) => {
+  const { surface: reviewSurface, queue: pendingQueue } = useCanvasReviewAdapter(webPaneId, token, questionsPage, allAnnotations, comments, (note, pending) => {
     setSpotlightFrame(null); setSelected(null); setHovered(null); initialFit.current = true
-    const note = allAnnotations.find((n) => n.id === canvasNoteIdFromSelector(selector))
     if (note) { setNotesVisible(true); showPage(note.page, noteBounds(note)); return }
-    const pending = comments.queued.find((n) => n.selector === selector)
     const frame = pending?.canvas && allFrames.find((f) => f.id === pending.canvas!.frameId)
     if (!pending?.canvas || !frame) return
     showPage(frame.page, { x: frame.x + pending.canvas.point.x - 40, y: frame.y + pending.canvas.point.y - 40, w: 80, h: 80 })
     ++hitSequence.current; comments.open(`pending:${pending.id}`)
-  })
-  const reviewSurface = useMemo<TileReviewSurface>(() => ({
-    inspect: () => {},
-    resolveSelectors: (_items, receive) => receive([]),
-    subscribePending: (listener) => { reviewListeners.current.pending.add(listener); return () => { reviewListeners.current.pending.delete(listener) } },
-    subscribeQuestions: (listener) => {
-      reviewListeners.current.questions.add(listener)
-      listener(reviewState.current.questionsPage, questionSnapshot())
-      return () => { reviewListeners.current.questions.delete(listener) }
-    },
-    revealSelector: (selector) => reveal(selector),
-  }), [])
-  const pendingQueue = useMemo<PendingQueueApi | null>(() => {
-    if (!webPaneId) return null
-    const api = createWebPanesApi(token)
-    // The drawer's questions live on the manifest page, so it always sees that page's sent answers.
-    const ours = (work: Promise<WebPanePendingSnapshot>) => work.then((snapshot) => ({ ...snapshot, sent: reviewState.current.sent }))
-    return {
-      list: () => api.pendingNotes(webPaneId, questionsPage),
-      add: (note) => ours(api.addPendingNote(webPaneId, note)),
-      addResponse: (pageUrl, response) => ours(api.addPendingResponse(webPaneId, pageUrl, response)),
-      update: (noteId, revision, change) => ours(api.updatePendingNote(webPaneId, noteId, revision, change)),
-      upload: (noteId, revision, file) => ours(api.uploadPendingAttachment(webPaneId, noteId, revision, file)),
-      removeAttachment: (noteId, revision, attachmentId) => ours(api.removePendingAttachment(webPaneId, noteId, revision, attachmentId)),
-      attachmentUrl: (attachmentId) => api.pendingAttachmentUrl(webPaneId, attachmentId),
-      remove: (noteId) => ours(api.removePendingNote(webPaneId, noteId)),
-      send: (targets, options) => ours(api.sendPendingNotes(webPaneId, targets, options)),
-      dismissDropped: () => ours(api.dismissPendingDropped(webPaneId)),
-    }
-  }, [webPaneId, token, questionsPage])
+  }, answerable)
   const pins = readOnly ? [] : canvasPins(comments.draft, comments.queued, comments.threads)
   const activePin = pins.find((pin) => pin.id === comments.active)
   const activeNote = comments.queued.find((note) => `pending:${note.id}` === comments.active)

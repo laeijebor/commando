@@ -5,7 +5,7 @@ export const CANVAS_ANNOTATION_KINDS = ['development', 'important', 'design', 'q
 export type CanvasPage = { id: string; title: string }
 export type CanvasFrame = {
   id: string; title: string; platform?: string; src: string; x: number; y: number; w: number; h: number; page?: string
-  focus?: number; interactive?: boolean; interactiveNote?: string
+  slide?: string; focus?: number; interactive?: boolean; interactiveNote?: string
   variant?: { title: string; context?: string; description?: string }
 }
 export type CanvasSection = {
@@ -20,7 +20,7 @@ export type CanvasAnnotation = {
   key?: string; options?: string[]; multiple?: boolean; answer?: string
 }
 export type CanvasManifest = { title: string; pages: CanvasPage[]; sections: CanvasSection[]; frames: CanvasFrame[]; annotations: CanvasAnnotation[] }
-export type CanvasManifestResult = { manifest: CanvasManifest; errors: string[] }
+export type CanvasManifestResult = { manifest: CanvasManifest; errors: string[]; warnings?: string[]; deck?: { title: string; size: '16:9' | 'a4'; width: number; height: number; theme: string; slides: { id: string; title: string; notes: string }[] } }
 /** A frame or note move. `fixed` applies to notes only and defaults to true. */
 export type CanvasMove = { id: string; x: number; y: number; fixed?: boolean }
 export type CanvasStatusChange = { id: string; status: CanvasSection['status'] }

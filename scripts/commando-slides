@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Open a deck through the canvas registry and keep all feedback subcommands.
+set -euo pipefail
+canvas="$(cd "$(dirname "$0")" && pwd)/commando-canvas"
+case "${1:-}" in
+  threads|reply|resolve|spotlight) exec "$canvas" "$@" ;;
+esac
+[ $# -ge 1 ] && [ $# -le 2 ] || { echo 'usage: commando-slides <deck-folder> [deck.html]' >&2; exit 2; }
+exec "$canvas" "$1" --manifest "${2:-deck.html}"

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Presenter view</title>
+<link rel="stylesheet" href="assets/tile.css">
+<style>
+  body { background: #050409; }
+  .pv { display: grid; grid-template-columns: 1fr 360px; grid-template-rows: auto 1fr auto; gap: 18px; height: 100%; padding: 20px 24px; }
+  .top { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
+  .top .time { font: 600 22px/1 var(--mono); color: var(--text); }
+  .main { position: relative; container-type: size; display: grid; place-items: center; }
+  .main .screen { width: min(100cqw, 100cqh * 16 / 9); }
+  .side { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+  .side h6 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .nextup { aspect-ratio: 16/9; position: relative; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 1px var(--border-mid); }
+  .nextup iframe { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; border: 0; transform: scale(.28125); transform-origin: 0 0; }
+  .notesbox { flex: 1; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 14px 16px; font-size: 17px; line-height: 1.5; color: var(--text-soft); }
+  .notesbox b { color: var(--text); }
+  .foot { grid-column: 1 / -1; display: flex; gap: 14px; align-items: center; color: var(--muted); font-size: 12px; }
+  .dots { display: flex; gap: 6px; }
+  .dots i { width: 28px; height: 4px; border-radius: 3px; background: var(--border-mid); }
+  .dots i.on { background: var(--accent); }
+</style></head>
+<body><div class="pv">
+  <div class="top" data-canvas-label="Presenter header"><span class="time" data-canvas-label="Timer">04:12</span><span>elapsed</span><span style="flex:1"></span><span>Presenting on “Studio Display” · audience sees slide only</span><button class="btn">Exit <span class="kbd">Esc</span></button></div>
+  <div class="main"><div class="screen" data-canvas-label="Current slide"><iframe src="s5.html"></iframe></div></div>
+  <div class="side">
+    <div><h6>Next · 6 / 8</h6><div class="nextup" data-canvas-label="Next slide"><iframe src="s6.html"></iframe></div></div>
+    <div class="notesbox" data-canvas-label="Speaker notes"><h6>Notes</h6><b>Rebuilt from the table in the PR</b> so it re-themes; the original PNG is in the evidence folder.<br><br>Point at the 4G row: only 3/min, but each one cost a 34 MB download on mobile data.</div>
+  </div>
+  <div class="foot"><div class="dots"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></div><span style="flex:1"></span><span class="kbd">←</span><span class="kbd">→</span> move <span class="kbd">G</span> grid <span class="kbd">B</span> black screen <span class="kbd">N</span> notes</div>
+</div></body></html>

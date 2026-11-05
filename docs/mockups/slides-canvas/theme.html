@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Theme picker</title>
+<link rel="stylesheet" href="assets/tile.css">
+<style>
+  .menu { right: 250px; top: 84px; width: 420px; padding: 10px; }
+  .opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 4px; }
+  .opt { border-radius: 10px; border: 1px solid var(--border-mid); overflow: hidden; background: var(--surface); }
+  .opt.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .opt .pv { position: relative; height: 70px; overflow: hidden; }
+  .opt .pv iframe { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; border: 0; transform: scale(.1); transform-origin: 0 0; pointer-events: none; }
+  .opt .nm { padding: 7px 9px; font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; }
+  .opt .nm small { color: var(--muted); font-weight: 500; }
+  .match { margin: 8px 4px 2px; padding: 12px; border-radius: 10px; border: 1px dashed var(--border-strong); }
+  .match h5 { margin: 0 0 3px; font-size: 13px; }
+  .match p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+  .src { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .input { display: flex; gap: 8px; }
+  .input span { flex: 1; padding: 6px 10px; border-radius: 7px; border: 1px solid var(--border-mid); background: var(--surface-deep); color: var(--text-soft); font: 12px var(--mono); }
+  .tokens { display: flex; gap: 6px; margin-top: 10px; align-items: center; font-size: 11.5px; color: var(--muted); }
+  .tokens i { width: 22px; height: 22px; border-radius: 6px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
+</style></head>
+<body><div class="tile">
+  <div data-chrome="slides" data-counter="4 / 8" data-open="theme" data-theme="Harbor" data-swatch="#ff6a3d"></div>
+  <div class="stage"><div class="screen"><iframe src="harbor-4.html"></iframe></div></div>
+  <div class="strip" data-strip="4" data-deck-theme="brand-harbor"></div>
+  <div class="pop menu" data-canvas-label="Theme menu">
+    <div class="head">Deck theme</div>
+    <div class="opts">
+      <div class="opt" data-canvas-label="Ink theme option"><div class="pv"><iframe src="s4.html"></iframe></div><div class="nm">Ink <small>default</small></div></div>
+      <div class="opt" data-canvas-label="Paper theme option"><div class="pv"><iframe src="paper-4.html"></iframe></div><div class="nm">Paper <small>print</small></div></div>
+      <div class="opt on" data-canvas-label="Brand theme option"><div class="pv"><iframe src="harbor-4.html"></iframe></div><div class="nm">Harbor <small>brand</small></div></div>
+    </div>
+    <div class="match" data-canvas-label="Match a brand">
+      <h5>Match a brand</h5>
+      <p>The agent reads the source, writes a theme file (colours, type, radius, logo) and checks contrast.</p>
+      <div class="src"><span class="chip c">This repo's tokens</span><span class="chip">Website URL</span><span class="chip">Screenshot</span><span class="chip">Figma file</span></div>
+      <div class="input"><span>https://harbor.example.com</span><button class="btn primary">Ask agent</button></div>
+      <div class="tokens"><i style="background:#fff6ef"></i><i style="background:#10313a"></i><i style="background:#ff6a3d"></i><i style="background:#1f9d74"></i><span>Avenir Next 800 · radius 28 · ⚓ mark · contrast AA ✓</span></div>
+    </div>
+  </div>
+</div>
+<script src="assets/chrome.js"></script>
+</body></html>

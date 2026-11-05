@@ -9,10 +9,10 @@ import type { CanvasFrame } from '../shared/canvas-manifest'
 import { readCanvasLabels, type CanvasLabelReports } from './canvasLabels'
 import { readCanvasHotspots, type CanvasHotspotReports } from './canvasHotspots'
 
-export function canvasFrameUrl(baseUrl: string, frame: CanvasFrame, revision = 0): string {
-  const query = new URLSearchParams({ 'canvas-frame': frame.id })
+export function canvasFrameUrl(baseUrl: string, frame: CanvasFrame, revision = 0, extra: Record<string, string> = {}): string {
+  const query = new URLSearchParams({ ...extra, 'canvas-frame': frame.id })
   if (revision) query.set('canvas-reload', String(revision))
-  return baseUrl + encodeCanvasPath(frame.src) + '?' + query
+  return baseUrl + encodeCanvasPath(frame.src) + '?' + query + (frame.slide ? '#' + encodeURIComponent(frame.slide) : '')
 }
 
 export type CanvasFrameInput = { type: 'goto'; target: string } | { type: 'escape' } | { type: 'zoom'; deltaY: number; deltaMode: number; x: number; y: number }
@@ -23,7 +23,7 @@ export function readCanvasFrameInput(data: Record<string, unknown>): CanvasFrame
   return null
 }
 
-export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, revisions: Record<string, number>, onRedline?: (frameId: string, payload: unknown, pageUrl: string) => void, input?: { live: string | null; onInput: (frameId: string, input: CanvasFrameInput) => void }) {
+export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, revisions: Record<string, number>, onRedline?: (frameId: string, payload: unknown, pageUrl: string) => void, input?: { live: string | null; onInput: (frameId: string, input: CanvasFrameInput) => void }, extra?: Record<string, string>) {
   const relay = useRef(onRedline)
   const interaction = useRef(input)
   const pending = useRef<WebPanePendingSnapshot>({ notes: [], knownUpTo: 0, dropped: 0 })
@@ -35,14 +35,14 @@ export function useCanvasFrameBridge(frames: CanvasFrame[], baseUrl: string, rev
   const [reports, setReports] = useState<CanvasLabelReports>({})
   const [hotspots, setHotspots] = useState<CanvasHotspotReports>({})
   useLayoutEffect(() => {
-    const next = new Map(frames.map((frame) => [frame.id, canvasFrameUrl(baseUrl, frame, revisions[frame.id])]))
+    const next = new Map(frames.map((frame) => [frame.id, canvasFrameUrl(baseUrl, frame, revisions[frame.id], extra)]))
     const previous = sources.current
     const unchanged = ([id]: [string, unknown]) => next.has(id) && next.get(id) === previous.get(id)
     setReports((current) => Object.fromEntries(Object.entries(current).filter(unchanged)))
     setHotspots((current) => Object.fromEntries(Object.entries(current).filter(unchanged)))
     sources.current = next
     for (const request of requests.current.values()) if (next.get(request.frameId) !== request.url) request.finish(null)
-  }, [frames, baseUrl, revisions])
+  }, [frames, baseUrl, revisions, extra])
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       const data = event.data
