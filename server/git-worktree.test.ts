@@ -481,6 +481,27 @@ describe('GitWorktreeService.removeWorktree', () => {
     }
   })
 
+  it('checks for gitlinks in a repository too large for an ordinary git output buffer', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'big')
+    try {
+      run(base, 'init', '-q', main)
+      // 30,000 index entries make `ls-files --stage` print about 3 MB.
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: main, input: 'x', encoding: 'utf8' }).trim()
+      const entries = Array.from({ length: 30_000 }, (_, i) => `100644 ${blob} 0\tpackages/module-${Math.floor(i / 1000)}/src/component-file-${i}.ts`).join('\n')
+      execFileSync('git', ['update-index', '--index-info'], { cwd: main, input: `${entries}\n` })
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'big')
+      run(main, 'worktree', 'add', '-q', '-b', 'big', linked)
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).resolves.toEqual(worktree)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  }, 120_000)
+
   it('checks out an existing branch again under any name git accepts', async () => {
     const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
     const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })

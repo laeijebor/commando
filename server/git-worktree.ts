@@ -8,6 +8,8 @@ const COMMAND_TIMEOUT_MS = 5_000
 const WORKTREE_TIMEOUT_MS = 30_000
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const BUFFER_BYTES = 1024 * 1024
+/** About 3 million tracked files at roughly 85 bytes each. */
+const INDEX_LISTING_BYTES = 256 * 1024 * 1024
 const DEFAULT_BRANCH_CANDIDATES = ['main', 'master']
 const REMOTE = 'origin'
 /** Conservative subset of `git check-ref-format --branch`. */
@@ -259,7 +261,8 @@ export class GitWorktreeService {
     try {
       // A gitlink (submodule, or a nested repository someone staged) keeps only a commit id: its files and
       // objects live in the folder that removal deletes, so such a worktree is never saved this way.
-      const gitlink = (await this.git(worktree.root, ['ls-files', '--stage'])).stdout.split('\n').find((line) => line.startsWith('160000 '))
+      // One line per tracked file, so a large repository needs far more room than other commands.
+      const gitlink = (await this.git(worktree.root, ['ls-files', '--stage'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\n').find((line) => line.startsWith('160000 '))
       if (gitlink) throw new GitWorktreeError('exec', `Worktree contains a submodule or nested repository at ${gitlink.split('\t')[1]}`)
       const before = await status()
       if (!before.trim()) return worktree
@@ -390,12 +393,12 @@ export class GitWorktreeService {
     }
   }
 
-  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<{ stdout: string; stderr: string }> {
+  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES): Promise<{ stdout: string; stderr: string }> {
     const options: GitExecutorOptions = {
       cwd,
       encoding: 'utf8',
       env: { ...this.environment, GIT_TERMINAL_PROMPT: '0' },
-      maxBuffer: BUFFER_BYTES,
+      maxBuffer,
       shell: false,
       timeout,
       windowsHide: true,
