@@ -323,6 +323,18 @@ describe('session management API', () => {
     expect(recordedAt).toBeLessThan(remove.mock.invocationCallOrder[0])
   })
 
+  it('archiving a paused session records the worktree on an archive that had to keep it', async () => {
+    // Pause A, archive B (B keeps the worktree because A will reopen in it), then archive paused A.
+    const { api, archives, remove, summary } = archiveHarness({ paused: true })
+    const keptB = { id: '44444444-4444-4444-8444-444444444444', name: 'B', createdAt: 0, windowCount: 1, paneCount: 1 }
+    vi.mocked(archives.list).mockResolvedValue([summary, keptB])
+    vi.mocked(archives.get).mockImplementation(async (id) => ({ ...(id === keptB.id ? keptB : summary), windows: [{ panes: [{ path: `${worktree.root}/app` }] }] }) as never)
+    const response = await post(`${await startApi(api)}/api/session-management/archives/${summary.id}/archive`, {})
+    expect(response.status).toBe(200)
+    expect(vi.mocked(archives.update)).toHaveBeenCalledWith(keptB.id, { worktree: { path: worktree.root, mainRoot: '/repo', branch: 'feature' } })
+    expect(remove).toHaveBeenCalled()
+  })
+
   it('pauses a session: stops it and its helpers, holds its place and keeps the worktree', async () => {
     const { api, archives, remove, actions, preferences, commitWorkInProgress } = archiveHarness()
     const response = await post(`${await startApi(api)}/api/session-management/sessions/%241/pause`, { confirmSessionId: '$1' })
