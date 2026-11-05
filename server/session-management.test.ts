@@ -309,6 +309,18 @@ describe('session management API', () => {
     expect(remove).not.toHaveBeenCalled()
   })
 
+  it('lets another archived session in the worktree check it out again when restored', async () => {
+    const { api, archives, remove, summary } = archiveHarness()
+    const other = { id: '33333333-3333-4333-8333-333333333333', name: 'older', createdAt: 0, windowCount: 1, paneCount: 1 }
+    vi.mocked(archives.list).mockResolvedValue([summary, other])
+    vi.mocked(archives.get).mockImplementation(async (id) => ({ ...(id === other.id ? other : summary), windows: [{ panes: [{ path: worktree.root }] }] }) as never)
+    const response = await post(`${await startApi(api)}/api/session-management/sessions/%241/archive`, { confirmSessionId: '$1' })
+    expect(response.status).toBe(200)
+    expect(vi.mocked(archives.update)).toHaveBeenCalledWith(other.id, { worktree: { path: worktree.root, mainRoot: '/repo', branch: 'feature' } })
+    expect(vi.mocked(archives.update)).not.toHaveBeenCalledWith(summary.id, { worktree: { path: worktree.root, mainRoot: '/repo', branch: 'feature' } })
+    expect(remove).toHaveBeenCalled()
+  })
+
   it('pauses a session: stops it and its helpers, holds its place and keeps the worktree', async () => {
     const { api, archives, remove, actions, preferences, commitWorkInProgress } = archiveHarness()
     const response = await post(`${await startApi(api)}/api/session-management/sessions/%241/pause`, { confirmSessionId: '$1' })
