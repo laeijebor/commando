@@ -8,6 +8,8 @@ const COMMAND_TIMEOUT_MS = 5_000
 const WORKTREE_TIMEOUT_MS = 30_000
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const BUFFER_BYTES = 1024 * 1024
+/** About 3 million tracked files at roughly 85 bytes each. */
+const INDEX_LISTING_BYTES = 256 * 1024 * 1024
 const DEFAULT_BRANCH_CANDIDATES = ['main', 'master']
 const REMOTE = 'origin'
 /** Conservative subset of `git check-ref-format --branch`. */
@@ -190,7 +192,8 @@ export class GitWorktreeService {
   }
 
   async createWorktree(input: CreateWorktreeInput): Promise<CreateWorktreeResult> {
-    const branch = validateBranchName(input.branch)
+    // An existing branch may use any name git accepts (`feature/c++`); only names we pick follow the conservative rule.
+    const branch = input.existingBranchOnly ? await this.validateExistingBranchName(input.mainRoot, input.branch) : validateBranchName(input.branch)
     if (!path.isAbsolute(input.path)) throw new GitWorktreeError('bad-path', 'Worktree path must be absolute')
     const target = path.normalize(input.path)
     const cwd = input.mainRoot
@@ -274,6 +277,11 @@ export class GitWorktreeService {
     }
     const status = async () => (await this.git(worktree.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).stdout
     try {
+      // A gitlink (submodule, or a nested repository someone staged) keeps only a commit id: its files and
+      // objects live in the folder that removal deletes, so such a worktree is never saved this way.
+      // One line per tracked file, so a large repository needs far more room than other commands.
+      const gitlink = (await this.git(worktree.root, ['ls-files', '--stage'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\n').find((line) => line.startsWith('160000 '))
+      if (gitlink) throw new GitWorktreeError('exec', `Worktree contains a submodule or nested repository at ${gitlink.split('\t')[1]}`)
       const before = await status()
       if (!before.trim()) return worktree
       const lines = before.split('\n')
@@ -330,6 +338,13 @@ export class GitWorktreeService {
     }
     void this.removeTree(aside)
       .catch((error) => console.warn(`[commando] Could not delete removed worktree folder ${aside}`, error))
+  }
+
+  private async validateExistingBranchName(cwd: string, value: unknown): Promise<string> {
+    if (typeof value !== 'string' || !value || value.startsWith('-')) throw new GitWorktreeError('bad-branch', 'Branch name is not a valid git ref')
+    try { await this.git(cwd, ['check-ref-format', '--branch', value]) }
+    catch { throw new GitWorktreeError('bad-branch', 'Branch name is not a valid git ref') }
+    return value
   }
 
   private async registeredWorktree(mainRoot: string, root: string) {
@@ -396,12 +411,12 @@ export class GitWorktreeService {
     }
   }
 
-  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<{ stdout: string; stderr: string }> {
+  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES): Promise<{ stdout: string; stderr: string }> {
     const options: GitExecutorOptions = {
       cwd,
       encoding: 'utf8',
       env: { ...this.environment, GIT_TERMINAL_PROMPT: '0' },
-      maxBuffer: BUFFER_BYTES,
+      maxBuffer,
       shell: false,
       timeout,
       windowsHide: true,
