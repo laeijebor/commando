@@ -254,15 +254,22 @@ export class GitWorktreeService {
     if (worktree.branch === 'HEAD' || !worktree.branch) {
       throw new GitWorktreeError('exec', 'Worktree has a detached HEAD, so a work-in-progress commit would not be kept on any branch')
     }
+    const status = async () => (await this.git(worktree.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).stdout
     try {
-      const status = (await this.git(worktree.root, ['status', '--porcelain=v1', '--untracked-files=all'])).stdout
-      if (!status.trim()) return worktree
-      if (status.split('\n').some((line) => /^(?:DD|AU|UD|UA|DU|AA|UU) /u.test(line))) {
+      const before = await status()
+      if (!before.trim()) return worktree
+      const lines = before.split('\n')
+      if (lines.some((line) => /^(?:DD|AU|UD|UA|DU|AA|UU) /u.test(line))) {
         throw new GitWorktreeError('exec', 'Worktree has unresolved merge conflicts')
       }
+      // git lists an untracked folder holding its own repository as one path ending in a slash, and would commit only a pointer to it.
+      const nested = lines.find((line) => /^\?\? .*\/"?$/u.test(line))
+      if (nested) throw new GitWorktreeError('exec', `Worktree contains another git repository at ${nested.slice(3)}`)
       await this.git(worktree.root, ['add', '--all'], WORKTREE_TIMEOUT_MS)
       // No hooks or signing: either could block or prompt with nobody watching.
-      await this.git(worktree.root, ['-c', 'commit.gpgsign=false', 'commit', '--no-verify', '--quiet', '-m', message], WORKTREE_TIMEOUT_MS)
+      await this.git(worktree.root, ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '--quiet', '-m', message], WORKTREE_TIMEOUT_MS)
+      // Work inside submodules is not part of this commit; leave such a worktree in place.
+      if ((await status()).trim()) throw new GitWorktreeError('exec', 'Some changes could not be committed, such as work inside a submodule')
       const head = (await this.git(worktree.root, ['rev-parse', '--verify', 'HEAD'])).stdout.trim()
       return { ...worktree, head }
     } catch (error) {

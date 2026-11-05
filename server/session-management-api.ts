@@ -259,11 +259,15 @@ export class SessionManagementApi {
 
         const prepareWorktreeDeletion = async () => {
           if (!this.dependencies.prepareSessionWorktreeDeletion) throw new HttpError(501, 'Worktree deletion is not available')
-          try { return await this.dependencies.prepareSessionWorktreeDeletion(route.sessionId) }
+          let plan: SessionWorktreeDeletionPlan
+          try { plan = await this.dependencies.prepareSessionWorktreeDeletion(route.sessionId) }
           catch (error) {
             if (error instanceof SessionWorktreeConflictError) throw new HttpError(409, error.message)
             throw error
           }
+          const pausedUser = await this.pausedSessionUsing(plan.worktree.root)
+          if (pausedUser) throw new HttpError(409, `${pausedUser}; resume or archive it first`)
+          return plan
         }
         if (route.action === 'delete-preview') {
           if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
@@ -356,6 +360,18 @@ export class SessionManagementApi {
     }
   }
 
+  /** Why a worktree must stay: a paused session will reopen in it. Pane paths are resolved by tmux, as the worktree root is by git. */
+  private async pausedSessionUsing(worktreeRoot: string, exceptArchiveId?: string): Promise<string | undefined> {
+    for (const summary of await this.archives.list()) {
+      if (!summary.paused || summary.id === exceptArchiveId) continue
+      const archive = await this.archives.get(summary.id).catch(() => undefined)
+      if (archive?.windows.some((window) => window.panes.some((pane) => pane.path === worktreeRoot || pane.path.startsWith(`${worktreeRoot}/`)))) {
+        return `Paused session “${summary.name}” still uses this worktree`
+      }
+    }
+    return undefined
+  }
+
   /** Helper sessions (dev servers and the like) for a worktree stop with the session that owns it. */
   private async closeBackgroundSessions(plan: SessionWorktreeDeletionPlan | undefined): Promise<void> {
     for (const session of plan?.auxiliarySessions ?? []) {
@@ -382,6 +398,8 @@ export class SessionManagementApi {
     plan: () => Promise<{ plan?: SessionWorktreeDeletionPlan; kept?: string }>,
   ): Promise<{ archive: ArchiveSummary; worktreeKept?: string }> {
     const { plan: removal, kept } = await plan()
+    const pausedUser = removal && await this.pausedSessionUsing(removal.worktree.root, archive.id)
+    if (pausedUser) return { archive: archive.paused ? await this.archives.update(archive.id, {}) : archive, worktreeKept: pausedUser }
     if (!removal) return { archive: archive.paused ? await this.archives.update(archive.id, {}) : archive, ...(kept ? { worktreeKept: kept } : {}) }
     await this.closeBackgroundSessions(removal)
     let current = removal.worktree

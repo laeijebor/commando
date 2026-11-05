@@ -908,6 +908,21 @@ describe('SessionTree', () => {
       await waitFor(() => expect(onSelectSession).toHaveBeenCalledWith('$9'))
     })
 
+    it('saves repository order without a paused row whose name is taken', async () => {
+      const duplicate = { id: 'paused-dup', name: 'Team Battles', createdAt: 1, windowCount: 1, paneCount: 1, paused: true as const, repo: { root: SAVE_ALL.root, name: 'Save-All' } }
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      sessionApi.listArchives.mockResolvedValue([duplicate])
+      renderTree()
+      await screen.findAllByRole('button', { name: 'Resume paused session Team Battles' })
+      const row = (name: string) => screen.getAllByRole('article').find((article) => article.textContent?.includes(name) && !article.classList.contains('paused'))!
+      fireEvent.dragStart(row('Coins everywhere'))
+      fireEvent.drop(row('Team Battles'), { clientY: 0 })
+      await waitFor(() => expect(sessionApi.savePreferences).toHaveBeenCalled())
+      const saved = sessionApi.savePreferences.mock.calls.at(-1)![0] as SessionTreePreferences
+      expect(saved.repositorySessionIds).toEqual(expect.arrayContaining(['$2', '$1']))
+      expect(saved.repositorySessionIds?.some((id) => id.startsWith('paused:'))).toBe(false)
+    })
+
     it('archives a paused session from its menu', async () => {
       const pausedArchive = { id: 'paused-id', name: 'Gone fishing', createdAt: 1, windowCount: 1, paneCount: 1, paused: true as const }
       sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
@@ -928,15 +943,19 @@ describe('SessionTree', () => {
       const actions = { current: null as SessionActions | null }
       renderTree({ actionsRef: actions })
       await screen.findByRole('button', { name: 'Actions for Coins everywhere' })
-      await act(() => actions.current!.archiveSession('$2', null))
+      await act(() => actions.current!.archiveSession('$1', null))
       await act(() => actions.current!.deleteSession('$1', false, null))
       expect(confirm).not.toHaveBeenCalled()
+      expect(sessionApi.archiveSession).toHaveBeenCalledWith('$1')
+      // A worktree's ignored files go with it, so archiving one always asks.
+      await act(() => actions.current!.archiveSession('$2', null))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('ignored files'))
       expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2')
       expect(sessionApi.deleteSession).toHaveBeenCalledWith('$1', false, [])
       confirm.mockReturnValue(false)
       await act(() => actions.current!.archiveSession('$2', 'Two processes will stop'))
       expect(confirm).toHaveBeenLastCalledWith('Two processes will stop')
-      expect(sessionApi.archiveSession).toHaveBeenCalledTimes(1)
+      expect(sessionApi.archiveSession).toHaveBeenCalledTimes(2)
       await act(() => actions.current!.deleteSession('$2', true, 'Two processes will stop'))
       expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Two processes will stop\n\nDelete tmux session “Coins everywhere” and its linked worktree\?.*Uncommitted changes/s))
       await act(() => actions.current!.deleteSession('$2', true, null))

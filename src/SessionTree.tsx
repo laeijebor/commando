@@ -141,6 +141,18 @@ function suggestedDirectories(sessionIds: readonly string[], panes: readonly Tmu
     .map(([directory]) => directory)
 }
 
+/** A paused row keyed by its archive (`paused:…`) has no place the daemon can store; ordering around it saves without it. */
+function withoutUnsavedPausedIds(preferences: SessionTreePreferences): SessionTreePreferences {
+  const saved = (ids: readonly string[]) => ids.filter((id) => !id.startsWith('paused:'))
+  return {
+    ...preferences,
+    groups: preferences.groups.map((group) => ({ ...group, sessionIds: saved(group.sessionIds) })),
+    ungroupedSessionIds: saved(preferences.ungroupedSessionIds),
+    ...(preferences.repositorySessionIds ? { repositorySessionIds: saved(preferences.repositorySessionIds) } : {}),
+    ...(preferences.repositoryGroups ? { repositoryGroups: preferences.repositoryGroups.map((group) => ({ ...group, sessionIds: saved(group.sessionIds) })) } : {}),
+  }
+}
+
 export function SessionTree(props: Props) {
   const api = useRef(createSessionManagementApi(props.token)).current
   const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
@@ -198,7 +210,8 @@ export function SessionTree(props: Props) {
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('blur', close) }
   }, [menu])
 
-  const save = (next: SessionTreePreferences) => {
+  const save = (unsaved: SessionTreePreferences) => {
+    const next = withoutUnsavedPausedIds(unsaved)
     const saveVersion = ++preferenceSaveVersion.current
     preferencesRef.current = next
     setPreferences(next)
@@ -413,7 +426,10 @@ export function SessionTree(props: Props) {
 
   const archiveSession = async (sessionId: string, confirmation?: string | null, onError: (message: string) => void = setError) => {
     const label = sessionMap.get(sessionId)?.name ?? sessionId
-    const prompt = confirmation === undefined ? `Archive tmux session “${label}”? Its running processes will stop. ${ARCHIVE_RESTORE_NOTE}` : confirmation
+    const fallback = `Archive tmux session “${label}”? Its running processes will stop. ${ARCHIVE_RESTORE_NOTE}`
+    // Removing a worktree deletes its ignored files, so that is always confirmed.
+    const inWorktree = props.panes.some((pane) => pane.sessionId === sessionId && pane.repo?.isWorktree)
+    const prompt = confirmation === undefined || (confirmation === null && inWorktree) ? fallback : confirmation
     if (prompt !== null && !window.confirm(prompt)) return
     await stash(label, () => api.archiveSession(sessionId), onError, 'Unable to archive session')
   }

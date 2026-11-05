@@ -457,6 +457,25 @@ describe('GitWorktreeService.removeWorktree', () => {
     }
   })
 
+  it('refuses a work-in-progress commit that would only point at a nested repository', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    try {
+      run(base, 'init', '-q', main)
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      run(linked, 'init', '-q', 'vendor clone')
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: expect.stringContaining('another git repository at "vendor clone/"') })
+      expect(run(linked, 'rev-parse', 'HEAD').trim()).toBe(worktree.head)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it('refuses a work-in-progress commit on a detached HEAD', async () => {
     await expect(new GitWorktreeService(fakeGit([]).execute).commitWorkInProgress({ root: '/w', mainRoot: '/m', branch: 'HEAD', head: 'abc' }, 'wip'))
       .rejects.toMatchObject({ message: expect.stringMatching(/detached HEAD/) })
