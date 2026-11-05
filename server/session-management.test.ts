@@ -318,7 +318,9 @@ describe('session management API', () => {
     expect(response.status).toBe(200)
     expect(vi.mocked(archives.update)).toHaveBeenCalledWith(other.id, { worktree: { path: worktree.root, mainRoot: '/repo', branch: 'feature' } })
     expect(vi.mocked(archives.update)).not.toHaveBeenCalledWith(summary.id, { worktree: { path: worktree.root, mainRoot: '/repo', branch: 'feature' } })
-    expect(remove).toHaveBeenCalled()
+    // Recorded before the folder goes, so a failed removal never leaves an archive without a way back.
+    const recordedAt = vi.mocked(archives.update).mock.invocationCallOrder[vi.mocked(archives.update).mock.calls.findIndex(([id]) => id === other.id)]
+    expect(recordedAt).toBeLessThan(remove.mock.invocationCallOrder[0])
   })
 
   it('pauses a session: stops it and its helpers, holds its place and keeps the worktree', async () => {
