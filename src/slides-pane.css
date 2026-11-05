@@ -42,3 +42,6 @@
 .slides-question .canvas-q-options button.is-picked { background: var(--cyan); color: var(--bg); }
 .slides-question .canvas-q textarea { color: var(--text); background: var(--surface-deep); border-color: var(--border-mid); font-size: 12px; }
 .slides-question .canvas-q-link { color: var(--cyan); font-size: 12px; }
+
+/* Present without the Fullscreen API (e.g. the desktop app's WKWebView): cover the window instead. */
+.slides-pane.is-presenting:not(:fullscreen) { position: fixed; inset: 0; z-index: 10000; background: #000; }
