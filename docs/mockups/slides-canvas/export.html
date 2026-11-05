@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Export and publish</title>
+<link rel="stylesheet" href="assets/tile.css">
+<style>
+  .stage::after { content: ""; position: absolute; inset: 0; background: rgba(5,4,10,.45); }
+  .menu { right: 12px; top: 84px; width: 340px; }
+  .publish { right: 364px; top: 300px; width: 380px; padding: 16px; }
+  .publish h4 { margin: 0 0 4px; font-size: 14px; }
+  .publish p { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+  .url { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--surface-deep); border: 1px solid var(--border-mid); font: 12px var(--mono); color: var(--cyan); }
+  .url span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .files { display: grid; gap: 6px; margin: 12px 0; }
+  .files div { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-soft); }
+  .files small { color: var(--muted); font-family: var(--mono); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .ok { color: var(--green); font-weight: 600; font-size: 12px; }
+  .progress { height: 4px; border-radius: 4px; background: var(--border); overflow: hidden; margin-top: 10px; }
+  .progress i { display: block; height: 100%; width: 100%; background: var(--green); }
+</style></head>
+<body><div class="tile">
+  <div data-chrome="slides" data-counter="4 / 8" data-open="export"></div>
+  <div class="stage"><div class="screen"><iframe src="s4.html"></iframe></div></div>
+  <div class="strip" data-strip="4"></div>
+
+  <div class="pop menu" data-canvas-label="Export menu">
+    <div class="head">Download</div>
+    <div class="item" data-canvas-label="Export PDF"><span class="ic">📄</span><span><b>PDF</b><small>8 pages · 16:9 · vector text, links kept</small></span><span class="kbd">⌘P</span></div>
+    <div class="item" data-canvas-label="Export PowerPoint"><span class="ic">📊</span><span><b>PowerPoint (.pptx)</b><small>One picture per slide + speaker notes</small></span><span class="chip w">v1</span></div>
+    <div class="item" data-canvas-label="Export PNGs"><span class="ic">🖼</span><span><b>Slide images</b><small>PNG per slide at 2×, zipped</small></span></div>
+    <div class="item" data-canvas-label="Export HTML"><span class="ic">⟨⟩</span><span><b>Single HTML file</b><small>Self-contained, images inlined, works offline</small></span></div>
+    <div class="item" data-canvas-label="Export one-pager"><span class="ic">📃</span><span><b>One-pager PDF</b><small>A4 summary of the same deck</small></span></div>
+    <hr>
+    <div class="head">Share</div>
+    <div class="item hi" data-canvas-label="Publish to evidence gallery"><span class="ic">⬆</span><span><b>Publish to evidence gallery</b><small>Unlisted link · deck, PDF and PPTX</small></span><span class="kbd">⇧⌘E</span></div>
+    <div class="item" data-canvas-label="Attach to PR"><span class="ic">⎇</span><span><b>Add to PR #156 description</b><small>Gallery link + cover image</small></span></div>
+  </div>
+
+  <div class="pop publish" data-canvas-label="Published card">
+    <div class="row" style="justify-content:space-between"><h4>Published</h4><span class="ok">● live</span></div>
+    <p>Anyone with the link can view. Re-publishing replaces it at the same URL.</p>
+    <div class="url"><span>evidence-gallery.‹your-subdomain›.workers.dev/d/reconnect-loop-fix</span><button class="btn" style="height:24px">Copy</button></div>
+    <div class="files">
+      <div>deck.html <small>viewer, keys ←/→</small></div>
+      <div>reconnect-loop-fix.pdf <small>2.1 MB</small></div>
+      <div>reconnect-loop-fix.pptx <small>3.4 MB</small></div>
+      <div>cover.png <small>og:image for link previews</small></div>
+    </div>
+    <div class="row"><button class="btn">Open</button><button class="btn">Unpublish</button><span style="flex:1"></span><button class="btn primary">Add link to PR</button></div>
+    <div class="progress"><i></i></div>
+  </div>
+</div>
+<script src="assets/chrome.js"></script>
+</body></html>

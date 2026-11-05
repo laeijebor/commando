@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from 'n
 import { dirname, join } from 'node:path'
 import { CANVAS_STATUSES, canvasRelativePath, parseCanvasManifest, type CanvasWriteResult } from '../shared/canvas-manifest.js'
 import { RedlineArtifactError, type RedlineArtifactRegistry } from './redline-artifacts.js'
+import { isDeckPath } from '../shared/deck.js'
 
 export const CANVAS_WRITE_TEMP_PREFIX = '.commando-canvas-'
 export const canvasContentHash = (text: string | Buffer): string => createHash('sha256').update(text).digest('hex')
@@ -42,6 +43,7 @@ function rewriteJson(text: string, updates: Map<string, unknown>): string {
 export function writeCanvas(artifacts: RedlineArtifactRegistry, artifactId: string, body: Record<string, unknown>, kind: 'frames' | 'annotations' | 'sections'): CanvasWriteResult {
   const fail = (status: number, message: string): never => { throw new RedlineArtifactError(status, message) }
   const manifest = canvasRelativePath(body.manifest)
+  if (isDeckPath(manifest)) return fail(400, 'Deck layout and section status are read-only; edit the deck HTML instead')
   if (!manifest || !manifest.endsWith('.json')) return fail(400, 'manifest must be a relative JSON path inside the canvas folder')
   const encoded = encodeCanvasPath(manifest)
   const file = artifacts.resolve(artifactId, encoded)

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slides tile</title>
+<link rel="stylesheet" href="assets/tile.css">
+<style>
+  .qcard { margin: 0 56px; display: none; gap: 12px; align-items: center; padding: 9px 12px; border-radius: 8px; border: 1px solid rgba(115,217,226,.35); background: rgba(115,217,226,.06); font-size: 12.5px; }
+  .qcard.on { display: flex; }
+  .qcard .who { color: var(--cyan); font-weight: 700; white-space: nowrap; }
+  .qcard .opt { height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid rgba(115,217,226,.4); color: var(--cyan); font-size: 12px; font-weight: 600; }
+  .qcard .opt.picked { background: var(--cyan); color: #06222a; }
+  .theme-menu { right: 196px; top: 86px; width: 230px; display: none; }
+  .theme-menu.open { display: block; }
+  .pin { position: absolute; width: 24px; height: 24px; border-radius: 50% 50% 50% 0; background: var(--accent); color: var(--accent-ink); font: 700 11px/24px Inter, sans-serif; text-align: center; transform: rotate(-45deg); box-shadow: 0 4px 10px rgba(0,0,0,.4); display: none; }
+  .pin span { display: block; transform: rotate(45deg); }
+  .pin.on { display: block; }
+</style>
+</head>
+<body>
+<div class="tile">
+  <div class="tabs" data-canvas-group="Tab strip">
+    <div class="tab"><span class="ic">◎</span>localhost:5273</div>
+    <div class="tab on" data-canvas-label="Slides tab"><span class="ic">▭</span>Reconnect loop fix<span class="x">×</span></div>
+    <div class="tab"><span class="ic">▦</span>Canvas · Settings</div>
+    <span class="plus">+</span>
+  </div>
+
+  <div class="bar" data-canvas-group="Toolbar">
+    <span class="title" data-canvas-label="Deck title">Reconnect loop fix</span>
+    <span class="sub" id="counter" data-canvas-label="Slide counter">1 / 8</span>
+    <span class="chip e" data-canvas-label="Round chip">round 2 · 1 slide changed</span>
+    <span class="spacer"></span>
+    <div class="seg" data-canvas-label="View switcher">
+      <button class="on">Slides</button><button>Grid</button><button>One-pager</button>
+    </div>
+    <button class="btn" id="themeBtn" data-canvas-label="Theme picker" data-canvas-hotspot="Switch the deck theme"><span class="swatch" id="themeSwatch" style="background:#b9a3ff"></span><span id="themeName">Ink</span> ▾</button>
+    <button class="btn" id="notesBtn" data-canvas-label="Notes toggle" data-canvas-hotspot="Show speaker notes">Notes</button>
+    <button class="btn icon" data-canvas-label="Comment tool" title="Comment">💬</button>
+    <button class="btn" data-canvas-label="Present button">▶ Present</button>
+    <button class="btn primary" data-canvas-label="Export menu button" data-canvas-goto="export">Export ▾</button>
+  </div>
+
+  <div class="stage" data-canvas-group="Stage">
+    <div class="toast" data-canvas-label="Agent spotlight">
+      <span class="dot"></span><span><b>Agent</b> rebuilt slide 5 as a native chart so it follows the theme</span>
+      <button class="btn" id="showMe" data-canvas-hotspot="Jumps to slide 5">Show me</button><button class="btn">Dismiss</button>
+    </div>
+    <div class="screen" data-canvas-label="Current slide">
+      <iframe id="slide" src="deck/deck.html#1" title="Current slide"></iframe>
+      <div class="pin" id="pin" style="left:62%;top:58%"><span>1</span></div>
+    </div>
+    <button class="nav prev" id="prev" data-canvas-label="Previous slide" data-canvas-hotspot="Previous slide (←)">‹</button>
+    <button class="nav next" id="next" data-canvas-label="Next slide" data-canvas-hotspot="Next slide (→)">›</button>
+  </div>
+
+  <div class="qcard on" id="qcard" data-canvas-label="Slide question">
+    <span class="who">? Agent asks</span>
+    <span style="flex:1;color:var(--text-soft)">Lead with what the user saw, or with the fix?</span>
+    <button class="opt" data-canvas-hotspot="Queues this answer">The symptom (recommended)</button>
+    <button class="opt" data-canvas-hotspot="Queues this answer">The fix</button>
+  </div>
+  <div class="notes" id="notes" style="display:none" data-canvas-label="Speaker notes"><b>Notes</b><span id="notesText"></span></div>
+
+  <div class="strip" id="strip" data-canvas-label="Filmstrip"></div>
+
+  <div class="queue" data-canvas-label="Answer queue strip">
+    <span class="count" id="qcount">1</span>
+    <span id="qtext">1 comment queued on slide 2 · “Crop the left phone to the composer”</span>
+    <span class="spacer" style="flex:1"></span>
+    <button class="btn">Send all</button>
+    <button class="btn primary">Send all + Build</button>
+  </div>
+
+  <div class="pop theme-menu" id="themeMenu" data-canvas-label="Theme menu">
+    <div class="head">Deck theme</div>
+    <button class="item hi" data-theme="ink" style="width:100%;text-align:left"><span class="swatch" style="background:#0c0a14;box-shadow:inset 0 0 0 3px #b9a3ff"></span><span><b>Ink</b><small>Commando default · dark</small></span><span class="kbd">1</span></button>
+    <button class="item" data-theme="paper" style="width:100%;text-align:left"><span class="swatch" style="background:#fbfaf7;box-shadow:inset 0 0 0 3px #5b3fd6"></span><span><b>Paper</b><small>Light · prints well</small></span><span class="kbd">2</span></button>
+    <button class="item" data-theme="brand-harbor" style="width:100%;text-align:left"><span class="swatch" style="background:#fff6ef;box-shadow:inset 0 0 0 3px #ff6a3d"></span><span><b>Harbor</b><small>Brand · from harbor-web tokens</small></span><span class="kbd">3</span></button>
+  </div>
+</div>
+
+<script>
+  const notes = [
+    'Open with the user-visible symptom, not the socket detail.',
+    'Both are real simulator captures from the evidence folder.',
+    'On loopback the same daemon closes it within 80 ms.',
+    'Desktop still gets full history: 34.6 MB once, no loop.',
+    'Rebuilt from the table in the PR so it re-themes; the original PNG is in the evidence folder.',
+    'Keep this to one breath per column.',
+    'Play the 4-second clip here if presenting live.',
+    'End on the residual risk so nobody is surprised later.',
+  ]
+  const themes = { ink: ['Ink', '#b9a3ff'], paper: ['Paper', '#5b3fd6'], 'brand-harbor': ['Harbor', '#ff6a3d'] }
+  let index = 0, theme = 'ink'
+  const slide = document.getElementById('slide')
+  const strip = document.getElementById('strip')
+  const url = (n) => `deck/deck.html${theme === 'ink' ? '' : `?theme=${theme}`}#${n + 1}`
+  const badges = { 0: ['q', '?'], 1: ['c', '💬 1'], 4: ['e', 'edited'] }
+  function buildStrip() {
+    strip.innerHTML = ''
+    for (let i = 0; i < 8; i++) {
+      const t = document.createElement('div')
+      t.className = 'thumb'; t.dataset.i = i
+      t.setAttribute('data-canvas-hotspot', `Go to slide ${i + 1}`)
+      t.innerHTML = `<iframe src="${url(i)}" tabindex="-1" loading="lazy"></iframe><span class="n">${i + 1}</span>` +
+        (badges[i] ? `<span class="badge ${badges[i][0]}">${badges[i][1]}</span>` : '')
+      t.onclick = () => go(i)
+      strip.append(t)
+    }
+  }
+  function go(i) {
+    index = Math.max(0, Math.min(7, i))
+    slide.src = url(index)
+    document.getElementById('counter').textContent = `${index + 1} / 8`
+    document.getElementById('notesText').textContent = notes[index]
+    document.getElementById('qcard').classList.toggle('on', index === 0)
+    document.getElementById('pin').classList.toggle('on', index === 1)
+    strip.querySelectorAll('.thumb').forEach((t) => t.classList.toggle('on', +t.dataset.i === index))
+  }
+  document.getElementById('prev').onclick = () => go(index - 1)
+  document.getElementById('next').onclick = () => go(index + 1)
+  document.getElementById('showMe').onclick = (e) => { e.target.closest('.toast').remove(); go(4) }
+  addEventListener('keydown', (e) => { if (e.key === 'ArrowRight') go(index + 1); if (e.key === 'ArrowLeft') go(index - 1) })
+  document.getElementById('notesBtn').onclick = (e) => {
+    const n = document.getElementById('notes'); const on = n.style.display === 'none'
+    n.style.display = on ? 'flex' : 'none'; e.currentTarget.classList.toggle('active', on)
+  }
+  const menu = document.getElementById('themeMenu')
+  document.getElementById('themeBtn').onclick = () => menu.classList.toggle('open')
+  menu.querySelectorAll('[data-theme]').forEach((b) => {
+    b.setAttribute('data-canvas-hotspot', 'Re-theme the deck')
+    b.onclick = () => {
+      theme = b.dataset.theme
+      menu.querySelectorAll('.item').forEach((x) => x.classList.toggle('hi', x === b))
+      document.getElementById('themeName').textContent = themes[theme][0]
+      document.getElementById('themeSwatch').style.background = themes[theme][1]
+      menu.classList.remove('open'); buildStrip(); go(index)
+    }
+  })
+  document.querySelectorAll('.qcard .opt').forEach((b) => b.onclick = () => {
+    document.querySelectorAll('.qcard .opt').forEach((x) => x.classList.toggle('picked', x === b))
+    document.getElementById('qcount').textContent = '2'
+    document.getElementById('qtext').textContent = `2 queued · slide 1: “${b.textContent}” · slide 2: “Crop the left phone to the composer”`
+  })
+  buildStrip(); go(0)
+</script>
+</body>
+</html>

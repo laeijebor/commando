@@ -2,7 +2,7 @@ import type { CommanderState } from '../shared/commander'
 import { isSessionGlyph, sessionIdentityForName } from '../shared/session-identity'
 import { SessionAvatar } from './SessionAvatar'
 import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pencil, Plus, RotateCcw, Smartphone, Trash2, X } from 'lucide-react'
-import { type KeyboardEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { type DragEvent, type KeyboardEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { AgentStatus, PaneMark, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
 import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
@@ -97,6 +97,14 @@ function markLabel(mark: PaneMark, pane: TmuxPane): string {
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
 
+type DropPosition = 'before' | 'after'
+
+/** The bottom half of a row drops below it; the top half drops above it. */
+function dropPosition(event: DragEvent<HTMLElement>): DropPosition {
+  const bounds = event.currentTarget.getBoundingClientRect()
+  return event.clientY > bounds.top + bounds.height / 2 ? 'after' : 'before'
+}
+
 function suggestedDirectories(sessionIds: readonly string[], panes: readonly TmuxPane[]): string[] {
   const sessions = new Set(sessionIds)
   const counts = new Map<string, { count: number; order: number }>()
@@ -120,6 +128,7 @@ export function SessionTree(props: Props) {
   const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number; groupsExpanded?: boolean } | null>(null)
   const [draggedSessionId, setDraggedSessionId] = useState<string | null>(null)
   const [dropGroupId, setDropGroupId] = useState<string | null>(null)
+  const [dropMarker, setDropMarker] = useState<{ id: string; position: DropPosition } | null>(null)
   const [collapsedContainerIds, setCollapsedContainerIds] = useState<Set<string>>(() => new Set(['auxiliary']))
   const [sessionCreateRequest, setSessionCreateRequest] = useState<SessionCreateRequest | null>(null)
   const [error, setError] = useState('')
@@ -215,7 +224,12 @@ export function SessionTree(props: Props) {
     }
   }, [props.onSelectSession, shortcutSessionIds])
 
-  const endDrag = () => { setDraggedSessionId(null); setDropGroupId(null) }
+  const endDrag = () => { setDraggedSessionId(null); setDropGroupId(null); setDropMarker(null) }
+  const markDrop = (id: string, position: DropPosition) => setDropMarker((current) => current?.id === id && current.position === position ? current : { id, position })
+  const clearDropMarker = (event: DragEvent<HTMLElement>, id: string) => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropMarker((current) => current?.id === id ? null : current)
+  }
+  const dropMarkerClass = (id: string) => dropMarker?.id === id ? ` drop-${dropMarker.position}` : ''
 
   const setGroupingMode = (groupingMode: SessionGroupingMode) => {
     if (groupingMode === mode) return
@@ -235,7 +249,8 @@ export function SessionTree(props: Props) {
       return
     }
     const groups = currentPreferences.groups.map((group) => ({ ...group, sessionIds: group.sessionIds.filter((id) => id !== sessionId) }))
-    let ungroupedSessionIds = currentPreferences.ungroupedSessionIds.filter((id) => id !== sessionId)
+    // Start from the displayed order, which also lists live sessions not saved yet.
+    let ungroupedSessionIds = sessionTreeContainers(currentPreferences, props.sessions).at(-1)!.sessionIds.filter((id) => id !== sessionId)
     if (destinationId === 'ungrouped') {
       const index = beforeId ? ungroupedSessionIds.indexOf(beforeId) : -1
       if (index >= 0) ungroupedSessionIds.splice(index, 0, sessionId)
@@ -444,7 +459,8 @@ export function SessionTree(props: Props) {
         const groupBodyId = `session-group-${container.id.replace(/[^A-Za-z0-9_-]/gu, '_')}`
         const sessionCount = container.sessionIds.filter((id) => sessionMap.has(id)).length
         const droppable = container.kind !== 'auxiliary' && Boolean(draggedSessionId && (manual || container.sessionIds.includes(draggedSessionId) || container.items?.some((item) => repositoryItemId(item) === draggedSessionId)))
-        const renderSession = (sessionId: string, repositoryGroupId?: string) => {
+        // nextId is the item after this row in its list, so a drop below the row inserts before it.
+        const renderSession = (sessionId: string, nextId: string | undefined, repositoryGroupId?: string) => {
           const session = sessionMap.get(sessionId)
           if (!session) return null
           const selected = session.id === props.selectedSessionId
@@ -463,7 +479,7 @@ export function SessionTree(props: Props) {
           const simulatorPane = sessionPanes.find((pane) => props.simulators?.[pane.id])
           const simulator = simulatorPane && props.simulators?.[simulatorPane.id]
           return <article
-            className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}`}
+            className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}${dropMarkerClass(session.id)}`}
             draggable={container.kind !== 'auxiliary'}
             onDragStart={(event) => {
               event.dataTransfer?.setData('text/plain', session.id)
@@ -471,11 +487,19 @@ export function SessionTree(props: Props) {
               setDraggedSessionId(session.id)
             }}
             onDragEnd={endDrag}
-            onDragOver={droppable ? (event) => { event.stopPropagation(); if (!(repositoryGroupId && draggedSessionId?.startsWith('group:'))) event.preventDefault() } : undefined}
+            onDragOver={droppable ? (event) => {
+              event.stopPropagation()
+              if (repositoryGroupId && draggedSessionId?.startsWith('group:')) return
+              event.preventDefault()
+              markDrop(session.id, dropPosition(event))
+            } : undefined}
+            onDragLeave={(event) => clearDropMarker(event, session.id)}
             onDrop={droppable ? (event) => {
               event.preventDefault()
               event.stopPropagation()
-              if (draggedSessionId && !(repositoryGroupId && draggedSessionId.startsWith('group:'))) moveToContainer(draggedSessionId, container.id, session.id, repositoryGroupId)
+              if (draggedSessionId && !(repositoryGroupId && draggedSessionId.startsWith('group:'))) {
+                moveToContainer(draggedSessionId, container.id, dropPosition(event) === 'after' ? nextId : session.id, repositoryGroupId)
+              }
               endDrag()
             } : undefined}
             key={session.id}
@@ -530,8 +554,9 @@ export function SessionTree(props: Props) {
             {container.group ? <><button type="button" onClick={() => moveGroup(container.id, -1)} disabled={groupIndex === 0} aria-label={`Move ${container.name} up`}><ArrowUp /></button><button type="button" onClick={() => moveGroup(container.id, 1)} disabled={groupIndex === preferences.groups.length - 1} aria-label={`Move ${container.name} down`}><ArrowDown /></button><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
           </header>
           <div id={groupBodyId} hidden={collapsed}>
-            {container.items ? container.items.map((item) => {
-              if (item.kind === 'session') return renderSession(item.id)
+            {container.items ? container.items.map((item, itemIndex) => {
+              const nextItemId = container.items![itemIndex + 1] ? repositoryItemId(container.items![itemIndex + 1]) : undefined
+              if (item.kind === 'session') return renderSession(item.id, nextItemId)
               const group = item.group
               const bodyId = `repository-group-${group.id}`
               const groupPanes = item.sessionIds.flatMap((id) => props.panes.filter((pane) => pane.sessionId === id))
@@ -545,17 +570,25 @@ export function SessionTree(props: Props) {
                 const current = preferencesRef.current
                 save({ ...current, repositoryGroups: current.repositoryGroups?.map((candidate) => candidate.id === group.id ? { ...candidate, ...change } : candidate) })
               }
-              return <div className="repository-session-group" key={`group:${group.id}`}>
+              // A group dropped below this one lands after its members, so the line goes under the whole group.
+              const groupDropAfter = dropMarker?.id === `group:${group.id}` && dropMarker.position === 'after'
+              return <div className={`repository-session-group${groupDropAfter ? ' drop-after' : ''}`} key={`group:${group.id}`}>
                 <header
-                  className={`${dropGroupId === group.id ? 'drop-target' : ''}${draggedSessionId === `group:${group.id}` ? ' dragging' : ''}`}
+                  className={`${dropGroupId === group.id ? 'drop-target' : ''}${draggedSessionId === `group:${group.id}` ? ' dragging' : ''}${dropMarker?.id === `group:${group.id}` && !groupDropAfter ? ' drop-before' : ''}`}
                   draggable
                   onDragStart={(event) => { event.stopPropagation(); event.dataTransfer?.setData('text/plain', `group:${group.id}`); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; setDraggedSessionId(`group:${group.id}`) }}
                   onDragEnd={endDrag}
-                  onDragOver={droppable ? (event) => { event.preventDefault(); event.stopPropagation(); setDropGroupId(group.id) } : undefined}
-                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropGroupId(null) }}
+                  onDragOver={droppable ? (event) => {
+                    event.preventDefault(); event.stopPropagation()
+                    // A group dropped on a header reorders around it; a session joins the group.
+                    if (draggedSessionId?.startsWith('group:')) markDrop(`group:${group.id}`, dropPosition(event))
+                    else setDropGroupId(group.id)
+                  } : undefined}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropGroupId(null); clearDropMarker(event, `group:${group.id}`) }}
                   onDrop={droppable ? (event) => {
                     event.preventDefault(); event.stopPropagation()
-                    if (draggedSessionId) moveToContainer(draggedSessionId, container.id, draggedSessionId.startsWith('group:') ? `group:${group.id}` : undefined, draggedSessionId.startsWith('group:') ? undefined : group.id)
+                    if (draggedSessionId?.startsWith('group:')) moveToContainer(draggedSessionId, container.id, dropPosition(event) === 'after' ? nextItemId : `group:${group.id}`)
+                    else if (draggedSessionId) moveToContainer(draggedSessionId, container.id, undefined, group.id)
                     endDrag()
                   } : undefined}
                 >
@@ -574,11 +607,11 @@ export function SessionTree(props: Props) {
                   onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropGroupId(null) }}
                   onDrop={droppable ? (event) => { event.preventDefault(); event.stopPropagation(); if (draggedSessionId && !draggedSessionId.startsWith('group:')) moveToContainer(draggedSessionId, container.id, undefined, group.id); endDrag() } : undefined}
                 >
-                  {item.sessionIds.map((id) => renderSession(id, group.id))}
+                  {item.sessionIds.map((id, index) => renderSession(id, item.sessionIds[index + 1], group.id))}
                   {!item.sessionIds.length ? <p className="session-pref-empty">Drop a session here.</p> : null}
                 </div>
               </div>
-            }) : container.sessionIds.map((id) => renderSession(id))}
+            }) : container.sessionIds.map((id, index) => renderSession(id, container.sessionIds[index + 1]))}
             {manual && !container.sessionIds.some((id) => sessionMap.has(id)) ? <p className="session-pref-empty">Drop a session here.</p> : null}
           </div>
         </section>

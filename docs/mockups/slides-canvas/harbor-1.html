@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Companion app reconnect loop</title>
+<meta name="deck:title" content="Companion app · reconnect loop fix · PR #156">
+<link rel="stylesheet" href="deck/slides.css">
+<link rel="stylesheet" href="deck/themes/brand-harbor.css" id="theme">
+</head>
+<body>
+<main class="deck">
+<!-- 1 · Title -->
+<section class="slide" data-n="1" data-total="8" data-layout="title" data-canvas-group="Slide 1 · Title">
+  <p class="kicker" data-canvas-label="Kicker">Ship review · 24 Oct 2026</p>
+  <h1 data-canvas-label="Headline">The phone stopped throwing away what you type</h1>
+  <p class="lede" data-canvas-label="Lede">The companion app reconnected every ~4 seconds, closing the keyboard each time. It now holds one connection for minutes, on WiFi and 4G.</p>
+  <div class="meta-row" data-canvas-label="Meta pills">
+    <span class="pill"><span class="dot accent"></span>PR #156 · merged</span>
+    <span class="pill">daemon + mobile</span>
+    <span class="pill good"><span class="dot"></span>0 reconnects/min after</span>
+  </div>
+  <aside class="notes">Open with the user-visible symptom, not the socket detail.</aside>
+</section>
+</main>
+<script src="deck/deck.js"></script>
+</body>
+</html>

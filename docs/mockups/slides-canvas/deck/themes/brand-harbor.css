@@ -1,0 +1,26 @@
+/* Brand example — "Harbor" (a made-up client). Shows how an agent re-themes a deck
+   from a product's own tokens: colours, type, corner radius and logo mark. */
+:root {
+  --theme-name: "Harbor (brand)";
+  --bg: #fff6ef;
+  --bg-2: #ffe9dc;
+  --surface: #ffffff;
+  --line: #f1d3c2;
+  --ink: #10313a;
+  --ink-soft: #2b4d56;
+  --muted: #6b8288;
+  --accent: #ff6a3d;
+  --accent-ink: #ffffff;
+  --accent-2: #10313a;
+  --good: #1f9d74;
+  --warn: #e0a019;
+  --bad: #d64545;
+  --font-display: "Avenir Next", "Futura", ui-sans-serif, sans-serif;
+  --font-body: "Avenir Next", ui-sans-serif, -apple-system, sans-serif;
+  --font-mono: "SFMono-Regular", Menlo, monospace;
+  --display-weight: 800;
+  --display-tracking: -0.025em;
+  --radius: 28px;
+  --glow: radial-gradient(800px 500px at 100% 0%, rgba(255,106,61,.16), transparent 60%);
+  --mark: "⚓ Harbor";
+}
