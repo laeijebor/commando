@@ -35,7 +35,7 @@ describe('SlidesPane', () => {
   it('renders native slides, navigates with keys and filmstrip, and shows notes on request', async () => {
     const { container } = mount()
     const iframe = await screen.findByTitle('Opening')
-    expect(iframe.getAttribute('src')).toContain('canvas-frame=opening#opening')
+    expect(iframe.getAttribute('data-src')).toContain('canvas-frame=opening#opening')
     expect((iframe as HTMLIFrameElement).style.width).toBe('1280px')
     expect(screen.getByLabelText('Slide counter')).toHaveTextContent('1 / 3')
     fireEvent.keyDown(screen.getByLabelText('Slides'), { key: 'ArrowRight' })
@@ -54,20 +54,20 @@ describe('SlidesPane', () => {
   it('previews and remembers theme URLs on stage and thumbnails, and queues brand feedback', async () => {
     const { container, unmount } = mount(); await screen.findByTitle('Opening')
     fireEvent.click(screen.getByLabelText('Theme')); fireEvent.click(await screen.findByRole('menuitemradio', { name: 'paper' }))
-    expect(screen.getByTitle('Opening').getAttribute('src')).toContain('theme=paper')
+    expect(screen.getByTitle('Opening').getAttribute('data-src')).toContain('theme=paper')
     expect(container.querySelector('.slides-filmstrip iframe')?.getAttribute('src')).toContain('theme=paper')
     fireEvent.click(screen.getByLabelText('Theme')); fireEvent.change(screen.getByLabelText('Brand source'), { target: { value: 'https://brand.example' } })
     fireEvent.keyDown(screen.getByLabelText('Brand source'), { key: 'End' }); expect(screen.getByTitle('Opening')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Queue request'))
     await waitFor(() => expect(calls.some((call) => (call.body?.note as { comment?: string })?.comment === 'Make a brand theme for this deck from: https://brand.example')).toBe(true))
-    unmount(); mount(); expect((await screen.findByTitle('Opening')).getAttribute('src')).toContain('theme=paper')
+    unmount(); mount(); expect((await screen.findByTitle('Opening')).getAttribute('data-src')).toContain('theme=paper')
   })
   it('drops a remembered theme that no longer exists and falls back to the deck default', async () => {
     const key = `commando:slides-theme:${artifactId}:deck.html`
     localStorage.setItem(key, 'retired-theme')
     html = html.replace('themes/ink.css', 'themes/paper.css')
     const { container } = mount()
-    await waitFor(() => expect(screen.getByTitle('Opening').getAttribute('src')).toContain('theme=paper'))
+    await waitFor(() => expect(screen.getByTitle('Opening').getAttribute('data-src')).toContain('theme=paper'))
     expect(container.querySelector('.slides-filmstrip iframe')?.getAttribute('src')).toContain('theme=paper')
     await waitFor(() => expect(localStorage.getItem(key)).toBeNull())
     fireEvent.click(screen.getByLabelText('Theme'))
@@ -106,19 +106,19 @@ describe('SlidesPane', () => {
   it('reloads assets and deck changes while preserving a surviving slide id', async () => {
     mount(); await screen.findByTitle('Opening'); fireEvent.click(screen.getByRole('button', { name: 'Slide 2: Evidence' }))
     act(() => publishCanvasChange({ artifactId, changed: ['themes/paper.css'] }))
-    await waitFor(() => expect(screen.getByTitle('Evidence').getAttribute('src')).toContain('canvas-reload=1'))
+    await waitFor(() => expect(screen.getByTitle('Evidence').getAttribute('data-src')).toContain('canvas-reload=1'))
     html = html.replace('Evidence notes', 'Updated evidence notes')
     act(() => publishCanvasChange({ artifactId, changed: ['deck.html'] }))
-    await waitFor(() => expect(screen.getByTitle('Evidence').getAttribute('src')).toContain('canvas-reload=2'))
+    await waitFor(() => expect(screen.getByTitle('Evidence').getAttribute('data-src')).toContain('canvas-reload=2'))
     fireEvent.click(screen.getByLabelText('Notes')); await screen.findByText('Updated evidence notes')
   })
   it('shows history as read-only and restores live', async () => {
     mount(); await screen.findByTitle('Opening'); fireEvent.click(screen.getByLabelText('History'))
     fireEvent.click(await screen.findByRole('menuitemradio', { name: /1 comment/ }))
-    await waitFor(() => expect(screen.getByTitle('Opening').getAttribute('src')).toContain('/canvas-snapshots/'))
+    await waitFor(() => expect(screen.getByTitle('Opening').getAttribute('data-src')).toContain('/canvas-snapshots/'))
     expect(screen.getByLabelText('Comment tool')).toBeDisabled(); expect(screen.getByLabelText('Export')).toBeDisabled()
     fireEvent.click(screen.getByText('Back to live'))
-    await waitFor(() => expect(screen.getByTitle('Opening').getAttribute('src')).toContain('/artifacts/'))
+    await waitFor(() => expect(screen.getByTitle('Opening').getAttribute('data-src')).toContain('/artifacts/'))
   })
   it('hit-tests native slide points and renders only the current slide pin', async () => {
     const { container } = mount(); const iframe = await screen.findByTitle('Opening') as HTMLIFrameElement
@@ -163,7 +163,7 @@ describe('SlidesPane', () => {
     fireEvent.click(screen.getByLabelText('Next slide'))
     const second = await screen.findByTitle('Evidence')
     expect(second).toBe(first)
-    expect(second.getAttribute('src')).toContain('canvas-frame=evidence#evidence')
+    expect(second.getAttribute('data-src')).toContain('canvas-frame=evidence#evidence')
   })
   it('presents as a full-window overlay when the Fullscreen API is missing, and Escape exits', async () => {
     const original = HTMLElement.prototype.requestFullscreen

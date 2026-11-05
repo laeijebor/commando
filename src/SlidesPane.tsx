@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type IframeHTMLAttributes } from 'react'
 import { ChevronLeft, ChevronRight, Download, Grid2X2, MessageCircle, NotebookText, Palette, Play, Presentation } from 'lucide-react'
 import { encodeCanvasPath, type CanvasFrame, type CanvasManifestResult } from '../shared/canvas-manifest'
 import type { CanvasSnapshot } from '../shared/canvas-snapshot'
@@ -32,6 +32,18 @@ function Thumbnail({ frame, src }: { frame: CanvasFrame; src: string }) {
   }, [])
   return <div className="slides-thumb-screen" ref={ref} style={{ aspectRatio: `${frame.w}/${frame.h}` }}><iframe title={`Preview: ${frame.title}`} src={src} loading="lazy" sandbox="allow-scripts" tabIndex={-1}
     style={{ width: frame.w, height: frame.h, transform: `scale(${width / frame.w})` }} /></div>
+}
+
+/** The stage keeps one iframe for the whole deck: a freshly inserted stage iframe paints black in
+ *  WebKit at a non-100% page zoom. Later slides load with location.replace, so they add no history. */
+function StageFrame({ url, frameRef, ...props }: { url: string; frameRef: (node: HTMLIFrameElement | null) => void } & Omit<IframeHTMLAttributes<HTMLIFrameElement>, 'src'>) {
+  const [first] = useState(url), shown = useRef(url), node = useRef<HTMLIFrameElement | null>(null)
+  useLayoutEffect(() => {
+    if (url === shown.current) return
+    shown.current = url
+    try { node.current?.contentWindow?.location.replace(url) } catch { if (node.current) node.current.src = url }
+  }, [url])
+  return <iframe {...props} src={first} data-src={url} ref={(element) => { node.current = element; frameRef(element) }} />
 }
 
 export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, onTitle, onClose, webPaneId, token = '' }: {
@@ -173,11 +185,10 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
       {error && <span role="alert">{error}</span>}
     </div>}
     {error && !menu && <div className="canvas-errors" role="alert">{error}</div>}
-    {grid ? thumbnails : <>
+    <div className="slides-body">{grid && thumbnails}
       <div className={`slides-stage${commentMode ? ' is-commenting' : ''}`} ref={(node) => { stage.current = node; setStageNode(node) }}>
         {frame && <div className="slides-screen" ref={screen} style={{ width: frame.w * scale, height: frame.h * scale }} onClick={(event) => { pane.current?.focus(); void dropComment(event) }}>
-          {/* One iframe for every slide: WebKit at a non-100% page zoom paints a freshly inserted stage iframe black. */}
-          <iframe key={baseUrl} ref={(node) => register(frame.id, node)} title={frame.title} sandbox="allow-scripts" src={canvasFrameUrl(baseUrl, frame, revisions[frame.id], { theme })} onLoad={syncInteraction}
+          <StageFrame frameRef={(node) => register(frame.id, node)} title={frame.title} sandbox="allow-scripts" url={canvasFrameUrl(baseUrl, frame, revisions[frame.id], { theme })} onLoad={syncInteraction}
             style={{ width: frame.w, height: frame.h, transform: `scale(${scale})` }} />
         </div>}
         <button type="button" className="slides-nav is-prev" aria-label="Previous slide" disabled={index === 0} onClick={() => go(index - 1)}><ChevronLeft size={20} /></button>
@@ -198,8 +209,8 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
         return <div className="slides-question" data-canvas-note={note.id} key={note.id}><strong>? Agent asks</strong><span>{note.text}</span>
           <CanvasQuestionControls question={question} recorded={note.answer} pending={readOnly ? undefined : pendingForQuestion(question, comments.snapshot.notes, questionsPage)} sent={readOnly || delivered?.response.answer === note.answer ? undefined : delivered} disabled={readOnly || !webPaneId || comments.busy} onQueue={comments.answer} onRemove={comments.remove} /></div>
       })}{notes && <div className="slides-notes"><b>Notes</b><span>{result.deck?.slides.find((slide) => slide.id === frame?.id)?.notes || 'No speaker notes.'}</span></div>}</div>
-      {thumbnails}
-    </>}
+      {!grid && thumbnails}
+    </div>
     {!readOnly && !presenting && <CanvasSpotlightToast webPaneId={webPaneId} token={token} onShow={(request) => { if (request.frame && frames.some((f) => f.id === request.frame)) { pick(request.frame); setSpotlight(request) } }} />}
     {webPaneId && review.queue && !readOnly && !presenting && <TileReviewLayer webPaneId={webPaneId} pageUrl={questionsPage} reviewMode={false} active={false} containerRef={pane} inputRef={stage} pendingQueue={review.queue} surface={review.surface} />}
   </div>
