@@ -74,17 +74,18 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const go = (next: number) => { ++hitSequence.current; comments.close(); setChoice(frames[Math.max(0, Math.min(frames.length - 1, next))]?.id ?? ''); setSelected(null); setSpotlight(null) }
   const pick = (id: string) => { go(frames.findIndex((f) => f.id === id)); setGrid(false) }
   const [viewport, setViewport] = useState({ w: 0, h: 0 })
+  const [stageNode, setStageNode] = useState<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
-    const node = stage.current
+    const node = stageNode
     if (!node) return
     const measure = () => setViewport({ w: node.clientWidth, h: node.clientHeight })
     measure(); const observer = new ResizeObserver(measure); observer.observe(node)
     return () => observer.disconnect()
-  }, [grid, presenting])
+  }, [stageNode, presenting])
   const scale = frame ? Math.max(0.01, Math.min((viewport.w - (presenting ? 0 : 112)) / frame.w, (viewport.h - (presenting ? 0 : 28)) / frame.h)) : 1
   const camera = { scale, x: (viewport.w - (frame?.w ?? 0) * scale) / 2 - (frame?.x ?? 0) * scale, y: (viewport.h - (frame?.h ?? 0) * scale) / 2 }
   useEffect(() => {
-    const changed = () => setPresenting(document.fullscreenElement === pane.current)
+    const changed = () => setPresenting(document.fullscreenElement === pane.current)  // the in-app overlay fallback never fires this
     document.addEventListener('fullscreenchange', changed)
     return () => document.removeEventListener('fullscreenchange', changed)
   }, [])
@@ -93,6 +94,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
     if (!node) return
     const keydown = (event: KeyboardEvent) => {
       if ((event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], .canvas-composer, [class*="tile-review-"]')) return
+      if (event.key === 'Escape' && presenting && !document.fullscreenElement) { event.preventDefault(); setPresenting(false); return }
       if (event.key === 'Escape') { ++hitSequence.current; setCommentMode(false); setMenu(null); comments.close(); return }
       const next = ['ArrowRight', 'PageDown'].includes(event.key) || (presenting && event.key === ' ') ? index + 1 : ['ArrowLeft', 'PageUp'].includes(event.key) ? index - 1 : event.key === 'Home' ? 0 : event.key === 'End' ? frames.length - 1 : null
       if (next === null) return
@@ -155,7 +157,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
       <button type="button" aria-label="Notes" aria-pressed={notes} onClick={() => setNotes(!notes)}><NotebookText size={14} /><span>Notes</span></button>
       <button type="button" aria-label="Comment tool" aria-pressed={commentMode} disabled={readOnly || !webPaneId || comments.busy} onClick={() => { ++hitSequence.current; setCommentMode(!commentMode) }}><MessageCircle size={14} /></button>
       <CanvasHistory apiUrl={`${apiUrl}/canvas/snapshots`} token={token} selected={snapshot} disabled={comments.busy} onSelect={selectSnapshot} />
-      <button type="button" aria-label="Present" disabled={!frame} onClick={() => { setGrid(false); setMenu(null); comments.close(); setCommentMode(false); if (!pane.current?.requestFullscreen) { setError('Fullscreen is unavailable in this browser'); return } void pane.current.requestFullscreen().then(() => pane.current?.focus()).catch(() => setError('Fullscreen is unavailable in this browser')) }}><Play size={14} /><span>Present</span></button>
+      <button type="button" aria-label="Present" disabled={!frame} onClick={() => { setGrid(false); setMenu(null); comments.close(); setCommentMode(false); const overlay = () => { setPresenting(true); pane.current?.focus() }; if (!pane.current?.requestFullscreen) { overlay(); return } void pane.current.requestFullscreen().then(() => pane.current?.focus()).catch(overlay) }}><Play size={14} /><span>Present</span></button>
       <button type="button" aria-label="Export" disabled={readOnly} aria-expanded={menu === 'export'} onClick={() => { setError(''); setMenu(menu === 'export' ? null : 'export') }}><Download size={14} /><span>Export</span></button>
       {onClose && <button type="button" aria-label="Close slides tab" onClick={onClose}>×</button>}
     </div>
@@ -172,9 +174,10 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
     </div>}
     {error && !menu && <div className="canvas-errors" role="alert">{error}</div>}
     {grid ? thumbnails : <>
-      <div className={`slides-stage${commentMode ? ' is-commenting' : ''}`} ref={stage}>
+      <div className={`slides-stage${commentMode ? ' is-commenting' : ''}`} ref={(node) => { stage.current = node; setStageNode(node) }}>
         {frame && <div className="slides-screen" ref={screen} style={{ width: frame.w * scale, height: frame.h * scale }} onClick={(event) => { pane.current?.focus(); void dropComment(event) }}>
-          <iframe key={`${baseUrl}/${frame.id}`} ref={(node) => register(frame.id, node)} title={frame.title} sandbox="allow-scripts" src={canvasFrameUrl(baseUrl, frame, revisions[frame.id], { theme })} onLoad={syncInteraction}
+          {/* One iframe for every slide: WebKit at a non-100% page zoom paints a freshly inserted stage iframe black. */}
+          <iframe key={baseUrl} ref={(node) => register(frame.id, node)} title={frame.title} sandbox="allow-scripts" src={canvasFrameUrl(baseUrl, frame, revisions[frame.id], { theme })} onLoad={syncInteraction}
             style={{ width: frame.w, height: frame.h, transform: `scale(${scale})` }} />
         </div>}
         <button type="button" className="slides-nav is-prev" aria-label="Previous slide" disabled={index === 0} onClick={() => go(index - 1)}><ChevronLeft size={20} /></button>

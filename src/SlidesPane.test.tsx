@@ -157,4 +157,29 @@ describe('SlidesPane', () => {
     expect(pane).not.toHaveClass('is-presenting'); expect(fullscreen).toHaveBeenCalledOnce()
   })
 
+  it('reuses one stage iframe across slides so WebKit at a non-100% zoom keeps painting it', async () => {
+    mount()
+    const first = await screen.findByTitle('Opening')
+    fireEvent.click(screen.getByLabelText('Next slide'))
+    const second = await screen.findByTitle('Evidence')
+    expect(second).toBe(first)
+    expect(second.getAttribute('src')).toContain('canvas-frame=evidence#evidence')
+  })
+  it('presents as a full-window overlay when the Fullscreen API is missing, and Escape exits', async () => {
+    const original = HTMLElement.prototype.requestFullscreen
+    // WKWebView without element fullscreen has no requestFullscreen at all.
+    Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: undefined })
+    try {
+      mount(); await screen.findByTitle('Opening')
+      fireEvent.click(screen.getByLabelText('Present'))
+      const pane = screen.getByLabelText('Slides')
+      expect(pane).toHaveClass('is-presenting')
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      fireEvent.keyDown(pane, { key: 'ArrowRight' }); await screen.findByTitle('Evidence')
+      fireEvent.keyDown(pane, { key: 'Escape' })
+      expect(pane).not.toHaveClass('is-presenting')
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', { configurable: true, value: original })
+    }
+  })
 })
