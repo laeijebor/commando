@@ -501,6 +501,43 @@ describe('GitWorktreeService.removeWorktree', () => {
     }
   })
 
+  it('refuses a work-in-progress commit when an index flag hides edits from status', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    try {
+      run(base, 'init', '-q', main)
+      writeFileSync(path.join(main, 'config.json'), '{}')
+      run(main, 'add', '.')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      for (const flag of ['--assume-unchanged', '--skip-worktree']) {
+        run(linked, 'update-index', flag, 'config.json')
+        writeFileSync(path.join(linked, 'config.json'), '{"local":true}')
+        expect(run(linked, 'status', '--porcelain').trim()).toBe('')
+        await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: expect.stringContaining('at config.json') })
+        run(linked, 'update-index', flag.replace('--', '--no-'), 'config.json')
+        run(linked, 'checkout', '--', 'config.json')
+      }
+      // Sparse checkout marks files outside its cone skip-worktree, but they aren't on disk to lose.
+      for (const folder of ['app', 'docs']) {
+        mkdirSync(path.join(linked, folder))
+        writeFileSync(path.join(linked, folder, 'file.md'), '')
+      }
+      run(linked, 'add', '.')
+      run(linked, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'folders')
+      run(linked, 'sparse-checkout', 'set', 'app')
+      expect(run(linked, 'ls-files', '-v')).toContain('S docs/file.md')
+      const sparse = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(sparse, 'wip')).resolves.toEqual(sparse)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it('refuses a work-in-progress commit when a repository was started inside a tracked folder', async () => {
     const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
     const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
