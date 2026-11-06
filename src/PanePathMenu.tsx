@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { Copy, FolderOpen } from 'lucide-react'
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -12,6 +13,7 @@ type PanePathMenuProps = {
 }
 
 export function PanePathMenu({ path, x, y, onClose, onCopy, onOpen }: PanePathMenuProps) {
+  const { local } = useHost()
   const menuRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState({ x, y })
 
@@ -76,7 +78,7 @@ export function PanePathMenu({ path, x, y, onClose, onCopy, onOpen }: PanePathMe
         <Copy aria-hidden="true" />
         Copy
       </button>
-      <button type="button" role="menuitem" onClick={() => choose(onOpen)}>
+      <button type="button" role="menuitem" disabled={!local} title={!local ? 'Only on this Mac for now' : undefined} onClick={() => choose(onOpen)}>
         <FolderOpen aria-hidden="true" />
         Open
       </button>

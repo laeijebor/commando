@@ -118,6 +118,7 @@ const PROVIDER_NAMES: Record<Exclude<AgentProvider, 'unknown'>, string> = {
   opencode: 'OpenCode',
   cursor: 'Cursor',
   muse: 'Muse',
+  deepseek: 'DeepSeek',
 }
 
 function providerName(provider: AgentProvider): string {

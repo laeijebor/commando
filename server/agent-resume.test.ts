@@ -127,6 +127,20 @@ describe('AgentResumeService', () => {
     expect(resume.get(TARGET)?.command).toBe(`/c/scripts/commando-agent claude --config-dir /Users/me/.claudew --permission-mode acceptEdits --resume ${SESSION}`)
   })
 
+  it('records a DeepSeek host for automatic resume without copying API keys or a Claude profile', async () => {
+    const host = 'node /c/server/agent-host/main.ts deepseek --permission-mode acceptEdits'
+    const resume = service({
+      chatLauncher: '/c/scripts/commando-agent',
+      chatSettings: () => ({ model: 'deepseek-flash[1m]', permissionMode: 'acceptEdits' }),
+      readProcessTable: vi.fn(async () => `  500 1 ${host}\n  700 500 /bin/claude --output-format stream-json\n`),
+      readProcessEnvironment: vi.fn(async () => `${host} DEEPSEEK_API_KEY=secret CLAUDE_CONFIG_DIR=/wrong/.claude`),
+    })
+    await resume.observeHookStatus(hookStatus({ provider: 'deepseek' }), pane(), OLD_SERVER)
+    expect(resume.get(TARGET)).toMatchObject({ provider: 'deepseek', command: `/c/scripts/commando-agent deepseek --model 'deepseek-flash[1m]' --permission-mode acceptEdits --resume ${SESSION}` })
+    await resume.flush()
+    expect(await readFile(deps.statePath!, 'utf8')).not.toContain('secret')
+  })
+
   it('restores a Cursor chat host instead of its CLI child and refreshes picker settings without API keys', async () => {
     const id = 'agent-11111111-2222-3333-4444-555555555555'
     const host = 'node /c/server/agent-host/main.ts cursor --permission-mode bypassPermissions'

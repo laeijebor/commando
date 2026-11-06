@@ -42,9 +42,9 @@ function isPinnedNote(value: unknown): value is PinnedNote {
   )
 }
 
-export function storedPinnedNote(): PinnedNote | null {
+export function storedPinnedNote(host = 'local'): PinnedNote | null {
   try {
-    const stored = window.localStorage.getItem(PINNED_NOTE_STORAGE_KEY)
+    const stored = window.localStorage.getItem(host === 'local' ? PINNED_NOTE_STORAGE_KEY : `${PINNED_NOTE_STORAGE_KEY}.${host}`)
     if (!stored) return null
     const parsed: unknown = JSON.parse(stored)
     return isPinnedNote(parsed) ? parsed : null
@@ -53,10 +53,10 @@ export function storedPinnedNote(): PinnedNote | null {
   }
 }
 
-export function storePinnedNote(note: PinnedNote | null): void {
+export function storePinnedNote(note: PinnedNote | null, host = 'local'): void {
   try {
-    if (note) window.localStorage.setItem(PINNED_NOTE_STORAGE_KEY, JSON.stringify(note))
-    else window.localStorage.removeItem(PINNED_NOTE_STORAGE_KEY)
+    if (note) window.localStorage.setItem(host === 'local' ? PINNED_NOTE_STORAGE_KEY : `${PINNED_NOTE_STORAGE_KEY}.${host}`, JSON.stringify(note))
+    else window.localStorage.removeItem(host === 'local' ? PINNED_NOTE_STORAGE_KEY : `${PINNED_NOTE_STORAGE_KEY}.${host}`)
   } catch {
     // Pinning still works in memory when browser storage is unavailable.
   }

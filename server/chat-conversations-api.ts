@@ -192,7 +192,7 @@ export class ChatConversationsApi {
       const record = this.dependencies.resumes.findConversation(provider, sessionId)
       // Cursor SDK chats (`agent-…`) have their own store: they resume as a Cursor chat, never in the CLI.
       const cursorChat = provider === 'cursor' && sessionId.startsWith('agent-')
-      const isTui = !cursorChat && (provider === 'cursor' || provider === 'opencode'
+      const isTui = provider !== 'deepseek' && !cursorChat && (provider === 'cursor' || provider === 'opencode'
         || (record ? !isChatResumeCommand(record.command) : !chat))
       let agent: SessionAgentLaunch | undefined
       let command: string | undefined

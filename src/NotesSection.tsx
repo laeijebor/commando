@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import {
   FilePlus2,
   Folder,
@@ -114,7 +115,8 @@ export function NotesSection({
   requestedNote?: NoteRequest | null
   onPinnedNoteChange?: (note: PinnedNote | null) => void
 }) {
-  const api = useRef(createNotesApi(token)).current
+  const { daemonFetch, path } = useHost()
+  const api = useRef(createNotesApi(token, daemonFetch, path)).current
   const [notes, setNotes] = useState<Note[]>([])
   const [folders, setFolders] = useState<string[]>([])
   const [folderFilter, setFolderFilter] = useState<string | null>(null)

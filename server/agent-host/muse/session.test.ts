@@ -285,9 +285,9 @@ describe('MuseChatSession', () => {
 
   it.each([
     ['bypassPermissions', true, 'serve --trust-workspace --disable-sandbox'],
-    ['bypassPermissions', false, 'serve --trust-workspace'],
-    ['acceptEdits', true, 'serve --trust-workspace'],
-    ['default', true, 'serve --trust-workspace'],
+    ['bypassPermissions', false, 'serve --trust-workspace --sandbox-network enabled'],
+    ['acceptEdits', true, 'serve --trust-workspace --sandbox-network enabled'],
+    ['default', true, 'serve --trust-workspace --sandbox-network enabled'],
   ] as const)('starts muse serve without the sandbox only for full access (%s, --yolo: %s)', async (permissionMode, fullAccess, argv) => {
     const dir = await mkdtemp(join(tmpdir(), 'commando-muse-args-'))
     try {
@@ -331,8 +331,8 @@ describe('MuseChatSession', () => {
 })
 
 describe('Muse helpers', () => {
-  it('turns the sandbox off on the host only when asked', () => {
-    expect(museServeArgs(true)).toEqual(['serve', '--trust-workspace'])
+  it('turns the sandbox off on the host only when asked, and opens its network to serve', () => {
+    expect(museServeArgs(true)).toEqual(['serve', '--trust-workspace', '--sandbox-network', 'enabled'])
     expect(museServeArgs(false)).toEqual(['serve', '--trust-workspace', '--disable-sandbox'])
   })
 
@@ -371,7 +371,7 @@ describe('Muse helpers', () => {
   it('switches to the Muse TUI on the same session and comes back to the chat', () => {
     const command = museTuiSwitchCommand({ model: 'muse-spark-1.3', effort: 'high', permissionMode: 'bypassPermissions' }, '/bin/muse', '/c/commando-agent', SESSION, ['--permission-mode', 'bypassPermissions'])
     expect(command).toBe(`exec /bin/bash -c 'set -m; /bin/muse --model muse-spark-1.3 --reasoning-effort high --yolo --trust-workspace resume ${SESSION}; exec /c/commando-agent muse --permission-mode bypassPermissions --resume ${SESSION} --from-claude-code'`)
-    expect(museTuiSwitchCommand({ permissionMode: 'acceptEdits' }, 'muse', '/c/a', SESSION, [])).toContain('muse --approval-mode never --trust-workspace resume')
+    expect(museTuiSwitchCommand({ permissionMode: 'acceptEdits' }, 'muse', '/c/a', SESSION, [])).toContain('muse --approval-mode never --sandbox-network enabled --trust-workspace resume')
   })
 
   it('recognises image types and mints UUIDv7 command ids', () => {

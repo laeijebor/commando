@@ -39,6 +39,8 @@ type ProviderSpec = {
 const MUSE_BINARY = /^muse-bin-\d[\w.-]*$/
 
 const PROVIDERS: Record<ResumableProvider, ProviderSpec> = {
+  // DeepSeek has a chat host, never a standalone TUI to discover or resume.
+  deepseek: { executables: [], env: [], flags: { bare: [], single: [], dropped: [] }, resume: () => [] },
   claude: {
     executables: ['claude'],
     env: ['CLAUDE_CONFIG_DIR'],

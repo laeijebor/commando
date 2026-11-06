@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../../shared/agent-chat.js'
 import { ChatImageStore } from '../chat-images.js'
 import { chatResumeCommand, claudeCodeSwitchCommand, parseHostArgs, restartEnv, sessionFlags, terminalLine, withSessionSettings } from './main.js'
+import { DEEPSEEK_MODEL, DEEPSEEK_MODELS } from './deepseek.js'
 import { AgentSession, PLAN_CAPTURED_MESSAGE, type SessionStore } from './session.js'
 import { createChatProviderSession } from './factory.js'
 import type { ChatProviderSession } from './provider.js'
@@ -253,7 +254,7 @@ describe('commando-agent arguments', () => {
   })
 
   it('lists every provider in help and rejects unsupported subcommands', () => {
-    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse\|cursor>/)
+    expect(parseHostArgs(['codex', '--help'], {})).toMatch(/^Usage: commando-agent <claude\|codex\|muse\|cursor\|deepseek>/)
     expect(parseHostArgs(['cursor'], {})).toEqual({ provider: 'cursor', permissionMode: 'bypassPermissions', bypassAllowed: true })
     expect(parseHostArgs([], {})).toMatch(/^Usage/)
     expect(parseHostArgs(['codex', '--effort', 'turbo'], {})).toMatch(/Unknown effort/)
@@ -1624,5 +1625,37 @@ describe('commando-agent switch command', () => {
     expect(command).toContain('exec /c/commando-agent claude --model opus --fast --permission-mode default --resume abcd1234-0000 --from-claude-code')
     expect(claudeCodeSwitchCommand({ ...args, fast: false }, '/bin/claude', '/c/commando-agent', 'abcd1234-0000'))
       .toContain(`--settings '"'"'{"fastMode":false}'"'"'`)
+  })
+})
+
+
+describe('DeepSeek through Claude Code', () => {
+  it('pins the Flash catalog, keeps credentials out of flag settings, and skips Anthropic plan usage', async () => {
+    const { fake, session } = started({ claudeProvider: 'deepseek', configDir: '/home/me/.commando/deepseek', model: DEEPSEEK_MODEL,
+      env: { ANTHROPIC_AUTH_TOKEN: 'test-secret', ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic', ANTHROPIC_MODEL: DEEPSEEK_MODEL } })
+    await tick()
+    expect(session.snapshot().session).toMatchObject({ provider: 'deepseek', selectedModel: DEEPSEEK_MODEL, models: DEEPSEEK_MODELS })
+    expect(fake.supportedModels).not.toHaveBeenCalled()
+    expect(fake.planUsage).not.toHaveBeenCalled()
+    expect(JSON.stringify(fake.options.settings)).not.toContain('test-secret')
+    expect(fake.options.env?.ANTHROPIC_AUTH_TOKEN).toBe('test-secret')
+    expect(session.tui).toBeUndefined()
+    await session.configure({ model: 'sonnet' })
+    expect(fake.setModel).not.toHaveBeenCalled()
+    await session.configure({ fast: true, effort: 'max' })
+    expect(fake.applyFlagSettings).not.toHaveBeenCalled()
+    session.send('hello')
+    await tick()
+    expect(fake.prompts.at(-1)?.message.content).toBe('hello')
+    session.close()
+  })
+
+  it('shows actionable setup when the key is missing without starting Claude', async () => {
+    const { fake, session } = started({ claudeProvider: 'deepseek', configDir: '/home/me/.commando/deepseek', env: {} })
+    await tick()
+    expect(session.snapshot().session).toMatchObject({ provider: 'deepseek', status: 'error' })
+    expect(session.snapshot().session.error).toContain('DEEPSEEK_API_KEY')
+    expect(fake.options).toBeUndefined()
+    session.close()
   })
 })

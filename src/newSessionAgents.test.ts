@@ -5,7 +5,7 @@ describe('New session agents', () => {
   it('lists Claude chat and terminal once per profile, or once when there are none', () => {
     const profiles = [{ name: 'claudep', configDir: '/h/.claudep' }, { name: 'claudew', configDir: '/h/.claudew', label: 'Work' }]
     expect(agentOptions(profiles).map((option) => [option.group, option.label, option.tag ?? ''])).toEqual([
-      ['Chat', 'Claude chat', 'claudep'], ['Chat', 'Claude chat', 'Work'], ['Chat', 'Codex chat', ''], ['Chat', 'Muse chat', ''], ['Chat', 'Cursor chat', ''],
+      ['Chat', 'Claude chat', 'claudep'], ['Chat', 'Claude chat', 'Work'], ['Chat', 'Codex chat', ''], ['Chat', 'Muse chat', ''], ['Chat', 'Cursor chat', ''], ['Chat', 'DeepSeek chat', ''],
       ['Terminal', 'Claude terminal', 'claudep'], ['Terminal', 'Claude terminal', 'Work'], ['Terminal', 'Codex', ''], ['Terminal', 'OpenCode', ''], ['Terminal', 'Cursor', ''],
       ['Other', 'Shell', ''], ['Other', 'Nothing', ''],
     ])

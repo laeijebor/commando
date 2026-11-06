@@ -6,8 +6,6 @@ import { CloudIntentMismatchError, CloudTaskSubmissionRejectedError, useCloudTas
 import { cloudTaskConnectionLabel } from './CloudTaskCard'
 import './cloud-tasks.css'
 
-export const CLAUDE_CREATE_DISABLED_REASON = 'Claude creation is unverified: receipt/detach and an enforceable pushed-source/no-bundle path have not been confirmed. Create in Claude, then link the session here.'
-
 type ConnectionChoice = Pick<CloudProviderInfo, 'id' | 'credentialContextId' | 'label'>
 function initialConnection(providers: CloudProviderInfo[]): ConnectionChoice | null {
   const codex = providers.filter((info) => info.id === 'codex')
@@ -69,12 +67,20 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
   const { confirmed, credentialContextId, contextChanged, setConfirmed } = useCloudAccountConfirmation(info)
   const linking = kind === 'link'
   const messaging = kind === 'message'
-  const promptTooLong = !linking && new TextEncoder().encode(prompt).byteLength > CLOUD_PROMPT_LIMIT
+  const promptLimit = provider === 'claude' && kind === 'create' ? Math.min(CLOUD_PROMPT_LIMIT, info?.createPromptByteLimit ?? CLOUD_PROMPT_LIMIT) : CLOUD_PROMPT_LIMIT
+  const promptTooLong = !linking && new TextEncoder().encode(prompt).byteLength > promptLimit
   const capability = linking ? info?.capabilities.link : info?.readiness === 'ready' && (messaging ? info.capabilities.sendMessage : info.capabilities.create)
   const uncertainIntents = pending.some((item) => item.status !== 'recorded' || item.operation?.state === 'delivery_unknown')
-  const reason = !info ? 'Selected connection is unavailable. Restore it or explicitly select a configured connection; another profile is never substituted.'
-    : capability ? info.reason : kind === 'create' && provider === 'claude'
-    ? [info?.reason, CLAUDE_CREATE_DISABLED_REASON].filter(Boolean).join(' ') : info?.reason ?? 'Provider capability has not been verified.'
+  const createUnavailable = kind === 'create' && !capability
+  const reason = !info ? 'This connection is unavailable.'
+    : info.readiness === 'missing_cli' ? `${provider === 'claude' ? 'Claude' : 'Codex'} CLI is not installed.`
+    : info.readiness === 'unverified' ? 'This CLI version has not been verified for cloud tasks.'
+    : info.readiness === 'error' ? 'This connection could not be checked.'
+    : !capability ? info.reason.split(/(?<=[.!?])\s/)[0].slice(0, 200) || 'Creation is unavailable for this connection.'
+    : linking ? 'Link an existing task using its provider ID.'
+    : messaging ? 'Confirm the account and destination before sending.'
+    : provider === 'claude' ? 'Uses a fresh clone of the pushed GitHub branch. Local working files are never included.'
+    : 'Uses an existing Codex environment and the requested branch.'
 
   useEffect(() => {
     const root = dialog.current!
@@ -161,7 +167,11 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
             {!info && <option value={selectedConnectionKey} disabled>{connectionLabel}</option>}
             {providers?.providers.map((item) => <option key={cloudConnectionKey(item.id, item.credentialContextId)} value={cloudConnectionKey(item.id, item.credentialContextId)}>{item.label}</option>)}
           </select></label>
-          <p id={helpId} className="cloud-notice">{info?.readiness ?? 'unverified'}{info?.version ? ` · ${info.version}` : ''} — {reason}</p>
+          <p id={helpId} className="cloud-notice">{reason}</p>
+          {createUnavailable ? <div className="cloud-actions">
+            <button type="button" disabled={!info?.capabilities.link} onClick={() => { setKind('link'); setConfirmed(false) }}>Link existing</button>
+            <a href={cloudProviderHome(provider)} target="_blank" rel="noopener noreferrer">Open {provider === 'claude' ? 'Claude' : 'Codex'} ↗</a>
+          </div> : <>
           <p>Connection: {connectionLabel}. Confirmation context: <code>{connection?.credentialContextId ?? 'Unavailable'}</code> · {info?.verifiedAccountRef ?? 'Account identity unverified'}</p>
           {contextChanged && <p role="alert">Provider account/context changed. Review the displayed context and confirm again; the previous confirmation cannot authorize it.</p>}
           <a href={cloudProviderHome(provider)} target="_blank" rel="noopener noreferrer">Open {provider === 'claude' ? 'Claude' : 'Codex'} ↗</a>
@@ -176,27 +186,25 @@ export function CloudTaskCreateDialog({ api, mode = 'create', recoveryTask, reen
           </> : <>
             <label>{provider === 'codex' ? 'Existing environment ID' : 'Existing checkout path'}<input required value={target} maxLength={provider === 'codex' ? 160 : 1_024} onChange={(event) => setTarget(event.target.value)} /></label>
             <label>Requested branch<input required value={branch} maxLength={240} onChange={(event) => setBranch(event.target.value)} /></label>
-            <label>Task prompt<textarea required rows={4} value={prompt} maxLength={CLOUD_PROMPT_LIMIT} aria-invalid={promptTooLong} aria-describedby={promptTooLong ? promptErrorId : undefined} onChange={(event) => setPrompt(event.target.value)} /></label>
+            <label>Task prompt<textarea required rows={4} value={prompt} maxLength={promptLimit} aria-invalid={promptTooLong} aria-describedby={promptTooLong ? promptErrorId : undefined} onChange={(event) => setPrompt(event.target.value)} /></label>
             <p className="cloud-destination"><strong>Destination: {connectionLabel}</strong><br />{target || 'Choose a source'} · {branch || 'Choose a branch'}</p>
-            <p>{provider === 'codex' ? 'Uses your existing provider environment. A moving branch does not verify a remote commit.'
-              : 'Requires verified clean, pushed source and an enforceable no-bundle policy; source is revalidated before dispatch.'} No automatic push, apply, or merge.</p>
           </>}
-          {promptTooLong && <p id={promptErrorId} role="alert">{messaging ? 'Message' : 'Task prompt'} exceeds the {CLOUD_PROMPT_LIMIT.toLocaleString('en-US')}-byte UTF-8 limit. Shorten it before submitting.</p>}
+          {promptTooLong && <p id={promptErrorId} role="alert">{messaging ? 'Message' : 'Task prompt'} exceeds the {promptLimit.toLocaleString('en-US')}-byte UTF-8 limit. Shorten it before submitting.</p>}
           <label className="cloud-check"><input type="checkbox" required checked={confirmed} disabled={!info} onChange={(event) => setConfirmed(event.target.checked)} />
             I confirm the current CLI account/context and this destination{linking ? ' belong to this task' : ''}.
           </label>
-          {!info?.verifiedAccountRef && <p>Official account identity is unverified. This confirmation is a user check, not provider evidence.</p>}
           {((!reentryKey && !linking && uncertainIntents) || mismatch) && <label className="cloud-check cloud-notice"><input type="checkbox" required={!reentryKey} checked={riskConfirmed} onChange={(event) => setRiskConfirmed(event.target.checked)} />
             {mismatch ? 'This changed draft needs a new key. I explicitly authorize a new intent after checking the provider; duplicate remote work or messages are possible.' : 'An earlier intent is unresolved. I checked the provider and want an explicit new intent; duplicate remote work is possible.'}
           </label>}
+          </>}
         </fieldset>
         {error && <p role="alert">{error} {uncertain && 'Close this dialog to recover the saved intent.'}</p>}
-        <button className="cloud-primary" type="submit" disabled={!connected || !capability || !confirmed || busy || uncertain || promptTooLong
+        {!createUnavailable && <><button className="cloud-primary" type="submit" disabled={!connected || !capability || !confirmed || busy || uncertain || promptTooLong
           || (linking ? !validCloudRemoteId(provider, remoteId.trim()) : messaging ? !boundTask || !prompt.trim() : !target.trim() || !branch.trim() || !prompt.trim())
           || (!reentryKey && !linking && uncertainIntents && !riskConfirmed)}>
           {busy ? 'Recording…' : reentryKey ? mismatch && riskConfirmed ? 'Explicitly record new intent' : 'Reconfirm and recover original intent' : linking ? 'Link identity only' : 'Record cloud task'}
         </button>
-        <p>Recorded locally is not cloud acceptance. Wait for a provider receipt before closing the laptop expecting hosted execution.</p>
+        <p>Wait for a provider receipt before expecting hosted execution.</p></>}
       </form>
     </section>
   </div>, document.body)

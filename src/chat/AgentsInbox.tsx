@@ -1,3 +1,4 @@
+import { useHost } from '../HostContext'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ArrowUpRight, Bot, ChevronDown, CircleAlert, CircleCheck, CircleSlash, LoaderCircle, Reply, Send, X } from 'lucide-react'
 import { RELAY_MAX_CHARS, type CommanderRelay } from '../../shared/commander'
@@ -45,6 +46,7 @@ function InboxReply({ row, token, disabled, onRelay, onClose }: {
 }) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const { daemonFetch } = useHost()
   const [error, setError] = useState('')
   const inFlight = useRef(false)
   const send = async () => {
@@ -53,7 +55,7 @@ function InboxReply({ row, token, disabled, onRelay, onClose }: {
     setSending(true)
     setError('')
     try {
-      onRelay(await createCommanderApi(token).relay(row.paneId, text))
+      onRelay(await createCommanderApi(token, daemonFetch).relay(row.paneId, text))
       onClose()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to relay message')

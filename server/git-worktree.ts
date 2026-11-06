@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { access, rename } from 'node:fs/promises'
+import { access, readdir, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
@@ -8,6 +8,8 @@ const COMMAND_TIMEOUT_MS = 5_000
 const WORKTREE_TIMEOUT_MS = 30_000
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const BUFFER_BYTES = 1024 * 1024
+/** About 3 million tracked files at roughly 85 bytes each. */
+const INDEX_LISTING_BYTES = 256 * 1024 * 1024
 const DEFAULT_BRANCH_CANDIDATES = ['main', 'master']
 const REMOTE = 'origin'
 /** Conservative subset of `git check-ref-format --branch`. */
@@ -30,6 +32,8 @@ export type CreateWorktreeInput = {
   remote?: string
   /** Refuse an existing branch instead of reusing it: the name was picked for the caller, not chosen. */
   newBranchOnly?: boolean
+  /** Refuse to create the branch: the caller is checking an existing one out again. */
+  existingBranchOnly?: boolean
 }
 
 export type CreateWorktreeResult = {
@@ -49,9 +53,24 @@ export type GitWorktreeServiceOptions = {
   pathExists?: (target: string) => Promise<boolean>
   fetchTimeoutMs?: number
   environment?: NodeJS.ProcessEnv
+  /** Absolute folder new `<repo>-worktrees` folders go under; see `worktreesParentFromEnv`. */
+  worktreesParent?: string
   /** Filesystem steps of worktree removal; tests replace them. */
   renamePath?: (from: string, to: string) => Promise<void>
   removeTree?: (target: string) => Promise<void>
+}
+
+/**
+ * `COMMANDO_WORKTREE_ROOT`: where new worktrees go (`<root>/<repo>-worktrees/<branch>`)
+ * instead of beside the main checkout. Unset or blank keeps the sibling layout.
+ */
+export function worktreesParentFromEnv(environment: NodeJS.ProcessEnv): string | undefined {
+  const value = environment.COMMANDO_WORKTREE_ROOT?.trim()
+  if (!value) return undefined
+  if (!path.isAbsolute(value) || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new Error('COMMANDO_WORKTREE_ROOT must be an absolute path')
+  }
+  return path.normalize(value).replace(/\/+$/u, '') || '/'
 }
 
 /** Names a removed worktree folder while a background process deletes it. */
@@ -127,6 +146,7 @@ export class GitWorktreeService {
   private readonly pathExists: (target: string) => Promise<boolean>
   private readonly fetchTimeoutMs: number
   private readonly environment: NodeJS.ProcessEnv
+  private readonly worktreesParent: string | undefined
   private readonly renamePath: (from: string, to: string) => Promise<void>
   private readonly removeTree: (target: string) => Promise<void>
 
@@ -137,6 +157,7 @@ export class GitWorktreeService {
     this.pathExists = options.pathExists ?? defaultPathExists
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
     this.environment = options.environment ?? process.env
+    this.worktreesParent = options.worktreesParent
     this.renamePath = options.renamePath ?? rename
     this.removeTree = options.removeTree ?? defaultRemoveTree
   }
@@ -155,6 +176,7 @@ export class GitWorktreeService {
       branch: branch ?? '',
       isWorktree: root !== mainRoot,
       ...(defaultBranch ? { defaultBranch, remote: REMOTE } : {}),
+      ...(this.worktreesParent ? { worktreesParent: this.worktreesParent } : {}),
     }
   }
 
@@ -170,13 +192,15 @@ export class GitWorktreeService {
   }
 
   async createWorktree(input: CreateWorktreeInput): Promise<CreateWorktreeResult> {
-    const branch = validateBranchName(input.branch)
+    // An existing branch may use any name git accepts (`feature/c++`); only names we pick follow the conservative rule.
+    const branch = input.existingBranchOnly ? await this.validateExistingBranchName(input.mainRoot, input.branch) : validateBranchName(input.branch)
     if (!path.isAbsolute(input.path)) throw new GitWorktreeError('bad-path', 'Worktree path must be absolute')
     const target = path.normalize(input.path)
     const cwd = input.mainRoot
 
     const branchExists = await this.refExists(cwd, `refs/heads/${branch}`)
     if (branchExists && input.newBranchOnly) throw new GitWorktreeError('branch-exists', `Branch ${branch} already exists`)
+    if (!branchExists && input.existingBranchOnly) throw new GitWorktreeError('bad-branch', `Branch ${branch} no longer exists`)
     const worktrees = branchExists || await this.pathExists(target)
       ? parseWorktreeList((await this.git(cwd, ['worktree', 'list', '--porcelain'])).stdout)
       : []
@@ -242,6 +266,53 @@ export class GitWorktreeService {
    * the registration, and a detached process deletes the renamed folder, so a
    * daemon restart does not interrupt it.
    */
+  /**
+   * Commit everything git tracks or could track (gitignored files excepted) so
+   * the worktree can be removed without losing work. Returns the identity with
+   * its new head, or the same identity when there was nothing to commit.
+   */
+  async commitWorkInProgress(worktree: GitWorktreeIdentity, message: string): Promise<GitWorktreeIdentity> {
+    if (worktree.branch === 'HEAD' || !worktree.branch) {
+      throw new GitWorktreeError('exec', 'Worktree has a detached HEAD, so a work-in-progress commit would not be kept on any branch')
+    }
+    const status = async () => (await this.git(worktree.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'])).stdout
+    try {
+      // Lines read `<tag> <mode> <object> <stage>\t<path>`, one per tracked file, so a large repository
+      // needs far more room than other commands.
+      const index = (await this.git(worktree.root, ['ls-files', '-v', '--stage', '-z'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout.split('\0')
+      // A gitlink (submodule, or a nested repository someone staged) keeps only a commit id: its files and
+      // objects live in the folder that removal deletes, so such a worktree is never saved this way.
+      const gitlink = index.find((line) => line.split(' ')[1] === '160000')
+      if (gitlink) throw new GitWorktreeError('exec', `Worktree contains a submodule or nested repository at ${gitlink.split('\t')[1]}`)
+      // assume-unchanged (a lowercase tag) and skip-worktree (S) hide a file's edits from status and add. Sparse
+      // checkout marks every file outside its cone S, but those are not on disk, so there is nothing to lose.
+      let hidden = index.find((line) => /^[a-z] /u.test(line))
+      for (const line of index) {
+        if (hidden) break
+        if (line.startsWith('S ') && await this.pathExists(path.join(worktree.root, line.split('\t')[1]))) hidden = line
+      }
+      if (hidden) throw new GitWorktreeError('exec', `Worktree has a file git is told to ignore changes to (assume-unchanged or skip-worktree) at ${hidden.split('\t')[1]}`)
+      // Found on disk: started inside a tracked folder, a repository looks like ordinary files to the outer one.
+      const nestedRepository = await this.nestedRepository(worktree.root)
+      if (nestedRepository) throw new GitWorktreeError('exec', `Worktree contains another git repository at ${nestedRepository}`)
+      const before = await status()
+      if (!before.trim()) return worktree
+      if (before.split('\n').some((line) => /^(?:DD|AU|UD|UA|DU|AA|UU) /u.test(line))) {
+        throw new GitWorktreeError('exec', 'Worktree has unresolved merge conflicts')
+      }
+      await this.git(worktree.root, ['add', '--all'], WORKTREE_TIMEOUT_MS)
+      // No hooks or signing: either could block or prompt with nobody watching.
+      await this.git(worktree.root, ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '--no-verify', '--quiet', '-m', message], WORKTREE_TIMEOUT_MS)
+      // Work inside submodules is not part of this commit; leave such a worktree in place.
+      if ((await status()).trim()) throw new GitWorktreeError('exec', 'Some changes could not be committed, such as work inside a submodule')
+      const head = (await this.git(worktree.root, ['rev-parse', '--verify', 'HEAD'])).stdout.trim()
+      return { ...worktree, head }
+    } catch (error) {
+      if (error instanceof GitWorktreeError) throw error
+      throw new GitWorktreeError('exec', `Could not commit work in progress: ${failureDetail(error)}`)
+    }
+  }
+
   async removeWorktree(worktree: GitWorktreeIdentity): Promise<void> {
     const root = path.normalize(worktree.root)
     const mainRoot = path.normalize(worktree.mainRoot)
@@ -276,6 +347,34 @@ export class GitWorktreeService {
     }
     void this.removeTree(aside)
       .catch((error) => console.warn(`[commando] Could not delete removed worktree folder ${aside}`, error))
+  }
+
+  /**
+   * The first folder below `root` holding its own `.git`, skipping gitignored folders: their contents
+   * (node_modules and the like) go with the worktree by design, and are never walked.
+   */
+  private async nestedRepository(root: string): Promise<string | undefined> {
+    const listing = (await this.git(root, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], WORKTREE_TIMEOUT_MS, INDEX_LISTING_BYTES)).stdout
+    const ignored = new Set(listing.split('\0').filter((entry) => entry.endsWith('/')).map((entry) => path.join(root, entry.slice(0, -1))))
+    const walk = async (directory: string): Promise<string | undefined> => {
+      const entries = await readdir(directory, { withFileTypes: true })
+      if (directory !== root && entries.some((entry) => entry.name === '.git')) return path.relative(root, directory)
+      for (const entry of entries) {
+        const child = path.join(directory, entry.name)
+        if (!entry.isDirectory() || entry.name === '.git' || ignored.has(child)) continue
+        const found = await walk(child)
+        if (found) return found
+      }
+      return undefined
+    }
+    return walk(root)
+  }
+
+  private async validateExistingBranchName(cwd: string, value: unknown): Promise<string> {
+    if (typeof value !== 'string' || !value || value.startsWith('-')) throw new GitWorktreeError('bad-branch', 'Branch name is not a valid git ref')
+    try { await this.git(cwd, ['check-ref-format', '--branch', value]) }
+    catch { throw new GitWorktreeError('bad-branch', 'Branch name is not a valid git ref') }
+    return value
   }
 
   private async registeredWorktree(mainRoot: string, root: string) {
@@ -342,12 +441,12 @@ export class GitWorktreeService {
     }
   }
 
-  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS): Promise<{ stdout: string; stderr: string }> {
+  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES): Promise<{ stdout: string; stderr: string }> {
     const options: GitExecutorOptions = {
       cwd,
       encoding: 'utf8',
       env: { ...this.environment, GIT_TERMINAL_PROMPT: '0' },
-      maxBuffer: BUFFER_BYTES,
+      maxBuffer,
       shell: false,
       timeout,
       windowsHide: true,

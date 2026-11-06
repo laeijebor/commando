@@ -5,7 +5,7 @@ import type { ChatStashEntry } from './chat-stash.js'
 import type { ChatMcpRequest, ChatMcpResult } from './chat-mcp.js'
 import type { ChatCardEvent } from './chat-tile-events.js'
 
-export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'muse' | 'unknown'
+export type AgentProvider = 'claude' | 'codex' | 'opencode' | 'cursor' | 'muse' | 'deepseek' | 'unknown'
 
 export type AgentStatusKind =
   | 'working'

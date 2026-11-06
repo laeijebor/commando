@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -86,6 +86,46 @@ describe('per-session tmux archives', () => {
     expect(targets[0]).toBe(`${newAgentPane} v1:${newAgentPane}:${target}`)
     expect(targets[1]!.split(' ')[1] ?? '').toBe('')
     expect(restored).toEqual([{ [target]: agent }])
+  })
+
+  it('pauses a session with its repository, then archives it with the worktree it removed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-archive-'))
+    directories.push(directory)
+    const archives = new SessionArchives({ directory, environment: { COMMANDO_TMUX_SOCKET_NAME: socket } })
+    await tmux('new-session', '-d', '-s', 'keep')
+    const sessionId = await tmux('new-session', '-d', '-P', '-F', '#{session_id}', '-s', 'restored', '-c', tmpdir())
+    const repo = { root: '/repo', name: 'repo', branch: 'feature', defaultBranch: 'main' }
+    const paused = await archives.archive(sessionId, 'restored', { paused: true, repo })
+    expect(paused).toMatchObject({ paused: true, repo })
+    const worktree = { path: '/repo-worktrees/feature', mainRoot: '/repo', branch: 'feature', wipCommit: 'a'.repeat(40) }
+    const archived = await archives.update(paused.id, { worktree })
+    expect(archived).toMatchObject({ repo, worktree })
+    expect(archived.paused).toBeUndefined()
+    expect(await archives.list()).toEqual([archived])
+    await expect(archives.update(paused.id, { paused: true, worktree })).rejects.toThrow('Invalid session archive update')
+  })
+
+  it('checks a removed worktree out again before restoring, opening ignored folders at its root', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'commando-archive-'))
+    directories.push(directory)
+    const worktreePath = join(directory, 'worktree')
+    const recreated: string[] = []
+    const archives = new SessionArchives({
+      directory, environment: { COMMANDO_TMUX_SOCKET_NAME: socket },
+      recreateWorktree: async (worktree) => { recreated.push(worktree.branch); await mkdir(worktree.path) },
+    })
+    await mkdir(join(worktreePath, 'build'), { recursive: true })
+    await tmux('new-session', '-d', '-s', 'keep')
+    const sessionId = await tmux('new-session', '-d', '-P', '-F', '#{session_id}', '-s', 'restored', '-c', worktreePath)
+    await tmux('split-window', '-d', '-h', '-t', sessionId, '-c', join(worktreePath, 'build'))
+    const summary = await archives.archive(sessionId, 'restored')
+    await archives.update(summary.id, { worktree: { path: worktreePath, mainRoot: '/repo', branch: 'feature' } })
+    await rm(worktreePath, { recursive: true })
+
+    const restoredId = await archives.restore(summary.id)
+    expect(recreated).toEqual(['feature'])
+    const real = await realpath(worktreePath)
+    expect((await tmux('list-panes', '-t', restoredId, '-F', '#{pane_current_path}')).split('\n')).toEqual([real, real])
   })
 
   it('keeps the archive if restoration conflicts with a live session', async () => {

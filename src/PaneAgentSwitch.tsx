@@ -55,7 +55,7 @@ export function PaneAgentSwitch({
       >
         Chat
       </button>
-      {provider !== 'cursor' ? <button
+      {provider !== 'cursor' && provider !== 'deepseek' ? <button
         type="button"
         aria-pressed={mode === 'claude-code'}
         disabled={mode === 'chat' && claudeCodeDisabled}

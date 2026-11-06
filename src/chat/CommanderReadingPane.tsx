@@ -1,3 +1,4 @@
+import { useHost } from '../HostContext'
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronUp, Menu as MenuIcon, Send, X } from 'lucide-react'
 import type { ChatProvider } from '../../shared/agent-chat'
@@ -111,11 +112,12 @@ export function CommanderTranscriptView({ token, row, provider, cwd, refreshKey,
   disabled?: boolean
   onRelay: (relay: CommanderRelay) => void
 }) {
+  const { daemonFetch } = useHost()
   const [state, setState] = useState<TranscriptState>({ loading: true })
   useEffect(() => {
     let live = true
     setState((current) => ({ ...current, loading: true }))
-    createCommanderApi(token).transcript(row.paneId).then(
+    createCommanderApi(token, daemonFetch).transcript(row.paneId).then(
       (result) => { if (live) setState({ loading: false, result }) },
       (cause: unknown) => { if (live) setState((current) => ({ ...current, loading: false, error: cause instanceof Error ? cause.message : 'Unable to read the transcript' })) },
     )
@@ -137,6 +139,7 @@ export function CommanderTranscriptView({ token, row, provider, cwd, refreshKey,
 }
 
 function RelayComposer({ token, row, disabled, onRelay }: { token: string; row: CommanderInboxRow; disabled?: boolean; onRelay: (relay: CommanderRelay) => void }) {
+  const { daemonFetch } = useHost()
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
@@ -145,7 +148,7 @@ function RelayComposer({ token, row, disabled, onRelay }: { token: string; row: 
     setSending(true)
     setError('')
     try {
-      onRelay(await createCommanderApi(token).relay(row.paneId, text))
+      onRelay(await createCommanderApi(token, daemonFetch).relay(row.paneId, text))
       setText('')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to send the message')

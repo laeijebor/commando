@@ -174,7 +174,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (resume !== undefined && !isChatLaunchProvider(provider) && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (fullAccess !== undefined && (fullAccess !== true || provider !== 'muse-chat' || permissionMode !== 'bypassPermissions')) throw new Error('Only a Muse chat in bypassPermissions can ask for full access')
-  const chatName = provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : provider === 'cursor-chat' ? 'Cursor' : 'Claude'
+  const chatName = provider === 'deepseek-chat' ? 'DeepSeek' : provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : provider === 'cursor-chat' ? 'Cursor' : 'Claude'
   if (chatName !== 'Claude' && (configDir !== undefined || readableDir !== undefined)) throw new Error(`${chatName} chat does not accept a Claude profile or readable folder`)
   if (isChatLaunchProvider(provider) && permissionMode !== undefined && !chatPermissionModes(provider).some((mode) => mode.value === permissionMode)) throw new Error(`Unsupported ${chatName} permission mode`)
   // Only one stashed plan's own folder: a chat must not be handed any other path.
@@ -529,7 +529,7 @@ export class TmuxCreator {
         created = await this.worktrees.createWorktree({
           mainRoot: repo.mainRoot,
           branch,
-          path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch),
+          path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch, repo.worktreesParent),
           ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
           ...(branchFromName ? { newBranchOnly: true } : {}),
         })
@@ -798,7 +798,7 @@ export class TmuxCreator {
       const repo = await this.worktrees!.probe(cwd!)
       if (!repo.isRepo || !repo.mainRoot) throw new GitWorktreeError('not-repo', `${cwd} is not inside a git repository`)
       const result = await this.worktrees!.createWorktree({
-        mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!),
+        mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!, repo.worktreesParent),
         ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
       })
       worktree = result.worktree

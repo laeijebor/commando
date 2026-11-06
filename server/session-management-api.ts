@@ -13,7 +13,8 @@ import {
 } from './tmux-session-actions.js'
 import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
 import type { SessionWorktreeDeletionPlan } from './session-worktree-deletion.js'
-import { SessionArchives } from './session-archives.js'
+import { SessionArchives, type ArchivedRepo, type ArchiveSummary, type SessionArchive } from './session-archives.js'
+import type { GitWorktreeIdentity } from './git-worktree.js'
 
 const API_ROOT = '/api/session-management'
 const MAX_REQUEST_BYTES = 64 * 1024
@@ -27,6 +28,12 @@ type SessionManagementDependencies = {
   currentServerId?: () => string | null
   currentWindowIds: () => readonly string[]
   prepareSessionWorktreeDeletion?: (sessionId: string) => Promise<SessionWorktreeDeletionPlan>
+  /** Plans removing the worktree a paused session's saved directories are in. */
+  prepareDirectoriesWorktreeDeletion?: (directories: readonly string[]) => Promise<SessionWorktreeDeletionPlan>
+  /** Commits uncommitted work before an archive removes the worktree; returns the identity with its new head. */
+  commitWorkInProgress?: (worktree: GitWorktreeIdentity, message: string) => Promise<GitWorktreeIdentity>
+  /** The repository a live session belongs to, kept with a paused session for repository grouping. */
+  sessionRepo?: (sessionId: string) => ArchivedRepo | undefined
   afterSessionDeleted?: (sessionId: string) => void
   afterSessionRestored?: (sessionId: string) => void
   afterSessionRenamed?: (sessionId: string, previousName: string, name: string) => void | Promise<void>
@@ -85,13 +92,15 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function sessionRoute(pathname: string): { sessionId: string; action: 'rename' | 'delete' | 'delete-preview' | 'archive' | 'identity' } | null {
-  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete|delete-preview|archive|identity)$/.exec(pathname)
+type SessionAction = 'rename' | 'delete' | 'delete-preview' | 'archive' | 'pause' | 'identity'
+
+function sessionRoute(pathname: string): { sessionId: string; action: SessionAction } | null {
+  const match = /^\/api\/session-management\/sessions\/([^/]+)\/(rename|delete|delete-preview|archive|pause|identity)$/.exec(pathname)
   if (!match) return null
   try {
     return {
       sessionId: validateTmuxSessionId(decodeURIComponent(match[1])),
-      action: match[2] as 'rename' | 'delete' | 'delete-preview' | 'archive' | 'identity',
+      action: match[2] as SessionAction,
     }
   } catch {
     throw new HttpError(400, 'Invalid tmux session id')
@@ -141,12 +150,24 @@ export class SessionManagementApi {
         writeJson(response, 200, { archives: await this.archives.list() })
         return true
       }
-      const restore = /^\/api\/session-management\/archives\/([^/]+)\/restore$/.exec(url.pathname)
-      if (restore) {
+      const archiveRoute = /^\/api\/session-management\/archives\/([^/]+)\/(restore|archive)$/.exec(url.pathname)
+      if (archiveRoute) {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
-        const id = decodeURIComponent(restore[1])
+        const id = decodeURIComponent(archiveRoute[1])
         const archive = (await this.archives.list()).find((item) => item.id === id)
         if (!archive) throw new HttpError(404, 'Session archive does not exist')
+        if (archiveRoute[2] === 'archive') {
+          if (!archive.paused) throw new HttpError(409, 'Session is already archived')
+          const full = await this.archives.get(id)
+          const directories = full.windows.flatMap((window) => window.panes.map((pane) => pane.path))
+          const result = await this.removeArchivedWorktree(archive, () => this.planWorktreeRemoval(() => {
+            if (!this.dependencies.prepareDirectoriesWorktreeDeletion) throw new HttpError(501, 'Worktree removal is not available')
+            return this.dependencies.prepareDirectoriesWorktreeDeletion(directories)
+          }))
+          await this.dependencies.onSessionsChanged?.()
+          writeJson(response, 200, { ok: true, ...result })
+          return true
+        }
         if (this.dependencies.currentSessions().some((session) => session.name === archive.name)) {
           throw new HttpError(409, `A tmux session named “${archive.name}” already exists`)
         }
@@ -211,25 +232,42 @@ export class SessionManagementApi {
           return true
         }
 
-        if (route.action === 'archive') {
+        if (route.action === 'archive' || route.action === 'pause') {
           if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+          const paused = route.action === 'pause'
           const body = record(await readJson(request))
-          if (body.confirmSessionId !== route.sessionId) throw new HttpError(400, 'Archiving requires an exact confirmSessionId')
+          if (body.confirmSessionId !== route.sessionId) throw new HttpError(400, `${paused ? 'Pausing' : 'Archiving'} requires an exact confirmSessionId`)
           const name = this.dependencies.currentSessions().find((session) => session.id === route.sessionId)!.name
-          const archive = await this.archives.archive(route.sessionId, name)
+          // Planned while the session runs: afterwards its panes, which locate the worktree, are gone.
+          const plan = await this.planWorktreeRemoval(async () => {
+            if (!this.dependencies.prepareSessionWorktreeDeletion) throw new HttpError(501, 'Worktree removal is not available')
+            return this.dependencies.prepareSessionWorktreeDeletion(route.sessionId)
+          })
+          const repo = this.dependencies.sessionRepo?.(route.sessionId)
+          const archive = await this.archives.archive(route.sessionId, name, { paused, ...(repo ? { repo } : {}) })
           this.dependencies.afterSessionDeleted?.(route.sessionId)
+          if (paused) {
+            await this.closeBackgroundSessions(plan.plan)
+            try { await this.preferences.holdPlaceByName(route.sessionId, name) }
+            catch (error) { console.warn('[commando] Could not keep a paused session’s place in the session tree', error) }
+          }
+          const result = paused ? { archive } : await this.removeArchivedWorktree(archive, async () => plan)
           await this.dependencies.onSessionsChanged?.()
-          writeJson(response, 200, { ok: true, archive })
+          writeJson(response, 200, { ok: true, ...result })
           return true
         }
 
         const prepareWorktreeDeletion = async () => {
           if (!this.dependencies.prepareSessionWorktreeDeletion) throw new HttpError(501, 'Worktree deletion is not available')
-          try { return await this.dependencies.prepareSessionWorktreeDeletion(route.sessionId) }
+          let plan: SessionWorktreeDeletionPlan
+          try { plan = await this.dependencies.prepareSessionWorktreeDeletion(route.sessionId) }
           catch (error) {
             if (error instanceof SessionWorktreeConflictError) throw new HttpError(409, error.message)
             throw error
           }
+          const pausedUser = await this.pausedSessionUsing(plan.worktree.root)
+          if (pausedUser) throw new HttpError(409, `${pausedUser}; resume or archive it first`)
+          return plan
         }
         if (route.action === 'delete-preview') {
           if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
@@ -270,6 +308,7 @@ export class SessionManagementApi {
         this.dependencies.afterSessionDeleted?.(route.sessionId)
         let worktreeError: unknown
         try {
+          if (deleteWorktree) await this.recordWorktreeOnOtherArchives(deleteWorktree.worktree)
           await deleteWorktree?.remove()
         } catch (error) {
           worktreeError = error
@@ -322,6 +361,82 @@ export class SessionManagementApi {
     }
   }
 
+  /** Archives with a pane in the worktree. Pane paths are resolved by tmux, as the worktree root is by git. */
+  private async archivesUsing(worktreeRoot: string, exceptArchiveId?: string): Promise<SessionArchive[]> {
+    const using: SessionArchive[] = []
+    for (const summary of await this.archives.list()) {
+      if (summary.id === exceptArchiveId) continue
+      const archive = await this.archives.get(summary.id).catch(() => undefined)
+      if (archive?.windows.some((window) => window.panes.some((pane) => pane.path === worktreeRoot || pane.path.startsWith(`${worktreeRoot}/`)))) using.push(archive)
+    }
+    return using
+  }
+
+  /** Why a worktree must stay: a paused session will reopen in it. */
+  private async pausedSessionUsing(worktreeRoot: string, exceptArchiveId?: string): Promise<string | undefined> {
+    const paused = (await this.archivesUsing(worktreeRoot, exceptArchiveId)).find((archive) => archive.paused)
+    return paused ? `Paused session “${paused.name}” still uses this worktree` : undefined
+  }
+
+  /** Lets other archived sessions in a worktree about to go check its branch out again when they are restored. */
+  private async recordWorktreeOnOtherArchives(worktree: GitWorktreeIdentity, exceptArchiveId?: string): Promise<void> {
+    for (const archive of await this.archivesUsing(worktree.root, exceptArchiveId)) {
+      if (archive.paused || archive.worktree) continue
+      await this.archives.update(archive.id, { worktree: { path: worktree.root, mainRoot: worktree.mainRoot, branch: worktree.branch } })
+        .catch((error: unknown) => console.warn(`[commando] Could not record the removed worktree on archive ${archive.name}`, error))
+    }
+  }
+
+  /** Helper sessions (dev servers and the like) for a worktree stop with the session that owns it. */
+  private async closeBackgroundSessions(plan: SessionWorktreeDeletionPlan | undefined): Promise<void> {
+    for (const session of plan?.auxiliarySessions ?? []) {
+      await this.actions.delete(session.id).catch((error: unknown) => console.warn(`[commando] Could not close background session ${session.name}`, error))
+    }
+  }
+
+  /** A worktree plan, or why there is none: `kept` is worth telling the user, a session outside any worktree is not. */
+  private async planWorktreeRemoval(prepare: () => Promise<SessionWorktreeDeletionPlan>): Promise<{ plan?: SessionWorktreeDeletionPlan; kept?: string }> {
+    try { return { plan: await prepare() } }
+    catch (error) {
+      if (error instanceof SessionWorktreeConflictError) return error.reason === 'no-worktree' ? {} : { kept: error.message }
+      if (error instanceof HttpError && error.status === 501) return {}
+      throw error
+    }
+  }
+
+  /**
+   * Commits uncommitted work, records the worktree in the archive, then removes it. The archive and
+   * its session are already safe, so any failure here keeps the worktree and says why.
+   */
+  private async removeArchivedWorktree(
+    archive: ArchiveSummary,
+    plan: () => Promise<{ plan?: SessionWorktreeDeletionPlan; kept?: string }>,
+  ): Promise<{ archive: ArchiveSummary; worktreeKept?: string }> {
+    const { plan: removal, kept } = await plan()
+    const pausedUser = removal && await this.pausedSessionUsing(removal.worktree.root, archive.id)
+    if (pausedUser) return { archive: archive.paused ? await this.archives.update(archive.id, {}) : archive, worktreeKept: pausedUser }
+    if (!removal) return { archive: archive.paused ? await this.archives.update(archive.id, {}) : archive, ...(kept ? { worktreeKept: kept } : {}) }
+    await this.closeBackgroundSessions(removal)
+    let current = removal.worktree
+    let recorded = archive
+    try {
+      if (!this.dependencies.commitWorkInProgress) throw new Error('Work-in-progress commits are not available')
+      current = await this.dependencies.commitWorkInProgress(removal.worktree, `wip: archived session “${archive.name}”`)
+      // Recorded first: a restore recreates the worktree only when its folder is missing, so this is safe if removal fails.
+      recorded = await this.archives.update(archive.id, { worktree: {
+        path: current.root, mainRoot: current.mainRoot, branch: current.branch,
+        ...(current.head !== removal.worktree.head ? { wipCommit: current.head } : {}),
+      } })
+      await this.recordWorktreeOnOtherArchives(current, archive.id)
+      await removal.remove(current)
+      return { archive: recorded }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'worktree removal failed'
+      const unrecorded = await this.archives.update(archive.id, {}).catch(() => recorded)
+      return { archive: unrecorded, worktreeKept: current.head !== removal.worktree.head ? `${detail} (uncommitted work was saved in commit ${current.head.slice(0, 8)})` : detail }
+    }
+  }
+
   private async handlePreferences(
     request: IncomingMessage,
     response: ServerResponse,
@@ -347,7 +462,7 @@ export class SessionManagementApi {
   private allowedMethods(pathname: string): string {
     if (pathname === `${API_ROOT}/preferences`) return 'GET, PUT'
     if (pathname === `${API_ROOT}/archives`) return 'GET'
-    if (pathname.endsWith('/archive') || pathname.endsWith('/restore')) return 'POST'
+    if (pathname.endsWith('/archive') || pathname.endsWith('/pause') || pathname.endsWith('/restore')) return 'POST'
     if (pathname.endsWith('/delete-preview')) return 'GET'
     if (pathname.endsWith('/rename') || pathname.endsWith('/identity') || pathname.endsWith('/identities')) return 'POST'
     if (pathname.endsWith('/delete')) return 'DELETE'

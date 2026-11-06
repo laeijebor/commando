@@ -26,6 +26,7 @@ const CHATS: readonly { provider: StartWith; label: string }[] = [
   { provider: 'codex-chat', label: 'Codex chat' },
   { provider: 'muse-chat', label: 'Muse chat' },
   { provider: 'cursor-chat', label: 'Cursor chat' },
+  { provider: 'deepseek-chat', label: 'DeepSeek chat' },
 ]
 const TERMINALS: readonly { provider: StartWith; label: string }[] = [
   { provider: 'codex', label: 'Codex' },
@@ -69,6 +70,7 @@ export function modelProvider(provider: StartWith): ChatProvider | null {
     case 'codex-chat': case 'codex': return 'codex'
     case 'muse-chat': return 'muse'
     case 'cursor-chat': return 'cursor'
+    case 'deepseek-chat': return 'deepseek'
     default: return null
   }
 }

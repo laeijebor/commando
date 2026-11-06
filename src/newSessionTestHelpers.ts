@@ -3,7 +3,7 @@ import { expect } from 'vitest'
 import type { StartWith } from './newSessionAgents'
 
 const AGENT_LABELS: Record<StartWith, string> = {
-  'claude-chat': 'Claude chat', 'codex-chat': 'Codex chat', 'muse-chat': 'Muse chat', 'cursor-chat': 'Cursor chat',
+  'claude-chat': 'Claude chat', 'codex-chat': 'Codex chat', 'muse-chat': 'Muse chat', 'cursor-chat': 'Cursor chat', 'deepseek-chat': 'DeepSeek chat',
   claude: 'Claude terminal', codex: 'Codex', opencode: 'OpenCode', cursor: 'Cursor', shell: 'Shell', none: 'Nothing',
 }
 

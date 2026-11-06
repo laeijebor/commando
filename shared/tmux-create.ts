@@ -18,18 +18,18 @@ export type TmuxSplitPlacement = 'before' | 'after'
  * Interactive CLIs supported by creation; provider names are not executable names.
  * `claude-chat` runs Claude through Commando's agent host and shows it as a chat.
  */
-export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
+export type SessionAgentProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'deepseek-chat' | 'claude' | 'codex' | 'opencode' | 'cursor'
 /** The providers that run through Commando's agent host as a chat. */
-export type ChatLaunchProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat'
+export type ChatLaunchProvider = 'claude-chat' | 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'deepseek-chat'
 export function isChatLaunchProvider(provider: unknown): provider is ChatLaunchProvider {
-  return provider === 'claude-chat' || provider === 'codex-chat' || provider === 'muse-chat' || provider === 'cursor-chat'
+  return provider === 'claude-chat' || provider === 'codex-chat' || provider === 'muse-chat' || provider === 'cursor-chat' || provider === 'deepseek-chat'
 }
 /** The agent host's name for a chat provider: `commando-agent <name>`. */
 export function chatHostProvider(provider: ChatLaunchProvider): ChatProvider {
-  return provider === 'codex-chat' ? 'codex' : provider === 'muse-chat' ? 'muse' : provider === 'cursor-chat' ? 'cursor' : 'claude'
+  return provider === 'deepseek-chat' ? 'deepseek' : provider === 'codex-chat' ? 'codex' : provider === 'muse-chat' ? 'muse' : provider === 'cursor-chat' ? 'cursor' : 'claude'
 }
 export function chatLaunchProvider(provider: ChatProvider): ChatLaunchProvider {
-  return provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : provider === 'cursor' ? 'cursor-chat' : 'claude-chat'
+  return provider === 'deepseek' ? 'deepseek-chat' : provider === 'codex' ? 'codex-chat' : provider === 'muse' ? 'muse-chat' : provider === 'cursor' ? 'cursor-chat' : 'claude-chat'
 }
 export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'auto'
 export type SessionAgentLaunch = {
@@ -124,6 +124,7 @@ export const SESSION_AGENT_CHOICES = [
   { value: 'codex-chat', label: 'Codex chat' },
   { value: 'muse-chat', label: 'Muse chat' },
   { value: 'cursor-chat', label: 'Cursor chat' },
+  { value: 'deepseek-chat', label: 'DeepSeek chat' },
   { value: 'claude', label: 'Claude (terminal)' },
   { value: 'codex', label: 'Codex' },
   { value: 'opencode', label: 'OpenCode' },
@@ -131,7 +132,7 @@ export const SESSION_AGENT_CHOICES = [
 ] as const
 
 export const SESSION_AGENT_EXECUTABLES: Record<SessionAgentProvider, string> = {
-  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', 'muse-chat': 'commando-agent', 'cursor-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
+  'claude-chat': 'commando-agent', 'codex-chat': 'commando-agent', 'muse-chat': 'commando-agent', 'cursor-chat': 'commando-agent', 'deepseek-chat': 'commando-agent', claude: 'claude', codex: 'codex', opencode: 'opencode', cursor: 'agent',
 }
 
 /** Keep prompt data out of the shell and CLI option/subcommand parsers. */
@@ -180,7 +181,7 @@ export function parseChatImageArg(value: string): ChatImageRef {
 export type CreateTmuxSessionWorktree = {
   /** Branch to create (or reuse when it exists and is not checked out elsewhere). */
   branch: string
-  /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch)` when omitted. */
+  /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch, worktreesParent)` when omitted. */
   path?: string
   /** Multiline shell command to run in the new worktree before opening its interactive shell. */
   prepareCommand?: string
@@ -329,6 +330,12 @@ export type GitRepoInfo = {
   /** Default branch on the remote, e.g. `main`; undefined without a remote. */
   defaultBranch?: string
   remote?: string
+  /**
+   * Folder the daemon creates new `<repo>-worktrees` folders under
+   * (`COMMANDO_WORKTREE_ROOT`); absent when they go beside the main checkout.
+   * Not a checkout path: `PaneRepo.worktreeRoot` is the linked worktree itself.
+   */
+  worktreesParent?: string
 }
 
 export const MAX_BRANCH_NAME_LENGTH = 64
@@ -354,10 +361,15 @@ export function sanitizeBranchName(name: string): string {
   return value
 }
 
-/** `<parent of main checkout>/<repo>-worktrees/<branch>` */
-export function defaultWorktreePath(mainRoot: string, branch: string): string {
-  const root = mainRoot.replace(/\/+$/u, '')
-  return `${root}-worktrees/${branch}`
+/**
+ * `<parent of main checkout>/<repo>-worktrees/<branch>`, or
+ * `<worktreesParent>/<repo>-worktrees/<branch>` when the daemon has one configured.
+ */
+export function defaultWorktreePath(mainRoot: string, branch: string, worktreesParent?: string): string {
+  const main = mainRoot.replace(/\/+$/u, '')
+  if (!worktreesParent) return `${main}-worktrees/${branch}`
+  const name = main.slice(main.lastIndexOf('/') + 1)
+  return `${worktreesParent.replace(/\/+$/u, '')}/${name}-worktrees/${branch}`
 }
 
 /** A provider's model list as last seen: from its most recent chat, or Codex's own cache. */

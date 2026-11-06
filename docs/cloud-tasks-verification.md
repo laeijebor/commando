@@ -6,7 +6,8 @@ The `remote-agents` feature adds an independent cloud-task journal, official-CLI
 adapters, authenticated HTTP orchestration, a Cloud tasks area, and cloud HUD
 cards. Tasks do not depend on tmux session lifetime.
 
-Final automated checks for this implementation:
+Historical automated checks for the original `remote-agents` implementation
+(before the minimum-version and interactive-create changes below):
 
 | Check | Result |
 | --- | --- |
@@ -45,12 +46,74 @@ and a physical laptop-lid-close test have not been exercised. Automated fixtures
 remain explicitly synthetic. Verification flags were set only for the isolated
 Codex test processes; shared daemon configuration was not changed.
 
-Claude cloud creation remains disabled independently of the version setting:
-there is no verified enforceable no-bundle source-selection path yet. Existing
-Claude sessions can be linked; follow-up can be enabled after version/account
-verification. Codex submission and observation passed against the supplied
-environment; a nonempty diff was not produced by this read-only task. See README
-for version-gated configuration.
+Claude creation now has an enforceable pushed-source boundary: resolve the
+selected checkout's GitHub origin and requested branch with `git ls-remote`,
+record its remote URL/ref/SHA, and shallow-clone into a fresh 0700 scratch directory.
+The cloned SHA must equal the recorded SHA. A moving branch rejects before CLI
+launch. No user working files are copied; Claude can upload only the pushed clone.
+Only credential-free HTTPS/SSH GitHub origin URLs are accepted. Git uses the
+daemon's existing credentials without interactive login; failures reject before
+Claude starts. File/extension protocol rewrites and checkout hooks are disabled
+for cloning.
+
+Claude is launched with `--cloud` and one literal prompt argv element on a unique
+private tmux socket. The per-connection `CLAUDE_CONFIG_DIR` is set or unset in a
+fresh allowlisted environment. The exact known trust prompt is accepted only when
+tmux confirms the pane is in the owned scratch checkout. The pane is retained
+on exit, polled about every 500 ms, and only a complete three-line receipt with
+matching `session_[A-Za-z0-9]{10,64}` URL/resume IDs is accepted. Only the canonical
+Claude URL and known `?from=cli&m=0` suffix are allowed. Evidence remains
+`provider_receipt`: this proves acceptance, not live status or completion.
+
+The existing journal persists dispatching before launch, retains unknown creates
+across restart, and never auto-retries them. Clone/setup failures reject; timeout
+(120 seconds maximum), unexpected output, crashes and missing panes after launch
+produce `delivery_unknown`. Every settled path kills its private tmux session and
+removes scratch data. An ungraceful OS/process death can leave scratch data or a
+private server behind; no test claims crash-proof local cleanup.
+
+All `*_VERIFIED_VERSION` settings retain their names and now specify a minimum
+stable numeric `major.minor.patch`. Equal/newer stable installed versions enable
+capabilities; older, prerelease, malformed, ranged (`*`, `9.9`) and labeled values
+do not. Team and Max gates remain independent. Receipt parsers for existing
+Claude follow-up and Codex commands are unchanged; unfamiliar output remains
+unknown/unavailable rather than inferring success.
+
+New synthetic tests cover minimum-version comparisons; strict create receipts;
+remote branch resolution; private clone permissions and SHA drift; literal
+quotes/newlines/`$()` argv; trust acceptance restricted to scratch; timeout,
+malformed output, clone failure and cleanup; and persisted accepted/unknown
+creates with no replay after reopening SQLite. The fake interactive Node CLI is
+run through real private tmux when sockets are available, otherwise that test is
+explicitly skipped and the fake-runner suite still runs. No real Claude executable
+or session is used in these tests. Run:
+
+```sh
+npx tsc -p tsconfig.node.json --noEmit
+npx tsc -p tsconfig.app.json --noEmit
+npx vitest run server/cloud src/Cloud src/cloud
+```
+
+In the restricted implementation sandbox, both TypeScript commands exited 0
+without diagnostics. The default Vitest loader failed with `EPERM` writing
+`node_modules/.vite-temp`. With `--configLoader runner --cache=false`, the API
+and daemon suites failed because localhost listeners are forbidden (`listen
+EPERM`); excluding those two suites yielded **11 files / 507 passed, 1 skipped**.
+The skip is the fake executable's real private-tmux test: socket creation is
+also forbidden here. The orchestrator must rerun the full command above on a
+host permitting localhost listeners and private tmux sockets. No live provider
+submission is needed to run these tests.
+
+The create dialog shows a short reason plus **Link existing** and **Open provider**
+when creation is unavailable. Enabled connections retain the source/prompt form
+with concise source and receipt guidance. Component tests cover both states.
+
+Real Claude `--cloud` acceptance remains a separate release check: fake output
+cannot prove current provider authentication, trust-screen wording, real receipt
+format, detach behavior or hosted progression. The interactive launch shape was
+reported verified on Claude 2.1.314–2.1.316; this change does not run it again.
+Codex submission and observation previously passed against the supplied
+environment; a nonempty diff was not produced by that read-only task.
 
 Before completing release acceptance:
 
@@ -61,7 +124,8 @@ Before completing release acceptance:
 - [x] Restart isolated Commando and recover the same task without a duplicate submission.
 - [ ] Verify Claude Team and Max follow-up delivery against actual cloud sessions.
 - [ ] Record a real lid-close result separately from simulated disconnect tests.
-- [ ] Resolve Claude creation's source-selection gate before claiming support.
+- [x] Enforce Claude creation from a private pushed-source clone.
+- [ ] Exercise the new Claude interactive create path against a disposable real target.
 
 Keep the feature worktree and branch until these outstanding gates are resolved.
 

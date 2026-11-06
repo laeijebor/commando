@@ -38,10 +38,13 @@ import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
 import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { commanderAllowedTools } from '../commander-tools.js'
+import { DEEPSEEK_MODELS, DEEPSEEK_RUNTIME_ENV } from './deepseek.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
 import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
 
 export interface AgentSessionSpec {
+  /** The model provider when reusing Claude Code as the runtime. */
+  claudeProvider?: 'deepseek'
   paneId: string
   cwd: string
   /** Claude config dir; picks the login (`~/.claudep`, `~/.claudew`). */
@@ -330,7 +333,7 @@ function approvalReason(options: { decisionReason?: string }): string | undefine
  * about processes or sockets: a host owns it and forwards its events.
  */
 export class AgentSession implements ChatProviderSession {
-  readonly tui: ChatProviderTui = {
+  readonly tui: ChatProviderTui | undefined = {
     label: 'Claude Code',
     env: {},
     onReady: (listener) => this.on('switchReady', listener),
@@ -401,13 +404,18 @@ export class AgentSession implements ChatProviderSession {
     private readonly now: () => number = Date.now,
     private readonly store: SessionStore = sdkSessionStore,
   ) {
-    if (spec.configDir) this.tui.env.CLAUDE_CONFIG_DIR = spec.configDir
+    if (spec.claudeProvider === 'deepseek') {
+      this.tui = undefined
+      this.planUsageOff = true
+    }
+    if (spec.configDir && this.tui) this.tui.env.CLAUDE_CONFIG_DIR = spec.configDir
     this.mapper = new ClaudeItemMapper(now, spec.images)
     this.heldSends = spec.resume ? [] : null
     this.imageSessionId = spec.resume ?? randomUUID()
     this.info = {
       paneId: spec.paneId,
-      provider: 'claude',
+      provider: spec.claudeProvider ?? 'claude',
+      ...(spec.claudeProvider === 'deepseek' ? { models: DEEPSEEK_MODELS } : {}),
       cwd: spec.cwd,
       status: 'starting',
       hostPid: process.pid,
@@ -448,6 +456,13 @@ export class AgentSession implements ChatProviderSession {
   }
 
   async start(): Promise<void> {
+    if (this.spec.claudeProvider === 'deepseek' && !this.spec.env.ANTHROPIC_AUTH_TOKEN) {
+      const error = `DeepSeek needs an API key. Add {"env":{"DEEPSEEK_API_KEY":"your-key"}} to ${this.spec.configDir}/settings.json, then restart this chat. Get a key at https://platform.deepseek.com/api_keys.`
+      this.info = { ...this.info, error }
+      this.emitItems(this.mapper.notice('error', error))
+      this.setStatus('error')
+      return
+    }
     let notedSessions: string[] = []
     if (this.spec.resume) {
       // Show the conversation so far before Claude continues it.
@@ -485,7 +500,10 @@ export class AgentSession implements ChatProviderSession {
         ...(this.spec.model ? { model: this.spec.model } : {}),
         ...(this.spec.effort ? { effort: this.spec.effort } : {}),
         // The SDK only runs fast mode when the session itself opts in.
-        ...(this.spec.fast ? { settings: { fastMode: true } } : {}),
+        ...(this.spec.claudeProvider === 'deepseek' ? { settings: {
+          fastMode: false,
+          env: DEEPSEEK_RUNTIME_ENV,
+        } } : this.spec.fast ? { settings: { fastMode: true } } : {}),
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
         thinking: { type: 'adaptive', display: 'summarized' },
         permissionMode: this.spec.permissionMode,
@@ -509,8 +527,10 @@ export class AgentSession implements ChatProviderSession {
     void this.refreshContext()
     void this.refreshPlanUsage()
     // Windows reset and other chats spend the same plan while this one sits idle.
-    this.planUsageTimer = setInterval(() => void this.refreshPlanUsage(), PLAN_USAGE_IDLE_REFRESH_MS)
-    this.planUsageTimer.unref?.()
+    if (!this.planUsageOff) {
+      this.planUsageTimer = setInterval(() => void this.refreshPlanUsage(), PLAN_USAGE_IDLE_REFRESH_MS)
+      this.planUsageTimer.unref?.()
+    }
     const held = this.heldSends ?? []
     this.heldSends = null
     if (hasInitialTurn(this.spec)) this.send(this.spec.initialPrompt ?? '', this.spec.initialImages)
@@ -659,6 +679,7 @@ export class AgentSession implements ChatProviderSession {
    * and goes across with the switch. `cancel` withdraws a switch still waiting.
    */
   async requestSwitch(action: ChatSwitchAction): Promise<void> {
+    if (!this.tui) return
     const current = this.info.claudeCodeSwitch
     if (current === 'switching') return
     if (action === 'cancel') {
@@ -912,7 +933,7 @@ export class AgentSession implements ChatProviderSession {
     if (change.model !== undefined) {
       const option = this.info.models?.find((model) => model.value === change.model)
       if (this.info.models && !option) {
-        this.emitItems(this.mapper.notice('error', `Claude doesn't offer the model ${change.model} here.`))
+        this.emitItems(this.mapper.notice('error', `${this.info.provider === 'deepseek' ? 'DeepSeek' : 'Claude'} doesn't offer the model ${change.model} here.`))
       } else {
         try {
           // "default" means no explicit model, so a resume follows Claude Code's default too.
@@ -1032,7 +1053,7 @@ export class AgentSession implements ChatProviderSession {
 
   private async loadModels(handle: Query): Promise<void> {
     try {
-      const models = (await handle.supportedModels()).flatMap(toModelOption)
+      const models = this.spec.claudeProvider === 'deepseek' ? DEEPSEEK_MODELS : (await handle.supportedModels()).flatMap(toModelOption)
       this.info = { ...this.info, models }
       this.emitSession()
     } catch (error) {

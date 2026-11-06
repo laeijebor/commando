@@ -396,6 +396,7 @@
 .tmux-create__dot.is-muse { background: var(--amber); }
 .tmux-create__dot.is-cursor { background: var(--text-soft); }
 .tmux-create__dot.is-opencode { background: var(--green); }
+.tmux-create__dot.is-deepseek { background: #6c8cff; }
 /* The menus portal to <body>, outside .tmux-create. */
 .tmux-create__menu-foot {
   display: flex;

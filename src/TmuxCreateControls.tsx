@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { ChevronRight, GitBranch, Paperclip } from 'lucide-react'
 import {
@@ -83,7 +84,7 @@ export type TmuxCreateControlsProps = {
 
 type RepoProbe = { directory: string; info: GitRepoInfo } | null
 
-const START_WITH_VALUES: readonly StartWith[] = ['none', 'shell', 'claude-chat', 'codex-chat', 'muse-chat', 'cursor-chat', 'claude', 'codex', 'opencode', 'cursor']
+const START_WITH_VALUES: readonly StartWith[] = ['none', 'shell', 'claude-chat', 'codex-chat', 'muse-chat', 'cursor-chat', 'deepseek-chat', 'claude', 'codex', 'opencode', 'cursor']
 /** Before anything is remembered, a new session is a quick Claude chat. */
 const DEFAULT_START_WITH: StartWith = 'claude-chat'
 const LAST_START_WITH = '*'
@@ -107,9 +108,9 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unable to create the tmux target'
 }
 
-function loadWorkingDirectoryHistory(): string[] {
+function loadWorkingDirectoryHistory(host = 'local'): string[] {
   try {
-    const stored = window.localStorage.getItem(TMUX_CWD_HISTORY_STORAGE_KEY)
+    const stored = window.localStorage.getItem(host === 'local' ? TMUX_CWD_HISTORY_STORAGE_KEY : `${TMUX_CWD_HISTORY_STORAGE_KEY}.${host}`)
     if (!stored) return []
     let values: unknown
     try {
@@ -128,12 +129,12 @@ function loadWorkingDirectoryHistory(): string[] {
   }
 }
 
-function saveWorkingDirectoryHistory(value: string, history: readonly string[]): string[] {
+function saveWorkingDirectoryHistory(value: string, history: readonly string[], host = 'local'): string[] {
   if (!value) return [...history]
   const nextHistory = [value, ...history.filter((directory) => directory !== value)]
     .slice(0, MAX_WORKING_DIRECTORY_HISTORY)
   try {
-    window.localStorage.setItem(TMUX_CWD_HISTORY_STORAGE_KEY, JSON.stringify(nextHistory))
+    window.localStorage.setItem(host === 'local' ? TMUX_CWD_HISTORY_STORAGE_KEY : `${TMUX_CWD_HISTORY_STORAGE_KEY}.${host}`, JSON.stringify(nextHistory))
   } catch {
     // Persistence is optional when browser storage is unavailable.
   }
@@ -144,10 +145,10 @@ function saveWorkingDirectoryHistory(value: string, history: readonly string[]):
 // so agent-opened worktrees prepare like ones created here.
 const prepareCommandsSynced = new Set<string>()
 
-export function syncStoredPrepareCommands(token: string | undefined): void {
-  const api = createAgentChatsApi(token ?? '')
-  for (const [root, command] of Object.entries(loadWorktreePrepareCommands())) {
-    const key = JSON.stringify([token ?? '', root, command])
+export function syncStoredPrepareCommands(token: string | undefined, fetcher: typeof fetch = fetch, host = 'local'): void {
+  const api = createAgentChatsApi(token ?? '', fetcher)
+  for (const [root, command] of Object.entries(loadWorktreePrepareCommands(host))) {
+    const key = JSON.stringify([host, token ?? '', root, command])
     if (!command.trim() || prepareCommandsSynced.has(key)) continue
     prepareCommandsSynced.add(key)
     void api.setPrepareCommand(root, command).catch((cause: unknown) => {
@@ -158,9 +159,9 @@ export function syncStoredPrepareCommands(token: string | undefined): void {
   }
 }
 
-function loadWorktreePrepareCommands(): Record<string, string> {
+function loadWorktreePrepareCommands(host = 'local'): Record<string, string> {
   try {
-    const stored = window.localStorage.getItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY)
+    const stored = window.localStorage.getItem(host === 'local' ? WORKTREE_PREPARE_COMMANDS_STORAGE_KEY : `${WORKTREE_PREPARE_COMMANDS_STORAGE_KEY}.${host}`)
     if (!stored) return {}
     const value = JSON.parse(stored) as unknown
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -172,15 +173,15 @@ function loadWorktreePrepareCommands(): Record<string, string> {
   }
 }
 
-function saveWorktreePrepareCommand(repoRoot: string, command: string): void {
+function saveWorktreePrepareCommand(repoRoot: string, command: string, host = 'local'): void {
   try {
-    const commands = loadWorktreePrepareCommands()
+    const commands = loadWorktreePrepareCommands(host)
     if (command.trim()) commands[repoRoot] = command
     else delete commands[repoRoot]
     if (Object.keys(commands).length) {
-      window.localStorage.setItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY, JSON.stringify(commands))
+      window.localStorage.setItem(host === 'local' ? WORKTREE_PREPARE_COMMANDS_STORAGE_KEY : `${WORKTREE_PREPARE_COMMANDS_STORAGE_KEY}.${host}`, JSON.stringify(commands))
     } else {
-      window.localStorage.removeItem(WORKTREE_PREPARE_COMMANDS_STORAGE_KEY)
+      window.localStorage.removeItem(host === 'local' ? WORKTREE_PREPARE_COMMANDS_STORAGE_KEY : `${WORKTREE_PREPARE_COMMANDS_STORAGE_KEY}.${host}`)
     }
   } catch {
     // Persistence is optional when browser storage is unavailable.
@@ -208,9 +209,9 @@ function saveStartWith(repoKey: string | undefined, startWith: StartWith): void 
   }
 }
 
-const defaultUploads = (token: string): AttachmentUploads => ({
-  uploadImage: (image) => uploadChatImage(token, image),
-  uploadVideo: (file, signal) => uploadChatVideo(token, file, signal),
+const defaultUploads = (token: string, fetcher: typeof fetch): AttachmentUploads => ({
+  uploadImage: (image) => uploadChatImage(token, image, fetcher),
+  uploadVideo: (file, signal) => uploadChatVideo(token, file, signal, fetcher),
 })
 
 function firstLine(text: string): string {
@@ -231,6 +232,7 @@ export function TmuxCreateControls({
   uploads,
   naming,
 }: TmuxCreateControlsProps) {
+  const { activeHost: host, hostName, daemonFetch } = useHost()
   const prepareEditVersion = useRef(0)
   const [openVersion, setOpenVersion] = useState(0)
   const detailsRef = useRef<HTMLDetailsElement>(null)
@@ -240,7 +242,7 @@ export function TmuxCreateControls({
   const submitRef = useRef<HTMLButtonElement>(null)
   const [sessionName, setSessionName] = useState('')
   const [windowName, setWindowName] = useState('')
-  const [workingDirectoryHistory, setWorkingDirectoryHistory] = useState(loadWorkingDirectoryHistory)
+  const [workingDirectoryHistory, setWorkingDirectoryHistory] = useState(() => loadWorkingDirectoryHistory(host))
   const [workingDirectory, setWorkingDirectory] = useState(
     sessionCreateRequest?.repo?.root ?? sessionCreateRequest?.suggestedDirectories[0] ?? workingDirectoryHistory[0] ?? '',
   )
@@ -266,8 +268,8 @@ export function TmuxCreateControls({
   const [openingPrompt, setOpeningPrompt] = useState('')
   const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfile[] | null>(null)
   /** The Claude login, shared by Claude chat and Claude terminal. */
-  const [claudeProfile, setClaudeProfile] = useState<string | undefined>(() => loadChatLaunch(undefined).configDir)
-  const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined))
+  const [claudeProfile, setClaudeProfile] = useState<string | undefined>(() => loadChatLaunch(undefined, 'claude-chat', host).configDir)
+  const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined, 'claude-chat', host))
   const [modelCatalogs, setModelCatalogs] = useState<ModelCatalogs | null>(null)
   const [modelPick, setModelPick] = useState<{ key: string; value: string } | null>(null)
   const [namingInfo, setNamingInfo] = useState<SessionNamingResponse | null>(null)
@@ -297,7 +299,7 @@ export function TmuxCreateControls({
   const probeVersion = useRef(0)
   const probeRepoRef = useRef(probeRepo)
   probeRepoRef.current = probeRepo
-  const attachments = useOpeningAttachments(uploads ?? defaultUploads(token))
+  const attachments = useOpeningAttachments(uploads ?? defaultUploads(token, daemonFetch))
   const availableDirectories = [
     ...groupDirectorySuggestions,
     ...workingDirectoryHistory.filter((directory) => !groupDirectorySuggestions.includes(directory)),
@@ -321,21 +323,21 @@ export function TmuxCreateControls({
   // With a prompt the name may be left out: the daemon names the session (and its branch) from it.
   const autoName = !sessionName.trim() && promptGiven
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
-  const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>') : '')
+  const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>', repo.worktreesParent) : '')
   const worktreeRequested = Boolean(repo && worktreeEnabled)
   const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
   const workspaceOpen = workspaceChoice ?? (notRepo || probeTimedOut)
 
-  useEffect(() => { syncStoredPrepareCommands(token) }, [token])
+  useEffect(() => { syncStoredPrepareCommands(token, daemonFetch, host) }, [token])
 
   useEffect(() => {
     const root = repo?.mainRoot
-    const commands = loadWorktreePrepareCommands()
+    const commands = loadWorktreePrepareCommands(host)
     setPrepareCommand(root ? commands[root] ?? '' : '')
     if (!root || Object.hasOwn(commands, root) || (sessionCreateRequest?.repo && root !== sessionCreateRequest.repo.root)) return
     let cancelled = false
     const version = prepareEditVersion.current
-    void createAgentChatsApi(token).getPrepareCommand(root).then(
+    void createAgentChatsApi(token, daemonFetch).getPrepareCommand(root).then(
       (command) => { if (!cancelled && version === prepareEditVersion.current) setPrepareCommand(command) },
       (cause: unknown) => console.warn('Unable to load repository prepare command', cause),
     )
@@ -347,12 +349,12 @@ export function TmuxCreateControls({
   const preferenceProvider = isChatLaunchProvider(agentProvider) ? agentProvider : 'claude-chat'
   useEffect(() => {
     setAgentProvider(loadStartWith(repoKey))
-    setClaudeProfile(loadChatLaunch(repoKey).configDir)
+    setClaudeProfile(loadChatLaunch(repoKey, 'claude-chat', host).configDir)
     // A model picked for one repository is not a choice for the next.
     setModelPick(null)
   }, [repoKey])
   useEffect(() => {
-    setChatLaunch(loadChatLaunch(repoKey, preferenceProvider))
+    setChatLaunch(loadChatLaunch(repoKey, preferenceProvider, host))
   }, [repoKey, preferenceProvider])
 
   // Profiles name the Claude rows of the Agent menu, so they load straight away.
@@ -611,15 +613,15 @@ export function TmuxCreateControls({
           ...(promptAccepted && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
           ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
           ...(model ? { model } : {}),
-          ...(agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat' ? chatLaunchPermission(agentProvider, chatLaunch.permissionMode) : {}),
+          ...(isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat' ? chatLaunchPermission(agentProvider, chatLaunch.permissionMode) : {}),
           ...(agentProvider === 'claude-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
           ...(usesClaudeProfile(agentProvider) && claudeConfigDir ? { configDir: claudeConfigDir } : {}),
         }
-        if (agentProvider === 'codex-chat' || agentProvider === 'muse-chat' || agentProvider === 'cursor-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, agentProvider)
+        if (isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, agentProvider, host)
         if (usesClaudeProfile(agentProvider)) {
           // Keep a remembered profile even when the list could not be loaded this time.
-          const remembered = agentProvider === 'claude-chat' ? chatLaunch : loadChatLaunch(repoKey)
-          saveChatLaunch(repoKey, { ...(claudeConfigDir ? { configDir: claudeConfigDir } : {}), permissionMode: remembered.permissionMode })
+          const remembered = agentProvider === 'claude-chat' ? chatLaunch : loadChatLaunch(repoKey, 'claude-chat', host)
+          saveChatLaunch(repoKey, { ...(claudeConfigDir ? { configDir: claudeConfigDir } : {}), permissionMode: remembered.permissionMode }, 'claude-chat', host)
         }
         // Only what was picked here is remembered, never a fallback to the default.
         if (catalogKey && modelPick?.key === catalogKey) saveModelChoice(repoKey, catalogKey, selectedModel)
@@ -633,13 +635,13 @@ export function TmuxCreateControls({
         }
       }
       if (repo?.mainRoot) {
-        saveWorktreePrepareCommand(repo.mainRoot, prepareCommand)
-        void createAgentChatsApi(token).setPrepareCommand(repo.mainRoot, prepareCommand.trim() ? prepareCommand : '')
+        saveWorktreePrepareCommand(repo.mainRoot, prepareCommand, host)
+        void createAgentChatsApi(token, daemonFetch).setPrepareCommand(repo.mainRoot, prepareCommand.trim() ? prepareCommand : '')
           .catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
       }
       const result = requireSessionAgentLaunch(request, await onCreateSession(request))
       saveStartWith(repoKey, agentProvider)
-      const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory)
+      const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory, host)
       setWorkingDirectoryHistory(nextHistory)
       setDirectoryHistoryOpen(false)
       const { created, worktree } = result
@@ -859,8 +861,8 @@ export function TmuxCreateControls({
                 prepareEditVersion.current += 1
                 setPrepareCommand(command)
                 if (repo.mainRoot) {
-                  saveWorktreePrepareCommand(repo.mainRoot, command)
-                  void createAgentChatsApi(token).setPrepareCommand(repo.mainRoot, command.trim() ? command : '')
+                  saveWorktreePrepareCommand(repo.mainRoot, command, host)
+                  void createAgentChatsApi(token, daemonFetch).setPrepareCommand(repo.mainRoot, command.trim() ? command : '')
                     .catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
                 }
               }}
@@ -1004,6 +1006,7 @@ export function TmuxCreateControls({
   const panel = (
     <div className="tmux-create__panel">
       <form ref={formRef} onSubmit={submit} onPaste={onPaste} onKeyDown={onKeyDown} aria-busy={pending}>
+        <p className="tmux-create__message">Runs on {hostName}</p>
         {destination}
         <label>
           Session name <span>{promptGiven ? 'optional' : promptAccepted ? 'required without a prompt' : ''}</span>
@@ -1063,8 +1066,8 @@ export function TmuxCreateControls({
           setOpenVersion((value) => value + 1)
           const startWith = loadStartWith(repoKey)
           setAgentProvider(startWith)
-          setClaudeProfile(loadChatLaunch(repoKey).configDir)
-          setChatLaunch(loadChatLaunch(repoKey, isChatLaunchProvider(startWith) ? startWith : 'claude-chat'))
+          setClaudeProfile(loadChatLaunch(repoKey, 'claude-chat', host).configDir)
+          setChatLaunch(loadChatLaunch(repoKey, isChatLaunchProvider(startWith) ? startWith : 'claude-chat', host))
           return
         }
         if (sessionGroupId !== 'ungrouped') setWorkingDirectory(workingDirectoryHistory[0] ?? '')

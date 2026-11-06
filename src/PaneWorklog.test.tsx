@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentResume, SessionBrief } from '../shared/protocol'
 import { PaneWorklog } from './PaneWorklog'
+import { HostProvider } from './HostContext'
 
 const brief: SessionBrief = {
   paneId: '%12',
@@ -125,6 +126,17 @@ describe('PaneWorklog', () => {
     expect([...section.querySelectorAll('.pane-worklog-device')].map((row) => row.textContent)).toEqual([
       'Holding Pixel 5MASCOT · Rive round', 'Waiting for iPhone 15 Pro · #2Allocations', 'moto e13 is offered: claim itSmoke test',
     ])
+  })
+
+  it('hides machine-local device locks on a remote host', () => {
+    window.localStorage.setItem('commando.active-host', 'hub')
+    render(<HostProvider><PaneWorklog brief={{ ...brief, devices: [
+      { resourceId: 'pixel', name: 'Pixel 5', state: 'held', task: 'Smoke test' },
+    ] }} paneLabel="Tests" /></HostProvider>)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
+    expect(screen.queryByText('Holding Pixel 5')).toBeNull()
+    expect(screen.queryByLabelText('Important terms for Tests')).toBeNull()
+    expect(screen.getByText('Map current behavior')).toBeInTheDocument()
   })
 
   it('renders a simulator first, counts it with references and handles both actions', async () => {

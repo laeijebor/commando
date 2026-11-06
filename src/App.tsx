@@ -1,9 +1,11 @@
-import { PairPhoneDialog } from './PairPhoneDialog'
+import { HostProvider, HostWorkspace, useHost } from './HostContext'
+import { HostSwitcher, HostsSettings } from './HostSwitcher'
 import { commanderInbox } from './commanderInbox'
 import { GROUP_ORDER } from './chat/AgentsInbox'
 import { CommanderTranscriptView, type CommanderPeek } from './chat/CommanderReadingPane'
 import { createCommanderApi } from './commanderApi'
 import { initialCommanderClientState, reduceCommanderMessage } from './commanderClientState'
+import { PairPhoneDialog } from './PairPhoneDialog'
 import { isSessionName } from '../shared/session-identity'
 import {
   Activity,
@@ -33,6 +35,7 @@ import {
   Minimize2,
   NotebookPen,
   PanelLeft,
+  Pause,
   PanelRightOpen,
   PanelTop,
   PanelsTopLeft,
@@ -119,7 +122,7 @@ import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { createAgentProfilesApi } from './agentProfilesApi'
 import { SessionTree, type SessionActions } from './SessionTree'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
-import { ARCHIVE_RESTORE_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
+import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
 import type { AgentChatRequest } from '../shared/agent-chats'
 import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
@@ -174,6 +177,7 @@ import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } f
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   hostTakesMcp,
+  providerName,
   hostTakesSwitch,
   mergeChatItems,
   planImplementationPrompt,
@@ -450,7 +454,7 @@ type TerminalPaneProps = {
 
 /** What clicking Claude Code in a chat's header does, or why it can't. */
 function claudeCodeSwitchTitle(chat: ChatState): string {
-  if (chat.session.provider === 'cursor') return 'Cursor chat does not support switching to a terminal UI'
+  if (chat.session.provider === 'cursor' || chat.session.provider === 'deepseek') return `${providerName(chat.session.provider)} chat does not support switching to a terminal UI`
   const label = providerTuiLabel(chat.session.provider)
   if (!chat.hostConnected) return 'The agent host is disconnected'
   if (!hostTakesSwitch(chat.session)) return `This chat started before switching to ${label}; restart it to switch`
@@ -1117,6 +1121,11 @@ function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
 }
 
 export function App() {
+  return <HostProvider><HostWorkspace><HostApp /></HostWorkspace></HostProvider>
+}
+
+function HostApp() {
+  const { activeHost, local, hostName, hosts, daemonFetch, path, switchHost } = useHost()
   const desktopWindowActive = useDesktopWindowActivity()
   const [narrowPanel, setNarrowPanel] = useState(() => isNarrowPanel(window.matchMedia(NARROW_PANEL_QUERY)))
   const [openDrawers, setOpenDrawers] = useState<Record<string, boolean>>({})
@@ -1128,7 +1137,7 @@ export function App() {
     return () => media.removeEventListener('change', onChange)
   }, [])
   useEffect(() => { setOpenDrawers({}) }, [narrowPanel])
-  const nativeWindowBridge = getNativeWindowBridge()
+  const nativeWindowBridge = local ? getNativeWindowBridge() : null
   const detachedWebPaneIds = useDetachedWebPaneIds()
   const [pairPhoneOpen, setPairPhoneOpen] = useState(false)
   const [token, setToken] = useState(getInitialToken)
@@ -1174,7 +1183,7 @@ export function App() {
   /** Recent chat sends by request id, so a refusal shows on the right pane. */
   const chatSendPanes = useRef(new Map<string, string>())
   const [chatViews, setChatViews] = useState<Record<string, 'chat' | 'terminal'>>({})
-  const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(storedAgentHudDismissals)
+  const [agentHudDismissals, setAgentHudDismissals] = useState<AgentHudDismissals>(() => storedAgentHudDismissals(activeHost))
   const [agentHudFilter, setAgentHudFilter] = useState<AgentHudFilter | null>(null)
   const [sessionTreePreferences, setSessionTreePreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const [workspaces, setWorkspaces] = useState<Record<string, SavedWorkspace>>({})
@@ -1209,7 +1218,7 @@ export function App() {
   const [webPaneFeedback, setWebPaneFeedback] = useState<Record<string, WebPaneFeedbackInfo>>({})
   const { observe: observePaneAttribution, isRecentTarget: isRecentPaneTarget, visibleTargets: attributionTargets } = usePaneAttribution()
   const [agentChatRequests, setAgentChatRequests] = useState<Record<string, AgentChatRequest>>({})
-  const agentChatsApi = useMemo(() => createAgentChatsApi(token), [token])
+  const agentChatsApi = useMemo(() => createAgentChatsApi(token, daemonFetch), [token])
   const [webPaneNavigateRequests, setWebPaneNavigateRequests] = useState<Record<string, WebPaneNavigateRequest>>({})
   const [webPaneReloads, setWebPaneReloads] = useState<Record<string, number>>({})
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
@@ -1262,7 +1271,7 @@ export function App() {
   const [paneActionError, setPaneActionError] = useState('')
   const [screenshotLightbox, setScreenshotLightbox] = useState<PaneScreenshotLightboxRequest | null>(null)
   const [revealInFinder, setRevealInFinder] = useState(false)
-  const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(storedPinnedNote)
+  const [pinnedNote, setPinnedNote] = useState<PinnedNote | null>(() => storedPinnedNote(activeHost))
   const [requestedNote, setRequestedNote] = useState<NoteRequest | null>(null)
   const [resizeRetryVersion, setResizeRetryVersion] = useState(0)
   const tokenBrokerRef = useRef<SessionTokenBroker | null>(null)
@@ -1303,11 +1312,11 @@ export function App() {
 
   const changePinnedNote = useCallback((next: PinnedNote | null) => {
     setPinnedNote(next)
-    storePinnedNote(next)
+    storePinnedNote(next, activeHost)
   }, [])
 
   const savePinnedNote = useCallback(async (note: PinnedNote) => {
-    const updated = await createNotesApi(token).update(note.vaultId, note.id, {
+    const updated = await createNotesApi(token, daemonFetch, path).update(note.vaultId, note.id, {
       title: note.title,
       body: note.body,
       folder: note.folder,
@@ -1316,19 +1325,19 @@ export function App() {
     const next = pinnedNoteFrom(note.vaultId, updated)
     setPinnedNote((current) => {
       if (current?.vaultId !== note.vaultId || current.id !== note.id) return current
-      storePinnedNote(next)
+      storePinnedNote(next, activeHost)
       return next
     })
     return next
   }, [token])
 
   const uploadPinnedNoteImage = useCallback(
-    (note: PinnedNote, file: File) => createNotesApi(token).uploadImage(note.vaultId, note.id, file),
+    (note: PinnedNote, file: File) => createNotesApi(token, daemonFetch, path).uploadImage(note.vaultId, note.id, file),
     [token],
   )
 
   const resolvePinnedNoteImageUrl = useCallback(
-    (note: PinnedNote, url: string) => createNotesApi(token).resolveImageUrl(url, note.vaultId),
+    (note: PinnedNote, url: string) => createNotesApi(token, daemonFetch, path).resolveImageUrl(url, note.vaultId),
     [token],
   )
 
@@ -1415,7 +1424,7 @@ export function App() {
   }
 
   useEffect(() => {
-    const bridge = getNativeTerminalBridge()
+    const bridge = local ? getNativeTerminalBridge() : null
     if (!bridge) return
     let active = true
     let unsubscribeTheme = () => {}
@@ -1447,7 +1456,7 @@ export function App() {
   const handleServerMessage = (message: ServerMessage) => {
     switch (message.type) {
       case 'capabilities':
-        setRevealInFinder(message.capabilities.revealInFinder)
+        setRevealInFinder(local && message.capabilities.revealInFinder)
         break
       case 'snapshot':
         if (
@@ -1662,6 +1671,10 @@ export function App() {
         }
         break
       case 'web_panes':
+        if (!local) {
+          setAgentChatRequests(message.agentChatRequests ?? {})
+          break
+        }
         if (knownPanelTabs.current === null) {
           knownPanelTabs.current = new Map(message.webPanes.filter((tab) => tab.dock !== 'split').map((tab) => [tab.id, tab.openRevision ?? 0]))
         }
@@ -1674,6 +1687,7 @@ export function App() {
         setWebPaneReloads(message.reloads ?? {})
         break
       case 'session_ides':
+        if (!local) break
         // Origin URLs are authorized per browser by open(); broadcasts contain
         // only the neutral proxy path. Preserve already-authorized frame URLs.
         setSessionIdes((current) => message.ides.map((ide) => {
@@ -1738,21 +1752,28 @@ export function App() {
 
   const { connection, send } = useDaemon(token, authUser !== null, handleServerMessage)
   const connected = connection.phase === 'live'
+  const localAuthRejected = connection.phase === 'unauthorized' && (local || connection.authSource === 'local')
+  const hostHealth = hosts.find((host) => host.id === activeHost)?.health.state
+  // A live stream is fresher evidence than the registry's periodic health probe.
+  const hostConnectionState = local || connected ? null
+    : connection.phase === 'unauthorized' || hostHealth === 'unauthorized' ? 'unauthorized'
+      : connection.phase === 'reconnecting' || connection.attempt > 0 || hostHealth === 'offline' ? 'offline'
+        : 'connecting'
   const resizeAuthorityActive = desktopWindowActive && connected && area === 'workspace'
   resizeAuthorityActiveRef.current = resizeAuthorityActive
 
   useEffect(() => {
-    if (!token && connection.phase === 'unauthorized') setAuthUser(null)
-  }, [connection.phase, token])
+    if (localAuthRejected && !token) setAuthUser(null)
+  }, [localAuthRejected, token])
   useEffect(() => {
     const broker = tokenBrokerRef.current
     if (!broker) return
-    if (token && connection.phase !== 'unauthorized') {
+    if (token && !localAuthRejected) {
       broker.setToken(token)
     } else {
       broker.forgetToken()
     }
-  }, [connection.phase, token])
+  }, [localAuthRejected, token])
   const maximizedTmuxPaneId =
     maximizedPaneId && !isWebPaneLeafId(maximizedPaneId) ? maximizedPaneId : null
   const activeResizePaneId = resizeAuthorityActive
@@ -1896,7 +1917,8 @@ export function App() {
 
   const selectPanelTab = useCallback(async (tab: PanelTab) => {
     selectPanelTabLocally(tab)
-    try { await createWebPanesApi(token).setActiveTab(panelTabKey(tab), tab.anchorPaneId) } catch (error) {
+    if (!local) return
+    try { await createWebPanesApi(token, daemonFetch).setActiveTab(panelTabKey(tab), tab.anchorPaneId) } catch (error) {
       setPaneActionError(error instanceof Error ? error.message : 'Could not select tab')
     }
   }, [selectPanelTabLocally, token])
@@ -2148,6 +2170,7 @@ export function App() {
   }
 
   const openSessionIde = async (sessionId: string) => {
+    if (!local) return
     setSelectedSessionId(sessionId)
     setArea('ide')
     setLeftPanelOpen(false)
@@ -2157,7 +2180,7 @@ export function App() {
     setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
     try {
       const focused = snapshot?.panes.find((pane) => pane.id === focusedPaneId && pane.sessionId === sessionId)
-      const ide = await createSessionIdesApi(token).open(sessionId, focused?.id)
+      const ide = await createSessionIdesApi(token, daemonFetch).open(sessionId, focused?.id)
       // Live broadcasts are authoritative; an older HTTP response must not
       // replace a newer shared-session attachment list.
       setSessionIdes((current) => current.some((item) => item.id === ide.id)
@@ -2178,7 +2201,7 @@ export function App() {
     setIdePendingSessions((current) => new Set([...current, sessionId]))
     setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
     try {
-      await createSessionIdesApi(token).detach(sessionId)
+      await createSessionIdesApi(token, daemonFetch).detach(sessionId)
       setSessionIdes((current) => current.map((item) => ({ ...item, sessionIds: item.sessionIds.filter((id) => id !== sessionId) })).filter((item) => item.sessionIds.length))
       setArea('workspace')
     } catch (error) {
@@ -2206,7 +2229,7 @@ export function App() {
     setCommanderOpening(true)
     const version = commanderStateVersion.current
     try {
-      const state = await createCommanderApi(token).ensure()
+      const state = await createCommanderApi(token, daemonFetch).ensure()
       // A live broadcast received during the request is newer than its response.
       if (version === commanderStateVersion.current) dispatchCommander({ type: 'commander_state', state })
     } catch (cause) {
@@ -2217,7 +2240,7 @@ export function App() {
   /** Closes Commander and starts a fresh one on the profile, then shows it like opening Commander does. */
   const switchCommanderProfile = async (configDir: string | null) => {
     const version = commanderStateVersion.current
-    const state = await createCommanderApi(token).setProfile(configDir)
+    const state = await createCommanderApi(token, daemonFetch).setProfile(configDir)
     if (version === commanderStateVersion.current) dispatchCommander({ type: 'commander_state', state })
     // Only now: earlier, the old Commander is still open and would be the one shown.
     setCommanderOpening(true)
@@ -2248,7 +2271,7 @@ export function App() {
   }
 
   const restorePanePrTab = async (tab: BuiltinPanelTab) => {
-    await webPanesApi.restorePrTab(tab.anchorPaneId, tab.key, true)
+    if (local) await webPanesApi.restorePrTab(tab.anchorPaneId, tab.key, true)
     setDismissedPrTabs((current) => {
       const entries = { ...current[tab.anchorPaneId] }
       delete entries[tab.key]
@@ -2660,15 +2683,15 @@ export function App() {
     return !chats[paneId] && Boolean(paneChatHandoff(paneId, agentStatuses[paneId], chatHandoffEntries, chatHandoffs))
   }
   const failedResumeCount = Object.values(agentResumes).filter((resume) => resume.state === 'failed').length
-  const tmuxCreateApi = createTmuxHttpApi(token)
-  const sessionNamingApi = useMemo(() => createSessionNamingApi(token), [token])
-  const sessionNamingSettings = useMemo(() => ({ api: sessionNamingApi, loadModels: createTmuxHttpApi(token).models }), [sessionNamingApi, token])
-  const chatConversationsApi = useMemo(() => createChatConversationsApi(token), [token])
+  const tmuxCreateApi = createTmuxHttpApi(token, daemonFetch)
+  const sessionNamingApi = useMemo(() => createSessionNamingApi(token, daemonFetch), [token])
+  const sessionNamingSettings = useMemo(() => ({ api: sessionNamingApi, loadModels: createTmuxHttpApi(token, daemonFetch).models }), [sessionNamingApi, token])
+  const chatConversationsApi = useMemo(() => createChatConversationsApi(token, daemonFetch), [token])
   const loadConversations = useCallback(async () => {
     const conversations = await chatConversationsApi.list()
     const names = [...new Set(conversations.flatMap((conversation) => conversation.session ? [conversation.session.name] : []).filter(isSessionName))].slice(0, 500)
     try {
-      const preferences = await createSessionManagementApi(token).ensureIdentities(names)
+      const preferences = await createSessionManagementApi(token, daemonFetch).ensureIdentities(names)
       setSessionTreePreferences(preferences)
     } catch {
       // History stays usable if preference storage is temporarily unavailable;
@@ -2676,13 +2699,13 @@ export function App() {
     }
     return conversations
   }, [chatConversationsApi, token])
-  const paneManagementApi = createPaneManagementApi(token)
-  const paneScreenshotsApi = createPaneScreenshotsApi(token)
-  const sessionManagementApi = createSessionManagementApi(token)
-  const gitDiffApi = useMemo(() => createGitDiffApi(token), [token])
-  const simsApi = useMemo(() => createSimsApi(token), [token])
-  const prsApi = useMemo(() => createPrsApi(token), [token])
-  const agentProfilesApi = useMemo(() => createAgentProfilesApi(token), [token])
+  const paneManagementApi = createPaneManagementApi(token, daemonFetch)
+  const paneScreenshotsApi = createPaneScreenshotsApi(token, daemonFetch)
+  const sessionManagementApi = createSessionManagementApi(token, daemonFetch)
+  const gitDiffApi = useMemo(() => createGitDiffApi(token, daemonFetch), [token])
+  const simsApi = useMemo(() => createSimsApi(token, daemonFetch), [token])
+  const prsApi = useMemo(() => createPrsApi(token, daemonFetch), [token])
+  const agentProfilesApi = useMemo(() => createAgentProfilesApi(token, daemonFetch), [token])
   /**
    * "Implement in a new chat pane": splits the chat's pane and starts a fresh
    * chat with the same profile and folder, in the mode the chat had before plan
@@ -2697,7 +2720,7 @@ export function App() {
     // A plan too long for the prompt goes in a folder only this new chat may read.
     let readableDir: string | undefined
     if (new TextEncoder().encode(prompt).length > MAX_PANE_PROMPT_BYTES) {
-      const stashed = await stashChatPlan(token, plan)
+      const stashed = await stashChatPlan(token, plan, daemonFetch)
       prompt = implementPlanFilePrompt(stashed.path)
       readableDir = stashed.dir
     }
@@ -2711,7 +2734,7 @@ export function App() {
     setMaximizedPaneId(null)
     setPendingPaneFocus({ paneId: created.paneId })
   }
-  const chatStashApi = useMemo(() => createChatStashApi(token), [token])
+  const chatStashApi = useMemo(() => createChatStashApi(token, daemonFetch), [token])
   const chatStash = useMemo<ChatStash>(() => ({ entries: chatStashEntries, ...chatStashApi }), [chatStashEntries, chatStashApi])
   // Rebuilt only when a reading changes, not on every streamed chat item.
   const planUsageKey = Object.values(chats).map(({ session }) => `${session.provider}:${session.configDir ?? ''}:${session.planUsage?.updatedAt ?? ''}`).join(',')
@@ -2739,8 +2762,8 @@ export function App() {
           }
         }),
         pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, paneId),
-        uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image),
-        uploadVideo: (file, signal) => uploadChatVideo(latestChatDeps.current.token, file, signal),
+        uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image, daemonFetch),
+        uploadVideo: (file, signal) => uploadChatVideo(latestChatDeps.current.token, file, signal, daemonFetch),
       }
       chatServiceCache.current.set(paneId, services)
     }
@@ -2788,7 +2811,7 @@ export function App() {
             finish({ items: [], error: 'Not connected to Commando' })
           }
         }),
-        savePlan: (markdown) => saveChatPlan(latestChatDeps.current.token, markdown),
+        savePlan: (markdown) => saveChatPlan(latestChatDeps.current.token, markdown, daemonFetch),
         implementInNewPane: (plan, mode) => latestChatDeps.current.implementPlanInNewPane(paneId, plan, mode),
         switchToClaudeCode: (action) => latestChatDeps.current.switchChat(paneId, action),
         registerDraft: (read) => {
@@ -2810,15 +2833,15 @@ export function App() {
   }
   const simulatorTabKey = webPanes.flatMap((pane) => pane.content?.kind === 'simulator' ? [pane.content.udid] : []).join(',')
   useEffect(() => {
-    if (!simulatorTabKey || !connected) return
+    if (!local || !simulatorTabKey || !connected) return
     let cancelled = false
     void simsApi.list().then((listing) => {
       if (!cancelled) setSimulatorNames(Object.fromEntries(listing.map((sim) => [sim.udid, sim.name])))
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [simulatorTabKey, connected, token])
-  const cloudTasksApi = useMemo(() => createCloudTasksApi(token), [token])
-  const webPanesApi = createWebPanesApi(token)
+  const cloudTasksApi = useMemo(() => createCloudTasksApi(token, daemonFetch), [token])
+  const webPanesApi = createWebPanesApi(token, daemonFetch)
 
   const renameSelectedSession = async () => {
     if (!selectedSession) return
@@ -2837,7 +2860,7 @@ export function App() {
     const revision = tab.openRevision ?? 0
     if (seenPanelTabs.current.get(tab.id) === revision) return
     seenPanelTabs.current.set(tab.id, revision)
-    void createWebPanesApi(token).clearUnseen(tab.id).then(() => {
+    void createWebPanesApi(token, daemonFetch).clearUnseen(tab.id).then(() => {
       setWebPanes((current) => current.map((pane) => pane.id === tab.id && (pane.openRevision ?? 0) === revision ? { ...pane, unseen: false } : pane))
     }).catch((cause) => {
       if (seenPanelTabs.current.get(tab.id) === revision) seenPanelTabs.current.delete(tab.id)
@@ -2846,6 +2869,7 @@ export function App() {
   }, [token])
 
   const openWebPane = async (url: string, anchorPaneId: string, engine?: WebPaneEngine) => {
+    if (!local) return
     setPaneActionError('')
     try {
       await webPanesApi.open(url, anchorPaneId, undefined, engine)
@@ -2895,7 +2919,10 @@ export function App() {
       { label: 'Reset identity', icon: RotateCcw, onSelect: run((actions) => actions.changeIdentity(sessionId, true, setPaneActionError)) },
       { label: 'Rename', icon: Pencil, onSelect: run((actions) => actions.renameSession(sessionId, setPaneActionError)) },
       { label: 'Resume a chat…', icon: RotateCcw, disabled: !connected, onSelect: () => resumeSessionChat(sessionId) },
-      ...auxiliary ? [] : [{ label: 'Archive session', icon: Archive, onSelect: run((actions) => {
+      ...auxiliary ? [] : [{ label: 'Pause session', icon: Pause, onSelect: run((actions) => {
+        const text = warning()
+        return actions.pauseSession(sessionId, text ? `Pause session “${session.name}”?\n\n${text}\n\n${PAUSE_RESUME_NOTE}` : null, setPaneActionError)
+      }) }, { label: 'Archive session', icon: Archive, onSelect: run((actions) => {
         const text = warning()
         return actions.archiveSession(sessionId, text ? `Archive session “${session.name}”?\n\n${text}\n\n${ARCHIVE_RESTORE_NOTE}` : null, setPaneActionError)
       }) }],
@@ -2951,11 +2978,11 @@ export function App() {
 
   const paneSimulators = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
     const brief = paneBriefs[pane.id]
-    return brief?.simulator && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.simulator]] : []
+    return local && brief?.simulator && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.simulator]] : []
   })), [snapshot?.panes, paneBriefs])
   const paneDevices = useMemo(() => Object.fromEntries((snapshot?.panes ?? []).flatMap((pane) => {
     const brief = paneBriefs[pane.id]
-    return brief?.devices?.length && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.devices]] : []
+    return local && brief?.devices?.length && (!brief.targetId || brief.targetId === pane.targetId) ? [[pane.id, brief.devices]] : []
   })), [snapshot?.panes, paneBriefs])
   const showSimulator = async (udid: string, anchorPaneId: string) => {
     setPaneActionError('')
@@ -3015,7 +3042,7 @@ export function App() {
     setPaneActionError('')
     if (next) selectPanelTabLocally(next)
     try {
-      await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature, next ? panelTabKey(next) : undefined)
+      if (local) await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature, next ? panelTabKey(next) : undefined)
       setDismissedPrTabs((current) => ({ ...current, [tab.anchorPaneId]: { ...current[tab.anchorPaneId], [tab.key]: signature } }))
     } catch (error) {
       setPanelActiveTabs((current) => {
@@ -3184,9 +3211,9 @@ export function App() {
   }
 
   /** A Codex, Muse or Cursor chat launch with the permission mode remembered for the path's repository. */
-  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat' | 'cursor-chat'): Promise<SessionAgentLaunch> => {
+  const rememberedProviderChatLaunch = async (path: string, provider: 'codex-chat' | 'muse-chat' | 'cursor-chat' | 'deepseek-chat'): Promise<SessionAgentLaunch> => {
     const repoRoot = await gitDiffApi.repo(path).then((info) => info.mainRoot, () => undefined)
-    return { provider, ...chatLaunchPermission(provider, loadChatLaunch(repoRoot ?? path, provider).permissionMode) }
+    return { provider, ...chatLaunchPermission(provider, loadChatLaunch(repoRoot ?? path, provider, activeHost).permissionMode) }
   }
 
   /** A chat launch with the profile and permissions remembered for the path's repository, as in the new-session dialog. */
@@ -3198,7 +3225,7 @@ export function App() {
         return null
       }),
     ])
-    const preference = loadChatLaunch(repoRoot ?? path)
+    const preference = loadChatLaunch(repoRoot ?? path, 'claude-chat', activeHost)
     // Check the remembered profile against the current ones, as the dialog does, so a
     // stale or missing preference never falls back to the daemon's own login.
     const configDir = profiles ? chatProfileConfigDir(preference.configDir, profiles) : preference.configDir
@@ -3214,7 +3241,7 @@ export function App() {
     try {
       const agent = choice === 'shell' ? undefined
         : choice === 'claude-chat' ? await rememberedChatLaunch(pane.path)
-          : choice === 'codex-chat' || choice === 'muse-chat' || choice === 'cursor-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
+          : choice === 'codex-chat' || choice === 'muse-chat' || choice === 'cursor-chat' || choice === 'deepseek-chat' ? await rememberedProviderChatLaunch(pane.path, choice)
             : { provider: choice }
       await tmuxCreateApi.launchInEmptyPane({ paneId, ...(agent ? { agent } : {}) })
       // Focus lands once the snapshot swaps the launcher for the running pane.
@@ -3673,7 +3700,7 @@ export function App() {
     contextRendererControl?.manualXterm || contextRendererControl?.actual === 'xterm',
   )
 
-  if (authPending && (!token || connection.phase === 'unauthorized')) {
+  if (authPending && (!token || localAuthRejected)) {
     return (
       <main className="auth-screen">
         <div className="auth-ambient" aria-hidden="true" />
@@ -3687,7 +3714,7 @@ export function App() {
     )
   }
 
-  if ((!token && !authUser) || connection.phase === 'unauthorized') {
+  if ((!token && !authUser) || localAuthRejected) {
     return (
       <AuthGate
         bootstrap={authBootstrap ?? { enabled: false, needsOwner: false, ownerEmail: null }}
@@ -3835,8 +3862,8 @@ export function App() {
     return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
       fullWidth visible={visible} onAttentionChange={reportSessionAttention}
       empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
-      simsApi={simsApi} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
-      screenshotsApi={paneScreenshotsApi} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
+      simsApi={local ? simsApi : undefined} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
+      screenshotsApi={local ? paneScreenshotsApi : undefined} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
       onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
       onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
   }
@@ -3857,7 +3884,7 @@ export function App() {
           </span>
         </div>
         <div className="location-readout">
-          <span>commando://local</span>
+          <span>commando://{local ? 'local' : hostName}</span>
           <strong>{selectedSession?.name ?? 'discovering-sessions'}</strong>
         </div>
         <div className="titlebar-actions">
@@ -3929,7 +3956,7 @@ export function App() {
         </div>
       </header>
 
-      {connection.phase === 'reconnecting' ? (
+      {local && connection.phase === 'reconnecting' ? (
         <div className="connection-banner" role="status">
           <WifiOff aria-hidden="true" />
           <span>{connection.detail}. Pane snapshots remain visible; input resumes after reconnect.</span>
@@ -3938,6 +3965,7 @@ export function App() {
       ) : null}
 
       <div
+        data-host-unavailable={!local && connection.phase !== 'live' ? '' : undefined}
         ref={cockpitBodyRef}
         className={`cockpit-body area-${area}${leftPanelHidden ? ' left-panel-hidden' : ''}${rightPanelHidden ? ' right-panel-hidden' : ''}${resizingLeftPanel ? ' resizing-left-panel' : ''}`}
       >
@@ -3985,11 +4013,8 @@ export function App() {
           />
           {pairPhoneOpen ? <PairPhoneDialog token={token} onClose={() => setPairPhoneOpen(false)} /> : null}
           <div className="sidebar-header">
-            <div>
-              <span className="section-kicker">Machine</span>
-              <strong>Local sessions</strong>
-            </div>
-            <button type="button" className="icon-button" aria-label="Pair a phone" title="Pair a phone" onClick={() => setPairPhoneOpen(true)}><Smartphone aria-hidden="true" /></button>
+            <HostSwitcher token={token} authenticated={Boolean(token || authUser)} />
+            {local ? <button type="button" className="icon-button" aria-label="Pair a phone" title="Pair a phone" onClick={() => setPairPhoneOpen(true)}><Smartphone aria-hidden="true" /></button> : null}
             <button
               type="button"
               className="icon-button panel-close"
@@ -4017,13 +4042,13 @@ export function App() {
               <NotebookPen aria-hidden="true" />
               <span>Notes</span>
             </button>
-            <button type="button" className={area === 'sims' ? 'active' : ''} aria-current={area === 'sims' ? 'page' : undefined} onClick={() => { setArea('sims'); setLeftPanelOpen(false) }}>
+            <button type="button" disabled={!local} title={!local ? 'Only on this Mac for now' : undefined} className={area === 'sims' ? 'active' : ''} aria-current={area === 'sims' ? 'page' : undefined} onClick={() => { setArea('sims'); setLeftPanelOpen(false) }}>
               <Smartphone aria-hidden="true" />
-              <span>Simulators</span>
+              <span>Simulators{!local ? <small> · Only on this Mac for now</small> : null}</span>
             </button>
-            <button type="button" className={area === 'devices' ? 'active' : ''} aria-current={area === 'devices' ? 'page' : undefined} onClick={() => { setArea('devices'); setLeftPanelOpen(false) }}>
+            <button type="button" disabled={!local} title={!local ? 'Only on this Mac for now' : undefined} className={area === 'devices' ? 'active' : ''} aria-current={area === 'devices' ? 'page' : undefined} onClick={() => { setArea('devices'); setLeftPanelOpen(false) }}>
               <SmartphoneCharging aria-hidden="true" />
-              <span>Devices</span>
+              <span>Devices{!local ? <small> · Only on this Mac for now</small> : null}</span>
             </button>
             <button type="button" className={area === 'settings' ? 'active' : ''} aria-current={area === 'settings' ? 'page' : undefined} onClick={() => { setArea('settings'); setLeftPanelOpen(false) }}>
               <Settings aria-hidden="true" />
@@ -4046,7 +4071,7 @@ export function App() {
             ) : null}
             <span>{snapshot?.panes.length ?? 0} panes</span>
           </div>
-          <div className="session-tree">
+          <div className="session-tree" hidden={!local && connection.phase !== 'live'}>
             <SessionTree
               token={token}
               commanderState={commanderState}
@@ -4065,7 +4090,7 @@ export function App() {
               seen={paneSeen}
               simulators={paneSimulators}
               devices={paneDevices}
-              onShowDevices={() => { setArea('devices'); setLeftPanelOpen(false) }}
+              onShowDevices={local ? () => { setArea('devices'); setLeftPanelOpen(false) } : undefined}
               selectedSessionId={selectedSessionId}
               onSelectSession={selectSession}
               onSelectPane={jumpToPane}
@@ -4074,7 +4099,7 @@ export function App() {
               onPreferencesChanged={setSessionTreePreferences}
               ides={sessionIdes}
               ideSessionId={area === 'ide' ? selectedSessionId : null}
-              onOpenIde={(sessionId) => { void openSessionIde(sessionId) }}
+              onOpenIde={local ? (sessionId) => { void openSessionIde(sessionId) } : undefined}
               onResumeChat={resumeSessionChat}
               actionsRef={sessionActionsRef}
               creation={{
@@ -4091,14 +4116,14 @@ export function App() {
           <PortsSection
             token={token}
             sessions={snapshot?.sessions ?? []}
-            ports={snapshot?.ports ?? []}
+            ports={local || connected ? snapshot?.ports ?? [] : []}
             selectedSessionId={selectedSessionId}
             onSelectSession={selectSession}
             onSelectPane={jumpToPane}
-            onOpenAsTile={(port) => {
+            onOpenAsTile={local ? (port) => {
               jumpToPane(port.paneId)
               void openWebPane(openPortUrl(port.port), port.paneId)
-            }}
+            } : undefined}
           />
           <footer className="sidebar-footer">
             <Server aria-hidden="true" />
@@ -4109,9 +4134,16 @@ export function App() {
           </footer>
         </aside>
 
-        <main className={`workspace-main area-${area}`} id="workspace-main">
+        <main data-host-connection={hostConnectionState ?? undefined} className={`workspace-main area-${area}`} id="workspace-main">
+          {hostConnectionState ? <div className="host-connection-banner" role={hostConnectionState === 'connecting' ? 'status' : 'alert'}>
+            <span>{hostConnectionState === 'connecting' ? `Connecting to ${hostName}…`
+              : hostConnectionState === 'unauthorized' ? `${hostName} rejected the saved token — update it in Settings → Hosts`
+                : `${hostName} offline — showing nothing; switch back to This Mac`}</span>
+            {hostConnectionState === 'unauthorized' ? <button type="button" onClick={() => setArea('settings')}>Hosts settings</button> : null}
+            <button type="button" onClick={() => switchHost('local')}>This Mac</button>
+          </div> : null}
           {area === 'workspace' ? <>
-          <header className="workspace-toolbar">
+          <header hidden={Boolean(hostConnectionState)} className="workspace-toolbar">
             <div className="workspace-context">
               <h1
                 title={activeGroup
@@ -4148,7 +4180,7 @@ export function App() {
               ) : null}
             </div>
             <div className="workspace-actions">
-              <button type="button" className="open-session-ide" disabled={!connected || !selectedSessionId} onClick={() => { if (selectedSessionId) void openSessionIde(selectedSessionId) }}><Code2 />{sessionIdes.some((ide) => ide.sessionIds.includes(selectedSessionId ?? '')) ? 'IDE' : 'Open IDE'}</button>
+              <button type="button" className="open-session-ide" disabled={!local || !connected || !selectedSessionId} title={!local ? 'Only on this Mac for now' : undefined} onClick={() => { if (selectedSessionId) void openSessionIde(selectedSessionId) }}><Code2 />{sessionIdes.some((ide) => ide.sessionIds.includes(selectedSessionId ?? '')) ? 'IDE' : 'Open IDE'}</button>
               <label
                 className={`web-layout-toggle${webLayoutAuthoritative ? ' active' : ''}${webLayoutError ? ' has-error' : ''}`}
                 title={webLayoutError || 'Keep tmux window geometry synchronized with the web workspace until unchecked'}
@@ -4188,7 +4220,7 @@ export function App() {
             </div>
           </header>
 
-          <div className={`workspace-canvas${maximizedPaneId ? ' maximized' : ''}`}>
+          <div hidden={Boolean(hostConnectionState)} className={`workspace-canvas${maximizedPaneId ? ' maximized' : ''}`}>
             {(activeGroup ? [activeGroup] : []).map((group) => {
               const groupPanes = group.paneIds.flatMap((paneId) => {
                 const pane = paneMap.get(paneId)
@@ -4425,8 +4457,8 @@ export function App() {
                             useXtermFallback={rendererControl?.manualXterm ?? false}
                             gitApi={gitDiffApi}
                             prsApi={prsApi}
-                            screenshotsApi={paneScreenshotsApi}
-                            simsApi={simsApi}
+                            screenshotsApi={local ? paneScreenshotsApi : undefined}
+                            simsApi={local ? simsApi : undefined}
                             onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }}
                             paneManagementApi={paneManagementApi}
                             revealInFinder={revealInFinder}
@@ -4529,7 +4561,7 @@ export function App() {
             ) : null}
           </div>
           </> : area === 'linear' ? <LinearSection token={token} /> : null}
-          <SessionIdeView
+          {local ? <SessionIdeView
             active={area === 'ide'}
             sessionId={selectedSessionId}
             sessionName={selectedSession?.name ?? 'Session'}
@@ -4543,19 +4575,20 @@ export function App() {
             onOpen={() => { if (selectedSessionId) void openSessionIde(selectedSessionId) }}
             onDetach={() => { if (selectedSessionId) void detachSessionIde(selectedSessionId) }}
             onTerminal={() => setArea('workspace')}
-          />
-          {area === 'sims' ? (
+          /> : null}
+          {local && area === 'sims' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening simulators...</p></section>}>
               <SimsView token={token} />
             </Suspense>
           ) : null}
-          {area === 'devices' ? (
+          {local && area === 'devices' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening devices...</p></section>}>
               <DevicesView token={token} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: false }) }} />
             </Suspense>
           ) : null}
           {area === 'settings' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening settings...</p></section>}>
+              <HostsSettings token={token} />
               <SettingsView api={agentProfilesApi} naming={sessionNamingSettings} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
                 commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
@@ -4575,7 +4608,7 @@ export function App() {
         </main>
 
         {area === 'workspace' ? <aside
-          className={`agent-hud${rightPanelOpen ? ' panel-open' : ''}`}
+          hidden={!local && connection.phase !== 'live'} className={`agent-hud${rightPanelOpen ? ' panel-open' : ''}`}
           onTransitionEnd={finishResponsiveDrawerTransition}
         >
           <div className="hud-header">
@@ -4689,7 +4722,7 @@ export function App() {
                       {...(hudAnswers[status.paneId] ? { answerState: hudAnswers[status.paneId] } : {})}
                       onDismiss={() => setAgentHudDismissals((current) => {
                         const next = { ...current, [status.paneId]: status.updatedAt }
-                        storeAgentHudDismissals(next)
+                        storeAgentHudDismissals(next, activeHost)
                         return next
                       })}
                       key={status.paneId}
@@ -4738,7 +4771,7 @@ export function App() {
         <PaneActionErrorFeedback message={paneActionError} onDismiss={() => setPaneActionError('')} />
       ) : null}
 
-      {screenshotLightbox ? (
+      {local && screenshotLightbox ? (
         <PaneScreenshotLightbox
           request={screenshotLightbox}
           screenshotsApi={paneScreenshotsApi}
@@ -4748,14 +4781,14 @@ export function App() {
         />
       ) : null}
 
-      {paneMenu && contextPane ? (
+      {paneMenu && contextPane && (local || connected) ? (
         <PaneContextMenu
           paneLabel={contextPane.title || contextPane.command || `Pane ${contextPane.index}`}
           x={paneMenu.x}
           y={paneMenu.y}
           busy={paneActionPending || !connected}
-          nativeTerminalAvailable={nativeTerminalAvailable || Boolean(contextRendererControl?.manualXterm)}
-          useXtermFallback={contextUsesXterm}
+          nativeTerminalAvailable={local && (nativeTerminalAvailable || Boolean(contextRendererControl?.manualXterm))}
+          useXtermFallback={local && contextUsesXterm}
           mark={paneMarks[contextPane.targetId]}
           onClose={closePaneMenu}
           onRename={() => setRenamingPaneId(paneMenu.paneId)}
@@ -4781,7 +4814,7 @@ export function App() {
         />
       ) : null}
 
-      {paletteOpen ? (
+      {paletteOpen && (local || connected) ? (
         <div
           className="palette-backdrop"
           data-native-terminal-occluder=""

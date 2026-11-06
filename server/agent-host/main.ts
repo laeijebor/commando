@@ -17,11 +17,12 @@ import { claudeCodeSwitchCommand as providerSwitchCommand } from './session.js'
 
 export { claudeCodeFlags } from './session.js'
 
-const USAGE = `Usage: commando-agent <claude|codex|muse|cursor> [options]
+const USAGE = `Usage: commando-agent <claude|codex|muse|cursor|deepseek> [options]
 
 Runs a provider session in this tmux pane and shows it as a chat in Commando.
 Codex uses the local codex app-server and Muse uses muse serve, each with its existing login.
 Cursor uses the local Cursor SDK; use /login to sign in.
+DeepSeek uses Claude Code with its own API key and profile in ~/.commando/deepseek.
 
 Options:
   --config-dir DIR                 Claude config dir (default: $CLAUDE_CONFIG_DIR)
@@ -423,7 +424,7 @@ async function main(): Promise<void> {
   const quit = () => {
     if (quitting) return
     quitting = true
-    const ended = parsed.provider !== 'claude' ? new Promise<void>((resolve) => session.on('closed', resolve)) : undefined
+    const ended = parsed.provider !== 'claude' && parsed.provider !== 'deepseek' ? new Promise<void>((resolve) => session.on('closed', resolve)) : undefined
     session.close()
     host.remove(paneId)
     const exit = () => { host.stop(); process.exit(0) }

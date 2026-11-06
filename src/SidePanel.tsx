@@ -1,3 +1,4 @@
+import { useHost } from './HostContext'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { FileDiff, GitPullRequest, LayoutDashboard, Presentation, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X, type LucideIcon } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
@@ -97,20 +98,22 @@ export function SidePanel({
   renderTab: (tab: WebPane, visible: boolean) => ReactNode
   children: ReactNode
 }) {
-  const [drawerHeight, setDrawerHeight] = useState(() => loadDrawerHeight(windowId))
+  const { activeHost, local } = useHost()
+  const storageWindowId = activeHost === 'local' ? windowId : `${activeHost}:${windowId}`
+  const [drawerHeight, setDrawerHeight] = useState(() => loadDrawerHeight(storageWindowId))
   const [drawerOccluding, setDrawerOccluding] = useState(false)
   const drawerRef = useRef<HTMLElement>(null)
   const scrimRef = useRef<HTMLButtonElement>(null)
   const drawerDragRef = useRef<{ startY: number; height: number; windowHeight: number } | null>(null)
   const swallowedPointerRef = useRef(false)
-  const [width, setWidth] = useState(() => loadWidth(windowId))
-  const [collapseChoice, setCollapsed] = useState(() => loadCollapsed(windowId))
+  const [width, setWidth] = useState(() => loadWidth(storageWindowId))
+  const [collapseChoice, setCollapsed] = useState(() => loadCollapsed(storageWindowId))
   const [hasHadWebTabs, setHasHadWebTabs] = useState(tabs.length > 0)
   useEffect(() => { if (tabs.length > 0) setHasHadWebTabs(true) }, [tabs.length])
   const collapsed = collapseChoice ?? defaultPanelCollapsed(tabs.length > 0, null, hasHadWebTabs)
   const changeCollapsed = (value: boolean) => {
     setCollapsed(value)
-    try { localStorage.setItem(`commando.side-panel.collapsed.${windowId}`, String(value)) } catch { /* Best effort. */ }
+    try { localStorage.setItem(`commando.side-panel.collapsed.${storageWindowId}`, String(value)) } catch { /* Best effort. */ }
   }
   const [paneData, setPaneData] = useState<Record<string, PanePanelData>>({})
   const onData = useCallback((id: string, data: PanePanelData) => {
@@ -153,7 +156,7 @@ export function SidePanel({
     if (expanded && active) setVisited((current) => current.has(active.id) ? current : new Set([...current, active.id]))
   }, [owner, stored, active?.id, expanded, focusedTabs.map((tab) => tab.id).join(',')])
   useEffect(() => {
-    try { localStorage.setItem(`commando.side-panel.width.${windowId}`, String(width)) } catch { /* Best effort. */ }
+    try { localStorage.setItem(`commando.side-panel.width.${storageWindowId}`, String(width)) } catch { /* Best effort. */ }
   }, [windowId, width])
   useEffect(() => { setAdding(null); setUrl('') }, [focusedPaneId])
   useEffect(() => {
@@ -170,7 +173,7 @@ export function SidePanel({
     else changeCollapsed(false)
   }, [revealRequest, narrowMode])
   useEffect(() => {
-    try { localStorage.setItem(`commando.side-panel.height.${windowId}`, String(drawerHeight)) } catch { /* Best effort. */ }
+    try { localStorage.setItem(`commando.side-panel.height.${storageWindowId}`, String(drawerHeight)) } catch { /* Best effort. */ }
   }, [windowId, drawerHeight])
   useEffect(() => {
     if (!narrowMode || !expanded || gridMaximized) return
@@ -348,7 +351,7 @@ export function SidePanel({
                   <button type="button" className="side-panel-tab-close" aria-label={`Close ${label}`} onClick={() => onClose(tab.id)}><X /></button>
                 </div>
               })}
-              <button type="button" className="web-pane-button side-panel-add" aria-label="Add web tab" aria-expanded={adding !== null} onClick={() => setAdding(adding ? null : 'webkit')}><Plus /></button>
+              <button type="button" disabled={!local} title={!local ? 'Only on this Mac for now' : undefined} className="web-pane-button side-panel-add" aria-label="Add web tab" aria-expanded={adding !== null} onClick={() => setAdding(adding ? null : 'webkit')}><Plus /></button>
             </div>
             <span className="side-panel-owner" title={paneLabel}>{paneLabel}</span>
             {active && onMaximize && <button className="web-pane-button" type="button" aria-label={maximizedTab ? 'Restore panel tab' : 'Maximize panel tab'} onClick={() => onMaximize(active)}>{maximizedTab ? <Minimize2 /> : <Maximize2 />}</button>}

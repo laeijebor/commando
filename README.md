@@ -353,25 +353,38 @@ reordering and recovery; an unavailable Max connection never falls back to Team.
 | Action | Claude Code Cloud | Codex Cloud |
 | --- | --- | --- |
 | Link an existing ID | Yes, explicitly user-supplied | Yes, explicitly user-supplied |
-| Create from Commando | Unavailable until source-selection/no-bundle behavior is verified | Version-gated CLI submission |
+| Create from Commando | Version-gated interactive CLI in a private scratch clone | Version-gated CLI submission |
 | Live status | Open the session in Claude | Version-gated, exact-ID CLI lookup |
 | Follow-up | Version-gated CLI message acknowledgement | Open the task in Codex |
 | Diff | Open the session in Claude | Version-gated, bounded read-only preview |
 
 Linking records an identity; it does not prove provider acceptance or delivery of
-an earlier message. Claude creation is deliberately unavailable: a clean checkout
-does not establish whether the CLI will upload a repository bundle. Existing
-Claude sessions can still be linked and, with verified CLI support, messaged.
+an earlier message. Claude creation resolves the selected checkout's GitHub origin
+and verifies the requested branch on that remote. Commando records the remote URL,
+branch and commit, then shallow-clones the branch into a fresh private directory
+(mode 0700). The cloned commit must still match before Claude starts. Claude runs
+only in that clone, so unpushed changes, ignored files and untracked files from the
+user's checkout cannot be uploaded. The CLI may upload the pushed clone itself;
+Commando never runs it in the user's working checkout.
 
-Cloud CLI execution is **off by default until its installed version is explicitly
-verified**. Missing binaries and unsupported capabilities appear in the task
+Creation runs `claude --cloud "<prompt>"` interactively on a unique private tmux
+socket, with the prompt passed as one literal argv element. Only the exact known
+folder-trust prompt in that owned scratch checkout is auto-accepted. A complete
+matching session URL/resume receipt records `provider_receipt` evidence. Clone or
+tmux setup failures reject the request; any uncertainty after launch (including
+timeouts, unexpected output or a killed pane) becomes `delivery_unknown`, with no
+automatic retry. The private session and scratch directory are cleaned up after
+every attempt. Provider work continues independently after acceptance.
+
+Cloud CLI execution is **off by default until a minimum verified version is
+configured**. Missing binaries and unsupported capabilities appear in the task
 dialog. This implementation's automated tests use synthetic executables and API
 fixtures; they are not evidence of an authenticated provider smoke test.
 
 On the daemon host, sign in through the official CLI using the subscription
 account that owns the cloud environment/session. After checking that version's
 cloud commands, receipt output, and detach behavior against a disposable target,
-configure the exact semantic version you verified:
+configure the minimum stable semantic version you verified:
 
 ```sh
 COMMANDO_CODEX_CLI=/absolute/path/to/codex
@@ -395,10 +408,12 @@ are optional: discovery checks PATH, then `~/.local/bin`, and for Codex checks
 installed NVM Node versions newest-first. An explicit override always wins,
 including an invalid one; it never silently falls back to a different binary.
 Discovery does not execute shell aliases or install/update software. Version values are
-the exact version numbers, not the full `codex-cli …` or `… (Claude Code)` label,
-and ranges are not accepted. A version mismatch disables CLI capabilities again.
-Each Claude version setting enables only its own supported follow-up delivery,
-not creation; verifying Team does not enable Max. The former singular
+minimum numeric `major.minor.patch` versions, not the full `codex-cli …` or
+`… (Claude Code)` label. Installed versions equal to or newer than the configured
+minimum enable capabilities; older, prerelease, malformed, label-formatted and
+ranged values remain unverified. Strict receipt parsers still fail closed if a
+new CLI changes its output. Each Claude setting enables creation and follow-up
+only for its own connection; verifying Team does not enable Max. The former singular
 `COMMANDO_CLOUD_CLAUDE_VERIFIED_VERSION` is not used by the two-connection factory.
 Context labels are local identity namespaces, not credentials. Use a new context
 when changing accounts; the app checks declared context changes and requires
@@ -554,6 +569,7 @@ Opting in holds agent hooks open exactly like Island does: a pending permission 
 | --- | --- | --- |
 | `COMMANDO_PORT` | Local daemon port | `4310` |
 | `COMMANDO_GITHUB` | `on`/`off`: GitHub reads (PR lists, quick look, branch PR badges). Daemons on other ports share the same `gh` API budget | `on` at `4310`, `off` on other ports |
+| `COMMANDO_WORKTREE_ROOT` | Absolute folder new worktrees are created under, as `<root>/<repo>-worktrees/<branch>`; see [Worktree volume](#worktree-volume) | Beside the main checkout: `<parent>/<repo>-worktrees/<branch>` |
 | `COMMANDO_TURN_BRIEFS` | Case-insensitive `off`/`0`/`false` disables model turn briefs; `on`/`1`/`true` enables them | Enabled at `4310`, disabled on other ports |
 | `COMMANDO_OWNER_EMAIL` | Enables email/password auth and restricts first-owner creation to this address | Token-only mode |
 | `COMMANDO_AUTH_DB_PATH` | Better Auth SQLite database | `~/.commando/auth.sqlite` |
@@ -574,6 +590,30 @@ Opting in holds agent hooks open exactly like Island does: a pending permission 
 | `COMMANDO_TMUX_SOCKET_PATH` | Connect through `tmux -S <path>` | Default tmux server |
 
 Set only one tmux socket override.
+
+### Worktree volume
+
+With many agents churning `node_modules` and build output, macOS's `fseventsd`
+can fall behind writing its on-disk journal. The kernel then drops file events
+and every watcher (watchman, Metro, Vite, Spotlight) rescans in a loop until a
+reboot. A dedicated APFS volume with journaling and Spotlight switched off avoids
+that: watchers still receive live events, only the journal stops.
+
+```bash
+sudo bash scripts/dev-volume.sh                        # creates /Volumes/Dev
+sudo DEV_VOLUME_NAME=Work bash scripts/dev-volume.sh   # another name
+export COMMANDO_WORKTREE_ROOT=/Volumes/Dev/worktrees   # in the shell profile the daemon starts from
+```
+
+The script adds the volume to the existing APFS container (no repartitioning),
+marks it `.fseventsd/no_log`, runs `mdutil -i off`, excludes it from Time
+Machine, and points the npm cache and Xcode DerivedData at it (the old cache
+folders are left in place). It is safe to re-run, and refuses a volume of that
+name it did not create unless `DEV_VOLUME_ADOPT=1` is set. pnpm needs no change:
+it keeps a per-volume store so hard links keep working.
+With `COMMANDO_WORKTREE_ROOT` set, new worktrees are created at
+`<root>/<repo>-worktrees/<branch>` and both clients preview that path; existing
+worktrees stay where they are, so migrate gradually as branches merge.
 
 ## Tailscale Access
 
@@ -736,3 +776,5 @@ network access rules. Device-token hashes and metadata live in
 `~/.commando/paired-devices-<port>.json` (0600); codes live only in memory. Device tokens
 have the existing automation bearer’s access, except pairing management, which
 requires the owner session or `COMMANDO_TOKEN`.
+
+DeepSeek V4.1 Flash is available as **DeepSeek chat**. See [DeepSeek chat setup](docs/deepseek-chat.md) for API key configuration and supported behavior.

@@ -1,3 +1,4 @@
+import { useHost } from '../HostContext'
 import { useState } from 'react'
 import { ImageOff, LoaderCircle } from 'lucide-react'
 import { chatImageUrl, findChatReplyImage, type ChatReplyImage, type ChatReplyImageError } from '../../shared/agent-chat'
@@ -29,8 +30,10 @@ function Notice({ reason, src, path }: { reason: keyof typeof NOTICES; src: stri
 
 /** A stored reply image; a click enlarges it. Keyed by id, so a newer copy of the file gets a fresh try. */
 function StoredImage({ id, src, alt }: { id: string; src: string; alt: string }) {
+  const { local } = useHost()
   const [open, setOpen] = useState(false)
   const [failed, setFailed] = useState(false)
+  if (!local) return <span>Only on this Mac for now</span>
   if (failed) return <Notice reason="undrawable" src={src} />
   const url = chatImageUrl(id)
   const name = alt || fileName(src)

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentProfilesResponse } from '../shared/agent-profiles'
@@ -120,6 +120,7 @@ describe('SettingsView', () => {
       const onSwitch = vi.fn(async () => {})
       setup({}, { configDir: '/Users/leo/.claudegone', open: true, onSwitch })
       const select = await screen.findByRole('combobox', { name: 'Commander profile' })
+      await act(async () => {})
       expect(select).toHaveValue('/Users/leo/.claudegone')
       expect(screen.getByRole('option', { name: '~/.claudegone (missing)' })).toBeDisabled()
       fireEvent.change(select, { target: { value: '' } })
@@ -171,6 +172,8 @@ describe('SettingsView', () => {
       const onSwitch = vi.fn(async () => { throw new Error('tmux refused') })
       setup({}, { configDir: '/Users/leo/.claudew', open: false, onSwitch })
       expect(await screen.findByText('Work', { selector: 'strong' })).toBeInTheDocument()
+      // Flush the initial profile-selection effect before changing the select.
+      await act(async () => {})
       fireEvent.change(screen.getByRole('combobox', { name: 'Commander profile' }), { target: { value: '' } })
       fireEvent.click(screen.getByRole('button', { name: 'Start Commander' }))
       expect(window.confirm).toHaveBeenCalledWith('Start Commander on the default login?')

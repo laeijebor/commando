@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GitExecutorOptions } from './git-diff.js'
-import { GitWorktreeError, GitWorktreeService } from './git-worktree.js'
+import { GitWorktreeError, GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
 
 type Call = { args: string[]; cwd: string; timeout: number }
 
@@ -64,6 +64,15 @@ describe('GitWorktreeService.probe', () => {
     expect(git.calls[0].cwd).toBe(`${MAIN}/apps/web`)
   })
 
+  it('reports the configured worktrees parent so clients preview the same default path', async () => {
+    const git = fakeGit([
+      [['rev-parse', '--path-format=absolute'], `${MAIN}\n${MAIN}/.git\nmain\n`],
+      [['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], 'origin/main\n'],
+    ])
+    const service = new GitWorktreeService(git.execute, { worktreesParent: '/Volumes/Dev/worktrees' })
+    await expect(service.probe(MAIN)).resolves.toMatchObject({ isRepo: true, worktreesParent: '/Volumes/Dev/worktrees' })
+  })
+
   it('maps a linked worktree back to its main checkout', async () => {
     const worktree = '/Users/dev/gizmo/Save-All-worktrees/coins'
     const git = fakeGit([
@@ -116,6 +125,17 @@ describe('GitWorktreeService.probe', () => {
     const info = await new GitWorktreeService(noRemote.execute).probe(MAIN)
     expect(info.defaultBranch).toBeUndefined()
     expect(info.remote).toBeUndefined()
+  })
+})
+
+describe('worktreesParentFromEnv', () => {
+  it('is unset unless COMMANDO_WORKTREE_ROOT names an absolute folder', () => {
+    expect(worktreesParentFromEnv({})).toBeUndefined()
+    expect(worktreesParentFromEnv({ COMMANDO_WORKTREE_ROOT: '  ' })).toBeUndefined()
+    expect(worktreesParentFromEnv({ COMMANDO_WORKTREE_ROOT: '/Volumes/Dev/worktrees/' })).toBe('/Volumes/Dev/worktrees')
+    expect(() => worktreesParentFromEnv({ COMMANDO_WORKTREE_ROOT: 'worktrees' })).toThrow(/absolute path/)
+    expect(() => worktreesParentFromEnv({ COMMANDO_WORKTREE_ROOT: '/Volumes/Dev\n' })).not.toThrow()
+    expect(() => worktreesParentFromEnv({ COMMANDO_WORKTREE_ROOT: '/Volumes/De\u0001v' })).toThrow(/absolute path/)
   })
 })
 
@@ -420,6 +440,169 @@ describe('GitWorktreeService.removeWorktree', () => {
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
+  })
+
+  it('saves uncommitted work on the branch, removes the worktree, then checks the branch out again', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    const identity = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+    const service = new GitWorktreeService(undefined, { environment: { ...process.env, ...identity } })
+    try {
+      run(base, 'init', '-q', main)
+      writeFileSync(path.join(main, '.gitignore'), 'node_modules\n')
+      run(main, 'add', '.gitignore')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).resolves.toEqual(worktree)
+
+      mkdirSync(path.join(linked, 'node_modules', 'from-git', '.git'), { recursive: true })
+      writeFileSync(path.join(linked, 'node_modules', 'big.js'), '')
+      writeFileSync(path.join(linked, 'notes.txt'), 'uncommitted')
+      const saved = await service.commitWorkInProgress(worktree, 'wip: archived session')
+      expect(saved.head).not.toBe(worktree.head)
+      expect(run(linked, 'log', '-1', '--format=%s')).toBe('wip: archived session\n')
+      expect(run(linked, 'show', '--name-only', '--format=', 'HEAD').trim()).toBe('notes.txt')
+
+      await service.removeWorktree(saved)
+      await vi.waitFor(() => expect(readdirSync(path.dirname(linked))).toEqual([]))
+      await expect(service.createWorktree({ mainRoot: main, branch: 'gone', path: linked, existingBranchOnly: true }))
+        .rejects.toMatchObject({ message: 'Branch gone no longer exists' })
+      await service.createWorktree({ mainRoot: main, branch: 'feature', path: linked, existingBranchOnly: true })
+      expect(readdirSync(linked).sort()).toEqual(['.git', '.gitignore', 'notes.txt'])
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a work-in-progress commit that would only point at a nested repository', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    try {
+      run(base, 'init', '-q', main)
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      run(linked, 'init', '-q', 'vendor clone')
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: 'Worktree contains another git repository at vendor clone' })
+      expect(run(linked, 'rev-parse', 'HEAD').trim()).toBe(worktree.head)
+      // Once staged it is a gitlink, which keeps none of its files.
+      run(linked, '-c', 'user.name=t', '-c', 'user.email=t@t', '-C', 'vendor clone', 'commit', '-q', '--allow-empty', '-m', 'inner')
+      execFileSync('git', ['add', 'vendor clone'], { cwd: linked, stdio: 'ignore' })
+      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: 'Worktree contains a submodule or nested repository at vendor clone' })
+      expect(run(linked, 'rev-parse', 'HEAD').trim()).toBe(worktree.head)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a work-in-progress commit when an index flag hides edits from status', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    try {
+      run(base, 'init', '-q', main)
+      writeFileSync(path.join(main, 'config.json'), '{}')
+      run(main, 'add', '.')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      for (const flag of ['--assume-unchanged', '--skip-worktree']) {
+        run(linked, 'update-index', flag, 'config.json')
+        writeFileSync(path.join(linked, 'config.json'), '{"local":true}')
+        expect(run(linked, 'status', '--porcelain').trim()).toBe('')
+        await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: expect.stringContaining('at config.json') })
+        run(linked, 'update-index', flag.replace('--', '--no-'), 'config.json')
+        run(linked, 'checkout', '--', 'config.json')
+      }
+      // Sparse checkout marks files outside its cone skip-worktree, but they aren't on disk to lose.
+      for (const folder of ['app', 'docs']) {
+        mkdirSync(path.join(linked, folder))
+        writeFileSync(path.join(linked, folder, 'file.md'), '')
+      }
+      run(linked, 'add', '.')
+      run(linked, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'folders')
+      run(linked, 'sparse-checkout', 'set', 'app')
+      expect(run(linked, 'ls-files', '-v')).toContain('S docs/file.md')
+      const sparse = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(sparse, 'wip')).resolves.toEqual(sparse)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a work-in-progress commit when a repository was started inside a tracked folder', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    try {
+      run(base, 'init', '-q', main)
+      mkdirSync(path.join(main, 'vendor'))
+      writeFileSync(path.join(main, 'vendor', 'lib.js'), 'x')
+      run(main, 'add', '.')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      run(path.join(linked, 'vendor'), 'init', '-q')
+      expect(run(linked, 'status', '--porcelain').trim()).toBe('')
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).rejects.toMatchObject({ message: 'Worktree contains another git repository at vendor' })
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('checks for gitlinks in a repository too large for an ordinary git output buffer', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'big')
+    try {
+      run(base, 'init', '-q', main)
+      // 30,000 index entries make `ls-files --stage` print about 3 MB.
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: main, input: 'x', encoding: 'utf8' }).trim()
+      const entries = Array.from({ length: 30_000 }, (_, i) => `100644 ${blob} 0\tpackages/module-${Math.floor(i / 1000)}/src/component-file-${i}.ts`).join('\n')
+      execFileSync('git', ['update-index', '--index-info'], { cwd: main, input: `${entries}\n` })
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'big')
+      run(main, 'worktree', 'add', '-q', '-b', 'big', linked)
+      const service = new GitWorktreeService()
+      const worktree = (await service.worktreeForDirectory(linked))!
+      await expect(service.commitWorkInProgress(worktree, 'wip')).resolves.toEqual(worktree)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  }, 120_000)
+
+  it('checks out an existing branch again under any name git accepts', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'cpp')
+    const service = new GitWorktreeService()
+    try {
+      run(base, 'init', '-q', main)
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init')
+      run(main, 'branch', 'feature/c++')
+      await service.createWorktree({ mainRoot: main, branch: 'feature/c++', path: linked, existingBranchOnly: true })
+      expect(run(linked, 'branch', '--show-current').trim()).toBe('feature/c++')
+      await expect(service.createWorktree({ mainRoot: main, branch: 'bad..name', path: path.join(base, 'x'), existingBranchOnly: true }))
+        .rejects.toMatchObject({ kind: 'bad-branch' })
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a work-in-progress commit on a detached HEAD', async () => {
+    await expect(new GitWorktreeService(fakeGit([]).execute).commitWorkInProgress({ root: '/w', mainRoot: '/m', branch: 'HEAD', head: 'abc' }, 'wip'))
+      .rejects.toMatchObject({ message: expect.stringMatching(/detached HEAD/) })
   })
 
   it('refuses to remove the main checkout', async () => {

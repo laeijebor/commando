@@ -136,7 +136,7 @@ describe('durable cloud orchestration', () => {
     expect(JSON.stringify(await service.listProviders())).not.toContain('private-secret')
   })
 
-  it('explains Claude creation source policy independently of verified follow-up capability', async () => {
+  it('explains unavailable Claude creation independently of follow-up capability', async () => {
     const { adapter, info } = fakeProvider('claude')
     info.capabilities.create = false
     info.verifiedAccountRef = null
@@ -144,7 +144,7 @@ describe('durable cloud orchestration', () => {
     const service = new CloudTaskService({ store: new FakeCloudRepository(), providers: [adapter] })
     services.push(service)
     const provider = (await service.listProviders()).providers[0]
-    expect(provider.reason).toContain('no verified enforceable no-bundle source-selection path')
+    expect(provider.reason).toContain('Claude creation is unavailable for this connection')
     expect(provider.reason).toContain('Cloud follow-up is enabled')
     expect(provider.reason).toContain('Account identity is unverified')
     expect(provider.reason).not.toContain('private-secret')
@@ -1039,10 +1039,10 @@ describe('SQLite/service/adapter/process integration', () => {
     vi.stubEnv('COMMANDO_TOKEN', 'synthetic-secret-must-not-leak')
     vi.stubEnv('OPENAI_API_KEY', 'synthetic-secret-must-not-leak')
     const adapter = new CodexCloudAdapter({
-      executable: 'synthetic-only', credentialContextId: 'synthetic-process', verifiedVersion: '0.0.0-synthetic',
+      executable: 'synthetic-only', credentialContextId: 'synthetic-process', verifiedVersion: '0.0.0',
       runner: (request) => {
         requests.push(request.args)
-        return runCloudCli({ ...request, executable: process.execPath, args: [fixture, ...request.args] })
+        return runCloudCli({ ...request, executable: process.execPath, args: [fixture, ...request.args] }).then((result) => request.args[0] === '--version' ? { ...result, stdout: result.stdout.replace('0.0.0-synthetic', '0.0.0') } : result)
       },
     })
     const service = new CloudTaskService({ store, providers: [adapter] })

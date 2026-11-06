@@ -88,6 +88,14 @@ describe('defaultWorktreePath', () => {
     const { defaultWorktreePath } = await import('./tmux-create.js')
     expect(defaultWorktreePath('/Users/leo/vivifit/', 'chat-video')).toBe('/Users/leo/vivifit-worktrees/chat-video')
   })
+
+  it('keeps the <repo>-worktrees folder under a configured root instead of beside the checkout', async () => {
+    const { defaultWorktreePath } = await import('./tmux-create.js')
+    expect(defaultWorktreePath('/Users/leo/dev/gizmo/Save-All', 'bot-rematch-flow', '/Volumes/Dev/worktrees'))
+      .toBe('/Volumes/Dev/worktrees/Save-All-worktrees/bot-rematch-flow')
+    expect(defaultWorktreePath('/Users/leo/vivifit/', 'fix/chat-video', '/Volumes/Dev/worktrees/'))
+      .toBe('/Volumes/Dev/worktrees/vivifit-worktrees/fix/chat-video')
+  })
 })
 
 describe('chat launch arguments', () => {
@@ -130,4 +138,10 @@ describe('Cursor chat launch arguments', () => {
     expect(sessionAgentArgv({ provider: 'cursor-chat', permissionMode: 'auto', resume: 'agent-12345678-0000', prompt: '--model injected\nhello' }))
       .toEqual(['commando-agent', 'cursor', '--permission-mode', 'auto', '--resume', 'agent-12345678-0000', '--prompt', '--model injected\nhello'])
   })
+})
+
+
+it('launches DeepSeek without inheriting Claude profile or readable-directory flags', () => {
+  expect(sessionAgentArgv({ provider: 'deepseek-chat', configDir: '/unused', readableDir: '/unused', permissionMode: 'plan', resume: 'session-1234', prompt: 'hello' }))
+    .toEqual(['commando-agent', 'deepseek', '--permission-mode', 'plan', '--resume', 'session-1234', '--prompt', 'hello'])
 })

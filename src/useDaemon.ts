@@ -1,3 +1,5 @@
+import { useHost } from './HostContext'
+import { daemonWebSocketUrl } from './hostPaths'
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
 import { publishCanvasSpotlights, publishCanvasChange, publishGuideStateChanged, publishCanvasThreadsChanged, publishCanvasPendingChanged, publishCanvasRefresh } from './webPanesApi'
@@ -16,6 +18,8 @@ export type ConnectionState = {
   detail: string
   attempt: number
   retryAt?: number
+  /** Which credential failed: this Mac's owner login, or the saved host token. */
+  authSource?: 'local' | 'host'
 }
 
 const INITIAL_CONNECTION: ConnectionState = {
@@ -50,6 +54,7 @@ export function useDaemon(
   sessionAuthenticated: boolean,
   onMessage: (message: ServerMessage) => void,
 ) {
+  const { activeHost, local, daemonFetch } = useHost()
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION)
   const socketRef = useRef<WebSocket | null>(null)
   const receiveMessage = useEffectEvent(onMessage)
@@ -66,41 +71,59 @@ export function useDaemon(
     let attempt = 0
     const abortController = new AbortController()
 
+    const authFailure = async (response: Response): Promise<'local' | 'host' | null> => {
+      if (response.ok) return null
+      if (!local) {
+        const body = await response.clone().json().catch(() => ({})) as { code?: string }
+        if (body.code === 'host_unauthorized') return 'host'
+        if (body.code === 'unauthorized') return 'local'
+      }
+      // Upstream 401/403 responses are normalized by the proxy. An unlabelled
+      // rejection therefore requires refreshing this Mac's owner credentials.
+      return response.status === 401 || response.status === 403 ? 'local' : null
+    }
+    const rejectAuth = (authSource: 'local' | 'host') => {
+      if (cancelled) return
+      setConnection({
+        phase: 'unauthorized', authSource, attempt,
+        detail: authSource === 'local' ? 'This Mac requires a new owner login or daemon token' : 'The remote host rejected its saved token',
+      })
+    }
+
     const connect = (isReconnect: boolean) => {
       if (cancelled) return
 
       setConnection({
         phase: isReconnect ? 'reconnecting' : 'connecting',
-        detail: isReconnect ? `Reconnecting to local daemon (attempt ${attempt})` : 'Opening live channel',
+        detail: isReconnect ? `Reconnecting to ${local ? 'local' : 'remote'} daemon (attempt ${attempt})` : 'Opening live channel',
         attempt,
       })
 
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : ''
-      const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws${tokenQuery}`)
+      const socket = new WebSocket(daemonWebSocketUrl(activeHost, token))
       socketRef.current = socket
 
       socket.addEventListener('open', () => {
         if (cancelled) return
         attempt = 0
-        publishCanvasRefresh()
+        if (local) publishCanvasRefresh()
         setConnection({
           phase: 'live',
-          detail: 'Authenticated local stream',
+          detail: local ? 'Authenticated local stream' : 'Authenticated remote stream',
           attempt: 0,
         })
       })
 
       socket.addEventListener('message', (event) => {
-        if (typeof event.data !== 'string') return
+        if (cancelled || typeof event.data !== 'string') return
         try {
           const message = JSON.parse(event.data) as ServerMessage
+          if (!local && (message.type.startsWith('canvas_') || message.type === 'guide_state_changed' || message.type === 'session_ides')) return
           if (message.type === 'canvas_pending_changed') publishCanvasPendingChanged(message.webPaneId)
           else if (message.type === 'canvas_threads_changed') publishCanvasThreadsChanged(message.webPaneId)
           else if (message.type === 'canvas_changed') publishCanvasChange(message)
           else if (message.type === 'guide_state_changed') publishGuideStateChanged(message)
           else {
-            if (message.type === 'web_panes') publishCanvasSpotlights(message.spotlightRequests ?? {})
+            if (local && message.type === 'web_panes') publishCanvasSpotlights(message.spotlightRequests ?? {})
             receiveMessage(message)
           }
         } catch {
@@ -115,33 +138,41 @@ export function useDaemon(
         if (cancelled) return
         if (socketRef.current === socket) socketRef.current = null
 
-        if (event.code === 4401 || event.code === 4403) {
-          setConnection({
-            phase: 'unauthorized',
-            detail: 'The daemon rejected this session token',
-            attempt,
-          })
+        const authClose = event.code === 4401 || event.code === 4403
+        if (local && authClose) {
+          rejectAuth('local')
           return
+        }
+        if (!local) {
+          setConnection({ phase: 'reconnecting', detail: 'Checking the closed remote stream', attempt })
         }
 
         const assessAndReconnect = async () => {
-          if (event.code === 1006) {
+          if (event.code === 1006 || !local) {
             try {
-              const response = await fetch('/api/health', {
+              const response = await daemonFetch('/api/health', {
                 credentials: 'same-origin',
                 headers: token ? { Authorization: `Bearer ${token}` } : undefined,
                 signal: abortController.signal,
               })
-              if (response.status === 401 || response.status === 403) {
-                setConnection({
-                  phase: 'unauthorized',
-                  detail: 'The restarted daemon requires a new session token',
-                  attempt,
+              const healthAuth = await authFailure(response)
+              if (cancelled) return
+              if (healthAuth) { rejectAuth(healthAuth); return }
+              if (!local && response.ok) {
+                // Health may be public on the hub. Probe a protected route too:
+                // the browser cannot expose the body of a rejected WS upgrade.
+                const protectedResponse = await daemonFetch('/api/snapshot', {
+                  credentials: 'same-origin',
+                  headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                  signal: abortController.signal,
                 })
-                return
+                const snapshotAuth = await authFailure(protectedResponse)
+                if (cancelled) return
+                if (snapshotAuth) { rejectAuth(snapshotAuth); return }
+                if (protectedResponse.ok && authClose) { rejectAuth('host'); return }
               }
             } catch {
-              // The daemon may still be offline; the bounded reconnect loop handles it.
+              // Unreachable probes cannot identify a bad credential; retry the stream.
             }
           }
 
@@ -172,7 +203,7 @@ export function useDaemon(
       })
 
       try {
-        const response = await fetch('/api/snapshot', {
+        const response = await daemonFetch('/api/snapshot', {
           credentials: 'same-origin',
           headers: {
             Accept: 'application/json',
@@ -181,28 +212,26 @@ export function useDaemon(
           signal: abortController.signal,
         })
 
-        if (response.status === 401 || response.status === 403) {
-          setConnection({
-            phase: 'unauthorized',
-            detail: 'The daemon rejected this session token',
-            attempt: 0,
-          })
-          return
-        }
+        if (cancelled) return
+        const snapshotAuth = await authFailure(response)
+        if (cancelled) return
+        if (snapshotAuth) { rejectAuth(snapshotAuth); return }
         if (!response.ok) throw new Error(`Snapshot request returned ${response.status}`)
 
         const snapshot = snapshotFromResponse(await response.json())
+        if (cancelled) return
         if (!snapshot) throw new Error('Snapshot response did not match the protocol')
         receiveMessage({ type: 'snapshot', snapshot })
         connect(false)
       } catch (error) {
         if (cancelled || abortController.signal.aborted) return
         setConnection({
-          phase: 'connecting',
+          phase: local ? 'connecting' : 'reconnecting',
           detail: error instanceof Error ? error.message : 'Snapshot request failed',
           attempt: 0,
         })
-        connect(false)
+        if (local) connect(false)
+        else reconnectTimer = window.setTimeout(() => void hydrate(), 5_000)
       }
     }
 
@@ -216,7 +245,7 @@ export function useDaemon(
       socketRef.current = null
       socket?.close(1000, 'Client reset')
     }
-  }, [sessionAuthenticated, token])
+  }, [sessionAuthenticated, token, activeHost, daemonFetch, local])
 
   const send = useCallback((message: ClientMessage) => {
     const socket = socketRef.current

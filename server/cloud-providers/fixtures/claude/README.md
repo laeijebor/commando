@@ -17,8 +17,9 @@ documented tracking suffix above, and stores the canonical URL. Prose, partial
 JSON, arrays, extra fields, conflicting identities and arbitrary URL suffixes
 are not authoritative receipts. A receipt acknowledges delivery, not completion.
 
-Creation remains disabled even with an exact verified version: a supported,
-enforceable source-selection/no-bundle policy has not been established.
+Creation is enabled at or above the configured minimum stable verified version.
+It uses a fresh private clone of the requested GitHub branch and the interactive
+`--cloud` CLI on a unique tmux socket. The working checkout is never submitted.
 
 P0b still requires an explicitly approved executable/version, disposable target,
 subscription login, and controlled live evidence. No global install, credential
@@ -26,3 +27,8 @@ reads or real cloud tasks are part of these tests.
 
 `process.cjs` is a harmless fake executable copied to a temporary directory by
 runner tests. It exercises real process behavior, never provider authentication.
+
+`create.cjs` is a synthetic interactive executable. Tests prepend a Node shebang;
+it writes the exact known trust screen, waits for Down + Enter on its PTY, then
+prints a three-line synthetic receipt. It records argv/cwd/profile in the test's
+temporary profile directory. It never contacts Claude or reads credentials.

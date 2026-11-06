@@ -107,8 +107,9 @@ import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
 import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
-import { GitWorktreeService } from './git-worktree.js'
-import { prepareSessionWorktreeDeletion } from './session-worktree-deletion.js'
+import { GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
+import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion, type SessionWorktreeDeletionDependencies } from './session-worktree-deletion.js'
+import { sessionRepo } from '../shared/session-repositories.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
@@ -696,7 +697,7 @@ async function main(): Promise<void> {
     // Storage failure must not reset task history or take local tmux offline.
     console.error('[commando] Cloud task storage unavailable; cloud routes are disabled')
   }
-  const gitWorktrees = new GitWorktreeService()
+  const gitWorktrees = new GitWorktreeService(undefined, { worktreesParent: worktreesParentFromEnv(process.env) })
   const paneRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory))
   // The profile store is set up further down; this only runs when a pane starts.
   const tmuxCreator = new TmuxCreator(runTmuxCreateCommand, tmuxSocketArgsFromEnv(), gitWorktrees, undefined, undefined,
@@ -1776,10 +1777,21 @@ async function main(): Promise<void> {
       console.error(`[commando] tmux Resurrect save failed after ${change}`, error)
     })
   }
+  const worktreeDeletion: SessionWorktreeDeletionDependencies = {
+    currentPanes: async () => (await refreshSnapshotFresh()).panes,
+    currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
+    worktreeForDirectory: (directory) => gitWorktrees.worktreeForDirectory(directory),
+    removeWorktree: (worktree) => gitWorktrees.removeWorktree(worktree),
+  }
   const sessionManagement = new SessionManagementApi({
     actions: tmuxSessionActions,
     preferences: sessionPreferences,
-    archives: new SessionArchives({ agents: agentResume }),
+    archives: new SessionArchives({
+      agents: agentResume,
+      recreateWorktree: async (worktree) => {
+        await gitWorktrees.createWorktree({ mainRoot: worktree.mainRoot, branch: worktree.branch, path: worktree.path, existingBranchOnly: true })
+      },
+    }),
     currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
     currentServerId: () => snapshotServerId,
     currentWindowIds: () => snapshot.windows.map((window) => window.id),
@@ -1790,12 +1802,14 @@ async function main(): Promise<void> {
         })
       }
     },
-    prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, {
-      currentPanes: async () => (await refreshSnapshotFresh()).panes,
-      currentSessions: () => snapshot.sessions.map(({ id, name }) => ({ id, name })),
-      worktreeForDirectory: (directory) => gitWorktrees.worktreeForDirectory(directory),
-      removeWorktree: (worktree) => gitWorktrees.removeWorktree(worktree),
-    }),
+    prepareSessionWorktreeDeletion: (sessionId) => prepareSessionWorktreeDeletion(sessionId, worktreeDeletion),
+    prepareDirectoriesWorktreeDeletion: (directories) => prepareDirectoriesWorktreeDeletion(directories, worktreeDeletion),
+    commitWorkInProgress: (worktree, message) => gitWorktrees.commitWorkInProgress(worktree, message),
+    sessionRepo: (sessionId) => {
+      const session = snapshot.sessions.find((entry) => entry.id === sessionId)
+      const repo = session && sessionRepo(session, snapshot.panes)
+      return repo ? { root: repo.root, name: repo.name, ...(repo.branch ? { branch: repo.branch } : {}), ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch } : {}) } : undefined
+    },
     afterSessionDeleted: () => saveResurrectAfter('session deletion'),
     afterSessionRestored: () => saveResurrectAfter('session restore'),
     beforeWindowDeleted: async (windowId) => {
