@@ -12,23 +12,39 @@ const READERS = new Set(['grep', 'egrep', 'rg', 'ag', 'tail', 'head', 'less', 'm
 
 /** Watches the process table for builds that make the host busy outside the lock (`busyProcesses`). */
 export class BusyProcessWatch {
-  private lines: Array<{ pid: number; command: string }> = []
+  private lines: Array<{ pid: number; ppid: number; command: string }> = []
+  private parents = new Map<number, number>()
   constructor(private readonly list: () => Promise<string> = () => new Promise((resolve, reject) => {
-    execFile('ps', ['-axo', 'pid=,command='], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout))
+    execFile('ps', ['-axo', 'pid=,ppid=,command='], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => error ? reject(error) : resolve(stdout))
   })) {}
 
   async refresh(): Promise<void> {
-    this.lines = (await this.list()).split('\n').map((line) => /^\s*(\d+)\s+(.*)$/.exec(line)).filter((match) => match !== null)
-      .map((match) => ({ pid: Number(match[1]), command: match[2] }))
-      .filter((entry) => entry.pid !== process.pid && !entry.command.includes('commando-device') && !READERS.has(entry.command.split(/\s+/, 1)[0].split('/').pop()!))
+    const all = (await this.list()).split('\n').map((line) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).filter((match) => match !== null)
+      .map((match) => ({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] }))
+    this.parents = new Map(all.map((entry) => [entry.pid, entry.ppid]))
+    this.lines = all.filter((entry) => entry.pid !== process.pid && !entry.command.includes('commando-device') && !READERS.has(entry.command.split(/\s+/, 1)[0].split('/').pop()!))
   }
 
-  busy = (resource: DeviceResource): string | undefined => {
+  busy = (resource: DeviceResource, requester?: { pid?: number }): string | undefined => {
+    const own = requester?.pid === undefined ? undefined : this.family(requester.pid)
     for (const fragment of resource.busyProcesses ?? []) {
-      const match = this.lines.find((entry) => entry.command.includes(fragment))
+      const match = this.lines.find((entry) => entry.command.includes(fragment) && !own?.(entry.pid))
       if (match) return `${fragment} (pid ${match.pid})`
     }
     return undefined
+  }
+
+  /** Whether a process is `pid` itself, one of its ancestors (the shell that started it) or one of its descendants. */
+  private family(pid: number): (candidate: number) => boolean {
+    const ancestors = new Set<number>()
+    for (let current: number | undefined = pid; current !== undefined && current > 1 && !ancestors.has(current); current = this.parents.get(current)) ancestors.add(current)
+    return (candidate) => {
+      if (ancestors.has(candidate)) return true
+      for (let current: number | undefined = candidate, steps = 0; current !== undefined && current > 1 && steps < 64; current = this.parents.get(current), steps++) {
+        if (current === pid) return true
+      }
+      return false
+    }
   }
 }
 
@@ -260,7 +276,9 @@ export class DeviceLockApi {
     // claimBy: when an offer lapses — 5 minutes after the agent got the message, or 15 if it never arrives.
     return { ...snapshot, queue: snapshot.queue.map((entry) => ({ ...entry, position: this.dependencies.registry.position(entry),
       ...(entry.offer ? { claimBy: entry.offer.deliveredAt !== undefined ? entry.offer.deliveredAt + OFFER_TIMEOUT_MS : entry.offer.at + UNDELIVERED_OFFER_TIMEOUT_MS } : {}) })),
-      waitingFor: Object.fromEntries(snapshot.resources.map((resource) => [resource.id, this.dependencies.processes.busy(resource)]).filter(([, busy]) => busy)) }
+      // Judged for whoever is next in line, as the queue would.
+      waitingFor: Object.fromEntries(snapshot.resources.map((resource) => [resource.id, this.dependencies.processes.busy(resource,
+        snapshot.queue.find((entry) => !entry.offer && entry.resourceIds.includes(resource.id)))]).filter(([, busy]) => busy)) }
   }
 
   private describe(result: LockResult) {
@@ -269,7 +287,7 @@ export class DeviceLockApi {
     const holders = result.entry.resourceIds.flatMap((id) => registry.holdersOf(id))
     const offered = registry.snapshot().queue.filter((entry) => entry.offer && result.entry.resourceIds.includes(entry.offer.resourceId))
     const waitingFor = result.entry.resourceIds.map((id) => registry.resource(id)).filter((resource) => resource !== undefined)
-      .map((resource) => this.dependencies.processes.busy(resource)).find(Boolean)
+      .map((resource) => this.dependencies.processes.busy(resource, result.entry)).find(Boolean)
     return { ...result, holders, offered, ...(waitingFor ? { waitingFor } : {}) }
   }
 
