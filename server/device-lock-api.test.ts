@@ -175,11 +175,23 @@ describe('DeviceLockApi', () => {
   })
 
   it('reports a build running outside the heavy-job lock', async () => {
-    const { api, registry } = setup('  17 /bin/bash ./gradlew assembleRelease\n  18 node commando-device.mjs lock heavy --task gradlew\n  19 tail -f xcodebuild.log\n  20 /usr/bin/grep -r gradlew .\n')
+    const { api, registry } = setup('  17 1 /bin/bash ./gradlew assembleRelease\n  18 1 node commando-device.mjs lock heavy --task gradlew\n  19 1 tail -f xcodebuild.log\n  20 1 /usr/bin/grep -r gradlew .\n')
     registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['xcodebuild', 'gradlew'] })
     const queued = await call(api, 'POST', '/lock', { request: 'heavy', task: 'pod install', mode: 'wait' })
     expect(queued.body).toMatchObject({ status: 'queued', waitingFor: 'gradlew (pid 17)' })
     expect((await call(api, 'GET')).body.waitingFor).toEqual({ heavy: 'gradlew (pid 17)' })
+  })
+
+  it('does not count the requesting script, the shell that started it, or its children as a build', async () => {
+    // 100 = an agent's shell running the wrapper; 200 = the wrapper (the lock's --pid); 300 = its child; 400 = someone else's build.
+    const ps = ['  100 1 /bin/zsh -c scripts/video-heavy.sh export npx expo export', '  200 100 bash scripts/video-heavy.sh export npx expo export',
+      '  300 200 node commando-device.mjs lock heavy --wait --pid 200'].join('\n')
+    const own = setup(ps)
+    own.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(own.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'held' })
+    const other = setup(ps + '\n  400 1 node /repo/node_modules/.bin/expo export --platform ios')
+    other.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(other.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'queued', waitingFor: 'expo export (pid 400)' })
   })
 
   it('adds and removes resources', async () => {

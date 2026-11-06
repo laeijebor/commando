@@ -58,8 +58,11 @@ export type SweepEvents = {
   dropped: QueueEntry[]
 }
 export type SweepContext = { paneExists: (paneId: string) => boolean; pidAlive: (pid: number) => boolean; busy?: BusyCheck }
-/** Returns a short description of what is keeping the resource busy outside the lock, if anything. */
-export type BusyCheck = (resource: DeviceResource) => string | undefined
+/**
+ * Returns a short description of what is keeping the resource busy outside the lock, if anything. The
+ * requester's own process tree doesn't count: a wrapper script run as `heavy.sh xcodebuild …` names the build it waits to start.
+ */
+export type BusyCheck = (resource: DeviceResource, requester?: Pick<LockOwner, 'pid'>) => string | undefined
 
 /** How long an agent has to claim an offer once it has received the message. */
 export const OFFER_TIMEOUT_MS = 5 * 60_000
@@ -413,7 +416,7 @@ export class DeviceLockRegistry {
       if (state.paused.includes(resource.id) || holders.some((entry) => entry.resourceId === resource.id) ||
         queue.some((entry) => entry.offer?.resourceId === resource.id)) continue
       const next = queue.find((entry) => !entry.offer && entry.resourceIds.includes(resource.id))
-      if (!next || busy?.(resource)) continue
+      if (!next || busy?.(resource, next)) continue
       if (next.mode === 'wait' || next.id === grantNow) {
         const holder = this.holderFor(next, resource.id)
         holders = [...holders, holder]
