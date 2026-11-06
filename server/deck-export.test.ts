@@ -22,7 +22,7 @@ beforeEach(async () => {
   screenshot.mockClear()
 })
 afterEach(async () => { vi.unstubAllEnvs(); await rm(dir, { recursive: true, force: true }) })
-async function request(path: string, body?: unknown, auth: 'agent' | 'owner' | 'none' = path === 'deck-export' ? 'owner' : 'agent') {
+async function request(path: string, body?: unknown, auth: 'agent' | 'owner' | 'none' = path === 'deck-export' || path === 'deck-reveal' ? 'owner' : 'agent') {
   const req = Readable.from(body ? [JSON.stringify(body)] : []) as unknown as IncomingMessage
   req.method = body ? 'POST' : 'GET'; req.headers = { 'content-type': 'application/json', ...(auth === 'agent' ? { authorization: `Bearer ${token}` } : auth === 'owner' ? { 'x-owner': 'yes' } : {}) }
   const chunks: Buffer[] = [], writeHead = vi.fn(), setHeader = vi.fn()
@@ -87,6 +87,20 @@ describe('deck export', () => {
     vi.stubEnv('COMMANDO_SLIDES_CLI', cli); vi.stubEnv('COMMANDO_CHROMIUM_PATH', process.execPath)
     const result = await request('deck-export', { deck: 'deck.html', format: 'pdf' })
     expect(result.status).toBe(503); expect(result.text).toContain('buffer limit'); expect(result.text).not.toContain('timed out')
+  })
+  it('saves to the downloads folder without overwriting, and reveals only files it saved', async () => {
+    const cli = join(dir, 'fake.mjs'), downloads = join(dir, 'Downloads')
+    await mkdir(downloads)
+    await writeFile(cli, `import fs from 'node:fs'; const args=process.argv.slice(2); fs.writeFileSync(args[args.indexOf('--out')+1],'exported'); console.log(JSON.stringify({ok:true}));`)
+    vi.stubEnv('COMMANDO_SLIDES_CLI', cli); vi.stubEnv('COMMANDO_CHROMIUM_PATH', process.execPath); vi.stubEnv('COMMANDO_DOWNLOADS_DIR', downloads)
+    const first = await request('deck-export', { deck: 'deck.html', format: 'pdf', save: 'downloads' })
+    expect(first.status).toBe(200); expect(JSON.parse(first.text)).toEqual({ ok: true, path: join(downloads, 'deck-title.pdf'), name: 'deck-title.pdf' })
+    expect(await readFile(join(downloads, 'deck-title.pdf'), 'utf8')).toBe('exported')
+    const second = JSON.parse((await request('deck-export', { deck: 'deck.html', format: 'pdf', save: 'downloads' })).text)
+    expect(second.name).toBe('deck-title (2).pdf')
+    expect((await request('deck-export', { deck: 'deck.html', format: 'pdf', save: '/tmp' })).status).toBe(400)
+    expect((await request('deck-reveal', { path: join(dir, 'deck.html') }, 'owner')).status).toBe(404)
+    expect((await request('deck-reveal', { path: second.path }, 'agent')).status).toBe(401)
   })
   it('builds literal CLI arguments', () => {
     expect(deckExportArgs('pdf', '/a deck/deck.html', '/out/file.pdf', '/Chrome path', 'paper')).toEqual(['pdf', '/a deck/deck.html', '--json', '--out', '/out/file.pdf', '--browser', '/Chrome path', '--theme', 'paper'])

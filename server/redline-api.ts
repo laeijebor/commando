@@ -1,5 +1,5 @@
 import { parseCanvasSource } from '../shared/deck.js'
-import { deckThemes, exportDeck } from './deck-export.js'
+import { deckThemes, exportDeck, revealSavedExport } from './deck-export.js'
 import { encodeCanvasPath } from '../shared/canvas-manifest.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -284,7 +284,7 @@ export class RedlineApi {
       return
     }
     await this.authenticate(request, url)
-    const deckRoute = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/(deck-themes|deck-export)$/.exec(url.pathname)
+    const deckRoute = /^\/api\/redline\/artifacts\/([0-9a-f]{16})\/(deck-themes|deck-export|deck-reveal)$/.exec(url.pathname)
     if (deckRoute) {
       if (deckRoute[2] === 'deck-themes') {
         if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
@@ -292,7 +292,9 @@ export class RedlineApi {
       } else {
         if (!await this.dependencies.ownerAuthorized(request, url)) throw new HttpError(401, 'Owner authorization required')
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
-        await exportDeck(this.dependencies.artifacts, deckRoute[1], await this.readJson(request), response)
+        const body = await this.readJson(request)
+        if (deckRoute[2] === 'deck-reveal') { await revealSavedExport(body.path); this.writeJson(response, 200, { ok: true }) }
+        else await exportDeck(this.dependencies.artifacts, deckRoute[1], body, response)
       }
       return
     }
