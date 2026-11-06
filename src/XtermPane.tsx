@@ -44,6 +44,11 @@ const SEARCH_DECORATIONS = {
   activeMatchColorOverviewRuler: '#f6c177',
 }
 
+/** Matches the desktop app's native terminal (TerminalProfile.swift). */
+export const TERMINAL_FONT_FAMILY =
+  '"JetBrains Mono", "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace'
+export const TERMINAL_FONT_SIZE = 10
+
 type ClipboardWriter = Pick<Clipboard, 'writeText'>
 
 function sourceDimension(value: number, minimum: number): number {
@@ -154,8 +159,8 @@ export function XtermPane({
       cursorInactiveStyle: 'outline',
       disableStdin: !connectedRef.current,
       drawBoldTextInBrightColors: true,
-      fontFamily: '"JetBrains Mono", "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      fontSize: 10,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: TERMINAL_FONT_SIZE,
       lineHeight: 1,
       minimumContrastRatio: 1,
       macOptionClickForcesSelection: true,
