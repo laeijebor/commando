@@ -25,10 +25,11 @@ export class BusyProcessWatch {
     this.lines = all.filter((entry) => entry.pid !== process.pid && !entry.command.includes('commando-device') && !READERS.has(entry.command.split(/\s+/, 1)[0].split('/').pop()!))
   }
 
-  busy = (resource: DeviceResource, requester?: { pid?: number }): string | undefined => {
-    const own = requester?.pid === undefined ? undefined : this.family(requester.pid)
+  /** What is running a build outside the lock, ignoring the process trees of the given requesters. */
+  busy = (resource: DeviceResource, requesters: Array<{ pid?: number }> = []): string | undefined => {
+    const own = requesters.flatMap((requester) => requester.pid === undefined ? [] : [this.family(requester.pid)])
     for (const fragment of resource.busyProcesses ?? []) {
-      const match = this.lines.find((entry) => entry.command.includes(fragment) && !own?.(entry.pid))
+      const match = this.lines.find((entry) => entry.command.includes(fragment) && !own.some((isOwn) => isOwn(entry.pid)))
       if (match) return `${fragment} (pid ${match.pid})`
     }
     return undefined
@@ -278,7 +279,7 @@ export class DeviceLockApi {
       ...(entry.offer ? { claimBy: entry.offer.deliveredAt !== undefined ? entry.offer.deliveredAt + OFFER_TIMEOUT_MS : entry.offer.at + UNDELIVERED_OFFER_TIMEOUT_MS } : {}) })),
       // Judged for whoever is next in line, as the queue would.
       waitingFor: Object.fromEntries(snapshot.resources.map((resource) => [resource.id, this.dependencies.processes.busy(resource,
-        snapshot.queue.find((entry) => !entry.offer && entry.resourceIds.includes(resource.id)))]).filter(([, busy]) => busy)) }
+        snapshot.queue.filter((entry) => entry.resourceIds.includes(resource.id)))]).filter(([, busy]) => busy)) }
   }
 
   private describe(result: LockResult) {
@@ -287,7 +288,7 @@ export class DeviceLockApi {
     const holders = result.entry.resourceIds.flatMap((id) => registry.holdersOf(id))
     const offered = registry.snapshot().queue.filter((entry) => entry.offer && result.entry.resourceIds.includes(entry.offer.resourceId))
     const waitingFor = result.entry.resourceIds.map((id) => registry.resource(id)).filter((resource) => resource !== undefined)
-      .map((resource) => this.dependencies.processes.busy(resource, result.entry)).find(Boolean)
+      .map((resource) => this.dependencies.processes.busy(resource, registry.snapshot().queue.filter((entry) => entry.resourceIds.includes(resource.id)))).find(Boolean)
     return { ...result, holders, offered, ...(waitingFor ? { waitingFor } : {}) }
   }
 
