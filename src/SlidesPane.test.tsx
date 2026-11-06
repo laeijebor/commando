@@ -103,6 +103,22 @@ describe('SlidesPane', () => {
     })
     expect(calls.some((call) => call.url.includes('/canvas/frames/'))).toBe(false)
   })
+  it('in the desktop app, saves exports to Downloads through the daemon and offers Show in Finder', async () => {
+    vi.stubGlobal('webkit', { messageHandlers: { commandoNativeWindow: { postMessage: vi.fn() } } })
+    mount(); await screen.findByTitle('Opening')
+    const originalFetch = fetch
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (!url.endsWith('/deck-export') && !url.endsWith('/deck-reveal')) return originalFetch(url, init)
+      calls.push({ url, body: JSON.parse(String(init?.body)) })
+      return Promise.resolve({ ok: true, json: async () => url.endsWith('/deck-reveal') ? { ok: true } : { ok: true, path: '/Users/me/Downloads/example-deck.pdf', name: 'example-deck.pdf' } })
+    }))
+    fireEvent.click(screen.getByLabelText('Export'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'PDF' }))
+    expect(await screen.findByText('example-deck.pdf')).toBeInTheDocument()
+    expect(calls.find((call) => call.url.endsWith('/deck-export'))?.body).toMatchObject({ format: 'pdf', save: 'downloads' })
+    fireEvent.click(screen.getByRole('button', { name: 'Show in Finder' }))
+    await waitFor(() => expect(calls.find((call) => call.url.endsWith('/deck-reveal'))?.body).toEqual({ path: '/Users/me/Downloads/example-deck.pdf' }))
+  })
   it('reloads assets and deck changes while preserving a surviving slide id', async () => {
     mount(); await screen.findByTitle('Opening'); fireEvent.click(screen.getByRole('button', { name: 'Slide 2: Evidence' }))
     act(() => publishCanvasChange({ artifactId, changed: ['themes/paper.css'] }))

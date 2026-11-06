@@ -1,7 +1,7 @@
 import { isDeckPath, parseDeck } from '../shared/deck.js'
 import { execFile, type ExecFileException } from 'node:child_process'
 import { existsSync, createReadStream, readFileSync, readdirSync } from 'node:fs'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { copyFile, constants as fsConstants, mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
 import type { ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, posix } from 'node:path'
@@ -49,10 +49,35 @@ export function deckExportFailure(error: Pick<ExecFileException, 'code' | 'kille
   return stderr.trim().split(/\r?\n/).at(-1)?.trim() || 'Slide export failed. Check the slides CLI installation and deck assets.'
 }
 let activeExports = 0
+/** Where `save: 'downloads'` exports land; the desktop app can't save browser downloads. */
+export const downloadsDir = (env: NodeJS.ProcessEnv = process.env): string => env.COMMANDO_DOWNLOADS_DIR || join(homedir(), 'Downloads')
+/** Paths this daemon saved, so reveal can't be pointed at arbitrary files. */
+const savedExports = new Set<string>()
+/** Copies without overwriting: `name.pdf`, then `name (2).pdf`, like a browser download. */
+export async function saveWithoutOverwrite(source: string, dir: string, name: string): Promise<string> {
+  const dot = name.lastIndexOf('.'), stem = name.slice(0, dot), ext = name.slice(dot)
+  await mkdir(dir, { recursive: true }).catch((error: NodeJS.ErrnoException) => fail(500, `Could not save to ${dir}: ${error.code ?? error.message}`))
+  for (let n = 1; n <= 999; n++) {
+    const target = join(dir, n === 1 ? name : `${stem} (${n})${ext}`)
+    try { await copyFile(source, target, fsConstants.COPYFILE_EXCL); return target } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EEXIST') continue
+      await rm(target, { force: true })  // never leave a truncated export behind
+      return fail(500, `Could not save to ${dir}: ${code ?? (error as Error).message}`)
+    }
+  }
+  return fail(409, `Too many exports named ${name} in ${dir}`)
+}
+export function revealSavedExport(path: unknown): Promise<void> {
+  if (typeof path !== 'string' || !savedExports.has(path)) return Promise.reject(new RedlineArtifactError(404, 'Not a slide export saved by Commando'))
+  if (process.platform !== 'darwin') return Promise.reject(new RedlineArtifactError(501, 'Show in Finder is only available on macOS'))
+  return new Promise((resolve, reject) => execFile('/usr/bin/open', ['-R', path], (error) => error ? reject(new RedlineArtifactError(500, 'Could not show the file in Finder')) : resolve()))
+}
 const mime = { pdf: 'application/pdf', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', png: 'image/png', html: 'text/html; charset=utf-8' }
 export async function exportDeck(artifacts: RedlineArtifactRegistry, id: string, body: Record<string, unknown>, response: ServerResponse): Promise<void> {
   const { file, parsed } = resolveDeck(artifacts, id, body.deck)
   if (body.theme !== undefined && (typeof body.theme !== 'string' || !/^[a-z0-9-]{1,40}$/.test(body.theme))) return fail(400, 'Invalid theme; expected 1–40 lowercase letters, digits or hyphens')
+  if (body.save !== undefined && body.save !== 'downloads') return fail(400, "save must be 'downloads'")
   if (body.format !== 'pdf' && body.format !== 'pptx' && body.format !== 'png' && body.format !== 'html') return fail(400, 'format must be pdf, pptx, png or html')
   const format = body.format
   const slide = body.slide === undefined ? parsed.deck.slides[0]?.id : body.slide
@@ -87,7 +112,15 @@ export async function exportDeck(artifacts: RedlineArtifactRegistry, id: string,
     const info = await stat(output).catch(() => null)
     if (!info?.isFile()) return fail(503, 'Slides CLI did not produce the exported file')
     const slug = parsed.deck.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 100) || 'slides'
-    response.writeHead(200, { 'Content-Type': mime[format], 'Content-Length': info.size, 'Content-Disposition': `attachment; filename="${slug}${format === 'png' ? `-${slide}` : ''}.${format}"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+    const filename = `${slug}${format === 'png' ? `-${slide}` : ''}.${format}`
+    if (body.save === 'downloads') {
+      const saved = await saveWithoutOverwrite(output, downloadsDir(), filename)
+      savedExports.add(saved)
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+      response.end(JSON.stringify({ ok: true, path: saved, name: basename(saved) }))
+      return
+    }
+    response.writeHead(200, { 'Content-Type': mime[format], 'Content-Length': info.size, 'Content-Disposition': `attachment; filename="${filename}"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
     await pipeline(createReadStream(output), response)
   } finally { --activeExports; if (temp) await rm(temp, { recursive: true, force: true }) }
 }
