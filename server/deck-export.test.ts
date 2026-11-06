@@ -102,6 +102,15 @@ describe('deck export', () => {
     expect((await request('deck-reveal', { path: join(dir, 'deck.html') }, 'owner')).status).toBe(404)
     expect((await request('deck-reveal', { path: second.path }, 'agent')).status).toBe(401)
   })
+  it('creates a missing downloads folder and reports an unwritable one clearly', async () => {
+    const cli = join(dir, 'fake.mjs'), missing = join(dir, 'new', 'Downloads')
+    await writeFile(cli, `import fs from 'node:fs'; const args=process.argv.slice(2); fs.writeFileSync(args[args.indexOf('--out')+1],'exported'); console.log(JSON.stringify({ok:true}));`)
+    vi.stubEnv('COMMANDO_SLIDES_CLI', cli); vi.stubEnv('COMMANDO_CHROMIUM_PATH', process.execPath); vi.stubEnv('COMMANDO_DOWNLOADS_DIR', missing)
+    expect(JSON.parse((await request('deck-export', { deck: 'deck.html', format: 'pdf', save: 'downloads' })).text).path).toBe(join(missing, 'deck-title.pdf'))
+    vi.stubEnv('COMMANDO_DOWNLOADS_DIR', join(dir, 'deck.html', 'nested'))
+    const result = await request('deck-export', { deck: 'deck.html', format: 'pdf', save: 'downloads' })
+    expect(result.status).toBe(500); expect(JSON.parse(result.text).error).toMatch(/^Could not save to .*: E/)
+  })
   it('builds literal CLI arguments', () => {
     expect(deckExportArgs('pdf', '/a deck/deck.html', '/out/file.pdf', '/Chrome path', 'paper')).toEqual(['pdf', '/a deck/deck.html', '--json', '--out', '/out/file.pdf', '--browser', '/Chrome path', '--theme', 'paper'])
   })
