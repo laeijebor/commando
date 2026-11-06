@@ -2,12 +2,15 @@
 
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatItem } from '../../shared/agent-chat'
 import { ChatTimeline } from './ChatTimeline'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 const items: ChatItem[] = [
   { id: 'u1', turnId: 't1', status: 'completed', createdAt: 1, updatedAt: 1, kind: 'user_message', text: 'Hello' },
@@ -46,5 +49,22 @@ describe('ChatTimeline jump to latest', () => {
     sizeScroller(timeline, 0)
     act(() => scrollTo(timeline, 0))
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull()
+  })
+
+  it('restores the scroll position a WebKit reset loses while hidden', () => {
+    let resized = () => {}
+    vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resized = callback } observe() {} disconnect() {} })
+    render(<ChatTimeline items={items} cwd="/work" working={false} />)
+    const timeline = screen.getByTestId('chat-timeline')
+    sizeScroller(timeline)
+    act(() => scrollTo(timeline, 300))
+    sizeScroller(timeline, 0)
+    resized()
+    // Shown again: WebKit reports the reset scroll before the observer runs.
+    sizeScroller(timeline)
+    act(() => scrollTo(timeline, 0))
+    resized()
+    expect(timeline.scrollTop).toBe(300)
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument()
   })
 })
