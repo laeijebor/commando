@@ -14,6 +14,7 @@ import { pendingForQuestion, sentForQuestion, TileReviewLayer } from './TileRevi
 import { useCanvasComments } from './useCanvasComments'
 import { useCanvasLayout } from './useCanvasLayout'
 import { canvasFrameUrl, useCanvasFrameBridge } from './canvasFrameBridge'
+import { hasNativeWindowHandler } from './nativeWindowBridge'
 import { canvasNoteContext } from './canvasComments'
 import { labelKey, labelsForFrame, type CanvasLabelRef } from './canvasLabels'
 import { canvasRequest } from './canvasWrite'
@@ -53,6 +54,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const [loaded, setLoaded] = useState(false), [revisions, setRevisions] = useState<Record<string, number>>({})
   const [choice, setChoice] = useState(''), [grid, setGrid] = useState(false), [notes, setNotes] = useState(false), [commentMode, setCommentMode] = useState(false)
   const [menu, setMenu] = useState<'theme' | 'export' | null>(null), [themes, setThemes] = useState<string[] | null>(null), [brand, setBrand] = useState('')
+  const [saved, setSaved] = useState<{ path: string; name: string } | null>(null)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [presenting, setPresenting] = useState(false)
   const [spotlight, setSpotlight] = useState<CanvasSpotlightRequest | null>(null), [selected, setSelected] = useState<CanvasLabelRef | null>(null)
   const pane = useRef<HTMLDivElement>(null), stage = useRef<HTMLDivElement>(null), screen = useRef<HTMLDivElement>(null)
@@ -139,10 +141,13 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const selectSnapshot = (next: CanvasSnapshot | null) => { ++hitSequence.current; comments.close(); setCommentMode(false); setMenu(null); setResult(EMPTY); setSnapshot(next) }
   const download = async (format: 'pdf' | 'pptx' | 'png' | 'html') => {
     if (busy || !frame) return
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setSaved(null)
     try {
+      // The desktop app's web view can't save browser downloads, so the daemon writes the file to ~/Downloads.
+      const save = hasNativeWindowHandler()
       const response = await canvasRequest(`${apiUrl}/deck-export`, token,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deck: manifestPath, format, theme, ...(format === 'png' ? { slide: frame.id } : {}) }) }, 'Slide export failed')
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deck: manifestPath, format, theme, ...(format === 'png' ? { slide: frame.id } : {}), ...(save ? { save: 'downloads' } : {}) }) }, 'Slide export failed')
+      if (save) { const { path, name } = await response.json() as { path: string; name: string }; setSaved({ path, name }); setMenu(null); return }
       const url = URL.createObjectURL(await response.blob()), link = document.createElement('a')
       const slug = result.manifest.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'slides'
       link.href = url; link.download = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1] ?? `${slug}${format === 'png' ? `-${frame.id}` : ''}.${format}`; link.click()
@@ -185,6 +190,9 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
       {error && <span role="alert">{error}</span>}
     </div>}
     {error && !menu && <div className="canvas-errors" role="alert">{error}</div>}
+    {saved && !menu && <div className="slides-saved" role="status"><span>Saved to Downloads · <b>{saved.name}</b></span>
+      <button type="button" onClick={() => void canvasRequest(`${apiUrl}/deck-reveal`, token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: saved.path }) }, 'Could not show the file').catch((reason: Error) => setError(reason.message))}>Show in Finder</button>
+      <button type="button" aria-label="Dismiss" onClick={() => setSaved(null)}>×</button></div>}
     <div className="slides-body">{grid && thumbnails}
       <div className={`slides-stage${commentMode ? ' is-commenting' : ''}`} ref={(node) => { stage.current = node; setStageNode(node) }}>
         {frame && <div className="slides-screen" ref={screen} style={{ width: frame.w * scale, height: frame.h * scale }} onClick={(event) => { pane.current?.focus(); void dropComment(event) }}>
