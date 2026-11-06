@@ -1,10 +1,11 @@
 import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
+import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
 import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatTaskAction } from '../../shared/agent-chat'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
+import { Button } from './ui/button'
 import { providerLabel } from './ComposerControls'
 import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
@@ -377,6 +378,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
+  const lastTop = useRef(0)
+  const [scrolledUp, setScrolledUp] = useState(false)
 
   useLayoutEffect(() => {
     const element = scroller.current
@@ -386,36 +389,68 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   useEffect(() => {
     const element = scroller.current
     if (!element) return
+    // WebKit resets a hidden timeline's scroll position (e.g. behind a maximised side-panel tab)
+    // and reports the reset as a scroll once it shows again. Ignore scrolls until the observer
+    // sees it visible, then put the position back.
+    let hidden = false
     const onScroll = () => {
+      if (hidden || element.clientHeight === 0) return
       pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48
+      lastTop.current = element.scrollTop
+      setScrolledUp(!pinned.current)
     }
     element.addEventListener('scroll', onScroll, { passive: true })
-    return () => element.removeEventListener('scroll', onScroll)
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => {
+      const visible = element.clientHeight > 0
+      if (visible && hidden) element.scrollTop = pinned.current ? element.scrollHeight : lastTop.current
+      hidden = !visible
+    })
+    observer?.observe(element)
+    return () => {
+      element.removeEventListener('scroll', onScroll)
+      observer?.disconnect()
+    }
   }, [])
+
+  const jumpToEnd = () => {
+    const element = scroller.current
+    if (!element) return
+    pinned.current = true
+    setScrolledUp(false)
+    element.scrollTop = element.scrollHeight
+  }
 
   // A card the user sent after the latest activity doesn't end that activity.
   const last = [...rows].reverse().find((row) => !(row.kind === 'user' && row.item.tileEvents?.length))
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
   const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   return (
-    <div ref={scroller} className="chat-timeline min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4" data-testid="chat-timeline">
-      <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">
-        {header}
-        <TimelineContext value={context}>
-          {rows.length === 0 && !header ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
-          ) : rows.map((row) => row.kind === 'user' && row.item.id === userMessageCard?.itemId
-            ? <div key={row.id}>{userMessageCard.content}</div>
-            : <Row key={row.id} row={row} cwd={cwd} />)}
-        </TimelineContext>
-        {working && !streaming && !liveWork ? (
-          <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">
-            <span className="size-1.5 rounded-full bg-primary chat-pulse" aria-hidden="true" />
-            Working…
-          </div>
-        ) : null}
-        {footer}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={scroller} className="chat-timeline min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4" data-testid="chat-timeline">
+        <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">
+          {header}
+          <TimelineContext value={context}>
+            {rows.length === 0 && !header ? (
+              <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
+            ) : rows.map((row) => row.kind === 'user' && row.item.id === userMessageCard?.itemId
+              ? <div key={row.id}>{userMessageCard.content}</div>
+              : <Row key={row.id} row={row} cwd={cwd} />)}
+          </TimelineContext>
+          {working && !streaming && !liveWork ? (
+            <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">
+              <span className="size-1.5 rounded-full bg-primary chat-pulse" aria-hidden="true" />
+              Working…
+            </div>
+          ) : null}
+          {footer}
+        </div>
       </div>
+      {scrolledUp ? (
+        <Button variant="outline" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-md" onClick={jumpToEnd}>
+          <ArrowDown aria-hidden="true" />
+          Jump to latest
+        </Button>
+      ) : null}
     </div>
   )
 }
