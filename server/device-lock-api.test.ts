@@ -175,11 +175,45 @@ describe('DeviceLockApi', () => {
   })
 
   it('reports a build running outside the heavy-job lock', async () => {
-    const { api, registry } = setup('  17 /bin/bash ./gradlew assembleRelease\n  18 node commando-device.mjs lock heavy --task gradlew\n  19 tail -f xcodebuild.log\n  20 /usr/bin/grep -r gradlew .\n')
+    const { api, registry } = setup('  17 1 /bin/bash ./gradlew assembleRelease\n  18 1 node commando-device.mjs lock heavy --task gradlew\n  19 1 tail -f xcodebuild.log\n  20 1 /usr/bin/grep -r gradlew .\n')
     registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['xcodebuild', 'gradlew'] })
     const queued = await call(api, 'POST', '/lock', { request: 'heavy', task: 'pod install', mode: 'wait' })
     expect(queued.body).toMatchObject({ status: 'queued', waitingFor: 'gradlew (pid 17)' })
     expect((await call(api, 'GET')).body.waitingFor).toEqual({ heavy: 'gradlew (pid 17)' })
+  })
+
+  it('does not count the requesting script, the shell that started it, or its children as a build', async () => {
+    // 100 = an agent's shell running the wrapper; 200 = the wrapper (the lock's --pid); 300 = its child; 400 = someone else's build.
+    const ps = ['  100 1 /bin/zsh -c scripts/video-heavy.sh export npx expo export', '  200 100 bash scripts/video-heavy.sh export npx expo export',
+      '  300 200 node commando-device.mjs lock heavy --wait --pid 200'].join('\n')
+    const own = setup(ps)
+    own.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(own.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'held' })
+    // The wrapper's own child running the export is still its own; a sibling started from the same shell is not.
+    const child = setup(ps + '\n  350 200 node /repo/node_modules/.bin/expo export --platform ios')
+    child.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(child.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'held' })
+    const sibling = setup(ps + '\n  450 100 node /repo/node_modules/.bin/expo export --platform android')
+    sibling.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(sibling.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'queued', waitingFor: 'expo export (pid 450)' })
+    const other = setup(ps + '\n  400 1 node /repo/node_modules/.bin/expo export --platform ios')
+    other.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(other.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'queued', waitingFor: 'expo export (pid 400)' })
+  })
+
+  it('does not let a queued wrapper\'s command line hold up the request ahead of it', async () => {
+    // 500 waits first (plain build script); 600 queued behind it with "xcodebuild" in its own arguments.
+    let ps = ''
+    const registry = new DeviceLockRegistry()
+    registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['xcodebuild'] })
+    const api = new DeviceLockApi({ token, registry, processes: new BusyProcessWatch(async () => ps), message: async () => undefined, cli: 'cli',
+      paneExists: () => true, sessionName: async () => 's', pidAlive: () => true })
+    await call(api, 'POST', '/lock', { request: 'heavy', task: 'holder' })
+    ps = ['  500 1 bash scripts/build-device.sh v7', '  600 1 bash scripts/sim-heavy.sh "v7: sim xcodebuild" bash sim-xcbuild.sh'].join('\n')
+    await call(api, 'POST', '/lock', { request: 'heavy', task: 'build-device', mode: 'wait', pid: 500 }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/lock', { request: 'heavy', task: 'sim', mode: 'wait', pid: 600 }, { 'x-commando-pane': '%3' })
+    await call(api, 'POST', '/release', { request: 'heavy' })
+    expect(registry.holdersOf('heavy')).toMatchObject([{ pid: 500 }])
   })
 
   it('adds and removes resources', async () => {
