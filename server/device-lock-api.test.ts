@@ -189,6 +189,13 @@ describe('DeviceLockApi', () => {
     const own = setup(ps)
     own.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
     expect((await call(own.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'held' })
+    // The wrapper's own child running the export is still its own; a sibling started from the same shell is not.
+    const child = setup(ps + '\n  350 200 node /repo/node_modules/.bin/expo export --platform ios')
+    child.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(child.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'held' })
+    const sibling = setup(ps + '\n  450 100 node /repo/node_modules/.bin/expo export --platform android')
+    sibling.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
+    expect((await call(sibling.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'queued', waitingFor: 'expo export (pid 450)' })
     const other = setup(ps + '\n  400 1 node /repo/node_modules/.bin/expo export --platform ios')
     other.registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['expo export'] })
     expect((await call(other.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'queued', waitingFor: 'expo export (pid 400)' })
