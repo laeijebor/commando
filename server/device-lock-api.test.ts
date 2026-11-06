@@ -194,6 +194,21 @@ describe('DeviceLockApi', () => {
     expect((await call(other.api, 'POST', '/lock', { request: 'heavy', task: 'export', mode: 'wait', pid: 200 })).body).toMatchObject({ status: 'queued', waitingFor: 'expo export (pid 400)' })
   })
 
+  it('does not let a queued wrapper\'s command line hold up the request ahead of it', async () => {
+    // 500 waits first (plain build script); 600 queued behind it with "xcodebuild" in its own arguments.
+    let ps = ''
+    const registry = new DeviceLockRegistry()
+    registry.addResource({ id: 'heavy', name: 'Mac builds', kind: 'host', busyProcesses: ['xcodebuild'] })
+    const api = new DeviceLockApi({ token, registry, processes: new BusyProcessWatch(async () => ps), message: async () => undefined, cli: 'cli',
+      paneExists: () => true, sessionName: async () => 's', pidAlive: () => true })
+    await call(api, 'POST', '/lock', { request: 'heavy', task: 'holder' })
+    ps = ['  500 1 bash scripts/build-device.sh v7', '  600 1 bash scripts/sim-heavy.sh "v7: sim xcodebuild" bash sim-xcbuild.sh'].join('\n')
+    await call(api, 'POST', '/lock', { request: 'heavy', task: 'build-device', mode: 'wait', pid: 500 }, { 'x-commando-pane': '%2' })
+    await call(api, 'POST', '/lock', { request: 'heavy', task: 'sim', mode: 'wait', pid: 600 }, { 'x-commando-pane': '%3' })
+    await call(api, 'POST', '/release', { request: 'heavy' })
+    expect(registry.holdersOf('heavy')).toMatchObject([{ pid: 500 }])
+  })
+
   it('adds and removes resources', async () => {
     const { api } = setup()
     expect((await call(api, 'POST', '/resources', { id: 'moto', name: 'moto e13', kind: 'android', serial: 'ZY22HCMSMZ' })).body.resource).toMatchObject({ id: 'moto' })
