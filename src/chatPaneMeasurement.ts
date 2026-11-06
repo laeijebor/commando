@@ -41,6 +41,8 @@ export function useChatPaneMeasurement(
   elementRef: RefObject<HTMLElement | null>,
   active: boolean,
   measurementKey: string,
+  /** tmux's current size for the pane: a change made elsewhere is corrected, as xterm does. */
+  tmuxSize: string,
   onResize: (cols: number, rows: number) => void,
 ): void {
   const resizeRef = useRef(onResize)
@@ -79,5 +81,5 @@ export function useChatPaneMeasurement(
       observer.disconnect()
       if (timer !== null) window.clearTimeout(timer)
     }
-  }, [active, elementRef, measurementKey])
+  }, [active, elementRef, measurementKey, tmuxSize])
 }

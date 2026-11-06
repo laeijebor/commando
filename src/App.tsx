@@ -551,7 +551,7 @@ export function TerminalPaneCard({
   const headerAttention = status ? paneAttention(status, Number.POSITIVE_INFINITY) : null
   const showChat = Boolean(chat) && chatView === 'chat'
   const bodyRef = useRef<HTMLDivElement>(null)
-  useChatPaneMeasurement(bodyRef, showChat && resizeOwner, measurementKey, onResize)
+  useChatPaneMeasurement(bodyRef, showChat && resizeOwner, measurementKey, `${pane.width}x${pane.height}`, onResize)
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)

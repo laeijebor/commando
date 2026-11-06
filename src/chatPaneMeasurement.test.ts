@@ -40,7 +40,7 @@ describe('useChatPaneMeasurement', () => {
   it('reports the terminal grid that fits the chat pane', () => {
     const ref = { current: paneBody(1200, 480) }
     const onResize = vi.fn()
-    renderHook(() => useChatPaneMeasurement(ref, true, 'key', onResize))
+    renderHook(() => useChatPaneMeasurement(ref, true, 'key', '80x24', onResize))
 
     act(() => { vi.runAllTimers() })
 
@@ -51,7 +51,7 @@ describe('useChatPaneMeasurement', () => {
   it('stays quiet while the pane is not the resize owner', () => {
     const ref = { current: paneBody(1200, 480) }
     const onResize = vi.fn()
-    renderHook(() => useChatPaneMeasurement(ref, false, 'key', onResize))
+    renderHook(() => useChatPaneMeasurement(ref, false, 'key', '80x24', onResize))
 
     act(() => { vi.runAllTimers() })
 
@@ -62,8 +62,8 @@ describe('useChatPaneMeasurement', () => {
     const ref = { current: paneBody(1200, 480) }
     const onResize = vi.fn()
     const { rerender } = renderHook(
-      ({ measurementKey }) => useChatPaneMeasurement(ref, true, measurementKey, onResize),
-      { initialProps: { measurementKey: 'grid' } },
+      ({ measurementKey, tmuxSize }) => useChatPaneMeasurement(ref, true, measurementKey, tmuxSize, onResize),
+      { initialProps: { measurementKey: 'grid', tmuxSize: '365x55' } },
     )
     act(() => { vi.runAllTimers() })
     act(() => {
@@ -74,7 +74,23 @@ describe('useChatPaneMeasurement', () => {
 
     // A split changes the layout shape, and with it the measurement key: the
     // layout is only sent once every pane has reported under the new key.
-    rerender({ measurementKey: 'split' })
+    rerender({ measurementKey: 'split', tmuxSize: '365x55' })
+    act(() => { vi.runAllTimers() })
+
+    expect(onResize).toHaveBeenCalledTimes(2)
+    expect(onResize).toHaveBeenLastCalledWith(200, 40)
+  })
+
+  it('reports again when tmux resizes the pane from elsewhere', () => {
+    const ref = { current: paneBody(1200, 480) }
+    const onResize = vi.fn()
+    const { rerender } = renderHook(
+      ({ tmuxSize }) => useChatPaneMeasurement(ref, true, 'grid', tmuxSize, onResize),
+      { initialProps: { tmuxSize: '200x40' } },
+    )
+    act(() => { vi.runAllTimers() })
+
+    rerender({ tmuxSize: '365x110' })
     act(() => { vi.runAllTimers() })
 
     expect(onResize).toHaveBeenCalledTimes(2)
