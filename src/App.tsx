@@ -114,6 +114,7 @@ import { decodeBase64Bytes, PaneStreamRegistry, type PaneTerminalSink } from './
 import { dispatchBoundedPaste } from './terminalInput'
 import { THEMES, activeTheme, applyTheme, onThemeChange, storedTheme, type ThemeName } from './theme'
 import { type ConnectionPhase, useDaemon } from './useDaemon'
+import { useChatPaneMeasurement } from './chatPaneMeasurement'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
@@ -549,6 +550,8 @@ export function TerminalPaneCard({
   // The header is on screen, so a finished turn here reads as seen.
   const headerAttention = status ? paneAttention(status, Number.POSITIVE_INFINITY) : null
   const showChat = Boolean(chat) && chatView === 'chat'
+  const bodyRef = useRef<HTMLDivElement>(null)
+  useChatPaneMeasurement(bodyRef, showChat && resizeOwner, measurementKey, onResize)
   const brief = suppliedBrief && (!suppliedBrief.targetId || suppliedBrief.targetId === pane.targetId) ? suppliedBrief : undefined
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [renameValue, setRenameValue] = useState(paneLabel)
@@ -793,7 +796,7 @@ export function TerminalPaneCard({
           <span><b>{mark.activityCount}</b>{mark.lastActivityAt ? <time dateTime={new Date(mark.lastActivityAt).toISOString()}> · {displayTime(mark.lastActivityAt)}</time> : null}</span>
         </button>
       ) : null}
-      <div className="terminal-pane-body">
+      <div ref={bodyRef} className="terminal-pane-body">
         {showChat && chat ? (
           <ChatPane
             paneId={pane.id}
