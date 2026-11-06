@@ -141,7 +141,7 @@ export function SlidesPane({ artifactId, manifest: manifestPath, artifactUrl, on
   const selectSnapshot = (next: CanvasSnapshot | null) => { ++hitSequence.current; comments.close(); setCommentMode(false); setMenu(null); setResult(EMPTY); setSnapshot(next) }
   const download = async (format: 'pdf' | 'pptx' | 'png' | 'html') => {
     if (busy || !frame) return
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setSaved(null)
     try {
       // The desktop app's web view can't save browser downloads, so the daemon writes the file to ~/Downloads.
       const save = hasNativeWindowHandler()

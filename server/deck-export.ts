@@ -1,7 +1,7 @@
 import { isDeckPath, parseDeck } from '../shared/deck.js'
 import { execFile, type ExecFileException } from 'node:child_process'
 import { existsSync, createReadStream, readFileSync, readdirSync } from 'node:fs'
-import { copyFile, constants as fsConstants, mkdtemp, rm, stat } from 'node:fs/promises'
+import { copyFile, constants as fsConstants, mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
 import type { ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, posix } from 'node:path'
@@ -56,9 +56,15 @@ const savedExports = new Set<string>()
 /** Copies without overwriting: `name.pdf`, then `name (2).pdf`, like a browser download. */
 export async function saveWithoutOverwrite(source: string, dir: string, name: string): Promise<string> {
   const dot = name.lastIndexOf('.'), stem = name.slice(0, dot), ext = name.slice(dot)
+  await mkdir(dir, { recursive: true }).catch((error: NodeJS.ErrnoException) => fail(500, `Could not save to ${dir}: ${error.code ?? error.message}`))
   for (let n = 1; n <= 999; n++) {
     const target = join(dir, n === 1 ? name : `${stem} (${n})${ext}`)
-    try { await copyFile(source, target, fsConstants.COPYFILE_EXCL); return target } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    try { await copyFile(source, target, fsConstants.COPYFILE_EXCL); return target } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EEXIST') continue
+      await rm(target, { force: true })  // never leave a truncated export behind
+      return fail(500, `Could not save to ${dir}: ${code ?? (error as Error).message}`)
+    }
   }
   return fail(409, `Too many exports named ${name} in ${dir}`)
 }
