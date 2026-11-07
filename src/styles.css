@@ -290,7 +290,7 @@ pre {
 }
 
 .brand-copy small,
-.location-readout span {
+.location-readout > span {
   color: var(--muted-dim);
   font-family: var(--mono);
   font-size: 9px;
@@ -304,7 +304,7 @@ pre {
   font-size: 10px;
 }
 
-.location-readout strong {
+.location-readout > strong {
   min-width: 0;
   max-width: 32vw;
   overflow: hidden;
@@ -314,7 +314,7 @@ pre {
   white-space: nowrap;
 }
 
-.location-readout strong::before {
+.location-readout > strong::before {
   content: "/";
   margin-right: 8px;
   color: var(--border-strong);
