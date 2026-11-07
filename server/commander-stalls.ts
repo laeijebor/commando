@@ -4,7 +4,10 @@ import type { CommanderRelays } from './commander-relays.js'
 
 type Episode = { updatedAt: number; endedAt: number; nudged: boolean; nudgeAt?: number; noticed: boolean; reason: string }
 type Options = {
+  /** Every agent, including those the repo filter hides, so hiding a repo does not forget its stalls. */
   agents: () => CommanderAgent[]; status: (id: string) => AgentStatus | undefined
+  /** Targets in the repos Commander watches; only these raise stall notices. Defaults to every agent. */
+  watched?: () => ReadonlySet<string>
   commander: () => CommanderState; relays: Pick<CommanderRelays, 'enqueue' | 'cancelNudges'>
   now?: () => number; env?: NodeJS.ProcessEnv
 }
@@ -54,7 +57,7 @@ export class CommanderStalls {
   private async runCheck(): Promise<void> {
     const baseline = !this.initialized
     this.initialized = true
-    const agents = this.options.agents(), live = new Set(agents.map((a) => a.targetId))
+    const agents = this.options.agents(), live = new Set(agents.map((a) => a.targetId)), watched = this.options.watched?.() ?? live
     for (const target of this.episodes.keys()) if (!live.has(target)) this.episodes.delete(target)
     for (const target of this.started.keys()) if (!live.has(target)) this.started.delete(target)
     const configured = Number((this.options.env ?? process.env).COMMANDO_COMMANDER_STALL_MINUTES ?? 30)
@@ -79,7 +82,7 @@ export class CommanderStalls {
         }
         const commander = this.options.commander()
         this.notices = this.notices.filter((n) => n > this.now() - 3_600_000)
-        if (!episode || episode.noticed || !commander.paneId || this.notices.length >= 6) continue
+        if (!episode || episode.noticed || !watched.has(agent.targetId) || !commander.paneId || this.notices.length >= 6) continue
         await this.options.relays.enqueue({ paneId: commander.paneId, origin: 'commander', kind: 'relay', delivery: 'queue',
           text: `[Commando] ${JSON.stringify(agent.title)} (pane ${agent.paneId}, session ${agent.sessionName}) looks stalled: ${episode.reason}. Latest brief: ${agent.brief?.text ?? agent.headline}. You may nudge it with: commando-agents nudge ${agent.paneId} "<message>"` })
         episode.noticed = true; this.notices.push(this.now())

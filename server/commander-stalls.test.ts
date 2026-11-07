@@ -102,3 +102,16 @@ it('releases a failed nudge reservation and its hourly quota', async () => {
   expect(s.stalls.takeNudge('target')).toBe(true)
   expect(s.stalls.takeNudge('target')).toBe(false)
 })
+it('tracks stalls in hidden repos without noticing them, and does not repeat a notice when the repo is shown again', async () => {
+  let watched = new Set<string>()
+  const status = { status: 'working', source: 'hook', updatedAt: 0 } as AgentStatus
+  const agent = { paneId: '%1', targetId: 'target', title: 'Fix bug', sessionName: 'work', headline: 'Working' } as CommanderAgent
+  const enqueue = vi.fn(async () => ({} as never)), state: CommanderState = { targetId: 'commander', paneId: '%9' }
+  const stalls = new CommanderStalls({ agents: () => [agent], watched: () => watched, status: () => status, commander: () => state,
+    relays: { enqueue, cancelNudges: vi.fn(async () => {}) }, now: () => 0, env: {} })
+  await stalls.check(); status.status = 'failed'; await stalls.check()
+  expect(stalls.stalled('target')).toBe(true); expect(enqueue).not.toHaveBeenCalled()
+  watched = new Set(['target']); await stalls.check(); expect(enqueue).toHaveBeenCalledOnce()
+  watched = new Set(); await stalls.check(); watched = new Set(['target']); await stalls.check()
+  expect(enqueue).toHaveBeenCalledOnce()
+})

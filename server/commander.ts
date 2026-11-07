@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { CommanderState } from '../shared/commander.js'
+import { normalizeCommanderRepoFilter, type CommanderState } from '../shared/commander.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
 import { defaultSessionBriefStatePath } from './session-briefs.js'
 import { validClaudeConfigDir, type TmuxCreator } from './tmux-create.js'
@@ -13,7 +13,7 @@ export function commanderInstructions(cliPath: string): string {
   return `You are Commander: the user's single interface to all their agent chats in Commando. Brief them, relay their messages, and help them decide where to look.
 
 Tools (run with node ${JSON.stringify(cliPath)}):
-- list [--json]: status of every agent chat, needs-you first.
+- list [--json] [--all]: status of every agent chat, needs-you first. When the user has limited Commander to some repos, list shows only those; --all shows every agent.
 - read %N [--turns N]: read the latest 1–10 turns of a chat.
 - relay %N "message" [--steer]: relay the user's words to a chat.
 - nudge %N "message": nudge a stalled agent.
@@ -39,6 +39,8 @@ export class Commander {
   private targetId: string | null = null
   /** The Claude profile Commander runs on; unset runs on the daemon's default login. */
   private configDir: string | undefined
+  /** Repo keys Commander watches; unset watches every repo. */
+  private repoFilter: string[] | undefined
   private lastState = ''
   private operations: Promise<unknown> = Promise.resolve()
   private readonly statePath: string
@@ -49,7 +51,8 @@ export class Commander {
   }
   state(): CommanderState {
     const pane = this.options.snapshot().panes.find((p) => p.targetId === this.targetId && !p.dead)
-    return { targetId: this.targetId, ...(pane ? { paneId: pane.id, sessionId: pane.sessionId } : {}), ...(this.configDir ? { configDir: this.configDir } : {}) }
+    return { targetId: this.targetId, ...(pane ? { paneId: pane.id, sessionId: pane.sessionId } : {}), ...(this.configDir ? { configDir: this.configDir } : {}),
+      ...(this.repoFilter ? { repoFilter: this.repoFilter } : {}) }
   }
   async load(): Promise<void> {
     try {
@@ -60,6 +63,8 @@ export class Commander {
         if (typeof value.configDir === 'string' && validClaudeConfigDir(value.configDir, this.options.home ?? homedir())) this.configDir = value.configDir
         else console.error(`[commando] Ignored an invalid Commander profile in ${this.statePath}`)
       }
+      try { this.repoFilter = normalizeCommanderRepoFilter(value.repoFilter) }
+      catch { console.error(`[commando] Ignored an invalid Commander repo filter in ${this.statePath}`) }
       if (this.targetId) await this.writeInstructions()
     } catch (error) {
       this.targetId = null
@@ -87,11 +92,16 @@ export class Commander {
       if (!this.options.closeSession) throw new Error('Commander cannot close its session here')
       await this.options.closeSession(sessionId)
     }
-    await this.persist(null, configDir ?? undefined)
+    await this.persist({ targetId: null, configDir: configDir ?? undefined })
     await this.options.refreshSnapshot()
     return this.create()
   }) }
-  forget(): Promise<void> { return this.serial(() => this.persist(null, this.configDir)) }
+  /** Limits the agents Commander watches to these repos; null or an empty list watches every repo. */
+  setRepoFilter(repos: string[] | null): Promise<CommanderState> { return this.serial(async () => {
+    await this.persist({ repoFilter: normalizeCommanderRepoFilter(repos) })
+    return this.state()
+  }) }
+  forget(): Promise<void> { return this.serial(() => this.persist({ targetId: null })) }
   private async create(): Promise<CommanderState> {
     await this.writeInstructions()
     const names = new Set(this.options.snapshot().sessions.map((s) => s.name))
@@ -101,7 +111,7 @@ export class Commander {
     await this.options.refreshSnapshot()
     const pane = this.options.snapshot().panes.find((p) => p.id === result.created.paneId)
     if (!pane) throw new Error('Commander pane was created but is not visible in the snapshot')
-    await this.persist(pane.targetId, this.configDir)
+    await this.persist({ targetId: pane.targetId })
     return this.state()
   }
   private serial<T>(action: () => Promise<T>): Promise<T> {
@@ -109,13 +119,20 @@ export class Commander {
     this.operations = operation.catch(() => {})
     return operation
   }
-  private async persist(targetId: string | null, configDir: string | undefined): Promise<void> {
+  /** Saves the given fields over the current ones; a key present with undefined clears that field. */
+  private async persist(change: { targetId?: string | null; configDir?: string; repoFilter?: string[] }): Promise<void> {
+    const targetId = change.targetId !== undefined ? change.targetId : this.targetId
+    const configDir = 'configDir' in change ? change.configDir : this.configDir
+    const repoFilter = 'repoFilter' in change ? change.repoFilter : this.repoFilter
     await mkdir(dirname(this.statePath), { recursive: true, mode: 0o700 })
     const tmp = `${this.statePath}.${randomUUID()}.tmp`
-    try { await writeFile(tmp, JSON.stringify({ targetId, ...(configDir ? { configDir } : {}) }), { mode: 0o600, flag: 'wx' }); await rename(tmp, this.statePath) }
-    finally { await rm(tmp, { force: true }) }
+    try {
+      await writeFile(tmp, JSON.stringify({ targetId, ...(configDir ? { configDir } : {}), ...(repoFilter ? { repoFilter } : {}) }), { mode: 0o600, flag: 'wx' })
+      await rename(tmp, this.statePath)
+    } finally { await rm(tmp, { force: true }) }
     this.targetId = targetId
     this.configDir = configDir
+    this.repoFilter = repoFilter
     this.reconcile()
   }
   private async writeToolPermissions(cliPath: string): Promise<void> {

@@ -13,21 +13,21 @@ const TOKEN = 'commander-agent-token-at-least-32-characters'
 const dirs: string[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))) })
 function setup() {
-  const commander = { targetId: 'commander', paneId: '%9' }
+  const commander: { targetId: string; paneId: string; repoFilter?: string[] } = { targetId: 'commander', paneId: '%9' }
   const snapshot = { panes: [
     { id: '%9', targetId: 'commander', sessionId: '$9', path: '/commander' },
     { id: '%1', targetId: 'agent', sessionId: '$1', path: '/repo', title: 'Pane title', chatTitle: 'Chat title' },
     { id: '%2', targetId: 'shell', sessionId: '$1', path: '/shell' },
-  ], sessions: [{ id: '$1', name: 'work' }] } as unknown as CommandoSnapshot
+  ], sessions: [{ id: '$1', name: 'work', windowIds: [] }] } as unknown as CommandoSnapshot
   const statuses = new Map<string, AgentStatus>([['%1', { paneId: '%1', provider: 'claude', status: 'done', source: 'hook', updatedAt: 100, settledAt: 100, agentSessionId: 'session-id' } as AgentStatus]])
   let chat = false, stalled = false, nudge = true, worklog: SessionBrief | undefined, brief: TurnBrief | undefined
   const enqueue = vi.fn(async (input) => ({ id: 'abc', ...input, status: 'queued' } as never)), cancel = vi.fn(async () => ({ id: 'abc' } as never))
   const screen = vi.fn(async () => '\x1b[31mRendered output\x1b[0m'), items: ChatItem[] = []
   const ensure = vi.fn(async () => commander), forget = vi.fn(async () => {}), switchProfile = vi.fn(async (configDir: string | null) => ({ ...commander, ...(configDir ? { configDir } : {}) })), configDir = vi.fn(async (): Promise<string | undefined> => undefined)
-  const releaseNudge = vi.fn(), codexRollout = vi.fn(async (_id: string): Promise<string | undefined> => undefined)
+  const setRepoFilter = vi.fn(async (repos: string[] | null) => { if (repos) commander.repoFilter = repos; else delete commander.repoFilter; return commander }), releaseNudge = vi.fn(), codexRollout = vi.fn(async (_id: string): Promise<string | undefined> => undefined)
   const api = new CommanderApi({
     agentToken: TOKEN, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', snapshot: () => snapshot,
-    status: (id) => statuses.get(id), commander: { state: () => commander, ensure, forget, switchProfile },
+    status: (id) => statuses.get(id), commander: { state: () => commander, ensure, forget, switchProfile, setRepoFilter },
     claudeProfiles: async () => [{ name: 'claudew', configDir: '/h/.claudew' }],
     relays: { enqueue, cancel, values: () => [] }, stalls: { stalled: () => stalled, check: async () => {}, takeNudge: () => nudge, releaseNudge },
     brief: () => brief, sessionBrief: () => worklog, chatSession: () => chat ? { title: 'Session title', provider: 'claude' } as ChatSessionInfo : undefined,
@@ -44,7 +44,7 @@ function setup() {
     const handled = await api.handle(request, response, new URL(`http://localhost/api/commander${path}`))
     return { status, result, handled }
   }
-  return { releaseNudge, codexRollout, api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, switchProfile, configDir,
+  return { setRepoFilter, releaseNudge, codexRollout, api, call, snapshot, statuses, enqueue, cancel, screen, items, ensure, forget, switchProfile, configDir,
     chat: () => { chat = true }, stalled: (v: boolean) => { stalled = v }, nudge: (v: boolean) => { nudge = v },
     worklog: (v: SessionBrief) => { worklog = v }, brief: (v: TurnBrief) => { brief = v } }
 }
@@ -69,6 +69,25 @@ describe('CommanderApi', () => {
     expect((await s.call('PUT', '/profile', { configDir: '/h/.claudew' }, 'owner')).result).toEqual({ ok: true, state: { targetId: 'commander', paneId: '%9', configDir: '/h/.claudew' } })
     expect((await s.call('PUT', '/profile', { configDir: null }, 'owner')).status).toBe(200)
     expect(s.switchProfile.mock.calls).toEqual([['/h/.claudew'], [null]])
+  })
+  it('lists only agents in the chosen repos, unless asked for all, and still reads and relays to hidden ones', async () => {
+    const s = setup()
+    s.snapshot.sessions.push({ id: '$2', name: 'vivifit', windowIds: [] } as never)
+    s.snapshot.panes.push({ id: '%3', targetId: 'viv', sessionId: '$2', path: '/dev/vivifit', title: 'Vivifit', repo: { root: '/dev/vivifit', name: 'vivifit' } } as never)
+    s.statuses.set('%3', { paneId: '%3', provider: 'claude', status: 'done', source: 'hook', updatedAt: 1, settledAt: 1 } as AgentStatus)
+    expect((await s.call('PUT', '/repos', { repos: ['/dev/vivifit'] }, TOKEN)).status).toBe(401)
+    expect((await s.call('PUT', '/repos', { repos: ['relative'] }, 'owner')).status).toBe(400)
+    expect((await s.call('PUT', '/repos', { repos: 'x' }, 'owner')).status).toBe(400)
+    expect(s.setRepoFilter).not.toHaveBeenCalled()
+    expect((await s.call('PUT', '/repos', { repos: ['/dev/vivifit'] }, 'owner')).result).toMatchObject({ ok: true, state: { repoFilter: ['/dev/vivifit'] } })
+    expect((await s.call('GET', '/agent/list')).result.map((a: { paneId: string }) => a.paneId)).toEqual(['%3'])
+    expect((await s.call('GET', '/agent/list?all=1')).result.map((a: { paneId: string }) => a.paneId)).toEqual(['%1', '%3'])
+    expect((await s.call('GET', '/agent/read?pane=%251')).status).toBe(200)
+    expect((await s.call('POST', '/agent/relay', { pane: '%1', text: 'hi' })).status).toBe(200)
+    expect((await s.call('PUT', '/repos', { repos: ['no-repo'] }, 'owner')).status).toBe(200)
+    expect((await s.call('GET', '/agent/list')).result.map((a: { paneId: string }) => a.paneId)).toEqual(['%1'])
+    expect((await s.call('PUT', '/repos', { repos: null }, 'owner')).status).toBe(200)
+    expect((await s.call('GET', '/agent/list')).result).toHaveLength(2)
   })
   it('lists every agent excluding Commander, derives needs-you/unread and respects title precedence', async () => {
     const s = setup()
