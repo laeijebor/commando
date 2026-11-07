@@ -151,11 +151,14 @@ export function SessionHistoryNav({ history, isLive, navigate, step }: Props) {
     const outside = (event: Event) => {
       if (!root.current?.contains(event.target as Node)) setMenu(null)
     }
+    const onBlur = () => setMenu(null)
     window.addEventListener('pointerdown', outside, true)
     window.addEventListener('click', outside, true)
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('pointerdown', outside, true)
       window.removeEventListener('click', outside, true)
+      window.removeEventListener('blur', onBlur)
     }
   }, [menu])
   useEffect(() => {

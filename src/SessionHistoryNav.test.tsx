@@ -138,6 +138,18 @@ describe('session history navigation', () => {
     expect(back()).toHaveAccessibleName('Back')
   })
 
+  it('closes on window blur without changing the selected session or history', () => {
+    render(<Harness />)
+    visit('Alpha'); visit('Beta')
+    const history = stored()
+    expect(openMenu()).toBeInTheDocument()
+    fireEvent.blur(window)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('b:workspace')
+    expect(stored()).toEqual(history)
+    expect(select).not.toHaveBeenCalled()
+  })
+
   it('opens after a 450ms hold, suppresses its click, and cancels short/cancelled holds', () => {
     vi.useFakeTimers()
     // jsdom otherwise creates a generic Event without pointer button information.
