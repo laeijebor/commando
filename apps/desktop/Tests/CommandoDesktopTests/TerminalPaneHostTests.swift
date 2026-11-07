@@ -661,11 +661,25 @@ final class TerminalPaneHostTests: XCTestCase {
         XCTAssertTrue(view.performKeyEquivalent(with: commandK))
         XCTAssertTrue(view.performKeyEquivalent(with: command4))
         _ = view.performKeyEquivalent(with: shiftedCommandK)
-        XCTAssertEqual(shortcuts, ["k", "4"])
+        for (key, keyCode) in [("[", UInt16(33)), ("]", UInt16(30))] {
+            let commandBracket = try XCTUnwrap(keyEvent(key: key, modifiers: .command, keyCode: keyCode))
+            XCTAssertTrue(view.performKeyEquivalent(with: commandBracket))
+            for extraModifier in [NSEvent.ModifierFlags.shift, .control, .option] {
+                let modifiedBracket = try XCTUnwrap(keyEvent(
+                    key: key, modifiers: [.command, extraModifier], keyCode: keyCode
+                ))
+                _ = view.performKeyEquivalent(with: modifiedBracket)
+            }
+        }
+        XCTAssertEqual(shortcuts, ["k", "4", "[", "]"])
 
         XCTAssertTrue(window.makeFirstResponder(nil))
         XCTAssertFalse(view.performKeyEquivalent(with: commandK))
-        XCTAssertEqual(shortcuts, ["k", "4"])
+        for (key, keyCode) in [("[", UInt16(33)), ("]", UInt16(30))] {
+            let commandBracket = try XCTUnwrap(keyEvent(key: key, modifiers: .command, keyCode: keyCode))
+            XCTAssertFalse(view.performKeyEquivalent(with: commandBracket))
+        }
+        XCTAssertEqual(shortcuts, ["k", "4", "[", "]"])
         window.contentView = nil
         window.orderOut(nil)
     }
