@@ -157,3 +157,23 @@ it('keeps queued receipts visible past fifteen minutes', () => {
   setup(data)
   expect(screen.getByText('Relayed · queued')).toBeInTheDocument()
 })
+it('limits Commander to the repos ticked in the header menu, and back to all repos', async () => {
+  const onRepoFilter = vi.fn(async () => {})
+  const options = [{ key: '/dev/commando', name: 'commando' }, { key: '/dev/vivifit', name: 'vivifit' }]
+  const props = { groups: groups(), token: 'token', onOpenPane: vi.fn(), onRelay: vi.fn(), repoOptions: options, onRepoFilter }
+  const view = render(<AgentsInbox {...props} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Repos: All repos' }))
+  const all = await screen.findByRole('menuitemcheckbox', { name: 'All repos' })
+  expect(all).toHaveAttribute('aria-checked', 'true')
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'commando' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/dev/commando'])
+  view.rerender(<AgentsInbox {...props} repoFilter={['/dev/commando']} groups={{ needs_you: [], finished: [], working: [], idle: [] }} />)
+  expect(screen.getByRole('button', { name: 'Repos: commando' })).toBeInTheDocument()
+  expect(screen.getByText('No agents in the chosen repos.')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'vivifit' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/dev/commando', '/dev/vivifit'])
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'commando' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(null)
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'All repos' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(null)
+})

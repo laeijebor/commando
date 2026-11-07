@@ -912,10 +912,13 @@ const defaultTokenPath = ${JSON.stringify(tokenPath)}
 ` + String.raw`
 export function parseAgentsArgs(args) {
   const [command, ...parameters] = args
-  const asJson = parameters.at(-1) === '--json' && (command === 'list' || ['relay', 'nudge'].includes(command) && parameters.length >= 3)
+  const invalid = () => { throw new Error('Usage: commando-agents list [--json] [--all] | read %N [--turns 1-10] | relay %N "message" [--steer] | nudge %N "message" | relays | cancel <id>') }
+  if (command === 'list') {
+    if (parameters.some((flag) => !['--json', '--all'].includes(flag)) || new Set(parameters).size !== parameters.length) return invalid()
+    return { method: 'GET', path: parameters.includes('--all') ? '/list?all=1' : '/list', human: !parameters.includes('--json') }
+  }
+  const asJson = parameters.at(-1) === '--json' && ['relay', 'nudge'].includes(command) && parameters.length >= 3
   const rest = asJson ? parameters.slice(0, -1) : parameters
-  const invalid = () => { throw new Error('Usage: commando-agents list [--json] | read %N [--turns 1-10] | relay %N "message" [--steer] | nudge %N "message" | relays | cancel <id>') }
-  if (command === 'list' && !rest.length) return { method: 'GET', path: '/list', human: !asJson }
   if (command === 'relays' && !rest.length) return { method: 'GET', path: '/relays' }
   if (command === 'cancel' && rest.length === 1 && /^[a-f0-9-]+$/.test(rest[0])) return { method: 'POST', path: '/relays/' + rest[0] + '/cancel' }
   const pane = rest[0]

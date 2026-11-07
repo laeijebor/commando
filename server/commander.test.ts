@@ -153,3 +153,23 @@ it('leaves Commander and its profile as they were when the old session cannot be
   expect(commander.state()).toEqual({ targetId: 'old', paneId: '%1', sessionId: '$1' })
   expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ targetId: 'old', configDir: '/etc' })
 })
+
+it('persists the repo filter across restarts, keeps it through forget, and drops an invalid saved one', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'commander-repos-')); dirs.push(home)
+  const statePath = join(home, 'state.json'); await writeFile(statePath, JSON.stringify({ targetId: 'stable', configDir: join(home, '.claudew') }))
+  const changed = vi.fn(), options = { home, statePath, snapshot: () => ({ panes: [], sessions: [] } as unknown as CommandoSnapshot),
+    creator: { createSession: vi.fn() }, refreshSnapshot: async () => {}, changed }
+  const commander = new Commander(options); await commander.load()
+  expect(await commander.setRepoFilter(['/dev/commando', '/dev/vivifit', '/dev/commando'])).toMatchObject({ repoFilter: ['/dev/commando', '/dev/vivifit'] })
+  expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ repoFilter: ['/dev/commando', '/dev/vivifit'] }))
+  await expect(commander.setRepoFilter(['relative'])).rejects.toThrow('absolute')
+  await commander.forget()
+  const restarted = new Commander(options); await restarted.load()
+  expect(restarted.state()).toEqual({ targetId: null, configDir: join(home, '.claudew'), repoFilter: ['/dev/commando', '/dev/vivifit'] })
+  expect((await restarted.setRepoFilter([])).repoFilter).toBeUndefined()
+  expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ targetId: null, configDir: join(home, '.claudew') })
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  await writeFile(statePath, JSON.stringify({ targetId: 'stable', repoFilter: 'oops' }))
+  const invalid = new Commander(options); await invalid.load()
+  expect(invalid.state()).toEqual({ targetId: 'stable' })
+})
