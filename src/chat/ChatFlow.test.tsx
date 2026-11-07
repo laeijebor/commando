@@ -158,6 +158,17 @@ describe('queue and steer', () => {
     expect(flow!.queue).toHaveBeenCalledWith({ action: 'steer', id: 'q1' })
   })
 
+  it('steers every queued message in at once, only for hosts that support it', () => {
+    const queued = [{ id: 'q1', text: 'run lint' }, { id: 'q2', text: 'and the tests' }]
+    const { flow, rerender } = renderPane([], { status: 'running', hostVersion: 8, queue: queued })
+    fireEvent.click(within(screen.getByTestId('chat-queue')).getByRole('button', { name: 'Steer all' }))
+    expect(flow!.queue).toHaveBeenLastCalledWith({ action: 'steer_all' })
+    rerender([], { status: 'running', hostVersion: 8, queue: queued.slice(0, 1) })
+    expect(screen.queryByRole('button', { name: 'Steer all' })).not.toBeInTheDocument()
+    rerender([], { status: 'running', hostVersion: 7, queue: queued })
+    expect(screen.queryByRole('button', { name: 'Steer all' })).not.toBeInTheDocument()
+  })
+
   it('brings queued messages back into the composer on Stop', () => {
     const { onInterrupt } = renderPane([], { sessionId: 'queue-session', status: 'running', queue: [{ id: 'q1', text: 'run lint' }, { id: 'q2', text: 'and the tests' }] })
     fireEvent.change(textbox(), { target: { value: 'half typed' } })

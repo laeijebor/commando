@@ -8,7 +8,7 @@
 import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type ChatMcpResult } from './chat-mcp.js'
 import type { ChatCardEvent } from './chat-tile-events.js'
 
-export const AGENT_HOST_PROTOCOL_VERSION = 7
+export const AGENT_HOST_PROTOCOL_VERSION = 8
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -51,6 +51,13 @@ export const CHAT_VIDEO_HOST_VERSION = 7
 
 export function hostTakesVideos(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_VIDEO_HOST_VERSION
+}
+
+/** Hosts from this version can steer the whole queue in as one message (`steer_all`). */
+export const CHAT_STEER_ALL_HOST_VERSION = 8
+
+export function hostTakesSteerAll(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_STEER_ALL_HOST_VERSION
 }
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
@@ -640,6 +647,8 @@ export type ChatQueueAction =
   | { action: 'remove'; id: string }
   /** Take it out of the queue and send it now, steering the running turn. */
   | { action: 'steer'; id: string }
+  /** Send the whole queue now as one message, steering the running turn. */
+  | { action: 'steer_all' }
 
 export type ChatTaskAction = 'stop' | 'background'
 
@@ -939,10 +948,26 @@ export const MAX_QUEUED_MESSAGES = 20
 const MAX_QUEUED = MAX_QUEUED_MESSAGES
 
 export function parseChatQueueAction(value: Record<string, unknown>): ChatQueueAction | null {
+  if (value.action === 'steer_all') return { action: 'steer_all' }
   if (!shortString(value.id)) return null
   if (value.action === 'remove' || value.action === 'steer') return { action: value.action, id: value.id }
   if (value.action === 'edit' && typeof value.text === 'string' && value.text.trim() && value.text.length <= MAX_TEXT) return { action: 'edit', id: value.id, text: value.text }
   return null
+}
+
+/**
+ * The queued messages that go out together, oldest first: as many as fit the
+ * image limit, but always at least one. Hosts join their text with blank lines.
+ */
+export function takeQueueBatch(queue: readonly ChatQueuedMessage[]): { batch: ChatQueuedMessage[]; rest: ChatQueuedMessage[] } {
+  let images = 0, count = 0
+  for (const queued of queue) {
+    const next = queued.images?.length ?? 0
+    if (count && images + next > MAX_CHAT_IMAGES) break
+    images += next
+    count += 1
+  }
+  return { batch: queue.slice(0, count), rest: queue.slice(count) }
 }
 
 function parseQueue(value: unknown): ChatQueuedMessage[] | undefined {

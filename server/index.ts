@@ -2798,6 +2798,10 @@ async function main(): Promise<void> {
             : 'No agent host is connected for this pane', message.requestId)
           return
         }
+        if (message.type === 'chat_queue' && message.action === 'steer_all' && !agentHosts.takesSteerAll(message.paneId)) {
+          sendError(client, 'chat_unavailable', 'This chat started before Steer all; restart it to use it', message.requestId)
+          return
+        }
         let delivered: boolean
         if (message.type === 'chat_queue') {
           const { type: _type, paneId, requestId, ...change } = message
