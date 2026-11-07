@@ -273,7 +273,7 @@ export class CursorChatSession implements ChatProviderSession {
           if (this.closing) return
           if (outcome === 'complete_delivered') this.emitItems(this.mapper.expectUser(trimmed, [], true))
           else this.enqueue(trimmed, images, true)
-        } else this.enqueue(trimmed, images)
+        } else this.enqueue(trimmed, images, options.delivery === 'steer') // An undeliverable steer (images) stays ahead of later messages.
         return
       }
       await this.startRun(trimmed, images)
