@@ -1236,6 +1236,21 @@ describe('AgentSession queue and steer', () => {
     expect(fake.prompts.map((prompt) => prompt.message.content)).toEqual(['first', 'steer me', 'fixed'])
   })
 
+  it('steers the whole queue in as one message with priority now', async () => {
+    const { fake, session, sessions, items } = started()
+    session.send('first')
+    session.send('use the group account', [], { delivery: 'queue' })
+    session.send('his email is ada@example.com', [], { delivery: 'queue' })
+    session.updateQueue({ action: 'steer_all' })
+    await tick()
+    expect(fake.prompts.at(-1)).toMatchObject({ message: { content: 'use the group account\n\nhis email is ada@example.com' }, priority: 'now' })
+    expect([...items.values()].at(-1)).toMatchObject({ kind: 'user_message', steered: true })
+    expect(sessions.at(-1)?.queue).toBeUndefined()
+    session.updateQueue({ action: 'steer_all' })
+    await tick()
+    expect(fake.prompts).toHaveLength(2)
+  })
+
   it('sends a steer or queued send straight away when no turn runs', async () => {
     const { fake, session } = started()
     session.send('queued but idle', [], { delivery: 'queue' })

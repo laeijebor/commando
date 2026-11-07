@@ -3,7 +3,7 @@ import {
   MAX_CHAT_IMAGES,
   attachmentNote,
   isChatVideoId,
-  MAX_QUEUED_MESSAGES,
+  MAX_QUEUED_MESSAGES, takeQueueBatch,
   isChatEffort,
   isModelValue,
   type ChatAnswer,
@@ -332,6 +332,13 @@ export class MuseChatSession implements ChatProviderSession {
     return input
   }
   updateQueue(change: ChatQueueAction): void {
+    if (change.action === 'steer_all') {
+      const { batch, rest } = takeQueueBatch(this.queue)
+      if (!batch.length) return
+      this.setQueue(rest)
+      this.send(batch.map((entry) => entry.text).filter(Boolean).join('\n\n'), batch.flatMap((entry) => entry.images ?? []), { delivery: 'steer' })
+      return
+    }
     const entry = this.queue.find((entry) => entry.id === change.id)
     if (!entry) { this.emitItems(this.mapper.notice('info', 'That queued message has already been sent.')); return }
     if (change.action === 'edit') this.setQueue(this.queue.map((value) => value === entry ? { ...value, text: change.text.trim() || value.text } : value))

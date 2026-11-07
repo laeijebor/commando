@@ -3,7 +3,7 @@ import { getSessionInfo, getSessionMessages, getSubagentMessages, query, type Ca
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
-  MAX_QUEUED_MESSAGES,
+  MAX_QUEUED_MESSAGES, takeQueueBatch,
   attachmentNote,
   chatImageType,
   isChatVideoId,
@@ -593,8 +593,15 @@ export class AgentSession implements ChatProviderSession {
     })
   }
 
-  /** Edits, removes or steers a queued message. */
+  /** Edits, removes or steers a queued message, or steers the whole queue in as one message. */
   updateQueue(change: ChatQueueAction): void {
+    if (change.action === 'steer_all') {
+      const { batch, rest } = takeQueueBatch(this.queue)
+      if (!batch.length) return
+      this.setQueue(rest)
+      this.send(batch.map((queued) => queued.text).filter(Boolean).join('\n\n'), batch.flatMap((queued) => queued.images ?? []), { delivery: 'steer' })
+      return
+    }
     const entry = this.queue.find((queued) => queued.id === change.id)
     if (!entry) {
       // It went to Claude with the rest of the queue before this change arrived.

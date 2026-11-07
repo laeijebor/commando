@@ -265,6 +265,14 @@ describe('CursorChatSession', () => {
     expect(session.queued).toEqual([])
     session.close()
   })
+  it('steers the whole queue in as one message', async () => {
+    const { session, sdk } = await running()
+    session.send('First', [], { delivery: 'queue' }); session.send('Second', [], { delivery: 'queue' }); await tick()
+    session.updateQueue({ action: 'steer_all' }); await tick()
+    expect(sdk.runs[0].steer).toHaveBeenCalledWith('First\n\nSecond')
+    expect(session.queued).toEqual([])
+    session.close()
+  })
   it('queues when steer is absent and supports editing, removing and bounded queues', async () => {
     const { session, sdk } = await running()
     sdk.runs[0].steer = undefined as never
