@@ -51,23 +51,32 @@ function RepoFilter({ options, filter, disabled, onChange }: {
   onChange: NonNullable<AgentsInboxProps['onRepoFilter']>
 }) {
   const [error, setError] = useState('')
-  const selected = new Set(filter)
+  // Ticks made before the daemon echoes the last one build on each other instead of on the stale prop.
+  const [pending, setPending] = useState<string[] | null>()
+  const filterKey = filter?.join('\n')
+  useEffect(() => { setPending(undefined) }, [filterKey])
+  const current = pending === undefined ? filter : pending ?? undefined
+  const selected = new Set(current)
   const save = (repos: string[] | null) => {
     setError('')
-    void onChange(repos).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to change repos'))
+    setPending(repos)
+    void onChange(repos).catch((cause: unknown) => {
+      setPending(undefined)
+      setError(cause instanceof Error ? cause.message : 'Unable to change repos')
+    })
   }
   const names = options.filter((option) => selected.has(option.key)).map((option) => option.name)
-  const label = filter?.length ? names.join(', ') || `${filter.length} repos` : 'All repos'
+  const label = current?.length ? names.join(', ') || `${current.length} repos` : 'All repos'
   return <Menu>
     <MenuTrigger disabled={disabled} aria-label={`Repos: ${label}`} title={error || 'Choose which repos Commander watches'}
       className={cn('flex max-w-[45%] shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-2xs hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-50',
-        error ? 'text-destructive' : filter?.length ? 'text-primary' : 'text-muted-foreground')}>
+        error ? 'text-destructive' : current?.length ? 'text-primary' : 'text-muted-foreground')}>
       <FolderGit2 className="size-3 shrink-0" aria-hidden="true" />
       <span className="truncate">{label}</span>
       <ChevronDown className="size-3 shrink-0" aria-hidden="true" />
     </MenuTrigger>
     <MenuPopup>
-      <MenuCheckboxItem checked={!filter?.length} onCheckedChange={(checked) => { if (checked) save(null) }}>All repos</MenuCheckboxItem>
+      <MenuCheckboxItem checked={!current?.length} onCheckedChange={(checked) => { if (checked) save(null) }}>All repos</MenuCheckboxItem>
       <MenuSeparator />
       {options.map((option) => <MenuCheckboxItem key={option.key} checked={selected.has(option.key)} title={option.key === option.name ? undefined : option.key}
         onCheckedChange={(checked) => {

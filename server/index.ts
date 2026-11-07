@@ -2139,7 +2139,8 @@ async function main(): Promise<void> {
   })
   await turnBriefs.load()
   const commanderStalls: CommanderStalls = new CommanderStalls({
-    agents: () => commanderApi.agents(), status: (id) => agentStatuses.get(id),
+    agents: () => commanderApi.agents({ all: true }), watched: () => new Set(commanderApi.agents().map((agent) => agent.targetId)),
+    status: (id) => agentStatuses.get(id),
     commander: () => commander.state(), relays: commanderRelays,
   })
   const codexRolloutLookups = new Map<string, ResumeRolloutLookup>()
