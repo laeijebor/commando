@@ -265,6 +265,23 @@ describe('CursorChatSession', () => {
     expect(session.queued).toEqual([])
     session.close()
   })
+  it('steers the whole queue in as one message', async () => {
+    const { session, sdk } = await running()
+    session.send('First', [], { delivery: 'queue' }); session.send('Second', [], { delivery: 'queue' }); await tick()
+    session.updateQueue({ action: 'steer_all' }); await tick()
+    expect(sdk.runs[0].steer).toHaveBeenCalledWith('First\n\nSecond')
+    expect(session.queued).toEqual([])
+    session.close()
+  })
+  it('keeps queue order when Steer all takes a batch with images, which Cursor cannot steer', async () => {
+    const { session, sdk } = await running()
+    const six = Array.from({ length: 6 }, (_, i) => ({ id: `${i}.png` }))
+    session.send('First', six, { delivery: 'queue' }); session.send('Second', six, { delivery: 'queue' }); await tick()
+    session.updateQueue({ action: 'steer_all' }); await tick()
+    expect(sdk.runs[0].steer).not.toHaveBeenCalled()
+    expect(session.queued.map((entry) => entry.text)).toEqual(['First', 'Second'])
+    session.close()
+  })
   it('queues when steer is absent and supports editing, removing and bounded queues', async () => {
     const { session, sdk } = await running()
     sdk.runs[0].steer = undefined as never

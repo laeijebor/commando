@@ -8,12 +8,14 @@ import { Popover, PopoverPopup, PopoverTrigger } from './ui/popover'
 
 /**
  * Messages the host holds until Claude's turn ends (after t3code's
- * QueuedRunsControl): edit, remove, or steer one in now.
+ * QueuedRunsControl): edit, remove, or steer one (or all of them) in now.
  */
-export function QueuedMessages({ provider = 'Claude', queue, disabled, onChange, onEditOrphaned }: {
+export function QueuedMessages({ provider = 'Claude', queue, disabled, canSteerAll = false, onChange, onEditOrphaned }: {
   provider?: string
   queue: ChatQueuedMessage[]
   disabled: boolean
+  /** The host can steer the whole queue in as one message. */
+  canSteerAll?: boolean
   onChange: (change: ChatQueueAction) => void
   /** The message being edited was sent meanwhile; the edit goes to the composer instead of being lost. */
   onEditOrphaned?: (text: string) => void
@@ -34,7 +36,16 @@ export function QueuedMessages({ provider = 'Claude', queue, disabled, onChange,
   }, [])
   return (
     <div className="flex flex-col gap-1 border-b border-border px-3 py-2" aria-label="Queued messages" data-testid="chat-queue">
-      <span className="text-2xs text-muted-foreground">{`Queued · sent together when ${provider}'s turn ends`}</span>
+      <div className="flex min-h-6 items-center gap-2">
+        <span className="min-w-0 flex-1 text-2xs text-muted-foreground">{`Queued · sent together when ${provider}'s turn ends`}</span>
+        {canSteerAll && queue.length > 1 ? (
+          <Button size="xs" variant="ghost-muted" disabled={disabled} title={`Send the queue now as one message and end ${provider}'s current turn at its next safe point`}
+            onClick={() => onChange({ action: 'steer_all' })}>
+            <Rabbit aria-hidden="true" />
+            Steer all
+          </Button>
+        ) : null}
+      </div>
       {queue.map((queued) => (
         <div key={queued.id} className="flex min-w-0 items-start gap-1.5 rounded-md bg-secondary px-2 py-1 text-sm text-secondary-label">
           {editing?.id === queued.id ? (

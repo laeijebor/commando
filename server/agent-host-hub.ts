@@ -4,6 +4,7 @@ import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
   hostTakesInput,
+  hostTakesSteerAll,
   hostTakesVideos,
   hostTakesMcp,
   hostTakesSettings,
@@ -386,7 +387,14 @@ export class AgentHostHub {
     return session ? hostTakesTurnFlow(session) : false
   }
 
+  takesSteerAll(paneId: string): boolean {
+    const session = this.chats.get(paneId)?.state.session
+    return session ? hostTakesSteerAll(session) : false
+  }
+
   updateQueue(paneId: string, change: ChatQueueAction, requestId: string): boolean {
+    // An older host would drop steer_all as malformed, so it never reaches one.
+    if (change.action === 'steer_all' && !this.takesSteerAll(paneId)) return false
     return this.takesTurnFlow(paneId) && this.toHost(paneId, { type: 'queue', paneId, requestId, ...change })
   }
 

@@ -10,6 +10,7 @@ import {
   chatPlanTitle,
   hostTakesInput,
   hostTakesSettings,
+  hostTakesSteerAll,
   hostTakesTurnFlow,
   hostTakesVideos,
   isChatVideoId,
@@ -865,6 +866,7 @@ export function ChatComposer({
             provider={provider}
             queue={queue}
             disabled={!hostConnected}
+            canSteerAll={hostTakesSteerAll(session)}
             onChange={onQueue}
             onEditOrphaned={(text) => {
               setDraft((current) => [current.trim(), text].filter(Boolean).join('\n\n'))
