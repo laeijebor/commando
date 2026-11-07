@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import { getSessionInfo, getSessionMessages, getSubagentMessages, query, type CanUseTool, type FastModeDisabledReason, type FastModeState, type ModelInfo, type PermissionMode, type PermissionResult, type Query, type SDKControlGetContextUsageResponse, type SDKMessage, type SDKUserMessage, type SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
-  MAX_CHAT_IMAGES,
   MAX_QUEUED_MESSAGES, takeQueueBatch,
   attachmentNote,
   chatImageType,
@@ -643,15 +642,8 @@ export class AgentSession implements ChatProviderSession {
   private flushQueue(): void {
     // A switch to Claude Code carries the queue across instead.
     if (!this.queue.length || this.turnOpen || this.info.claudeCodeSwitch || this.info.status === 'closed' || this.info.status === 'error') return
-    const batch: ChatQueuedMessage[] = []
-    let imageCount = 0
-    for (const queued of this.queue) {
-      const count = queued.images?.length ?? 0
-      if (batch.length && imageCount + count > MAX_CHAT_IMAGES) break
-      batch.push(queued)
-      imageCount += count
-    }
-    this.setQueue(this.queue.slice(batch.length))
+    const { batch, rest } = takeQueueBatch(this.queue)
+    this.setQueue(rest)
     this.send(batch.map((queued) => queued.text).filter(Boolean).join('\n\n'), batch.flatMap((queued) => queued.images ?? []))
   }
 

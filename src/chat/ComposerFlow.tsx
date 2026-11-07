@@ -39,7 +39,7 @@ export function QueuedMessages({ provider = 'Claude', queue, disabled, canSteerA
       <div className="flex min-h-6 items-center gap-2">
         <span className="min-w-0 flex-1 text-2xs text-muted-foreground">{`Queued · sent together when ${provider}'s turn ends`}</span>
         {canSteerAll && queue.length > 1 ? (
-          <Button size="xs" variant="ghost-muted" disabled={disabled} title={`Send all ${queue.length} now as one message and end ${provider}'s current turn at its next safe point`}
+          <Button size="xs" variant="ghost-muted" disabled={disabled} title={`Send the queue now as one message and end ${provider}'s current turn at its next safe point`}
             onClick={() => onChange({ action: 'steer_all' })}>
             <Rabbit aria-hidden="true" />
             Steer all
