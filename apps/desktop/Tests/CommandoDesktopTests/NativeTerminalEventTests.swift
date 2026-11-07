@@ -111,7 +111,7 @@ final class NativeTerminalEventTests: XCTestCase {
         XCTAssertEqual(failure["code"] as? String, "max_panes")
         XCTAssertEqual(failure["fatal"] as? Bool, false)
 
-        for key in ["k", "1", "9"] {
+        for key in ["k", "1", "9", "[", "]"] {
             let shortcut = try roundTripPayload(NativeTerminalEventBuilder.hostShortcut(key: key))
             XCTAssertEqual(Set(shortcut.keys), ["key", "metaKey"])
             XCTAssertEqual(shortcut["key"] as? String, key)

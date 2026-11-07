@@ -405,6 +405,12 @@ final class HostedTerminalView: TerminalView {
         }
         if shortcutModifiers == .command,
            let key = event.charactersIgnoringModifiers?.lowercased(),
+           key == "[" || key == "]" {
+            if !event.isARepeat { shortcutWasPressed?(key) }
+            return true
+        }
+        if shortcutModifiers == .command,
+           let key = event.charactersIgnoringModifiers?.lowercased(),
            key == "k" || key == "p" || (key.count == 1 && ("1"..."9").contains(key)) {
             shortcutWasPressed?(key)
             return true
