@@ -215,6 +215,7 @@ import {
 import { createSessionManagementApi, type SessionTreePreferences } from './sessionManagementApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
+import { SessionHistoryNav, useSessionHistory } from './SessionHistoryNav'
 import { useDesktopWindowActivity } from './desktopWindowActivity'
 import { paneAttention, paneAttentionLabels } from './sessionIndicator'
 import { SessionTokenBroker } from './sessionTokenBroker'
@@ -2172,6 +2173,8 @@ function HostApp() {
     setLeftPanelOpen(false)
   }
 
+  const sessionHistory = useSessionHistory(local ? 'local' : activeHost, snapshot?.sessions, selectedSessionId, selectSession)
+
   const openSessionIde = async (sessionId: string) => {
     if (!local) return
     setSelectedSessionId(sessionId)
@@ -3887,6 +3890,7 @@ function HostApp() {
           </span>
         </div>
         <div className="location-readout">
+          <SessionHistoryNav {...sessionHistory} />
           <span>commando://{local ? 'local' : hostName}</span>
           <strong>{selectedSession?.name ?? 'discovering-sessions'}</strong>
         </div>
