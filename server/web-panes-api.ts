@@ -5,7 +5,7 @@ import type { Guides } from './guides.js'
 import { isBuiltinPanelKey } from '../shared/web-pane-placement.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
+import { MAX_FEEDBACK_NOTES_PER_POST, MAX_WEB_PANE_TITLE_LENGTH, MAX_WEB_PANE_URL_LENGTH, type WebPane, type WebPaneEngine, type WebPaneFeedbackNote, type WebPanePendingSendIntent, type WebPanePendingSnapshot, type WebPanePlacement } from '../shared/protocol.js'
 import {
   MAX_RESPONSE_ANSWER,
   MAX_RESPONSE_DATA_JSON,
@@ -55,6 +55,8 @@ type WebPanesApiDependencies = {
   /** Owner auth (session cookie or COMMANDO_TOKEN bearer/query token). */
   ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>
   paneForId: (paneId: string) => AnchorPane | undefined
+  /** The live pane holding a stable target id, for reopening closed tabs. */
+  paneForTarget?: (targetId: string) => AnchorPane | undefined
   /** Label for the agent occupying a pane, e.g. "claude · gizmo". */
   agentLabel?: (paneId: string) => string | undefined
   onChange: () => void
@@ -418,6 +420,28 @@ export class WebPanesApi {
         }
         this.dependencies.onChange()
         writeJson(response, 200, { ok: true })
+        return true
+      }
+
+      if (route.kind === 'closed-tabs') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        if (caller !== 'owner') throw new HttpError(403, 'Only the owner can reopen or forget closed tabs')
+        const body = await readJson(request)
+        if (typeof body.targetId !== 'string' || typeof body.id !== 'string' || !WEB_PANE_ID.test(body.id)) throw new HttpError(400, 'targetId and id are required')
+        if (route.action === 'forget') {
+          if (!this.dependencies.service.forgetClosed(body.targetId, body.id)) throw new HttpError(404, 'Closed tab does not exist')
+          this.dependencies.onChange()
+          writeJson(response, 200, { ok: true })
+          return true
+        }
+        const anchorPane = this.dependencies.paneForTarget?.(body.targetId)
+        if (!anchorPane) throw new HttpError(404, 'The pane that owns this tab is not open')
+        const pane = this.dependencies.service.reopenClosed(body.targetId, body.id, {
+          anchorPaneId: anchorPane.id, sessionId: anchorPane.sessionId, windowId: anchorPane.windowId,
+        })
+        this.adoptPending(pane)
+        this.dependencies.onChange()
+        writeJson(response, 200, { ok: true, webPaneId: pane.id, beside: pane.anchorPaneId, status: pane.status })
         return true
       }
 
@@ -950,7 +974,8 @@ export class WebPanesApi {
       }
 
       if (request.method !== 'DELETE') throw new HttpError(405, 'Method not allowed')
-      if (!this.dependencies.service.close(route.id)) {
+      const title = url.searchParams.get('title')?.slice(0, MAX_WEB_PANE_TITLE_LENGTH) || undefined
+      if (!this.dependencies.service.close(route.id, title)) {
         throw new HttpError(404, 'Web pane does not exist')
       }
       this.spotlight.retain(new Set(this.dependencies.service.list().map((pane) => pane.id)))
@@ -1082,6 +1107,7 @@ export class WebPanesApi {
   private route(pathname: string):
     | { kind: 'collection' }
     | { kind: 'pr-tabs'; action: 'dismiss' | 'restore' }
+    | { kind: 'closed-tabs'; action: 'reopen' | 'forget' }
     | { kind: 'pane'; id: string; action: 'spotlight' | 'active-tab' | 'seen' | 'dock' | 'confirm' | 'cdp' | 'feedback' | 'threads' | 'move' | 'navigate' | 'reload' | 'delete' }
     | { kind: 'pane'; id: string; action: 'attachment'; attachmentId: string }
     | { kind: 'pane'; id: string; action: 'navigate-request' | 'spotlight-request'; requestId: string }
@@ -1089,6 +1115,8 @@ export class WebPanesApi {
     | { kind: 'pane'; id: string; action: 'pending'; noteId?: number; attachmentId?: string; attachments?: boolean; send?: boolean; sendBuild?: boolean; dismissDropped?: boolean; response?: boolean; page?: boolean } {
     if (pathname === `${API_ROOT}/pr-tabs/dismiss`) return { kind: 'pr-tabs', action: 'dismiss' }
     if (pathname === `${API_ROOT}/pr-tabs/restore`) return { kind: 'pr-tabs', action: 'restore' }
+    if (pathname === `${API_ROOT}/closed-tabs/reopen`) return { kind: 'closed-tabs', action: 'reopen' }
+    if (pathname === `${API_ROOT}/closed-tabs/forget`) return { kind: 'closed-tabs', action: 'forget' }
     if (pathname === API_ROOT) return { kind: 'collection' }
     const thread = /^\/api\/web-panes\/([^/]+)\/threads\/(ct-[0-9a-f]{24})\/(replies|status)$/.exec(pathname)
     if (thread && WEB_PANE_ID.test(thread[1])) return { kind: 'pane', id: thread[1], threadId: thread[2], action: thread[3] === 'replies' ? 'thread-replies' : 'thread-status' }

@@ -491,6 +491,18 @@ export type WebPanePlacement = 'right' | 'below' | 'auto'
  */
 export type WebPaneEngine = 'webkit' | 'chromium'
 
+export type ClosedWebPaneKind = 'canvas' | 'slides' | 'guide' | 'redline' | 'page'
+
+/** A closed side-panel tab that its pane can reopen. */
+export type ClosedWebPane = {
+  /** The tab's original web pane id; reopening restores it. */
+  id: string
+  kind: ClosedWebPaneKind
+  title: string
+  url: string
+  closedAt: number
+}
+
 /**
  * A browser tile rendered among the tmux panes of a window. Web panes exist
  * only in the app-side layout tree — tmux never sees them, and they must be
@@ -776,6 +788,8 @@ export type ServerMessage =
       /** Per-pane panel selection, including built-in keys. */
       activeTabs?: Record<string, string>
       dismissedPrTabs?: Record<string, Record<string, string>>
+      /** Recently closed tabs, keyed by the owning pane's stable target id. */
+      closedTabs?: Record<string, ClosedWebPane[]>
       feedback?: Record<string, WebPaneFeedbackInfo>
       navigateRequests?: Record<string, WebPaneNavigateRequest>
       agentChatRequests?: Record<string, AgentChatRequest>

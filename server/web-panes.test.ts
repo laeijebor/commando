@@ -1863,6 +1863,6 @@ it('builds the web_panes broadcast with stored selection, dismissals and the rem
   const state = { feedback: {}, navigateRequests: {}, spotlightRequests: {}, reloads: { [pane.id]: 2 } }
   expect(buildWebPanesMessage(service, state)).toEqual({
     type: 'web_panes', webPanes: service.list(), activeTabs: { '%12': pane.id },
-    dismissedPrTabs: { '%12': { 'pr:acme:widgets:12': 'old' } }, ...state,
+    dismissedPrTabs: { '%12': { 'pr:acme:widgets:12': 'old' } }, closedTabs: {}, ...state,
   })
 })
