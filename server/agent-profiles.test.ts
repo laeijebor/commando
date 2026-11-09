@@ -23,6 +23,17 @@ async function home(names = ['', 'w', 'p']) {
 const preferences = (dir: string) => new AgentProfilePreferences(join(dir, '.commando', 'agent-profiles.json'), dir)
 
 describe('AgentProfilePreferences', () => {
+  it('rescans when a cached list does not know the profile yet', async () => {
+    const dir = await home(['w'])
+    const stale = [{ name: 'claude', configDir: join(dir, '.claude') }]
+    const fresh = vi.fn(async () => [{ name: 'claudew', configDir: join(dir, '.claudew') }])
+    const prefs = new AgentProfilePreferences(join(dir, '.commando', 'agent-profiles.json'), dir, async () => stale, fresh)
+    await prefs.update({ configDir: join(dir, '.claudew'), label: 'Work' })
+    expect(fresh).toHaveBeenCalledOnce()
+    expect((await prefs.claudeProfiles({ includeHidden: true, fresh: true }))[0]).toMatchObject({ name: 'claudew', label: 'Work' })
+    await expect(prefs.update({ configDir: join(dir, '.claudex'), label: 'Gone' })).rejects.toThrow('Unknown Claude profile')
+  })
+
   it('labels, defaults and hides discovered profiles, and pickers leave hidden ones out', async () => {
     const dir = await home(), prefs = preferences(dir)
     await prefs.update({ configDir: join(dir, '.claudew'), label: ' Work ', isDefault: true })
