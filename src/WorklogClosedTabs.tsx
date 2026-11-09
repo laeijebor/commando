@@ -30,7 +30,9 @@ export function WorklogClosedTabs({ tabs, paneLabel, connected, onReopen, onForg
   onReopen: (id: string) => Promise<void>
   onForget: (id: string) => Promise<void>
 }) {
-  const [collapsed, setCollapsed] = useState(tabs.length > COLLAPSE_AFTER)
+  // Until the user chooses, the list's length decides: the worklog stays mounted while it fills.
+  const [collapsedChoice, setCollapsed] = useState<boolean | null>(null)
+  const collapsed = collapsedChoice ?? tabs.length > COLLAPSE_AFTER
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState('')
   if (!tabs.length) return null
@@ -48,7 +50,7 @@ export function WorklogClosedTabs({ tabs, paneLabel, connected, onReopen, onForg
       <button
         type="button"
         className="pane-worklog-section-toggle"
-        onClick={() => setCollapsed((current) => !current)}
+        onClick={() => setCollapsed(!collapsed)}
         aria-expanded={!collapsed}
         aria-label={`${collapsed ? 'Expand' : 'Collapse'} closed tabs for ${paneLabel}`}
       >

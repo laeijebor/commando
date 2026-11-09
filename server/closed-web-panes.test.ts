@@ -78,7 +78,31 @@ describe('closed tabs', () => {
     expect(service.prune([{ id: '@9', sessionId: '$2', paneIds: ['%40'] }])).toBe(true)
     expect(service.get(plain.id)).toBeUndefined()
     expect(service.closedTabs()[TARGET].map((tab) => tab.id)).toEqual([plain.id])
-    expect(service.parkedIds()).toContain(owned.id)
+    expect(service.retainedIds()).toContain(owned.id)
+  })
+
+  it('finds the owner of a tab pruned on the first snapshot after a restart', async () => {
+    const { service, path } = await setup()
+    const page = service.open({ ...anchor, url: 'http://localhost/after-restart' })
+    // Any healthy snapshot stamps the anchor's target onto the persisted tab.
+    service.prune([{ id: '@3', sessionId: '$1', paneIds: ['%12'] }])
+    await service.flush()
+    const { service: restarted, targets: restartedTargets } = await setup({ path })
+    restartedTargets.clear()
+    await restarted.load()
+    expect(restarted.prune([{ id: '@9', sessionId: '$2', paneIds: ['%40'] }])).toBe(true)
+    expect(restarted.closedTabs()[TARGET].map((tab) => tab.id)).toEqual([page.id])
+  })
+
+  it('broadcasts closed tabs only for targets with a live pane', async () => {
+    const { service } = await setup()
+    const live = new Set([TARGET])
+    service.closedTabHooks = { ...service.closedTabHooks!, liveTargets: () => live }
+    service.close(service.open({ ...anchor, url: 'http://localhost/mine' }).id)
+    service.close(service.open({ ...anchor, anchorPaneId: '%13', url: 'http://localhost/other' }).id)
+    expect(Object.keys(buildWebPanesMessage(service).closedTabs ?? {})).toEqual([TARGET])
+    live.add(OTHER_TARGET)
+    expect(Object.keys(service.closedTabs()).sort()).toEqual([TARGET, OTHER_TARGET].sort())
   })
 
   it('keeps one entry per content, at most 30 per target, for 14 days', async () => {
@@ -146,7 +170,7 @@ describe('closed tabs', () => {
     const { service: loaded } = await setup({ path, now: () => now })
     await loaded.load()
     expect(loaded.closedTabs()).toEqual({ [TARGET]: [expect.objectContaining({ id: kept.id, title: 'Kept page', closedAt: now })] })
-    expect(loaded.parkedIds()).toContain(kept.id)
+    expect(loaded.retainedIds()).toContain(kept.id)
 
     now += CLOSED_WEB_PANE_TTL_MS
     const { service: expired } = await setup({ path, now: () => now })

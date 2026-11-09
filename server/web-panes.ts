@@ -37,7 +37,7 @@ const SIM_UDID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const ENGINES: readonly WebPaneEngine[] = ['webkit', 'chromium']
 const LAYOUT_STATES = ['pending', 'settled'] as const
 
-type PersistedWebPane = WebPane & { tmuxSocketHash?: string; awaitingAgentSession?: true }
+type PersistedWebPane = WebPane & { tmuxSocketHash?: string; awaitingAgentSession?: true; anchorTargetId?: string }
 type ParkedWebPane = { pane: PersistedWebPane; parkedAt: number }
 
 type StateFile = {
@@ -46,6 +46,8 @@ type StateFile = {
   panes: PersistedWebPane[]
   parkedPanes: ParkedWebPane[]
   closedPanes: ClosedWebPaneEntry[]
+  /** Last known target id of each live tab's anchor, for tabs pruned before the pane is seen again. */
+  anchorTargets?: Record<string, string>
   activeTabs: Record<string, string>
   dismissedPrTabs: Record<string, Record<string, string>>
 }
@@ -322,7 +324,13 @@ function parseState(value: unknown): StateFile {
         ...(typeof entry.title === 'string' && entry.title ? { title: entry.title.slice(0, MAX_WEB_PANE_TITLE_LENGTH) } : {}) })
     }
   }
-  return { version: 2, allowedOrigins, panes, parkedPanes, closedPanes, activeTabs, dismissedPrTabs }
+  const anchorTargets: Record<string, string> = {}
+  if (Array.isArray(value.panes)) {
+    for (const pane of value.panes) {
+      if (isRecord(pane) && typeof pane.id === 'string' && isCommandoTargetId(pane.anchorTargetId)) anchorTargets[pane.id] = pane.anchorTargetId
+    }
+  }
+  return { version: 2, allowedOrigins, panes, parkedPanes, closedPanes, anchorTargets, activeTabs, dismissedPrTabs }
 }
 
 type WebPaneEnvironment = Record<string, string | undefined>
@@ -401,6 +409,8 @@ export type ClosedTabHooks = {
   /** Must still answer for an anchor that just left the tmux snapshot. */
   targetIdFor: (paneId: string) => string | undefined
   titleFor?: (pane: WebPane) => string | undefined
+  /** Targets with a live pane; only their closed tabs are broadcast. */
+  liveTargets?: () => ReadonlySet<string>
 }
 
 /**
@@ -417,6 +427,7 @@ export class WebPaneService {
   private activeTabs: Record<string, string> = {}
   private dismissedPrTabs: Record<string, Record<string, string>> = {}
   private readonly paneSocketHashes = new Map<string, string>()
+  private readonly anchorTargets = new Map<string, string>()
   private readonly awaitingAgentSession = new Set<string>()
   private readonly allowedOrigins = new Set<string>()
   private writes: Promise<void> = Promise.resolve()
@@ -470,12 +481,15 @@ export class WebPaneService {
     this.panes.clear()
     this.parkedPanes.clear()
     this.paneSocketHashes.clear()
+    this.anchorTargets.clear()
     this.awaitingAgentSession.clear()
     for (const persistedPane of state.panes) {
       const { tmuxSocketHash: persistedSocketHash, awaitingAgentSession, ...pane } = persistedPane
       this.panes.set(pane.id, pane)
       if (awaitingAgentSession) this.awaitingAgentSession.add(pane.id)
       if (persistedSocketHash) this.paneSocketHashes.set(pane.id, persistedSocketHash)
+      const anchorTargetId = state.anchorTargets?.[pane.id]
+      if (anchorTargetId) this.anchorTargets.set(pane.id, anchorTargetId)
     }
     for (const entry of state.parkedPanes) {
       const key = agentSessionKey(entry.pane.agentSession!)
@@ -499,12 +513,14 @@ export class WebPaneService {
   }
 
   /** Parked and closed tabs still own durable resources such as canvas discussions. */
-  parkedIds(): string[] {
+  retainedIds(): string[] {
     return [...[...this.parkedPanes.values()].flatMap((entries) => entries.map(({ pane }) => pane.id)), ...this.closedPanes.ids()]
   }
 
   closedTabs(): Record<string, ClosedWebPane[]> {
-    return this.closedPanes.byTarget()
+    const all = this.closedPanes.byTarget()
+    const live = this.closedTabHooks?.liveTargets?.()
+    return live ? Object.fromEntries(Object.entries(all).filter(([targetId]) => live.has(targetId))) : all
   }
 
   /** Brings a closed tab back beside its pane under its original id, selected. */
@@ -553,7 +569,7 @@ export class WebPaneService {
 
   private recordClosed(pane: WebPane, title?: string): void {
     const hooks = this.closedTabHooks
-    const targetId = hooks?.targetIdFor(pane.anchorPaneId)
+    const targetId = hooks?.targetIdFor(pane.anchorPaneId) ?? this.anchorTargets.get(pane.id)
     if (!hooks || !targetId) return
     let resolved = title?.trim() || undefined
     try { resolved ??= hooks.titleFor?.(pane) } catch { /* The list falls back to the tab's file or URL. */ }
@@ -1046,6 +1062,21 @@ export class WebPaneService {
     return changed
   }
 
+  /** Remembers each anchor's target, so a tab pruned right after a restart still finds its owner. */
+  private stampAnchorTargets(): boolean {
+    let changed = false
+    for (const id of this.anchorTargets.keys()) {
+      if (!this.panes.has(id)) { this.anchorTargets.delete(id); changed = true }
+    }
+    for (const pane of this.panes.values()) {
+      const targetId = this.closedTabHooks?.targetIdFor(pane.anchorPaneId)
+      if (!targetId || this.anchorTargets.get(pane.id) === targetId) continue
+      this.anchorTargets.set(pane.id, targetId)
+      changed = true
+    }
+    return changed
+  }
+
   /** Pruned tabs that no conversation will bring back become closed tabs. */
   private drop(pane: WebPane): void {
     this.recordClosed(pane)
@@ -1108,6 +1139,7 @@ export class WebPaneService {
     }
     let changed = this.closedPanes.trim()
     changed = this.trimParkedPanes() || changed
+    changed = this.stampAnchorTargets() || changed
     // Built-in selections have no window or socket metadata. Only a complete,
     // matching snapshot can prove their anchors disappeared.
     let canPruneActiveTabs = currentWindows.every((window) => window.paneIds.length > 0)
@@ -1202,7 +1234,8 @@ export class WebPaneService {
           closedPanes: this.closedPanes.list(),
           panes: [...this.panes.values()].map((pane) => {
             const socketHash = this.paneSocketHashes.get(pane.id)
-            return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}),
+            const anchorTargetId = this.anchorTargets.get(pane.id)
+            return { ...pane, ...(socketHash ? { tmuxSocketHash: socketHash } : {}), ...(anchorTargetId ? { anchorTargetId } : {}),
               ...(this.awaitingAgentSession.has(pane.id) ? { awaitingAgentSession: true as const } : {}) }
           }),
         }

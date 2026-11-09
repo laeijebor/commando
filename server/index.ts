@@ -673,7 +673,7 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
-    canvasThreads.retain(new Set([...liveIds, ...webPanes.parkedIds()]))
+    canvasThreads.retain(new Set([...liveIds, ...webPanes.retainedIds()]))
     webPaneAgentRequests.retain(liveIds)
     canvasSpotlight.retain(liveIds)
     canvasPush?.retain(liveIds)
@@ -2043,6 +2043,7 @@ async function main(): Promise<void> {
   webPanes.closedTabHooks = {
     targetIdFor: (paneId) => paneForId(paneId)?.targetId ?? paneTargets.get(paneId),
     titleFor: tileTitle,
+    liveTargets: () => new Set(snapshot.panes.map((pane) => pane.targetId)),
   }
   canvasPush = new CanvasPush({
     sending: agentPushes,
@@ -2348,7 +2349,7 @@ async function main(): Promise<void> {
   canvasSnapshots.prune()
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
   canvasWatch.sync(webPanes.list())
-  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.parkedIds()]))
+  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.retainedIds()]))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),

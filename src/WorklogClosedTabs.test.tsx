@@ -51,11 +51,16 @@ describe('Closed tabs in the session worklog', () => {
     expect(screen.queryByRole('region', { name: 'Closed tabs for Tests' })).not.toBeInTheDocument()
   })
 
-  it('starts collapsed when the list is long', () => {
+  it('collapses once the list grows long, until the user chooses', () => {
     const many = Array.from({ length: 7 }, (_, index) => ({ ...tabs[0], id: `w-0000001${index}`, title: `Page ${index}` }))
-    render(<PaneWorklog brief={brief} paneLabel="Tests" fullWidth closedTabs={many} onReopenClosedTab={async () => undefined} onForgetClosedTab={async () => undefined} />)
+    const props = { brief, paneLabel: 'Tests', fullWidth: true, onReopenClosedTab: async () => undefined, onForgetClosedTab: async () => undefined }
+    const view = render(<PaneWorklog {...props} closedTabs={many.slice(0, 2)} />)
+    expect(screen.getByRole('button', { name: 'Reopen Page 1' })).toBeInTheDocument()
+    view.rerender(<PaneWorklog {...props} closedTabs={many} />)
     expect(screen.queryByRole('button', { name: 'Reopen Page 0' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Expand closed tabs for Tests' }))
     expect(screen.getByRole('button', { name: 'Reopen Page 6' })).toBeInTheDocument()
+    view.rerender(<PaneWorklog {...props} closedTabs={[...many, { ...tabs[0], id: 'w-00000099', title: 'Page 7' }]} />)
+    expect(screen.getByRole('button', { name: 'Reopen Page 7' })).toBeInTheDocument()
   })
 })

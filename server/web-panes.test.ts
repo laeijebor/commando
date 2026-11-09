@@ -170,7 +170,7 @@ describe('conversation-owned web panes', () => {
       ? [{ id: '@4', sessionId: '$1', paneIds: ['%13'] }]
       : [{ id: '@9', sessionId: '$2', paneIds: ['%40'] }]
     service.prune(windows)
-    expect(service.parkedIds()).toEqual([])
+    expect(service.retainedIds()).toEqual([])
     if (death === 'anchor') expect(service.get(known.id)?.anchorPaneId).toBe('%13')
     else expect(service.get(known.id)).toBeUndefined()
   })
@@ -188,7 +188,7 @@ describe('conversation-owned web panes', () => {
     await writeFile(path, JSON.stringify(state))
     const loaded = track(new WebPaneService(path, Date.now, undefined, 'owner', resolve))
     await loaded.load()
-    expect(loaded.parkedIds()).toEqual([])
+    expect(loaded.retainedIds()).toEqual([])
     expect(loaded.get('w-00000001')).not.toHaveProperty('agentSession')
     expect(loaded.get('w-00000001')).not.toHaveProperty('awaitingAgentSession')
     sessions.set(destination.anchorPaneId, conversation)
@@ -306,7 +306,7 @@ describe('conversation-owned web panes', () => {
       if (otherEngine) expect(service.get(otherEngine.id)).toBeDefined()
       if (otherContent) expect(service.get(otherContent.id)).toBeDefined()
       expect(service.panelActiveTabs()[destination.anchorPaneId]).toBe(parked.id)
-      expect(service.parkedIds()).toEqual([])
+      expect(service.retainedIds()).toEqual([])
       expect(service.reconcileAgentSession(destination)).toBe(false)
       await service.flush()
       const state = JSON.parse(await readFile(path, 'utf8'))
@@ -336,7 +336,7 @@ describe('conversation-owned web panes', () => {
       expect(service.get(live.id)).toEqual(live)
       expect(service.list()).toHaveLength(2)
       expect(service.panelActiveTabs()[destination.anchorPaneId]).toBe(live.id)
-      expect(service.parkedIds()).toEqual([])
+      expect(service.retainedIds()).toEqual([])
       expect(service.reconcileAgentSession(destination)).toBe(false)
       await service.flush()
       const state = JSON.parse(await readFile(path, 'utf8'))
@@ -390,7 +390,7 @@ describe('conversation-owned web panes', () => {
     expect(service.reconcileAgentSession(destination)).toBe(false)
     expect(service.get(live.id)).toEqual(live)
     expect(service.get(parked.id)).toBeUndefined()
-    expect(service.parkedIds()).toEqual([parked.id])
+    expect(service.retainedIds()).toEqual([parked.id])
     expect(service.list()).toHaveLength(MAX_WEB_PANES)
   })
 
@@ -406,7 +406,7 @@ describe('conversation-owned web panes', () => {
     expect(service.list()).toHaveLength(MAX_WEB_PANES)
     expect(service.get(live.id)).toBeUndefined()
     expect(service.get(parked.id)?.agentSession).toEqual(conversation)
-    expect(service.parkedIds()).toEqual([])
+    expect(service.retainedIds()).toEqual([])
   })
 
   it('batches duplicate restoration without per-tab list copies or persistence', async () => {
