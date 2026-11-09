@@ -147,3 +147,16 @@ button.session-indicator::before { width: 6px; height: 6px; content: ''; border-
 .session-commander-count { padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--amber); font: 9px/14px var(--mono); }
 .session-commander-unread { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--accent); }
 .session-tree-tools button:disabled { opacity: .5; cursor: default; }
+
+/* Processes a paused or archived session left running; clicking stops them. */
+.session-processes-left {
+  padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  border-radius: 4px;
+  color: var(--amber);
+  background: transparent;
+  font: 700 8px/1.2 var(--mono);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.session-processes-left:not(:disabled):hover { background: color-mix(in srgb, var(--amber) 14%, transparent); }

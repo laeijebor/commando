@@ -11,6 +11,7 @@ import { openWorkspace } from './newSessionTestHelpers'
 import { NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import type { PrsApiClient, PanePrSummary } from './prsApi'
 import type { SessionTreePreferences } from './sessionManagementApi'
+import type { TrackedProcess } from '../shared/tracked-processes'
 
 const sessionApi = vi.hoisted(() => ({
   loadPreferences: vi.fn(),
@@ -27,6 +28,8 @@ const sessionApi = vi.hoisted(() => ({
 }))
 
 vi.mock('./sessionManagementApi', () => ({ createSessionManagementApi: () => sessionApi }))
+const processesApi = vi.hoisted(() => ({ list: vi.fn(), stop: vi.fn() }))
+vi.mock('./trackedProcessesApi', async (importOriginal) => ({ ...await importOriginal<object>(), createTrackedProcessesApi: () => processesApi }))
 
 afterEach(() => {
   cleanup()
@@ -41,6 +44,9 @@ beforeEach(() => {
   sessionApi.savePreferences.mockImplementation(async (preferences) => preferences)
   sessionApi.previewWorktreeDeletion.mockResolvedValue({ auxiliarySessions: [] })
   sessionApi.listArchives.mockResolvedValue([])
+  sessionApi.deleteSession.mockResolvedValue({})
+  processesApi.list.mockResolvedValue([])
+  processesApi.stop.mockResolvedValue({ stopped: [], missing: [], failed: [] })
 })
 
 function pane(id: string, index: number, title: string): TmuxPane {
@@ -819,7 +825,7 @@ describe('SessionTree', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Actions for Coins everywhere' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session and worktree' }))
 
-       await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith('$2', true, []))
+       await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith('$2', true, [], []))
       expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/Uncommitted changes.*branch will be kept/s))
       expect(onSessionsChanged).toHaveBeenCalled()
     })
@@ -851,7 +857,7 @@ describe('SessionTree', () => {
       expect(screen.getByRole('button', { name: 'Actions for native_app-unrelated' })).toBeVisible()
       fireEvent.click(screen.getByRole('button', { name: 'Actions for Cleanup' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session and worktree' }))
-      await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith(main.id, true, [helper.id]))
+      await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith(main.id, true, [helper.id], []))
       expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('• native_app-cleanup'))
     })
 
@@ -881,7 +887,7 @@ describe('SessionTree', () => {
       renderTree({ onSessionsChanged })
       fireEvent.click(await screen.findByRole('button', { name: 'Actions for Coins everywhere' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Archive session' }))
-      await waitFor(() => expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2'))
+      await waitFor(() => expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2', []))
       expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('saved as a wip commit'))
       expect(await screen.findByRole('button', { name: 'Restore Coins everywhere' })).toBeInTheDocument()
       expect(screen.getByText('2 windows / 3 panes')).toBeInTheDocument()
@@ -915,7 +921,7 @@ describe('SessionTree', () => {
       const view = renderTree({ onSelectSession })
       fireEvent.click(await screen.findByRole('button', { name: 'Actions for Coins everywhere' }))
       fireEvent.click(screen.getByRole('menuitem', { name: 'Pause session' }))
-      await waitFor(() => expect(sessionApi.pauseSession).toHaveBeenCalledWith('$2'))
+      await waitFor(() => expect(sessionApi.pauseSession).toHaveBeenCalledWith('$2', []))
       expect(confirm).toHaveBeenCalledWith(expect.stringContaining('simulators are released'))
 
       view.rerender(<SessionTree token="token" sessions={sessions.filter((session) => session.id !== '$2')} panes={panes.filter((item) => item.sessionId !== '$2')}
@@ -949,6 +955,76 @@ describe('SessionTree', () => {
       expect(saved.repositorySessionIds?.some((id) => id.startsWith('paused:'))).toBe(false)
     })
 
+    const tracked = (key: string, sessionId: string, overrides: Partial<TrackedProcess> = {}): TrackedProcess => ({
+      key, pid: Number(key.split(':')[0]), command: `node server-${key}`, fullCommand: `node server-${key}`, startedAt: Date.now() - 120_000,
+      cpuPercent: 0, rssKb: 0, ports: [], childCount: 0, detached: false, paneId: '%2', paneOpen: true, sessionId, sessionName: 'Coins everywhere',
+      targetId: panes[1].targetId, ...overrides,
+    })
+
+    it('lists a closing session’s processes ticked to stop, and keeps the ones the user unticks', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      sessionApi.archiveSession.mockResolvedValue({ archive: { id: 'a', name: 'Coins everywhere', createdAt: 1, windowCount: 1, paneCount: 1 } })
+      processesApi.list.mockResolvedValue([
+        tracked('20:1', '$2'), tracked('21:1', '$2', { detached: true, ports: [4499] }), tracked('30:1', '$1'),
+      ])
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderTree()
+      fireEvent.click(await screen.findByRole('button', { name: 'Actions for Coins everywhere' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Archive session' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Archive session “Coins everywhere”' })
+      expect(processesApi.list).toHaveBeenCalledWith(true)
+      expect(dialog).toHaveTextContent('saved as a wip commit')
+      expect(dialog).toHaveTextContent(':4499 · detached')
+      const boxes = within(dialog).getAllByRole('checkbox')
+      expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([true, true])
+      expect(within(dialog).queryByText('node server-30:1')).toBeNull()
+      fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Stop node server-20:1' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Archive and stop 1' }))
+      await waitFor(() => expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2', ['21:1']))
+      expect(confirm).not.toHaveBeenCalled()
+      expect(screen.queryByRole('dialog')).toBeNull()
+    })
+
+    it('closes nothing when the process dialog is cancelled', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      processesApi.list.mockResolvedValue([tracked('20:1', '$2')])
+      renderTree()
+      fireEvent.click(await screen.findByRole('button', { name: 'Actions for Coins everywhere' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Delete session “Coins everywhere”' })
+      fireEvent.keyDown(dialog, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(sessionApi.deleteSession).not.toHaveBeenCalled()
+    })
+
+    it('warns that detached processes may survive when they cannot be listed', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      processesApi.list.mockRejectedValue(new Error('offline'))
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderTree()
+      fireEvent.click(await screen.findByRole('button', { name: 'Actions for Team Battles' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session' }))
+      await waitFor(() => expect(sessionApi.deleteSession).toHaveBeenCalledWith('$1', false, [], []))
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining('could not be listed (offline)'))
+    })
+
+    it('shows the processes a paused session left running and stops them on request', async () => {
+      const pausedArchive = { id: 'paused-id', name: 'Gone fishing', createdAt: 1, windowCount: 1, paneCount: 1, paused: true as const, targetIds: [panes[1].targetId] }
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      sessionApi.listArchives.mockResolvedValue([pausedArchive])
+      processesApi.list.mockResolvedValue([
+        tracked('21:1', '$9', { paneOpen: false, detached: true, ports: [4499] }),
+        tracked('22:1', '$1', { paneOpen: true }),
+      ])
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+      renderTree()
+      const left = await screen.findByRole('button', { name: 'Stop 1 process Gone fishing left running' })
+      expect(left).toHaveTextContent('1 running')
+      fireEvent.click(left)
+      await waitFor(() => expect(processesApi.stop).toHaveBeenCalledWith(['21:1']))
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('• node server-21:1 (:4499)'))
+    })
+
     it('archives a paused session from its menu', async () => {
       const pausedArchive = { id: 'paused-id', name: 'Gone fishing', createdAt: 1, windowCount: 1, paneCount: 1, paused: true as const }
       sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
@@ -972,12 +1048,12 @@ describe('SessionTree', () => {
       await act(() => actions.current!.archiveSession('$1', null))
       await act(() => actions.current!.deleteSession('$1', false, null))
       expect(confirm).not.toHaveBeenCalled()
-      expect(sessionApi.archiveSession).toHaveBeenCalledWith('$1')
+      expect(sessionApi.archiveSession).toHaveBeenCalledWith('$1', [])
       // A worktree's ignored files go with it, so archiving one always asks.
       await act(() => actions.current!.archiveSession('$2', null))
       expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('ignored files'))
-      expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2')
-      expect(sessionApi.deleteSession).toHaveBeenCalledWith('$1', false, [])
+      expect(sessionApi.archiveSession).toHaveBeenCalledWith('$2', [])
+      expect(sessionApi.deleteSession).toHaveBeenCalledWith('$1', false, [], [])
       confirm.mockReturnValue(false)
       await act(() => actions.current!.archiveSession('$2', 'Two processes will stop'))
       expect(confirm).toHaveBeenLastCalledWith('Two processes will stop')

@@ -213,6 +213,7 @@ import {
   type AgentHudFilter,
 } from './agentHud'
 import { createSessionManagementApi, type SessionTreePreferences } from './sessionManagementApi'
+import { createTrackedProcessesApi } from './trackedProcessesApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { SessionHistoryNav, useSessionHistory } from './SessionHistoryNav'
@@ -2711,6 +2712,7 @@ function HostApp() {
   const gitDiffApi = useMemo(() => createGitDiffApi(token, daemonFetch), [token])
   const simsApi = useMemo(() => createSimsApi(token, daemonFetch), [token])
   const prsApi = useMemo(() => createPrsApi(token, daemonFetch), [token])
+  const trackedProcessesApi = useMemo(() => createTrackedProcessesApi(token, daemonFetch), [token])
   const agentProfilesApi = useMemo(() => createAgentProfilesApi(token, daemonFetch), [token])
   /**
    * "Implement in a new chat pane": splits the chat's pane and starts a fresh
@@ -3871,7 +3873,8 @@ function HostApp() {
       simsApi={local ? simsApi : undefined} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
       screenshotsApi={local ? paneScreenshotsApi : undefined} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
       onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
-      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
+      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)}
+      processesApi={trackedProcessesApi} />
   }
 
   return (
