@@ -1215,6 +1215,8 @@ function HostApp() {
   }, [])
   const knownPanelTabs = useRef<Map<string, number> | null>(null)
   const pendingTabSelection = useRef(new Map<string, string>())
+  // A broadcast sent before the daemon handled our close must not reselect the closing tab.
+  const closingPanelTabs = useRef(new Set<string>())
   const seenPanelTabs = useRef(new Map<string, number>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
   const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
@@ -1938,7 +1940,7 @@ function HostApp() {
     if (!effectivePaneId || !activeGroup || !connected) return
     const focusedTabs = panelTabs(tabs.filter((tab) => tab.windowId === activeGroup.windowId), effectivePaneId)
     const newTabs = openedPanelTabs(focusedTabs, previous)
-    const selected = newTabs.at(-1)
+    const selected = newTabs.filter((tab) => !closingPanelTabs.current.has(tab.id)).at(-1)
     if (!selected) return
     if (pendingTabSelection.current.get(effectivePaneId) === selected.id) return
     pendingTabSelection.current.set(effectivePaneId, selected.id)
@@ -3088,11 +3090,14 @@ function HostApp() {
         ? { ...pane, activeTab: pane.id === next }
         : pane)
     })
+    closingPanelTabs.current.add(webPaneId)
     try {
       await selection
       await webPanesApi.close(webPaneId, webPaneTitles[webPaneId])
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
+    } finally {
+      closingPanelTabs.current.delete(webPaneId)
     }
   }
 
