@@ -53,7 +53,7 @@ import type {
   TmuxPane,
   WebPane,
 } from '../shared/protocol.js'
-import { isRedlineArtifactUrl, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
+import { isRedlineArtifactUrl, redlineArtifactId, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
@@ -656,6 +656,8 @@ async function main(): Promise<void> {
     spotlightRequests: canvasSpotlight.pending(),
     reloads: webPaneAgentRequests.reloads(),
   })
+  // Declared before publishWebPanes, which keeps tabs' artifact registrations alive.
+  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
@@ -679,6 +681,7 @@ async function main(): Promise<void> {
     canvasPush?.retain(liveIds)
     guides?.retain(liveIds)
     canvasWatch.sync(webPanes.list())
+    redlineArtifacts.retain(webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []))
     broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
@@ -2344,7 +2347,6 @@ async function main(): Promise<void> {
       // adopts the unsent pills back (they expire with the TTL sweep).
     },
   })
-  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
   const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
   canvasSnapshots.prune()
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))

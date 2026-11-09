@@ -517,6 +517,15 @@ export class WebPaneService {
     return [...[...this.parkedPanes.values()].flatMap((entries) => entries.map(({ pane }) => pane.id)), ...this.closedPanes.ids()]
   }
 
+  /** URLs of live, parked and closed tabs, whose daemon-served artifacts must stay registered. */
+  retainedUrls(): string[] {
+    return [
+      ...[...this.panes.values()].map((pane) => pane.url),
+      ...[...this.parkedPanes.values()].flatMap((entries) => entries.map(({ pane }) => pane.url)),
+      ...this.closedPanes.list().map(({ pane }) => pane.url),
+    ]
+  }
+
   closedTabs(): Record<string, ClosedWebPane[]> {
     const all = this.closedPanes.byTarget()
     const live = this.closedTabHooks?.liveTargets?.()

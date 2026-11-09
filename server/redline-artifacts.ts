@@ -5,8 +5,10 @@ import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path'
 
 export const MAX_ARTIFACT_DIRS = 64
 
-/** Persisted registrations expire after a week — a review never runs that long. */
+/** Persisted registrations expire after a week unless a tab still shows them (see `retain`). */
 export const REDLINE_ARTIFACT_TTL_MS = 7 * 24 * 60 * 60 * 1_000
+/** How stale a retained registration may get before `retain` refreshes it, so refreshes rarely write. */
+const RETAIN_REFRESH_MS = 24 * 60 * 60 * 1_000
 
 export function defaultRedlineArtifactStatePath(port: number): string {
   return join(homedir(), '.commando', `redline-artifacts-${port}.json`)
@@ -83,6 +85,19 @@ export class RedlineArtifactRegistry {
     nextEntries.set(id, { dir: real, registeredAt })
     this.commit(nextEntries)
     return { id }
+  }
+
+  /** Keeps registrations alive while a live, parked or closed tab still points at them. */
+  retain(ids: Iterable<string>): void {
+    const now = this.now()
+    let nextEntries: Map<string, Entry> | undefined
+    for (const id of ids) {
+      const entry = this.entries.get(id)
+      if (!entry || entry.registeredAt < now - REDLINE_ARTIFACT_TTL_MS || entry.registeredAt >= now - RETAIN_REFRESH_MS) continue
+      nextEntries ??= new Map(this.entries)
+      nextEntries.set(id, { ...entry, registeredAt: now })
+    }
+    if (nextEntries) this.commit(nextEntries)
   }
 
   unregister(id: string): boolean {

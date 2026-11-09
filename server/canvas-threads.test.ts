@@ -31,6 +31,15 @@ describe('canvas threads for conversation-owned tabs', () => {
   const retain = (store: CanvasThreadsStore, service: WebPaneService) =>
     store.retain(new Set([...service.list().map((pane) => pane.id), ...service.retainedIds()]))
 
+  it('lists URLs of live and parked tabs so their artifacts stay registered', () => {
+    const service = serviceAt(() => 1_000)
+    const parked = service.open({ ...anchor, url: 'http://127.0.0.1:4310/redline/artifacts/aaaa/canvas.html', content })
+    expect(service.retainedUrls()).toEqual([parked.url])
+    service.prune(survivingWindow)
+    expect(service.list()).toEqual([])
+    expect(service.retainedUrls()).toEqual([parked.url])
+  })
+
   it('keeps discussions through park, restart and restore, then releases them at the parked TTL', async () => {
     let now = 1_000
     const service = serviceAt(() => now)
