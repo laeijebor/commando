@@ -15,7 +15,7 @@ import { SessionWorktreeConflictError } from './session-worktree-deletion.js'
 import type { SessionWorktreeDeletionPlan } from './session-worktree-deletion.js'
 import { SessionArchives, type ArchivedRepo, type ArchiveSummary, type SessionArchive } from './session-archives.js'
 import type { GitWorktreeIdentity } from './git-worktree.js'
-import type { ProcessTracker } from './tracked-processes.js'
+import { TrackedProcessScopeError, type ProcessSelection, type ProcessTracker } from './tracked-processes.js'
 import { parseProcessKeys } from './tracked-processes-api.js'
 
 const API_ROOT = '/api/session-management'
@@ -37,7 +37,7 @@ type SessionManagementDependencies = {
   /** The repository a live session belongs to, kept with a paused session for repository grouping. */
   sessionRepo?: (sessionId: string) => ArchivedRepo | undefined
   /** Processes started from the session's panes; the ones the user chose stop after it closes. */
-  trackedProcesses?: Pick<ProcessTracker, 'list' | 'stop'>
+  trackedProcesses?: Pick<ProcessTracker, 'select' | 'stopSelection'>
   afterSessionDeleted?: (sessionId: string) => void
   afterSessionRestored?: (sessionId: string) => void
   afterSessionRenamed?: (sessionId: string, previousName: string, name: string) => void | Promise<void>
@@ -241,7 +241,7 @@ export class SessionManagementApi {
           const paused = route.action === 'pause'
           const body = record(await readJson(request))
           if (body.confirmSessionId !== route.sessionId) throw new HttpError(400, `${paused ? 'Pausing' : 'Archiving'} requires an exact confirmSessionId`)
-          const stopKeys = await this.processesToStop(route.sessionId, body.stopProcessKeys)
+          const toStop = await this.processesToStop(route.sessionId, body.stopProcessKeys)
           const name = this.dependencies.currentSessions().find((session) => session.id === route.sessionId)!.name
           // Planned while the session runs: afterwards its panes, which locate the worktree, are gone.
           const plan = await this.planWorktreeRemoval(async () => {
@@ -256,8 +256,9 @@ export class SessionManagementApi {
             try { await this.preferences.holdPlaceByName(route.sessionId, name) }
             catch (error) { console.warn('[commando] Could not keep a paused session’s place in the session tree', error) }
           }
+          // Stopped before the worktree goes, so no dev server is still writing into it.
+          const processes = await this.stopProcesses(toStop)
           const result = paused ? { archive } : await this.removeArchivedWorktree(archive, async () => plan)
-          const processes = await this.stopProcesses(route.sessionId, stopKeys)
           await this.dependencies.onSessionsChanged?.()
           writeJson(response, 200, { ok: true, ...result, ...processes })
           return true
@@ -290,7 +291,7 @@ export class SessionManagementApi {
         if (body.deleteWorktree !== undefined && typeof body.deleteWorktree !== 'boolean') {
           throw new HttpError(400, 'deleteWorktree must be a boolean')
         }
-        const stopKeys = await this.processesToStop(route.sessionId, body.stopProcessKeys)
+        const toStop = await this.processesToStop(route.sessionId, body.stopProcessKeys)
         let deleteWorktree: SessionWorktreeDeletionPlan | undefined
         if (body.deleteWorktree === true) {
           deleteWorktree = await prepareWorktreeDeletion()
@@ -313,7 +314,8 @@ export class SessionManagementApi {
         }
         await this.actions.delete(route.sessionId)
         this.dependencies.afterSessionDeleted?.(route.sessionId)
-        const processes = await this.stopProcesses(route.sessionId, stopKeys)
+        const processes = await this.stopProcesses(toStop)
+        const processDetail = processes.processesNotStopped ? ` Some of its processes may still run: ${processes.processesNotStopped}.` : ''
         let worktreeError: unknown
         try {
           if (deleteWorktree) await this.recordWorktreeOnOtherArchives(deleteWorktree.worktree)
@@ -330,12 +332,12 @@ export class SessionManagementApi {
         if (worktreeError) {
           const detail = worktreeError instanceof Error ? worktreeError.message : 'worktree removal failed'
           const refreshDetail = refreshError ? ' Session state refresh also failed.' : ''
-          throw new HttpError(409, `Tmux session was deleted, but its worktree was not removed: ${detail}.${refreshDetail}`)
+          throw new HttpError(409, `Tmux session was deleted, but its worktree was not removed: ${detail}.${refreshDetail}${processDetail}`)
         }
         if (refreshError) {
           const detail = refreshError instanceof Error ? refreshError.message : 'session state refresh failed'
           const subject = body.deleteWorktree === true ? 'Tmux session and worktree were deleted' : 'Tmux session was deleted'
-          throw new HttpError(502, `${subject}, but session state refresh failed: ${detail}`)
+          throw new HttpError(502, `${subject}, but session state refresh failed: ${detail}.${processDetail}`)
         }
         writeJson(response, 200, { ok: true, sessionId: route.sessionId, worktreeDeleted: body.deleteWorktree === true, ...processes })
         return true
@@ -370,27 +372,29 @@ export class SessionManagementApi {
   }
 
   /**
-   * The requested keys that are this session's tracked processes. Processes that exited since
-   * the confirmation are dropped; a key of another session's process is refused.
+   * The chosen processes of this session, taken before it closes: closing it regroups what is left,
+   * so they are stopped by these pids. Processes that exited since the confirmation are dropped;
+   * another session's process is refused.
    */
-  private async processesToStop(sessionId: string, value: unknown): Promise<string[]> {
-    if (value === undefined) return []
+  private async processesToStop(sessionId: string, value: unknown): Promise<ProcessSelection | undefined> {
+    if (value === undefined) return undefined
     const keys = parseProcessKeys(value)
     if (!keys) throw new HttpError(400, 'stopProcessKeys must list up to 256 process keys')
-    if (!keys.length) return []
+    if (!keys.length) return undefined
     if (!this.dependencies.trackedProcesses) throw new HttpError(501, 'Process tracking is not available')
-    const processes = await this.dependencies.trackedProcesses.list(0)
-    const outside = processes.find((process) => keys.includes(process.key) && process.sessionId !== sessionId)
-    if (outside) throw new HttpError(409, `“${outside.command}” is not one of this session’s processes; review the confirmation and try again`)
-    return keys.filter((key) => processes.some((process) => process.key === key))
+    try { return await this.dependencies.trackedProcesses.select(keys, (process) => process.sessionId === sessionId) }
+    catch (error) {
+      if (error instanceof TrackedProcessScopeError) throw new HttpError(409, `${error.message}; review the confirmation and try again`)
+      throw error
+    }
   }
 
   /** Stops the chosen processes once their session has closed; the session is gone either way, so a failure is reported, not thrown. */
-  private async stopProcesses(sessionId: string, keys: readonly string[]): Promise<{ processesStopped?: number; processesNotStopped?: string }> {
-    if (!keys.length || !this.dependencies.trackedProcesses) return {}
+  private async stopProcesses(selection: ProcessSelection | undefined): Promise<{ processesStopped?: number; processesNotStopped?: string }> {
+    if (!selection?.members.length || !this.dependencies.trackedProcesses) return {}
     try {
-      const result = await this.dependencies.trackedProcesses.stop(keys, (process) => process.sessionId === sessionId)
-      void result.finished.catch((error: unknown) => console.warn('[commando] Could not finish stopping a closed session’s processes', error))
+      const result = await this.dependencies.trackedProcesses.stopSelection(selection)
+      await result.finished
       return { processesStopped: result.stopped.length, ...(result.failed.length ? { processesNotStopped: `Could not signal process ${result.failed.join(', ')}` } : {}) }
     } catch (error) {
       console.warn('[commando] Could not stop a closed session’s processes', error)

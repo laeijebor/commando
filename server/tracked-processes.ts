@@ -21,6 +21,7 @@ import { tmuxSocketStateSuffix } from './tmux-socket-scope.js'
 export const SCAN_MAX_AGE_MS = 10_000
 const MIN_PROCESS_AGE_MS = 5_000
 const STOP_GRACE_MS = 3_000
+const STOP_POLL_MS = 250
 const COMMAND_TIMEOUT_MS = 3_000
 const COMMAND_BUFFER_BYTES = 32 * 1024 * 1024
 const MAX_PS_LINES = 20_000
@@ -358,10 +359,10 @@ export type StopDependencies = {
 }
 
 /**
- * SIGTERM, then SIGKILL after a grace period, to processes that are still the exact processes
- * that were scanned: each pid's start time is checked again right before each signal, so a
- * reused pid is never signalled. Resolves once TERM is sent; `finished` settles after any KILL
- * with the number of processes that needed it.
+ * SIGTERM, then SIGKILL to what is still running after a grace period, to processes that are
+ * still the exact processes that were scanned: each pid's start time is checked again right
+ * before each signal, so a reused pid is never signalled. Resolves once TERM is sent; `finished`
+ * settles once all have exited or been killed, with the number that needed KILL.
  */
 export async function stopMembers(members: readonly ProcessMember[], dependencies: StopDependencies): Promise<{ terminated: number; failed: number[]; finished: Promise<number> }> {
   const failed: number[] = []
@@ -388,9 +389,12 @@ export async function stopMembers(members: readonly ProcessMember[], dependencie
   const alive = await unchanged(members)
   const terminated = send(alive, 'SIGTERM')
   const finished = (async () => {
-    if (!alive.length) return 0
-    await dependencies.sleep(dependencies.graceMs ?? STOP_GRACE_MS)
-    return send(await unchanged(alive), 'SIGKILL')
+    let remaining = alive
+    for (let waited = 0; remaining.length && waited < (dependencies.graceMs ?? STOP_GRACE_MS); waited += STOP_POLL_MS) {
+      await dependencies.sleep(STOP_POLL_MS)
+      remaining = await unchanged(remaining)
+    }
+    return remaining.length ? send(remaining, 'SIGKILL') : 0
   })()
   return { terminated, failed, finished }
 }
@@ -452,8 +456,8 @@ function runCommand(command: string, args: readonly string[]): Promise<string> {
       encoding: 'utf8', maxBuffer: COMMAND_BUFFER_BYTES, shell: false, timeout: COMMAND_TIMEOUT_MS, windowsHide: true,
       env: { ...process.env, LC_ALL: 'C' },
     }, (error, stdout) => {
-      // lsof with no listeners and ps with no matching pid exit 1 with nothing to report.
-      if (!error || ((command === 'lsof' || command === 'ps') && error.code === 1)) resolve(stdout ?? '')
+      // lsof with no listeners and `ps -p` with no live pid exit 1 with nothing to report.
+      if (!error || ((command === 'lsof' || (command === 'ps' && args.includes('-p'))) && error.code === 1)) resolve(stdout ?? '')
       else reject(error)
     })
   })
@@ -474,6 +478,7 @@ export type ProcessTrackerOptions = {
   daemonPid?: number
 }
 
+export type ProcessSelection = { processes: TrackedProcess[]; members: ProcessMember[]; missing: string[] }
 export type StopResult = { stopped: TrackedProcess[]; missing: string[]; failed: number[]; finished: Promise<number> }
 
 export class ProcessTracker {
@@ -482,6 +487,10 @@ export class ProcessTracker {
   private readonly store: TrackedProcessStore
   private state: Promise<{ panes: Map<string, PaneRecord>; processes: Map<string, string> }> | null = null
   private latest: { at: number; result: TrackResult } | null = null
+  /** Kept for when the tmux server exits with its last session: its processes are still tracked. */
+  private lastServer: TmuxServer | null = null
+  /** Kept so a failed lsof cannot drop the protection of protected ports. */
+  private lastListeners: ListeningProcess[] = []
   private inflight: Promise<TrackResult> | null = null
 
   constructor(private readonly options: ProcessTrackerOptions) {
@@ -511,7 +520,8 @@ export class ProcessTracker {
     const startedAt = this.now()
     this.state ??= this.store.load()
     const state = await this.state
-    const server = await this.options.tmuxServer()
+    const server = await this.options.tmuxServer() ?? this.lastServer
+    if (server) this.lastServer = server
     if (!server) {
       const result = { processes: [], members: new Map(), remembered: new Map() }
       this.latest = { at: startedAt, result }
@@ -520,12 +530,19 @@ export class ProcessTracker {
     const platform = this.options.platform ?? process.platform
     const [table, listeners, macEnvironments] = await Promise.all([
       this.runner('ps', PROCESS_TABLE_ARGS),
-      // Ports are a detail: a host without lsof still lists its processes.
-      this.runner('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpcn']).catch(() => ''),
+      this.runner('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpcn']).then(parseListeningProcesses).catch((error: unknown) => {
+        // A host without lsof still lists its processes; the last listeners keep protected ports protected.
+        console.warn('[commando] lsof failed; process ports may be stale', error)
+        return this.lastListeners
+      }),
       platform === 'darwin' ? this.runner('ps', ['-axwwE', '-o', 'pid=,command=']) : Promise.resolve(''),
     ])
     const uid = this.options.uid ?? process.getuid?.()
-    const rows = parseProcessTable(table).filter((row) => uid === undefined || row.uid === uid)
+    const parsed = parseProcessTable(table)
+    // A ps that cannot print these columns must not read as "nothing runs": that would forget every remembered process.
+    if (!parsed.length) throw new Error('ps listed no processes')
+    this.lastListeners = listeners
+    const rows = parsed.filter((row) => uid === undefined || row.uid === uid)
     const tags = platform === 'darwin' ? parseMacEnvironmentTags(macEnvironments, server.socketPath)
       : platform === 'linux' ? await (this.options.readLinuxTags ?? readLinuxTags)(rows.map(({ pid }) => pid), server.socketPath)
         : new Map<number, PaneTag>()
@@ -536,7 +553,7 @@ export class ProcessTracker {
       })
     }
     const result = trackProcesses({
-      rows, tags, listeners: parseListeningProcesses(listeners), livePanes, server,
+      rows, tags, listeners, livePanes, server,
       remembered: state.processes, paneRecords: state.panes,
       daemonPid: this.options.daemonPid ?? process.pid, protectedPorts: this.protectedPorts, now: startedAt,
     })
@@ -562,27 +579,39 @@ export class ProcessTracker {
   }
 
   /**
-   * Stops tracked process groups by key after a fresh scan. Keys that are no longer tracked are
-   * returned as `missing`; a key `allowed` refuses throws TrackedProcessScopeError before any signal.
+   * The tracked process groups for `keys` in a fresh scan, with every process in them. Keys no
+   * longer tracked are `missing`; a key `allowed` refuses throws TrackedProcessScopeError.
    */
-  async stop(keys: readonly string[], allowed?: (process: TrackedProcess) => boolean): Promise<StopResult> {
+  async select(keys: readonly string[], allowed?: (process: TrackedProcess) => boolean): Promise<ProcessSelection> {
     const result = await this.result(0)
-    const stopped: TrackedProcess[] = []
+    const processes: TrackedProcess[] = []
     const missing: string[] = []
     for (const key of new Set(keys)) {
       const tracked = result.processes.find((process) => process.key === key)
       if (!tracked) { missing.push(key); continue }
       if (allowed && !allowed(tracked)) throw new TrackedProcessScopeError(`Process ${tracked.pid} (${tracked.command}) is not part of this request`)
-      stopped.push(tracked)
+      processes.push(tracked)
     }
-    const members = stopped.flatMap((tracked) => result.members.get(tracked.key) ?? [])
-    for (const tracked of stopped) console.info(`[commando] stopping process ${tracked.pid} (${tracked.command}) from pane ${tracked.paneId}${tracked.sessionName ? ` of ${tracked.sessionName}` : ''}`)
-    const { failed, finished } = await stopMembers(members, {
+    return { processes, members: processes.flatMap((tracked) => result.members.get(tracked.key) ?? []), missing }
+  }
+
+  /**
+   * Stops a selection. Its pids are signalled as scanned (start times re-checked), so it can be
+   * taken before a session closes and stopped after, however the close regroups its processes.
+   */
+  async stopSelection(selection: ProcessSelection): Promise<StopResult> {
+    for (const tracked of selection.processes) console.info(`[commando] stopping process ${tracked.pid} (${tracked.command}) from pane ${tracked.paneId}${tracked.sessionName ? ` of ${tracked.sessionName}` : ''}`)
+    this.latest = null
+    const { failed, finished } = await stopMembers(selection.members, {
       signal: this.options.signal ?? ((pid, signal) => process.kill(pid, signal)),
       startTimes: async (pids) => pids.length ? parseStartTimes(await this.runner('ps', ['-o', 'pid=,lstart=', '-p', pids.join(',')])) : new Map(),
       sleep: this.options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     })
-    this.latest = null
-    return { stopped, missing, failed, finished: finished.finally(() => { this.latest = null }) }
+    return { stopped: selection.processes, missing: selection.missing, failed, finished: finished.finally(() => { this.latest = null }) }
+  }
+
+  /** Stops tracked process groups by key, from a fresh scan. */
+  async stop(keys: readonly string[], allowed?: (process: TrackedProcess) => boolean): Promise<StopResult> {
+    return this.stopSelection(await this.select(keys, allowed))
   }
 }

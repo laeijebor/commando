@@ -966,6 +966,7 @@ describe('SessionTree', () => {
       sessionApi.archiveSession.mockResolvedValue({ archive: { id: 'a', name: 'Coins everywhere', createdAt: 1, windowCount: 1, paneCount: 1 } })
       processesApi.list.mockResolvedValue([
         tracked('20:1', '$2'), tracked('21:1', '$2', { detached: true, ports: [4499] }), tracked('30:1', '$1'),
+        tracked('22:1', '$2', { command: 'Code', fullCommand: '/Applications/Visual Studio Code.app/Contents/MacOS/Code', detached: true }),
       ])
       const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
       renderTree()
@@ -976,7 +977,9 @@ describe('SessionTree', () => {
       expect(dialog).toHaveTextContent('saved as a wip commit')
       expect(dialog).toHaveTextContent(':4499 · detached')
       const boxes = within(dialog).getAllByRole('checkbox')
-      expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([true, true])
+      // An app the pane opened is left running unless ticked.
+      expect(boxes.map((box) => (box as HTMLInputElement).checked)).toEqual([true, true, false])
+      expect(dialog).toHaveTextContent('app, kept unless ticked')
       expect(within(dialog).queryByText('node server-30:1')).toBeNull()
       fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Stop node server-20:1' }))
       fireEvent.click(within(dialog).getByRole('button', { name: 'Archive and stop 1' }))

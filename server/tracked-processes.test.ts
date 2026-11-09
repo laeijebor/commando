@@ -181,6 +181,18 @@ describe('stopping processes', () => {
     expect(signals).toEqual([[201, 'SIGTERM'], [202, 'SIGTERM'], [202, 'SIGKILL']])
   })
 
+  it('finishes as soon as everything has exited after TERM', async () => {
+    const live = new Map([[201, OLD]])
+    const signal = vi.fn((pid: number) => { live.delete(pid) })
+    const result = await stopMembers([{ pid: 201, startedAt: OLD }], {
+      signal, startTimes: async (pids) => new Map(pids.flatMap((pid) => live.has(pid) ? [[pid, live.get(pid)!] as const] : [])),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    })
+    await vi.advanceTimersByTimeAsync(250)
+    await expect(result.finished).resolves.toBe(0)
+    expect(signal.mock.calls).toEqual([[201, 'SIGTERM']])
+  })
+
   it('ignores processes that already exited and reports ones it may not signal', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const result = await stopMembers([{ pid: 301, startedAt: OLD }, { pid: 302, startedAt: OLD }], {
@@ -220,6 +232,23 @@ describe('ProcessTracker', () => {
       }),
     }
   }
+
+  it('keeps tracking after the tmux server exits with its last session, and refuses an unreadable process table', async () => {
+    // A /bin/sleep left by a closed pane: only the saved state places it.
+    const remembered = new Map([[processKey({ pid: 101, startedAt: new Date(2026, 10, 9, 11, 0, 0).getTime() }), '50:%3']])
+    await new TrackedProcessStore(join(folder, 'state.json')).save(new Map([['50:%3', { sessionId: '$1', sessionName: 'Work' }]]), remembered)
+    let server: { socketPath: string; serverPid: number } | null = { socketPath: SOCKET, serverPid: 50 }
+    const runner = vi.fn(async (command: string, args: readonly string[]) => command === 'lsof' || args[0] === '-axwwE' ? '' : table)
+    const scanner = new ProcessTracker({
+      livePanes: () => [], tmuxServer: async () => server, store: new TrackedProcessStore(join(folder, 'state.json')),
+      runner, platform: 'darwin', now: () => NOW, uid: 501, daemonPid: 9_000,
+    })
+    expect((await scanner.list(0)).map(({ pid }) => pid)).toEqual([101])
+    server = null
+    expect((await scanner.list(0)).map(({ pid }) => pid)).toEqual([101])
+    runner.mockImplementation(async (command: string) => command === 'ps' ? 'ps: lstart: keyword not found\n' : '')
+    await expect(scanner.list(0)).rejects.toThrow('ps listed no processes')
+  })
 
   it('shares a recent scan, remembers processes across daemon restarts and stops them after their pane closed', async () => {
     const first = tracker([pane])

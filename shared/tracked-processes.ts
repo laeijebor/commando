@@ -33,3 +33,11 @@ const PROCESS_KEY = /^\d{1,10}:\d{1,12}$/
 export function isTrackedProcessKey(value: unknown): value is string {
   return typeof value === 'string' && PROCESS_KEY.test(value)
 }
+
+/**
+ * Whether the close dialog ticks a process to stop. Apps from an Applications folder (an editor
+ * a pane opened with `code .`, a browser) are left unticked: they outlive the session on purpose.
+ */
+export function stopsByDefault(process: Pick<TrackedProcess, 'fullCommand'>): boolean {
+  return !/^(?:\/System)?\/Applications\/|^\/Users\/[^/]+\/Applications\//.test(process.fullCommand)
+}

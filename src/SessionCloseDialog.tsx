@@ -1,7 +1,7 @@
 import { X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { TrackedProcess } from '../shared/tracked-processes'
+import { stopsByDefault, type TrackedProcess } from '../shared/tracked-processes'
 import { processUptime } from './WorklogProcesses'
 import './session-create-dialog.css'
 import './session-close-dialog.css'
@@ -24,7 +24,7 @@ export function SessionCloseDialog({ request, onCancel, onConfirm }: {
   /** The keys of the processes to stop. */
   onConfirm: (stopKeys: string[]) => void
 }) {
-  const [kept, setKept] = useState<ReadonlySet<string>>(new Set())
+  const [kept, setKept] = useState<ReadonlySet<string>>(() => new Set(request.processes.filter((process) => !stopsByDefault(process)).map(({ key }) => key)))
   const confirm = useRef<HTMLButtonElement>(null)
   useEffect(() => { confirm.current?.focus() }, [])
   const toggle = (key: string, stop: boolean) => setKept((current) => {
@@ -56,7 +56,7 @@ export function SessionCloseDialog({ request, onCancel, onConfirm }: {
                 <strong title={process.fullCommand}>{process.command}</strong>
                 <small>
                   {[`up ${processUptime(process.startedAt)}`, `pid ${process.pid}`, process.childCount ? `+${process.childCount} child${process.childCount === 1 ? '' : 'ren'}` : '',
-                    process.ports.length ? process.ports.map((port) => `:${port}`).join(' ') : '', process.detached ? 'detached' : ''].filter(Boolean).join(' · ')}
+                    process.ports.length ? process.ports.map((port) => `:${port}`).join(' ') : '', process.detached ? 'detached' : '', stopsByDefault(process) ? '' : 'app, kept unless ticked'].filter(Boolean).join(' · ')}
                 </small>
               </span>
             </label>

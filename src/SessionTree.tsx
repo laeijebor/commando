@@ -168,6 +168,8 @@ export function SessionTree(props: Props) {
   const processesApi = useRef(createTrackedProcessesApi(props.token, daemonFetch)).current
   const [closeRequest, setCloseRequest] = useState<SessionCloseRequest | null>(null)
   const closeResolver = useRef<((stopKeys: string[] | null) => void) | null>(null)
+  // A tree that goes away mid-confirmation cancels the close.
+  useEffect(() => () => closeResolver.current?.(null), [])
   const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const preferencesRef = useRef(preferences)
   /** `archiveId` marks a paused session's menu. */
@@ -463,11 +465,14 @@ export function SessionTree(props: Props) {
   const stash = async (label: string, run: () => Promise<SessionArchiveResult>, onError: (message: string) => void, failure: string) => {
     try {
       const { archive, worktreeKept, processesNotStopped } = await run()
-      setArchives(await api.listArchives())
+      const problems = [
+        worktreeKept ? `Archived “${label}” but kept its worktree: ${worktreeKept}` : '',
+        processesNotStopped ? `Closed “${label}” but some of its processes may still run: ${processesNotStopped}` : '',
+      ].filter(Boolean)
+      if (problems.length) onError(problems.join(' '))
       if (!archive.paused) setArchivesExpanded(true)
       props.onSessionsChanged()
-      if (worktreeKept) onError(`Archived “${label}” but kept its worktree: ${worktreeKept}`)
-      else reportProcesses(label, processesNotStopped, onError)
+      setArchives(await api.listArchives())
     } catch (cause) { onError(cause instanceof Error ? cause.message : failure) }
   }
 

@@ -10,7 +10,7 @@ import { SessionArchives } from './session-archives.js'
 import { SessionPreferenceStore } from './session-preferences.js'
 import { TmuxSessionActions } from './tmux-session-actions.js'
 import { TrackedProcessesApi, parseProcessKeys } from './tracked-processes-api.js'
-import { TrackedProcessScopeError, type ProcessTracker, type StopResult } from './tracked-processes.js'
+import { TrackedProcessScopeError, type ProcessSelection, type ProcessTracker, type StopResult } from './tracked-processes.js'
 
 const TARGET = '11111111-1111-4111-8111-111111111111'
 
@@ -38,14 +38,20 @@ async function call(handler: { handle(request: IncomingMessage, response: Server
 }
 
 function fakeTracker(processes: TrackedProcess[]) {
-  const stop = vi.fn(async (keys: readonly string[], allowed?: (process: TrackedProcess) => boolean): Promise<StopResult> => {
-    const stopped = processes.filter((process) => keys.includes(process.key))
-    const outside = stopped.find((process) => allowed && !allowed(process))
+  const select = vi.fn(async (keys: readonly string[], allowed?: (process: TrackedProcess) => boolean): Promise<ProcessSelection> => {
+    const chosen = processes.filter((process) => keys.includes(process.key))
+    const outside = chosen.find((process) => allowed && !allowed(process))
     if (outside) throw new TrackedProcessScopeError(`Process ${outside.pid} is not part of this request`)
-    return { stopped, missing: keys.filter((key) => !stopped.some((process) => process.key === key)), failed: [], finished: Promise.resolve(0) }
+    return {
+      processes: chosen, members: chosen.map(({ pid, startedAt }) => ({ pid, startedAt })),
+      missing: keys.filter((key) => !chosen.some((process) => process.key === key)),
+    }
   })
+  const stopSelection = vi.fn(async (selection: ProcessSelection): Promise<StopResult> =>
+    ({ stopped: selection.processes, missing: selection.missing, failed: [], finished: Promise.resolve(0) }))
+  const stop = vi.fn(async (keys: readonly string[], allowed?: (process: TrackedProcess) => boolean) => stopSelection(await select(keys, allowed)))
   const list = vi.fn(async () => processes)
-  return { list, stop } satisfies Pick<ProcessTracker, 'list' | 'stop'>
+  return { list, stop, select, stopSelection } satisfies Pick<ProcessTracker, 'list' | 'stop' | 'select' | 'stopSelection'>
 }
 
 describe('process keys', () => {
@@ -89,11 +95,16 @@ describe('closing a session with tracked processes', () => {
   function harness(processes: TrackedProcess[]) {
     const order: string[] = []
     const tracker = fakeTracker(processes)
-    tracker.stop.mockImplementationOnce(async (keys, allowed) => {
+    tracker.select.mockImplementation(async (keys, allowed) => {
+      order.push('select')
+      const chosen = processes.filter((process) => keys.includes(process.key))
+      const outside = chosen.find((process) => !allowed?.(process))
+      if (outside) throw new TrackedProcessScopeError(`Process ${outside.pid} is not part of this request`)
+      return { processes: chosen, members: chosen.map(({ pid, startedAt }) => ({ pid, startedAt })), missing: keys.filter((key) => !chosen.some((process) => process.key === key)) }
+    })
+    tracker.stopSelection.mockImplementation(async (selection) => {
       order.push('stop')
-      const stopped = processes.filter((process) => keys.includes(process.key))
-      expect(stopped.every((process) => allowed?.(process))).toBe(true)
-      return { stopped, missing: [], failed: [], finished: Promise.resolve(0) }
+      return { stopped: selection.processes, missing: selection.missing, failed: [], finished: Promise.resolve(0) }
     })
     const archives = new SessionArchives({ directory: join(folder, 'archives') })
     archives.archive = vi.fn(async () => { order.push('archive'); return { id: 'a', name: 'work', createdAt: 1, windowCount: 1, paneCount: 1 } })
@@ -110,21 +121,22 @@ describe('closing a session with tracked processes', () => {
     const result = await call(api, '/api/session-management/sessions/%241/archive', 'POST', { confirmSessionId: '$1', stopProcessKeys: ['6:1', '9:1'] })
     expect(result.status).toBe(200)
     expect(result.body.processesStopped).toBe(1)
-    expect(order).toEqual(['archive', 'stop'])
+    // Chosen before the session closes, stopped by pid after it.
+    expect(order).toEqual(['select', 'archive', 'stop'])
     // 9:1 exited since the dialog listed it; 5:1 was left unticked.
-    expect(tracker.stop.mock.calls[0][0]).toEqual(['6:1'])
+    expect(tracker.stopSelection.mock.calls[0][0].members).toEqual([{ pid: 6, startedAt: 1 }])
   })
 
   it('stops chosen processes on pause and delete too, and nothing when none are chosen', async () => {
     const paused = harness(processes)
     expect((await call(paused.api, '/api/session-management/sessions/%241/pause', 'POST', { confirmSessionId: '$1', stopProcessKeys: ['5:1'] })).status).toBe(200)
-    expect(paused.order).toEqual(['archive', 'stop'])
+    expect(paused.order).toEqual(['select', 'archive', 'stop'])
     const deleted = harness(processes)
     expect((await call(deleted.api, '/api/session-management/sessions/%241/delete', 'DELETE', { confirmSessionId: '$1', stopProcessKeys: ['5:1', '6:1'] })).body.processesStopped).toBe(2)
-    expect(deleted.order).toEqual(['delete', 'stop'])
+    expect(deleted.order).toEqual(['select', 'delete', 'stop'])
     const kept = harness(processes)
     expect((await call(kept.api, '/api/session-management/sessions/%241/delete', 'DELETE', { confirmSessionId: '$1' })).status).toBe(200)
-    expect(kept.tracker.stop).not.toHaveBeenCalled()
+    expect(kept.tracker.stopSelection).not.toHaveBeenCalled()
   })
 
   it('refuses malformed keys and another session’s processes before closing anything', async () => {
@@ -134,13 +146,13 @@ describe('closing a session with tracked processes', () => {
     expect(other.status).toBe(409)
     expect(archives.archive).not.toHaveBeenCalled()
     expect(actions.delete).not.toHaveBeenCalled()
-    expect(tracker.stop).not.toHaveBeenCalled()
+    expect(tracker.stopSelection).not.toHaveBeenCalled()
   })
 
   it('reports processes it could not stop without failing the close', async () => {
     const { api, tracker } = harness(processes)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    tracker.stop.mockReset().mockRejectedValue(new Error('ps failed'))
+    tracker.stopSelection.mockReset().mockRejectedValue(new Error('ps failed'))
     const result = await call(api, '/api/session-management/sessions/%241/archive', 'POST', { confirmSessionId: '$1', stopProcessKeys: ['5:1'] })
     expect(result.status).toBe(200)
     expect(result.body.processesNotStopped).toBe('ps failed')
