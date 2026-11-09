@@ -8,11 +8,12 @@ import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
 import { PrReadCache } from './pr-read-cache.js'
 import { fetchGithubAsset, githubAssetUrl, type GithubAsset } from './github-assets.js'
-import { PanePrRecords, isPanePrRef, recordRecency, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
+import { PanePrRecords, isPanePrRef, recordRecency, recordRelation, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
+import { resolvePrImpact, type PrImpactReport } from './pane-pr-impacts.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
 import { stripHtmlComments } from '../shared/chat-tile-events.js'
-import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
+import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList, PanePrLink } from '../shared/pr-types.js'
 export type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 import {
   isCommandoTargetId,
@@ -68,9 +69,16 @@ const RECORD_GRACE_MS = 10 * 60_000
 // Full status for 15 PRs keeps a lookup well inside GitHub's ~10s query limit.
 const RECORDED_LOOKUP_BATCH_SIZE = 15
 
+// A branch's PR rarely changes, and review-fix loops push to it again and again.
+const BRANCH_PR_CACHE_TTL_MS = 30 * 60_000
+const MAX_BRANCH_PR_CACHE_ENTRIES = 200
+
 type RecordedRef = PanePrRecord & { targetId: string }
-/** Recorded PRs found by number, per pane, and the panes with a PR that couldn't be checked. */
-type RecordedLookup = { byTarget: Map<string, PanePrSummary[]>; incomplete: Set<string> }
+/**
+ * Recorded PRs found by number, per pane, with how the pane relates to each,
+ * and the panes with a PR that couldn't be checked.
+ */
+type RecordedLookup = { byTarget: Map<string, PanePrSummary[]>; links: Map<string, PanePrLink[]>; incomplete: Set<string> }
 const PR_CONVERSATION_TTL_MS = 60_000
 const PR_CHECKS_TTL_MS = 30_000
 
@@ -128,6 +136,14 @@ query($targetQuery: String!, $first: Int!) {
   linked: search(query: $targetQuery, type: ISSUE, first: $first) {
     issueCount
     nodes { ... on PullRequest { ${PANE_PR_FIELDS} } }
+  }
+}`.trim()
+
+const BRANCH_PULL_REQUESTS_QUERY = `
+query($owner: String!, $name: String!, $head: String!) {
+  ${RATE_LIMIT_FIELD}
+  repository(owner: $owner, name: $name) {
+    pullRequests(headRefName: $head, first: 5, orderBy: { field: CREATED_AT, direction: DESC }) { nodes { number state } }
   }
 }`.trim()
 
@@ -476,9 +492,10 @@ function paneTargetSearchQuery(targetIds: readonly string[], openOnly = false): 
   return `is:pr${openOnly ? ' is:open' : ''} in:body ${targetIds.join(' OR ')} sort:created-desc`
 }
 
-function parsePanePullRequest(node: JsonRecord, targetId: string, viewer: string): PanePrSummary | null {
+/** `targetId` null reads a PR without checking it carries a pane's marker. */
+function parsePanePullRequest(node: JsonRecord, targetId: string | null, viewer: string): PanePrSummary | null {
   const body = typeof node.body === 'string' ? node.body : ''
-  if (parseCommandoPrMarker(body)?.targetId !== targetId) return null
+  if (targetId !== null && parseCommandoPrMarker(body)?.targetId !== targetId) return null
   const repository = optionalObject(node, 'repository')
   const repo = repository && typeof repository.nameWithOwner === 'string'
     ? repository.nameWithOwner
@@ -771,6 +788,7 @@ export class PrService {
   private readonly listSizes = new Map<string, number>()
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
   private readonly panePrRecords: PanePrRecords
+  private readonly branchPrCache = new Map<string, { at: number; number: number }>()
   private readonly metadataCache: PrReadCache<JsonRecord>
   private readonly commentPagesCache: PrReadCache<JsonRecord[]>
   private readonly reviewThreadsCache: PrReadCache<Map<number, PrReviewThread>>
@@ -1060,17 +1078,57 @@ export class PrService {
   }
 
   /**
+   * Records PRs a pane's agent pushed to, reviewed or commented on. Reports name
+   * a branch or nothing at all as often as a PR, so each is resolved first;
+   * one that can't be resolved is skipped.
+   */
+  async recordPaneImpacts(targetIdInput: unknown, reports: readonly PrImpactReport[]): Promise<void> {
+    const targetId = validatePaneTargetId(targetIdInput)
+    let changed = false
+    for (const report of reports) {
+      const ref = await resolvePrImpact(report, {
+        git: this.gitRunner,
+        repoFromRemote: repoFromGithubRemote,
+        pullRequestForBranch: (repo, branch) => this.pullRequestForBranch(repo, branch),
+      })
+      if (ref && await this.panePrRecords.touch(targetId, [ref], report.relation)) changed = true
+    }
+    if (changed) this.paneListCache.delete(targetId)
+  }
+
+  /** The newest open PR with this head branch, else the newest of any state. */
+  private async pullRequestForBranch(repo: string, branch: string): Promise<number | null> {
+    const key = `${repo.toLowerCase()}#${branch}`
+    const cached = this.branchPrCache.get(key)
+    if (cached && this.now() - cached.at < BRANCH_PR_CACHE_TTL_MS) return cached.number
+    const [owner, name] = validateRepo(repo).split('/', 2)
+    const payload = parseGhObject(await this.ghRead([
+      'api', 'graphql', '-f', `query=${BRANCH_PULL_REQUESTS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `head=${branch}`,
+    ]))
+    const repository = optionalObject(objectField(payload, 'data'), 'repository')
+    const nodes = repository && optionalObject(repository, 'pullRequests')?.nodes
+    const prs = Array.isArray(nodes) ? nodes.filter(isRecord) : []
+    const number = (prs.find((pr) => pr.state === 'OPEN') ?? prs[0])?.number
+    if (typeof number !== 'number') return null
+    this.branchPrCache.delete(key)
+    this.branchPrCache.set(key, { at: this.now(), number })
+    if (this.branchPrCache.size > MAX_BRANCH_PR_CACHE_ENTRIES) this.branchPrCache.delete(this.branchPrCache.keys().next().value!)
+    return number
+  }
+
+  /**
    * GitHub's search sometimes returns nothing for a marker it matched a moment
    * ago. Remember every PR it finds, then look up any it misses by number.
    */
   private async recordedPullRequests(targetIds: string[], result: Awaited<ReturnType<PrService['searchPanes']>>): Promise<RecordedLookup> {
+    // What search found, per pane: a PR marked by one pane can be another's impacted PR.
     const found = new Set<string>()
     const hits = new Map<string, Array<PanePrRef & { createdAt: number }>>()
     for (const node of result.linked.nodes) {
       const targetId = parseCommandoPrMarker(typeof node.body === 'string' ? node.body : '')?.targetId
       const ref = { repo: optionalObject(node, 'repository')?.nameWithOwner, number: node.number }
       if (!isPanePrRef(ref)) continue
-      found.add(prKey(ref))
+      if (targetId) found.add(`${targetId} ${prKey(ref)}`)
       const createdAt = Date.parse(typeof node.createdAt === 'string' ? node.createdAt : '')
       if (targetId && targetIds.includes(targetId)) hits.set(targetId, [...hits.get(targetId) ?? [], { repo: ref.repo, number: ref.number, createdAt }])
     }
@@ -1083,24 +1141,28 @@ export class PrService {
     const missing: RecordedRef[] = []
     for (const targetId of targetIds) {
       for (const ref of await this.panePrRecords.list(targetId)) {
-        if (!found.has(prKey(ref)) && recordRecency(ref) > oldest) missing.push({ ...ref, targetId })
+        // Search never finds a PR the pane only pushed to or commented on, however new.
+        if (!found.has(`${targetId} ${prKey(ref)}`) && (ref.created === false || recordRecency(ref) > oldest)) missing.push({ ...ref, targetId })
       }
     }
     const lookup = await this.lookUpRecordedPullRequests(missing, result.viewer)
-    for (const [targetId, prs] of lookup.byTarget) {
-      lookup.byTarget.set(targetId, prs.filter((pr) => !found.has(prKey(pr)) && !(Date.parse(pr.createdAt) < oldest)))
+    for (const [targetId, links] of lookup.links) {
+      const kept = new Set(links.filter((link) => !found.has(`${targetId} ${prKey(link)}`) && (link.relation !== 'created' || !(link.at < oldest))).map(prKey))
+      lookup.links.set(targetId, links.filter((link) => kept.has(prKey(link))))
+      lookup.byTarget.set(targetId, (lookup.byTarget.get(targetId) ?? []).filter((pr) => kept.has(prKey(pr))))
     }
     return lookup
   }
 
   /**
-   * Looks PRs up by number, checking each still carries its pane's marker.
-   * Keeps the records in step: a PR that is gone, or lost its marker past the
-   * grace period, is dropped; a renamed repo is recorded under its new name.
+   * Looks PRs up by number, checking each PR the pane created still carries its
+   * marker. Keeps the records in step: a PR that is gone is dropped, and one that
+   * lost its marker past the grace period too, unless the pane also pushed to or
+   * commented on it; a renamed repo is recorded under its new name.
    * Throws when GitHub can't be read, like a failed search would.
    */
   private async lookUpRecordedPullRequests(refs: readonly RecordedRef[], viewer: string): Promise<RecordedLookup> {
-    const lookup: RecordedLookup = { byTarget: new Map(), incomplete: new Set() }
+    const lookup: RecordedLookup = { byTarget: new Map(), links: new Map(), incomplete: new Set() }
     const batches: RecordedRef[][] = []
     for (let start = 0; start < refs.length; start += RECORDED_LOOKUP_BATCH_SIZE) batches.push(refs.slice(start, start + RECORDED_LOOKUP_BATCH_SIZE))
     const payloads = await Promise.all(batches.map((batch) => this.ghRead(['api', 'graphql', '-f', `query=${recordedPullRequestsQuery(batch)}`])
@@ -1111,6 +1173,8 @@ export class PrService {
       })
       .then(parseGhObject)))
     const stale: RecordedRef[] = []
+    const disowned: RecordedRef[] = []
+    const claimed: RecordedRef[] = []
     const seen: RecordedRef[] = []
     batches.forEach((batch, batchIndex) => {
       const payload = payloads[batchIndex]
@@ -1131,26 +1195,47 @@ export class PrService {
         if (failed.has(alias)) { lookup.incomplete.add(ref.targetId); return }
         const repository = gone.has(alias) ? null : optionalObject(data, alias)
         const node = repository && optionalObject(repository, 'pullRequest')
-        // The PR body stays the source of truth: a removed or moved marker drops the
-        // record, after a grace period for tools that add the marker after creating it.
-        const pullRequest = node ? parsePanePullRequest(node, ref.targetId, reader) : null
+        const pullRequest = node ? parsePanePullRequest(node, null, reader) : null
+        const expired = this.now() - ref.at > RECORD_GRACE_MS
+        // An impacted PR was found on GitHub before it was recorded, so a missing one is gone.
         if (!pullRequest) {
-          if (this.now() - ref.at > RECORD_GRACE_MS) stale.push(ref)
+          if (expired || ref.created === false) stale.push(ref)
           return
+        }
+        let relation = recordRelation(ref)
+        const marked = parseCommandoPrMarker(typeof node?.body === 'string' ? node.body : '')?.targetId === ref.targetId
+        if (marked && relation !== 'created') {
+          claimed.push(ref)
+          relation = 'created'
+        } else if (!marked && relation === 'created') {
+          // The PR body stays the source of truth for creation: a removed or moved marker
+          // drops the claim, after a grace period for tools that add the marker later.
+          if (!expired) return
+          if (!ref.impact) { stale.push(ref); return }
+          disowned.push(ref)
+          relation = ref.impact
         }
         // GitHub follows renamed and transferred repos; keep the record under the current name.
         if (pullRequest.repo.toLowerCase() !== ref.repo.toLowerCase()) {
           stale.push(ref)
         }
         // Also learns when the PR was created, so an old one stops counting as new.
-        seen.push({ repo: pullRequest.repo, number: pullRequest.number, at: ref.at, createdAt: Date.parse(pullRequest.createdAt), targetId: ref.targetId })
+        const createdAt = Date.parse(pullRequest.createdAt)
+        seen.push({ ...ref, repo: pullRequest.repo, number: pullRequest.number, createdAt })
         const prs = lookup.byTarget.get(ref.targetId) ?? []
-        if (!prs.some((known) => prKey(known) === prKey(pullRequest))) lookup.byTarget.set(ref.targetId, [...prs, pullRequest])
+        if (prs.some((known) => prKey(known) === prKey(pullRequest))) return
+        lookup.byTarget.set(ref.targetId, [...prs, pullRequest])
+        const link: PanePrLink = { repo: pullRequest.repo, number: pullRequest.number, relation,
+          at: relation === 'created' ? createdAt : ref.impactedAt ?? ref.at }
+        lookup.links.set(ref.targetId, [...lookup.links.get(ref.targetId) ?? [], link])
       })
     })
+    const of = (refs: RecordedRef[], targetId: string) => refs.filter((ref) => ref.targetId === targetId)
     for (const targetId of new Set([...stale, ...seen].map((ref) => ref.targetId))) {
-      await this.panePrRecords.remove(targetId, stale.filter((ref) => ref.targetId === targetId))
-      await this.panePrRecords.add(targetId, seen.filter((ref) => ref.targetId === targetId))
+      await this.panePrRecords.remove(targetId, of(stale, targetId))
+      await this.panePrRecords.disown(targetId, of(disowned, targetId))
+      await this.panePrRecords.learn(targetId, of(seen, targetId).map(({ targetId: _targetId, ...record }) => record))
+      await this.panePrRecords.add(targetId, of(claimed, targetId))
     }
     return lookup
   }
@@ -1181,11 +1266,12 @@ export class PrService {
 
   private paneListFrom(result: Awaited<ReturnType<PrService['searchPanes']>>, targetId: string, openOnly: boolean, shared = false, lookup?: RecordedLookup): PanePrList {
     const recorded = lookup?.byTarget.get(targetId) ?? []
-    const pullRequests = result.linked.nodes
+    const found = result.linked.nodes
       .map((node) => parsePanePullRequest(node, targetId, result.viewer))
       .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
-      .concat(recorded)
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    const pullRequests = found.concat(recorded).sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    const links = found.map((pr): PanePrLink => ({ repo: pr.repo, number: pr.number, relation: 'created', at: Date.parse(pr.createdAt) }))
+      .concat(lookup?.links.get(targetId) ?? [])
     const list: PanePrList = {
       targetId,
       viewer: result.viewer,
@@ -1196,6 +1282,7 @@ export class PrService {
       // A recorded PR that couldn't be checked may still belong here.
       truncated: result.linked.truncated || lookup?.incomplete.has(targetId) === true,
       fetchedAt: result.fetchedAt,
+      links,
     }
     this.invalidateChangedReferences(list)
     if (!openOnly) this.entities.ingest(list, result.order)

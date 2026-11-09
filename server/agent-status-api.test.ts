@@ -12,10 +12,12 @@ let changes: AgentStatusChange[]
 let interactions: AgentInteractionBroker
 let registry: AgentStatusRegistry
 let createdPullRequests: Array<{ paneId: string; refs: unknown }>
+let impactedPullRequests: Array<{ paneId: string; reports: unknown }>
 
 beforeEach(async () => {
   changes = []
   createdPullRequests = []
+  impactedPullRequests = []
   interactions = new AgentInteractionBroker()
   registry = new AgentStatusRegistry()
   const api = new AgentStatusHookApi({
@@ -27,6 +29,7 @@ beforeEach(async () => {
     paneCommand: () => 'opencode',
     onChange: (change) => changes.push(change),
     onPullRequestsCreated: (paneId, refs) => createdPullRequests.push({ paneId, refs }),
+    onPullRequestsImpacted: (paneId, reports) => impactedPullRequests.push({ paneId, reports }),
     interactions,
     now: () => 123,
   })
@@ -92,6 +95,33 @@ describe('AgentStatusHookApi', () => {
 
     await post('/api/agent-status/hooks/claude', { hook_event_name: 'PostToolUse', session_id: 'claude-session', createdPullRequests: 'nope' })
     expect(createdPullRequests).toHaveLength(1)
+  })
+
+  it('passes on well-formed PR impacts with the hook cwd to fall back on', async () => {
+    await post('/api/agent-status/hooks/claude', {
+      hook_event_name: 'PostToolUse',
+      session_id: 'claude-session',
+      tool_name: 'Bash',
+      cwd: '/work/app',
+      impactedPullRequests: [
+        { relation: 'pushed', cwd: '/work/app/../api', remote: 'origin', branch: 'feat' },
+        { relation: 'reviewed', repo: 'acme/widgets', number: 5, extra: 'dropped' },
+        { relation: 'commented', cwd: '/work/app' },
+        { relation: 'starred', number: 3 },
+        { relation: 'pushed', branch: '--upload-pack=x' },
+        { relation: 'pushed', remote: '-x' },
+        { relation: 'commented', repo: 'bad', number: 2 },
+        { relation: 'commented', cwd: 'relative' },
+      ],
+    })
+    expect(impactedPullRequests).toEqual([{ paneId: '%1', reports: [
+      { relation: 'pushed', cwd: '/work/api', fallbackCwd: '/work/app', remote: 'origin', branch: 'feat' },
+      { relation: 'reviewed', fallbackCwd: '/work/app', repo: 'acme/widgets', number: 5 },
+      { relation: 'commented', cwd: '/work/app' },
+      { relation: 'commented', fallbackCwd: '/work/app' },
+    ] }])
+    await post('/api/agent-status/hooks/claude', { hook_event_name: 'PostToolUse', session_id: 'claude-session', impactedPullRequests: 'nope' })
+    expect(impactedPullRequests).toHaveLength(1)
   })
 
   it('records Muse hooks, which use the Claude hook format, under Muse', async () => {

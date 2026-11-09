@@ -85,6 +85,7 @@ import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
 import { defaultPanePrRecordsPath } from './pane-pr-records.js'
+import { panePrRelation } from '../shared/pane-pr-links.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
@@ -1036,7 +1037,11 @@ async function main(): Promise<void> {
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {
     snapshot: (repo, number, targetId) => prs.autofixSnapshot(repo, number, targetId),
-    linkedPrs: async (targetId) => (await prs.listPanePullRequests(targetId)).pullRequests,
+    // Only PRs the pane created; one it merely pushed to or reviewed is someone else's to fix.
+    linkedPrs: async (targetId) => {
+      const list = await prs.listPanePullRequests(targetId)
+      return list.pullRequests.filter((pr) => panePrRelation(list, pr) === 'created')
+    },
     target: (targetId) => {
       const pane = snapshot.panes.find((pane) => pane.targetId === targetId)
       const chat = pane && agentHosts.states().find((chat) => chat.paneId === pane.id)
@@ -1940,6 +1945,10 @@ async function main(): Promise<void> {
     onPullRequestsCreated: (paneId, refs) => {
       const targetId = paneForId(paneId)?.targetId
       if (targetId) void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
+    },
+    onPullRequestsImpacted: (paneId, reports) => {
+      const targetId = paneForId(paneId)?.targetId
+      if (targetId) void prs.recordPaneImpacts(targetId, reports).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
     },
     interactions,
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),

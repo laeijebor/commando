@@ -1600,3 +1600,134 @@ describe('GitHub rate limit backpressure', () => {
     expect(runner.mock.calls[0]![0].find((arg) => arg.startsWith('query='))).toContain('rateLimit { remaining resetAt cost limit }')
   })
 })
+
+describe('pane PR impacts', () => {
+  const targetId = '123e4567-e89b-42d3-a456-426614174000'
+  const other = '550e8400-e29b-41d4-a716-446655440000'
+  const node = (number: number, body = 'Someone else\'s PR', createdAt = '2026-08-19T09:00:00Z') =>
+    pullRequestNode({ number, body, createdAt, url: `https://github.com/acme/widgets/pull/${number}`, repository: { nameWithOwner: 'acme/widgets' } })
+  const search = (...nodes: Array<Record<string, unknown>>) =>
+    JSON.stringify({ data: { viewer: { login: 'leo' }, linked: { issueCount: nodes.length, nodes } } })
+  const queryOf = (args: string[]) => args.find((arg) => arg.startsWith('query=')) ?? ''
+  /** Answers searches, lookups by number and branch lookups from a table of PRs. */
+  function github(prs: Record<number, Record<string, unknown> | null>, searchNodes: () => Array<Record<string, unknown>> = () => [], branches: Record<string, number> = {}) {
+    return vi.fn(async (args: string[]) => {
+      const query = queryOf(args)
+      if (query.includes('pullRequests(headRefName')) {
+        const head = args.find((arg) => arg.startsWith('head='))!.slice(5)
+        const number = branches[head]
+        return JSON.stringify({ data: { repository: { pullRequests: { nodes: number ? [{ number: number - 1, state: 'CLOSED' }, { number, state: 'OPEN' }] : [] } } } })
+      }
+      if (!query.startsWith('query=query { viewer')) return search(...searchNodes())
+      const numbers = [...query.matchAll(/pullRequest\(number: (\d+)\)/g)].map((match) => Number(match[1]))
+      return JSON.stringify({
+        data: { viewer: { login: 'leo' }, ...Object.fromEntries(numbers.map((number, index) => [`r${index}`, prs[number] === null ? null : { pullRequest: prs[number] }])) },
+        errors: numbers.flatMap((number, index) => prs[number] === null ? [{ type: 'NOT_FOUND', path: [`r${index}`], message: 'Could not resolve' }] : []),
+      })
+    })
+  }
+  const linkOf = (list: Awaited<ReturnType<PrService['listPanePullRequests']>>) => (list.links ?? []).map((link) => `${link.number}:${link.relation}`)
+
+  it('lists a PR the pane reviewed, without a marker, under its relation', async () => {
+    let now = Date.parse('2026-09-01T00:00:00Z')
+    const runner = github({ 5: node(5) })
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => now })
+    await service.recordPaneImpacts(targetId, [{ relation: 'reviewed', repo: 'acme/widgets', number: 5 }])
+    let list = await service.listPanePullRequests(targetId)
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([5])
+    expect(list.links).toEqual([{ repo: 'acme/widgets', number: 5, relation: 'reviewed', at: now }])
+    // No grace period applies: it never had a marker to lose.
+    now += 60 * 60_000
+    list = await service.listPanePullRequests(targetId)
+    expect(linkOf(list)).toEqual(['5:reviewed'])
+  })
+
+  it('resolves a bare git push to the PR for the pushed branch, once per branch', async () => {
+    const runner = github({ 7: node(7) }, () => [], { feat: 7 })
+    const git = vi.fn(async (args: string[], cwd: string) => {
+      if (cwd !== '/work/app') throw new Error('not a repo')
+      const command = args.join(' ')
+      if (command === 'rev-parse --git-dir') return '.git'
+      if (command === 'rev-parse --abbrev-ref --symbolic-full-name @{push}') return 'origin/feat\n'
+      if (command === 'remote get-url origin') return 'git@github.com:acme/widgets.git\n'
+      throw new Error(`unexpected git ${command}`)
+    })
+    const service = new PrService({ runner, gitRunner: git, paneBatchWindowMs: 0, listTtlMs: 0 })
+    // The command's cd led nowhere git knows, so the hook's own cwd is used.
+    await service.recordPaneImpacts(targetId, [{ relation: 'pushed', cwd: '/work/app/app', fallbackCwd: '/work/app' }])
+    await service.recordPaneImpacts(targetId, [{ relation: 'pushed', cwd: '/work/app' }])
+    expect(runner.mock.calls.filter(([args]) => queryOf(args).includes('pullRequests(headRefName'))).toHaveLength(1)
+    expect(linkOf(await service.listPanePullRequests(targetId))).toEqual(['7:pushed'])
+  })
+
+  it('resolves gh pr commands by number or current branch against gh\'s base remote', async () => {
+    const runner = github({ 3: node(3), 8: node(8) }, () => [], { 'fix/x': 8 })
+    const git = vi.fn(async (args: string[]) => {
+      const command = args.join(' ')
+      if (command === 'rev-parse --git-dir') return '.git'
+      if (command.startsWith('config --get-regexp')) return 'remote.upstream.gh-resolved base\n'
+      if (command === 'remote') return 'origin\nupstream\n'
+      if (command === 'remote get-url upstream') return 'https://github.com/acme/widgets.git'
+      if (command === 'remote get-url origin') return 'https://github.com/leo/widgets.git'
+      if (command === 'rev-parse --abbrev-ref HEAD') return 'fix/x'
+      throw new Error(`unexpected git ${command}`)
+    })
+    const service = new PrService({ runner, gitRunner: git, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPaneImpacts(targetId, [{ relation: 'commented', cwd: '/work/app', number: 3 }, { relation: 'commented', cwd: '/work/app' }])
+    expect(linkOf(await service.listPanePullRequests(targetId)).sort()).toEqual(['3:commented', '8:commented'])
+  })
+
+  it('skips an impact it cannot resolve', async () => {
+    const runner = github({}, () => [], {})
+    const git = vi.fn(async (args: string[]) => {
+      if (args.join(' ') === 'rev-parse --git-dir') return '.git'
+      if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') return 'no-pr-yet'
+      if (args.join(' ') === 'remote get-url origin') return 'https://github.com/acme/widgets.git'
+      throw new Error('no upstream')
+    })
+    const service = new PrService({ runner, gitRunner: git, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPaneImpacts(targetId, [{ relation: 'pushed', cwd: '/work/app' }, { relation: 'pushed' }, { relation: 'commented', number: 4 }])
+    expect((await service.listPanePullRequests(targetId)).pullRequests).toEqual([])
+  })
+
+  it('drops an impacted PR GitHub no longer has, at once', async () => {
+    const prs: Record<number, Record<string, unknown> | null> = { 5: node(5) }
+    const service = new PrService({ runner: github(prs), paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPaneImpacts(targetId, [{ relation: 'commented', repo: 'acme/widgets', number: 5 }])
+    expect(linkOf(await service.listPanePullRequests(targetId))).toEqual(['5:commented'])
+    prs[5] = null
+    expect((await service.listPanePullRequests(targetId)).pullRequests).toEqual([])
+    prs[5] = node(5)
+    expect((await service.listPanePullRequests(targetId)).pullRequests).toEqual([])
+  })
+
+  it('keeps a created PR whose marker is gone as pushed, when the pane pushed to it', async () => {
+    let now = 1_000
+    const service = new PrService({ runner: github({ 6: node(6), 9: node(9) }), paneBatchWindowMs: 0, listTtlMs: 0, now: () => now })
+    await service.recordPanePullRequests(targetId, [{ repo: 'acme/widgets', number: 6 }, { repo: 'acme/widgets', number: 9 }])
+    await service.recordPaneImpacts(targetId, [{ relation: 'pushed', repo: 'acme/widgets', number: 6 }])
+    // Inside the grace period an unmarked created PR waits for its marker.
+    expect((await service.listPanePullRequests(targetId)).pullRequests).toEqual([])
+    now += 10 * 60_000 + 1
+    expect(linkOf(await service.listPanePullRequests(targetId))).toEqual(['6:pushed'])
+    expect(linkOf(await service.listPanePullRequests(targetId))).toEqual(['6:pushed'])
+  })
+
+  it('shows a PR another pane created as impacted, even when the same search finds it', async () => {
+    const theirs = node(11, `<!-- commando:v1 target=${other} relation=created -->`)
+    const service = new PrService({ runner: github({ 11: theirs }, () => [theirs]), paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPaneImpacts(targetId, [{ relation: 'reviewed', repo: 'acme/widgets', number: 11 }])
+    expect(linkOf(await service.listPanePullRequests(targetId))).toEqual(['11:reviewed'])
+  })
+
+  it('lists created PRs found by search with the created relation', async () => {
+    const mine = node(2, `<!-- commando:v1 target=${targetId} relation=created -->`, '2026-08-20T09:00:00Z')
+    const service = new PrService({ runner: github({ 4: node(4) }, () => [mine]), paneBatchWindowMs: 0, listTtlMs: 0, now: () => 5_000 })
+    await service.recordPaneImpacts(targetId, [{ relation: 'pushed', repo: 'acme/widgets', number: 4 }, { relation: 'pushed', repo: 'acme/widgets', number: 2 }])
+    const list = await service.listPanePullRequests(targetId)
+    expect(list.links).toEqual([
+      { repo: 'acme/widgets', number: 2, relation: 'created', at: Date.parse('2026-08-20T09:00:00Z') },
+      { repo: 'acme/widgets', number: 4, relation: 'pushed', at: 5_000 },
+    ])
+  })
+})
