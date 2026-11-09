@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attachmentNote, chatImageContentType, hostTakesVideos, isChatAttachmentId, isChatVideoId, notedVideos, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
+import { takeQueueBatch, parseChatQueueAction, attachmentNote, chatImageContentType, hostTakesVideos, isChatAttachmentId, isChatVideoId, notedVideos, chatImageStillId, chatImageType, chatImageUrl, hostTakesInput, isChatImageId, parseChatImageRefs, parseChatItem, parseChatSessionInfo, parseChatSettingsChange, parseDaemonMessage, parseHostMessage, selectedModelOption, stripAttachmentNotes, stripAttachmentNotesFromSummary } from './agent-chat.js'
 
 const base = { id: 'a', turnId: 't', status: 'completed', createdAt: 1, updatedAt: 1 }
 
@@ -298,5 +298,18 @@ describe('chat login', () => {
   it('bounds the reason and drops nonstring optional fields', () => {
     expect(parseChatSessionInfo({ ...session, login: { state: 'required', reason: 'x'.repeat(1000) } })?.login?.reason).toHaveLength(500)
     expect(parseChatSessionInfo({ ...session, login: { state: 'required', reason: {}, url: 7 } })?.login).toEqual({ state: 'required' })
+  })
+})
+
+describe('steering the whole queue', () => {
+  it('parses steer_all without an id, and batches queued messages up to the image limit', () => {
+    expect(parseChatQueueAction({ action: 'steer_all' })).toEqual({ action: 'steer_all' })
+    expect(parseDaemonMessage({ type: 'queue', paneId: '%1', requestId: 'r1', action: 'steer_all' })).toEqual({ type: 'queue', paneId: '%1', requestId: 'r1', action: 'steer_all' })
+    const image = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `${String(i).padStart(64, 'a')}.png`, name: 'a.png' }))
+    const queue = [{ id: 'a', text: 'one', images: image(6) }, { id: 'b', text: 'two' }, { id: 'c', text: 'three', images: image(6) }]
+    expect(takeQueueBatch(queue)).toEqual({ batch: queue.slice(0, 2), rest: queue.slice(2) })
+    const big = [{ id: 'a', text: 'huge', images: image(12) }, { id: 'b', text: 'next' }]
+    expect(takeQueueBatch(big).batch.map((queued) => queued.id)).toEqual(['a'])
+    expect(takeQueueBatch([])).toEqual({ batch: [], rest: [] })
   })
 })
