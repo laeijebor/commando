@@ -3871,7 +3871,8 @@ function HostApp() {
       simsApi={local ? simsApi : undefined} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
       screenshotsApi={local ? paneScreenshotsApi : undefined} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
       onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
-      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
+      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)}
+      onOpenPr={(repo, number) => { void revealPrTab(pane.id, repo, number, 'Description') }} />
   }
 
   return (
