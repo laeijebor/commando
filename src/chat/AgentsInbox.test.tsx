@@ -190,3 +190,22 @@ it('builds quick ticks on each other before the daemon echoes the filter', () =>
   expect(onRepoFilter).toHaveBeenLastCalledWith(['/dev/commando', '/dev/vivifit'])
   expect(screen.getByRole('button', { name: 'Repos: commando, vivifit' })).toBeInTheDocument()
 })
+it('keeps newer quick ticks when the daemon echoes an earlier save before the latest one returns', async () => {
+  const saves: Array<() => void> = []
+  const onRepoFilter = vi.fn(() => new Promise<void>((resolve) => { saves.push(resolve) }))
+  const options = [{ key: '/a', name: 'a' }, { key: '/b', name: 'b' }, { key: '/c', name: 'c' }]
+  const props = { groups: groups(), token: 'token', onOpenPane: vi.fn(), onRelay: vi.fn(), repoOptions: options, onRepoFilter }
+  const view = render(<AgentsInbox {...props} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Repos: All repos' }))
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'a' }))
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'b' }))
+  // The first save's broadcast lands while the second is still in flight.
+  view.rerender(<AgentsInbox {...props} repoFilter={['/a']} />)
+  saves[0]!()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Repos: a, b' })).toBeInTheDocument())
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'c' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/a', '/b', '/c'])
+  view.rerender(<AgentsInbox {...props} repoFilter={['/a', '/b', '/c']} />)
+  saves[1]!(); saves[2]!()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Repos: a, b, c' })).toBeInTheDocument())
+})
