@@ -51,16 +51,21 @@ function RepoFilter({ options, filter, disabled, onChange }: {
   onChange: NonNullable<AgentsInboxProps['onRepoFilter']>
 }) {
   const [error, setError] = useState('')
-  // Ticks made before the daemon echoes the last one build on each other instead of on the stale prop.
+  // Quick ticks build on each other until the latest save settles; echoes of earlier saves
+  // must not replace the newer selection.
   const [pending, setPending] = useState<string[] | null>()
-  const filterKey = filter?.join('\n')
-  useEffect(() => { setPending(undefined) }, [filterKey])
+  const latestSave = useRef(0)
   const current = pending === undefined ? filter : pending ?? undefined
   const selected = new Set(current)
   const save = (repos: string[] | null) => {
+    const id = ++latestSave.current
     setError('')
     setPending(repos)
-    void onChange(repos).catch((cause: unknown) => {
+    void onChange(repos).then(() => {
+      if (id === latestSave.current) setPending(undefined)
+    }, (cause: unknown) => {
+      // A newer save already carries this selection, so only the latest failure matters.
+      if (id !== latestSave.current) return
       setPending(undefined)
       setError(cause instanceof Error ? cause.message : 'Unable to change repos')
     })
