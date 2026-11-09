@@ -930,6 +930,49 @@ describe('agent hook installer', () => {
     }
   })
 
+  it('reports PRs the agent pushed to or commented on', async () => {
+    const home = await temporaryHome()
+    const paths = await new AgentHookInstaller({ home }).install()
+    const received: Array<Record<string, unknown>> = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        let body = ''
+        for await (const chunk of request) body += chunk
+        received.push(JSON.parse(body) as Record<string, unknown>)
+        response.writeHead(200)
+        response.end()
+      })()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Test server did not bind')
+    try {
+      const send = async (input: Record<string, unknown>) => {
+        const child = spawn(process.execPath, [paths.claudeBridgePath], {
+          env: { ...process.env, COMMANDO_PORT: String(address.port), TMUX_PANE: '%42' },
+          stdio: ['pipe', 'ignore', 'inherit'],
+        })
+        child.stdin.end(JSON.stringify({ session_id: 'claude-session', hook_event_name: 'PostToolUse', cwd: '/work/app', ...input }))
+        await new Promise<void>((resolve, reject) => {
+          child.once('error', reject)
+          child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`Bridge exited ${code}`)))
+        })
+      }
+      await send({ tool_name: 'Bash', tool_input: { command: 'cd ../api && git push -u origin feat 2>&1 | tail -2' }, tool_response: { stdout: '', stderr: '' } })
+      await send({ tool_name: 'Bash', tool_input: { command: "gh pr review https://github.com/acme/widgets/pull/5 --approve -b 'raw-review-body'" }, tool_response: { stdout: '', stderr: '' } })
+      await send({ tool_name: 'Bash', tool_input: { command: 'echo "git push origin feat"' }, tool_response: { stdout: '', stderr: '' } })
+
+      expect(received.map((body) => [body.impactedPullRequests, body.cwd])).toEqual([
+        [[{ relation: 'pushed', cwd: '/work/app/../api', remote: 'origin', branch: 'feat' }], '/work/app'],
+        [[{ relation: 'reviewed', cwd: '/work/app', repo: 'acme/widgets', number: 5 }], '/work/app'],
+        [undefined, undefined],
+      ])
+      expect(JSON.stringify(received)).not.toContain('raw-review-body')
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
   it('returns Claude question answers through PermissionRequest hook output', async () => {
     const home = await temporaryHome()
     const paths = await new AgentHookInstaller({ home }).install()

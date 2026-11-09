@@ -5,6 +5,7 @@ import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
 import { generatedDeviceCli } from './device-lock-cli.js'
+import { pullRequestImpactsFor } from './pr-impact-hook.js'
 
 export const CLAUDE_HOOK_EVENTS = [
   'SessionStart',
@@ -233,6 +234,7 @@ async function inheritedPaneEnv() {
 
 const __name = (target, name) => Object.defineProperty(target, 'name', { value: name, configurable: true })
 ${isCursorInvocation.toString()}
+${pullRequestImpactsFor.toString()}
 
 function asObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
@@ -625,6 +627,8 @@ async function main() {
     // Muse's permission hook output is not Claude's, so its prompts stay in the TUI.
     const request = PROVIDER === 'muse' ? undefined : interactionFor(input)
     const planUpdate = planUpdateFor(input)
+    // PRs the agent pushed to or commented on, named as the command named them.
+    const impacts = pullRequestImpactsFor(input)
     const body = JSON.stringify({
       hook_event_name: boundedText(event, 80),
       session_id: boundedText(input.session_id, 200),
@@ -642,6 +646,9 @@ async function main() {
       taskPatch: planUpdate.taskPatch,
       taskSnapshot: planUpdate.taskSnapshot,
       createdPullRequests: createdPullRequestsFor(input),
+      impactedPullRequests: impacts,
+      // The daemon resolves an impact's branch here when the command's own cd led nowhere.
+      cwd: impacts && typeof input.cwd === 'string' && input.cwd.startsWith('/') ? input.cwd.slice(0, 4096) : undefined,
       filePath: tool.filePath,
       check: tool.check,
       finalMessage,

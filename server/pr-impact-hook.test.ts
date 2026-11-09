@@ -1,0 +1,108 @@
+import { describe, expect, it } from 'vitest'
+import { pullRequestImpactsFor } from './pr-impact-hook.js'
+
+const cwd = '/work/app'
+const bash = (command: string, event = 'PostToolUse') => pullRequestImpactsFor({ hook_event_name: event, tool_name: 'Bash', cwd, tool_input: { command } })
+
+describe('pullRequestImpactsFor', () => {
+  it.each([
+    ['git push', [{ relation: 'pushed', cwd }]],
+    ['git push -u origin feat', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['git push --set-upstream origin feat/x-1', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat/x-1' }]],
+    ['git push origin HEAD:refs/heads/fix', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'fix' }]],
+    ['git push origin HEAD', [{ relation: 'pushed', cwd, remote: 'origin' }]],
+    ['git push --force-with-lease origin +local:remote', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'remote' }]],
+    ['git push --force-with-lease=feat:abc123 origin feat', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['git push origin a b', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'a' }, { relation: 'pushed', cwd, remote: 'origin', branch: 'b' }]],
+    ['git push https://github.com/acme/widgets.git feat', [{ relation: 'pushed', cwd, repo: 'acme/widgets', branch: 'feat' }]],
+    ['git push git@github.com:acme/widgets.git feat', [{ relation: 'pushed', cwd, repo: 'acme/widgets', branch: 'feat' }]],
+    ['git -C ../other push origin feat', [{ relation: 'pushed', cwd: '/work/app/../other', remote: 'origin', branch: 'feat' }]],
+    ['git -c core.x=1 --no-pager push', [{ relation: 'pushed', cwd }]],
+    ['cd /work/api && npm test && git push 2>&1 | tail -3', [{ relation: 'pushed', cwd: '/work/api' }]],
+    ['GIT_TRACE=1 git push origin feat > /tmp/push.log', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['git add -A; git commit -m "fix: x"; git push origin feat', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+  ])('reads %j', (command, expected) => {
+    expect(bash(command)).toEqual(expected)
+  })
+
+  it.each([
+    ['gh pr comment 123 -b "Fixed in abc"', [{ relation: 'commented', cwd, number: 123 }]],
+    ['gh pr review https://github.com/o/r/pull/5 --approve', [{ relation: 'reviewed', cwd, repo: 'o/r', number: 5 }]],
+    ['gh pr review --comment -b "nit"', [{ relation: 'reviewed', cwd }]],
+    ['gh pr merge', [{ relation: 'commented', cwd }]],
+    ['gh pr merge 7 --squash --delete-branch', [{ relation: 'commented', cwd, number: 7 }]],
+    ['gh pr edit feat-branch --title "New title" --add-label bug', [{ relation: 'commented', cwd, branch: 'feat-branch' }]],
+    ['gh pr close 9 -c "superseded by #10"', [{ relation: 'commented', cwd, number: 9 }]],
+    ['gh pr ready 12 -R acme/widgets', [{ relation: 'commented', cwd, repo: 'acme/widgets', number: 12 }]],
+    ['gh pr comment --repo github.com/acme/widgets 4 --body-file /tmp/b.md', [{ relation: 'commented', cwd, repo: 'acme/widgets', number: 4 }]],
+    ['gh pr comment someone:their-branch -b hi', [{ relation: 'commented', cwd, branch: 'their-branch' }]],
+    // Like the shell, `#5` starts a comment, so this ran on the current branch's PR.
+    ['gh pr comment #5', [{ relation: 'commented', cwd }]],
+    ['git push && gh pr comment 3 -b done', [{ relation: 'pushed', cwd }, { relation: 'commented', cwd, number: 3 }]],
+  ])('reads %j', (command, expected) => {
+    expect(bash(command)).toEqual(expected)
+  })
+
+  it('ignores the PR body written through a heredoc in a substitution', () => {
+    const command = `gh pr comment 42 --body "$(cat <<'EOF'
+Pushed the fix. "Quoted" (and a paren
+git push origin main
+EOF
+)"`
+    expect(bash(command)).toEqual([{ relation: 'commented', cwd, number: 42 }])
+  })
+
+  it.each([
+    'echo "git push origin feat"',
+    "echo 'gh pr comment 5 -b x'",
+    'printf "%s" git push',
+    'cat <<EOF\ngit push origin feat\ngh pr merge 3\nEOF',
+    'git push --dry-run origin feat',
+    'git push origin --delete feat',
+    'git push origin :feat',
+    'git push origin --tags',
+    'git push origin v1.0:refs/tags/v1.0',
+    'git push origin "$BRANCH"',
+    'git push origin $(git branch --show-current)',
+    'gh pr comment "$PR" -b hi',
+    'gh pr view 5',
+    'gh pr create --title x',
+    'gh pr checks 5',
+    'git status # then git push',
+    'bash -c "git push"',
+    'git pushx',
+    'gh pr comment 5 -R "$REPO"',
+  ])('ignores %j', (command) => {
+    expect(bash(command)).toBeUndefined()
+  })
+
+  it('only reads a completed Bash call', () => {
+    expect(bash('git push', 'PreToolUse')).toBeUndefined()
+    expect(bash('git push', 'PostToolUseFailure')).toBeUndefined()
+    expect(pullRequestImpactsFor({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { command: 'git push' } })).toBeUndefined()
+    expect(pullRequestImpactsFor({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'git push ' + 'x'.repeat(20_001) } })).toBeUndefined()
+  })
+
+  it('leaves out an unusable working directory', () => {
+    expect(pullRequestImpactsFor({ hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: 'relative', tool_input: { command: 'git push' } }))
+      .toEqual([{ relation: 'pushed' }])
+    expect(pullRequestImpactsFor({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'cd sub && git push' } }))
+      .toEqual([{ relation: 'pushed' }])
+    expect(bash('cd ~/x && git push')).toEqual([{ relation: 'pushed' }])
+  })
+
+  it('keeps at most ten', () => {
+    expect(bash(Array.from({ length: 12 }, (_, index) => `gh pr comment ${index + 1} -b x`).join(' && '))).toHaveLength(10)
+  })
+
+  it('reads GitHub MCP tools', () => {
+    const mcp = (name: string, toolInput: Record<string, unknown>) => pullRequestImpactsFor({ hook_event_name: 'PostToolUse', tool_name: `mcp__github__${name}`, tool_input: toolInput })
+    expect(mcp('add_issue_comment', { owner: 'acme', repo: 'widgets', issue_number: 4, body: 'x' })).toEqual([{ relation: 'commented', repo: 'acme/widgets', number: 4 }])
+    expect(mcp('create_pull_request_review', { owner: 'acme', repo: 'widgets', pullNumber: '6', event: 'APPROVE' })).toEqual([{ relation: 'reviewed', repo: 'acme/widgets', number: 6 }])
+    expect(mcp('merge_pull_request', { owner: 'acme', repo: 'widgets', pull_number: 8 })).toEqual([{ relation: 'commented', repo: 'acme/widgets', number: 8 }])
+    expect(mcp('push_files', { owner: 'acme', repo: 'widgets', branch: 'feat', files: [] })).toEqual([{ relation: 'pushed', repo: 'acme/widgets', branch: 'feat' }])
+    expect(mcp('get_pull_request', { owner: 'acme', repo: 'widgets', pullNumber: 8 })).toBeUndefined()
+    expect(mcp('add_issue_comment', { owner: 'acme', repo: 'bad repo', issue_number: 4 })).toBeUndefined()
+    expect(mcp('add_issue_comment', { owner: 'acme', repo: 'widgets', issue_number: -4 })).toBeUndefined()
+  })
+})
