@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PanePrRecords } from './pane-pr-records.js'
+import { PanePrRecords, recordRelation } from './pane-pr-records.js'
 
 const target = '123e4567-e89b-42d3-a456-426614174000'
 const other = '550e8400-e29b-41d4-a716-446655440000'
@@ -93,7 +93,7 @@ describe('pane PR records', () => {
     const first = new PanePrRecords(path, () => 5)
     await first.add(target, [{ repo: 'acme/widgets', number: 7 }])
     await first.flushed()
-    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ version: 1, targets: { [target]: [{ repo: 'acme/widgets', number: 7, at: 5 }] } })
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ version: 2, targets: { [target]: [{ repo: 'acme/widgets', number: 7, at: 5 }] } })
     expect(await new PanePrRecords(path).list(target)).toEqual([{ repo: 'acme/widgets', number: 7, at: 5 }])
   })
 
@@ -108,5 +108,89 @@ describe('pane PR records', () => {
       'not-a-target': [{ repo: 'acme/widgets', number: 3, at: 1 }],
     } }))
     expect(await new PanePrRecords(mixed).list(target)).toEqual([{ repo: 'acme/widgets', number: 1, at: 1 }])
+  })
+
+  it('records impacted PRs, keeping the strongest impact and the latest time', async () => {
+    let now = 1_000
+    const records = new PanePrRecords(undefined, () => now)
+    expect(await records.touch(target, [{ repo: 'acme/widgets', number: 3 }], 'commented')).toBe(true)
+    now = 2_000
+    expect(await records.touch(target, [{ repo: 'acme/widgets', number: 3 }], 'pushed')).toBe(true)
+    now = 3_000
+    // Same PR, weaker impact: only the time moves, which needs no new read.
+    expect(await records.touch(target, [{ repo: 'ACME/widgets', number: 3 }], 'reviewed')).toBe(false)
+    expect(await records.list(target)).toEqual([{ repo: 'acme/widgets', number: 3, at: 1_000, impact: 'pushed', impactedAt: 3_000, created: false }])
+    expect(recordRelation((await records.list(target))[0])).toBe('pushed')
+    expect(await records.touch(target, [{ repo: 'bad', number: 3 }], 'pushed')).toBe(false)
+    expect(await records.touch('not-a-target', [{ repo: 'acme/widgets', number: 3 }], 'pushed')).toBe(false)
+  })
+
+  it('upgrades an impacted PR the pane turns out to have created, and keeps the impact', async () => {
+    let now = 1_000
+    const records = new PanePrRecords(undefined, () => now)
+    await records.touch(target, [{ repo: 'acme/widgets', number: 3 }], 'pushed')
+    now = 5_000
+    expect(await records.add(target, [{ repo: 'acme/widgets', number: 3, createdAt: 900 }])).toBe(true)
+    const [record] = await records.list(target)
+    expect(record).toEqual({ repo: 'acme/widgets', number: 3, at: 5_000, createdAt: 900, impact: 'pushed', impactedAt: 1_000 })
+    expect(recordRelation(record)).toBe('created')
+    // A created PR that is pushed to stays created.
+    await records.touch(target, [{ repo: 'acme/widgets', number: 3 }], 'pushed')
+    expect(recordRelation((await records.list(target))[0])).toBe('created')
+  })
+
+  it('disowns a created PR: keeps it as impacted if the pane touched it, else forgets it', async () => {
+    const records = new PanePrRecords(undefined, () => 1_000)
+    await records.add(target, [{ repo: 'acme/widgets', number: 1 }, { repo: 'acme/widgets', number: 2 }])
+    await records.touch(target, [{ repo: 'acme/widgets', number: 2 }, { repo: 'acme/widgets', number: 9 }], 'commented')
+    await records.disown(target, [{ repo: 'acme/widgets', number: 1 }, { repo: 'acme/widgets', number: 2 }, { repo: 'acme/widgets', number: 9 }])
+    const listed = await records.list(target)
+    expect(listed.map((record) => `${record.number}:${recordRelation(record)}`).sort()).toEqual(['2:commented', '9:commented'])
+  })
+
+  it('learns creation times and renamed repos without changing relations', async () => {
+    const records = new PanePrRecords(undefined, () => 1_000)
+    await records.touch(target, [{ repo: 'acme/old', number: 4 }], 'reviewed')
+    const [record] = await records.list(target)
+    await records.remove(target, [record])
+    await records.learn(target, [{ ...record, repo: 'acme/new', createdAt: 500 }])
+    expect(await records.list(target)).toEqual([{ ...record, repo: 'acme/new', createdAt: 500 }])
+  })
+
+  it('keeps 20 created and 20 impacted PRs per pane', async () => {
+    let now = 0
+    const records = new PanePrRecords(undefined, () => ++now)
+    await records.add(target, Array.from({ length: 25 }, (_, index) => ({ repo: 'acme/widgets', number: index + 1 })))
+    for (let number = 100; number < 125; number += 1) await records.touch(target, [{ repo: 'acme/widgets', number }], 'pushed')
+    const listed = await records.list(target)
+    expect(listed.filter((record) => record.created === false)).toHaveLength(20)
+    expect(listed.filter((record) => record.created !== false)).toHaveLength(20)
+    expect(listed.some((record) => record.number === 124)).toBe(true)
+    expect(listed.some((record) => record.number === 104)).toBe(false)
+  })
+
+  it('reads a version 1 file as created PRs and keeps impacted ones across a restart', async () => {
+    const path = await temporaryPath()
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, JSON.stringify({ version: 1, targets: { [target]: [{ repo: 'acme/widgets', number: 1, at: 5, createdAt: 4 }] } }))
+    const first = new PanePrRecords(path, () => 10)
+    expect((await first.list(target)).map(recordRelation)).toEqual(['created'])
+    await first.touch(target, [{ repo: 'acme/widgets', number: 2 }], 'commented')
+    await first.flushed()
+    const second = await new PanePrRecords(path).list(target)
+    expect(second.map((record) => `${record.number}:${recordRelation(record)}`)).toEqual(['2:commented', '1:created'])
+  })
+
+  it('drops records whose relation fields do not make sense', async () => {
+    const path = await temporaryPath()
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, JSON.stringify({ version: 2, targets: { [target]: [
+      { repo: 'acme/widgets', number: 1, at: 1, created: false },
+      { repo: 'acme/widgets', number: 2, at: 1, impact: 'stared', impactedAt: 1 },
+      { repo: 'acme/widgets', number: 3, at: 1, created: true },
+      { repo: 'acme/widgets', number: 4, at: 1, created: false, impact: 'pushed', impactedAt: 'soon' },
+      { repo: 'acme/widgets', number: 5, at: 1, created: false, impact: 'pushed', impactedAt: 2 },
+    ] } }))
+    expect((await new PanePrRecords(path).list(target)).map((record) => record.number)).toEqual([5])
   })
 })
