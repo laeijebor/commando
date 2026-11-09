@@ -5,7 +5,7 @@
 .pane-worklog-processes > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
 .pane-worklog-processes > header strong { color: var(--text-soft); font: 800 7px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
 .pane-worklog-processes > header small { color: var(--muted-dim); font: 600 7px/1 var(--mono); }
-.pane-worklog-process { grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; }
+.pane-worklog-reference.pane-worklog-process { grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; }
 .pane-worklog-process > button {
   padding: 3px 7px;
   border: 1px solid var(--border-mid);

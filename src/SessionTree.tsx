@@ -800,8 +800,8 @@ export function SessionTree(props: Props) {
         {archivesExpanded ? <div>{archivedSessions.map((archive) => <div className="session-archive-row" key={archive.id}>
           <span title={[new Date(archive.createdAt).toLocaleString(), archive.worktree ? `worktree removed: ${archive.worktree.path}` : undefined].filter(Boolean).join(' · ')}>
             <strong>{archive.name}</strong><small>{archive.worktree ? `${archive.worktree.branch} · ` : ''}{archive.windowCount} windows / {archive.paneCount} panes</small>
+            {leftRunningButton(archive)}
           </span>
-          {leftRunningButton(archive)}
           <button type="button" disabled={resumingIds.has(archive.id)} onClick={() => void restoreSession(archive)} aria-label={`Restore ${archive.name}`}
             title={archive.worktree ? `Check out ${archive.worktree.branch} again at ${archive.worktree.path} and reopen the session` : 'Reopen the session and its chats'}><RotateCcw /> {resumingIds.has(archive.id) ? 'Restoring…' : 'Restore'}</button>
         </div>)}</div> : null}

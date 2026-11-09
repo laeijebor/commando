@@ -160,3 +160,4 @@ button.session-indicator::before { width: 6px; height: 6px; content: ''; border-
   white-space: nowrap;
 }
 .session-processes-left:not(:disabled):hover { background: color-mix(in srgb, var(--amber) 14%, transparent); }
+.session-archive-row .session-processes-left { justify-self: start; }
