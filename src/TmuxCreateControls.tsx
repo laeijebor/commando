@@ -41,6 +41,7 @@ import {
 import { AgentPicker, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
 import { isAttachableFile, useOpeningAttachments, type AttachmentUploads } from './useOpeningAttachments'
 import type { SessionNamingApi } from './sessionNamingApi'
+import { cachedClaudeProfiles, rememberClaudeProfiles } from './claudeProfileCache'
 import type { SessionNamingResponse } from '../shared/session-naming'
 
 export type SessionCreateRepo = { root: string; name: string; defaultBranch?: string }
@@ -60,6 +61,8 @@ export const START_WITH_STORAGE_KEY = 'commando.tmux-create.start-with-by-repo'
 const MAX_WORKING_DIRECTORY_HISTORY = 10
 const REPO_PROBE_DEBOUNCE_MS = 200
 const REPO_PROBE_TIMEOUT_MS = 10_000
+/** With no remembered profile list, how long Start waits before using the remembered or default login. */
+const PROFILE_LOAD_WAIT_MS = 5_000
 
 export type TmuxCreateControlsProps = {
   token?: string
@@ -266,7 +269,7 @@ export function TmuxCreateControls({
     (sessionCreateRequest?.repo?.root ?? sessionCreateRequest?.suggestedDirectories[0] ?? workingDirectoryHistory[0]) || undefined,
   ))
   const [openingPrompt, setOpeningPrompt] = useState('')
-  const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfile[] | null>(null)
+  const [claudeProfiles, setClaudeProfiles] = useState<ClaudeProfile[] | null>(() => cachedClaudeProfiles(host))
   /** The Claude login, shared by Claude chat and Claude terminal. */
   const [claudeProfile, setClaudeProfile] = useState<string | undefined>(() => loadChatLaunch(undefined, 'claude-chat', host).configDir)
   const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined, 'claude-chat', host))
@@ -357,20 +360,34 @@ export function TmuxCreateControls({
     setChatLaunch(loadChatLaunch(repoKey, preferenceProvider, host))
   }, [repoKey, preferenceProvider])
 
-  // Profiles name the Claude rows of the Agent menu, so they load straight away.
+  // Profiles name the Claude rows of the Agent menu. The last list shows straight away and
+  // is reloaded on every open; without one, Start waits for the load, or gives up after a while.
+  const loadClaudeProfilesRef = useRef(loadClaudeProfiles)
+  loadClaudeProfilesRef.current = loadClaudeProfiles
   useEffect(() => {
-    if (claudeProfiles || !loadClaudeProfiles) return
+    const load = loadClaudeProfilesRef.current
+    if (!load) return
     let cancelled = false
-    void loadClaudeProfiles().then(
-      (profiles) => { if (!cancelled) setClaudeProfiles(profiles) },
+    const cached = cachedClaudeProfiles(host)
+    setClaudeProfiles(cached)
+    // A failed or slow load leaves an empty list; the remembered profile (else the daemon's default) is used.
+    const giveUp = () => { if (!cancelled) setClaudeProfiles((current) => current ?? []) }
+    const wait = cached ? undefined : window.setTimeout(giveUp, PROFILE_LOAD_WAIT_MS)
+    void load().then(
+      (profiles) => {
+        rememberClaudeProfiles(host, profiles)
+        if (!cancelled) setClaudeProfiles(profiles)
+      },
       (cause: unknown) => {
         console.warn('Unable to load Claude profiles; starting Claude on the remembered or default one', cause)
-        if (!cancelled) setClaudeProfiles([])
+        giveUp()
       },
-    )
-    // A failed load leaves an empty list; the remembered profile (else the daemon's default) is used.
-    return () => { cancelled = true }
-  }, [claudeProfiles, loadClaudeProfiles])
+    ).finally(() => window.clearTimeout(wait))
+    return () => {
+      cancelled = true
+      window.clearTimeout(wait)
+    }
+  }, [host, openVersion, sessionCreateRequest?.id])
   // The parent may pass a new function each render; refetch only when the form (re)opens.
   const loadModelCatalogsRef = useRef(loadModelCatalogs)
   loadModelCatalogsRef.current = loadModelCatalogs

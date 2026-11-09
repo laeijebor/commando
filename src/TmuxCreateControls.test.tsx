@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CreateTmuxSessionRequest, GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
+import type { ClaudeProfile, CreateTmuxSessionRequest, GitRepoInfo, TmuxCreatedTarget, TmuxCreateResponse } from '../shared/tmux-create'
 import {
   START_WITH_STORAGE_KEY,
   TMUX_CWD_HISTORY_STORAGE_KEY,
@@ -13,6 +13,7 @@ import {
 import { agentPill, chooseAgent, choosePermission, expectAgent, menuLabels, openWorkspace, permissionPill } from './newSessionTestHelpers'
 import { HostProvider } from './HostContext'
 import { CHAT_LAUNCH_STORAGE_KEY } from './chatLaunchPreferences'
+import { cachedClaudeProfiles, forgetClaudeProfiles, rememberClaudeProfiles } from './claudeProfileCache'
 
 const created: TmuxCreatedTarget = {
   kind: 'session',
@@ -44,6 +45,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   cleanup()
   window.localStorage.clear()
+  forgetClaudeProfiles()
 })
 
 describe('TmuxCreateControls', () => {
@@ -889,6 +891,42 @@ describe('opening prompt first', () => {
 })
 
 describe('Claude chat profile loading', () => {
+  it('offers the last profile list while it reloads, and keeps the reloaded one for next time', async () => {
+    rememberClaudeProfiles('local', [{ name: 'claudew', configDir: '/Users/dev/.claudew' }])
+    forgetClaudeProfiles()
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({
+      created, agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' },
+    }))
+    let finishLoad!: (profiles: ClaudeProfile[]) => void
+    const view = render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession}
+      loadClaudeProfiles={() => new Promise((resolve) => { finishLoad = resolve })} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    chooseAgent('claude-chat', 'claudew')
+    const submit = screen.getByRole('button', { name: 'Start chat' })
+    expect(submit).not.toBeDisabled()
+
+    finishLoad([{ name: 'claudew', configDir: '/Users/dev/.claudew' }, { name: 'claudep', configDir: '/Users/dev/.claudep' }])
+    await waitFor(() => expect(menuLabels(agentPill())).toContain('Claude chat · claudep'))
+    view.unmount()
+    expect(cachedClaudeProfiles('local')?.map(({ name }) => name)).toEqual(['claudew', 'claudep'])
+  })
+
+  it('stops waiting for a slow profile list when none is remembered', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ '*': { configDir: '/Users/dev/.claudew', permissionMode: 'default' } }))
+      render(<TmuxCreateControls variant="dialog" onCreateSession={vi.fn()} loadClaudeProfiles={() => new Promise<ClaudeProfile[]>(() => {})} />)
+      fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+      chooseAgent('claude-chat')
+      const submit = screen.getByRole('button', { name: 'Start chat' })
+      expect(submit).toBeDisabled()
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+      expect(submit).not.toBeDisabled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the remembered profile when the profile list cannot be loaded', async () => {
     window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ '*': { configDir: '/Users/dev/.claudew', permissionMode: 'plan' } }))
     const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({

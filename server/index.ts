@@ -8,6 +8,7 @@ import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { AgentLoginProber, AgentProfilePreferences, handleAgentProfilesApi } from './agent-profiles.js'
+import { ClaudeProfileCache } from './claude-profile-cache.js'
 import { ModelCatalog } from './model-catalog.js'
 import { handleSessionNamingApi, loginFingerprint, SessionNamer } from './session-namer.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
@@ -2060,7 +2061,8 @@ async function main(): Promise<void> {
     sending: agentPushes,
   })
   const repoPrepareCommands = new RepoPrepareCommands(defaultRepoPrepareCommandsPath(port))
-  const agentProfilePreferences = new AgentProfilePreferences()
+  const claudeProfileCache = new ClaudeProfileCache()
+  const agentProfilePreferences = new AgentProfilePreferences(undefined, undefined, () => claudeProfileCache.list(), () => claudeProfileCache.refresh())
   const agentLoginProber = new AgentLoginProber()
   const agentChatsApi = new AgentChatsApi({
     agentToken: agentHookToken,
@@ -2087,7 +2089,10 @@ async function main(): Promise<void> {
   })
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
-  const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const chatConversations = new ChatConversationIndex({
+    resolveRepos: (paths) => conversationRepos.resolve(paths),
+    claudeConfigDirs: async () => (await claudeProfileCache.list()).map((profile) => profile.configDir),
+  })
   const commander = new Commander({
     statePath: `${sessionBriefs.statePath}.commander.json`, snapshot: () => snapshot,
     creator: tmuxCreator, refreshSnapshot: refreshSnapshotFresh,
