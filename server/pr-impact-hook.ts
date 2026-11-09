@@ -7,6 +7,8 @@ export type PrImpactHookReport = {
   number?: number
   /** The PR's head branch, when the command named it. */
   branch?: string
+  /** The owner of a fork's head branch, from `gh pr <verb> owner:branch`. */
+  headOwner?: string
   /** The git remote pushed to, when the command named it. */
   remote?: string
 }
@@ -32,10 +34,17 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   const REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/
   const BRANCH = /^(?![-/.])(?!.*\.\.)[A-Za-z0-9._/+-]{1,200}$/
   const REMOTE = /^(?!-)[A-Za-z0-9._-]{1,100}$/
+  const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/
   const impacts: PrImpactHookReport[] = []
   const add = (impact: PrImpactHookReport) => {
     const key = JSON.stringify(impact)
     if (impacts.length < 10 && !impacts.some((known) => JSON.stringify(known) === key)) impacts.push(impact)
+  }
+  // `here` is null once a cd or -C went somewhere the hook can't follow; then
+  // only a report that names its repo, and its PR or branch, still means anything.
+  const addAt = (here: string | null | undefined, impact: PrImpactHookReport) => {
+    if (here === null && !(impact.repo && (impact.number || impact.branch))) return
+    add(here ? { ...impact, cwd: here } : impact)
   }
   const repoFromRemote = (text: string): string | undefined => {
     const match = /^(?:https:\/\/|ssh:\/\/git@|git@)github\.com[:/]([A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}?)(?:\.git)?\/?$/i.exec(text)
@@ -97,7 +106,7 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   // From `$(` to its closing `)`, past quotes and heredocs inside it.
   const skipSubstitution = (start: number): number => {
     const pending: string[] = []
-    let depth = 0
+    let depth = 1
     let index = start + 1
     while (index < text.length) {
       const character = text[index]
@@ -210,16 +219,20 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   }
   endSegment()
 
-  const within = (base: string | undefined, path: Word | undefined): string | undefined => {
-    if (!path || path.dynamic || !path.text || path.text.startsWith('~') || path.text === '-') return undefined
+  const within = (base: string | null | undefined, path: Word | undefined): string | null => {
+    if (!path || path.dynamic || !path.text || path.text.startsWith('~') || path.text === '-') return null
     if (path.text.startsWith('/')) return path.text
-    return base ? `${base.replace(/\/+$/, '')}/${path.text}` : undefined
+    return base ? `${base.replace(/\/+$/, '')}/${path.text}` : null
   }
-  let cwd = startCwd
+  let cwd: string | null | undefined = startCwd
   for (const segment of segments) {
     let start = 0
+    let ghRepo: Word | undefined
     while (start < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[start].text)
-      || ['command', 'exec', 'time', 'nohup', 'env'].includes(segment[start].text))) start += 1
+      || ['command', 'exec', 'time', 'nohup', 'env'].includes(segment[start].text))) {
+      if (segment[start].text.startsWith('GH_REPO=')) ghRepo = { text: segment[start].text.slice(8), dynamic: segment[start].dynamic }
+      start += 1
+    }
     const command = segment[start]
     if (!command || command.dynamic) continue
     const name = command.text.split('/').pop()
@@ -234,6 +247,8 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
       while (at < rest.length && rest[at].text.startsWith('-')) {
         const option = rest[at].text
         if (option === '-C') here = within(here, rest[at + 1])
+        // Another git dir or work tree is not one the daemon can find from here.
+        if (/^--(?:git-dir|work-tree)(?:=|$)/.test(option)) here = null
         at += ['-C', '-c', '--git-dir', '--work-tree', '--namespace'].includes(option) ? 2 : 1
       }
       if (rest[at]?.text !== 'push' || rest[at].dynamic) continue
@@ -254,14 +269,14 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
       const remote = positionals[0] ?? remoteOption
       const refspecs = positionals.slice(1)
       if (skip || (bulk && !refspecs.length) || remote?.dynamic) continue
-      const target: PrImpactHookReport = { relation: 'pushed', ...(here ? { cwd: here } : {}) }
+      const target: PrImpactHookReport = { relation: 'pushed' }
       if (remote) {
         const repo = repoFromRemote(remote.text)
         if (repo) target.repo = repo
         else if (REMOTE.test(remote.text)) target.remote = remote.text
         else continue
       }
-      if (!refspecs.length) add(target)
+      if (!refspecs.length) addAt(here, target)
       for (const refspec of refspecs.slice(0, 5)) {
         if (refspec.dynamic) continue
         const spec = refspec.text.replace(/^\+/, '')
@@ -270,8 +285,8 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
         if (colon === 0) continue
         let branch = colon === -1 ? spec : spec.slice(colon + 1) || spec.slice(0, colon)
         branch = branch.replace(/^refs\/heads\//, '')
-        if (branch === 'HEAD') add(target)
-        else if (!branch.startsWith('refs/') && BRANCH.test(branch)) add({ ...target, branch })
+        if (branch === 'HEAD') addAt(here, target)
+        else if (!branch.startsWith('refs/') && BRANCH.test(branch)) addAt(here, { ...target, branch })
       }
       continue
     }
@@ -297,8 +312,9 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
         else if (values[verb].includes(argument.text)) position += 1
         else if (!argument.text.startsWith('-') && !selector) selector = argument
       }
+      repoOption ??= ghRepo
       if (selector?.dynamic || repoOption?.dynamic) continue
-      const impact: PrImpactHookReport = { relation: verb === 'review' ? 'reviewed' : 'commented', ...(cwd ? { cwd } : {}) }
+      const impact: PrImpactHookReport = { relation: verb === 'review' ? 'reviewed' : 'commented' }
       if (repoOption) {
         const repo = repoOption.text.replace(/^https:\/\//, '').replace(/^github\.com\//, '').replace(/\/+$/, '')
         if (!REPO.test(repo)) continue
@@ -306,13 +322,15 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
       }
       const url = selector && /^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100})\/pull\/(\d{1,9})(?:[/?#].*)?$/.exec(selector.text)
       const number = selector && /^#?(\d{1,9})$/.exec(selector.text)
-      if (url) add({ ...impact, repo: url[1], number: Number(url[2]) })
-      else if (number) add({ ...impact, number: Number(number[1]) })
+      if (url) addAt(cwd, { ...impact, repo: url[1], number: Number(url[2]) })
+      else if (number) addAt(cwd, { ...impact, number: Number(number[1]) })
       else if (selector) {
         // `owner:branch` names a fork's branch.
-        const branch = selector.text.slice(selector.text.indexOf(':') + 1)
-        if (BRANCH.test(branch)) add({ ...impact, branch })
-      } else add(impact)
+        const colon = selector.text.indexOf(':')
+        const branch = selector.text.slice(colon + 1)
+        const headOwner = colon > 0 ? selector.text.slice(0, colon) : undefined
+        if (BRANCH.test(branch) && (!headOwner || OWNER.test(headOwner))) addAt(cwd, { ...impact, branch, ...(headOwner ? { headOwner } : {}) })
+      } else addAt(cwd, impact)
     }
   }
   return impacts.length ? impacts : undefined

@@ -35,11 +35,23 @@ describe('pullRequestImpactsFor', () => {
     ['gh pr close 9 -c "superseded by #10"', [{ relation: 'commented', cwd, number: 9 }]],
     ['gh pr ready 12 -R acme/widgets', [{ relation: 'commented', cwd, repo: 'acme/widgets', number: 12 }]],
     ['gh pr comment --repo github.com/acme/widgets 4 --body-file /tmp/b.md', [{ relation: 'commented', cwd, repo: 'acme/widgets', number: 4 }]],
-    ['gh pr comment someone:their-branch -b hi', [{ relation: 'commented', cwd, branch: 'their-branch' }]],
+    ['gh pr comment someone:their-branch -b hi', [{ relation: 'commented', cwd, branch: 'their-branch', headOwner: 'someone' }]],
+    ['GH_REPO=acme/widgets gh pr comment 5 -b hi', [{ relation: 'commented', cwd, repo: 'acme/widgets', number: 5 }]],
     // Like the shell, `#5` starts a comment, so this ran on the current branch's PR.
     ['gh pr comment #5', [{ relation: 'commented', cwd }]],
     ['git push && gh pr comment 3 -b done', [{ relation: 'pushed', cwd }, { relation: 'commented', cwd, number: 3 }]],
   ])('reads %j', (command, expected) => {
+    expect(bash(command)).toEqual(expected)
+  })
+
+  it.each([
+    ['echo $(date) && git push origin feat', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    [`git commit -m "$(cat <<'EOF'\nfix: handle (nested) parens\n\ngit push origin nope\nEOF\n)" && git push`, [{ relation: 'pushed', cwd }]],
+    ['X=$(git push origin a); git push origin b', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'b' }]],
+    ['cd "$(git rev-parse --show-toplevel)" && git push https://github.com/acme/widgets feat', [{ relation: 'pushed', repo: 'acme/widgets', branch: 'feat' }]],
+    ['git -C "$WT" push https://github.com/acme/widgets feat', [{ relation: 'pushed', repo: 'acme/widgets', branch: 'feat' }]],
+    ['cd ~/x && gh pr comment https://github.com/acme/widgets/pull/3 -b ok', [{ relation: 'commented', repo: 'acme/widgets', number: 3 }]],
+  ])('keeps reading past a substitution or lost directory: %j', (command, expected) => {
     expect(bash(command)).toEqual(expected)
   })
 
@@ -72,6 +84,11 @@ EOF
     'bash -c "git push"',
     'git pushx',
     'gh pr comment 5 -R "$REPO"',
+    'GH_REPO=$R gh pr comment 5',
+    'git -C "$WT" push origin feat',
+    'git --git-dir=/x/.git push origin feat',
+    'cd ~/x && git push',
+    'cd "$DIR" && gh pr comment 5 -b hi',
   ])('ignores %j', (command) => {
     expect(bash(command)).toBeUndefined()
   })
@@ -86,9 +103,9 @@ EOF
   it('leaves out an unusable working directory', () => {
     expect(pullRequestImpactsFor({ hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: 'relative', tool_input: { command: 'git push' } }))
       .toEqual([{ relation: 'pushed' }])
+    // A relative cd from an unknown directory leads nowhere the daemon can follow.
     expect(pullRequestImpactsFor({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'cd sub && git push' } }))
-      .toEqual([{ relation: 'pushed' }])
-    expect(bash('cd ~/x && git push')).toEqual([{ relation: 'pushed' }])
+      .toBeUndefined()
   })
 
   it('keeps at most ten', () => {

@@ -8,6 +8,7 @@ export type PrImpactReport = PrImpactHookReport & { fallbackCwd?: string }
 const MAX_REPORTS = 10
 const BRANCH = /^(?![-/.])(?!.*\.\.)[A-Za-z0-9._/+-]{1,200}$/
 const REMOTE = /^(?!-)[A-Za-z0-9._-]{1,100}$/
+const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/
 
 function cleanPath(value: unknown): string | undefined {
   return typeof value === 'string' && isAbsolute(value) && value.length <= 4096 && !value.includes('\0') ? resolve(value) : undefined
@@ -24,7 +25,8 @@ export function parsePrImpactReports(value: unknown, fallbackCwd: unknown): PrIm
     const report: PrImpactReport = { relation: raw.relation }
     const cwd = cleanPath(raw.cwd)
     if (cwd) report.cwd = cwd
-    if (fallback && fallback !== cwd) report.fallbackCwd = fallback
+    // Only a relative cd can have been applied twice; without a cwd the command's place is unknown.
+    if (cwd && fallback && fallback !== cwd) report.fallbackCwd = fallback
     if (raw.repo !== undefined || raw.number !== undefined) {
       const ref = { repo: raw.repo ?? 'unknown/unknown', number: raw.number ?? 1 }
       if (!isPanePrRef(ref)) return []
@@ -34,6 +36,10 @@ export function parsePrImpactReports(value: unknown, fallbackCwd: unknown): PrIm
     if (raw.branch !== undefined) {
       if (typeof raw.branch !== 'string' || !BRANCH.test(raw.branch)) return []
       report.branch = raw.branch
+    }
+    if (raw.headOwner !== undefined) {
+      if (typeof raw.headOwner !== 'string' || !OWNER.test(raw.headOwner)) return []
+      report.headOwner = raw.headOwner
     }
     if (raw.remote !== undefined) {
       if (typeof raw.remote !== 'string' || !REMOTE.test(raw.remote)) return []
@@ -46,8 +52,8 @@ export function parsePrImpactReports(value: unknown, fallbackCwd: unknown): PrIm
 export type PrImpactResolver = {
   git: (args: string[], cwd: string) => Promise<string>
   repoFromRemote: (url: string) => string | null
-  /** The PR whose head is this branch, preferring an open one; null when there is none. */
-  pullRequestForBranch: (repo: string, branch: string) => Promise<number | null>
+  /** The PR whose head is this branch of the repo (or of `headOwner`'s fork), preferring an open one. */
+  pullRequestForBranch: (repo: string, branch: string, headOwner?: string) => Promise<number | null>
 }
 
 /**
@@ -58,6 +64,7 @@ export type PrImpactResolver = {
  */
 export async function resolvePrImpact(report: PrImpactReport, resolver: PrImpactResolver): Promise<PanePrRef | null> {
   if (report.repo && report.number) return { repo: report.repo, number: report.number }
+  if (report.repo && report.branch) return forBranch(report.repo, report.branch, report, resolver)
   const cwd = await workingDirectory(report, resolver)
   if (!cwd) return null
   const git = async (args: string[]) => (await resolver.git(args, cwd).catch(() => '')).trim()
@@ -83,8 +90,11 @@ export async function resolvePrImpact(report: PrImpactReport, resolver: PrImpact
   }
   if (!repo) return null
   if (report.number) return { repo, number: report.number }
-  if (!branch || !BRANCH.test(branch)) return null
-  const number = await resolver.pullRequestForBranch(repo, branch)
+  return branch && BRANCH.test(branch) ? forBranch(repo, branch, report, resolver) : null
+}
+
+async function forBranch(repo: string, branch: string, report: PrImpactReport, resolver: PrImpactResolver): Promise<PanePrRef | null> {
+  const number = await resolver.pullRequestForBranch(repo, branch, report.headOwner)
   return number ? { repo, number } : null
 }
 

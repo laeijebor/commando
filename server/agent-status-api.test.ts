@@ -97,7 +97,7 @@ describe('AgentStatusHookApi', () => {
     expect(createdPullRequests).toHaveLength(1)
   })
 
-  it('passes on well-formed PR impacts with the hook cwd to fall back on', async () => {
+  it('passes on well-formed PR impacts, with the hook cwd to fall back on after a cd', async () => {
     await post('/api/agent-status/hooks/claude', {
       hook_event_name: 'PostToolUse',
       session_id: 'claude-session',
@@ -116,9 +116,9 @@ describe('AgentStatusHookApi', () => {
     })
     expect(impactedPullRequests).toEqual([{ paneId: '%1', reports: [
       { relation: 'pushed', cwd: '/work/api', fallbackCwd: '/work/app', remote: 'origin', branch: 'feat' },
-      { relation: 'reviewed', fallbackCwd: '/work/app', repo: 'acme/widgets', number: 5 },
+      { relation: 'reviewed', repo: 'acme/widgets', number: 5 },
       { relation: 'commented', cwd: '/work/app' },
-      { relation: 'commented', fallbackCwd: '/work/app' },
+      { relation: 'commented' },
     ] }])
     await post('/api/agent-status/hooks/claude', { hook_event_name: 'PostToolUse', session_id: 'claude-session', impactedPullRequests: 'nope' })
     expect(impactedPullRequests).toHaveLength(1)

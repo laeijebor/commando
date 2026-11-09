@@ -72,6 +72,12 @@ const RECORDED_LOOKUP_BATCH_SIZE = 15
 // A branch's PR rarely changes, and review-fix loops push to it again and again.
 const BRANCH_PR_CACHE_TTL_MS = 30 * 60_000
 const MAX_BRANCH_PR_CACHE_ENTRIES = 200
+// Search never finds a PR a pane only impacted, so each pane read would look it
+// up again. Reuse a lookup for as long as a background read would; a closed or
+// merged PR rarely changes, so for longer. A new impact on it forces a fresh one.
+const IMPACTED_OPEN_TTL_MS = 5 * 60_000
+const IMPACTED_DONE_TTL_MS = 30 * 60_000
+const MAX_IMPACTED_SUMMARIES = 500
 
 type RecordedRef = PanePrRecord & { targetId: string }
 /**
@@ -143,7 +149,9 @@ const BRANCH_PULL_REQUESTS_QUERY = `
 query($owner: String!, $name: String!, $head: String!) {
   ${RATE_LIMIT_FIELD}
   repository(owner: $owner, name: $name) {
-    pullRequests(headRefName: $head, first: 5, orderBy: { field: CREATED_AT, direction: DESC }) { nodes { number state } }
+    pullRequests(headRefName: $head, first: 10, orderBy: { field: CREATED_AT, direction: DESC }) {
+      nodes { number state headRepository { nameWithOwner } headRepositoryOwner { login } }
+    }
   }
 }`.trim()
 
@@ -488,6 +496,13 @@ function prKey(ref: PanePrRef): string {
   return `${ref.repo.toLowerCase()}#${ref.number}`
 }
 
+function addRecorded(lookup: RecordedLookup, targetId: string, pr: PanePrSummary, link: PanePrLink): void {
+  const prs = lookup.byTarget.get(targetId) ?? []
+  if (prs.some((known) => prKey(known) === prKey(pr))) return
+  lookup.byTarget.set(targetId, [...prs, pr])
+  lookup.links.set(targetId, [...lookup.links.get(targetId) ?? [], link])
+}
+
 function paneTargetSearchQuery(targetIds: readonly string[], openOnly = false): string {
   return `is:pr${openOnly ? ' is:open' : ''} in:body ${targetIds.join(' OR ')} sort:created-desc`
 }
@@ -789,6 +804,7 @@ export class PrService {
   private readonly paneListCache = new Map<string, SwrCacheEntry<PanePrList>>()
   private readonly panePrRecords: PanePrRecords
   private readonly branchPrCache = new Map<string, { at: number; number: number }>()
+  private readonly impactedSummaries = new Map<string, { at: number; pr: PanePrSummary }>()
   private readonly metadataCache: PrReadCache<JsonRecord>
   private readonly commentPagesCache: PrReadCache<JsonRecord[]>
   private readonly reviewThreadsCache: PrReadCache<Map<number, PrReviewThread>>
@@ -1089,16 +1105,22 @@ export class PrService {
       const ref = await resolvePrImpact(report, {
         git: this.gitRunner,
         repoFromRemote: repoFromGithubRemote,
-        pullRequestForBranch: (repo, branch) => this.pullRequestForBranch(repo, branch),
+        pullRequestForBranch: (repo, branch, headOwner) => this.pullRequestForBranch(repo, branch, headOwner),
       })
-      if (ref && await this.panePrRecords.touch(targetId, [ref], report.relation)) changed = true
+      if (!ref) continue
+      // A merge, close or push changes what the PR shows.
+      this.impactedSummaries.delete(prKey(ref))
+      if (await this.panePrRecords.touch(targetId, [ref], report.relation)) changed = true
     }
     if (changed) this.paneListCache.delete(targetId)
   }
 
-  /** The newest open PR with this head branch, else the newest of any state. */
-  private async pullRequestForBranch(repo: string, branch: string): Promise<number | null> {
-    const key = `${repo.toLowerCase()}#${branch}`
+  /**
+   * The newest open PR whose head is this branch of the repo itself (or of
+   * `headOwner`'s fork), else the newest of any state. Forks often reuse names like `main`.
+   */
+  private async pullRequestForBranch(repo: string, branch: string, headOwner?: string): Promise<number | null> {
+    const key = `${repo.toLowerCase()}#${headOwner?.toLowerCase() ?? ''}:${branch}`
     const cached = this.branchPrCache.get(key)
     if (cached && this.now() - cached.at < BRANCH_PR_CACHE_TTL_MS) return cached.number
     const [owner, name] = validateRepo(repo).split('/', 2)
@@ -1107,7 +1129,9 @@ export class PrService {
     ]))
     const repository = optionalObject(objectField(payload, 'data'), 'repository')
     const nodes = repository && optionalObject(repository, 'pullRequests')?.nodes
-    const prs = Array.isArray(nodes) ? nodes.filter(isRecord) : []
+    const prs = (Array.isArray(nodes) ? nodes.filter(isRecord) : []).filter((pr) => headOwner
+      ? String(optionalObject(pr, 'headRepositoryOwner')?.login).toLowerCase() === headOwner.toLowerCase()
+      : String(optionalObject(pr, 'headRepository')?.nameWithOwner).toLowerCase() === repo.toLowerCase())
     const number = (prs.find((pr) => pr.state === 'OPEN') ?? prs[0])?.number
     if (typeof number !== 'number') return null
     this.branchPrCache.delete(key)
@@ -1145,7 +1169,13 @@ export class PrService {
         if (!found.has(`${targetId} ${prKey(ref)}`) && (ref.created === false || recordRecency(ref) > oldest)) missing.push({ ...ref, targetId })
       }
     }
-    const lookup = await this.lookUpRecordedPullRequests(missing, result.viewer)
+    const reused = missing.flatMap((ref) => {
+      const hit = ref.created === false ? this.impactedSummaries.get(prKey(ref)) : undefined
+      const ttl = hit?.pr.state === 'open' ? IMPACTED_OPEN_TTL_MS : IMPACTED_DONE_TTL_MS
+      return hit && this.now() - hit.at < ttl ? [{ ref, pr: hit.pr }] : []
+    })
+    const lookup = await this.lookUpRecordedPullRequests(missing.filter((ref) => !reused.some((hit) => hit.ref === ref)), result.viewer)
+    for (const { ref, pr } of reused) addRecorded(lookup, ref.targetId, pr, { repo: pr.repo, number: pr.number, relation: recordRelation(ref), at: ref.impactedAt ?? ref.at })
     for (const [targetId, links] of lookup.links) {
       const kept = new Set(links.filter((link) => !found.has(`${targetId} ${prKey(link)}`) && (link.relation !== 'created' || !(link.at < oldest))).map(prKey))
       lookup.links.set(targetId, links.filter((link) => kept.has(prKey(link))))
@@ -1222,12 +1252,13 @@ export class PrService {
         // Also learns when the PR was created, so an old one stops counting as new.
         const createdAt = Date.parse(pullRequest.createdAt)
         seen.push({ ...ref, repo: pullRequest.repo, number: pullRequest.number, createdAt })
-        const prs = lookup.byTarget.get(ref.targetId) ?? []
-        if (prs.some((known) => prKey(known) === prKey(pullRequest))) return
-        lookup.byTarget.set(ref.targetId, [...prs, pullRequest])
-        const link: PanePrLink = { repo: pullRequest.repo, number: pullRequest.number, relation,
-          at: relation === 'created' ? createdAt : ref.impactedAt ?? ref.at }
-        lookup.links.set(ref.targetId, [...lookup.links.get(ref.targetId) ?? [], link])
+        if (relation !== 'created') {
+          this.impactedSummaries.delete(prKey(pullRequest))
+          this.impactedSummaries.set(prKey(pullRequest), { at: this.now(), pr: pullRequest })
+          if (this.impactedSummaries.size > MAX_IMPACTED_SUMMARIES) this.impactedSummaries.delete(this.impactedSummaries.keys().next().value!)
+        }
+        addRecorded(lookup, ref.targetId, pullRequest, { repo: pullRequest.repo, number: pullRequest.number, relation,
+          at: relation === 'created' ? createdAt : ref.impactedAt ?? ref.at })
       })
     })
     const of = (refs: RecordedRef[], targetId: string) => refs.filter((ref) => ref.targetId === targetId)
