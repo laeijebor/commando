@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentProfilesResponse } from '../shared/agent-profiles'
 import type { AgentProfilesApi } from './agentProfilesApi'
 import { SettingsView, type CommanderProfileSetting } from './SettingsView'
+import { cachedClaudeProfiles, forgetClaudeProfiles } from './claudeProfileCache'
 
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); forgetClaudeProfiles(); window.localStorage.clear() })
 
 const response = (): AgentProfilesResponse => ({
   claude: [
@@ -35,6 +36,14 @@ function setup(overrides: Partial<AgentProfilesApi> = {}, commander?: CommanderP
 const row = (path: string) => screen.getAllByText(path).map((node) => node.closest('li')).find(Boolean) as HTMLElement
 
 describe('SettingsView', () => {
+  it("hands New session the pickers' profiles each time it loads, so a changed default or hidden profile is not offered stale", async () => {
+    setup()
+    await waitFor(() => expect(cachedClaudeProfiles('local')).toEqual([
+      { name: 'claudew', configDir: '/Users/leo/.claudew', label: 'Work', isDefault: true },
+      { name: 'claudep', configDir: '/Users/leo/.claudep' },
+    ]))
+  })
+
   it("lists each Claude profile's label, folder and login, and the other agents read-only", async () => {
     setup()
     await screen.findByText('~/.claudew')

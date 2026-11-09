@@ -6,7 +6,7 @@ import type { ClaudeProfile } from '../shared/tmux-create.js'
 import { ClaudeProfileCache } from './claude-profile-cache.js'
 
 const dirs: string[] = []
-afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))) })
+afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 5 }))) })
 
 async function setup() {
   const home = await mkdtemp(join(tmpdir(), 'commando-profile-cache-'))
@@ -14,12 +14,9 @@ async function setup() {
   const profile = (name: string): ClaudeProfile => ({ name, configDir: join(home, `.${name}`) })
   let clock = 1_000
   const discover = vi.fn(async (): Promise<ClaudeProfile[]> => [])
-  const cache = () => new ClaudeProfileCache(join(home, '.commando', 'claude-profiles.json'), home, discover, 30_000, () => clock)
+  const cache = () => new ClaudeProfileCache(join(home, '.commando', 'claude-profiles.json'), home, discover, 30_000, () => clock, 50)
   return { home, profile, discover, cache, advance: (ms: number) => { clock += ms } }
 }
-
-/** Resolves once pending background work (scan, then store) has run. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
 
 describe('ClaudeProfileCache', () => {
   it('waits for the first scan, stores it, and answers from memory while fresh', async () => {
@@ -30,17 +27,18 @@ describe('ClaudeProfileCache', () => {
     expect(await profiles.list()).toEqual([work])
     expect(await profiles.list()).toEqual([work])
     expect(discover).toHaveBeenCalledOnce()
-    await settle()
+    await profiles.idle()
     expect(JSON.parse(await readFile(profiles.path, 'utf8'))).toEqual({ profiles: [work] })
     expect((await stat(profiles.path)).mode & 0o777).toBe(0o600)
   })
 
-  it('answers a restarted daemon from disk at once, then rescans in the background', async () => {
+  it('answers a restarted daemon from disk when the rescan is slow, then keeps the rescan', async () => {
     const { profile, discover, cache } = await setup()
     const [work, personal] = [profile('claudew'), profile('claudep')]
     discover.mockResolvedValueOnce([work])
-    await cache().refresh()
-    await settle()
+    const first = cache()
+    await first.refresh()
+    await first.idle()
 
     let finishScan!: (found: ClaudeProfile[]) => void
     discover.mockReturnValueOnce(new Promise((resolve) => { finishScan = resolve }))
@@ -48,20 +46,43 @@ describe('ClaudeProfileCache', () => {
     expect(await restarted.list()).toEqual([work])
     expect(discover).toHaveBeenCalledTimes(2)
     finishScan([personal, work])
-    await settle()
+    await restarted.idle()
     expect(await restarted.list()).toEqual([personal, work])
     expect(discover).toHaveBeenCalledTimes(2)
   })
 
-  it('rescans once stale and shares one scan between concurrent callers', async () => {
+  it('answers a stale read with a quick rescan, shared by concurrent reads', async () => {
     const { profile, discover, cache, advance } = await setup()
-    const work = profile('claudew')
-    discover.mockResolvedValue([work])
+    const [work, personal] = [profile('claudew'), profile('claudep')]
+    discover.mockResolvedValueOnce([work])
     const profiles = cache()
     await profiles.list()
     advance(30_000)
-    await Promise.all([profiles.list(), profiles.list(), profiles.refresh()])
+    discover.mockResolvedValueOnce([personal])
+    expect(await Promise.all([profiles.list(), profiles.list()])).toEqual([[personal], [personal]])
     expect(discover).toHaveBeenCalledTimes(2)
+    await profiles.idle()
+  })
+
+  it('runs one more scan after a running one for callers that need a fresh list', async () => {
+    const { profile, discover, cache, advance } = await setup()
+    const [work, added] = [profile('claudew'), profile('claudex')]
+    discover.mockResolvedValueOnce([work])
+    const profiles = cache()
+    await profiles.list()
+    advance(30_000)
+    let finishScan!: (found: ClaudeProfile[]) => void
+    discover.mockReturnValueOnce(new Promise((resolve) => { finishScan = resolve }))
+    expect(await profiles.list()).toEqual([work])
+
+    // The folder is created while that scan runs, so it may have missed it.
+    discover.mockResolvedValueOnce([work, added])
+    const fresh = Promise.all([profiles.refresh(), profiles.refresh()])
+    finishScan([work])
+    expect(await fresh).toEqual([[work, added], [work, added]])
+    expect(discover).toHaveBeenCalledTimes(3)
+    expect(await profiles.list()).toEqual([work, added])
+    await profiles.idle()
   })
 
   it('ignores stored entries outside the home folder and a corrupt file', async () => {
@@ -70,13 +91,15 @@ describe('ClaudeProfileCache', () => {
     const profiles = cache()
     discover.mockResolvedValueOnce([work])
     await profiles.refresh()
-    await settle()
+    await profiles.idle()
     await writeFile(profiles.path, JSON.stringify({ profiles: [work, { name: 'x', configDir: '/etc' }, { name: 1, configDir: join(home, '.claudep') }] }))
+    discover.mockReturnValueOnce(new Promise(() => {}))
     expect(await cache().list()).toEqual([work])
 
     await writeFile(profiles.path, '{')
     discover.mockResolvedValueOnce([])
-    expect(await cache().list()).toEqual([])
-    await settle()
+    const reread = cache()
+    expect(await reread.list()).toEqual([])
+    await reread.idle()
   })
 })

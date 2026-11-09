@@ -2089,7 +2089,10 @@ async function main(): Promise<void> {
   })
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
-  const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const chatConversations = new ChatConversationIndex({
+    resolveRepos: (paths) => conversationRepos.resolve(paths),
+    claudeConfigDirs: async () => (await claudeProfileCache.list()).map((profile) => profile.configDir),
+  })
   const commander = new Commander({
     statePath: `${sessionBriefs.statePath}.commander.json`, snapshot: () => snapshot,
     creator: tmuxCreator, refreshSnapshot: refreshSnapshotFresh,
