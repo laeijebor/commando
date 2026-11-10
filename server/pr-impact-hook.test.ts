@@ -55,6 +55,35 @@ describe('pullRequestImpactsFor', () => {
     expect(bash(command)).toEqual(expected)
   })
 
+  // Exit 0 only proves the last list (commands joined by && and pipes) succeeded.
+  it.each([
+    ['git add -A && git commit -m "fix: x" && git push', [{ relation: 'pushed', cwd }]],
+    ['npm test && git push origin feat 2>&1 | tail -2', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['git push origin feat &> /tmp/push.log', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['git status\ngit push origin feat\n', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['(cd /work/other && git status); git push origin feat', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['(cd /work/other); gh pr comment 5 -b hi', [{ relation: 'commented', cwd, number: 5 }]],
+    ['cd /work/api && (npm test) && git push', [{ relation: 'pushed', cwd: '/work/api' }]],
+  ])('counts only the list that decided the exit status: %j', (command, expected) => {
+    expect(bash(command)).toEqual(expected)
+  })
+
+  it.each([
+    'git push origin a || git push origin b',
+    'gh pr comment 42 -b hi || true',
+    'false && gh pr comment 42 -b hi; echo done',
+    'git push origin feat; echo "exit $?"',
+    'git push origin feat\necho pushed',
+    'git push origin feat &',
+    'git push origin feat & wait',
+    '(git push origin feat)',
+    '(cd /work/other && git push origin feat)',
+    'pushd /work/other && popd && git push',
+    'test -n "$X" || gh pr merge 3',
+  ])('reports nothing when the command may not have run or succeeded: %j', (command) => {
+    expect(bash(command)).toBeUndefined()
+  })
+
   it('ignores the PR body written through a heredoc in a substitution', () => {
     const command = `gh pr comment 42 --body "$(cat <<'EOF'
 Pushed the fix. "Quoted" (and a paren
