@@ -850,6 +850,7 @@ export class PrService {
       this.invalidateDetailCaches(repo)
       this.entities.invalidate(repo)
       for (const key of this.listCache.keys()) if (key.toLowerCase().startsWith(`${repo.toLowerCase()}::`)) this.listCache.delete(key)
+      for (const key of this.impactedSummaries.keys()) if (key.startsWith(`${repo.toLowerCase()}#`)) this.impactedSummaries.delete(key)
       this.paneListCache.clear()
     })
     this.gitRunner = options?.gitRunner ?? defaultGitRunner
@@ -905,6 +906,7 @@ export class PrService {
       return { merged: true }
     } finally {
       this.merging.delete(key)
+      this.impactedSummaries.delete(prKey({ repo, number }))
       this.invalidateDetailCaches(repo, number)
       this.entities.invalidate(repo)
       if (merged) this.entities.markMerged(repo, number, this.now())
@@ -1256,7 +1258,8 @@ export class PrService {
         seen.push({ ...ref, repo: pullRequest.repo, number: pullRequest.number, createdAt })
         if (relation !== 'created') {
           this.impactedSummaries.delete(prKey(pullRequest))
-          this.impactedSummaries.set(prKey(pullRequest), { at: this.now(), pr: pullRequest })
+          // Stamped, so a reused summary never overrides newer status from another read.
+          this.impactedSummaries.set(prKey(pullRequest), { at: this.now(), pr: { ...pullRequest, statusFetchedAt: pullRequest.statusFetchedAt ?? this.now() } })
           if (this.impactedSummaries.size > MAX_IMPACTED_SUMMARIES) this.impactedSummaries.delete(this.impactedSummaries.keys().next().value!)
         }
         addRecorded(lookup, ref.targetId, pullRequest, { repo: pullRequest.repo, number: pullRequest.number, relation,
@@ -1578,7 +1581,7 @@ export class PrService {
   }
 
   private invalidateChangedReferences(list: PrList | PanePrList): void {
-    for (const item of list.pullRequests) {
+    for (const item of [...list.pullRequests, ...'impacted' in list ? list.impacted ?? [] : []]) {
       const repo = 'repo' in list ? list.repo : (item as PanePrSummary).repo
       const summary = 'repo' in list ? item as PrSummary : (item as PanePrSummary).preview
       if (!summary) continue

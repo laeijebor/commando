@@ -1728,6 +1728,29 @@ describe('pane PR impacts', () => {
     expect(lookups()).toBe(3)
   })
 
+  it('forgets a reused impacted lookup once the PR is merged here', async () => {
+    const prs: Record<number, Record<string, unknown> | null> = { 5: node(5) }
+    const inner = github(prs)
+    const head = 'a'.repeat(40)
+    const runner = vi.fn(async (args: string[]) => {
+      if (args[0] === 'pr' && args[1] === 'view') return JSON.stringify({ state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', headRefOid: head })
+      if (args[0] === 'api' && args[1] === 'repos/acme/widgets') return JSON.stringify({ allow_merge_commit: true })
+      if (args.includes('PUT')) return JSON.stringify({ merged: true })
+      return inner(args)
+    })
+    const lookups = () => inner.mock.calls.filter(([args]) => queryOf(args).startsWith('query=query { viewer')).length
+    const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPaneImpacts(targetId, [{ relation: 'pushed', repo: 'acme/widgets', number: 5 }])
+    await service.listPanePullRequests(targetId)
+    expect(lookups()).toBe(1)
+    await service.mergePullRequest('acme/widgets', 5, head)
+    prs[5] = node(5)
+    prs[5]!.state = 'MERGED'
+    const list = await service.listPanePullRequests(targetId)
+    expect(lookups()).toBe(2)
+    expect(list.impacted?.[0]).toMatchObject({ number: 5, state: 'merged' })
+  })
+
   it('looks up a fork\'s branch PR only when the command named the fork', async () => {
     const runner = github({ 107: node(107) }, () => [], { main: 7 })
     const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0 })
