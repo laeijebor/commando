@@ -2056,6 +2056,7 @@ async function main(): Promise<void> {
     targetIdFor: (paneId) => paneForId(paneId)?.targetId ?? paneTargets.get(paneId),
     titleFor: tileTitle,
     liveTargets: () => new Set(snapshot.panes.map((pane) => pane.targetId)),
+    adopt: (closedId, liveId) => canvasThreads.reassign(closedId, liveId),
   }
   canvasPush = new CanvasPush({
     sending: agentPushes,

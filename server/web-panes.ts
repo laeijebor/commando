@@ -411,6 +411,8 @@ export type ClosedTabHooks = {
   titleFor?: (pane: WebPane) => string | undefined
   /** Targets with a live pane; only their closed tabs are broadcast. */
   liveTargets?: () => ReadonlySet<string>
+  /** A closed tab resolved to a live duplicate: move what its id owned (canvas discussions) over. */
+  adopt?: (closedId: string, liveId: string) => void
 }
 
 /**
@@ -545,6 +547,7 @@ export class WebPaneService {
     const live = [...this.panes.values()].find((pane) => pane.id === id ||
       (pane.anchorPaneId === anchor.anchorPaneId && pane.dock === 'panel' && sameTabContent(pane, entry.pane)))
     if (live) {
+      if (live.id !== id) this.closedTabHooks?.adopt?.(id, live.id)
       this.closedPanes.take(targetId, id)
       if (live.dock === 'panel' && live.anchorPaneId === anchor.anchorPaneId) this.activeTabs[anchor.anchorPaneId] = live.id
       this.persist()
@@ -1134,7 +1137,7 @@ export class WebPaneService {
    * when their whole session is absent. Returns true when anything changed.
    */
   prune(currentWindows: readonly PruneWindow[]): boolean {
-    if (this.panes.size === 0 && this.parkedPanes.size === 0 && Object.keys(this.activeTabs).length === 0 && Object.keys(this.dismissedPrTabs).length === 0) return false
+    if (this.panes.size === 0 && this.parkedPanes.size === 0 && !this.closedPanes.hasEntries() && Object.keys(this.activeTabs).length === 0 && Object.keys(this.dismissedPrTabs).length === 0) return false
     const totalPaneCount = currentWindows.reduce(
       (count, window) => count + window.paneIds.length,
       0,
