@@ -137,6 +137,8 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   const segments: Array<{ words: Word[]; list: number; nesting: number }> = []
   const lists = [{ or: false, background: false }]
   let nesting = 0
+  // After &&, || or a pipe, a newline continues the list rather than ending it.
+  let continued = false
   let words: Word[] = []
   let word = ''
   let inWord = false
@@ -145,6 +147,7 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   const heredocs: string[] = []
   const endWord = () => {
     if (inWord) {
+      continued = false
       if (redirect) redirect = false
       else words.push({ text: word, dynamic })
     }
@@ -167,7 +170,9 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   while (index < text.length) {
     const character = text[index]
     if (character === '\n') {
-      endList()
+      endWord()
+      if (continued) endSegment()
+      else endList()
       index = skipHeredocs(index + 1, heredocs)
     } else if (character === ' ' || character === '\t' || character === '\r') {
       endWord()
@@ -183,6 +188,7 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
       if (character === '&' && !double) endList(true)
       else endSegment()
       if (character === '|' && double) lists[lists.length - 1].or = true
+      continued = character === '|' || double
       index += double || (character === '|' && text[index + 1] === '&') ? 2 : 1
     } else if (character === ';' || character === '(' || character === ')') {
       endList()
@@ -259,7 +265,8 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     let start = 0
     let ghRepo: Word | undefined
     while (start < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[start].text)
-      || ['command', 'exec', 'time', 'nohup', 'env'].includes(segment[start].text))) {
+      // `{ … }` runs in the current shell, so a cd inside it does move later commands.
+      || ['command', 'exec', 'time', 'nohup', 'env', '{'].includes(segment[start].text))) {
       if (segment[start].text.startsWith('GH_REPO=')) ghRepo = { text: segment[start].text.slice(8), dynamic: segment[start].dynamic }
       start += 1
     }

@@ -64,6 +64,9 @@ describe('pullRequestImpactsFor', () => {
     ['(cd /work/other && git status); git push origin feat', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
     ['(cd /work/other); gh pr comment 5 -b hi', [{ relation: 'commented', cwd, number: 5 }]],
     ['cd /work/api && (npm test) && git push', [{ relation: 'pushed', cwd: '/work/api' }]],
+    ['git push origin feat 2>&1 |\n  tail -3', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
+    ['npm test &&\n  git push', [{ relation: 'pushed', cwd }]],
+    ['{ cd /work/other; }; git push', [{ relation: 'pushed', cwd: '/work/other' }]],
   ])('counts only the list that decided the exit status: %j', (command, expected) => {
     expect(bash(command)).toEqual(expected)
   })
@@ -80,6 +83,8 @@ describe('pullRequestImpactsFor', () => {
     '(cd /work/other && git push origin feat)',
     'pushd /work/other && popd && git push',
     'test -n "$X" || gh pr merge 3',
+    'git diff --quiet ||\n  gh pr comment 42 -b x',
+    'test -f done || # already pushed\n  git push origin feat',
   ])('reports nothing when the command may not have run or succeeded: %j', (command) => {
     expect(bash(command)).toBeUndefined()
   })
