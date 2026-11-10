@@ -251,7 +251,7 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   endSegment()
 
   const within = (base: string | null | undefined, path: Word | undefined): string | null => {
-    if (!path || path.dynamic || !path.text || path.text.startsWith('~') || path.text === '-') return null
+    if (!path || path.dynamic || !path.text || path.text.startsWith('~') || path.text.startsWith('-')) return null
     if (path.text.startsWith('/')) return path.text
     return base ? `${base.replace(/\/+$/, '')}/${path.text}` : null
   }
@@ -261,6 +261,9 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   // A cd is followed only when it surely ran: in that last list, or as the first command
   // of a plain list (`cd x; git push`). Any other cd leaves the directory unknown.
   const lastList = segments.at(-1)?.list
+  // Inside if, loops or case a cd may or may not run, so after one the directory is unknown.
+  const RESERVED = ['if', 'then', 'elif', 'else', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select', '!', 'builtin']
+  let lost = false
   let cwd: string | null | undefined = startCwd
   for (const [position, { words: segment, list, nesting: depth }] of segments.entries()) {
     if (depth > 0) continue
@@ -279,8 +282,10 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     if (!command || command.dynamic) continue
     const name = command.text.split('/').pop()
     const rest = segment.slice(start + 1)
+    if (RESERVED.includes(command.text)) lost = true
+    if (lost) cwd = null
     if (name === 'cd' || name === 'pushd') {
-      cwd = ran ? within(cwd, rest[0]) : null
+      cwd = ran && !lost ? within(cwd, rest[0]) : null
       continue
     }
     if (name === 'popd') cwd = null

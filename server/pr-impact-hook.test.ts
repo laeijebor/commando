@@ -97,6 +97,12 @@ describe('pullRequestImpactsFor', () => {
     'cd /work/other || exit 1; git push',
     '(npm test) && cd /work/other; git push',
     'cd /work/other & git push',
+    'if false; then\n  cd /work/other\nfi\ngit push',
+    'if [ -d /work/other ]; then cd /work/other; fi; git push',
+    'for d in a b; do cd $d; done; git push',
+    'builtin cd /work/other; git push',
+    'cd -- /work/other && git push',
+    'cd -P /work/other && git push',
   ])('reports nothing when the command may not have run or succeeded: %j', (command) => {
     expect(bash(command)).toBeUndefined()
   })
