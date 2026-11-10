@@ -131,7 +131,14 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     return text.length
   }
 
-  const segments: Word[][] = []
+  // A segment is one simple command. Commands joined by && or || (and pipes) form a list;
+  // `;`, `&`, newlines and parentheses start a new one. Each list notes whether it used ||
+  // or ran in the background, and each segment how deep in ( subshells ) it sits.
+  const segments: Array<{ words: Word[]; list: number; nesting: number }> = []
+  const lists = [{ or: false, background: false }]
+  let nesting = 0
+  // After &&, || or a pipe, a newline continues the list rather than ending it.
+  let continued = false
   let words: Word[] = []
   let word = ''
   let inWord = false
@@ -140,6 +147,7 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   const heredocs: string[] = []
   const endWord = () => {
     if (inWord) {
+      continued = false
       if (redirect) redirect = false
       else words.push({ text: word, dynamic })
     }
@@ -150,20 +158,42 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   const endSegment = () => {
     endWord()
     redirect = false
-    if (words.length) segments.push(words)
+    if (words.length) segments.push({ words, list: lists.length - 1, nesting })
     words = []
+  }
+  const endList = (background = false) => {
+    endSegment()
+    lists[lists.length - 1].background ||= background
+    lists.push({ or: false, background: false })
   }
   let index = 0
   while (index < text.length) {
     const character = text[index]
     if (character === '\n') {
-      endSegment()
+      endWord()
+      if (continued) endSegment()
+      else endList()
       index = skipHeredocs(index + 1, heredocs)
     } else if (character === ' ' || character === '\t' || character === '\r') {
       endWord()
       index += 1
-    } else if (';&|()'.includes(character)) {
-      endSegment()
+    } else if (character === '&' && text[index + 1] === '>') {
+      // `&>file` redirects both outputs.
+      endWord()
+      index += 2
+      if (text[index] === '>') index += 1
+      redirect = true
+    } else if (character === '&' || character === '|') {
+      const double = text[index + 1] === character
+      if (character === '&' && !double) endList(true)
+      else endSegment()
+      if (character === '|' && double) lists[lists.length - 1].or = true
+      continued = character === '|' || double
+      index += double || (character === '|' && text[index + 1] === '&') ? 2 : 1
+    } else if (character === ';' || character === '(' || character === ')') {
+      endList()
+      if (character === '(') nesting += 1
+      if (character === ')') nesting = Math.max(0, nesting - 1)
       index += 1
     } else if (character === '#' && !inWord) {
       const end = text.indexOf('\n', index)
@@ -224,12 +254,19 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     if (path.text.startsWith('/')) return path.text
     return base ? `${base.replace(/\/+$/, '')}/${path.text}` : null
   }
+  // The call exited 0, which proves only that its last list succeeded. So only that list
+  // counts, and only when it has no || (either side may have run) and is not backgrounded.
+  // Subshells count for nothing, and a cd inside one does not move the commands after it.
+  const lastList = segments.at(-1)?.list
   let cwd: string | null | undefined = startCwd
-  for (const segment of segments) {
+  for (const { words: segment, list, nesting: depth } of segments) {
+    if (depth > 0) continue
+    const counts = list === lastList && !lists[list].or && !lists[list].background
     let start = 0
     let ghRepo: Word | undefined
     while (start < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[start].text)
-      || ['command', 'exec', 'time', 'nohup', 'env'].includes(segment[start].text))) {
+      // `{ … }` runs in the current shell, so a cd inside it does move later commands.
+      || ['command', 'exec', 'time', 'nohup', 'env', '{'].includes(segment[start].text))) {
       if (segment[start].text.startsWith('GH_REPO=')) ghRepo = { text: segment[start].text.slice(8), dynamic: segment[start].dynamic }
       start += 1
     }
@@ -241,6 +278,8 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
       cwd = within(cwd, rest[0])
       continue
     }
+    if (name === 'popd') cwd = null
+    if (!counts) continue
     if (name === 'git') {
       let here = cwd
       let at = 0
