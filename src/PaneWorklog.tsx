@@ -30,7 +30,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { AgentProvider, AgentResume, AgentTaskStatus, EarlierAgentSession, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
+import type { AgentProvider, AgentResume, AgentTaskStatus, ClosedWebPane, EarlierAgentSession, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
 import { SESSION_AGENT_CHOICES } from '../shared/tmux-create'
 import { PanePullRequests, usePanePullRequests } from './PanePullRequests'
 import type { PrsApiClient } from './prsApi'
@@ -38,6 +38,7 @@ import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
 import type { PaneManagementApiClient } from './paneManagementApi'
 import type { PaneScreenshotsApiClient } from './paneScreenshotsApi'
 import type { SimsApiClient } from './simsApi'
+import { WorklogClosedTabs } from './WorklogClosedTabs'
 
 const PREFERENCE_PREFIX = 'commando.pane-worklog.'
 
@@ -302,7 +303,14 @@ export function PaneWorklog({
   fullWidth = false,
   visible = true,
   onAttentionChange,
+  closedTabs = [],
+  onReopenClosedTab,
+  onForgetClosedTab,
 }: {
+  /** Recently closed side-panel tabs owned by this pane's target. */
+  closedTabs?: readonly ClosedWebPane[]
+  onReopenClosedTab?: (id: string) => Promise<void>
+  onForgetClosedTab?: (id: string) => Promise<void>
   fullWidth?: boolean
   visible?: boolean
   onAttentionChange?: (paneId: string, unseen: boolean, warning?: boolean) => void
@@ -567,6 +575,10 @@ export function PaneWorklog({
               })}
             </div>
           </section>
+        ) : null}
+
+        {onReopenClosedTab && onForgetClosedTab ? (
+          <WorklogClosedTabs tabs={closedTabs} paneLabel={paneLabel} connected={connected} onReopen={onReopenClosedTab} onForget={onForgetClosedTab} />
         ) : null}
 
         {tasks.length ? (

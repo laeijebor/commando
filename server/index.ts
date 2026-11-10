@@ -54,7 +54,7 @@ import type {
   TmuxPane,
   WebPane,
 } from '../shared/protocol.js'
-import { isRedlineArtifactUrl, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
+import { isRedlineArtifactUrl, redlineArtifactId, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
@@ -657,6 +657,8 @@ async function main(): Promise<void> {
     spotlightRequests: canvasSpotlight.pending(),
     reloads: webPaneAgentRequests.reloads(),
   })
+  // Declared before publishWebPanes, which keeps tabs' artifact registrations alive.
+  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
@@ -674,12 +676,13 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
-    canvasThreads.retain(new Set([...liveIds, ...webPanes.parkedIds()]))
+    canvasThreads.retain(new Set([...liveIds, ...webPanes.retainedIds()]))
     webPaneAgentRequests.retain(liveIds)
     canvasSpotlight.retain(liveIds)
     canvasPush?.retain(liveIds)
     guides?.retain(liveIds)
     canvasWatch.sync(webPanes.list())
+    redlineArtifacts.retain(webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []))
     broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
@@ -789,6 +792,8 @@ async function main(): Promise<void> {
   let snapshotReady = false
   // A lease's pane must be missing from two reads in a row, so one empty or failed tmux read releases nothing.
   let previousPaneIds = new Set<string>()
+  // Kept one snapshot past a pane's exit, so tabs pruned with it still find their owner.
+  const paneTargets = new Map<string, string>()
   // Releases wait for the listener, so a daemon that fails to bind its port never touches devices.
   let listening = false
   let snapshotRevision = 0
@@ -1703,7 +1708,11 @@ async function main(): Promise<void> {
           broadcast({ type: 'snapshot', snapshot })
           companion?.publish()
         }
+        for (const pane of snapshot.panes) paneTargets.set(pane.id, pane.targetId)
         const webPanesPruned = webPanes.prune(snapshot.windows)
+        if (snapshot.panes.length) {
+          for (const paneId of paneTargets.keys()) if (!paneForId(paneId)) paneTargets.delete(paneId)
+        }
         let webPaneConversationsChanged = false
         // Hooks can precede pane discovery, and loaded briefs need no new hook.
         for (const paneId of paneIds) {
@@ -2035,6 +2044,11 @@ async function main(): Promise<void> {
     }
     return pane.title?.trim() || undefined
   }
+  webPanes.closedTabHooks = {
+    targetIdFor: (paneId) => paneForId(paneId)?.targetId ?? paneTargets.get(paneId),
+    titleFor: tileTitle,
+    liveTargets: () => new Set(snapshot.panes.map((pane) => pane.targetId)),
+  }
   canvasPush = new CanvasPush({
     sending: agentPushes,
     repoRoot: fileURLToPath(new URL('../', import.meta.url)),
@@ -2287,6 +2301,10 @@ async function main(): Promise<void> {
     },
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
+    paneForTarget: (targetId) => {
+      const pane = snapshot.panes.find((candidate) => candidate.targetId === targetId && !candidate.dead)
+      return pane ? { id: pane.id, sessionId: pane.sessionId, windowId: pane.windowId, width: pane.width, height: pane.height } : undefined
+    },
     paneForId: (paneId) => {
       const pane = paneForId(paneId)
       return pane
@@ -2335,12 +2353,11 @@ async function main(): Promise<void> {
       // adopts the unsent pills back (they expire with the TTL sweep).
     },
   })
-  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
   const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
   canvasSnapshots.prune()
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
   canvasWatch.sync(webPanes.list())
-  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.parkedIds()]))
+  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.retainedIds()]))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),

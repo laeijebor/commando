@@ -166,6 +166,34 @@ describe('RedlineArtifactRegistry', () => {
     expect(registry.resolve(id, 'index.html')).toBeNull()
   })
 
+  it('retain keeps a shown registration alive past the ttl, refreshing at most daily', () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
+    let clock = 1_000
+    const registry = new RedlineArtifactRegistry({ statePath, now: () => clock })
+    const { id } = registry.register(realpathSync(artifactDir()))
+    const other = registry.register(realpathSync(artifactDir())).id
+    const written = () => readFileSync(statePath, 'utf8')
+    const before = written()
+    clock += 60_000
+    registry.retain([id])
+    expect(written()).toBe(before)
+    clock += REDLINE_ARTIFACT_TTL_MS - 120_000
+    registry.retain([id, 'unknown'])
+    clock += 120_000
+    expect(registry.resolve(id, 'index.html')).not.toBeNull()
+    expect(registry.resolve(other, 'index.html')).toBeNull()
+    expect(new RedlineArtifactRegistry({ statePath, now: () => clock }).resolve(id, 'index.html')).not.toBeNull()
+  })
+
+  it('retain does not revive an expired registration', () => {
+    let clock = 1_000
+    const registry = new RedlineArtifactRegistry({ now: () => clock })
+    const { id } = registry.register(realpathSync(artifactDir()))
+    clock += REDLINE_ARTIFACT_TTL_MS + 1
+    registry.retain([id])
+    expect(registry.resolve(id, 'index.html')).toBeNull()
+  })
+
   it('prunes expired entries before enforcing the registration cap', () => {
     const statePath = join(mkdtempSync(join(tmpdir(), 'redline-state-')), 'artifacts.json')
     let clock = 1_000

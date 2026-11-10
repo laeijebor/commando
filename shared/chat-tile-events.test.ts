@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ChatItem } from './agent-chat.js'
-import { isRedlineArtifactUrl, parseTileEventIds, tileEventMarker, tileEventSummary, tileEventTitle, tileSource, withTileEvents, type ChatTileEvent } from './chat-tile-events.js'
+import { isRedlineArtifactUrl, redlineArtifactId, parseTileEventIds, tileEventMarker, tileEventSummary, tileEventTitle, tileSource, withTileEvents, type ChatTileEvent } from './chat-tile-events.js'
 
 const base = { status: 'completed' as const, updatedAt: 0 }
 const user = (id: string, text: string, createdAt: number): ChatItem => ({ ...base, id, kind: 'user_message', text, turnId: `turn-${id}`, createdAt })
@@ -63,5 +63,9 @@ describe('labels', () => {
     expect(tileSource({ content: { kind: 'guide' } })).toBeUndefined()
     expect(isRedlineArtifactUrl('http://127.0.0.1:4310/redline/artifacts/abc/plan.html')).toBe(true)
     expect(isRedlineArtifactUrl('http://localhost:5173/')).toBe(false)
+    expect(redlineArtifactId('http://127.0.0.1:4310/redline/artifacts/abc/plan.html')).toBe('abc')
+    expect(redlineArtifactId('http://localhost:4310/redline/artifacts/abc')).toBe('abc')
+    expect(redlineArtifactId('http://example.com/redline/artifacts/abc/plan.html')).toBeUndefined()
+    expect(redlineArtifactId('not a url')).toBeUndefined()
   })
 })

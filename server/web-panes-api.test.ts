@@ -1549,3 +1549,33 @@ describe('pending note routes', () => {
     expect((await fetch(`${baseUrl}/api/web-panes/${id}/pending/nope`, { method: 'DELETE', headers: ownerAuth })).status).toBe(404)
   })
 })
+
+describe('closed tab routes', () => {
+  const target = '11111111-1111-4111-8111-111111111111'
+
+  it('records the closing title, then lets only the owner reopen beside the target\'s live pane or forget', async () => {
+    const service = await createService()
+    service.closedTabHooks = { targetIdFor: (paneId) => paneId === '%12' ? target : undefined }
+    const { baseUrl, onChange } = await startApi(service, {
+      paneForTarget: (targetId) => targetId === target ? { id: '%12', sessionId: '$1', windowId: '@3', width: 190, height: 55 } : undefined,
+    })
+    const opened = await (await post(baseUrl, '/api/web-panes', { url: 'http://localhost:5173/', anchor: '%12' }, agentAuth)).json() as { webPaneId: string }
+    expect((await fetch(`${baseUrl}/api/web-panes/${opened.webPaneId}?title=Storybook`, { method: 'DELETE', headers: ownerAuth })).status).toBe(200)
+    expect(service.closedTabs()[target]).toEqual([expect.objectContaining({ id: opened.webPaneId, title: 'Storybook' })])
+
+    expect((await post(baseUrl, '/api/web-panes/closed-tabs/reopen', { targetId: target, id: opened.webPaneId }, agentAuth)).status).toBe(403)
+    expect((await post(baseUrl, '/api/web-panes/closed-tabs/reopen', { targetId: '22222222-2222-4222-8222-222222222222', id: opened.webPaneId }, ownerAuth)).status).toBe(404)
+    const reopened = await post(baseUrl, '/api/web-panes/closed-tabs/reopen', { targetId: target, id: opened.webPaneId }, ownerAuth)
+    expect(reopened.status).toBe(200)
+    expect(await reopened.json()).toMatchObject({ ok: true, webPaneId: opened.webPaneId, beside: '%12', status: 'open' })
+    expect(service.get(opened.webPaneId)).toBeDefined()
+    expect(service.closedTabs()).toEqual({})
+
+    service.close(opened.webPaneId)
+    onChange.mockClear()
+    expect((await post(baseUrl, '/api/web-panes/closed-tabs/forget', { targetId: target, id: opened.webPaneId }, ownerAuth)).status).toBe(200)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect((await post(baseUrl, '/api/web-panes/closed-tabs/forget', { targetId: target, id: opened.webPaneId }, ownerAuth)).status).toBe(404)
+    expect((await post(baseUrl, '/api/web-panes/closed-tabs/forget', { targetId: target }, ownerAuth)).status).toBe(400)
+  })
+})

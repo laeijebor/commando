@@ -29,7 +29,16 @@ describe('canvas threads for conversation-owned tabs', () => {
   }
   // The daemon uses this union both when publishing changes and on startup.
   const retain = (store: CanvasThreadsStore, service: WebPaneService) =>
-    store.retain(new Set([...service.list().map((pane) => pane.id), ...service.parkedIds()]))
+    store.retain(new Set([...service.list().map((pane) => pane.id), ...service.retainedIds()]))
+
+  it('lists URLs of live and parked tabs so their artifacts stay registered', () => {
+    const service = serviceAt(() => 1_000)
+    const parked = service.open({ ...anchor, url: 'http://127.0.0.1:4310/redline/artifacts/aaaa/canvas.html', content })
+    expect(service.retainedUrls()).toEqual([parked.url])
+    service.prune(survivingWindow)
+    expect(service.list()).toEqual([])
+    expect(service.retainedUrls()).toEqual([parked.url])
+  })
 
   it('keeps discussions through park, restart and restore, then releases them at the parked TTL', async () => {
     let now = 1_000
@@ -42,7 +51,7 @@ describe('canvas threads for conversation-owned tabs', () => {
     const discussion = store.list(tab.id)
     service.prune(survivingWindow)
     expect(service.list()).toEqual([])
-    expect(service.parkedIds()).toEqual([tab.id])
+    expect(service.retainedIds()).toEqual([tab.id])
     retain(store, service)
     expect(store.list(tab.id)).toEqual(discussion)
     await service.flush()
@@ -52,14 +61,14 @@ describe('canvas threads for conversation-owned tabs', () => {
     retain(restoredStore, loaded)
     expect(restoredStore.list(tab.id)).toEqual(discussion)
     expect(loaded.reconcileAgentSession(destination)).toBe(true)
-    expect(loaded.parkedIds()).toEqual([])
+    expect(loaded.retainedIds()).toEqual([])
     retain(restoredStore, loaded)
     expect(loaded.get(tab.id)?.anchorPaneId).toBe(destination.anchorPaneId)
     expect(restoredStore.list(tab.id)).toEqual(discussion)
     loaded.prune(survivingWindow)
     now += 30 * 24 * 60 * 60 * 1_000
     expect(loaded.prune(survivingWindow)).toBe(true)
-    expect(loaded.parkedIds()).toEqual([])
+    expect(loaded.retainedIds()).toEqual([])
     retain(restoredStore, loaded)
     expect(new CanvasThreadsStore(path).list(tab.id)).toEqual([])
   })
@@ -89,8 +98,8 @@ describe('canvas threads for conversation-owned tabs', () => {
     const newest = loaded.open({ ...anchor, url: 'http://localhost/new', content })
     store.record(newest.id, [note])
     loaded.prune(survivingWindow)
-    expect(loaded.parkedIds()).toHaveLength(300)
-    expect(loaded.parkedIds()).not.toContain(tab.id)
+    expect(loaded.retainedIds()).toHaveLength(300)
+    expect(loaded.retainedIds()).not.toContain(tab.id)
     retain(store, loaded)
     const restoredStore = new CanvasThreadsStore(path)
     expect(restoredStore.list(tab.id)).toEqual([])

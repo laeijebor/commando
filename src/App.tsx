@@ -89,6 +89,7 @@ import type {
   SessionIde,
   SpecialKey,
   TmuxPane,
+  ClosedWebPane,
   WebPane,
   WebPaneEngine,
   WebPaneFeedbackInfo,
@@ -1195,6 +1196,7 @@ function HostApp() {
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
   const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
   const [dismissedPrTabs, setDismissedPrTabs] = useState<Record<string, Record<string, string>>>({})
+  const [closedTabs, setClosedTabs] = useState<Record<string, ClosedWebPane[]>>({})
   const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
   const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
   const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
@@ -1213,6 +1215,8 @@ function HostApp() {
   }, [])
   const knownPanelTabs = useRef<Map<string, number> | null>(null)
   const pendingTabSelection = useRef(new Map<string, string>())
+  // A broadcast sent before the daemon handled our close must not reselect the closing tab.
+  const closingPanelTabs = useRef(new Set<string>())
   const seenPanelTabs = useRef(new Map<string, number>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
   const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
@@ -1684,6 +1688,7 @@ function HostApp() {
         }
         setPanelActiveTabs(message.activeTabs ?? {})
         setDismissedPrTabs(message.dismissedPrTabs ?? {})
+        setClosedTabs(message.closedTabs ?? {})
         setWebPanes(message.webPanes)
         setWebPaneFeedback(message.feedback ?? {})
         setWebPaneNavigateRequests(message.navigateRequests ?? {})
@@ -1935,7 +1940,7 @@ function HostApp() {
     if (!effectivePaneId || !activeGroup || !connected) return
     const focusedTabs = panelTabs(tabs.filter((tab) => tab.windowId === activeGroup.windowId), effectivePaneId)
     const newTabs = openedPanelTabs(focusedTabs, previous)
-    const selected = newTabs.at(-1)
+    const selected = newTabs.filter((tab) => !closingPanelTabs.current.has(tab.id)).at(-1)
     if (!selected) return
     if (pendingTabSelection.current.get(effectivePaneId) === selected.id) return
     pendingTabSelection.current.set(effectivePaneId, selected.id)
@@ -3092,11 +3097,14 @@ function HostApp() {
         ? { ...pane, activeTab: pane.id === next }
         : pane)
     })
+    closingPanelTabs.current.add(webPaneId)
     try {
       await selection
-      await webPanesApi.close(webPaneId)
+      await webPanesApi.close(webPaneId, webPaneTitles[webPaneId])
     } catch (cause) {
       setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
+    } finally {
+      closingPanelTabs.current.delete(webPaneId)
     }
   }
 
@@ -3878,7 +3886,12 @@ function HostApp() {
       simsApi={local ? simsApi : undefined} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
       screenshotsApi={local ? paneScreenshotsApi : undefined} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
       onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
-      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)} />
+      onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)}
+      {...local ? {
+        closedTabs: closedTabs[pane.targetId],
+        onReopenClosedTab: (id: string) => webPanesApi.reopenClosedTab(pane.targetId, id),
+        onForgetClosedTab: (id: string) => webPanesApi.forgetClosedTab(pane.targetId, id),
+      } : {}} />
   }
 
   return (
