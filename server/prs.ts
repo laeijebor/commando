@@ -8,12 +8,12 @@ import { PrConflictInspector } from './pr-conflicts.js'
 import { PrStackService } from './pr-stacks.js'
 import { PrReadCache } from './pr-read-cache.js'
 import { fetchGithubAsset, githubAssetUrl, type GithubAsset } from './github-assets.js'
-import { PanePrRecords, isPanePrRef, recordRecency, recordRelation, type PanePrRecord, type PanePrRef } from './pane-pr-records.js'
+import { PanePrRecords, isPanePrRef, recordRecency, recordRelation, type PanePrRecord, type PanePrRef, type PanePrRelation } from './pane-pr-records.js'
 import { resolvePrImpact, type PrImpactReport } from './pane-pr-impacts.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
 import { stripHtmlComments } from '../shared/chat-tile-events.js'
-import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList, PanePrLink } from '../shared/pr-types.js'
+import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 export type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 import {
   isCommandoTargetId,
@@ -84,7 +84,9 @@ type RecordedRef = PanePrRecord & { targetId: string }
  * Recorded PRs found by number, per pane, with how the pane relates to each,
  * and the panes with a PR that couldn't be checked.
  */
-type RecordedLookup = { byTarget: Map<string, PanePrSummary[]>; links: Map<string, PanePrLink[]>; incomplete: Set<string> }
+type RecordedLookup = { byTarget: Map<string, PanePrSummary[]>; links: Map<string, RecordedLink[]>; incomplete: Set<string> }
+/** `at` is a created PR's creation time, or when the pane last touched an impacted one. */
+type RecordedLink = PanePrRef & { relation: PanePrRelation; at: number }
 const PR_CONVERSATION_TTL_MS = 60_000
 const PR_CHECKS_TTL_MS = 30_000
 
@@ -496,7 +498,7 @@ function prKey(ref: PanePrRef): string {
   return `${ref.repo.toLowerCase()}#${ref.number}`
 }
 
-function addRecorded(lookup: RecordedLookup, targetId: string, pr: PanePrSummary, link: PanePrLink): void {
+function addRecorded(lookup: RecordedLookup, targetId: string, pr: PanePrSummary, link: RecordedLink): void {
   const prs = lookup.byTarget.get(targetId) ?? []
   if (prs.some((known) => prKey(known) === prKey(pr))) return
   lookup.byTarget.set(targetId, [...prs, pr])
@@ -1296,13 +1298,22 @@ export class PrService {
   }
 
   private paneListFrom(result: Awaited<ReturnType<PrService['searchPanes']>>, targetId: string, openOnly: boolean, shared = false, lookup?: RecordedLookup): PanePrList {
-    const recorded = lookup?.byTarget.get(targetId) ?? []
-    const found = result.linked.nodes
+    const links = new Map((lookup?.links.get(targetId) ?? []).map((link) => [prKey(link), link]))
+    const impact = (pr: PanePrSummary) => {
+      const link = links.get(prKey(pr))
+      return link && link.relation !== 'created' ? { relation: link.relation, at: link.at } : null
+    }
+    const allRecorded = lookup?.byTarget.get(targetId) ?? []
+    const recorded = allRecorded.filter((pr) => !impact(pr))
+    const impacted = allRecorded.flatMap((pr) => {
+      const touched = impact(pr)
+      return touched ? [{ ...pr, relation: touched.relation, impactedAt: touched.at }] : []
+    })
+    const pullRequests = result.linked.nodes
       .map((node) => parsePanePullRequest(node, targetId, result.viewer))
       .filter((pullRequest): pullRequest is PanePrSummary => pullRequest !== null)
-    const pullRequests = found.concat(recorded).sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    const links = found.map((pr): PanePrLink => ({ repo: pr.repo, number: pr.number, relation: 'created', at: Date.parse(pr.createdAt) }))
-      .concat(lookup?.links.get(targetId) ?? [])
+      .concat(recorded)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     const list: PanePrList = {
       targetId,
       viewer: result.viewer,
@@ -1313,7 +1324,7 @@ export class PrService {
       // A recorded PR that couldn't be checked may still belong here.
       truncated: result.linked.truncated || lookup?.incomplete.has(targetId) === true,
       fetchedAt: result.fetchedAt,
-      links,
+      ...(impacted.length ? { impacted } : {}),
     }
     this.invalidateChangedReferences(list)
     if (!openOnly) this.entities.ingest(list, result.order)

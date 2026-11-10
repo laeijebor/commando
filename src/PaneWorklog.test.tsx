@@ -262,9 +262,9 @@ describe('PaneWorklog', () => {
   it('puts Pull requests between Important terms and the plan, and opens a PR beside the pane', async () => {
     const pr = (number: number, createdAt: string) => ({ repo: 'acme/app', number, title: `PR ${number}`, url: `https://example.test/pr/${number}`, state: 'open', isDraft: false, createdAt, updatedAt: createdAt, additions: 0, deletions: 0, checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null })
     const prsApi = {
-      pane: vi.fn().mockResolvedValue({ targetId: 'target', totalCount: 2, truncated: false, fetchedAt: Date.now(),
-        pullRequests: [pr(2, '2026-01-02T00:00:00Z'), pr(1, '2026-01-01T00:00:00Z')],
-        links: [{ repo: 'acme/app', number: 2, relation: 'created', at: Date.parse('2026-01-02T00:00:00Z') }, { repo: 'acme/app', number: 1, relation: 'pushed', at: Date.parse('2026-01-03T00:00:00Z') }] }),
+      pane: vi.fn().mockResolvedValue({ targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
+        pullRequests: [pr(2, '2026-01-02T00:00:00Z')],
+        impacted: [{ ...pr(1, '2026-01-01T00:00:00Z'), relation: 'pushed', impactedAt: Date.parse('2026-01-03T00:00:00Z') }] }),
       repoForPane: vi.fn().mockResolvedValue('acme/app'),
     }
     const onOpenPr = vi.fn()

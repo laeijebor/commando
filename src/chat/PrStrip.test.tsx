@@ -42,6 +42,17 @@ async function openCi() {
 }
 
 describe('chat PR strip', () => {
+  it('leaves out PRs the pane only pushed to, reviewed or commented on', async () => {
+    const api = setup([pr(12)])
+    api.pane.mockResolvedValue({ targetId, totalCount: 1, pullRequests: [pr(12)], truncated: false, fetchedAt: Date.now(),
+      impacted: [{ ...pr(30), relation: 'reviewed', impactedAt: 1 }] } as never)
+    api.view.unmount()
+    render(<PrStrip paneId="%2" api={api} connected />)
+    const section = await screen.findByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).queryByText('#30')).not.toBeInTheDocument()
+    expect(within(section).getByText('#12')).toBeInTheDocument()
+  })
+
   it('renders every PR with open PRs first, diffs and external links', async () => {
     setup([pr(10, 'merged'), pr(11, 'closed'), pr(12), pr(13)])
     const section = await screen.findByRole('region', { name: 'Linked pull requests' })

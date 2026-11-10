@@ -1629,7 +1629,10 @@ describe('pane PR impacts', () => {
       })
     })
   }
-  const linkOf = (list: Awaited<ReturnType<PrService['listPanePullRequests']>>) => (list.links ?? []).map((link) => `${link.number}:${link.relation}`)
+  const linkOf = (list: Awaited<ReturnType<PrService['listPanePullRequests']>>) => [
+    ...list.pullRequests.map((pr) => `${pr.number}:created`),
+    ...(list.impacted ?? []).map((pr) => `${pr.number}:${pr.relation}`),
+  ]
 
   it('lists a PR the pane reviewed, without a marker, under its relation', async () => {
     let now = Date.parse('2026-09-01T00:00:00Z')
@@ -1637,8 +1640,10 @@ describe('pane PR impacts', () => {
     const service = new PrService({ runner, paneBatchWindowMs: 0, listTtlMs: 0, now: () => now })
     await service.recordPaneImpacts(targetId, [{ relation: 'reviewed', repo: 'acme/widgets', number: 5 }])
     let list = await service.listPanePullRequests(targetId)
-    expect(list.pullRequests.map((pr) => pr.number)).toEqual([5])
-    expect(list.links).toEqual([{ repo: 'acme/widgets', number: 5, relation: 'reviewed', at: now }])
+    // Kept out of `pullRequests`, so tabs, session counts and auto-fix never see it.
+    expect(list.pullRequests).toEqual([])
+    expect(list.totalCount).toBe(0)
+    expect(list.impacted).toMatchObject([{ repo: 'acme/widgets', number: 5, relation: 'reviewed', impactedAt: now }])
     // No grace period applies: it never had a marker to lose.
     now += 60 * 60_000
     list = await service.listPanePullRequests(targetId)
@@ -1754,9 +1759,7 @@ describe('pane PR impacts', () => {
     const service = new PrService({ runner: github({ 4: node(4) }, () => [mine]), paneBatchWindowMs: 0, listTtlMs: 0, now: () => 5_000 })
     await service.recordPaneImpacts(targetId, [{ relation: 'pushed', repo: 'acme/widgets', number: 4 }, { relation: 'pushed', repo: 'acme/widgets', number: 2 }])
     const list = await service.listPanePullRequests(targetId)
-    expect(list.links).toEqual([
-      { repo: 'acme/widgets', number: 2, relation: 'created', at: Date.parse('2026-08-20T09:00:00Z') },
-      { repo: 'acme/widgets', number: 4, relation: 'pushed', at: 5_000 },
-    ])
+    expect(list.pullRequests.map((pr) => pr.number)).toEqual([2])
+    expect(list.impacted).toMatchObject([{ repo: 'acme/widgets', number: 4, relation: 'pushed', impactedAt: 5_000 }])
   })
 })

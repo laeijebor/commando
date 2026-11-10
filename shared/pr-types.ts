@@ -68,17 +68,20 @@ export type PanePrSummary = PrStatus & Pick<PrSummary, 'number' | 'title' | 'url
   repo: string
   preview?: PrSummary
 }
-/** How a pane's session relates to a PR: it created it, pushed to its branch, or reviewed or commented on it. */
-export type PanePrRelation = 'created' | 'pushed' | 'reviewed' | 'commented'
-/** `at` is when the relation began (the PR's creation) or last happened (a push or comment). */
-export type PanePrLink = { repo: string; number: number; relation: PanePrRelation; at: number }
+/** How a pane's session touched a PR it did not create: pushed to its branch, or reviewed or commented on it. */
+export type PanePrImpact = 'pushed' | 'reviewed' | 'commented'
+/** A PR the pane only impacted; `impactedAt` is when it last did. */
+export type PaneImpactedPr = PanePrSummary & { relation: PanePrImpact; impactedAt: number }
 export type PanePrList = {
   targetId: string
   viewer?: string
   totalCount: number
   pullRequests: PanePrSummary[]
-  /** One per PR in `pullRequests`; older daemons omit it, and every PR they list was created by the pane. */
-  links?: PanePrLink[]
+  /**
+   * PRs the pane pushed to, reviewed or commented on but did not create. Kept
+   * apart from `pullRequests`, so tabs, counts and auto-fix only see created PRs.
+   */
+  impacted?: PaneImpactedPr[]
   truncated: boolean
   fetchedAt: number
 }

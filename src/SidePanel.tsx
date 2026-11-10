@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import { FileDiff, GitPullRequest, LayoutDashboard, Presentation, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X, type LucideIcon } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
 import type { TmuxPane, WebPane, WebPaneEngine } from '../shared/protocol'
-import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, panelScrimClipPath, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, panelPanePrs, panelScrimClipPath, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrList, PrsApiClient } from './prsApi'
 import { usePaneGitSummary } from './paneGitStore'
@@ -63,7 +63,7 @@ export function tabLabel(tab: WebPane, title?: string, simulatorName?: string): 
 
 export function SidePanel({
   windowId, tabs, focusedPaneId, maximizedTabId, revealRequest, narrowMode = false, drawerOpen = false, onDrawerOpen, onDrawerClose, gridMaximized = false, paneLabel, simulatorNames, titles,
-  onSelect, onSeen, onClose, onOpen, renderTab, children, panes = [], gitApi, prsApi, connected = false, renderBuiltin, activeTabs = {}, dismissedPrTabs = {}, onDismissPr, onRestorePr, sessionAttention = {}, sessionWarnings = {}, onMaximize, onTabSets,
+  onSelect, onSeen, onClose, onOpen, renderTab, children, panes = [], gitApi, prsApi, connected = false, renderBuiltin, activeTabs = {}, dismissedPrTabs = {}, openedPrTabs = {}, onDismissPr, onRestorePr, sessionAttention = {}, sessionWarnings = {}, onMaximize, onTabSets,
 }: {
   windowId: string
   narrowMode?: boolean
@@ -85,6 +85,8 @@ export function SidePanel({
   connected?: boolean
   activeTabs?: Record<string, string>
   dismissedPrTabs?: Record<string, Record<string, string>>
+  /** Impacted PRs per pane whose tab was opened from the worklog; those get a tab like created PRs. */
+  openedPrTabs?: Record<string, readonly string[]>
   onDismissPr?: (tab: BuiltinPanelTab, signature: string, next?: PanelTab) => void
   onRestorePr?: (tab: BuiltinPanelTab) => void
   sessionAttention?: Record<string, boolean>
@@ -133,7 +135,7 @@ export function SidePanel({
   }, [onDrawerClose, focusedPaneId])
   const dragRef = useRef<{ startX: number; width: number; workspaceWidth: number } | null>(null)
   const paneIds = [...new Set([...panes.map((pane) => pane.id), ...tabs.map((tab) => tab.anchorPaneId), ...(focusedPaneId ? [focusedPaneId] : [])])]
-  const allTabs = paneIds.flatMap((id) => combinedPanelTabs(id, tabs, paneData[id]?.summary ?? null, paneData[id]?.prs?.pullRequests ?? [], sessionAttention[id], sessionWarnings[id], dismissedPrTabs[id]))
+  const allTabs = paneIds.flatMap((id) => combinedPanelTabs(id, tabs, paneData[id]?.summary ?? null, panelPanePrs(paneData[id]?.prs, openedPrTabs[id]), sessionAttention[id], sessionWarnings[id], dismissedPrTabs[id]))
   useEffect(() => { onTabSets?.(allTabs) }, [allTabs, onTabSets])
   const maximizedTab = allTabs.find((tab) => tab.id === maximizedTabId)
   const expanded = Boolean(maximizedTab) || (narrowMode ? drawerOpen : !collapsed)
@@ -146,7 +148,8 @@ export function SidePanel({
     return () => window.clearTimeout(timer)
   }, [narrowMode, expanded, gridMaximized, drawerOccluding])
   const owner = maximizedTab?.anchorPaneId ?? focusedPaneId ?? ''
-  const closedPrs = closedPanePrs(paneData[focusedPaneId ?? '']?.prs?.pullRequests ?? [], dismissedPrTabs[focusedPaneId ?? ''])
+  const focusedPrs = panelPanePrs(paneData[focusedPaneId ?? '']?.prs, openedPrTabs[focusedPaneId ?? ''])
+  const closedPrs = closedPanePrs(focusedPrs, dismissedPrTabs[focusedPaneId ?? ''])
   const focusedTabs = allTabs.filter((tab) => tab.anchorPaneId === owner)
   const stored = activeTabs[owner] ?? activePanelTab(tabs.filter((tab) => tab.anchorPaneId === owner))?.id
   const active = maximizedTab ?? resolveActivePanelTab(focusedTabs, stored, previousTabs.current[owner])
@@ -366,7 +369,7 @@ export function SidePanel({
             {closedPrs.map((pr) => <button key={prPanelKey(pr.repo, pr.number)} type="button" onClick={() => {
               onRestorePr?.(builtinPanelTab(focusedPaneId!, prPanelKey(pr.repo, pr.number)))
               setAdding(null)
-            }}><i className={`side-panel-pr-indicator ${pr.state === 'open' && pr.isDraft ? 'draft' : pr.state}`} aria-label={pr.state === 'open' && pr.isDraft ? 'draft' : pr.state} /><span>{(paneData[focusedPaneId ?? '']?.prs?.pullRequests ?? []).filter((linked) => linked.number === pr.number).length > 1 ? pr.repo : ''}#{pr.number} · {pr.title}</span></button>)}
+            }}><i className={`side-panel-pr-indicator ${pr.state === 'open' && pr.isDraft ? 'draft' : pr.state}`} aria-label={pr.state === 'open' && pr.isDraft ? 'draft' : pr.state} /><span>{focusedPrs.filter((linked) => linked.number === pr.number).length > 1 ? pr.repo : ''}#{pr.number} · {pr.title}</span></button>)}
           </section>}
           <form onSubmit={(event) => { event.preventDefault(); open() }}>
             <input autoFocus value={url} onChange={(event) => setUrl(event.target.value)} placeholder="http://localhost:5173" aria-label="Tab URL" />

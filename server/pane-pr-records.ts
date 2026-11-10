@@ -2,12 +2,12 @@ import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { isCommandoTargetId } from '../shared/pane-target.js'
-import type { PanePrRelation } from '../shared/pr-types.js'
+import type { PanePrImpact } from '../shared/pr-types.js'
 
 /** A PR a pane is known to have created or impacted, so it stays listed when GitHub's search misses it. */
 export type PanePrRef = { repo: string; number: number }
-/** How a pane touched a PR it may not have created. */
-export type PanePrImpact = Exclude<PanePrRelation, 'created'>
+export type { PanePrImpact }
+export type PanePrRelation = 'created' | PanePrImpact
 /**
  * `at` is when the PR was first recorded; `createdAt` when GitHub says it was created, once known.
  * `impact` is the strongest way the pane touched the PR, last at `impactedAt`.

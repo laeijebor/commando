@@ -17,23 +17,20 @@ function pr(overrides: Partial<PanePrSummary> & Pick<PanePrSummary, 'number'>): 
   }
 }
 
-function list(pullRequests: PanePrSummary[], links?: PanePrList['links'], truncated = false): PanePrList {
-  return { targetId: 'target', totalCount: pullRequests.length, truncated, fetchedAt: 0, pullRequests, ...(links ? { links } : {}) }
+function list(pullRequests: PanePrSummary[], impacted?: PanePrList['impacted'], truncated = false): PanePrList {
+  return { targetId: 'target', totalCount: pullRequests.length, truncated, fetchedAt: 0, pullRequests, ...(impacted ? { impacted } : {}) }
 }
 
 describe('WorklogPullRequests', () => {
   it('lists created and impacted PRs newest first with state, relation and foreign repos', async () => {
     const onOpen = vi.fn()
+    const at = (iso: string) => Date.parse(iso)
     render(<WorklogPullRequests paneId="%3" paneLabel="Tests" onOpen={onOpen} repoForPane={async () => 'acme/app'} list={list([
       pr({ number: 1, createdAt: '2026-01-01T00:00:00Z' }),
-      pr({ number: 2, state: 'merged' }),
-      pr({ number: 3, isDraft: true }),
-      pr({ repo: 'other/lib', number: 4, state: 'closed' }),
     ], [
-      { repo: 'acme/app', number: 1, relation: 'created', at: 100 },
-      { repo: 'acme/app', number: 2, relation: 'pushed', at: 400 },
-      { repo: 'acme/app', number: 3, relation: 'commented', at: 200 },
-      { repo: 'other/lib', number: 4, relation: 'reviewed', at: 300 },
+      { ...pr({ number: 2, state: 'merged' }), relation: 'pushed', impactedAt: at('2026-01-04T00:00:00Z') },
+      { ...pr({ number: 3, isDraft: true }), relation: 'commented', impactedAt: at('2026-01-02T00:00:00Z') },
+      { ...pr({ repo: 'other/lib', number: 4, state: 'closed' }), relation: 'reviewed', impactedAt: at('2026-01-03T00:00:00Z') },
     ])} />)
     const section = screen.getByLabelText('Pull requests for Tests')
     await within(section).findByText('merged')
@@ -67,6 +64,11 @@ describe('WorklogPullRequests', () => {
     expect(screen.getByText('1+ unresolved')).toHaveClass('replied')
     expect(screen.getByText('⚠ conflicts')).toBeInTheDocument()
     if (reviewLabel) expect(screen.getByText(reviewLabel)).toBeInTheDocument()
+  })
+
+  it('shows a pane that only impacted PRs, and names every repo until the pane repo is known', () => {
+    render(<WorklogPullRequests paneId="%3" paneLabel="Tests" list={list([], [{ ...pr({ number: 5 }), relation: 'pushed', impactedAt: 1 }])} />)
+    expect(screen.getByRole('button', { name: /#5/ })).toHaveTextContent('acme/app · open')
   })
 
   it('treats a list from an older daemon as created PRs and names every repo until the pane repo is known', () => {

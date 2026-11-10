@@ -1,7 +1,7 @@
 import type { WebPane } from '../shared/protocol'
 import { panelTabs, isLegacyPrPanelKey, parsePrPanelKey, prPanelKey, type BuiltinPanelKey } from '../shared/web-pane-placement'
 import type { GitDiffSummary } from './gitApi'
-import type { PanePrSummary } from './prsApi'
+import type { PanePrList, PanePrSummary } from './prsApi'
 export { panelTabs }
 
 export const NARROW_PANEL_QUERY = '(max-width: 840px)'
@@ -68,6 +68,11 @@ export function hasPaneChanges(summary: GitDiffSummary | null): boolean {
 export function orderedPanePrs(prs: readonly PanePrSummary[]): PanePrSummary[] {
   const priority = { open: 0, merged: 1, closed: 2 }
   return [...prs].sort((a, b) => priority[a.state] - priority[b.state] || b.updatedAt.localeCompare(a.updatedAt))
+}
+/** The PRs that get side-panel tabs: every PR the pane created, plus impacted ones opened from its worklog. */
+export function panelPanePrs(list: PanePrList | null | undefined, opened: readonly string[] = []): PanePrSummary[] {
+  const extra = (list?.impacted ?? []).filter((pr) => opened.includes(prPanelKey(pr.repo, pr.number)))
+  return extra.length ? [...list!.pullRequests, ...extra] : list?.pullRequests ?? []
 }
 export function prTabSignature(pr: PanePrSummary): string {
   return `${pr.state}|${pr.isDraft}|${pr.updatedAt}`
