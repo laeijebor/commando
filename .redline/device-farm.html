@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en" data-redline-theme="commando">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Device farm: sharing phones across the team</title>
+<link rel="stylesheet" href="http://127.0.0.1:4310/redline/design/default.css">
+<style>
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .good { color: #8ee6a8; }
+  .bad { color: #ff9b9b; }
+  .meh { color: #f3d58a; }
+  table td, table th { vertical-align: top; }
+  .mermaid { background: transparent; overflow-x: auto; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
+  .kv dt { color: #b4becd; }
+  .kv dd { margin: 0; }
+  pre.redline-code { white-space: pre-wrap; word-break: break-word; }
+  .small { font-size: 13px; color: #b4becd; }
+  .pill { display:inline-block; padding:1px 8px; border:1px solid #374252; border-radius:999px; font-size:12px; color:#b4becd; margin-right:4px }
+</style>
+</head>
+<body>
+<div class="redline-layout">
+<redline-nav mode="sections"
+  eyebrow="Commando → new repo"
+  heading="Device farm for the team"
+  summary="Shared always-on Macs with real phones, which ~7 engineers' agents lease for perf profiling. Trialled 4 ways today; recommendation and open questions inside."
+  status="Ready for review"></redline-nav>
+<main class="redline-shell redline-stack">
+
+<!-- ============ OVERVIEW ============ -->
+<section id="summary" data-redline-section data-redline-label="Recommendation" data-redline-group="Overview" class="redline-panel">
+  <h2>Recommendation</h2>
+  <div class="redline-callout" id="decision-summary">
+    <p><strong>Build a small "farm" service. It is a lease queue taken out of Commando, plus one host gateway that only lets you reach the devices you hold.</strong>
+    Interactive agent work goes through <strong>Argent's own remote tool-server</strong> behind that gateway. Your laptop agent keeps the same MCP tools it already uses; only the URL changes.
+    Measurements run as <strong>jobs on the host</strong>: you upload builds and a plan, the host runs repeated, interleaved A/B rounds, and you get <code>results.jsonl</code> plus traces back.
+    Raw <code>adb</code> through the gateway is the Android escape hatch. A host agent is optional, for diagnosing failures, not for running measurements.</p>
+    <p class="small">Approving this means a new repo, a lease API with a different identity model than tmux panes, and Commando keeping its local queue as a client of the farm.</p>
+  </div>
+  <h3>Why, in one line each</h3>
+  <ul>
+    <li><strong>B (MCP on host)</strong> mostly exists already. Argent ships <code>argent server start</code> plus <code>argent link</code>. Over that link it uploaded my 230&nbsp;MB APK and brought the Perfetto trace back to the "laptop" on its own. It has no idea of tenants, so it needs a lease gateway. I built one in about 80 lines and it works.</li>
+    <li><strong>C (raw CLIs over Tailscale)</strong> works for Android and can be made safe with an adb-protocol gate. <strong>It can't work for iPhones</strong>: <code>devicectl</code> and <code>xctrace</code> only talk to devices attached to the Mac they run on.</li>
+    <li><strong>A (host agent runs the workload)</strong> was the slowest, most expensive and noisiest. The same 5×&nbsp;cold-start job took 188&nbsp;s and $0.30, and it accidentally ran two launches at once. A 10-line script took 51&nbsp;s with a spread 4× tighter.</li>
+    <li><strong>Jobs</strong> match how you already profile (<code>plans/*.txt</code> × variants → <code>results.jsonl</code>). Jobs keep running when a laptop sleeps. And no laptop round-trips sit inside the measured window.</li>
+  </ul>
+</section>
+
+<section id="goal" data-redline-section data-redline-label="Goal &amp; constraints" data-redline-group="Overview" class="redline-panel">
+  <h2>Goal and constraints</h2>
+  <dl class="kv">
+    <dt>Users</dt><dd>~7 product engineers, each running Claude Code or Codex agents on their own laptop.</dd>
+    <dt>Hosts</dt><dd>One or more always-on Macs with physical Android phones and iPhones plugged in by USB.</dd>
+    <dt>Main use</dt><dd>Performance profiling of the React Native app: CPU % per thread, cold start, jank and frames, memory, Perfetto / simpleperf / xctrace / Hermes.</dd>
+    <dt>Secondary</dt><dd>Smoke-testing a native module on a real device; driving the app interactively.</dd>
+    <dt>Network</dt><dd>Probably Tailscale, so we can use tailnet identity (<code>tailscale whois</code>) and ACLs.</dd>
+    <dt>Like today</dt><dd>"Similar to what I do locally": lock → install variant → deep-link ablation → record N s → analyse → append to <code>results.jsonl</code> → restore the standard app → release.</dd>
+  </dl>
+  <h3>What today's queue already gets right (keep it)</h3>
+  <ul>
+    <li>One ordered queue per resource, with <code>any-android</code> / <code>any-ios</code> selectors and named devices when results must be comparable.</li>
+    <li>Agents get an <em>offer</em> and must claim it within 5 min; scripts block (<code>--wait --pid</code>). Re-locking is idempotent, and you're dropped after 3 missed turns.</li>
+    <li>Release steps attached to each device ("restore a2, log in NOTES.md"), a Devices view for pausing, reordering and force-releasing, and <code>heavy</code> busy-process detection.</li>
+  </ul>
+  <h3>What's tied to one machine (has to change)</h3>
+  <ul>
+    <li><strong>Identity is a tmux pane id</strong> (<code>%79</code>) plus <code>--as</code> plus <code>--pid</code>. A laptop agent has none of these on the host.</li>
+    <li><strong>Liveness is "pane exists / pid alive"</strong>, checked on the host. A remote client needs a heartbeat TTL instead.</li>
+    <li><strong>Offers are typed into the agent's tmux pane.</strong> Remote clients need long-poll or SSE, and Commando can relay into the pane as one such client.</li>
+    <li><strong>One shared hook token</strong> on localhost. The farm needs a per-engineer identity.</li>
+  </ul>
+</section>
+
+<!-- ============ TRIALS ============ -->
+<section id="trials" data-redline-section data-redline-label="Trial results" data-redline-group="Trials" class="redline-panel">
+  <h2>Trial results (today, on this Mac)</h2>
+  <p class="small">The host and the "laptop" were the same machine, talking over loopback through byte-counting proxies. The emulator (under the <code>emulator</code> lock) stood in for an Android phone. The iPhone was on Wi-Fi only, so physical-iOS steps were refused; see the caveat. Spike code is in <code>spikes/device-farm/</code>.</p>
+  <div class="redline-table-wrap">
+  <table>
+    <thead><tr><th>Approach</th><th>What I ran</th><th>Result</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr id="t-c"><td><strong>C</strong> raw <code>adb</code> via gate</td>
+        <td><code>ADB_SERVER_SOCKET=tcp:host:15037</code> → <code>adb-gate.mjs</code> → host adb server. devices, shell, install 230&nbsp;MB, Perfetto, pull, reverse, forward.</td>
+        <td><span class="good">All worked.</span> Install took <span class="num">3.2&nbsp;s</span> on loopback. Another serial, bare <code>adb shell</code> and <code>kill-server</code> were all <span class="good">refused</span>. <span class="meh"><code>forward</code> / <code>reverse</code> bind on the host</span>, not the laptop.</td>
+        <td>Good Android escape hatch. No iOS equivalent.</td></tr>
+      <tr id="t-b"><td><strong>B</strong> Argent remote tool-server</td>
+        <td>A second <code>argent server start --port 3101</code>; the laptop used <code>ARGENT_TOOLS_URL</code> and <code>ARGENT_AUTH_TOKEN</code>. Ran reinstall-app with a laptop-relative path, plus native-profiler-start and stop.</td>
+        <td><span class="good">It uploaded the APK on its own</span> ("Uploading local-only.apk…", <span class="num">126&nbsp;MB</span> on the wire). The <span class="good">trace was copied back</span> to a laptop-side artifacts folder. <span class="bad">No idea of tenants</span>: list-devices shows everything.</td>
+        <td>The best agent interface. It needs a lease gate.</td></tr>
+      <tr id="t-gate"><td><strong>B+</strong> lease-aware gateway</td>
+        <td><code>argent-gate.mjs</code> (~80 lines) checks each <code>/tools/:name</code> device argument against <em>live</em> holders in Commando's lock API. Then a laptop Claude ran with the stock <code>argent mcp</code> pointed at the gateway.</td>
+        <td>The lease holder saw only the emulator. The other tenant saw <span class="good">0 devices</span> and was refused with "you don't hold a lease on emulator-5554. Run: farm lock…". <code>stop-all-simulator-servers</code> was blocked. The upload went through the gateway fine. The laptop Claude needed <span class="num">26&nbsp;s, 5 turns</span> to list devices, restart the app and describe the screen.</td>
+        <td><strong>Works. Laptop agents need no changes.</strong></td></tr>
+      <tr id="t-a"><td><strong>A</strong> host agent</td>
+        <td><code>claude -p --model sonnet</code> with adb-only tools: "5 cold starts (<code>am start -W -S</code>) + 5 s Perfetto + pull, reply JSON".</td>
+        <td><span class="bad">188&nbsp;s, $0.30, 18 turns.</span> It ran two launches in parallel by mistake, and runs timed out. Results: <span class="num">[1722, 794, 959, 1096, 4328]</span>. It left the trace on the device.</td>
+        <td>Poor for running measurements.</td></tr>
+      <tr id="t-script"><td>Baseline: plain script</td>
+        <td>Same job as 10 lines of bash through the adb gate.</td>
+        <td><span class="good">51&nbsp;s, $0</span>, <span class="num">[1266, 1375, 1463, 1165, 1300]</span>, cleaned up after itself.</td>
+        <td>This is what a "job" should run.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <redline-evidence id="trial-evidence" heading="Things the trials surfaced">
+    <div id="ev-metro" data-evidence="Metro / port forwards" data-status="observed" data-impact="high" data-group="Design constraints" data-source="adb forward tcp:19222 … → lsof shows adb server pid listening on host 127.0.0.1:19222">
+      <p data-takeaway>Device ↔ laptop ports don't reach the laptop.</p>
+      <p><code>adb reverse tcp:8081</code> sends the phone to the <em>host's</em> 8081. Argent's Hermes/React profiler connects to Metro on the tool-server's host too. Perf runs should use bundled-JS builds; live Metro needs Metro on the host or a second tunnel.</p>
+    </div>
+    <div id="ev-ids" data-evidence="Device identity" data-status="observed" data-group="Design constraints" data-source="Commando lock serial D7608D6B… vs Argent list-devices udid 00008130-000171363413803A">
+      <p data-takeaway>The same iPhone has two ids.</p>
+      <p>The lock stores the CoreDevice identifier; Argent and xctrace use the hardware UDID. The gateway maps between them using <code>devicectl</code> JSON. The farm should own one device record holding every alias.</p>
+    </div>
+    <div id="ev-wired" data-evidence="iPhone transport" data-status="observed" data-impact="high" data-group="Not yet proven" data-source="launch-app → 'Device transport is localNetwork, not wired'">
+      <p data-takeaway>Physical-iOS through Argent is unproven here.</p>
+      <p>Argent refuses iPhones that aren't cabled, and this one was on Wi-Fi, so the iOS path still needs a wired run. Your <code>measure.sh</code> already shows xctrace works <em>on the host</em>. What's untested is only Argent's remote layer on top.</p>
+    </div>
+    <div id="ev-keyguard" data-evidence="Device health" data-status="observed" data-group="Design constraints" data-source="battery-investigation/NOTES.md 2026-11-09 19:37–20:18">
+      <p data-takeaway>A locked phone cost a 40-min turn last night.</p>
+      <p>The Pixel sat at the PIN keyguard while a run held the lock. The farm should check health (unlocked, battery, thermal, cabled) <em>before</em> offering a device, not after.</p>
+    </div>
+    <div id="ev-flow" data-evidence="Argent flows remotely" data-status="observed" data-group="Not yet proven" data-source="argent flow --help: 'ARGENT_TOOLS_URL and argent link routing are not supported'">
+      <p data-takeaway><code>argent flow run</code> refuses remote servers.</p>
+      <p>Saved flows are the obvious job scenario format, but they'd have to run <em>on the host</em> anyway, which is the job runner's job. Fine either way.</p>
+    </div>
+  </redline-evidence>
+</section>
+
+<!-- ============ OPTIONS ============ -->
+<section id="options" data-redline-section data-redline-label="Options compared" data-redline-group="Options" class="redline-panel">
+  <h2>The options, compared</h2>
+  <div class="redline-table-wrap">
+  <table>
+    <thead><tr><th>Criterion</th><th>A · host agent</th><th>B · MCP on host</th><th>C · raw CLIs over tailnet</th><th>D · lease + gateway + jobs</th></tr></thead>
+    <tbody>
+      <tr><td>iPhones</td><td class="good">yes (local to host)</td><td class="good">yes (Argent on host)</td><td class="bad">no: devicectl/xctrace are local-only; ssh needed</td><td class="good">yes</td></tr>
+      <tr><td>Measurement quality</td><td class="bad">agent pacing in the loop; wide spread</td><td class="meh">fine for diagnosis; laptop latency inside scripted loops</td><td class="meh">your scripts unchanged, but network hops between steps</td><td class="good">host-side, deterministic, interleaved, health-gated</td></tr>
+      <tr><td>Agent ergonomics</td><td class="meh">"please do X" and wait; lossy</td><td class="good">same Argent tools they know</td><td class="good">adb they know (Android only)</td><td class="good">Argent tools + <code>farm job</code> + adb</td></tr>
+      <tr><td>Laptop asleep / disconnects</td><td class="good">keeps going</td><td class="bad">session dies mid-run</td><td class="bad">dies</td><td class="good">jobs keep going; leases expire cleanly</td></tr>
+      <tr><td>Tenant isolation</td><td class="meh">by prompt</td><td class="bad">none built in</td><td class="meh">needs the adb gate</td><td class="good">one gate checks the lease on every call</td></tr>
+      <tr><td>Cost per run</td><td class="bad">~$0.30 and 3 min for a trivial job</td><td class="good">tokens only for the laptop's own agent</td><td class="good">none</td><td class="good">none for jobs</td></tr>
+      <tr><td>Build effort</td><td class="meh">small, but brittle</td><td class="good">tiny (Argent exists) + gate</td><td class="meh">gate + ssh story for iOS</td><td class="meh">medium: lease service, gate, runner</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <redline-tradeoffs id="option-cards" heading="Short version">
+    <div id="opt-a" data-option="a" data-label="A · host agent"><p>Good as a helper on the host ("why won't this build install?", "write a flow for the shop screen"). Bad as the thing that runs measurements: agent pacing ends up in your numbers, cleanup isn't guaranteed, and every run costs tokens.</p></div>
+    <div id="opt-b" data-option="b" data-label="B · MCP on host"><p>Basically free: Argent already does upload, download and every device tool remotely. On its own it's unsafe for 7 people and fragile for long runs. It becomes the interactive half of D.</p></div>
+    <div id="opt-c" data-option="c" data-label="C · tunnelled CLIs"><p>Lovely for Android power users and for your existing scripts. It can't reach iPhones, so it can't be the foundation. It becomes D's escape hatch, behind the same lease gate.</p></div>
+    <div id="opt-d" data-option="d" data-label="D · lease + gateway + jobs" data-recommended><p>One lease authority; one gateway in front of Argent and adb; a job runner on the host for repeatable measurements. Each of A, B and C is used for the part it's good at.</p></div>
+  </redline-tradeoffs>
+  <redline-choice key="approach" prompt="Which approach should the new repo build toward?">
+    <redline-option>D: lease service + gateway (Argent + adb) + host job runner (recommended)</redline-option>
+    <redline-option>B only: lease service + Argent gateway, no job runner yet</redline-option>
+    <redline-option>C first: lease service + adb gate + ssh for iOS scripts</redline-option>
+    <redline-option>A: host agent that runs requested workloads</redline-option>
+  </redline-choice>
+</section>
+
+<section id="sol" data-redline-section data-redline-label="Sol's take" data-redline-group="Options" class="redline-panel">
+  <h2>Discussion with Sol (Codex, GPT-6.1)</h2>
+  <p class="small">Two rounds. Round 1 was blind: it got the code and your three options. Round 2 got the trial results and my draft, and was asked to attack it.</p>
+  <div id="sol-r1">
+    <h3>Round 1, before the trials</h3>
+    <ul>
+      <li><strong>Same shape as mine:</strong> "Build a host job runner with a thin MCP interface and an interactive lease mode." Upload → queue → prepare → run N → analyse → clean → publish.</li>
+      <li><strong>On A:</strong> "use a host agent to author scenarios and investigate failures. Execute measurements through deterministic tools." The trial backed this up.</li>
+      <li><strong>On C:</strong> Android is viable but <code>adb reverse</code> ends at the host; iOS should stay on the host, with direct CoreDevice forwarding "uncertain". Also matched by the trial.</li>
+      <li><strong>Measurement hygiene:</strong> no heavy builds during captures; gate on battery, thermal and charging; record OS, refresh rate and brightness; interleave baseline and candidate on the same phone; separate "diagnosis" runs (Metro/Hermes) from "benchmark" runs (bundled JS).</li>
+      <li><strong>Extraction:</strong> keep the scheduler, selectors, offers, idempotency and withdraw-after-grant, plus their tests. Replace <code>LockOwner</code>, the pane/pid sweeps, pane-message delivery and the shared token. Use SQLite and don't share the JSON file across hosts.</li>
+    </ul>
+    <p class="small">What it missed: that Argent already covers iPhone driving and remote upload/download. It suggested Appium/WDA for iOS interaction.</p>
+  </div>
+  <div id="sol-r2">
+    <h3>Round 2, after the trials</h3>
+    <p><strong>Sol's headline:</strong> "Build a small profiling appliance first… device recovery will probably consume more effort than queue scheduling."</p>
+    <h4>Where Sol agreed</h4>
+    <ul>
+      <li>Take the host agent out of execution. Front Argent rather than reimplementing its device tools. Keep adb as an escape hatch. Use bundled JS for benchmarks and live Metro only for diagnosis.</li>
+    </ul>
+    <h4>Where Sol pushed back (and I think it's right)</h4>
+    <ul>
+      <li id="sol-allowlist"><strong>Checking device ids isn't enough.</strong> The gateway needs an explicit tool <em>allow-list</em>. <code>run-sequence</code> and flows run nested actions; profiler stop and artifact handles have no device argument; and a check when a request is admitted can't revoke a capture that's already running. <em>I've added this to the risks.</em></li>
+      <li id="sol-adbgate"><strong>The adb gate only reads the first frame.</strong> Unknown requests pass, and forwards are host-wide even for an authorised serial. Production needs a protocol allow-list or state machine, live revocation, and forwards owned by the lease.</li>
+      <li id="sol-recipes"><strong>iOS: registered recipes, not arbitrary scripts.</strong> Make <code>measure.sh</code> a versioned host recipe with validated parameters. <code>ForceCommand</code> or a separate macOS account per lease is not a real sandbox, and whether it isolates Instruments sessions is unproven.</li>
+      <li id="sol-cleanup"><strong>Release needs a cleanup state.</strong> Today's registry releases and immediately offers to the next request. The farm needs revoke → stop → clean → verify → reassign, and it must reconcile after a crash.</li>
+      <li id="sol-version"><strong>Pin Argent versions.</strong> Sol's read of the newer docs: flows are now "E2E tests", and linked CLI runs are documented in later versions, so my "flow run refuses remote" finding may be specific to 0.26. You have 0.26; 0.32 is out.</li>
+      <li id="sol-next"><strong>The decisive next trial</strong> is a wired iPhone running your real variant × ablation plan through <code>measure.sh</code> remotely, including disconnect, cancel and cleanup. The emulator plus <code>am start -W</code> proves the plumbing works, not the measurements.</li>
+    </ul>
+    <h4>Where we disagree: what v0 is</h4>
+    <ul>
+      <li><strong>Sol:</strong> v0 is the <em>job appliance</em>. Uploaded artifacts plus a plan, run unattended, with <strong>one active farm session per Mac</strong>, polling only, and no MCP, SSE or Commando integration yet. It gets the numbers right first.</li>
+      <li><strong>Me:</strong> v0 is the <em>lease + Argent gateway</em>, because your engineers' first need is "my agent can use a real phone at all", and that is almost free. Jobs follow in v1. I would limit it to one <em>capture</em> per host at a time rather than one session, so interactive leases on different phones can still run side by side.</li>
+    </ul>
+    <redline-choice key="v0" prompt="What should v0 (week 1) be?">
+      <redline-option>Lease + Argent gateway first (agents can use farm phones interactively); jobs in v1</redline-option>
+      <redline-option>Sol's job appliance first (unattended plan runs, one session per Mac); interactive later</redline-option>
+      <redline-option>Both, thin: lease + gateway + a single registered Android recipe</redline-option>
+    </redline-choice>
+  </div>
+</section>
+
+<!-- ============ PROPOSAL ============ -->
+<section id="architecture" data-redline-section data-redline-label="Architecture" data-redline-group="Proposal" class="redline-panel">
+  <h2>Architecture</h2>
+<pre class="mermaid">
+flowchart LR
+  subgraph Laptop["Engineer laptop"]
+    AG["Coding agent"]
+    MCP["argent mcp\n(stock)"]
+    CLI["farm CLI / MCP"]
+    ADB["adb"]
+    AG --> MCP
+    AG --> CLI
+    AG --> ADB
+  end
+  subgraph Host["Always-on Mac"]
+    GW["farm gateway\n(lease check)"]
+    LS["lease service\n(queue, SQLite)"]
+    AT["Argent tool-server"]
+    AS["adb server"]
+    JR["job runner"]
+    HC["health probe"]
+    PH(["phones (USB)"])
+    GW --> AT
+    GW --> AS
+    GW --> JR
+    GW -.asks.-> LS
+    JR -.leases.-> LS
+    HC -.feeds.-> LS
+    AT --> PH
+    AS --> PH
+    JR --> PH
+  end
+  MCP -- "tailnet HTTPS" --> GW
+  CLI -- "tailnet HTTPS" --> GW
+  ADB -- "adb proto" --> GW
+  CMD["Commando\n(your Mac)"] -- "client" --> LS
+</pre>
+  <ul>
+    <li>The <strong>lease service</strong> is the only authority. It holds who holds what and who is queued, plus offers, heartbeats and health. Commando's <code>DeviceLockRegistry</code> moves here almost unchanged, with a new owner identity.</li>
+    <li>The <strong>gateway</strong> is the only door to the devices. Every request carries a tenant identity (tailnet <code>whois</code> plus a session id). Every device-targeted call is checked against <em>current</em> leases, and listings are filtered. The spike already does this for Argent and adb.</li>
+    <li>The <strong>job runner</strong> takes a lease itself, gates on health, runs the plan, cleans up (restores the standard app), releases, and publishes results.</li>
+    <li><strong>Commando</strong> becomes a client. Your local Devices view shows farm devices next to local ones, and offers still appear in the pane.</li>
+  </ul>
+</section>
+
+<section id="lifecycle" data-redline-section data-redline-label="Lease lifecycle" data-redline-group="Proposal" class="redline-panel">
+  <h2>Lease lifecycle (remote version of today's queue)</h2>
+<pre class="mermaid">
+sequenceDiagram
+  participant A as Laptop agent
+  participant F as farm (lease svc)
+  participant H as Health probe
+  A->>F: lock pixel --task "Rive A/B" --estimate 25m
+  F-->>A: queued #2 (session id, wait URL)
+  A->>F: wait (long-poll / SSE)
+  H-->>F: pixel healthy (unlocked, 84%, 31°C)
+  F-->>A: offer pixel, claim within 5 min
+  A->>F: claim
+  F-->>A: held, lease token, TTL 90s
+  loop while working
+    A->>F: heartbeat (every 30s)
+  end
+  A->>F: release
+  F->>F: run release steps (restore app)
+  F-->>A: released
+</pre>
+  <ul>
+    <li><strong>A heartbeat replaces pane/pid liveness.</strong> The CLI and MCP adapters send it automatically. A missed TTL triggers cleanup <em>before</em> the next offer.</li>
+    <li><strong>Offer delivery</strong> uses long-poll or SSE from the farm. Commando subscribes and keeps typing "Pixel 5 is yours…" into the pane, so today's agent UX survives.</li>
+    <li><strong>Release steps become automatic where possible:</strong> the host reinstalls the standard app itself instead of trusting each agent to.</li>
+  </ul>
+</section>
+
+<section id="ergonomics" data-redline-section data-redline-label="What an engineer types" data-redline-group="Proposal" class="redline-panel">
+  <h2>What an engineer's agent actually does</h2>
+  <h3>One-time setup</h3>
+<pre class="redline-code">brew install tailscale &amp;&amp; tailscale up      # join the tailnet
+npx @company/farm init                        # adds MCP entry, skill, sets ARGENT_TOOLS_URL</pre>
+  <h3>Interactive (debugging and poking around)</h3>
+<pre class="redline-code">farm lock pixel --task "check shop jank"      # queued → offered → held (heartbeat in background)
+# the agent's normal Argent MCP tools now hit the farm's Pixel:
+#   reinstall-app (uploads APK) · launch-app · describe · gesture-tap · native-profiler-start/stop
+adb -s 25121FDD4S00H7 shell dumpsys gfxinfo …  # optional: raw adb through the gate
+farm release pixel</pre>
+  <h3>Measurement (what you'd run for an A/B)</h3>
+<pre class="redline-code">farm job submit \
+  --device pixel --artifact base=a2.apk --artifact fix=cp3-all.apk \
+  --plan plans/android-p5.txt --iterations 5 --interleave \
+  --measure "cpu:main,js,RenderThread" --settle 15s --duration 45s
+# → job 7f3c queued (#1 on pixel)
+farm job wait 7f3c    # streams progress; laptop may sleep
+# → results.jsonl (per run), summary.md (median/IQR per variant), traces/ (download on demand)</pre>
+  <p>The plan format can start as <em>your existing</em> <code>plans/*.txt</code> (variant, ablation spec, deep link). Argent flows would be added later for scenarios that need taps.</p>
+</section>
+
+<section id="ios" data-redline-section data-redline-label="iPhones" data-redline-group="Proposal" class="redline-panel">
+  <h2>iPhones specifically</h2>
+  <ul>
+    <li><strong>Everything runs on the host:</strong> <code>devicectl</code>, <code>xctrace</code> and Argent's iOS tools need the phone attached to the Mac running them. No laptop-side CLI path exists.</li>
+    <li><strong>Builds:</strong> laptops (or CI) build a signed device <code>.app</code>/IPA. The provisioning profile must include the farm phones' UDIDs and <code>get-task-allow</code> for profiling. Upload it the same way the APK went up.</li>
+    <li><strong>Your xctrace scripts</strong> (<code>measure.sh</code>-style) become a <em>job type</em>: "run this script under my lease on the host", with only the leased device id in env, in a per-job temp dir, as a non-admin farm user. That's the iOS escape hatch, the equivalent of the adb gate.</li>
+    <li><strong>Phones must stay cabled</strong> (Argent refuses Wi-Fi iPhones), and the host should keep them awake and unlocked (no passcode on farm devices).</li>
+  </ul>
+  <redline-ask key="ios-builds" prompt="Where should iOS device builds come from: each engineer's laptop, CI, or the farm host itself (it has Xcode but would need signing keys)?"></redline-ask>
+</section>
+
+<section id="hygiene" data-redline-section data-redline-label="Measurement hygiene" data-redline-group="Proposal" class="redline-panel">
+  <h2>Making numbers comparable across people</h2>
+  <ul>
+    <li><strong>Health gate before every offer and every job iteration:</strong> screen unlocked, battery ≥ 50 % and charging policy, thermal state nominal, cabled, no heavy build running on the host.</li>
+    <li><strong>Record the environment</strong> on every result row: device, OS, refresh rate, brightness, thermal and battery, host load, artifact hash.</li>
+    <li><strong>Interleave A/B on the same phone</strong> (ABAB…, not AAAA BBBB), with a cooldown between runs. That's how the job runner orders iterations by default.</li>
+    <li><strong>No heavy builds on the host during capture.</strong> <code>heavy</code> stays a lock, and the job runner holds it while recording.</li>
+    <li><strong>"Benchmark" vs "diagnosis" runs:</strong> benchmarks use bundled-JS release-like builds with no Metro; diagnosis (Hermes/React profiler) is interactive and isn't comparable.</li>
+  </ul>
+</section>
+
+<section id="extraction" data-redline-section data-redline-label="Extraction from Commando" data-redline-group="Proposal" class="redline-panel">
+  <h2>What moves out of Commando</h2>
+  <p class="small">The device-lock code is about 2,400 lines, with 58 tests across 4 files. Roughly: the scheduler moves as-is, identity and delivery get rewritten, and the UI is adapted.</p>
+  <redline-file-tree id="extract-map" heading="Today's files → farm repo">
+    <ul>
+      <li data-dir="server">server (Commando today)
+        <ul>
+          <li id="f-locks" data-path="server/device-locks.ts" data-status="move" data-proposed>device-locks.ts: queue, selectors, offers, skips, pause/reorder, withdraw-after-grant → <code>farm/core</code>. <code>LockOwner</code>/<code>sameOwner</code> become an engineer + session identity.</li>
+          <li id="f-api" data-path="server/device-lock-api.ts" data-status="modify" data-proposed>device-lock-api.ts: HTTP routes → <code>farm/service</code>. Pane messaging and <code>pidAlive</code> are replaced by heartbeats plus SSE. <code>BusyProcessWatch</code> stays as the host's <code>heavy</code> detector.</li>
+          <li id="f-wall" data-path="server/device-wall.ts" data-status="move" data-proposed>device-wall.ts: adb/devicectl discovery → <code>farm/health</code>, which grows unlock, battery and thermal probes and the id alias map.</li>
+          <li id="f-cli" data-path="server/device-lock-cli.ts" data-status="modify" data-proposed>device-lock-cli.ts → <code>farm</code> CLI (npm). The same verbs (lock/claim/release/cancel/list) plus <code>job</code>.</li>
+        </ul>
+      </li>
+      <li data-dir="src">src (Commando UI)
+        <ul>
+          <li id="f-view" data-path="src/DevicesView.tsx" data-status="modify" data-proposed>DevicesView.tsx stays in Commando but reads the farm API, and gets a small web build for the farm's own admin page.</li>
+        </ul>
+      </li>
+      <li data-dir="farm">farm (new repo)
+        <ul>
+          <li id="f-gw" data-path="farm/gateway" data-status="add" data-proposed>gateway: grown from <code>spikes/device-farm/argent-gate.mjs</code> + <code>adb-gate.mjs</code>.</li>
+          <li id="f-jobs" data-path="farm/jobs" data-status="add" data-proposed>jobs: upload store, plan runner, health gate, results/traces.</li>
+          <li id="f-mcp" data-path="farm/mcp" data-status="add" data-proposed>mcp: <code>farm_lock</code>, <code>farm_release</code>, <code>farm_job_submit</code>, <code>farm_job_status</code>; device tools stay Argent's.</li>
+        </ul>
+      </li>
+    </ul>
+  </redline-file-tree>
+  <redline-choice key="local-queue" prompt="On your own Mac, should Commando keep its local queue, or treat this Mac as just another farm host?">
+    <redline-option>Run the farm service locally too; Commando is only a client (one code path)</redline-option>
+    <redline-option>Keep Commando's built-in queue for local, and talk to remote farms separately</redline-option>
+  </redline-choice>
+</section>
+
+<section id="milestones" data-redline-section data-redline-label="Milestones" data-redline-group="Proposal" class="redline-panel">
+  <h2>Milestones</h2>
+  <redline-milestones id="ms" heading="Smallest useful thing first">
+    <div id="m-pre" data-milestone="Before v0 · 1 day" data-status="proposed">Decisive trial: a wired iPhone and the Pixel run a real plan (your <code>measure.sh</code> / <code>android-run-plan.sh</code>) driven remotely, including laptop disconnect, cancel and cleanup. Done when results match a local run within noise, or we learn what breaks.</div>
+    <div id="m0" data-milestone="v0 · week 1" data-depends-on="Before v0 · 1 day" data-status="proposed">(Scope depends on the v0 question in "Sol's take".) New repo with the lease service (extracted registry, SQLite, heartbeats, tailnet identity) and the gateway in front of Argent + adb. Done when two engineers on different laptops can queue for the Pixel, and the holder installs, profiles and pulls a trace with stock Argent MCP while the other is refused.</div>
+    <div id="m1" data-milestone="v1 · jobs" data-depends-on="v0 · week 1" data-status="proposed">Job runner for Android: upload variants, plan file, interleaved N iterations, health gate, auto-restore of the standard app, results.jsonl + summary. Done when your <code>android-p5.txt</code> plan runs unattended from a laptop and matches a local run within noise.</div>
+    <div id="m2" data-milestone="v2 · iOS" data-depends-on="v1 · jobs" data-status="proposed">Wired iPhone: Argent remote path verified, a script-under-lease job type for xctrace, signing guidance. Done when <code>measure.sh</code>-style runs work from a laptop.</div>
+    <div id="m3" data-milestone="v3 · Commando client" data-depends-on="v0 · week 1" data-status="proposed">Commando's Devices view and pane offers backed by the farm; multiple hosts.</div>
+  </redline-milestones>
+</section>
+
+<section id="risks" data-redline-section data-redline-label="Risks" data-redline-group="Proposal" class="redline-panel">
+  <h2>Risks</h2>
+  <redline-risk id="risk-list" heading="What could bite">
+    <div id="r-argent" data-risk="Argent isn't a security boundary" data-likelihood="medium" data-impact="high" data-status="open">The gateway only sees tool names and arguments. Sessions, <code>run-sequence</code> and flows (nested actions), profiler-stop and artifact handles, or tools with no device argument could act on a device you don't hold. A check when a request is admitted also can't stop a capture already running. Mitigation: allow-list tools rather than block-list them, block <code>run-sequence</code> and flows until they're validated, scope artifact ids per tenant, keep upstream Argent on loopback with its token held only by the gateway, and add a contract test per Argent upgrade. Expiry must revoke, stop and clean up.</div>
+    <div id="r-adbgate" data-risk="adb gate is first-frame only" data-likelihood="medium" data-impact="medium" data-status="open">The spike checks only the opening request. Production needs a protocol allow-list, revocation of live connections when a lease ends, and forwards/reverses owned by the lease and torn down on release. Ship it behind an experimental flag.</div>
+    <div id="r-cleanup" data-risk="Release without cleanup" data-likelihood="high" data-impact="medium" data-status="open">Today's registry offers the device to the next request the moment it's released. A crashed run leaves a test build installed (your LOCKS.md already warns about this). Add a <em>cleaning</em> state: revoke → stop → restore the standard app → verify → offer.</div>
+    <div id="r-skew" data-risk="Argent version skew" data-likelihood="high" data-impact="medium" data-status="open">The laptop runs <code>argent mcp</code> 0.26 against a host on 0.32, and the upload format or tools drift apart. Mitigation: the gateway reports the host version, and <code>farm init</code> pins the client to match.</div>
+    <div id="r-ios" data-risk="iOS remote path unproven" data-likelihood="medium" data-impact="high" data-status="open">Not exercised today because the phone was on Wi-Fi. Mitigation: make a wired iPhone run the first task of v0, before building on it.</div>
+    <div id="r-bw" data-risk="Upload size" data-likelihood="medium" data-impact="low" data-status="open">Your APKs are about 230 MB (126 MB compressed). Over home Wi-Fi to the office, that's roughly 30–60 s per variant. Mitigation: content-hash dedupe, so an unchanged base is uploaded once.</div>
+    <div id="r-noise" data-risk="Shared host adds noise" data-likelihood="medium" data-impact="medium" data-status="open">Other tenants' installs and the emulator compete with captures. Mitigation: the job runner holds <code>heavy</code> during capture, keep emulators off farm hosts, and record host load.</div>
+  </redline-risk>
+</section>
+
+<section id="questions" data-redline-section data-redline-label="Open questions" data-redline-group="Decisions" class="redline-panel">
+  <h2>Open questions for you</h2>
+  <redline-choice key="first-host" prompt="What's the first farm host?">
+    <redline-option>This Mac (your phones), opened to the team over Tailscale</redline-option>
+    <redline-option>A dedicated Mac mini in the office</redline-option>
+    <redline-option>Not decided yet</redline-option>
+  </redline-choice>
+  <redline-choice key="repo" prompt="Where should the new repo live?">
+    <redline-option>Company GitHub org, private (team can contribute)</redline-option>
+    <redline-option>Your personal account first, move later</redline-option>
+  </redline-choice>
+  <redline-choice key="identity" prompt="How should engineers authenticate to the farm?">
+    <redline-option>Tailscale identity only (whois on each connection)</redline-option>
+    <redline-option>Tailscale + per-engineer token (works through other tunnels too)</redline-option>
+  </redline-choice>
+  <redline-ask key="v0-scope" prompt="Anything the v0 must include for the team to actually use it in week 1 (e.g. Slack notifications when your turn comes, a web dashboard)?"></redline-ask>
+  <redline-approve key="plan" prompt="Approve this direction (D, v0 first) so I can start the new repo?"></redline-approve>
+</section>
+
+</main>
+</div>
+<script src="http://127.0.0.1:4310/redline/sdk.js"></script>
+<script type="module">
+  import mermaid from "http://127.0.0.1:4310/redline/design/mermaid/mermaid.esm.min.mjs"
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' })
+  // Sections mode hides inactive sections; render each diagram only once it is visible.
+  const io = new IntersectionObserver((entries) => {
+    const nodes = entries.filter((e) => e.isIntersecting && !e.target.dataset.processed).map((e) => e.target)
+    nodes.forEach((n) => io.unobserve(n))
+    if (nodes.length) mermaid.run({ nodes })
+  })
+  document.querySelectorAll('.mermaid').forEach((el) => io.observe(el))
+</script>
+</body>
+</html>
