@@ -300,26 +300,28 @@ export function trackProcesses(input: TrackInput): TrackResult {
   }
 
   const remembered = new Map<string, string>()
-  const listed = new Set<number>()
-  const minimumStart = input.now - (input.minAgeMs ?? MIN_PROCESS_AGE_MS)
+  const eligible = new Set<number>()
   for (const [pid, owner] of owners) {
-    const row = byPid.get(pid)!
-    remembered.set(processKey(row), owner.paneKey)
-    if (!hidden.has(pid) && row.startedAt <= minimumStart) listed.add(pid)
+    remembered.set(processKey(byPid.get(pid)!), owner.paneKey)
+    if (!hidden.has(pid)) eligible.add(pid)
   }
 
-  // Group each listed process under its topmost listed ancestor from the same pane.
+  // Group each process under its topmost eligible ancestor from the same pane. Only groups whose
+  // top has run a few seconds are listed, but a listed group keeps its young children, so
+  // stopping it stops them too.
   const groups = new Map<number, number[]>()
-  for (const pid of listed) {
+  for (const pid of eligible) {
     let top = pid
     for (const ancestor of ancestors(byPid.get(pid)!.ppid)) {
-      if (!listed.has(ancestor.pid) || owners.get(ancestor.pid)!.paneKey !== owners.get(pid)!.paneKey) break
+      if (!eligible.has(ancestor.pid) || owners.get(ancestor.pid)!.paneKey !== owners.get(pid)!.paneKey) break
       top = ancestor.pid
     }
     const group = groups.get(top) ?? []
     group.push(pid)
     groups.set(top, group)
   }
+  const minimumStart = input.now - (input.minAgeMs ?? MIN_PROCESS_AGE_MS)
+  for (const top of groups.keys()) if (byPid.get(top)!.startedAt > minimumStart) groups.delete(top)
 
   const portsByPid = new Map<number, number[]>()
   for (const listener of input.listeners) portsByPid.set(listener.processId, [...portsByPid.get(listener.processId) ?? [], listener.port])

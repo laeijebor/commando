@@ -117,6 +117,18 @@ describe('tracking processes', () => {
     expect([...result.remembered.keys()]).toContain(processKey(rows[1]))
   })
 
+  it('lists only groups old enough to matter, but stops a listed group’s young children with it', () => {
+    const rows = [
+      row(100, 50, '-zsh', { pgid: 100, tpgid: 100, tty: 'ttys003' }),
+      row(101, 100, 'npm run dev', { pgid: 101 }),
+      row(102, 101, 'node vite', { pgid: 101, startedAt: NOW - 1_000 }),
+      row(103, 100, 'git status', { pgid: 103, startedAt: NOW - 1_000 }),
+    ]
+    const result = trackProcesses(input(rows))
+    expect(result.processes.map(({ pid, childCount }) => ({ pid, childCount }))).toEqual([{ pid: 101, childCount: 1 }])
+    expect(result.members.get(processKey(rows[1]))?.map(({ pid }) => pid).sort()).toEqual([101, 102])
+  })
+
   it('lists an idle shell’s background jobs', () => {
     const result = trackProcesses(input([
       row(100, 50, '-zsh', { pgid: 100, tpgid: 100, tty: 'ttys003' }),
