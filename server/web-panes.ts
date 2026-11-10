@@ -532,6 +532,11 @@ export class WebPaneService {
     return live ? Object.fromEntries(Object.entries(all).filter(([targetId]) => live.has(targetId))) : all
   }
 
+  /** Changes when a target with closed tabs gains or loses its live pane, e.g. on session restore. */
+  closedTabOwners(): string {
+    return Object.keys(this.closedTabs()).sort().join(',')
+  }
+
   /** Brings a closed tab back beside its pane under its original id, selected. */
   reopenClosed(targetId: string, id: string, anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>): WebPane {
     const entry = this.closedPanes.list().find((candidate) => candidate.targetId === targetId && candidate.pane.id === id)
