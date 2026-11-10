@@ -1,0 +1,34 @@
+.session-close-dialog { width: min(440px, 100%); }
+.session-close-dialog > header > strong { font-size: 12px; }
+.session-close-body { display: grid; gap: 10px; padding: 12px 14px; overflow: auto; }
+.session-close-message { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; white-space: pre-wrap; }
+.session-close-body fieldset { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.session-close-body legend { margin-bottom: 4px; padding: 0; color: var(--text-soft); font: 800 9px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+.session-close-hint { margin: 0 0 4px; color: var(--muted-dim); font-size: 10px; }
+.session-close-process {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+  cursor: pointer;
+}
+.session-close-process input { margin: 2px 0 0; }
+.session-close-process span { display: grid; gap: 3px; min-width: 0; }
+.session-close-process strong { overflow: hidden; color: var(--text-soft); font: 700 11px/1.3 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.session-close-process small { overflow: hidden; color: var(--muted-dim); font: 600 9px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.session-close-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--border); }
+.session-close-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: 600 11px/1 var(--sans);
+  cursor: pointer;
+}
+.session-close-actions button:hover { background: var(--surface-hover); }
+.session-close-actions .session-close-confirm { border-color: color-mix(in srgb, var(--red) 55%, var(--border)); color: var(--red); }

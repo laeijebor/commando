@@ -107,6 +107,8 @@ import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
+import { ProcessTracker } from './tracked-processes.js'
+import { TrackedProcessesApi } from './tracked-processes-api.js'
 import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
 import { GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
 import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion, type SessionWorktreeDeletionDependencies } from './session-worktree-deletion.js'
@@ -185,6 +187,7 @@ import {
 const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
+const TRACKED_PROCESS_SCAN_MS = 15_000
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -1781,6 +1784,18 @@ async function main(): Promise<void> {
       })
   }
 
+  const processTracker = new ProcessTracker({
+    livePanes: () => {
+      const names = new Map(snapshot.sessions.map((session) => [session.id, session.name]))
+      return snapshot.panes.flatMap((pane) => pane.processId ? [{
+        paneId: pane.id, processId: pane.processId, sessionId: pane.sessionId,
+        sessionName: names.get(pane.sessionId) ?? pane.sessionId, targetId: pane.targetId,
+      }] : [])
+    },
+    tmuxServer: () => tmux.tmuxServer(),
+    protectedPorts,
+  })
+  const trackedProcessesApi = new TrackedProcessesApi(processTracker)
   const tmuxSessionActions = new TmuxSessionActions()
   const saveResurrectAfter = (change: string) => {
     void resurrectSaver.save().catch((error: unknown) => {
@@ -1820,6 +1835,7 @@ async function main(): Promise<void> {
       const repo = session && sessionRepo(session, snapshot.panes)
       return repo ? { root: repo.root, name: repo.name, ...(repo.branch ? { branch: repo.branch } : {}), ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch } : {}) } : undefined
     },
+    trackedProcesses: processTracker,
     afterSessionDeleted: () => saveResurrectAfter('session deletion'),
     afterSessionRestored: () => saveResurrectAfter('session restore'),
     beforeWindowDeleted: async (windowId) => {
@@ -3110,6 +3126,7 @@ async function main(): Promise<void> {
         if (await agentRequestApi.handle(request, response, url)) return
         if (await pushApi.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return
+        if (await trackedProcessesApi.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
         if (await chatConversationsApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
@@ -3263,6 +3280,10 @@ async function main(): Promise<void> {
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
   resurrectSaver.start()
+  // Scanning reads every process's environment, so it runs slowly and only while someone is watching.
+  const trackedProcessTimer = setInterval(() => {
+    if (clients.size) void processTracker.list(TRACKED_PROCESS_SCAN_MS).catch((error: unknown) => console.warn('[commando] Process tracking scan failed', error))
+  }, TRACKED_PROCESS_SCAN_MS)
   const simPoolReaperTimer = simPoolReaper && setInterval(() => {
     void simPoolReaper.sweep().catch((error: unknown) => console.warn('[sim-pool] unleased simulator check failed', error))
   }, POOL_REAP_INTERVAL_MS)
@@ -3285,6 +3306,7 @@ async function main(): Promise<void> {
     hostsHealth.stop()
     hostsProxy.close()
     clearInterval(snapshotTimer)
+    clearInterval(trackedProcessTimer)
     if (simPoolReaperTimer) clearInterval(simPoolReaperTimer)
     externalAgents.close()
     prAutofix.stop()

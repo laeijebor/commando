@@ -39,6 +39,8 @@ import type { PaneManagementApiClient } from './paneManagementApi'
 import type { PaneScreenshotsApiClient } from './paneScreenshotsApi'
 import type { SimsApiClient } from './simsApi'
 import { WorklogClosedTabs } from './WorklogClosedTabs'
+import type { TrackedProcessesApiClient } from './trackedProcessesApi'
+import { WorklogProcesses } from './WorklogProcesses'
 
 const PREFERENCE_PREFIX = 'commando.pane-worklog.'
 
@@ -306,6 +308,7 @@ export function PaneWorklog({
   closedTabs = [],
   onReopenClosedTab,
   onForgetClosedTab,
+  processesApi,
 }: {
   /** Recently closed side-panel tabs owned by this pane's target. */
   closedTabs?: readonly ClosedWebPane[]
@@ -331,6 +334,7 @@ export function PaneWorklog({
   resume?: AgentResume
   /** Asks the daemon to resume the agent again after a failed attempt. */
   onRetryResume?: () => void
+  processesApi?: TrackedProcessesApiClient
 }) {
   const { local, activeHost } = useHost()
   const [preferences, setPreferences] = useState(() => storedPreferences(brief, activeHost))
@@ -576,6 +580,8 @@ export function PaneWorklog({
             </div>
           </section>
         ) : null}
+
+        <WorklogProcesses api={processesApi} targetId={brief.targetId} paneLabel={paneLabel} connected={connected} visible={visible} />
 
         {onReopenClosedTab && onForgetClosedTab ? (
           <WorklogClosedTabs tabs={closedTabs} paneLabel={paneLabel} connected={connected} onReopen={onReopenClosedTab} onForget={onForgetClosedTab} />

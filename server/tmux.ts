@@ -215,6 +215,18 @@ export class TmuxClient {
     return this.openPorts.terminateSessionPorts(parsePaneProcesses(panes), sessionId, expectedTargets)
   }
 
+  /** This daemon's tmux server: its socket and pid, which processes started in its panes carry in TMUX. */
+  async tmuxServer(): Promise<{ socketPath: string; serverPid: number } | null> {
+    try {
+      const line = (await this.run(['list-sessions', '-F', '#{pid}|#{socket_path}'], { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: DISCOVERY_BUFFER_BYTES })).split('\n', 1)[0]
+      const match = /^(\d+)\|(\/.+)$/.exec(line ?? '')
+      return match ? { serverPid: Number(match[1]), socketPath: match[2] } : null
+    } catch (error) {
+      if (isNoServer(error)) return null
+      throw error
+    }
+  }
+
   setControllerHandlers(handlers: TmuxControllerHandlers): void {
     this.controllers.setHandlers(handlers)
   }
