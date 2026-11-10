@@ -1,7 +1,7 @@
 import { X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { stopsByDefault, type TrackedProcess } from '../shared/tracked-processes'
+import { keepReason, stopsByDefault, type TrackedProcess } from '../shared/tracked-processes'
 import { processUptime } from './WorklogProcesses'
 import './session-create-dialog.css'
 import './session-close-dialog.css'
@@ -56,7 +56,7 @@ export function SessionCloseDialog({ request, onCancel, onConfirm }: {
                 <strong title={process.fullCommand}>{process.command}</strong>
                 <small>
                   {[`up ${processUptime(process.startedAt)}`, `pid ${process.pid}`, process.childCount ? `+${process.childCount} child${process.childCount === 1 ? '' : 'ren'}` : '',
-                    process.ports.length ? process.ports.map((port) => `:${port}`).join(' ') : '', process.detached ? 'detached' : '', stopsByDefault(process) ? '' : 'app, kept unless ticked'].filter(Boolean).join(' · ')}
+                    process.ports.length ? process.ports.map((port) => `:${port}`).join(' ') : '', process.detached ? 'detached' : '', keepReason(process) ? `${keepReason(process)}, kept unless ticked` : ''].filter(Boolean).join(' · ')}
                 </small>
               </span>
             </label>

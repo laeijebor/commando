@@ -34,10 +34,24 @@ export function isTrackedProcessKey(value: unknown): value is string {
   return typeof value === 'string' && PROCESS_KEY.test(value)
 }
 
+const APP = /^(?:\/System)?\/Applications\/|^\/Users\/[^/]+\/Applications\//
+// Daemons other sessions reuse once started: stopping one breaks their builds or devices.
+const SHARED_HELPER_NAMES = new Set(['adb', 'gpg-agent', 'ssh-agent', 'watchman', 'sccache'])
+const SHARED_HELPER_CLASSES = /\borg\.gradle\.launcher\.daemon\.|\bKotlinCompileDaemon\b/
+
 /**
- * Whether the close dialog ticks a process to stop. Apps from an Applications folder (an editor
- * a pane opened with `code .`, a browser) are left unticked: they outlive the session on purpose.
+ * Why the close dialog leaves a process unticked, if it does. Apps from an Applications folder
+ * (an editor a pane opened with `code .`, a browser) outlive the session on purpose, and shared
+ * helper daemons (adb, Gradle, watchman) serve other sessions too.
  */
+export function keepReason(process: Pick<TrackedProcess, 'fullCommand'>): 'app' | 'shared helper' | undefined {
+  if (APP.test(process.fullCommand)) return 'app'
+  const program = process.fullCommand.trimStart().split(/\s/, 1)[0].split('/').at(-1) ?? ''
+  if (SHARED_HELPER_NAMES.has(program) || SHARED_HELPER_CLASSES.test(process.fullCommand)) return 'shared helper'
+  return undefined
+}
+
+/** Whether the close dialog ticks a process to stop. */
 export function stopsByDefault(process: Pick<TrackedProcess, 'fullCommand'>): boolean {
-  return !/^(?:\/System)?\/Applications\/|^\/Users\/[^/]+\/Applications\//.test(process.fullCommand)
+  return keepReason(process) === undefined
 }
