@@ -101,8 +101,11 @@ describe('closed tabs', () => {
     service.close(service.open({ ...anchor, url: 'http://localhost/mine' }).id)
     service.close(service.open({ ...anchor, anchorPaneId: '%13', url: 'http://localhost/other' }).id)
     expect(Object.keys(buildWebPanesMessage(service).closedTabs ?? {})).toEqual([TARGET])
+    expect(service.closedTabOwners()).toBe(TARGET)
+    // A restored session brings its target back: the daemon republishes on this change.
     live.add(OTHER_TARGET)
     expect(Object.keys(service.closedTabs()).sort()).toEqual([TARGET, OTHER_TARGET].sort())
+    expect(service.closedTabOwners()).toBe([TARGET, OTHER_TARGET].sort().join(','))
   })
 
   it('keeps one entry per content, at most 30 per target, for 14 days', async () => {

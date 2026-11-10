@@ -663,6 +663,7 @@ async function main(): Promise<void> {
    * streams that no longer correspond to an open chromium tile, then
    * broadcasts the new list.
    */
+  let publishedClosedTabOwners = ''
   const publishWebPanes = (): void => {
     const streamable = new Set(
       webPanes
@@ -682,6 +683,7 @@ async function main(): Promise<void> {
     guides?.retain(liveIds)
     canvasWatch.sync(webPanes.list())
     redlineArtifacts.retain(webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []))
+    publishedClosedTabOwners = webPanes.closedTabOwners()
     broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
@@ -1723,7 +1725,9 @@ async function main(): Promise<void> {
           const pane = paneForId(paneId)
           return pane ? { cols: pane.width, rows: pane.height } : undefined
         })
-        if (webPanesPruned || webPaneConversationsChanged || webPaneLayoutMetadataResolved) {
+        if (webPanesPruned || webPaneConversationsChanged || webPaneLayoutMetadataResolved ||
+          // A degraded (empty) snapshot would briefly hide every closed tab.
+          (snapshot.panes.length > 0 && webPanes.closedTabOwners() !== publishedClosedTabOwners)) {
           publishWebPanes()
         }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
