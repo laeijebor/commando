@@ -33,6 +33,19 @@ describe('normalized GitHub PR entities', () => {
     expect(store.repo(hud).pullRequests[0].stack).toBeNull()
     expect(store.pane(sidebar).pullRequests[0].stack).toBeNull()
   })
+  it('applies shared status, including a merge, to impacted PRs while keeping their relation', () => {
+    const store = new PrEntities()
+    const impacted: PanePrList = { targetId: 'target', totalCount: 0, truncated: false, fetchedAt: 1, pullRequests: [],
+      impacted: [{ ...pr(), repo: 'acme/widgets', preview: pr(), relation: 'pushed', impactedAt: 5 }] }
+    store.ingest(impacted, store.beginRead())
+    store.markMerged('acme/widgets', 12, 2)
+    expect(store.pane(impacted).impacted).toMatchObject([{ number: 12, state: 'merged', relation: 'pushed', impactedAt: 5 }])
+    expect(store.pane(impacted).pullRequests).toEqual([])
+    // Retained while only an impacted list holds it.
+    store.retain([impacted])
+    expect(store.pane(impacted).impacted?.[0].state).toBe('merged')
+  })
+
   it('shares status between case-insensitive repo and pane views, including full previews', () => {
     const store = new PrEntities()
     const sidebar = pane()

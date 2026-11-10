@@ -1967,6 +1967,10 @@ async function main(): Promise<void> {
       const targetId = paneForId(paneId)?.targetId
       if (targetId) void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
     },
+    onPullRequestsImpacted: (paneId, reports) => {
+      const targetId = paneForId(paneId)?.targetId
+      if (targetId) void prs.recordPaneImpacts(targetId, reports).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
+    },
     interactions,
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,

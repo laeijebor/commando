@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AgentStatusChange, AgentStatusRegistry } from './agent-status-registry.js'
 import type { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { isPanePrRef, type PanePrRef } from './pane-pr-records.js'
+import { parsePrImpactReports, type PrImpactReport } from './pane-pr-impacts.js'
 
 const API_ROOT = '/api/agent-status/hooks'
 const MAX_REQUEST_BYTES = 64 * 1024
@@ -20,6 +21,8 @@ type AgentStatusApiDependencies = {
   onChange: (change: AgentStatusChange) => void
   /** PRs the agent's own tool output shows it just created. */
   onPullRequestsCreated?: (paneId: string, refs: PanePrRef[]) => void
+  /** PRs the agent pushed to, reviewed or commented on, as the hook read them from its commands. */
+  onPullRequestsImpacted?: (paneId: string, reports: PrImpactReport[]) => void
   interactions?: AgentInteractionBroker
   /** A chat pane's host answers permission prompts itself (SDK canUseTool), so hooks never hold them. */
   chatOwnsPane?: (paneId: string) => boolean
@@ -225,6 +228,8 @@ export class AgentStatusHookApi {
           ? body.createdPullRequests.slice(0, MAX_CREATED_PULL_REQUESTS).filter(isPanePrRef)
           : []
         if (created.length) this.dependencies.onPullRequestsCreated?.(targetPaneId, created.map(({ repo, number }) => ({ repo, number })))
+        const impacted = parsePrImpactReports(body.impactedPullRequests, body.cwd)
+        if (impacted.length) this.dependencies.onPullRequestsImpacted?.(targetPaneId, impacted)
       } else if (provider === 'codex') {
         const event = body.event
         if (!isRecord(event)) throw new HttpError(400, 'event must be a JSON object')
