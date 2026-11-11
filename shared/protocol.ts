@@ -1,4 +1,5 @@
 import type { CommanderRelay, CommanderState, TurnBrief } from './commander.js'
+import type { DiffFilters } from './diff-filters.js'
 import type { AgentChatRequest } from './agent-chats.js'
 import type { ExternalAgentRun, ChatAnswer, ChatCommand, ChatFileSearchResult, ChatHandoffInfo, ChatImageRef, ChatItem, ChatQueueAction, ChatSendOptions, ChatSessionInfo, ChatSettingsChange, ChatState, ChatSubagentTranscript, ChatSwitchAction, ChatTaskAction } from './agent-chat.js'
 import type { ChatStashEntry } from './chat-stash.js'
@@ -826,6 +827,8 @@ export type ServerMessage =
   | { type: 'commander_relay_snapshot'; relays: CommanderRelay[] }
   /** Commander: which pane is the Commander; sent on connect and on change. */
   | { type: 'commander_state'; state: CommanderState }
+  /** Diff view: hide-tests / hide-generated switches and per-repo generated patterns; sent on connect and on change. */
+  | { type: 'diff_filters'; filters: DiffFilters }
   /** Answers one client's `chat_mcp`. */
   | ({ type: 'chat_mcp_result'; paneId: string; requestId: string } & ChatMcpResult)
   | { type: 'error'; code: string; message: string; requestId?: string }
