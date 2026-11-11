@@ -156,6 +156,7 @@ import {
   isWebPaneLeafId,
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
+import { createDiffFiltersApi, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
@@ -1559,6 +1560,9 @@ function HostApp() {
       case 'commander_relay_snapshot':
         dispatchCommander(message)
         break
+      case 'diff_filters':
+        setDiffFilters(message.filters)
+        break
       case 'commander_state':
         commanderStateVersion.current += 1
         dispatchCommander(message)
@@ -2722,6 +2726,12 @@ function HostApp() {
   const paneScreenshotsApi = createPaneScreenshotsApi(token, daemonFetch)
   const sessionManagementApi = createSessionManagementApi(token, daemonFetch)
   const gitDiffApi = useMemo(() => createGitDiffApi(token, daemonFetch), [token])
+  useEffect(() => {
+    setDiffFiltersSaver(createDiffFiltersApi(token, daemonFetch))
+    return () => setDiffFiltersSaver(null)
+  }, [token])
+  // A host switch remounts this app; the next daemon's filters replace these when it connects.
+  useEffect(() => () => resetDiffFilters(), [])
   const simsApi = useMemo(() => createSimsApi(token, daemonFetch), [token])
   const prsApi = useMemo(() => createPrsApi(token, daemonFetch), [token])
   const trackedProcessesApi = useMemo(() => createTrackedProcessesApi(token, daemonFetch), [token])

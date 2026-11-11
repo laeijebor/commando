@@ -19,6 +19,7 @@ import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
 import { Commander } from './commander.js'
+import { DiffFiltersStore } from './diff-filters.js'
 import { createCommanderStatusObserver } from './commander-observer.js'
 import { CommanderApi } from './commander-api.js'
 import { CommanderRelays } from './commander-relays.js'
@@ -2144,6 +2145,8 @@ async function main(): Promise<void> {
     },
   })
   await commander.load()
+  const diffFilters = new DiffFiltersStore({ changed: (filters) => broadcast({ type: 'diff_filters', filters }) })
+  await diffFilters.load()
   // Assigned once relays exist; relay updates report offer deliveries to it.
   let deviceLockApi: DeviceLockApi | undefined
   const commanderRelays = new CommanderRelays({
@@ -2949,6 +2952,7 @@ async function main(): Promise<void> {
       send(client, { type: 'commander_relay_snapshot', relays: commanderRelays.values() })
       send(client, { type: 'commander_state', state: commander.state() })
     })
+    send(client, { type: 'diff_filters', filters: diffFilters.get() })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
@@ -3105,6 +3109,7 @@ async function main(): Promise<void> {
           return
         }
         if (await hostsApi.handle(request, response, url)) return
+        if (await diffFilters.handle(request, response, url)) return
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
         if (await deviceWallApi.handle(request, response, url)) return
