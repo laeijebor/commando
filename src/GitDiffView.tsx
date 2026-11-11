@@ -26,7 +26,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { COMMON_GENERATED_PATTERNS, generatedMatcher, isTestPath, repoGeneratedPatterns } from '../shared/diff-filters'
+import { generatedMatcher, isTestPath, repoGeneratedPatterns } from '../shared/diff-filters'
 import { parseAnsi } from './ansi'
 import { updateDiffFilters, useDiffFilters } from './diffFilters'
 import { AnsiText, findTextMatches } from './AnsiText'
@@ -875,44 +875,6 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                 </button>
               </div>
             </header>
-            {editingGenerated !== null && repo.root ? (
-              <form
-                className="git-diff-generated-editor"
-                aria-label="Generated file patterns"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  void changeFilters({ repo: { root: repo.root!, patterns: editingGenerated.split('\n') } })
-                    .then((saved) => { if (saved) setEditingGenerated(null) })
-                }}
-              >
-                <label htmlFor={`${paneId}-generated-patterns`}>Generated in {repo.name ?? 'this repo'}</label>
-                <textarea
-                  id={`${paneId}-generated-patterns`}
-                  rows={5}
-                  value={editingGenerated}
-                  spellCheck={false}
-                  onChange={(event) => setEditingGenerated(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditingGenerated(null) }
-                  }}
-                />
-                <p>
-                  One pattern per line, like .gitignore: <code>drizzle/</code>, <code>workers/*/schema.json</code>.
-                  Start a line with <code>!</code> to keep matching files visible.
-                  Always generated too: {COMMON_GENERATED_PATTERNS.slice(0, 5).join(', ')} and other lockfiles.
-                </p>
-                <div className="git-diff-generated-actions">
-                  <button type="submit">Save</button>
-                  <button type="button" onClick={() => setEditingGenerated(null)}>Cancel</button>
-                  {diffFilters.generatedByRepo[repo.root] ? (
-                    <button type="button" title="Forget this repo's saved list and use the built-in one"
-                      onClick={() => { void changeFilters({ repo: { root: repo.root!, patterns: null } }).then((saved) => { if (saved) setEditingGenerated(null) }) }}>
-                      Reset
-                    </button>
-                  ) : null}
-                </div>
-              </form>
-            ) : null}
             {filterError ? <div className="git-diff-error" role="alert">{filterError}</div> : null}
             <div className="git-diff-file-filter">
               <Search aria-hidden="true" />
@@ -938,6 +900,43 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
               ) : null}
             </div>
             <div className="git-diff-file-scroll">
+              {editingGenerated !== null && repo.root ? (
+                <form
+                  className="git-diff-generated-editor"
+                  aria-label="Generated file patterns"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void changeFilters({ repo: { root: repo.root!, patterns: editingGenerated.split('\n') } })
+                      .then((saved) => { if (saved) setEditingGenerated(null) })
+                  }}
+                >
+                  <label htmlFor={`${paneId}-generated-patterns`}>Generated in {repo.name ?? 'this repo'}</label>
+                  <textarea
+                    id={`${paneId}-generated-patterns`}
+                    rows={4}
+                    value={editingGenerated}
+                    spellCheck={false}
+                    onChange={(event) => setEditingGenerated(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditingGenerated(null) }
+                    }}
+                  />
+                  <p>
+                    One pattern per line, like .gitignore. <code>!</code> keeps a path visible.
+                    Lockfiles, <code>*.gen.*</code> and <code>generated/</code> folders always count too.
+                  </p>
+                  <div className="git-diff-generated-actions">
+                    <button type="submit">Save</button>
+                    <button type="button" onClick={() => setEditingGenerated(null)}>Cancel</button>
+                    {diffFilters.generatedByRepo[repo.root] ? (
+                      <button type="button" title="Forget this repo's saved list and use the built-in one"
+                        onClick={() => { void changeFilters({ repo: { root: repo.root!, patterns: null } }).then((saved) => { if (saved) setEditingGenerated(null) }) }}>
+                        Reset
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+              ) : null}
               {summaryLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading changes</div> : null}
               {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}{errorHint}</div> : null}
               {!summaryLoading && !summaryError && allFiles.length === 0
