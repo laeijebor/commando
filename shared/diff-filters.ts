@@ -26,8 +26,6 @@ export const DEFAULT_DIFF_FILTERS: DiffFilters = { hideTests: false, hideGenerat
 export const MAX_DIFF_FILTER_REPOS = 200
 export const MAX_GENERATED_PATTERNS = 200
 export const MAX_GENERATED_PATTERN_LENGTH = 500
-/** Keeps a pattern's regex cheap: many `*` in one segment can backtrack badly. */
-export const MAX_PATTERN_WILDCARDS = 6
 const NO_PATTERNS: readonly string[] = Object.freeze([])
 
 /**
@@ -85,16 +83,32 @@ export function repoGeneratedPatterns(filters: DiffFilters, root: string | undef
   return name && Object.hasOwn(BUILT_IN_REPO_GENERATED, name) ? BUILT_IN_REPO_GENERATED[name]! : NO_PATTERNS
 }
 
-const escape = (text: string) => text.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-const segmentSource = (segment: string) => segment.split('*').map((part) => part.split('?').map(escape).join('[^/]')).join('[^/]*')
+/**
+ * Matches one path segment against `*` and `?` without backtracking: the
+ * classic two-pointer wildcard match, at most name × pattern steps.
+ */
+function segmentMatches(pattern: string, name: string): boolean {
+  let p = 0, n = 0, star = -1, resume = 0
+  while (n < name.length) {
+    if (p < pattern.length && (pattern[p] === '?' || pattern[p] === name[n])) { p++; n++ }
+    else if (p < pattern.length && pattern[p] === '*') { star = p++; resume = n }
+    else if (star >= 0) { p = star + 1; n = ++resume }
+    else return false
+  }
+  while (pattern[p] === '*') p++
+  return p === pattern.length
+}
+
+export type GeneratedPattern = { test(path: string): boolean }
 
 /**
  * Compiles a gitignore-style pattern against repo-relative paths. A pattern
  * without a slash matches a name at any depth; one with a slash starts at the
  * repo root; `**` spans folders; a trailing slash matches only folders.
- * A leading `!` is handled by `generatedMatcher`, not here.
+ * A leading `!` is handled by `generatedMatcher`, not here. Matching walks
+ * path segments with a memo, so its cost is bounded whatever the pattern.
  */
-export function compileGeneratedPattern(pattern: string): RegExp | null {
+export function compileGeneratedPattern(pattern: string): GeneratedPattern | null {
   let glob = pattern.trim()
   if (!glob || glob.startsWith('#')) return null
   const folder = glob.endsWith('/')
@@ -103,24 +117,45 @@ export function compileGeneratedPattern(pattern: string): RegExp | null {
   glob = glob.replace(/^\/+/, '')
   if (!glob) return null
   const anchored = rooted || glob.includes('/')
-  const segments = glob.split('/')
-  const body = segments.map((segment, index) => {
-    const last = index === segments.length - 1
-    if (segment === '**') return last ? '.*' : '(?:[^/]+/)*'
-    return segmentSource(segment) + (last ? '' : '/')
-  }).join('')
-  return new RegExp(`${anchored ? '^' : '(?:^|/)'}${body}${folder ? '/' : '(?:$|/)'}`)
+  const segments = glob.split('/').filter((segment, index, all) => !(segment === '**' && all[index - 1] === '**'))
+  return {
+    test(path) {
+      const parts = path.split('/')
+      // A folder pattern must leave at least the file name after it.
+      const lastEnd = folder ? parts.length - 1 : parts.length
+      const memo = new Map<number, boolean>()
+      // Can segments[from…] match parts[at…] and end on a segment boundary at or before lastEnd?
+      const matchFrom = (from: number, at: number): boolean => {
+        if (from === segments.length) return at <= lastEnd
+        const key = from * (parts.length + 1) + at
+        const known = memo.get(key)
+        if (known !== undefined) return known
+        let result: boolean
+        // A trailing ** needs at least one more segment, like gitignore's `a/**`.
+        if (segments[from] === '**' && from === segments.length - 1) result = at < lastEnd
+        else if (segments[from] === '**') {
+          result = false
+          for (let next = at; next <= parts.length && !result; next++) result = matchFrom(from + 1, next)
+        } else result = at < parts.length && segmentMatches(segments[from]!, parts[at]!) && matchFrom(from + 1, at + 1)
+        memo.set(key, result)
+        return result
+      }
+      if (anchored) return matchFrom(0, 0)
+      for (let start = 0; start < parts.length; start++) if (matchFrom(0, start)) return true
+      return false
+    },
+  }
 }
 
 /** A matcher for the common patterns plus the repo's own; a `!pattern` exempts what it matches. */
 export function generatedMatcher(patterns: readonly string[]): (path: string) => boolean {
-  const include: RegExp[] = [], exempt: RegExp[] = []
+  const include: GeneratedPattern[] = [], exempt: GeneratedPattern[] = []
   for (const pattern of [...COMMON_GENERATED_PATTERNS, ...patterns]) {
     const negated = pattern.trim().startsWith('!')
-    const regex = compileGeneratedPattern(negated ? pattern.trim().slice(1) : pattern)
-    if (regex) (negated ? exempt : include).push(regex)
+    const compiled = compileGeneratedPattern(negated ? pattern.trim().slice(1) : pattern)
+    if (compiled) (negated ? exempt : include).push(compiled)
   }
-  return (path) => include.some((regex) => regex.test(path)) && !exempt.some((regex) => regex.test(path))
+  return (path) => include.some((pattern) => pattern.test(path)) && !exempt.some((pattern) => pattern.test(path))
 }
 
 const controls = /[\u0000-\u001f\u007f]/
@@ -133,9 +168,7 @@ export function normalizeGeneratedPatterns(value: unknown): string[] {
     if (typeof entry !== 'string' || entry.length > MAX_GENERATED_PATTERN_LENGTH || controls.test(entry)) {
       throw new Error(`Each pattern must be text up to ${MAX_GENERATED_PATTERN_LENGTH} characters`)
     }
-    // `***` means the same as `**`, so collapse it before counting wildcards.
-    const pattern = entry.trim().replace(/\*{3,}/g, '**')
-    if ((pattern.match(/\*+/g)?.length ?? 0) > MAX_PATTERN_WILDCARDS) throw new Error(`A pattern can use * at most ${MAX_PATTERN_WILDCARDS} times`)
+    const pattern = entry.trim()
     if (pattern && !patterns.includes(pattern)) patterns.push(pattern)
   }
   return patterns
