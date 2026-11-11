@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import { applyDiffFiltersChange, DEFAULT_DIFF_FILTERS, type DiffFiltersChange } from '../shared/diff-filters'
-import { currentDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
+import { currentDiffFilters, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
 
 afterEach(() => {
   cleanup()
@@ -646,7 +646,7 @@ describe('hiding tests and generated files', () => {
     { path: 'src/client/sdk.gen.ts', status: 'M', additions: 1, deletions: 0, binary: false },
     { path: 'workers/proxy/schema.json', status: 'M', additions: 1, deletions: 0, binary: false },
   ] }
-  afterEach(() => { setDiffFilters(DEFAULT_DIFF_FILTERS); setDiffFiltersSaver(null) })
+  afterEach(() => { resetDiffFilters(); setDiffFiltersSaver(null) })
 
   function renderMixed() {
     const saved: DiffFiltersChange[] = []
