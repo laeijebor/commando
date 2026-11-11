@@ -57,3 +57,13 @@ describe('parsing and applying changes', () => {
     expect(parseDiffFilters(null)).toEqual(DEFAULT_DIFF_FILTERS)
   })
 })
+
+describe('pattern safety and stability', () => {
+  it('caps wildcards so a pattern cannot backtrack badly, and collapses *** to **', () => {
+    expect(() => parseDiffFiltersChange({ repo: { root: '/r', patterns: ['*a*a*a*a*a*a*a*b'] } })).toThrow('at most 6')
+    expect(parseDiffFiltersChange({ repo: { root: '/r', patterns: ['***/gen/'] } }).repo!.patterns).toEqual(['**/gen/'])
+  })
+  it('returns the same empty list for repos without patterns, so callers can memoize', () => {
+    expect(repoGeneratedPatterns(DEFAULT_DIFF_FILTERS, '/a', 'a')).toBe(repoGeneratedPatterns(DEFAULT_DIFF_FILTERS, '/b', undefined))
+  })
+})

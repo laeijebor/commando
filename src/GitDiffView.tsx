@@ -367,6 +367,8 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     (diffFilters.hideTests && isTestPath(file.path)) || (diffFilters.hideGenerated && isGenerated(file.path))
   )), [allFiles, diffFilters.hideGenerated, diffFilters.hideTests, isGenerated])
   const hiddenCount = allFiles.length - files.length
+  const shownPaths = useRef<string[]>([])
+  shownPaths.current = files.map((file) => file.path)
   const [editingGenerated, setEditingGenerated] = useState<string | null>(null)
   const [filterError, setFilterError] = useState('')
   const changeFilters = (change: Parameters<typeof updateDiffFilters>[0]) => {
@@ -484,9 +486,11 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         .then((next) => {
           if (request !== searchGeneration.current) return
           setAllSearchResult(next)
-          const matching = new Set(next.files.map((file) => file.file))
+          // Hidden tests and generated files never become the selection.
+          const shown = new Set(shownPaths.current)
+          const matching = next.files.map((file) => file.file).filter((file) => shown.has(file))
           setSelectedFile((current) => (
-            current && matching.has(current) ? current : next.files[0]?.file ?? current
+            current && matching.includes(current) ? current : matching[0] ?? current
           ))
         })
         .catch((cause: unknown) => {

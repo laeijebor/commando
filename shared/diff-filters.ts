@@ -24,6 +24,9 @@ export const DEFAULT_DIFF_FILTERS: DiffFilters = { hideTests: false, hideGenerat
 export const MAX_DIFF_FILTER_REPOS = 200
 export const MAX_GENERATED_PATTERNS = 200
 export const MAX_GENERATED_PATTERN_LENGTH = 500
+/** Keeps a pattern's regex cheap: many `*` in one segment can backtrack badly. */
+export const MAX_PATTERN_WILDCARDS = 6
+const NO_PATTERNS: readonly string[] = Object.freeze([])
 
 /**
  * Test files across the repos in use: `*.test.*` / `*.spec.*` (including
@@ -76,7 +79,7 @@ export const BUILT_IN_REPO_GENERATED: Readonly<Record<string, readonly string[]>
 /** The repo's own generated patterns: its saved list, else the built-in one for its folder name. */
 export function repoGeneratedPatterns(filters: DiffFilters, root: string | undefined, name: string | undefined): readonly string[] {
   if (root && filters.generatedByRepo[root]) return filters.generatedByRepo[root]
-  return (name && BUILT_IN_REPO_GENERATED[name]) || []
+  return (name && BUILT_IN_REPO_GENERATED[name]) || NO_PATTERNS
 }
 
 const escape = (text: string) => text.replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -127,7 +130,9 @@ export function normalizeGeneratedPatterns(value: unknown): string[] {
     if (typeof entry !== 'string' || entry.length > MAX_GENERATED_PATTERN_LENGTH || controls.test(entry)) {
       throw new Error(`Each pattern must be text up to ${MAX_GENERATED_PATTERN_LENGTH} characters`)
     }
-    const pattern = entry.trim()
+    // `***` means the same as `**`, so collapse it before counting wildcards.
+    const pattern = entry.trim().replace(/\*{3,}/g, '**')
+    if ((pattern.match(/\*+/g)?.length ?? 0) > MAX_PATTERN_WILDCARDS) throw new Error(`A pattern can use * at most ${MAX_PATTERN_WILDCARDS} times`)
     if (pattern && !patterns.includes(pattern)) patterns.push(pattern)
   }
   return patterns

@@ -9,6 +9,7 @@ import { createOwnerJsonRequest } from './webPanesApi'
  */
 let current: DiffFilters = DEFAULT_DIFF_FILTERS
 let save: ((change: DiffFiltersChange) => Promise<DiffFilters>) | null = null
+let latestSave = 0
 const listeners = new Set<() => void>()
 
 export function currentDiffFilters(): DiffFilters { return current }
@@ -21,14 +22,18 @@ export function setDiffFilters(filters: DiffFilters): void {
 /** How this window saves a change; null while it can't (no daemon). */
 export function setDiffFiltersSaver(saver: typeof save): void { save = saver }
 
+/** Forgets a daemon's filters (on a host switch) and ignores late answers from it. */
+export function resetDiffFilters(): void {
+  latestSave += 1
+  setDiffFilters(DEFAULT_DIFF_FILTERS)
+}
+
 export function useDiffFilters(): DiffFilters {
   return useSyncExternalStore((listener) => {
     listeners.add(listener)
     return () => { listeners.delete(listener) }
   }, () => current)
 }
-
-let latestSave = 0
 
 /** Saves a change; the switches flip at once and settle on the daemon's answer to the newest save. */
 export async function updateDiffFilters(change: DiffFiltersChange): Promise<void> {

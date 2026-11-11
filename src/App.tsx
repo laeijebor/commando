@@ -155,7 +155,7 @@ import {
   isWebPaneLeafId,
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
-import { createDiffFiltersApi, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
+import { createDiffFiltersApi, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
@@ -2722,6 +2722,8 @@ function HostApp() {
     setDiffFiltersSaver(createDiffFiltersApi(token, daemonFetch))
     return () => setDiffFiltersSaver(null)
   }, [token])
+  // A host switch remounts this app; the next daemon's filters replace these when it connects.
+  useEffect(() => () => resetDiffFilters(), [])
   const simsApi = useMemo(() => createSimsApi(token, daemonFetch), [token])
   const prsApi = useMemo(() => createPrsApi(token, daemonFetch), [token])
   const agentProfilesApi = useMemo(() => createAgentProfilesApi(token, daemonFetch), [token])

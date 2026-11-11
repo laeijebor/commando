@@ -691,3 +691,23 @@ describe('hiding tests and generated files', () => {
     expect(screen.queryByText('src/client/sdk.gen.ts')).not.toBeInTheDocument()
   })
 })
+
+it('never selects a hidden file from a search across all files', async () => {
+  // The first visible file doesn't match; the first match is a hidden test.
+  const files = [
+    { path: 'src/a.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+    { path: 'src/a.unit.test.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+    { path: 'src/b.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+  ]
+  const both: GitDiffSummary = { ...summary, files }
+  const api = fakeApi(both)
+  api.search = vi.fn(async (_paneId: string, query: string) => ({ query, matches: [], files: [{ file: 'src/a.unit.test.ts', matches: 2 }, { file: 'src/b.ts', matches: 1 }], totalMatches: 3, matchingFiles: 2, truncated: false }))
+  setDiffFilters({ ...DEFAULT_DIFF_FILTERS, hideTests: true })
+  render(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={both} />)
+  fireEvent.click(screen.getByRole('button', { name: 'all' }))
+  fireEvent.change(screen.getByPlaceholderText('Search all changed files'), { target: { value: 'needle' } })
+  await waitFor(() => expect(api.search).toHaveBeenCalled())
+  await waitFor(() => expect(api.fileDiff).toHaveBeenLastCalledWith('%1', 'src/b.ts', expect.anything()))
+  expect(api.fileDiff).not.toHaveBeenCalledWith('%1', 'src/a.unit.test.ts', expect.anything())
+  setDiffFilters(DEFAULT_DIFF_FILTERS)
+})
