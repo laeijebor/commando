@@ -369,7 +369,10 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   const hiddenCount = allFiles.length - files.length
   const shownPaths = useRef<string[]>([])
   shownPaths.current = files.map((file) => file.path)
-  const [editingGenerated, setEditingGenerated] = useState<string | null>(null)
+  // The draft remembers its repo: if the pane moves to another repo, the editor closes instead of saving there.
+  const [generatedDraft, setGeneratedDraft] = useState<{ root: string; text: string } | null>(null)
+  useEffect(() => { setGeneratedDraft((draft) => (draft && draft.root !== repo.root ? null : draft)) }, [repo.root])
+  const editingGenerated = generatedDraft && generatedDraft.root === repo.root ? generatedDraft : null
   const [filterError, setFilterError] = useState('')
   const changeFilters = (change: Parameters<typeof updateDiffFilters>[0]) => {
     setFilterError('')
@@ -851,7 +854,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                   aria-expanded={editingGenerated !== null}
                   disabled={!repo.root}
                   title={repo.root ? `Which files count as generated in ${repo.name ?? 'this repo'}` : 'Generated patterns need a git repository'}
-                  onClick={() => setEditingGenerated(editingGenerated === null ? repoPatterns.join('\n') : null)}
+                  onClick={() => setGeneratedDraft(editingGenerated === null && repo.root ? { root: repo.root, text: repoPatterns.join('\n') } : null)}
                 >
                   <SlidersHorizontal aria-hidden="true" />
                 </button>
@@ -904,25 +907,26 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
               ) : null}
             </div>
             <div className="git-diff-file-scroll">
-              {editingGenerated !== null && repo.root ? (
+              {editingGenerated !== null ? (
                 <form
                   className="git-diff-generated-editor"
                   aria-label="Generated file patterns"
                   onSubmit={(event) => {
                     event.preventDefault()
-                    void changeFilters({ repo: { root: repo.root!, patterns: editingGenerated.split('\n') } })
-                      .then((saved) => { if (saved) setEditingGenerated(null) })
+                    const draft = editingGenerated
+                    void changeFilters({ repo: { root: draft.root, patterns: draft.text.split('\n') } })
+                      .then((saved) => { if (saved) setGeneratedDraft((current) => (current === draft ? null : current)) })
                   }}
                 >
                   <label htmlFor={`${paneId}-generated-patterns`}>Generated in {repo.name ?? 'this repo'}</label>
                   <textarea
                     id={`${paneId}-generated-patterns`}
                     rows={4}
-                    value={editingGenerated}
+                    value={editingGenerated.text}
                     spellCheck={false}
-                    onChange={(event) => setEditingGenerated(event.target.value)}
+                    onChange={(event) => setGeneratedDraft({ root: editingGenerated.root, text: event.target.value })}
                     onKeyDown={(event) => {
-                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditingGenerated(null) }
+                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGeneratedDraft(null) }
                     }}
                   />
                   <p>
@@ -931,10 +935,14 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                   </p>
                   <div className="git-diff-generated-actions">
                     <button type="submit">Save</button>
-                    <button type="button" onClick={() => setEditingGenerated(null)}>Cancel</button>
-                    {diffFilters.generatedByRepo[repo.root] ? (
+                    <button type="button" onClick={() => setGeneratedDraft(null)}>Cancel</button>
+                    {diffFilters.generatedByRepo[editingGenerated.root] ? (
                       <button type="button" title="Forget this repo's saved list and use the built-in one"
-                        onClick={() => { void changeFilters({ repo: { root: repo.root!, patterns: null } }).then((saved) => { if (saved) setEditingGenerated(null) }) }}>
+                        onClick={() => {
+                          const root = editingGenerated.root
+                          void changeFilters({ repo: { root, patterns: null } })
+                            .then((saved) => { if (saved) setGeneratedDraft((current) => (current?.root === root ? null : current)) })
+                        }}>
                         Reset
                       </button>
                     ) : null}
