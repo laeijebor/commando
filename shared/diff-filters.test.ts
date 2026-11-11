@@ -64,9 +64,31 @@ describe('parsing and applying changes', () => {
 })
 
 describe('pattern safety and stability', () => {
-  it('caps wildcards so a pattern cannot backtrack badly, and collapses *** to **', () => {
-    expect(() => parseDiffFiltersChange({ repo: { root: '/r', patterns: ['*a*a*a*a*a*a*a*b'] } })).toThrow('at most 6')
-    expect(parseDiffFiltersChange({ repo: { root: '/r', patterns: ['***/gen/'] } }).repo!.patterns).toEqual(['**/gen/'])
+  it('matches in bounded time even for patterns that make a regex backtrack', () => {
+    const name = `${'a'.repeat(100)}.ts`, deep = `${Array.from({ length: 40 }, () => 'a').join('/')}/x.ts`
+    const started = performance.now()
+    expect(generatedMatcher(['*a*a*a*a*a*a*a*a*b', '**/**/**/**/b/**/**/c'])(name)).toBe(false)
+    expect(generatedMatcher(['**/a/**/a/**/a/**/a/**/b/'])(deep)).toBe(false)
+    expect(performance.now() - started).toBeLessThan(200)
+  })
+  it('keeps ** and folder semantics', () => {
+    const match = (pattern: string, path: string) => compileGeneratedPattern(pattern)!.test(path)
+    expect(match('a/**/z.ts', 'a/z.ts')).toBe(true)
+    expect(match('a/**/z.ts', 'a/b/c/z.ts')).toBe(true)
+    expect(match('a/**', 'a/b/c.ts')).toBe(true)
+    expect(match('**/b/', 'x/b/c.ts')).toBe(true)
+    expect(match('**/b/', 'x/b')).toBe(false)
+    expect(match('src/client', 'src/client/core/a.ts')).toBe(true)
+    expect(match('*.ts', 'a/b.ts')).toBe(true)
+    expect(match('b?.ts', 'a/bc.ts')).toBe(true)
+    expect(match('b?.ts', 'a/b.ts')).toBe(false)
+    // A trailing ** never matches nothing: `a/**` is inside a, and `**/` needs a folder.
+    expect(match('a/**', 'a')).toBe(false)
+    expect(match('a/**/', 'a/b')).toBe(false)
+    expect(match('a/**/', 'a/b/c.ts')).toBe(true)
+    expect(match('**/', 'x')).toBe(false)
+    expect(match('**/', 'x/y.ts')).toBe(true)
+    expect(match('**', 'x')).toBe(true)
   })
   it('returns the same empty list for repos without patterns, so callers can memoize', () => {
     expect(repoGeneratedPatterns(DEFAULT_DIFF_FILTERS, '/a', 'a')).toBe(repoGeneratedPatterns(DEFAULT_DIFF_FILTERS, '/b', undefined))
