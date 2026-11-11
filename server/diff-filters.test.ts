@@ -30,11 +30,11 @@ async function setup() {
 
 it('saves switches and per-repo patterns, broadcasts each change, and reloads them', async () => {
   const s = await setup()
-  expect((await s.call('GET')).result).toEqual({ ok: true, filters: { hideTests: false, hideGenerated: false, generatedByRepo: {} } })
+  expect((await s.call('GET')).result).toEqual({ ok: true, filters: { hideTests: false, hideGenerated: false, generatedByRepo: {}, revision: 0 } })
   expect((await s.call('PUT', { hideTests: true })).result.filters.hideTests).toBe(true)
   expect((await s.call('PUT', { repo: { root: '/dev/Save-All', patterns: ['drizzle/', ' ', 'drizzle/'] } })).result.filters.generatedByRepo).toEqual({ '/dev/Save-All': ['drizzle/'] })
   expect(s.changed).toHaveBeenCalledTimes(2)
-  expect(s.changed).toHaveBeenLastCalledWith({ hideTests: true, hideGenerated: false, generatedByRepo: { '/dev/Save-All': ['drizzle/'] } })
+  expect(s.changed).toHaveBeenLastCalledWith({ hideTests: true, hideGenerated: false, generatedByRepo: { '/dev/Save-All': ['drizzle/'] }, revision: 2 })
   const reloaded = new DiffFiltersStore({ path: s.path, changed: vi.fn() }); await reloaded.load()
   expect(reloaded.get()).toEqual(s.store.get())
   await s.call('PUT', { repo: { root: '/dev/Save-All', patterns: null } })
@@ -56,5 +56,5 @@ it('starts from defaults when the saved file is corrupt', async () => {
   vi.spyOn(console, 'error').mockImplementation(() => {})
   await writeFile(s.path, '{broken')
   const store = new DiffFiltersStore({ path: s.path, changed: vi.fn() }); await store.load()
-  expect(store.get()).toEqual({ hideTests: false, hideGenerated: false, generatedByRepo: {} })
+  expect(store.get()).toEqual({ hideTests: false, hideGenerated: false, generatedByRepo: {}, revision: 0 })
 })

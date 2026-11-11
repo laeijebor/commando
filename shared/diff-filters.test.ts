@@ -36,6 +36,10 @@ describe('generated patterns', () => {
     expect(repoGeneratedPatterns(filters, '/dev/Save-All', 'Save-All')).toEqual(['custom/'])
     expect(repoGeneratedPatterns(filters, '/other/Save-All', 'Save-All')).toBe(BUILT_IN_REPO_GENERATED['Save-All'])
     expect(repoGeneratedPatterns(filters, '/dev/x', 'x')).toEqual([])
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(repoGeneratedPatterns(DEFAULT_DIFF_FILTERS, `/dev/${name}`, name)).toEqual([])
+      expect(() => generatedMatcher(repoGeneratedPatterns(DEFAULT_DIFF_FILTERS, `/dev/${name}`, name))).not.toThrow()
+    }
   })
 })
 
@@ -47,13 +51,14 @@ describe('parsing and applying changes', () => {
     const change = parseDiffFiltersChange({ hideTests: true, repo: { root: '/r', patterns: [' a/ ', '', 'a/', 'b'] } })
     expect(change).toEqual({ hideTests: true, repo: { root: '/r', patterns: ['a/', 'b'] } })
     const next = applyDiffFiltersChange(DEFAULT_DIFF_FILTERS, change)
-    expect(next).toEqual({ hideTests: true, hideGenerated: false, generatedByRepo: { '/r': ['a/', 'b'] } })
+    expect(next).toEqual({ hideTests: true, hideGenerated: false, generatedByRepo: { '/r': ['a/', 'b'] }, revision: 1 })
     expect(applyDiffFiltersChange(next, { repo: { root: '/r', patterns: null } }).generatedByRepo).toEqual({})
     expect(DEFAULT_DIFF_FILTERS.generatedByRepo).toEqual({})
   })
   it('reads saved filters leniently', () => {
-    expect(parseDiffFilters({ hideTests: true, hideGenerated: 'x', generatedByRepo: { '/r': ['a'], rel: ['b'], '/bad': 'c' } }))
-      .toEqual({ hideTests: true, hideGenerated: false, generatedByRepo: { '/r': ['a'] } })
+    expect(parseDiffFilters({ hideTests: true, hideGenerated: 'x', generatedByRepo: { '/r': ['a'], rel: ['b'], '/bad': 'c' }, revision: 7 }))
+      .toEqual({ hideTests: true, hideGenerated: false, generatedByRepo: { '/r': ['a'] }, revision: 7 })
+    expect(parseDiffFilters({ revision: -1 }).revision).toBe(0)
     expect(parseDiffFilters(null)).toEqual(DEFAULT_DIFF_FILTERS)
   })
 })
