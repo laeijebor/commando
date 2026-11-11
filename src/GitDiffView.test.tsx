@@ -711,3 +711,22 @@ it('never selects a hidden file from a search across all files', async () => {
   expect(api.fileDiff).not.toHaveBeenCalledWith('%1', 'src/a.unit.test.ts', expect.anything())
   setDiffFilters(DEFAULT_DIFF_FILTERS)
 })
+
+it('closes the generated-pattern editor when the pane moves to another repo, instead of saving there', async () => {
+  const saved: DiffFiltersChange[] = []
+  setDiffFiltersSaver(async (change) => { saved.push(change); return applyDiffFiltersChange(currentDiffFilters(), change) })
+  const api = { ...fakeApi(summary), repo: vi.fn(async (path: string) => path.startsWith('/dev/vivifit')
+    ? { isRepo: true, mainRoot: '/dev/vivifit', name: 'vivifit' }
+    : { isRepo: true, mainRoot: '/dev/Save-All', name: 'Save-All' }) }
+  const view = render(<GitDiffView paneId="%1" panePath="/dev/Save-All" api={api} initialSummary={summary} />)
+  const edit = screen.getByRole('button', { name: 'Edit generated file patterns' })
+  await waitFor(() => expect(edit).toBeEnabled())
+  fireEvent.click(edit)
+  fireEvent.change(screen.getByRole('textbox', { name: 'Generated in Save-All' }), { target: { value: 'only-save-all/' } })
+  view.rerender(<GitDiffView paneId="%1" panePath="/dev/vivifit" api={api} initialSummary={summary} />)
+  await waitFor(() => expect(screen.queryByRole('form', { name: 'Generated file patterns' })).not.toBeInTheDocument())
+  expect(screen.queryByRole('textbox', { name: /Generated in/ })).not.toBeInTheDocument()
+  expect(saved).toEqual([])
+  setDiffFiltersSaver(null)
+  setDiffFilters(DEFAULT_DIFF_FILTERS)
+})
