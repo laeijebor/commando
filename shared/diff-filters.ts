@@ -9,6 +9,8 @@ export type DiffFilters = {
   hideGenerated: boolean
   /** Generated-file patterns by main checkout root; a saved list replaces that repo's built-in one. */
   generatedByRepo: Record<string, string[]>
+  /** Goes up with every saved change, so a window can tell an old answer from a newer update. */
+  revision: number
 }
 
 /** One change to the filters; absent fields stay as they are. */
@@ -19,7 +21,7 @@ export type DiffFiltersChange = {
   repo?: { root: string; patterns: string[] | null }
 }
 
-export const DEFAULT_DIFF_FILTERS: DiffFilters = { hideTests: false, hideGenerated: false, generatedByRepo: {} }
+export const DEFAULT_DIFF_FILTERS: DiffFilters = { hideTests: false, hideGenerated: false, generatedByRepo: {}, revision: 0 }
 
 export const MAX_DIFF_FILTER_REPOS = 200
 export const MAX_GENERATED_PATTERNS = 200
@@ -79,7 +81,8 @@ export const BUILT_IN_REPO_GENERATED: Readonly<Record<string, readonly string[]>
 /** The repo's own generated patterns: its saved list, else the built-in one for its folder name. */
 export function repoGeneratedPatterns(filters: DiffFilters, root: string | undefined, name: string | undefined): readonly string[] {
   if (root && filters.generatedByRepo[root]) return filters.generatedByRepo[root]
-  return (name && BUILT_IN_REPO_GENERATED[name]) || NO_PATTERNS
+  // Own properties only: a repo named "constructor" must not find Object's.
+  return name && Object.hasOwn(BUILT_IN_REPO_GENERATED, name) ? BUILT_IN_REPO_GENERATED[name]! : NO_PATTERNS
 }
 
 const escape = (text: string) => text.replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -168,11 +171,12 @@ export function parseDiffFilters(value: unknown): DiffFilters {
     if (!isRepoRoot(root)) continue
     try { generatedByRepo[root] = normalizeGeneratedPatterns(patterns) } catch { /* Skip a corrupt entry. */ }
   }
-  return { hideTests: record.hideTests === true, hideGenerated: record.hideGenerated === true, generatedByRepo }
+  const revision = Number.isSafeInteger(record.revision) && (record.revision as number) >= 0 ? record.revision as number : 0
+  return { hideTests: record.hideTests === true, hideGenerated: record.hideGenerated === true, generatedByRepo, revision }
 }
 
 export function applyDiffFiltersChange(filters: DiffFilters, change: DiffFiltersChange): DiffFilters {
-  const next: DiffFilters = { ...filters, generatedByRepo: { ...filters.generatedByRepo } }
+  const next: DiffFilters = { ...filters, generatedByRepo: { ...filters.generatedByRepo }, revision: filters.revision + 1 }
   if (change.hideTests !== undefined) next.hideTests = change.hideTests
   if (change.hideGenerated !== undefined) next.hideGenerated = change.hideGenerated
   if (change.repo) {

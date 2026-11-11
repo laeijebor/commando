@@ -9,11 +9,13 @@ import { createOwnerJsonRequest } from './webPanesApi'
  */
 let current: DiffFilters = DEFAULT_DIFF_FILTERS
 let save: ((change: DiffFiltersChange) => Promise<DiffFilters>) | null = null
-let latestSave = 0
+/** Bumped on a host switch so answers from the old daemon are dropped. */
+let generation = 0
 const listeners = new Set<() => void>()
 
 export function currentDiffFilters(): DiffFilters { return current }
 
+/** Socket updates arrive in daemon order and always apply; this is for them and for local flips. */
 export function setDiffFilters(filters: DiffFilters): void {
   current = filters
   for (const listener of listeners) listener()
@@ -24,7 +26,7 @@ export function setDiffFiltersSaver(saver: typeof save): void { save = saver }
 
 /** Forgets a daemon's filters (on a host switch) and ignores late answers from it. */
 export function resetDiffFilters(): void {
-  latestSave += 1
+  generation += 1
   setDiffFilters(DEFAULT_DIFF_FILTERS)
 }
 
@@ -35,10 +37,14 @@ export function useDiffFilters(): DiffFilters {
   }, () => current)
 }
 
-/** Saves a change; the switches flip at once and settle on the daemon's answer to the newest save. */
+/**
+ * Saves a change; the switches flip at once. The daemon's answer applies only
+ * if nothing newer has arrived meanwhile (another window's change, or a later
+ * save of ours), judged by revision.
+ */
 export async function updateDiffFilters(change: DiffFiltersChange): Promise<void> {
   if (!save) throw new Error('Not connected to Commando')
-  const id = ++latestSave
+  const started = generation
   const previous = current
   let optimistic: DiffFilters | undefined
   if (change.hideTests !== undefined || change.hideGenerated !== undefined) {
@@ -47,7 +53,7 @@ export async function updateDiffFilters(change: DiffFiltersChange): Promise<void
   }
   try {
     const saved = await save(change)
-    if (id === latestSave) setDiffFilters(saved)
+    if (started === generation && saved.revision >= current.revision) setDiffFilters(saved)
   } catch (error) {
     // Undo the flip only if nothing has replaced it since.
     if (optimistic && current === optimistic) setDiffFilters(previous)
