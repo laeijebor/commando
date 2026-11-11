@@ -26,7 +26,7 @@ it.each(['127.0.0.1', '8.8.8.8'])('uses the checked lookup on WS connections res
   const proxy = new HostsProxy(registry, async () => true)
   const socket = new PassThrough()
   try {
-    const request = Object.assign(new PassThrough(), { method: 'GET', headers: {} }) as unknown as IncomingMessage
+    const request = Object.assign(new PassThrough(), { method: 'GET', headers: {}, socket: { remoteAddress: '100.64.0.9' } }) as unknown as IncomingMessage
     await proxy.upgrade(request, socket, Buffer.alloc(0), new URL(`http://localhost/h/${host.id}/ws`))
     const options = vi.mocked(WebSocket).mock.calls[0][2] as RequestOptions & { maxPayload: number }
     expect(options.maxPayload).toBeGreaterThan(MAX_CHAT_HISTORY_BYTES)
