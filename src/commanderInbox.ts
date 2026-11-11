@@ -1,5 +1,6 @@
 import type { ChatState } from '../shared/agent-chat'
-import type { CommanderRelay, TurnBrief } from '../shared/commander'
+import { COMMANDER_NO_REPO, commanderPaneFilter, commanderRepoKey, type CommanderRelay, type TurnBrief } from '../shared/commander'
+import { sessionRepo } from '../shared/session-repositories'
 import type { AgentStatus, SessionBrief, TmuxPane, TmuxSession } from '../shared/protocol'
 import { agentNeedsAttention } from './agentHud'
 import { paneAttention, type PaneAttention } from './sessionIndicator'
@@ -31,6 +32,8 @@ export type CommanderInboxInput = {
   chats: Readonly<Record<string, ChatState>>
   relays: Readonly<Record<string, CommanderRelay>>
   commanderPaneId?: string
+  /** Repo keys Commander watches; absent watches every repo. */
+  repoFilter?: readonly string[]
   now?: number
 }
 
@@ -44,8 +47,9 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
     if (!relayReceiptVisible(relay, now)) continue
     if (!relays.has(relay.toTargetId) || relays.get(relay.toTargetId)!.createdAt < relay.createdAt) relays.set(relay.toTargetId, relay)
   }
+  const watched = commanderPaneFilter(input.repoFilter, input.snapshot?.sessions ?? [], input.snapshot?.panes ?? [])
   for (const pane of input.snapshot?.panes ?? []) {
-    if (pane.id === input.commanderPaneId) continue
+    if (pane.id === input.commanderPaneId || !watched(pane)) continue
     const suppliedChat = input.chats[pane.id]
     const chat = suppliedChat && (!suppliedChat.targetId || suppliedChat.targetId === pane.targetId) ? suppliedChat : undefined
     const suppliedStatus = input.agentStatuses[pane.id]
@@ -97,4 +101,26 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
 /** A queued relay always shows; a finished one shows for 15 minutes after it left the queue. */
 export function relayReceiptVisible(relay: CommanderRelay, now: number): boolean {
   return relay.status === 'queued' || (relay.settledAt ?? relay.deliveredAt ?? relay.createdAt) >= now - 15 * 60_000
+}
+
+export type CommanderRepoOption = { key: string; name: string }
+
+/** Repos Commander can be limited to: every repo with a session, plus saved ones that have none right now. */
+export function commanderRepoOptions(
+  snapshot: { panes: readonly TmuxPane[]; sessions: readonly TmuxSession[] } | null,
+  repoFilter: readonly string[] | undefined,
+  commanderSessionId?: string,
+): CommanderRepoOption[] {
+  const names = new Map<string, string>()
+  for (const session of snapshot?.sessions ?? []) {
+    if (session.id === commanderSessionId) continue
+    const key = commanderRepoKey(session, snapshot!.panes)
+    if (!names.has(key)) names.set(key, key === COMMANDER_NO_REPO ? 'No repository' : sessionRepo(session, snapshot!.panes)?.name ?? key)
+  }
+  for (const key of repoFilter ?? []) {
+    if (!names.has(key)) names.set(key, key === COMMANDER_NO_REPO ? 'No repository' : key.split('/').filter(Boolean).at(-1) ?? key)
+  }
+  const options = [...names].map(([key, name]) => ({ key, name }))
+  const rank = (option: CommanderRepoOption) => option.key === COMMANDER_NO_REPO ? 1 : 0
+  return options.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.key.localeCompare(b.key))
 }

@@ -157,3 +157,55 @@ it('keeps queued receipts visible past fifteen minutes', () => {
   setup(data)
   expect(screen.getByText('Relayed · queued')).toBeInTheDocument()
 })
+it('limits Commander to the repos ticked in the header menu, and back to all repos', async () => {
+  const onRepoFilter = vi.fn(async () => {})
+  const options = [{ key: '/dev/commando', name: 'commando' }, { key: '/dev/vivifit', name: 'vivifit' }]
+  const props = { groups: groups(), token: 'token', onOpenPane: vi.fn(), onRelay: vi.fn(), repoOptions: options, onRepoFilter }
+  const view = render(<AgentsInbox {...props} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Repos: All repos' }))
+  const all = await screen.findByRole('menuitemcheckbox', { name: 'All repos' })
+  expect(all).toHaveAttribute('aria-checked', 'true')
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'commando' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/dev/commando'])
+  view.rerender(<AgentsInbox {...props} repoFilter={['/dev/commando']} groups={{ needs_you: [], finished: [], working: [], idle: [] }} />)
+  expect(screen.getByRole('button', { name: 'Repos: commando' })).toBeInTheDocument()
+  expect(screen.getByText('No agents in the chosen repos.')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'vivifit' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/dev/commando', '/dev/vivifit'])
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'commando' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/dev/vivifit'])
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'vivifit' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(null)
+  view.rerender(<AgentsInbox {...props} repoFilter={['/dev/commando']} />)
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'All repos' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(null)
+})
+it('builds quick ticks on each other before the daemon echoes the filter', () => {
+  const onRepoFilter = vi.fn(() => new Promise<void>(() => {}))
+  const options = [{ key: '/dev/commando', name: 'commando' }, { key: '/dev/vivifit', name: 'vivifit' }]
+  render(<AgentsInbox groups={groups()} token="token" onOpenPane={vi.fn()} onRelay={vi.fn()} repoOptions={options} onRepoFilter={onRepoFilter} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Repos: All repos' }))
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'commando' }))
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'vivifit' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/dev/commando', '/dev/vivifit'])
+  expect(screen.getByRole('button', { name: 'Repos: commando, vivifit' })).toBeInTheDocument()
+})
+it('keeps newer quick ticks when the daemon echoes an earlier save before the latest one returns', async () => {
+  const saves: Array<() => void> = []
+  const onRepoFilter = vi.fn(() => new Promise<void>((resolve) => { saves.push(resolve) }))
+  const options = [{ key: '/a', name: 'a' }, { key: '/b', name: 'b' }, { key: '/c', name: 'c' }]
+  const props = { groups: groups(), token: 'token', onOpenPane: vi.fn(), onRelay: vi.fn(), repoOptions: options, onRepoFilter }
+  const view = render(<AgentsInbox {...props} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Repos: All repos' }))
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'a' }))
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'b' }))
+  // The first save's broadcast lands while the second is still in flight.
+  view.rerender(<AgentsInbox {...props} repoFilter={['/a']} />)
+  saves[0]!()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Repos: a, b' })).toBeInTheDocument())
+  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'c' }))
+  expect(onRepoFilter).toHaveBeenLastCalledWith(['/a', '/b', '/c'])
+  view.rerender(<AgentsInbox {...props} repoFilter={['/a', '/b', '/c']} />)
+  saves[1]!(); saves[2]!()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Repos: a, b, c' })).toBeInTheDocument())
+})
