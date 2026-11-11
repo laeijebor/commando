@@ -40,6 +40,29 @@ export function isLoopbackAddress(address: string | undefined): boolean {
   return normalized === '::1' || (ipv4 !== null && ipv4[0] === 127)
 }
 
+const FORWARDING_HEADERS = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-real-ip', 'tailscale-user-login']
+
+/** A Host header (`host:port`) or an Origin (`scheme://host:port`) that names this machine. */
+function namesLoopback(value: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(value.includes('://') ? value : `http://${value}`).hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A browser on this Mac talking to the daemon directly, so a page the daemon opens shows in front of
+ * the user. A reverse proxy such as Tailscale Serve also connects from loopback, but it forwards a
+ * remote user, so any forwarding header or non-loopback Host or Origin rules the request out.
+ */
+export function isLocalClient(request: IncomingMessage): boolean {
+  if (!isLoopbackAddress(request.socket.remoteAddress)) return false
+  if (FORWARDING_HEADERS.some((name) => request.headers[name] !== undefined)) return false
+  const origin = request.headers.origin
+  return namesLoopback(request.headers.host ?? '') && (origin === undefined || namesLoopback(origin))
+}
+
 function urlHostname(address: string): string {
   return address.includes(':') ? `[${address}]` : address
 }

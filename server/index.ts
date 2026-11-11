@@ -126,7 +126,7 @@ import {
   createAuthService,
   disabledAuthBootstrap,
 } from './auth.js'
-import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
+import { createNetworkAccess, isLocalClient, isLoopbackAddress } from './network-access.js'
 import { openUrlInBrowser } from './open-folder.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry, defaultDeviceLockStatePath, deviceLockClaimsByPane } from './device-locks.js'
@@ -2890,7 +2890,7 @@ async function main(): Promise<void> {
       backlog: new WsBacklog(),
       chatHistoryBytes: connectUrl ? chatHistoryBudget(connectUrl) : undefined,
       fullChatPanes: new Set(),
-      local: isLoopbackAddress(request.socket.remoteAddress),
+      local: isLocalClient(request),
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
