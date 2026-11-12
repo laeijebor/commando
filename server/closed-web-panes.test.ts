@@ -156,6 +156,36 @@ describe('closed tabs', () => {
     expect(service.closedTabs()).toEqual({})
   })
 
+  it('hands what the closed tab owned to the live duplicate it resolves to', async () => {
+    const { service } = await setup()
+    const adopted: Array<[string, string]> = []
+    service.closedTabHooks = { ...service.closedTabHooks!, adopt: (from, to) => adopted.push([from, to]) }
+    const closed = service.open({ ...anchor, url: 'http://localhost/same' })
+    service.close(closed.id)
+    const live = service.open({ ...anchor, url: 'http://localhost/same' })
+    service.reopenClosed(TARGET, closed.id, anchor)
+    expect(adopted).toEqual([[closed.id, live.id]])
+    expect(service.retainedIds()).toEqual([])
+  })
+
+  it('stops retaining expired entries even when no tabs are left to prune', async () => {
+    let now = 1_000_000
+    const { service } = await setup({ now: () => now })
+    const closed = service.open({ ...anchor, url: 'http://127.0.0.1:4310/redline/artifacts/abcd/plan.html' })
+    service.close(closed.id)
+    const gone = [{ id: '@99', sessionId: '$9', paneIds: ['%99'] }]
+    // Clears the dead anchor's panel selection, so only the closed entry is left.
+    service.prune(gone)
+    expect(service.prune(gone)).toBe(false)
+    expect(service.retainedIds()).toEqual([closed.id])
+    now += CLOSED_WEB_PANE_TTL_MS
+    expect(service.retainedIds()).toEqual([])
+    expect(service.retainedUrls()).toEqual([])
+    // The session is gone and no other tabs exist: prune must still drop the expired entry.
+    expect(service.prune(gone)).toBe(true)
+    expect(service.prune(gone)).toBe(false)
+  })
+
   it('forgets entries, and round-trips the rest through the state file', async () => {
     let now = 5_000_000
     const { service, path } = await setup({ now: () => now })

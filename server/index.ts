@@ -190,6 +190,7 @@ const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
 const TRACKED_PROCESS_SCAN_MS = 15_000
+const ARTIFACT_RETAIN_INTERVAL_MS = 60 * 60 * 1_000
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -666,6 +667,10 @@ async function main(): Promise<void> {
   })
   // Declared before publishWebPanes, which keeps tabs' artifact registrations alive.
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
+  /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
+  const retainTabArtifacts = (): void => {
+    redlineArtifacts.retain(webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []))
+  }
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
@@ -690,7 +695,7 @@ async function main(): Promise<void> {
     canvasPush?.retain(liveIds)
     guides?.retain(liveIds)
     canvasWatch.sync(webPanes.list())
-    redlineArtifacts.retain(webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []))
+    retainTabArtifacts()
     publishedClosedTabOwners = webPanes.closedTabOwners()
     broadcast(webPanesMessage())
   }
@@ -2076,6 +2081,7 @@ async function main(): Promise<void> {
     targetIdFor: (paneId) => paneForId(paneId)?.targetId ?? paneTargets.get(paneId),
     titleFor: tileTitle,
     liveTargets: () => new Set(snapshot.panes.map((pane) => pane.targetId)),
+    adopt: (closedId, liveId) => canvasThreads.reassign(closedId, liveId),
   }
   canvasPush = new CanvasPush({
     sending: agentPushes,
@@ -3305,6 +3311,12 @@ async function main(): Promise<void> {
   const trackedProcessTimer = setInterval(() => {
     if (clients.size) void processTracker.list(TRACKED_PROCESS_SCAN_MS).catch((error: unknown) => console.warn('[commando] Process tracking scan failed', error))
   }, TRACKED_PROCESS_SCAN_MS)
+  // Tabs can sit untouched for longer than an artifact's TTL, so refresh outside web-pane changes too.
+  retainTabArtifacts()
+  const artifactRetainTimer = setInterval(() => {
+    try { retainTabArtifacts() }
+    catch (error) { console.warn('[commando] Could not refresh tab artifact registrations', error) }
+  }, ARTIFACT_RETAIN_INTERVAL_MS)
   const simPoolReaperTimer = simPoolReaper && setInterval(() => {
     void simPoolReaper.sweep().catch((error: unknown) => console.warn('[sim-pool] unleased simulator check failed', error))
   }, POOL_REAP_INTERVAL_MS)
@@ -3328,6 +3340,7 @@ async function main(): Promise<void> {
     hostsProxy.close()
     clearInterval(snapshotTimer)
     clearInterval(trackedProcessTimer)
+    clearInterval(artifactRetainTimer)
     if (simPoolReaperTimer) clearInterval(simPoolReaperTimer)
     externalAgents.close()
     prAutofix.stop()

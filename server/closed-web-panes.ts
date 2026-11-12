@@ -77,11 +77,18 @@ export class ClosedWebPanes {
 
   /** Closed tabs keep their canvas discussions until they expire. */
   ids(): string[] {
-    return this.entries.map((entry) => entry.pane.id)
+    return this.list().map((entry) => entry.pane.id)
   }
 
+  /** Counts expired entries too, so `prune` still runs the `trim` that drops them. */
+  hasEntries(): boolean {
+    return this.entries.length > 0
+  }
+
+  /** Unexpired entries; expired ones stop retaining anything even before `trim` drops them. */
   list(): ClosedWebPaneEntry[] {
-    return [...this.entries]
+    const cutoff = this.now() - CLOSED_WEB_PANE_TTL_MS
+    return this.entries.filter((entry) => entry.closedAt > cutoff)
   }
 
   byTarget(): Record<string, ClosedWebPane[]> {
