@@ -38,10 +38,11 @@ export interface SessionManagementApiClient {
   changeIdentity(sessionId: string, glyph: string | null): Promise<SessionTreePreferences>
   renameSession(sessionId: string, name: string): Promise<void>
   previewWorktreeDeletion(sessionId: string): Promise<{ auxiliarySessions: { id: string; name: string }[] }>
-  deleteSession(sessionId: string, deleteWorktree?: boolean, confirmAuxiliarySessionIds?: string[]): Promise<void>
+  /** `stopProcessKeys` are tracked processes to stop once the session is closed. */
+  deleteSession(sessionId: string, deleteWorktree?: boolean, confirmAuxiliarySessionIds?: string[], stopProcessKeys?: string[]): Promise<{ processesNotStopped?: string }>
   listArchives(): Promise<SessionArchiveSummary[]>
-  archiveSession(sessionId: string): Promise<SessionArchiveResult>
-  pauseSession(sessionId: string): Promise<SessionArchiveResult>
+  archiveSession(sessionId: string, stopProcessKeys?: string[]): Promise<SessionArchiveResult>
+  pauseSession(sessionId: string, stopProcessKeys?: string[]): Promise<SessionArchiveResult>
   /** Archives a paused session, removing the worktree it kept. */
   archivePausedSession(archiveId: string): Promise<SessionArchiveResult>
   /** Restores an archived session, or resumes a paused one. */
@@ -54,6 +55,8 @@ export type SessionArchiveSummary = {
   createdAt: number
   windowCount: number
   paneCount: number
+  /** Its panes' target ids, which processes left running are tracked by. */
+  targetIds?: string[]
   /** Paused sessions stay in the session tree with their worktree. */
   paused?: true
   repo?: { root: string; name: string; branch?: string; defaultBranch?: string }
@@ -61,8 +64,8 @@ export type SessionArchiveSummary = {
   worktree?: { path: string; mainRoot: string; branch: string; wipCommit?: string }
 }
 
-/** `worktreeKept` says why an archive left its worktree in place. */
-export type SessionArchiveResult = { archive: SessionArchiveSummary; worktreeKept?: string }
+/** `worktreeKept` says why an archive left its worktree in place; `processesNotStopped` why chosen processes may still run. */
+export type SessionArchiveResult = { archive: SessionArchiveSummary; worktreeKept?: string; processesNotStopped?: string }
 
 type ApiErrorBody = { error?: unknown }
 
@@ -130,24 +133,28 @@ export function createSessionManagementApi(
     async previewWorktreeDeletion(sessionId) {
       return request<{ auxiliarySessions: { id: string; name: string }[] }>(`/sessions/${encodeURIComponent(sessionId)}/delete-preview`)
     },
-    async deleteSession(sessionId, deleteWorktree = false, confirmAuxiliarySessionIds = []) {
-      await request(`/sessions/${encodeURIComponent(sessionId)}/delete`, {
+    async deleteSession(sessionId, deleteWorktree = false, confirmAuxiliarySessionIds = [], stopProcessKeys = []) {
+      const result = await request<{ processesNotStopped?: string }>(`/sessions/${encodeURIComponent(sessionId)}/delete`, {
         method: 'DELETE',
-        body: JSON.stringify({ confirmSessionId: sessionId, deleteWorktree, ...(deleteWorktree ? { confirmAuxiliarySessionIds } : {}) }),
+        body: JSON.stringify({
+          confirmSessionId: sessionId, deleteWorktree, ...(deleteWorktree ? { confirmAuxiliarySessionIds } : {}),
+          ...(stopProcessKeys.length ? { stopProcessKeys } : {}),
+        }),
       })
+      return result.processesNotStopped ? { processesNotStopped: result.processesNotStopped } : {}
     },
     async listArchives() {
       const result = await request<{ archives: SessionArchiveSummary[] }>('/archives')
       return result.archives
     },
-    async archiveSession(sessionId) {
+    async archiveSession(sessionId, stopProcessKeys = []) {
       return request<SessionArchiveResult>(`/sessions/${encodeURIComponent(sessionId)}/archive`, {
-        method: 'POST', body: JSON.stringify({ confirmSessionId: sessionId }),
+        method: 'POST', body: JSON.stringify({ confirmSessionId: sessionId, ...(stopProcessKeys.length ? { stopProcessKeys } : {}) }),
       })
     },
-    async pauseSession(sessionId) {
+    async pauseSession(sessionId, stopProcessKeys = []) {
       return request<SessionArchiveResult>(`/sessions/${encodeURIComponent(sessionId)}/pause`, {
-        method: 'POST', body: JSON.stringify({ confirmSessionId: sessionId }),
+        method: 'POST', body: JSON.stringify({ confirmSessionId: sessionId, ...(stopProcessKeys.length ? { stopProcessKeys } : {}) }),
       })
     },
     async archivePausedSession(archiveId) {

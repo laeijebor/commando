@@ -23,6 +23,9 @@ import type { PrsApiClient } from './prsApi'
 import { SessionPrCount } from './SessionPrCount'
 import { paneAttention, paneAttentionLabels, sessionIndicator } from './sessionIndicator'
 import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE } from './sessionProcesses'
+import type { TrackedProcess } from '../shared/tracked-processes'
+import { createTrackedProcessesApi, useTrackedProcesses } from './trackedProcessesApi'
+import { SessionCloseDialog, type SessionCloseRequest } from './SessionCloseDialog'
 
 type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles' | 'loadModelCatalogs' | 'naming'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
@@ -102,6 +105,7 @@ function markLabel(mark: PaneMark, pane: TmuxPane): string {
 }
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
+const processCount = (count: number) => `${count} process${count === 1 ? '' : 'es'}`
 
 /**
  * Paused sessions shown in the tree. Each holds its place as a `name:` preference entry; one whose
@@ -161,6 +165,11 @@ function withoutUnsavedPausedIds(preferences: SessionTreePreferences): SessionTr
 export function SessionTree(props: Props) {
   const { daemonFetch } = useHost()
   const api = useRef(createSessionManagementApi(props.token, daemonFetch)).current
+  const processesApi = useRef(createTrackedProcessesApi(props.token, daemonFetch)).current
+  const [closeRequest, setCloseRequest] = useState<SessionCloseRequest | null>(null)
+  const closeResolver = useRef<((stopKeys: string[] | null) => void) | null>(null)
+  // A tree that goes away mid-confirmation cancels the close.
+  useEffect(() => () => closeResolver.current?.(null), [])
   const [preferences, setPreferences] = useState<SessionTreePreferences>(EMPTY_SESSION_TREE_PREFERENCES)
   const preferencesRef = useRef(preferences)
   /** `archiveId` marks a paused session's menu. */
@@ -403,6 +412,35 @@ export function SessionTree(props: Props) {
     } catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to update session identity') }
   }
 
+  /**
+   * Confirms closing a session. When it started processes, a dialog lists them with a ticked
+   * Stop box each; otherwise the plain prompt, if there is one. Resolves with the keys of the
+   * processes to stop, or null when the user cancels.
+   */
+  const confirmClose = async (sessionId: string, title: string, confirmLabel: string, prompt: string | null): Promise<string[] | null> => {
+    let processes: TrackedProcess[]
+    try { processes = (await processesApi.list(true)).filter((process) => process.sessionId === sessionId) }
+    catch (cause) {
+      const reason = cause instanceof Error ? cause.message : 'unknown error'
+      return window.confirm(`${prompt ? `${prompt}\n\n` : ''}Processes started from this session could not be listed (${reason}), so any that run detached will keep running.`) ? [] : null
+    }
+    if (!processes.length) return prompt === null || window.confirm(prompt) ? [] : null
+    closeResolver.current?.(null)
+    return new Promise((resolve) => {
+      closeResolver.current = resolve
+      setCloseRequest({ title, message: prompt, confirmLabel, processes })
+    })
+  }
+  const finishClose = (stopKeys: string[] | null) => {
+    const resolve = closeResolver.current
+    closeResolver.current = null
+    setCloseRequest(null)
+    resolve?.(stopKeys)
+  }
+  const reportProcesses = (label: string, processesNotStopped: string | undefined, onError: (message: string) => void) => {
+    if (processesNotStopped) onError(`Closed “${label}” but some of its processes may still run: ${processesNotStopped}`)
+  }
+
   const deleteSession = async (sessionId: string, deleteWorktree = false, confirmation?: string | null, onError: (message: string) => void = setError) => {
     const session = sessionMap.get(sessionId)
     const label = session?.name ?? sessionId
@@ -414,19 +452,27 @@ export function SessionTree(props: Props) {
     const prompt = deleteWorktree
       ? `${confirmation ? `${confirmation}\n\n` : ''}Delete tmux session “${label}” and its linked worktree?${auxiliary.length ? `\n\nThe following background sessions using this worktree will also be closed:\n${auxiliary.map(({ name }) => `• ${name}`).join('\n')}` : ''}\n\nUncommitted changes in the worktree will be permanently deleted. The git branch will be kept.`
       : confirmation === undefined ? `Delete tmux session “${label}” and all of its windows and panes?` : confirmation
-    if (prompt !== null && !window.confirm(prompt)) return
-    try { await api.deleteSession(sessionId, deleteWorktree, auxiliary.map(({ id }) => id)); props.onSessionsChanged() }
-    catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to delete session') }
+    const stopKeys = await confirmClose(sessionId, `Delete session “${label}”`, 'Delete', prompt)
+    if (!stopKeys) return
+    try {
+      const { processesNotStopped } = await api.deleteSession(sessionId, deleteWorktree, auxiliary.map(({ id }) => id), stopKeys)
+      props.onSessionsChanged()
+      reportProcesses(label, processesNotStopped, onError)
+    } catch (cause) { onError(cause instanceof Error ? cause.message : 'Unable to delete session') }
   }
 
   /** Runs an archive or pause, then reports a worktree it had to keep. */
   const stash = async (label: string, run: () => Promise<SessionArchiveResult>, onError: (message: string) => void, failure: string) => {
     try {
-      const { archive, worktreeKept } = await run()
-      setArchives(await api.listArchives())
+      const { archive, worktreeKept, processesNotStopped } = await run()
+      const problems = [
+        worktreeKept ? `Archived “${label}” but kept its worktree: ${worktreeKept}` : '',
+        processesNotStopped ? `Closed “${label}” but some of its processes may still run: ${processesNotStopped}` : '',
+      ].filter(Boolean)
+      if (problems.length) onError(problems.join(' '))
       if (!archive.paused) setArchivesExpanded(true)
       props.onSessionsChanged()
-      if (worktreeKept) onError(`Archived “${label}” but kept its worktree: ${worktreeKept}`)
+      setArchives(await api.listArchives())
     } catch (cause) { onError(cause instanceof Error ? cause.message : failure) }
   }
 
@@ -436,15 +482,17 @@ export function SessionTree(props: Props) {
     // Removing a worktree deletes its ignored files, so that is always confirmed.
     const inWorktree = props.panes.some((pane) => pane.sessionId === sessionId && pane.repo?.isWorktree)
     const prompt = confirmation === undefined || (confirmation === null && inWorktree) ? fallback : confirmation
-    if (prompt !== null && !window.confirm(prompt)) return
-    await stash(label, () => api.archiveSession(sessionId), onError, 'Unable to archive session')
+    const stopKeys = await confirmClose(sessionId, `Archive session “${label}”`, 'Archive', prompt)
+    if (!stopKeys) return
+    await stash(label, () => api.archiveSession(sessionId, stopKeys), onError, 'Unable to archive session')
   }
 
   const pauseSession = async (sessionId: string, confirmation?: string | null, onError: (message: string) => void = setError) => {
     const label = sessionMap.get(sessionId)?.name ?? sessionId
     const prompt = confirmation === undefined ? `Pause “${label}”? Its chats and processes will stop and its simulators are released. ${PAUSE_RESUME_NOTE}` : confirmation
-    if (prompt !== null && !window.confirm(prompt)) return
-    await stash(label, () => api.pauseSession(sessionId), onError, 'Unable to pause session')
+    const stopKeys = await confirmClose(sessionId, `Pause session “${label}”`, 'Pause', prompt)
+    if (!stopKeys) return
+    await stash(label, () => api.pauseSession(sessionId, stopKeys), onError, 'Unable to pause session')
   }
 
   const archivePausedSession = async (archive: SessionArchiveSummary) => {
@@ -495,6 +543,25 @@ export function SessionTree(props: Props) {
   }
 
   const archivedSessions = archives.filter((archive) => !archive.paused)
+  // Processes a paused or archived session left running, by the target ids of its panes.
+  const { processes: trackedProcesses, refresh: refreshProcesses } = useTrackedProcesses(processesApi, archives.length > 0 && props.connected !== false)
+  const leftRunning = (archive: SessionArchiveSummary) => (trackedProcesses ?? []).filter((process) =>
+    !process.paneOpen && process.targetId !== undefined && archive.targetIds?.includes(process.targetId))
+  const stopLeftRunning = async (archive: SessionArchiveSummary, processes: TrackedProcess[]) => {
+    if (!window.confirm(`Stop ${processCount(processes.length)} “${archive.name}” left running?\n\n${processes.map((process) => `• ${process.command}${process.ports.length ? ` (${process.ports.map((port) => `:${port}`).join(' ')})` : ''}`).join('\n')}`)) return
+    try {
+      const { failed } = await processesApi.stop(processes.map(({ key }) => key))
+      if (failed.length) setError(`Could not stop process ${failed.join(', ')}`)
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to stop processes') }
+    await refreshProcesses()
+  }
+  const leftRunningButton = (archive: SessionArchiveSummary) => {
+    const processes = leftRunning(archive)
+    return processes.length ? <button type="button" className="session-processes-left" disabled={props.connected === false}
+      onClick={(event) => { event.stopPropagation(); void stopLeftRunning(archive, processes) }}
+      aria-label={`Stop ${processCount(processes.length)} ${archive.name} left running`}
+      title={`Left running:\n${processes.map((process) => process.command).join('\n')}\nClick to stop`}>{processes.length} running</button> : null
+  }
   const menuArchive = menu?.archiveId ? archives.find((archive) => archive.id === menu.archiveId) : undefined
   const menuContainer = !menu?.archiveId && !manual && menu && !auxiliaryIds.has(menu.sessionId)
     ? containers.find((container) => container.kind === 'repository' && container.sessionIds.includes(menu.sessionId)) : undefined
@@ -574,7 +641,7 @@ export function SessionTree(props: Props) {
                 title={[`${archive.name} — paused ${new Date(archive.createdAt).toLocaleString()}`, archive.repo?.branch, `${plural(archive.windowCount, 'window')} / ${plural(archive.paneCount, 'pane')}`, 'Click to resume'].filter(Boolean).join(' · ')}>
                 <SessionAvatar identity={identity} /><span className="session-identity-name">{archive.name}</span>
               </button>
-              <span className="session-row-meta"><span className="session-paused-badge">{resuming ? 'Resuming…' : <><Pause aria-hidden="true" />Paused</>}</span></span>
+              <span className="session-row-meta">{leftRunningButton(archive)}<span className="session-paused-badge">{resuming ? 'Resuming…' : <><Pause aria-hidden="true" />Paused</>}</span></span>
               <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setMenu({ sessionId, archiveId: archive.id, x: bounds.left, y: bounds.bottom }) }} aria-label={`Actions for ${archive.name}`}><MoreHorizontal /></button></span>
             </div>
           </article>
@@ -738,6 +805,7 @@ export function SessionTree(props: Props) {
         {archivesExpanded ? <div>{archivedSessions.map((archive) => <div className="session-archive-row" key={archive.id}>
           <span title={[new Date(archive.createdAt).toLocaleString(), archive.worktree ? `worktree removed: ${archive.worktree.path}` : undefined].filter(Boolean).join(' · ')}>
             <strong>{archive.name}</strong><small>{archive.worktree ? `${archive.worktree.branch} · ` : ''}{archive.windowCount} windows / {archive.paneCount} panes</small>
+            {leftRunningButton(archive)}
           </span>
           <button type="button" disabled={resumingIds.has(archive.id)} onClick={() => void restoreSession(archive)} aria-label={`Restore ${archive.name}`}
             title={archive.worktree ? `Check out ${archive.worktree.branch} again at ${archive.worktree.path} and reopen the session` : 'Reopen the session and its chats'}><RotateCcw /> {resumingIds.has(archive.id) ? 'Restoring…' : 'Restore'}</button>
@@ -781,6 +849,7 @@ export function SessionTree(props: Props) {
         </> : null}
         {props.onResumeChat ? <button type="button" role="menuitem" disabled={!props.connected} onClick={() => { props.onResumeChat?.(menu.sessionId); setMenu(null) }}><RotateCcw /> Resume a chat…</button> : null}{!auxiliaryIds.has(menu.sessionId) ? <><button type="button" role="menuitem" onClick={() => { void pauseSession(menu.sessionId); setMenu(null) }}><Pause /> Pause session</button><button type="button" role="menuitem" onClick={() => { void archiveSession(menu.sessionId); setMenu(null) }}><Archive /> Archive session</button></> : null}<button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId); setMenu(null) }}><Trash2 /> Delete session</button>{!auxiliaryIds.has(menu.sessionId) && props.panes.some((pane) => pane.sessionId === menu.sessionId && pane.repo?.isWorktree) ? <button type="button" className="danger" role="menuitem" onClick={() => { void deleteSession(menu.sessionId, true); setMenu(null) }}><FolderX /> Delete session and worktree</button> : null}
       </div> : null}
+      {closeRequest ? <SessionCloseDialog request={closeRequest} onCancel={() => finishClose(null)} onConfirm={finishClose} /> : null}
     </div>
   )
 }

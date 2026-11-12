@@ -42,6 +42,8 @@ export type SessionArchive = {
 }
 export type ArchiveSummary = {
   id: string; name: string; createdAt: number; windowCount: number; paneCount: number
+  /** Its panes' target ids, which processes left running are tracked by. */
+  targetIds?: string[]
   paused?: true
   repo?: ArchivedRepo
   worktree?: ArchivedWorktree
@@ -96,6 +98,7 @@ function summary(archive: SessionArchive): ArchiveSummary {
   const { id, name, createdAt, windows, paused, repo, worktree } = archive
   return {
     id, name, createdAt, windowCount: windows.length, paneCount: windows.reduce((count, window) => count + window.panes.length, 0),
+    targetIds: windows.flatMap((window) => window.panes.flatMap((pane) => pane.targetId ? [pane.targetId] : [])),
     ...(paused ? { paused } : {}), ...(repo ? { repo } : {}), ...(worktree ? { worktree } : {}),
   }
 }
