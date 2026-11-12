@@ -251,6 +251,8 @@ describe('remote host HTTP and WebSocket integration', () => {
     expect(await binary).toEqual([Buffer.from([1, 2, 3]), true])
     expect(context.wsHeaders()).toMatchObject({ authorization: 'Bearer remote-secret', host: new URL(context.remoteOrigin).host, 'sec-websocket-protocol': 'commando', connection: 'Upgrade', upgrade: 'websocket' })
     for (const header of ['cookie', 'origin', 'referer', 'x-private']) expect(context.wsHeaders()[header]).toBeUndefined()
+    // A browser outside this Mac (its Origin isn't loopback) stays marked as remote for the target.
+    expect(context.wsHeaders()['x-forwarded-for']).toBeDefined()
     expect(context.wsPath()).toBe('/ws?arg=1')
   })
   it('forwards a hub replay frame larger than 4 MiB', async () => {

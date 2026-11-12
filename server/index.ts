@@ -130,7 +130,8 @@ import {
   createAuthService,
   disabledAuthBootstrap,
 } from './auth.js'
-import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
+import { createNetworkAccess, isLocalClient, isLoopbackAddress } from './network-access.js'
+import { openUrlInBrowser } from './open-folder.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry, defaultDeviceLockStatePath, deviceLockClaimsByPane } from './device-locks.js'
 import { DeviceDiscovery, DeviceWallApi, deviceLockAlerts } from './device-wall.js'
@@ -227,6 +228,8 @@ type ClientState = {
   chatHistoryBytes: number | undefined
   /** Chats this client fetched in full with `chat_history`, kept whole from then on. */
   fullChatPanes: Set<string>
+  /** Connected from this Mac, so a page the daemon opens shows where the user is. */
+  local: boolean
 }
 
 type PaneStreamState = {
@@ -2717,8 +2720,12 @@ async function main(): Promise<void> {
         return
       }
       case 'chat_mcp': {
-        void agentHosts.mcp(message.paneId, message.request).then((result) => {
-          send(client, { type: 'chat_mcp_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        void agentHosts.mcp(message.paneId, message.request).then(async (result) => {
+          // A browser blocks a page opened this long after the key press, so the daemon opens it on this Mac.
+          const authOpened = result.authUrl && client.local
+            ? await openUrlInBrowser(result.authUrl).then(() => true, () => false)
+            : false
+          send(client, { type: 'chat_mcp_result', paneId: message.paneId, requestId: message.requestId, ...result, ...(authOpened ? { authOpened } : {}) })
         })
         return
       }
@@ -2907,6 +2914,7 @@ async function main(): Promise<void> {
       backlog: new WsBacklog(),
       chatHistoryBytes: connectUrl ? chatHistoryBudget(connectUrl) : undefined,
       fullChatPanes: new Set(),
+      local: isLocalClient(request),
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })

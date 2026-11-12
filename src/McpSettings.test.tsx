@@ -65,6 +65,16 @@ describe('McpSettings', () => {
     expect(screen.getByRole('link', { name: /Open sign-in page/ })).toHaveAttribute('href', 'https://mcp.linear.app/authorize')
   })
 
+  it("doesn't open the sign-in page again when the daemon already opened it", async () => {
+    const openUrl = vi.fn(() => true)
+    renderSettings((request) => ({ servers: [linear], ...(request.action === 'authenticate' ? { authUrl: 'https://mcp.linear.app/authorize', authOpened: true } : {}) }), { openUrl })
+    fireEvent.click(await screen.findByRole('option', { name: /linear/ }))
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Authenticate/ }), { key: 'a' })
+    expect(await screen.findByText(/Finish signing in in your browser/)).toBeInTheDocument()
+    expect(openUrl).not.toHaveBeenCalled()
+    expect(screen.getByRole('link', { name: /Open sign-in page/ })).toHaveAttribute('href', 'https://mcp.linear.app/authorize')
+  })
+
   it('keeps the last list and shows the error when a read fails', async () => {
     let fail = false
     renderSettings(() => fail ? { servers: [], error: "This session isn't running" } : { servers: [github] }, { pollMs: 20 })

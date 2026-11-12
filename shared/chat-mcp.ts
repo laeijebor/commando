@@ -41,6 +41,8 @@ export interface ChatMcpResult {
   servers: ChatMcpServer[]
   /** The sign-in page an `authenticate` needs the user to open; the agent waits for its callback. */
   authUrl?: string
+  /** The daemon opened `authUrl` in the browser on its Mac, so the client needn't. */
+  authOpened?: boolean
   error?: string
 }
 
