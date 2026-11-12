@@ -83,7 +83,8 @@ export async function resolvePrImpact(report: PrImpactReport, resolver: PrImpact
       branch ??= await currentBranch(git)
       remote ??= 'origin'
     }
-    repo ??= resolver.repoFromRemote(await git(['remote', 'get-url', remote])) ?? undefined
+    // A push goes to the remote's pushurl, which git falls back from to its url.
+    repo ??= resolver.repoFromRemote(await git(['remote', 'get-url', '--push', remote])) ?? undefined
   } else {
     repo ??= await ghBaseRepo(git, resolver)
     if (!report.number) branch ??= await currentBranch(git)

@@ -1657,7 +1657,7 @@ describe('pane PR impacts', () => {
       const command = args.join(' ')
       if (command === 'rev-parse --git-dir') return '.git'
       if (command === 'rev-parse --abbrev-ref --symbolic-full-name @{push}') return 'origin/feat\n'
-      if (command === 'remote get-url origin') return 'git@github.com:acme/widgets.git\n'
+      if (command === 'remote get-url --push origin') return 'git@github.com:acme/widgets.git\n'
       throw new Error(`unexpected git ${command}`)
     })
     const service = new PrService({ runner, gitRunner: git, paneBatchWindowMs: 0, listTtlMs: 0 })
@@ -1666,6 +1666,21 @@ describe('pane PR impacts', () => {
     await service.recordPaneImpacts(targetId, [{ relation: 'pushed', cwd: '/work/app' }])
     expect(runner.mock.calls.filter(([args]) => queryOf(args).includes('pullRequests(headRefName'))).toHaveLength(1)
     expect(linkOf(await service.listPanePullRequests(targetId))).toEqual(['7:pushed'])
+  })
+
+  it('resolves a push against the remote\'s pushurl, not its fetch url', async () => {
+    const runner = github({}, () => [], { feat: 7 })
+    const git = vi.fn(async (args: string[]) => {
+      const command = args.join(' ')
+      if (command === 'rev-parse --git-dir') return '.git'
+      if (command === 'remote get-url --push origin') return 'git@github.com:leo/widgets.git\n'
+      if (command === 'remote get-url origin') return 'git@github.com:acme/widgets.git\n'
+      throw new Error(`unexpected git ${command}`)
+    })
+    const service = new PrService({ runner, gitRunner: git, paneBatchWindowMs: 0, listTtlMs: 0 })
+    await service.recordPaneImpacts(targetId, [{ relation: 'pushed', cwd: '/work/app', remote: 'origin', branch: 'feat' }])
+    const lookup = runner.mock.calls.find(([args]) => queryOf(args).includes('pullRequests(headRefName'))![0]
+    expect(lookup).toEqual(expect.arrayContaining(['owner=leo', 'name=widgets', 'head=feat']))
   })
 
   it('resolves gh pr commands by number or current branch against gh\'s base remote', async () => {

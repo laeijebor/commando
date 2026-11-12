@@ -133,9 +133,10 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
 
   // A segment is one simple command. Commands joined by && or || (and pipes) form a list;
   // `;`, `&`, newlines and parentheses start a new one. Each list notes whether it used ||
-  // or ran in the background, and each segment how deep in ( subshells ) it sits.
+  // or ran in the background, and each segment how deep in ( subshells ) it sits. A list
+  // that starts at a parenthesis may still hang off an && or || before it: `(a) && b`.
   const segments: Array<{ words: Word[]; list: number; nesting: number }> = []
-  const lists = [{ or: false, background: false }]
+  const lists = [{ or: false, background: false, grouped: false }]
   let nesting = 0
   // After &&, || or a pipe, a newline continues the list rather than ending it.
   let continued = false
@@ -161,10 +162,10 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     if (words.length) segments.push({ words, list: lists.length - 1, nesting })
     words = []
   }
-  const endList = (background = false) => {
+  const endList = (background = false, grouped = false) => {
     endSegment()
     lists[lists.length - 1].background ||= background
-    lists.push({ or: false, background: false })
+    lists.push({ or: false, background: false, grouped })
   }
   let index = 0
   while (index < text.length) {
@@ -191,7 +192,7 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
       continued = character === '|' || double
       index += double || (character === '|' && text[index + 1] === '&') ? 2 : 1
     } else if (character === ';' || character === '(' || character === ')') {
-      endList()
+      endList(false, character !== ';')
       if (character === '(') nesting += 1
       if (character === ')') nesting = Math.max(0, nesting - 1)
       index += 1
@@ -250,18 +251,25 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
   endSegment()
 
   const within = (base: string | null | undefined, path: Word | undefined): string | null => {
-    if (!path || path.dynamic || !path.text || path.text.startsWith('~') || path.text === '-') return null
+    if (!path || path.dynamic || !path.text || path.text.startsWith('~') || path.text.startsWith('-')) return null
     if (path.text.startsWith('/')) return path.text
     return base ? `${base.replace(/\/+$/, '')}/${path.text}` : null
   }
   // The call exited 0, which proves only that its last list succeeded. So only that list
   // counts, and only when it has no || (either side may have run) and is not backgrounded.
   // Subshells count for nothing, and a cd inside one does not move the commands after it.
+  // A cd is followed only when it surely ran: in that last list, or as the first command
+  // of a plain list (`cd x; git push`). Any other cd leaves the directory unknown.
   const lastList = segments.at(-1)?.list
+  // Inside if, loops or case a cd may or may not run, so after one the directory is unknown.
+  const RESERVED = ['if', 'then', 'elif', 'else', 'fi', 'for', 'while', 'until', 'do', 'done', 'case', 'esac', 'select', '!', 'builtin']
+  let lost = false
   let cwd: string | null | undefined = startCwd
-  for (const { words: segment, list, nesting: depth } of segments) {
+  for (const [position, { words: segment, list, nesting: depth }] of segments.entries()) {
     if (depth > 0) continue
     const counts = list === lastList && !lists[list].or && !lists[list].background
+    const first = position === 0 || segments[position - 1].list !== list
+    const ran = counts || (first && !lists[list].or && !lists[list].background && !lists[list].grouped)
     let start = 0
     let ghRepo: Word | undefined
     while (start < segment.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[start].text)
@@ -274,8 +282,10 @@ export function pullRequestImpactsFor(value: unknown): PrImpactHookReport[] | un
     if (!command || command.dynamic) continue
     const name = command.text.split('/').pop()
     const rest = segment.slice(start + 1)
+    if (RESERVED.includes(command.text)) lost = true
+    if (lost) cwd = null
     if (name === 'cd' || name === 'pushd') {
-      cwd = within(cwd, rest[0])
+      cwd = ran && !lost ? within(cwd, rest[0]) : null
       continue
     }
     if (name === 'popd') cwd = null

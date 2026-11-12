@@ -67,6 +67,13 @@ describe('pullRequestImpactsFor', () => {
     ['git push origin feat 2>&1 |\n  tail -3', [{ relation: 'pushed', cwd, remote: 'origin', branch: 'feat' }]],
     ['npm test &&\n  git push', [{ relation: 'pushed', cwd }]],
     ['{ cd /work/other; }; git push', [{ relation: 'pushed', cwd: '/work/other' }]],
+    // A cd is followed when it surely ran: first in a plain list, or anywhere in the last list.
+    ['cd /work/api; git push', [{ relation: 'pushed', cwd: '/work/api' }]],
+    ['cd /work/api\nnpm test\ngit push', [{ relation: 'pushed', cwd: '/work/api' }]],
+    ['npm ci && cd /work/api && git push', [{ relation: 'pushed', cwd: '/work/api' }]],
+    ['git fetch && git rebase origin/main; cd /work/api && git push', [{ relation: 'pushed', cwd: '/work/api' }]],
+    // An uncertain cd only loses reports that need a directory.
+    ['false && cd /work/other; gh pr comment https://github.com/acme/widgets/pull/3 -b ok', [{ relation: 'commented', repo: 'acme/widgets', number: 3 }]],
   ])('counts only the list that decided the exit status: %j', (command, expected) => {
     expect(bash(command)).toEqual(expected)
   })
@@ -85,6 +92,17 @@ describe('pullRequestImpactsFor', () => {
     'test -n "$X" || gh pr merge 3',
     'git diff --quiet ||\n  gh pr comment 42 -b x',
     'test -f done || # already pushed\n  git push origin feat',
+    'false && cd /work/other; git push origin feat',
+    'npm test && cd /work/other; git push',
+    'cd /work/other || exit 1; git push',
+    '(npm test) && cd /work/other; git push',
+    'cd /work/other & git push',
+    'if false; then\n  cd /work/other\nfi\ngit push',
+    'if [ -d /work/other ]; then cd /work/other; fi; git push',
+    'for d in a b; do cd $d; done; git push',
+    'builtin cd /work/other; git push',
+    'cd -- /work/other && git push',
+    'cd -P /work/other && git push',
   ])('reports nothing when the command may not have run or succeeded: %j', (command) => {
     expect(bash(command)).toBeUndefined()
   })
