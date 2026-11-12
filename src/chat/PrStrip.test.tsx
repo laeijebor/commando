@@ -86,6 +86,20 @@ describe('chat PR strip', () => {
     expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual([])
   })
 
+  it('dismisses every shown PR at once and restores them from Show more', async () => {
+    setup([pr(10, 'merged'), pr(11, 'merged'), pr(12)])
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss PR #11' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss all' }))
+    const section = screen.getByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).queryAllByRole('link')).toEqual([])
+    expect(screen.queryByRole('button', { name: 'Dismiss all' })).not.toBeInTheDocument()
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual(
+      [11, 12, 10].map((number) => `${targetId}:acme/widgets#${number}`))
+    fireEvent.click(screen.getByRole('button', { name: 'Show 3 more' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore PR #10' }))
+    expect(screen.getByRole('link', { name: 'Open PR #10 on GitHub' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
+  })
+
   it('shows the shared HUD status chips for open PRs only', async () => {
     const open = { ...pr(12), unresolvedThreads: 7, unansweredThreads: 2, conflicting: true }
     setup([open, { ...pr(10, 'merged'), unresolvedThreads: 4 }])
