@@ -5,6 +5,8 @@ import type { SessionNamingApi } from './sessionNamingApi'
 import { Bot, LogIn, Plus, RefreshCw } from 'lucide-react'
 import { CLAUDE_PROFILE_NAME, type AgentProfilesResponse, type ClaudeLoginStatus, type ClaudeProfileSettings } from '../shared/agent-profiles'
 import type { AgentProfilesApi } from './agentProfilesApi'
+import { rememberClaudeProfiles } from './claudeProfileCache'
+import { useHost } from './HostContext'
 import './settings-view.css'
 
 /** Home-relative, as profiles live in the home folder. */
@@ -116,12 +118,20 @@ export function SettingsView({ api, onOpenPane, commander, naming }: {
   const [newName, setNewName] = useState('')
   const [newLabel, setNewLabel] = useState('')
 
+  const { activeHost: host } = useHost()
   const load = useCallback(async (refresh = false) => {
     setLoading(true)
-    try { setData(await api.list(refresh)); setError('') }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to load profiles') }
+    try {
+      const loaded = await api.list(refresh)
+      setData(loaded)
+      setError('')
+      // Every change here reloads, so New session's remembered list keeps up with labels, the default and hidden profiles.
+      rememberClaudeProfiles(host, loaded.claude.filter((profile) => !profile.hidden).map(({ name, configDir, lastUsedAt, label, isDefault }) => ({
+        name, configDir, ...(lastUsedAt === undefined ? {} : { lastUsedAt }), ...(label ? { label } : {}), ...(isDefault ? { isDefault } : {}),
+      })))
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to load profiles') }
     finally { setLoading(false) }
-  }, [api])
+  }, [api, host])
   // Settings mounts each time it opens, so a login made meanwhile shows up.
   useEffect(() => { void load() }, [load])
 
