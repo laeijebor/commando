@@ -3,7 +3,9 @@ import {
   ChevronRight,
   ChevronUp,
   Columns2,
+  FileCog,
   FileDiff,
+  FlaskConical,
   FolderClosed,
   FolderOpen,
   List,
@@ -11,6 +13,7 @@ import {
   LoaderCircle,
   Rows3,
   Search,
+  SlidersHorizontal,
   X,
 } from 'lucide-react'
 import {
@@ -23,7 +26,9 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
+import { generatedMatcher, isTestPath, repoGeneratedPatterns } from '../shared/diff-filters'
 import { parseAnsi } from './ansi'
+import { updateDiffFilters, useDiffFilters } from './diffFilters'
 import { AnsiText, findTextMatches } from './AnsiText'
 export { AnsiText } from './AnsiText'
 import type {
@@ -345,7 +350,37 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     return () => { generation.current++ }
   }, [paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, refresh, comparisonVisible])
 
-  const files = summary?.files ?? []
+  const allFiles = summary?.files ?? []
+  const diffFilters = useDiffFilters()
+  const [repo, setRepo] = useState<{ root?: string; name?: string }>({})
+  useEffect(() => {
+    let cancelled = false
+    Promise.resolve().then(() => api.repo(panePath))
+      .then((info) => { if (!cancelled) setRepo({ ...(info.mainRoot ? { root: info.mainRoot } : {}), ...(info.name ? { name: info.name } : {}) }) })
+      .catch(() => { if (!cancelled) setRepo({}) })
+    return () => { cancelled = true }
+  }, [api, panePath])
+  const repoPatterns = repoGeneratedPatterns(diffFilters, repo.root, repo.name)
+  const isGenerated = useMemo(() => generatedMatcher(repoPatterns), [repoPatterns])
+  // Hidden tests and generated files leave the list entirely; the path filter and search apply to what's left.
+  const files = useMemo(() => allFiles.filter((file) => !(
+    (diffFilters.hideTests && isTestPath(file.path)) || (diffFilters.hideGenerated && isGenerated(file.path))
+  )), [allFiles, diffFilters.hideGenerated, diffFilters.hideTests, isGenerated])
+  const hiddenCount = allFiles.length - files.length
+  const shownPaths = useRef<string[]>([])
+  shownPaths.current = files.map((file) => file.path)
+  // The draft remembers its repo: if the pane moves to another repo, the editor closes instead of saving there.
+  const [generatedDraft, setGeneratedDraft] = useState<{ root: string; text: string } | null>(null)
+  useEffect(() => { setGeneratedDraft((draft) => (draft && draft.root !== repo.root ? null : draft)) }, [repo.root])
+  const editingGenerated = generatedDraft && generatedDraft.root === repo.root ? generatedDraft : null
+  const [filterError, setFilterError] = useState('')
+  const changeFilters = (change: Parameters<typeof updateDiffFilters>[0]) => {
+    setFilterError('')
+    return updateDiffFilters(change).then(() => true, (cause: unknown) => {
+      setFilterError(cause instanceof Error ? cause.message : 'Could not save diff filters')
+      return false
+    })
+  }
   const deferredFileFilter = useDeferredValue(fileFilter)
   const normalizedFileFilter = deferredFileFilter.trim().toLowerCase()
   const contentQuery = diffSearch.trim()
@@ -454,9 +489,11 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         .then((next) => {
           if (request !== searchGeneration.current) return
           setAllSearchResult(next)
-          const matching = new Set(next.files.map((file) => file.file))
+          // Hidden tests and generated files never become the selection.
+          const shown = new Set(shownPaths.current)
+          const matching = next.files.map((file) => file.file).filter((file) => shown.has(file))
           setSelectedFile((current) => (
-            current && matching.has(current) ? current : next.files[0]?.file ?? current
+            current && matching.includes(current) ? current : matching[0] ?? current
           ))
         })
         .catch((cause: unknown) => {
@@ -787,7 +824,41 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
               <span>
                 {visibleFiles.length !== files.length ? `${visibleFiles.length} / ` : ''}
                 {files.length} {files.length === 1 ? 'file' : 'files'}
+                {hiddenCount ? <span className="git-diff-hidden-count"> · {hiddenCount} hidden</span> : null}
               </span>
+              <div className="git-diff-file-view-toggle" role="group" aria-label="Hide files">
+                <button
+                  type="button"
+                  className={diffFilters.hideTests ? 'active' : undefined}
+                  aria-label="Hide test files"
+                  aria-pressed={diffFilters.hideTests}
+                  title={diffFilters.hideTests ? 'Show test files' : 'Hide test files'}
+                  onClick={() => { void changeFilters({ hideTests: !diffFilters.hideTests }) }}
+                >
+                  <FlaskConical aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={diffFilters.hideGenerated ? 'active' : undefined}
+                  aria-label="Hide generated files"
+                  aria-pressed={diffFilters.hideGenerated}
+                  title={diffFilters.hideGenerated ? 'Show generated files' : 'Hide generated files'}
+                  onClick={() => { void changeFilters({ hideGenerated: !diffFilters.hideGenerated }) }}
+                >
+                  <FileCog aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={editingGenerated !== null ? 'active' : undefined}
+                  aria-label="Edit generated file patterns"
+                  aria-expanded={editingGenerated !== null}
+                  disabled={!repo.root}
+                  title={repo.root ? `Which files count as generated in ${repo.name ?? 'this repo'}` : 'Generated patterns need a git repository'}
+                  onClick={() => setGeneratedDraft(editingGenerated === null && repo.root ? { root: repo.root, text: repoPatterns.join('\n') } : null)}
+                >
+                  <SlidersHorizontal aria-hidden="true" />
+                </button>
+              </div>
               <div className="git-diff-file-view-toggle" role="group" aria-label="File view">
                 <button
                   type="button"
@@ -811,6 +882,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                 </button>
               </div>
             </header>
+            {filterError ? <div className="git-diff-error" role="alert">{filterError}</div> : null}
             <div className="git-diff-file-filter">
               <Search aria-hidden="true" />
               <input
@@ -835,10 +907,55 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
               ) : null}
             </div>
             <div className="git-diff-file-scroll">
+              {editingGenerated !== null ? (
+                <form
+                  className="git-diff-generated-editor"
+                  aria-label="Generated file patterns"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    const draft = editingGenerated
+                    void changeFilters({ repo: { root: draft.root, patterns: draft.text.split('\n') } })
+                      .then((saved) => { if (saved) setGeneratedDraft((current) => (current === draft ? null : current)) })
+                  }}
+                >
+                  <label htmlFor={`${paneId}-generated-patterns`}>Generated in {repo.name ?? 'this repo'}</label>
+                  <textarea
+                    id={`${paneId}-generated-patterns`}
+                    rows={4}
+                    value={editingGenerated.text}
+                    spellCheck={false}
+                    onChange={(event) => setGeneratedDraft({ root: editingGenerated.root, text: event.target.value })}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGeneratedDraft(null) }
+                    }}
+                  />
+                  <p>
+                    One pattern per line, like .gitignore. <code>!</code> keeps a path visible.
+                    Lockfiles, <code>*.gen.*</code> and <code>generated/</code> folders always count too.
+                  </p>
+                  <div className="git-diff-generated-actions">
+                    <button type="submit">Save</button>
+                    <button type="button" onClick={() => setGeneratedDraft(null)}>Cancel</button>
+                    {diffFilters.generatedByRepo[editingGenerated.root] ? (
+                      <button type="button" title="Forget this repo's saved list and use the built-in one"
+                        onClick={() => {
+                          const root = editingGenerated.root
+                          void changeFilters({ repo: { root, patterns: null } })
+                            .then((saved) => { if (saved) setGeneratedDraft((current) => (current?.root === root ? null : current)) })
+                        }}>
+                        Reset
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+              ) : null}
               {summaryLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading changes</div> : null}
               {!summaryLoading && summaryError ? <div className="git-diff-error" role="alert">{summaryError}{errorHint}</div> : null}
-              {!summaryLoading && !summaryError && files.length === 0
+              {!summaryLoading && !summaryError && allFiles.length === 0
                 ? <div className="git-diff-status">No changes vs {summary?.target ?? 'target'}</div>
+                : null}
+              {!summaryLoading && !summaryError && allFiles.length > 0 && files.length === 0
+                ? <div className="git-diff-status">All {allFiles.length} changed files are hidden tests or generated files</div>
                 : null}
               {!summaryLoading && !summaryError && files.length > 0 && visibleFiles.length === 0
                 ? <div className="git-diff-status">No changed files match this search</div>

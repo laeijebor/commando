@@ -1,0 +1,225 @@
+/**
+ * Diff file filters: hide test files and generated files from the changed-file
+ * list. The two switches and each repo's generated patterns are saved by the
+ * daemon and shared by every Commando window.
+ */
+
+export type DiffFilters = {
+  hideTests: boolean
+  hideGenerated: boolean
+  /** Generated-file patterns by main checkout root; a saved list replaces that repo's built-in one. */
+  generatedByRepo: Record<string, string[]>
+  /** Goes up with every saved change, so a window can tell an old answer from a newer update. */
+  revision: number
+}
+
+/** One change to the filters; absent fields stay as they are. */
+export type DiffFiltersChange = {
+  hideTests?: boolean
+  hideGenerated?: boolean
+  /** Saves a repo's generated patterns; `patterns: null` goes back to its built-in list. */
+  repo?: { root: string; patterns: string[] | null }
+}
+
+export const DEFAULT_DIFF_FILTERS: DiffFilters = { hideTests: false, hideGenerated: false, generatedByRepo: {}, revision: 0 }
+
+export const MAX_DIFF_FILTER_REPOS = 200
+export const MAX_GENERATED_PATTERNS = 200
+export const MAX_GENERATED_PATTERN_LENGTH = 500
+const NO_PATTERNS: readonly string[] = Object.freeze([])
+
+/**
+ * Test files across the repos in use: `*.test.*` / `*.spec.*` (including
+ * `.unit.test.ts`, `.integration.test.ts`), pytest, Go and XCTest names, and
+ * anything inside a test folder.
+ */
+const TEST_FILE = /(?:^|\/)(?:[^/]*\.(?:test|spec)\.[^/]+|test_[^/]*\.py|[^/]*_test\.(?:py|go)|conftest\.py|[^/]*Tests\.swift)$/
+const TEST_FOLDER = /(?:^|\/)(?:__tests__|__mocks__|__snapshots__|tests?|Tests|e2e|fixtures|[^/]+-tests)\//
+
+export function isTestPath(path: string): boolean {
+  return TEST_FILE.test(path) || TEST_FOLDER.test(path)
+}
+
+/** Generated in every repo, on top of the repo's own list. */
+export const COMMON_GENERATED_PATTERNS: readonly string[] = [
+  '*.gen.*',
+  '*.generated.*',
+  'generated/',
+  '__generated__/',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+  'uv.lock',
+  'poetry.lock',
+  'Cargo.lock',
+  'Gemfile.lock',
+  'go.sum',
+  '*.min.js',
+  '*.min.css',
+]
+
+/** Built-in lists by repo folder name, used until a repo's list is saved. */
+export const BUILT_IN_REPO_GENERATED: Readonly<Record<string, readonly string[]>> = {
+  'Save-All': [
+    'drizzle/',
+    '**/src/client/core/',
+    '**/src/client/client/',
+    'workers/*/schema.json',
+  ],
+  vivifit: [
+    'drizzle*/',
+    'packages/storybook/storybook-static/',
+    // A Next.js route named "generated", not generated code.
+    '!apps-fe/teaser/src/app/document-templates/generated/',
+  ],
+}
+
+/** The repo's own generated patterns: its saved list, else the built-in one for its folder name. */
+export function repoGeneratedPatterns(filters: DiffFilters, root: string | undefined, name: string | undefined): readonly string[] {
+  if (root && filters.generatedByRepo[root]) return filters.generatedByRepo[root]
+  // Own properties only: a repo named "constructor" must not find Object's.
+  return name && Object.hasOwn(BUILT_IN_REPO_GENERATED, name) ? BUILT_IN_REPO_GENERATED[name]! : NO_PATTERNS
+}
+
+/**
+ * Matches one path segment against `*` and `?` without backtracking: the
+ * classic two-pointer wildcard match, at most name × pattern steps.
+ */
+function segmentMatches(pattern: string, name: string): boolean {
+  let p = 0, n = 0, star = -1, resume = 0
+  while (n < name.length) {
+    if (p < pattern.length && (pattern[p] === '?' || pattern[p] === name[n])) { p++; n++ }
+    else if (p < pattern.length && pattern[p] === '*') { star = p++; resume = n }
+    else if (star >= 0) { p = star + 1; n = ++resume }
+    else return false
+  }
+  while (pattern[p] === '*') p++
+  return p === pattern.length
+}
+
+export type GeneratedPattern = { test(path: string): boolean }
+
+/**
+ * Compiles a gitignore-style pattern against repo-relative paths. A pattern
+ * without a slash matches a name at any depth; one with a slash starts at the
+ * repo root; `**` spans folders; a trailing slash matches only folders.
+ * A leading `!` is handled by `generatedMatcher`, not here. Matching walks
+ * path segments with a memo, so its cost is bounded whatever the pattern.
+ */
+export function compileGeneratedPattern(pattern: string): GeneratedPattern | null {
+  let glob = pattern.trim()
+  if (!glob || glob.startsWith('#')) return null
+  const folder = glob.endsWith('/')
+  glob = glob.replace(/\/+$/, '')
+  const rooted = glob.startsWith('/')
+  glob = glob.replace(/^\/+/, '')
+  if (!glob) return null
+  const anchored = rooted || glob.includes('/')
+  const segments = glob.split('/').filter((segment, index, all) => !(segment === '**' && all[index - 1] === '**'))
+  return {
+    test(path) {
+      const parts = path.split('/')
+      // A folder pattern must leave at least the file name after it.
+      const lastEnd = folder ? parts.length - 1 : parts.length
+      const memo = new Map<number, boolean>()
+      // Can segments[from…] match parts[at…] and end on a segment boundary at or before lastEnd?
+      const matchFrom = (from: number, at: number): boolean => {
+        if (from === segments.length) return at <= lastEnd
+        const key = from * (parts.length + 1) + at
+        const known = memo.get(key)
+        if (known !== undefined) return known
+        let result: boolean
+        // A trailing ** needs at least one more segment, like gitignore's `a/**`.
+        if (segments[from] === '**' && from === segments.length - 1) result = at < lastEnd
+        else if (segments[from] === '**') {
+          result = false
+          for (let next = at; next <= parts.length && !result; next++) result = matchFrom(from + 1, next)
+        } else result = at < parts.length && segmentMatches(segments[from]!, parts[at]!) && matchFrom(from + 1, at + 1)
+        memo.set(key, result)
+        return result
+      }
+      if (anchored) return matchFrom(0, 0)
+      for (let start = 0; start < parts.length; start++) if (matchFrom(0, start)) return true
+      return false
+    },
+  }
+}
+
+/** A matcher for the common patterns plus the repo's own; a `!pattern` exempts what it matches. */
+export function generatedMatcher(patterns: readonly string[]): (path: string) => boolean {
+  const include: GeneratedPattern[] = [], exempt: GeneratedPattern[] = []
+  for (const pattern of [...COMMON_GENERATED_PATTERNS, ...patterns]) {
+    const negated = pattern.trim().startsWith('!')
+    const compiled = compileGeneratedPattern(negated ? pattern.trim().slice(1) : pattern)
+    if (compiled) (negated ? exempt : include).push(compiled)
+  }
+  return (path) => include.some((pattern) => pattern.test(path)) && !exempt.some((pattern) => pattern.test(path))
+}
+
+const controls = /[\u0000-\u001f\u007f]/
+
+/** Trims, drops blanks and duplicates, and rejects patterns that are too long or contain control characters. */
+export function normalizeGeneratedPatterns(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > MAX_GENERATED_PATTERNS) throw new Error(`patterns must be a list of at most ${MAX_GENERATED_PATTERNS}`)
+  const patterns: string[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.length > MAX_GENERATED_PATTERN_LENGTH || controls.test(entry)) {
+      throw new Error(`Each pattern must be text up to ${MAX_GENERATED_PATTERN_LENGTH} characters`)
+    }
+    const pattern = entry.trim()
+    if (pattern && !patterns.includes(pattern)) patterns.push(pattern)
+  }
+  return patterns
+}
+
+const isRepoRoot = (value: unknown): value is string => typeof value === 'string' && value.startsWith('/') && value.length <= 4096 && !controls.test(value)
+
+/** Parses a change request; throws a readable error on bad input. */
+export function parseDiffFiltersChange(value: unknown): DiffFiltersChange {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected an object')
+  const record = value as Record<string, unknown>
+  const change: DiffFiltersChange = {}
+  for (const key of ['hideTests', 'hideGenerated'] as const) {
+    if (record[key] === undefined) continue
+    if (typeof record[key] !== 'boolean') throw new Error(`${key} must be true or false`)
+    change[key] = record[key]
+  }
+  if (record.repo !== undefined) {
+    const repo = record.repo as Record<string, unknown> | null
+    if (!repo || typeof repo !== 'object' || !isRepoRoot(repo.root)) throw new Error('repo.root must be an absolute repository root')
+    change.repo = { root: repo.root, patterns: repo.patterns === null ? null : normalizeGeneratedPatterns(repo.patterns) }
+  }
+  return change
+}
+
+/** Reads saved filters leniently: bad fields fall back to defaults instead of failing. */
+export function parseDiffFilters(value: unknown): DiffFilters {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  const generatedByRepo: Record<string, string[]> = {}
+  const repos = record.generatedByRepo && typeof record.generatedByRepo === 'object' && !Array.isArray(record.generatedByRepo)
+    ? Object.entries(record.generatedByRepo as Record<string, unknown>) : []
+  for (const [root, patterns] of repos.slice(0, MAX_DIFF_FILTER_REPOS)) {
+    if (!isRepoRoot(root)) continue
+    try { generatedByRepo[root] = normalizeGeneratedPatterns(patterns) } catch { /* Skip a corrupt entry. */ }
+  }
+  const revision = Number.isSafeInteger(record.revision) && (record.revision as number) >= 0 ? record.revision as number : 0
+  return { hideTests: record.hideTests === true, hideGenerated: record.hideGenerated === true, generatedByRepo, revision }
+}
+
+export function applyDiffFiltersChange(filters: DiffFilters, change: DiffFiltersChange): DiffFilters {
+  const next: DiffFilters = { ...filters, generatedByRepo: { ...filters.generatedByRepo }, revision: filters.revision + 1 }
+  if (change.hideTests !== undefined) next.hideTests = change.hideTests
+  if (change.hideGenerated !== undefined) next.hideGenerated = change.hideGenerated
+  if (change.repo) {
+    if (change.repo.patterns === null) delete next.generatedByRepo[change.repo.root]
+    else {
+      if (!(change.repo.root in next.generatedByRepo) && Object.keys(next.generatedByRepo).length >= MAX_DIFF_FILTER_REPOS) {
+        throw new Error(`Generated patterns are saved for at most ${MAX_DIFF_FILTER_REPOS} repos`)
+      }
+      next.generatedByRepo[change.repo.root] = change.repo.patterns
+    }
+  }
+  return next
+}
