@@ -148,7 +148,7 @@ import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
 import { SidePanel, type PanePanelData } from './SidePanel'
 import { CommanderPeekTabs } from './CommanderPeekTabs'
-import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, NARROW_PANEL_QUERY, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, NARROW_PANEL_QUERY, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, prTabSignature, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
 import { dropPlacementFor, type DraggedItem } from './paneDrag'
 import {
@@ -157,7 +157,7 @@ import {
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
 import { createDiffFiltersApi, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
-import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
+import { createPrsApi, type PanePrSummary, type PrsApiClient, type PrSummary } from './prsApi'
 import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
 import { createCloudTasksApi } from './cloudTasksApi'
@@ -419,6 +419,7 @@ type TerminalPaneProps = {
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
   onChatOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
+  onChatDismissPrs?: (prs: PanePrSummary[]) => void
   chatServices?: ChatInputServices
   chatFlow?: ChatFlowServices
   /** Why the daemon refused one of this pane's chat sends. */
@@ -517,6 +518,7 @@ export function TerminalPaneCard({
   onChatConfigure,
   onChatRestart,
   onChatOpenPr,
+  onChatDismissPrs,
   chatServices,
   chatFlow,
   chatSendError,
@@ -825,6 +827,7 @@ export function TerminalPaneCard({
             onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
             {...(onChatOpenPr ? { onOpenPr: onChatOpenPr } : {})}
+            {...(onChatDismissPrs ? { onDismissPrs: onChatDismissPrs } : {})}
             {...(chatServices ? { services: chatServices } : {})}
             {...(chatFlow ? { flow: chatFlow } : {})}
             {...(chatSendError ? { sendError: chatSendError } : {})}
@@ -3005,6 +3008,7 @@ function HostApp() {
           onConfigure={(settings) => configureChat(row.paneId, settings)}
           onRestart={() => restartChat(row.paneId)}
           onOpenPr={(repo, number, tab) => { void revealPrTab(row.paneId, repo, number, tab) }}
+          onDismissPrs={(prs) => closePrTabs(row.paneId, prs)}
           services={chatServicesFor(row.paneId)} flow={chatFlowFor(row.paneId)}
           {...(chatSendErrors[row.paneId] ? { sendError: chatSendErrors[row.paneId] } : {})}
           onDismissSendError={() => setChatSendErrors((current) => { const next = { ...current }; delete next[row.paneId]; return next })}
@@ -3101,18 +3105,40 @@ function HostApp() {
       if (local) await webPanesApi.dismissPrTab(tab.anchorPaneId, tab.key, signature, next ? panelTabKey(next) : undefined)
       setDismissedPrTabs((current) => ({ ...current, [tab.anchorPaneId]: { ...current[tab.anchorPaneId], [tab.key]: signature } }))
     } catch (error) {
-      setPanelActiveTabs((current) => {
-        const restored = { ...current }
-        if (previousActiveKey === undefined) delete restored[tab.anchorPaneId]
-        else restored[tab.anchorPaneId] = previousActiveKey
-        return restored
-      })
-      setMaximizedBuiltinTab(previousMaximizedBuiltinTab)
-      setMaximizedPaneId(previousMaximizedPaneId)
-      setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
-        ? { ...pane, activeTab: previousWebActiveTabs.get(pane.id) } : pane))
+      // Only undo a selection this call moved; a batch closes several tabs but moves off just the active one.
+      if (next) {
+        setPanelActiveTabs((current) => {
+          const restored = { ...current }
+          if (previousActiveKey === undefined) delete restored[tab.anchorPaneId]
+          else restored[tab.anchorPaneId] = previousActiveKey
+          return restored
+        })
+        setMaximizedBuiltinTab(previousMaximizedBuiltinTab)
+        setMaximizedPaneId(previousMaximizedPaneId)
+        setWebPanes((current) => current.map((pane) => pane.anchorPaneId === tab.anchorPaneId
+          ? { ...pane, activeTab: previousWebActiveTabs.get(pane.id) } : pane))
+      }
       setPaneActionError(error instanceof Error ? error.message : 'Could not close PR tab')
     }
+  }
+
+  /** Closes the side-panel tabs of PRs dismissed from a chat's PR strip, moving off the active one. */
+  const closePrTabs = (paneId: string, prs: readonly PanePrSummary[]) => {
+    const tabs = panelTabSets.current.get(paneId) ?? []
+    const closing = prs.flatMap((pr) => {
+      const key = prPanelKey(pr.repo, pr.number)
+      const signature = prTabSignature(pr)
+      if (dismissedPrTabs[paneId]?.[key] === signature) return []
+      const tab = tabs.find((candidate): candidate is BuiltinPanelTab => isBuiltinTab(candidate) && candidate.key === key) ?? builtinPanelTab(paneId, key)
+      return [{ tab, signature }]
+    })
+    const activeKey = tabs.length ? panelTabKey(resolveActivePanelTab(tabs, panelActiveTabs[paneId], tabs)!) : undefined
+    const closingKeys = new Set<string>(closing.map(({ tab }) => tab.key))
+    // Only the active tab's close moves the selection, to the tab that survives beside it.
+    const next = activeKey && closingKeys.has(activeKey)
+      ? resolveActivePanelTab(tabs.filter((tab) => !closingKeys.has(panelTabKey(tab))), activeKey, tabs)
+      : undefined
+    for (const { tab, signature } of closing) void dismissPanePrTab(tab, signature, tab.key === activeKey ? next : undefined)
   }
 
   const closeWebPane = async (webPaneId: string) => {
@@ -4507,6 +4533,7 @@ function HostApp() {
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
                             onChatOpenPr={(repo, number, tab) => { void revealPrTab(pane.id, repo, number, tab) }}
+                            onChatDismissPrs={(prs) => closePrTabs(pane.id, prs)}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
                             handoffProvider={paneChatHandoff(pane.id, agentStatuses[pane.id], chatHandoffEntries, chatHandoffs)?.provider}
                             chatUploading={chatUploads.has(pane.id)}

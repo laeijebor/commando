@@ -990,6 +990,20 @@ describe('HUD tabs', () => {
       expect(open).not.toHaveBeenCalled()
     })
 
+    it('closes the PR\'s side-panel tab when it is dismissed from the chat strip', async () => {
+      const pr = stubPr()
+      await renderAppWithSnapshot()
+      act(() => daemonMessage?.({ type: 'chat_state', chat: { paneId: adjacentPane.id, hostConnected: true, items: [],
+        session: { paneId: adjacentPane.id, provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 1 } } }))
+      const strip = await screen.findByRole('region', { name: 'Linked pull requests' })
+      fireEvent.click(within(strip).getByRole('link', { name: 'feat: pane diff' }))
+      expect(await screen.findByRole('tab', { name: '#12 open' })).toHaveAttribute('aria-selected', 'true')
+      fireEvent.click(within(strip).getByRole('button', { name: 'Dismiss PR #12' }))
+      await waitFor(() => expect(screen.queryByRole('tab', { name: '#12 open' })).not.toBeInTheDocument())
+      expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
+      expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr-tabs/dismiss', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id, key: 'pr:acme:widgets:12', signature: `open|false|${pr.updatedAt}`, nextKey: 'session' }) }))
+    })
+
     it.each([
       ['Open checks for PR #12', 'Checks'],
       ['Open diff for PR #12', 'Diff'],
