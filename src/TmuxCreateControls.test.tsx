@@ -728,6 +728,35 @@ describe('models', () => {
     chooseAgent('shell')
     expect(screen.queryByRole('button', { name: /^Model:/ })).not.toBeInTheDocument()
   })
+
+  it('offers fast mode beside a model that has it, and starts the chat fast', async () => {
+    window.localStorage.clear()
+    window.localStorage.setItem('commando.chat-launch.by-repo', JSON.stringify({ '*': { configDir: '/Users/dev/.claudep', permissionMode: 'default' } }))
+    const fastCatalogs = { 'claude:/Users/dev/.claudep': { models: [{ value: 'default', displayName: 'Default (recommended)' }, { value: 'opus', displayName: 'Opus 5.5', supportsFast: true }], updatedAt: 1 } }
+    const onCreateSession = vi.fn(respond)
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} loadModelCatalogs={async () => fastCatalogs} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Model: Default model' }))
+    expect(screen.queryByRole('button', { name: 'Fast mode' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Opus 5.5/ }))
+    const toggle = screen.getByRole('button', { name: 'Fast mode' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
+    expect(onCreateSession.mock.calls[0]![0].agent).toMatchObject({ provider: 'claude-chat', model: 'opus', fast: true })
+    // The form resets to fast off for the next session.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Fast mode' })).toHaveAttribute('aria-pressed', 'false'))
+    // Terminal Claude shares the model list but can't start fast, so neither shows nor sends it.
+    fireEvent.click(screen.getByRole('button', { name: 'Fast mode' }))
+    chooseAgent('claude')
+    expect(screen.queryByRole('button', { name: 'Fast mode' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'term' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Create session/ }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledTimes(2))
+    expect(onCreateSession.mock.calls[1]![0].agent).not.toHaveProperty('fast')
+  })
 })
 
 describe('opening prompt first', () => {
