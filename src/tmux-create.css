@@ -390,6 +390,8 @@
 .tmux-create__pill svg { width: 10px; height: 10px; flex: none; color: var(--muted-dim); }
 .tmux-create__pill-text { overflow: hidden; text-overflow: ellipsis; }
 .tmux-create__pill-tag { color: var(--muted-dim); }
+.tmux-create__pill.is-fast, .tmux-create__pill.is-fast svg { color: var(--accent); }
+.tmux-create__pill.is-fast svg { fill: currentColor; }
 .tmux-create__dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-faint); }
 .tmux-create__dot.is-claude { background: var(--purple, var(--accent)); }
 .tmux-create__dot.is-codex { background: var(--cyan); }

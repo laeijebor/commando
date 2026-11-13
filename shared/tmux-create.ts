@@ -39,6 +39,8 @@ export type SessionAgentLaunch = {
   configDir?: string
   /** Chat providers, claude and codex: the model to start on (a picker value such as `sonnet` or `gpt-6.1-sol`). */
   model?: string
+  /** Chat providers only: start in fast mode (the host keeps it only on a model that offers it). */
+  fast?: true
   /** Chat providers only: images or videos (uploaded to /api/chat/images) sent with the opening prompt. */
   images?: ChatImageRef[]
   /** Chat providers only. */
@@ -144,6 +146,7 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       chatHostProvider(launch.provider),
       ...(launch.provider === 'claude-chat' && launch.configDir ? ['--config-dir', launch.configDir] : []),
       ...(launch.model ? ['--model', launch.model] : []),
+      ...(launch.fast ? ['--fast'] : []),
       '--permission-mode', launch.permissionMode ?? (launch.provider === 'cursor-chat' ? 'bypassPermissions' : 'default'),
       ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
       // Muse full access must be named: a bare bypassPermissions from before it existed stays sandboxed.

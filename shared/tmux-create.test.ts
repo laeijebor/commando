@@ -29,6 +29,10 @@ describe('interactive agent arguments', () => {
     expect(sessionAgentArgv({ provider: 'claude', model: 'sonnet', prompt: 'Fix' })).toEqual(['claude', '--model', 'sonnet', '--', ' Fix'])
     expect(sessionAgentArgv({ provider: 'codex', model: 'gpt-6.1-sol', prompt: 'Fix' })).toEqual(['codex', '--model', 'gpt-6.1-sol', '--', 'Fix'])
   })
+  it('starts a chat in fast mode only when asked', () => {
+    expect(sessionAgentArgv({ provider: 'claude-chat', model: 'opus', fast: true })).toEqual(['commando-agent', 'claude', '--model', 'opus', '--fast', '--permission-mode', 'default'])
+    expect(sessionAgentArgv({ provider: 'codex-chat' })).not.toContain('--fast')
+  })
   it('round-trips image ids and names through --image, splitting at the first colon', () => {
     const id = `${'c'.repeat(64)}.png`
     expect(parseChatImageArg(chatImageArg({ id, name: 'a: b.png' }))).toEqual({ id, name: 'a: b.png' })

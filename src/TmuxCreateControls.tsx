@@ -38,7 +38,7 @@ import {
   type AgentOption,
   type StartWith,
 } from './newSessionAgents'
-import { AgentPicker, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
+import { AgentPicker, NewSessionFastToggle, NewSessionModelPicker, NewSessionPermissionPicker } from './NewSessionPickers'
 import { isAttachableFile, useOpeningAttachments, type AttachmentUploads } from './useOpeningAttachments'
 import type { SessionNamingApi } from './sessionNamingApi'
 import { cachedClaudeProfiles, rememberClaudeProfiles } from './claudeProfileCache'
@@ -275,6 +275,7 @@ export function TmuxCreateControls({
   const [chatLaunch, setChatLaunch] = useState<ChatLaunchPreference>(() => loadChatLaunch(undefined, 'claude-chat', host))
   const [modelCatalogs, setModelCatalogs] = useState<ModelCatalogs | null>(null)
   const [modelPick, setModelPick] = useState<{ key: string; value: string } | null>(null)
+  const [fastPick, setFastPick] = useState(false)
   const [namingInfo, setNamingInfo] = useState<SessionNamingResponse | null>(null)
   /** Set while a model names the session; pressing create again skips the wait. */
   const namingRef = useRef<AbortController | null>(null)
@@ -429,6 +430,8 @@ export function TmuxCreateControls({
   const listKnown = Boolean(modelEntry)
   const selectedModel = models.find((model) => model.value === wantedModel)?.value
     ?? (!listKnown && wantedModel ? wantedModel : models[0]?.value ?? 'default')
+  const fastAvailable = Boolean(models.find((model) => model.value === selectedModel)?.supportsFast)
+  const fast = fastAvailable && fastPick
   const modelChoicesShown = !listKnown && wantedModel && !models.some((model) => model.value === wantedModel)
     ? [...models, { value: wantedModel, displayName: wantedModel }]
     : models
@@ -558,6 +561,7 @@ export function TmuxCreateControls({
     setWindowName('')
     setOpeningPrompt('')
     attachments.clear()
+    setFastPick(false)
     setBranch('')
     setBranchEdited(false)
     setWorktreePath(null)
@@ -630,6 +634,7 @@ export function TmuxCreateControls({
           ...(promptAccepted && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
           ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
           ...(model ? { model } : {}),
+          ...(fast ? { fast: true as const } : {}),
           ...(isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat' ? chatLaunchPermission(agentProvider, chatLaunch.permissionMode) : {}),
           ...(agentProvider === 'claude-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
           ...(usesClaudeProfile(agentProvider) && claudeConfigDir ? { configDir: claudeConfigDir } : {}),
@@ -785,6 +790,9 @@ export function TmuxCreateControls({
             disabled={unavailable}
             onPick={(value) => { if (catalogKey) setModelPick({ key: catalogKey, value }) }}
           />
+        ) : null}
+        {chatProvider && fastAvailable ? (
+          <NewSessionFastToggle on={fast} disabled={unavailable} onToggle={() => setFastPick(!fast)} />
         ) : null}
         {permissionModes.length ? (
           <NewSessionPermissionPicker
