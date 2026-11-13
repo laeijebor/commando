@@ -54,20 +54,22 @@ function unixRequest(socketPath: string, path: string, body?: unknown): Promise<
 }
 
 /**
- * Ask code-server which loaded workbench window shows `workspacePath`. Each
- * window's extension host registers its folders and CLI socket in the session
- * registry; code-server ranks windows whose folder contains the probe path
- * first, falling back to the most recent window when none does.
+ * code-server's session registry: each loaded workbench window's extension
+ * host registers its folders and CLI socket. A lookup returns the latest window
+ * whose folder contains `filePath`, or else the latest window of all.
  */
-async function workbenchSocket(sessionSocketPath: string, workspacePath: string): Promise<string | undefined> {
-  const probe = join(workspacePath, '.commando-open-file')
+async function registryLookup(sessionSocketPath: string, filePath: string): Promise<string | undefined> {
   try {
-    const { status, text } = await unixRequest(sessionSocketPath, `/session?filePath=${encodeURIComponent(probe)}`)
+    const { status, text } = await unixRequest(sessionSocketPath, `/session?filePath=${encodeURIComponent(filePath)}`)
     if (status !== 200) return undefined
     const socketPath = (JSON.parse(text) as { socketPath?: unknown }).socketPath
     return typeof socketPath === 'string' && socketPath ? socketPath : undefined
   } catch { return undefined }
 }
+
+const workspaceProbe = (workspacePath: string) => join(workspacePath, '.commando-open-file')
+/** Relative, so no window's folder contains it: the lookup returns the latest window. */
+const UNMATCHED_PROBE = 'commando-unmatched'
 
 function health(socketPath: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -157,7 +159,7 @@ export async function launchCodeServer(options: IdeLaunchOptions): Promise<IdeRu
 
 /** The daemon cannot single out the session's window; load it on the file instead. */
 export class IdeWindowAmbiguousError extends Error {
-  constructor() { super('Another IDE window also shows this worktree') }
+  constructor() { super('Could not tell which IDE window shows this worktree') }
 }
 
 export class SessionIdeService {
@@ -326,17 +328,23 @@ export class SessionIdeService {
     if (!isAbsolute(filePath)) throw new Error('File path must be absolute')
     const canonicalPath = await realpath(filePath).catch(() => { throw new Error('File no longer exists in this worktree') })
     if (!(await stat(canonicalPath)).isFile()) throw new Error('Only files can be opened in the IDE')
-    // code-server picks the latest window whose folder contains the probe, so a
-    // window on an ancestor folder (a repo holding nested worktrees) could take it.
     const workspace = entry.public.workspacePath
-    if ([...this.entries.values()].some((other) => other !== entry && other.public.state === 'ready' &&
-      workspace.startsWith(other.public.workspacePath.endsWith(sep) ? other.public.workspacePath : other.public.workspacePath + sep))) {
-      throw new IdeWindowAmbiguousError()
-    }
+    const others = [...this.entries.values()]
+      .filter((other) => other !== entry && other.public.state === 'ready')
+      .map((other) => other.public.workspacePath)
+    // A window on an ancestor folder (a repo holding nested worktrees) also contains the probe.
+    if (others.some((other) => workspace.startsWith(other.endsWith(sep) ? other : other + sep))) throw new IdeWindowAmbiguousError()
     const deadline = Date.now() + waitMs
     for (;;) {
-      const windowSocket = await workbenchSocket(sessionSocketPath, workspace)
+      const windowSocket = await registryLookup(sessionSocketPath, workspaceProbe(workspace))
       if (windowSocket) {
+        // The registry falls back to the latest window when this worktree's has not
+        // registered yet. A window other than the latest must have matched; the latest
+        // is ours only if no other IDE's worktree lookup also lands on it.
+        if (windowSocket === await registryLookup(sessionSocketPath, UNMATCHED_PROBE)) {
+          const otherWindows = await Promise.all(others.map((other) => registryLookup(sessionSocketPath, workspaceProbe(other))))
+          if (otherWindows.includes(windowSocket)) throw new IdeWindowAmbiguousError()
+        }
         // The window's CLI server, as `code-server --reuse-window <file>` would call it.
         const { status, text } = await unixRequest(windowSocket, '/', {
           type: 'open', fileURIs: [pathToFileURL(canonicalPath).href], folderURIs: [], forceReuseWindow: true,

@@ -178,24 +178,36 @@ describe('opening files in a loaded IDE window', () => {
   }
   afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve)))) })
 
-  it('asks the registry for the window showing this workspace and opens the file there', async () => {
-    const registry = join(directory, 'r.sock')
-    const window = join(directory, 'w.sock')
+  /** code-server's ranking: windows whose folder contains the path first, then the latest. */
+  const registry = async (windows: { folder: string; socket: string }[]) => {
+    const path = join(directory, 'r.sock')
     const queries: string[] = []
-    const opened: unknown[] = []
-    let registered = false
-    await listen(registry, (req, res) => {
+    await listen(path, (req, res) => {
       const filePath = new URL(req.url!, 'http://x').searchParams.get('filePath')!
       queries.push(filePath)
-      res.end(JSON.stringify({ socketPath: registered ? window : undefined }))
+      const latest = [...windows].reverse()
+      const match = latest.find((window) => filePath.startsWith(`${window.folder}/`)) ?? latest[0]
+      res.end(JSON.stringify({ socketPath: match?.socket }))
     })
-    await listen(window, (req, res) => {
+    return { path, queries }
+  }
+  const windowServer = async (name: string) => {
+    const socket = join(directory, `${name}.sock`)
+    const opened: unknown[] = []
+    await listen(socket, (req, res) => {
       let body = ''
       req.on('data', (chunk) => { body += chunk })
       req.on('end', () => { opened.push(JSON.parse(body)); res.end('null') })
     })
-    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: registry, stop })
+    return { socket, opened }
+  }
+
+  it('asks the registry for the window showing this workspace and opens the file there', async () => {
     const workspace = await realpath(directory)
+    const windows: { folder: string; socket: string }[] = []
+    const { path, queries } = await registry(windows)
+    const window = await windowServer('w')
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: path, stop })
     await writeFile(join(directory, 'a #1.ts'), '')
     await expect(service.openFile('$1', join(directory, 'a #1.ts'))).rejects.toThrow('Open this session’s IDE first')
     await service.attach('$1', directory)
@@ -203,10 +215,37 @@ describe('opening files in a loaded IDE window', () => {
     await expect(service.openFile('$1', join(directory, 'missing.ts'))).rejects.toThrow('no longer exists')
     await expect(service.openFile('$1', join(directory, 'other'))).rejects.toThrow('Only files')
     await expect(service.openFile('$1', join(directory, 'a #1.ts'), 300)).rejects.toThrow('not finished loading')
-    setTimeout(() => { registered = true }, 300)
+    setTimeout(() => { windows.push({ folder: workspace, socket: window.socket }) }, 300)
     await service.openFile('$1', join(directory, 'a #1.ts'))
-    expect(new Set(queries)).toEqual(new Set([join(workspace, '.commando-open-file')]))
-    expect(opened).toEqual([{ type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts`], folderURIs: [], forceReuseWindow: true }])
+    expect(queries).toContain(join(workspace, '.commando-open-file'))
+    expect(window.opened).toEqual([{ type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts`], folderURIs: [], forceReuseWindow: true }])
+  })
+
+  it('opens only in a window it can tell belongs to this worktree among several IDEs', async () => {
+    await mkdir(join(directory, 'a'))
+    await mkdir(join(directory, 'b'))
+    await writeFile(join(directory, 'a', 'x.ts'), '')
+    const [a, b] = [await realpath(join(directory, 'a')), await realpath(join(directory, 'b'))]
+    const windows: { folder: string; socket: string }[] = []
+    const { path } = await registry(windows)
+    const [windowA, windowB] = [await windowServer('wa'), await windowServer('wb')]
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: path, stop })
+    await service.attach('$1', a)
+    await service.attach('$2', b)
+    // Only B's window has registered: the registry's fallback is B's window, never A's.
+    windows.push({ folder: b, socket: windowB.socket })
+    await expect(service.openFile('$1', join(a, 'x.ts'))).rejects.toBeInstanceOf(IdeWindowAmbiguousError)
+    // A's window registered before B's: A's lookup is a real match, not the latest window.
+    windows.unshift({ folder: a, socket: windowA.socket })
+    await service.openFile('$1', join(a, 'x.ts'))
+    // A's window is the latest, and B's lookup finds B's own window.
+    windows.reverse()
+    await service.openFile('$1', join(a, 'x.ts'))
+    expect(windowA.opened).toHaveLength(2)
+    expect(windowB.opened).toHaveLength(0)
+    // B has no window: its lookup falls back to A's latest window too, so it cannot be told apart.
+    windows.splice(windows.findIndex((window) => window.folder === b), 1)
+    await expect(service.openFile('$1', join(a, 'x.ts'))).rejects.toBeInstanceOf(IdeWindowAmbiguousError)
   })
 
   it('asks for a reload when an IDE on an ancestor folder could take the file', async () => {
