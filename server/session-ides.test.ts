@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
+import { createServer, type Server } from 'node:http'
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -165,5 +166,46 @@ describe('session IDE ownership', () => {
     await detached
     expect((await reopened).state).toBe('ready')
     expect(launch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('opening files in a loaded IDE window', () => {
+  const servers: Server[] = []
+  const listen = async (path: string, handler: Parameters<typeof createServer>[1]) => {
+    const server = createServer(handler)
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(path, resolve))
+  }
+  afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve)))) })
+
+  it('asks the registry for the window showing this workspace and opens the file there', async () => {
+    const registry = join(directory, 'r.sock')
+    const window = join(directory, 'w.sock')
+    const queries: string[] = []
+    const opened: unknown[] = []
+    let registered = false
+    await listen(registry, (req, res) => {
+      const filePath = new URL(req.url!, 'http://x').searchParams.get('filePath')!
+      queries.push(filePath)
+      res.end(JSON.stringify({ socketPath: registered ? window : undefined }))
+    })
+    await listen(window, (req, res) => {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => { opened.push(JSON.parse(body)); res.end('null') })
+    })
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: registry, stop })
+    const workspace = await realpath(directory)
+    await writeFile(join(directory, 'a #1.ts'), '')
+    await expect(service.openFile('$1', join(directory, 'a #1.ts'))).rejects.toThrow('Open this session’s IDE first')
+    await service.attach('$1', directory)
+    await expect(service.openFile('$1', 'a.ts')).rejects.toThrow('absolute')
+    await expect(service.openFile('$1', join(directory, 'missing.ts'))).rejects.toThrow('no longer exists')
+    await expect(service.openFile('$1', join(directory, 'other'))).rejects.toThrow('Only files')
+    await expect(service.openFile('$1', join(directory, 'a #1.ts'), 300)).rejects.toThrow('not finished loading')
+    setTimeout(() => { registered = true }, 300)
+    await service.openFile('$1', join(directory, 'a #1.ts'))
+    expect(new Set(queries)).toEqual(new Set([join(workspace, '.commando-open-file')]))
+    expect(opened).toEqual([{ type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts`], folderURIs: [], forceReuseWindow: true }])
   })
 })

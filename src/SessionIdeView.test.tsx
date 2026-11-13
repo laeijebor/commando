@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { SessionIde } from '../shared/protocol'
-import { SessionIdeView } from './SessionIdeView'
+import { ideFrameUrl, SessionIdeView } from './SessionIdeView'
 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 const ide: SessionIde = { id: 'ide-1111111111111111', sessionIds: ['$1', '$2'], workspacePath: '/worktree', state: 'ready', generation: 1, url: '/ide/ide-1111111111111111/' }
@@ -80,4 +80,23 @@ it('shows detachment progress and keeps API errors visible without replacing the
   expect(screen.getByRole('button', { name: 'Detaching…' })).toHaveAttribute('aria-disabled', 'true')
   expect(screen.getByRole('alert')).toHaveTextContent('Unable to detach IDE')
   expect(container.querySelector('iframe')).not.toHaveAttribute('hidden')
+})
+
+it('starts a newly loaded IDE on a requested file without reloading it later', () => {
+  const key = `${ide.id}:${ide.generation}`
+  const { container, rerender } = render(<SessionIdeView {...props} initialFiles={{ [key]: '/worktree/src/a b#.ts' }} />)
+  const frame = container.querySelector('iframe')!
+  const src = new URL(frame.getAttribute('src')!, window.location.href)
+  expect(src.pathname).toBe('/ide/ide-1111111111111111/')
+  expect(JSON.parse(src.searchParams.get('payload')!)).toEqual([['openFile', `vscode-remote://${window.location.host}/worktree/src/a%20b%23.ts`]])
+  rerender(<SessionIdeView {...props} initialFiles={{ [key]: '/worktree/other.ts' }} />)
+  expect(container.querySelector('iframe')).toBe(frame)
+  expect(frame.getAttribute('src')).toBe(`${src.pathname}${src.search}`)
+})
+
+it('keeps absolute editor origins and plain URLs without a file', () => {
+  expect(ideFrameUrl('http://127.0.0.1:5000/ide/x/?folder=%2Fw')).toBe('http://127.0.0.1:5000/ide/x/?folder=%2Fw')
+  const url = new URL(ideFrameUrl('http://127.0.0.1:5000/ide/x/?folder=%2Fw', '/w/a.ts'))
+  expect(url.searchParams.get('folder')).toBe('/w')
+  expect(JSON.parse(url.searchParams.get('payload')!)).toEqual([['openFile', 'vscode-remote://127.0.0.1:5000/w/a.ts']])
 })
