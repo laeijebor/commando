@@ -19,5 +19,21 @@ export function createSessionIdesApi(token: string, fetcher: typeof fetch = fetc
       return body.ide
     },
     detach: async (sessionId: string): Promise<void> => { await request(sessionId, 'DELETE') },
+    /**
+     * Opens a file in the session's already-loaded IDE window. 'reload' means
+     * the daemon cannot single out that window, so load it on the file instead.
+     */
+    openFile: async (sessionId: string, path: string): Promise<'opened' | 'reload'> => {
+      const response = await fetcher(`/api/ides/sessions/${encodeURIComponent(sessionId)}/files`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ path }),
+      })
+      const body = await response.json().catch(() => ({})) as { error?: string; reload?: boolean }
+      if (response.status === 409 && body.reload) return 'reload'
+      if (!response.ok) throw new Error(body.error ?? `Unable to open file in IDE (${response.status})`)
+      return 'opened'
+    },
   }
 }

@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { SessionIde, TmuxPane } from '../shared/protocol.js'
-import { SessionIdeService } from './session-ides.js'
+import { IdeWindowAmbiguousError, SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 
 let directory: string
@@ -144,4 +144,24 @@ it('relays editor WebSockets over the private socket', async () => {
   })
   expect(result).toBe('editor-message')
   ws.terminate()
+})
+
+it('opens files only in a session’s ready IDE', async () => {
+  const openFile = vi.spyOn(service, 'openFile').mockResolvedValue()
+  const post = (path: string, body: unknown) => fetch(`${base}/api/ides/sessions/%241${path}`, {
+    method: 'POST', headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  expect((await post('/files', { path: '/x.ts' })).status).toBe(409)
+  await post('', {})
+  expect((await post('/files', {})).status).toBe(400)
+  expect((await post('/files', { path: join(directory, 'x.ts') })).status).toBe(200)
+  expect(openFile).toHaveBeenCalledWith('$1', join(directory, 'x.ts'))
+  openFile.mockRejectedValueOnce(new Error('File no longer exists in this worktree'))
+  const failed = await post('/files', { path: '/gone.ts' })
+  expect(failed.status).toBe(502)
+  expect(await failed.json()).toEqual({ error: 'File no longer exists in this worktree' })
+  openFile.mockRejectedValueOnce(new IdeWindowAmbiguousError())
+  const ambiguous = await post('/files', { path: '/nested.ts' })
+  expect(ambiguous.status).toBe(409)
+  expect(await ambiguous.json()).toMatchObject({ reload: true })
 })

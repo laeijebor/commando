@@ -2,6 +2,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Code2,
   Columns2,
   FileCog,
   FileDiff,
@@ -48,6 +49,8 @@ type Props = {
   comparison?: GitDiffComparison
   visible?: boolean
   errorHint?: ReactNode
+  /** Opens an absolute file path in the session's IDE; omitted where there is none. */
+  onOpenInIde?: (path: string) => void
 }
 
 export type GitDiffComparison = {
@@ -146,7 +149,7 @@ function statusLabel(file: GitChangedFile): { letter: string; className: string;
   }
 }
 
-export function GitDiffView({ paneId, panePath, api, initialSummary, comparison, visible = true, errorHint }: Props) {
+export function GitDiffView({ paneId, panePath, api, initialSummary, comparison, visible = true, errorHint, onOpenInIde }: Props) {
   const comparisonVisible = !comparison || visible
   const [summary, setSummary] = useState<GitDiffSummary | null>(initialSummary)
   const [summaryError, setSummaryError] = useState('')
@@ -630,8 +633,15 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     }
   }
 
+  // Deleted files have nothing in the worktree to open.
+  const ideFile = (file: GitChangedFile | undefined) => onOpenInIde && summary?.root && file && file.status[0] !== 'D'
+    ? `${summary.root}/${file.path}`
+    : undefined
+  const selectedIdeFile = ideFile(summary?.files?.find((file) => file.path === selectedFile))
+
   const renderFile = (file: GitChangedFile, label: string, depth = 0, treeItem = false): ReactNode => {
     const status = statusLabel(file)
+    const idePath = ideFile(file)
     const searchMatches = allFileMatchCounts.get(file.path)
     const button = (
       <button
@@ -639,6 +649,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         className={`git-diff-file${file.path === selectedFile ? ' selected' : ''}`}
         style={depth ? { paddingLeft: 8 + depth * 14 } : undefined}
         onClick={() => setSelectedFile(file.path)}
+        onDoubleClick={idePath ? () => onOpenInIde?.(idePath) : undefined}
         onMouseEnter={(event) => showPathTooltip(file.path, event.currentTarget)}
         onMouseLeave={() => setPathTooltip(null)}
         onFocus={(event) => showPathTooltip(file.path, event.currentTarget)}
@@ -657,9 +668,20 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         </span>
       </button>
     )
+    const openButton = idePath ? (
+      <button
+        type="button"
+        className="git-diff-file-open-ide"
+        onClick={() => onOpenInIde?.(idePath)}
+        aria-label={`Open ${file.path} in IDE`}
+        title="Open in IDE (or double-click the file)"
+      >
+        <Code2 aria-hidden="true" />
+      </button>
+    ) : null
     return treeItem
-      ? <div className="git-diff-tree-item" role="treeitem" key={file.path}>{button}</div>
-      : <div className="git-diff-list-item" key={file.path}>{button}</div>
+      ? <div className="git-diff-tree-item" role="treeitem" key={file.path}>{button}{openButton}</div>
+      : <div className="git-diff-list-item" key={file.path}>{button}{openButton}</div>
   }
 
   const renderFolder = (folder: FileTreeFolder, depth: number): ReactNode => {
@@ -1065,6 +1087,16 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                   all
                 </button>
               </div>
+              {selectedIdeFile ? (
+                <button
+                  type="button"
+                  className="git-diff-open-ide"
+                  onClick={() => onOpenInIde?.(selectedIdeFile)}
+                  title={`Open ${selectedFile} in the session IDE`}
+                >
+                  <Code2 aria-hidden="true" />Open in IDE
+                </button>
+              ) : null}
             </div>
             <div className="git-diff-output" ref={outputRef}>
               {diffLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Running difftastic</div> : null}

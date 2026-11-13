@@ -1,8 +1,9 @@
-import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
+import { createServer, type Server } from 'node:http'
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SessionIdeService, type IdeLaunchOptions, type IdeRuntime } from './session-ides.js'
+import { IdeWindowAmbiguousError, SessionIdeService, type IdeLaunchOptions, type IdeRuntime } from './session-ides.js'
 
 let directory: string
 let service: SessionIdeService
@@ -165,5 +166,113 @@ describe('session IDE ownership', () => {
     await detached
     expect((await reopened).state).toBe('ready')
     expect(launch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('opening files in a loaded IDE window', () => {
+  const servers: Server[] = []
+  const listen = async (path: string, handler: Parameters<typeof createServer>[1]) => {
+    const server = createServer(handler)
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(path, resolve))
+  }
+  afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve)))) })
+
+  /** code-server's ranking: windows whose folder contains the path first, then the latest. */
+  const registry = async (windows: { folder: string; socket: string }[], beforeQuery?: (count: number) => void) => {
+    const path = join(directory, 'r.sock')
+    const queries: string[] = []
+    await listen(path, (req, res) => {
+      const filePath = new URL(req.url!, 'http://x').searchParams.get('filePath')!
+      beforeQuery?.(queries.length)
+      queries.push(filePath)
+      const latest = [...windows].reverse()
+      const match = latest.find((window) => filePath.startsWith(`${window.folder}/`)) ?? latest[0]
+      res.end(JSON.stringify({ socketPath: match?.socket }))
+    })
+    return { path, queries }
+  }
+  const windowServer = async (name: string) => {
+    const socket = join(directory, `${name}.sock`)
+    const opened: unknown[] = []
+    await listen(socket, (req, res) => {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => { opened.push(JSON.parse(body)); res.end('null') })
+    })
+    return { socket, opened }
+  }
+
+  it('asks the registry for the window showing this workspace and opens the file there', async () => {
+    const workspace = await realpath(directory)
+    const windows: { folder: string; socket: string }[] = []
+    const { path, queries } = await registry(windows)
+    const window = await windowServer('w')
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: path, stop })
+    await writeFile(join(directory, 'a #1.ts'), '')
+    await expect(service.openFile('$1', join(directory, 'a #1.ts'))).rejects.toThrow('Open this session’s IDE first')
+    await service.attach('$1', directory)
+    await expect(service.openFile('$1', 'a.ts')).rejects.toThrow('absolute')
+    await expect(service.openFile('$1', join(directory, 'missing.ts'))).rejects.toThrow('no longer exists')
+    await expect(service.openFile('$1', join(directory, 'other'))).rejects.toThrow('Only files')
+    await expect(service.openFile('$1', join(directory, 'a #1.ts'), 300)).rejects.toThrow('not finished loading')
+    setTimeout(() => { windows.push({ folder: workspace, socket: window.socket }) }, 300)
+    await service.openFile('$1', join(directory, 'a #1.ts'))
+    expect(queries).toContain(join(workspace, '.commando-open-file'))
+    expect(window.opened).toEqual([{ type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts`], folderURIs: [], forceReuseWindow: true }])
+  })
+
+  it('opens only in a window it can tell belongs to this worktree among several IDEs', async () => {
+    await mkdir(join(directory, 'a'))
+    await mkdir(join(directory, 'b'))
+    await writeFile(join(directory, 'a', 'x.ts'), '')
+    const [a, b] = [await realpath(join(directory, 'a')), await realpath(join(directory, 'b'))]
+    const windows: { folder: string; socket: string }[] = []
+    const { path } = await registry(windows)
+    const [windowA, windowB] = [await windowServer('wa'), await windowServer('wb')]
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: path, stop })
+    await service.attach('$1', a)
+    await service.attach('$2', b)
+    // Only B's window has registered: the registry's fallback is B's window, never A's.
+    windows.push({ folder: b, socket: windowB.socket })
+    await expect(service.openFile('$1', join(a, 'x.ts'))).rejects.toBeInstanceOf(IdeWindowAmbiguousError)
+    // A's window registered before B's: A's lookup is a real match, not the latest window.
+    windows.unshift({ folder: a, socket: windowA.socket })
+    await service.openFile('$1', join(a, 'x.ts'))
+    // A's window is the latest, and B's lookup finds B's own window.
+    windows.reverse()
+    await service.openFile('$1', join(a, 'x.ts'))
+    expect(windowA.opened).toHaveLength(2)
+    expect(windowB.opened).toHaveLength(0)
+    // B has no window: its lookup falls back to A's latest window too, so it cannot be told apart.
+    windows.splice(windows.findIndex((window) => window.folder === b), 1)
+    await expect(service.openFile('$1', join(a, 'x.ts'))).rejects.toBeInstanceOf(IdeWindowAmbiguousError)
+  })
+
+  it('does not mistake a fallback window for a match when this worktree’s window registers mid-lookup', async () => {
+    await mkdir(join(directory, 'a'))
+    await mkdir(join(directory, 'b'))
+    await writeFile(join(directory, 'a', 'x.ts'), '')
+    const [a, b] = [await realpath(join(directory, 'a')), await realpath(join(directory, 'b'))]
+    const [windowA, windowB] = [await windowServer('wa'), await windowServer('wb')]
+    const windows = [{ folder: b, socket: windowB.socket }]
+    // A's window registers after the worktree lookup fell back to B's, before the latest is re-read.
+    const { path } = await registry(windows, (count) => { if (count === 2) windows.push({ folder: a, socket: windowA.socket }) })
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: path, stop })
+    await service.attach('$1', a)
+    await service.attach('$2', b)
+    await service.openFile('$1', join(a, 'x.ts'))
+    expect(windowA.opened).toHaveLength(1)
+    expect(windowB.opened).toHaveLength(0)
+  })
+
+  it('asks for a reload when an IDE on an ancestor folder could take the file', async () => {
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: join(directory, 'none.sock'), stop })
+    await writeFile(join(directory, 'other', 'a.ts'), '')
+    await service.attach('$1', join(directory, 'other'))
+    await service.attach('$2', directory)
+    await expect(service.openFile('$1', join(directory, 'other', 'a.ts'))).rejects.toBeInstanceOf(IdeWindowAmbiguousError)
+    // The ancestor's own window is unambiguous: nested folders do not contain its probe.
+    await expect(service.openFile('$2', join(directory, 'other', 'a.ts'), 0)).rejects.toThrow('not finished loading')
   })
 })
