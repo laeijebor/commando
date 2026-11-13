@@ -1,6 +1,7 @@
 // A dropdown menu styled like the popover; the popup portals to <body>, so it
 // carries the chat's scoped reset (`chat-floating`) instead of inheriting it.
 import { Menu as MenuPrimitive } from '@base-ui/react/menu'
+import { Check } from 'lucide-react'
 import { cn } from '../cn'
 
 export const Menu = MenuPrimitive.Root
@@ -36,15 +37,34 @@ export function MenuPopup({
   )
 }
 
+const itemClass = 'flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-foreground [&_svg]:size-3.5 [&_svg]:shrink-0'
+
 export function MenuItem({ className, danger, ...props }: MenuPrimitive.Item.Props & { danger?: boolean }) {
   return (
     <MenuPrimitive.Item
       className={cn(
-        'flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 outline-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-foreground [&_svg]:size-3.5 [&_svg]:shrink-0',
+        itemClass,
         danger && 'text-destructive data-[highlighted]:text-destructive',
         className,
       )}
       {...props}
     />
   )
+}
+
+
+/** A toggle row; the menu stays open so several can be flipped in one go. */
+export function MenuCheckboxItem({ className, children, ...props }: MenuPrimitive.CheckboxItem.Props) {
+  return (
+    <MenuPrimitive.CheckboxItem className={cn(itemClass, className)} {...props}>
+      <span className="flex size-3.5 shrink-0 items-center justify-center">
+        <MenuPrimitive.CheckboxItemIndicator><Check aria-hidden="true" /></MenuPrimitive.CheckboxItemIndicator>
+      </span>
+      {children}
+    </MenuPrimitive.CheckboxItem>
+  )
+}
+
+export function MenuSeparator({ className, ...props }: MenuPrimitive.Separator.Props) {
+  return <MenuPrimitive.Separator className={cn('my-1 h-px bg-border', className)} {...props} />
 }

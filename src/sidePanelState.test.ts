@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WebPane } from '../shared/protocol'
-import { NARROW_PANEL_QUERY, panelScrimClipPath, clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
+import { NARROW_PANEL_QUERY, panelScrimClipPath, clampDrawerHeight, DEFAULT_DRAWER_HEIGHT, isNarrowPanel, rememberedDrawerHeight, prTabSignature, visiblePanePrs, closedPanePrs, openedPanelTabs, combinedPanelTabs, panelPanePrs, defaultPanelCollapsed, panelTabKey, primaryPanePr, resolveActivePanelTab, activePanelTab, effectiveFocusedPane, panelTabs } from './sidePanelState'
 import { neighbouringTab, nextWebPaneOrder } from '../shared/web-pane-placement'
 
 function tab(id: string, anchorPaneId = '%12', order = 0): WebPane {
@@ -46,6 +46,14 @@ describe('effective pane focus', () => {
 describe('built-in panel tabs', () => {
   const changed = { isRepo: true, target: 'main', additions: 4, deletions: 2, files: [{ path: 'a.ts', status: 'M', additions: 4, deletions: 2, binary: false }] }
   const pr = (number: number, state: 'open' | 'merged' | 'closed', updatedAt: string) => ({ number, state, updatedAt, repo: 'acme/widgets' } as import('./prsApi').PanePrSummary)
+  it('gives an impacted PR a tab only once it was opened from the worklog', () => {
+    const list = { targetId: 't', totalCount: 1, truncated: false, fetchedAt: 0, pullRequests: [pr(8, 'open', '')],
+      impacted: [{ ...pr(9, 'open', ''), relation: 'pushed' as const, impactedAt: 1 }] }
+    expect(combinedPanelTabs('%12', [], null, panelPanePrs(list)).map(panelTabKey)).toEqual(['session', 'pr:acme:widgets:8'])
+    expect(combinedPanelTabs('%12', [], null, panelPanePrs(list, ['pr:acme:widgets:9'])).map(panelTabKey)).toEqual(['session', 'pr:acme:widgets:8', 'pr:acme:widgets:9'])
+    expect(panelPanePrs(list)).toBe(list.pullRequests)
+    expect(panelPanePrs(null)).toEqual([])
+  })
   it('orders Session, conditional Changes and PR, then the ordered web tabs', () => {
     expect(combinedPanelTabs('%12', [tab('b', '%12', 2), tab('a')], changed, [pr(8, 'open', '')]).map(panelTabKey)).toEqual(['session', 'changes', 'pr:acme:widgets:8', 'a', 'b'])
     expect(combinedPanelTabs('%12', [], null, []).map(panelTabKey)).toEqual(['session'])

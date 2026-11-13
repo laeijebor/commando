@@ -5,6 +5,7 @@ import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { AGENT_HOOK_TOKEN_PATH_ENV, AgentHookTokenStore } from './agent-hook-token.js'
 import { generatedDeviceCli } from './device-lock-cli.js'
+import { pullRequestImpactsFor } from './pr-impact-hook.js'
 
 export const CLAUDE_HOOK_EVENTS = [
   'SessionStart',
@@ -233,6 +234,7 @@ async function inheritedPaneEnv() {
 
 const __name = (target, name) => Object.defineProperty(target, 'name', { value: name, configurable: true })
 ${isCursorInvocation.toString()}
+${pullRequestImpactsFor.toString()}
 
 function asObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
@@ -625,6 +627,8 @@ async function main() {
     // Muse's permission hook output is not Claude's, so its prompts stay in the TUI.
     const request = PROVIDER === 'muse' ? undefined : interactionFor(input)
     const planUpdate = planUpdateFor(input)
+    // PRs the agent pushed to or commented on, named as the command named them.
+    const impacts = pullRequestImpactsFor(input)
     const body = JSON.stringify({
       hook_event_name: boundedText(event, 80),
       session_id: boundedText(input.session_id, 200),
@@ -642,6 +646,9 @@ async function main() {
       taskPatch: planUpdate.taskPatch,
       taskSnapshot: planUpdate.taskSnapshot,
       createdPullRequests: createdPullRequestsFor(input),
+      impactedPullRequests: impacts,
+      // The daemon resolves an impact's branch here when the command's own cd led nowhere.
+      cwd: impacts && typeof input.cwd === 'string' && input.cwd.startsWith('/') ? input.cwd.slice(0, 4096) : undefined,
       filePath: tool.filePath,
       check: tool.check,
       finalMessage,
@@ -912,10 +919,13 @@ const defaultTokenPath = ${JSON.stringify(tokenPath)}
 ` + String.raw`
 export function parseAgentsArgs(args) {
   const [command, ...parameters] = args
-  const asJson = parameters.at(-1) === '--json' && (command === 'list' || ['relay', 'nudge'].includes(command) && parameters.length >= 3)
+  const invalid = () => { throw new Error('Usage: commando-agents list [--json] [--all] | read %N [--turns 1-10] | relay %N "message" [--steer] | nudge %N "message" | relays | cancel <id>') }
+  if (command === 'list') {
+    if (parameters.some((flag) => !['--json', '--all'].includes(flag)) || new Set(parameters).size !== parameters.length) return invalid()
+    return { method: 'GET', path: parameters.includes('--all') ? '/list?all=1' : '/list', human: !parameters.includes('--json') }
+  }
+  const asJson = parameters.at(-1) === '--json' && ['relay', 'nudge'].includes(command) && parameters.length >= 3
   const rest = asJson ? parameters.slice(0, -1) : parameters
-  const invalid = () => { throw new Error('Usage: commando-agents list [--json] | read %N [--turns 1-10] | relay %N "message" [--steer] | nudge %N "message" | relays | cancel <id>') }
-  if (command === 'list' && !rest.length) return { method: 'GET', path: '/list', human: !asJson }
   if (command === 'relays' && !rest.length) return { method: 'GET', path: '/relays' }
   if (command === 'cancel' && rest.length === 1 && /^[a-f0-9-]+$/.test(rest[0])) return { method: 'POST', path: '/relays/' + rest[0] + '/cancel' }
   const pane = rest[0]

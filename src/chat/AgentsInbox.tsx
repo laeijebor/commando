@@ -1,13 +1,14 @@
 import { useHost } from '../HostContext'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { ArrowUpRight, Bot, ChevronDown, CircleAlert, CircleCheck, CircleSlash, LoaderCircle, Reply, Send, X } from 'lucide-react'
+import { ArrowUpRight, Bot, ChevronDown, CircleAlert, CircleCheck, CircleSlash, FolderGit2, LoaderCircle, Reply, Send, X } from 'lucide-react'
 import { RELAY_MAX_CHARS, type CommanderRelay } from '../../shared/commander'
-import { relayReceiptVisible, type CommanderInbox, type CommanderInboxRow, type InboxGroup } from '../commanderInbox'
+import { relayReceiptVisible, type CommanderInbox, type CommanderInboxRow, type CommanderRepoOption, type InboxGroup } from '../commanderInbox'
 import { createCommanderApi } from '../commanderApi'
 import { relativeTime } from '../relativeTime'
 import { cn } from './cn'
 import { useNow } from './Subagents'
 import { Button } from './ui/button'
+import { Menu, MenuCheckboxItem, MenuPopup, MenuSeparator, MenuTrigger } from './ui/menu'
 
 export type AgentsInboxProps = {
   groups: CommanderInbox
@@ -19,6 +20,12 @@ export type AgentsInboxProps = {
   peekTargetId?: string
   /** Shows an agent's chat in Commander's reading pane. */
   onPeek?: (paneId: string, targetId: string) => void
+  /** Repos the user can limit Commander to. */
+  repoOptions?: CommanderRepoOption[]
+  /** Repo keys Commander watches; absent watches every repo. */
+  repoFilter?: string[]
+  /** Saves the repo filter; null watches every repo. */
+  onRepoFilter?: (repos: string[] | null) => Promise<void>
 }
 const GROUP_LABELS: Record<InboxGroup, string> = { needs_you: 'Needs you', finished: 'Finished a turn', working: 'Working', idle: 'Idle' }
 export const GROUP_ORDER: InboxGroup[] = ['needs_you', 'finished', 'working', 'idle']
@@ -35,6 +42,55 @@ function RelayReceipt({ relay }: { relay: CommanderRelay }) {
   return <div className={cn('mt-0.5 text-2xs', relay.status === 'failed' ? 'text-warning' : 'text-muted-foreground')} role="status">
     {relay.status === 'failed' ? `Relay failed: ${relay.error || 'Unable to deliver'}` : `Relayed · ${relay.status}`}
   </div>
+}
+
+function RepoFilter({ options, filter, disabled, onChange }: {
+  options: CommanderRepoOption[]
+  filter?: string[]
+  disabled?: boolean
+  onChange: NonNullable<AgentsInboxProps['onRepoFilter']>
+}) {
+  const [error, setError] = useState('')
+  // Quick ticks build on each other until the latest save settles; echoes of earlier saves
+  // must not replace the newer selection.
+  const [pending, setPending] = useState<string[] | null>()
+  const latestSave = useRef(0)
+  const current = pending === undefined ? filter : pending ?? undefined
+  const selected = new Set(current)
+  const save = (repos: string[] | null) => {
+    const id = ++latestSave.current
+    setError('')
+    setPending(repos)
+    void onChange(repos).then(() => {
+      if (id === latestSave.current) setPending(undefined)
+    }, (cause: unknown) => {
+      // A newer save already carries this selection, so only the latest failure matters.
+      if (id !== latestSave.current) return
+      setPending(undefined)
+      setError(cause instanceof Error ? cause.message : 'Unable to change repos')
+    })
+  }
+  const names = options.filter((option) => selected.has(option.key)).map((option) => option.name)
+  const label = current?.length ? names.join(', ') || `${current.length} repos` : 'All repos'
+  return <Menu>
+    <MenuTrigger disabled={disabled} aria-label={`Repos: ${label}`} title={error || 'Choose which repos Commander watches'}
+      className={cn('flex max-w-[45%] shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-2xs hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-50',
+        error ? 'text-destructive' : current?.length ? 'text-primary' : 'text-muted-foreground')}>
+      <FolderGit2 className="size-3 shrink-0" aria-hidden="true" />
+      <span className="truncate">{label}</span>
+      <ChevronDown className="size-3 shrink-0" aria-hidden="true" />
+    </MenuTrigger>
+    <MenuPopup>
+      <MenuCheckboxItem checked={!current?.length} onCheckedChange={(checked) => { if (checked) save(null) }}>All repos</MenuCheckboxItem>
+      <MenuSeparator />
+      {options.map((option) => <MenuCheckboxItem key={option.key} checked={selected.has(option.key)} title={option.key === option.name ? undefined : option.key}
+        onCheckedChange={(checked) => {
+          const next = checked ? [...selected, option.key] : [...selected].filter((key) => key !== option.key)
+          save(next.length ? next : null)
+        }}>{option.name}</MenuCheckboxItem>)}
+      {error ? <div role="alert" className="px-2 py-1 text-xs text-destructive">{error}</div> : null}
+    </MenuPopup>
+  </Menu>
 }
 
 function InboxReply({ row, token, disabled, onRelay, onClose }: {
@@ -81,7 +137,7 @@ function InboxReply({ row, token, disabled, onRelay, onClose }: {
 }
 
 /** The live agent directory above Commander's composer. */
-export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled, peekTargetId, onPeek }: AgentsInboxProps) {
+export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled, peekTargetId, onPeek, repoOptions, repoFilter, onRepoFilter }: AgentsInboxProps) {
   const now = useNow(true)
   const [open, setOpen] = useState(true)
   const [idleOpen, setIdleOpen] = useState(false)
@@ -133,13 +189,16 @@ export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled, peek
   }
   const unread = GROUP_ORDER.flatMap((group) => groups[group]).filter((row) => row.unread).length
   return <div className="@container mx-auto mb-1.5 w-full max-w-[var(--chat-content-max-width)] rounded-lg border border-border bg-card" data-testid="agents-inbox">
-    <button type="button" className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1 text-left text-2xs text-muted-foreground hover:text-foreground"
-      aria-expanded={open} onClick={() => setOpen(!open)}>
-      <Bot className="size-3" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate">Agents · <span className={unread ? 'text-primary' : undefined}>{unread} new</span> · {groups.working.length} working · {groups.idle.length} idle</span>
-      {open ? <span className="hidden @[640px]:inline">↑↓ to choose · {onPeek ? 'Click to read · ' : ''}Enter to open · R to reply</span> : null}
-      <ChevronDown className={cn('size-3 shrink-0 transition-transform', !open && '-rotate-90')} aria-hidden="true" />
-    </button>
+    <div className="flex items-center gap-1 pr-1">
+      <button type="button" className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-1 pl-2.5 text-left text-2xs text-muted-foreground hover:text-foreground"
+        aria-expanded={open} onClick={() => setOpen(!open)}>
+        <Bot className="size-3" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate">Agents · <span className={unread ? 'text-primary' : undefined}>{unread} new</span> · {groups.working.length} working · {groups.idle.length} idle</span>
+        {open ? <span className="hidden @[760px]:inline">↑↓ to choose · {onPeek ? 'Click to read · ' : ''}Enter to open · R to reply</span> : null}
+        <ChevronDown className={cn('size-3 shrink-0 transition-transform', !open && '-rotate-90')} aria-hidden="true" />
+      </button>
+      {onRepoFilter && repoOptions ? <RepoFilter options={repoOptions} filter={repoFilter} disabled={disabled} onChange={onRepoFilter} /> : null}
+    </div>
     {open ? <div ref={list} role="listbox" aria-label="Agents inbox" className="max-h-[40vh] overflow-y-auto px-1 pb-1" onKeyDown={onKeyDown}>
       {GROUP_ORDER.map((group) => groups[group].length ? <div role="group" aria-label={GROUP_LABELS[group]} key={group}>
         {group === 'idle'
@@ -176,7 +235,7 @@ export function AgentsInbox({ groups, token, onOpenPane, onRelay, disabled, peek
           </div>
         }) : null}
       </div> : null)}
-      {!GROUP_ORDER.some((group) => groups[group].length) ? <div className="px-2 py-2 text-xs text-muted-foreground">No other agents yet.</div> : null}
+      {!GROUP_ORDER.some((group) => groups[group].length) ? <div className="px-2 py-2 text-xs text-muted-foreground">{repoFilter?.length ? 'No agents in the chosen repos.' : 'No other agents yet.'}</div> : null}
     </div> : null}
   </div>
 }

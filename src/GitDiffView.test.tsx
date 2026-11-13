@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
+import { applyDiffFiltersChange, DEFAULT_DIFF_FILTERS, type DiffFiltersChange } from '../shared/diff-filters'
+import { currentDiffFilters, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
 
 afterEach(() => {
   cleanup()
@@ -635,4 +637,96 @@ describe('GitDiffView target combobox', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Diff target branch' })).toBeInTheDocument()
   })
+})
+
+describe('hiding tests and generated files', () => {
+  const mixed: GitDiffSummary = { ...summary, files: [
+    { path: 'src/board.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+    { path: 'src/board.unit.test.ts', status: 'A', additions: 1, deletions: 0, binary: false },
+    { path: 'src/client/sdk.gen.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+    { path: 'workers/proxy/schema.json', status: 'M', additions: 1, deletions: 0, binary: false },
+  ] }
+  afterEach(() => { resetDiffFilters(); setDiffFiltersSaver(null) })
+
+  function renderMixed() {
+    const saved: DiffFiltersChange[] = []
+    setDiffFiltersSaver(async (change) => { saved.push(change); return applyDiffFiltersChange(currentDiffFilters(), change) })
+    const api = { ...fakeApi(mixed), repo: vi.fn().mockResolvedValue({ isRepo: true, mainRoot: '/dev/Save-All', name: 'Save-All' }) }
+    render(<GitDiffView paneId="%1" panePath="/dev/Save-All-worktrees/x" api={api} initialSummary={mixed} />)
+    fireEvent.click(screen.getByRole('button', { name: 'List view' }))
+    return saved
+  }
+
+  it('hides test and generated files with shared switches, counting what is hidden', async () => {
+    const saved = renderMixed()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide test files' }))
+    expect(saved).toEqual([{ hideTests: true }])
+    expect(screen.queryByText('src/board.unit.test.ts')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide test files' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText(/1 hidden/)).toBeInTheDocument()
+    // Save-All's built-in list counts workers/*/schema.json as generated, on top of *.gen.*.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit generated file patterns' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Hide generated files' }))
+    await waitFor(() => expect(screen.getByText(/3 hidden/)).toBeInTheDocument())
+    expect(screen.getByText('src/board.ts')).toBeInTheDocument()
+    expect(screen.queryByText('workers/proxy/schema.json')).not.toBeInTheDocument()
+    // Another window turns tests back on.
+    act(() => setDiffFilters({ ...DEFAULT_DIFF_FILTERS, hideGenerated: true }))
+    expect(screen.getByText('src/board.unit.test.ts')).toBeInTheDocument()
+  })
+
+  it('edits the repo generated list, keyed by its main checkout', async () => {
+    const saved = renderMixed()
+    act(() => setDiffFilters({ ...DEFAULT_DIFF_FILTERS, hideGenerated: true }))
+    const edit = screen.getByRole('button', { name: 'Edit generated file patterns' })
+    await waitFor(() => expect(edit).toBeEnabled())
+    fireEvent.click(edit)
+    const textbox = screen.getByRole('textbox', { name: 'Generated in Save-All' })
+    expect(textbox).toHaveValue('drizzle/\n**/src/client/core/\n**/src/client/client/\nworkers/*/schema.json')
+    fireEvent.change(textbox, { target: { value: 'drizzle/\n!workers/proxy/schema.json' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Generated in Save-All' })).not.toBeInTheDocument())
+    expect(saved.at(-1)).toEqual({ repo: { root: '/dev/Save-All', patterns: ['drizzle/', '!workers/proxy/schema.json'] } })
+    expect(screen.getByText('workers/proxy/schema.json')).toBeInTheDocument()
+    expect(screen.queryByText('src/client/sdk.gen.ts')).not.toBeInTheDocument()
+  })
+})
+
+it('never selects a hidden file from a search across all files', async () => {
+  // The first visible file doesn't match; the first match is a hidden test.
+  const files = [
+    { path: 'src/a.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+    { path: 'src/a.unit.test.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+    { path: 'src/b.ts', status: 'M', additions: 1, deletions: 0, binary: false },
+  ]
+  const both: GitDiffSummary = { ...summary, files }
+  const api = fakeApi(both)
+  api.search = vi.fn(async (_paneId: string, query: string) => ({ query, matches: [], files: [{ file: 'src/a.unit.test.ts', matches: 2 }, { file: 'src/b.ts', matches: 1 }], totalMatches: 3, matchingFiles: 2, truncated: false }))
+  setDiffFilters({ ...DEFAULT_DIFF_FILTERS, hideTests: true })
+  render(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={both} />)
+  fireEvent.click(screen.getByRole('button', { name: 'all' }))
+  fireEvent.change(screen.getByPlaceholderText('Search all changed files'), { target: { value: 'needle' } })
+  await waitFor(() => expect(api.search).toHaveBeenCalled())
+  await waitFor(() => expect(api.fileDiff).toHaveBeenLastCalledWith('%1', 'src/b.ts', expect.anything()))
+  expect(api.fileDiff).not.toHaveBeenCalledWith('%1', 'src/a.unit.test.ts', expect.anything())
+  setDiffFilters(DEFAULT_DIFF_FILTERS)
+})
+
+it('closes the generated-pattern editor when the pane moves to another repo, instead of saving there', async () => {
+  const saved: DiffFiltersChange[] = []
+  setDiffFiltersSaver(async (change) => { saved.push(change); return applyDiffFiltersChange(currentDiffFilters(), change) })
+  const api = { ...fakeApi(summary), repo: vi.fn(async (path: string) => path.startsWith('/dev/vivifit')
+    ? { isRepo: true, mainRoot: '/dev/vivifit', name: 'vivifit' }
+    : { isRepo: true, mainRoot: '/dev/Save-All', name: 'Save-All' }) }
+  const view = render(<GitDiffView paneId="%1" panePath="/dev/Save-All" api={api} initialSummary={summary} />)
+  const edit = screen.getByRole('button', { name: 'Edit generated file patterns' })
+  await waitFor(() => expect(edit).toBeEnabled())
+  fireEvent.click(edit)
+  fireEvent.change(screen.getByRole('textbox', { name: 'Generated in Save-All' }), { target: { value: 'only-save-all/' } })
+  view.rerender(<GitDiffView paneId="%1" panePath="/dev/vivifit" api={api} initialSummary={summary} />)
+  await waitFor(() => expect(screen.queryByRole('form', { name: 'Generated file patterns' })).not.toBeInTheDocument())
+  expect(screen.queryByRole('textbox', { name: /Generated in/ })).not.toBeInTheDocument()
+  expect(saved).toEqual([])
+  setDiffFiltersSaver(null)
+  setDiffFilters(DEFAULT_DIFF_FILTERS)
 })

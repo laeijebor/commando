@@ -17,12 +17,14 @@ describe('generated Commander CLI', () => {
   it('parses all commands, preserving exact words and encoding pane ids', async () => {
     const cli = await load()
     expect(cli.parseAgentsArgs(['list'])).toMatchObject({ method: 'GET', path: '/list' })
+    expect(cli.parseAgentsArgs(['list', '--all', '--json'])).toEqual({ method: 'GET', path: '/list?all=1', human: false })
+    expect(cli.parseAgentsArgs(['list', '--all'])).toEqual({ method: 'GET', path: '/list?all=1', human: true })
     expect(cli.parseAgentsArgs(['read', '%12', '--turns', '10'])).toMatchObject({ path: '/read?pane=%2512&turns=10' })
     expect(cli.parseAgentsArgs(['relay', '%1', ' exact\nwords ', '--steer'])).toEqual({ method: 'POST', path: '/relay', body: { pane: '%1', text: ' exact\nwords ', steer: true } })
     expect(cli.parseAgentsArgs(['nudge', '%1', 'hello'])).toMatchObject({ path: '/nudge', body: { pane: '%1', text: 'hello' } })
     expect(cli.parseAgentsArgs(['relays'])).toMatchObject({ path: '/relays' })
     expect(cli.parseAgentsArgs(['cancel', 'abc-123'])).toMatchObject({ method: 'POST', path: '/relays/abc-123/cancel' })
-    for (const args of [[], ['list', 'extra'], ['read', '%1', '--turns', '11'], ['relay', '%1', 'hello', '--queue'], ['nudge', '%1', 'hello', '--steer'], ['relay', '%1', 'bad\x00'], ['read', '1'], ['cancel', '../bad']]) expect(() => cli.parseAgentsArgs(args)).toThrow('Usage')
+    for (const args of [[], ['list', 'extra'], ['list', '--all', '--all'], ['read', '%1', '--turns', '11'], ['relay', '%1', 'hello', '--queue'], ['nudge', '%1', 'hello', '--steer'], ['relay', '%1', 'bad\x00'], ['read', '1'], ['cancel', '../bad']]) expect(() => cli.parseAgentsArgs(args)).toThrow('Usage')
   })
   it('prints needs-you first by default, JSON on request, and nonzero for API errors', async () => {
     const cli = await load(), out = vi.fn(), err = vi.fn()

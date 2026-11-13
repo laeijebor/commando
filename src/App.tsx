@@ -1,6 +1,6 @@
 import { HostProvider, HostWorkspace, useHost } from './HostContext'
 import { HostSwitcher, HostsSettings } from './HostSwitcher'
-import { commanderInbox } from './commanderInbox'
+import { commanderInbox, commanderRepoOptions } from './commanderInbox'
 import { GROUP_ORDER } from './chat/AgentsInbox'
 import { CommanderTranscriptView, type CommanderPeek } from './chat/CommanderReadingPane'
 import { createCommanderApi } from './commanderApi'
@@ -156,6 +156,7 @@ import {
   isWebPaneLeafId,
 } from './webPaneLayout'
 import { createGitDiffApi, type GitDiffApiClient } from './gitApi'
+import { createDiffFiltersApi, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
 import { createPrsApi, type PrsApiClient, type PrSummary } from './prsApi'
 import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
@@ -214,6 +215,7 @@ import {
   type AgentHudFilter,
 } from './agentHud'
 import { createSessionManagementApi, type SessionTreePreferences } from './sessionManagementApi'
+import { createTrackedProcessesApi } from './trackedProcessesApi'
 import { EMPTY_SESSION_TREE_PREFERENCES } from './sessionTreePreferences'
 import { getNativeTerminalBridge, NATIVE_TERMINAL_SHORTCUT_EVENT } from './nativeTerminalBridge'
 import { SessionHistoryNav, useSessionHistory } from './SessionHistoryNav'
@@ -1197,6 +1199,8 @@ function HostApp() {
   const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
   const [dismissedPrTabs, setDismissedPrTabs] = useState<Record<string, Record<string, string>>>({})
   const [closedTabs, setClosedTabs] = useState<Record<string, ClosedWebPane[]>>({})
+  // Impacted PRs only get a tab once opened from the worklog; created PRs always have one.
+  const [openedPrTabs, setOpenedPrTabs] = useState<Record<string, string[]>>({})
   const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
   const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
   const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
@@ -1555,6 +1559,9 @@ function HostApp() {
       case 'commander_relay':
       case 'commander_relay_snapshot':
         dispatchCommander(message)
+        break
+      case 'diff_filters':
+        setDiffFilters(message.filters)
         break
       case 'commander_state':
         commanderStateVersion.current += 1
@@ -2256,6 +2263,11 @@ function HostApp() {
     // Only now: earlier, the old Commander is still open and would be the one shown.
     setCommanderOpening(true)
   }
+  const setCommanderRepoFilter = async (repos: string[] | null) => {
+    const version = commanderStateVersion.current
+    const state = await createCommanderApi(token, daemonFetch).setRepoFilter(repos)
+    if (version === commanderStateVersion.current) dispatchCommander({ type: 'commander_state', state })
+  }
   // Creation may report state before its structural snapshot arrives (or vice versa).
   useEffect(() => {
     if (!commanderOpening || !commanderState.paneId) return
@@ -2714,8 +2726,15 @@ function HostApp() {
   const paneScreenshotsApi = createPaneScreenshotsApi(token, daemonFetch)
   const sessionManagementApi = createSessionManagementApi(token, daemonFetch)
   const gitDiffApi = useMemo(() => createGitDiffApi(token, daemonFetch), [token])
+  useEffect(() => {
+    setDiffFiltersSaver(createDiffFiltersApi(token, daemonFetch))
+    return () => setDiffFiltersSaver(null)
+  }, [token])
+  // A host switch remounts this app; the next daemon's filters replace these when it connects.
+  useEffect(() => () => resetDiffFilters(), [])
   const simsApi = useMemo(() => createSimsApi(token, daemonFetch), [token])
   const prsApi = useMemo(() => createPrsApi(token, daemonFetch), [token])
+  const trackedProcessesApi = useMemo(() => createTrackedProcessesApi(token, daemonFetch), [token])
   const agentProfilesApi = useMemo(() => createAgentProfilesApi(token, daemonFetch), [token])
   /**
    * "Implement in a new chat pane": splits the chat's pane and starts a fresh
@@ -2891,8 +2910,10 @@ function HostApp() {
 
   const commanderGroups = useMemo(() => commanderInbox({
     snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays,
-    commanderPaneId: commanderState.paneId,
-  }), [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId])
+    commanderPaneId: commanderState.paneId, repoFilter: commanderState.repoFilter,
+  }), [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId, commanderState.repoFilter])
+  const commanderRepos = useMemo(() => commanderRepoOptions(snapshot, commanderState.repoFilter, commanderState.sessionId),
+    [snapshot, commanderState.repoFilter, commanderState.sessionId])
   const commanderRows = useMemo(() => GROUP_ORDER.flatMap((group) => commanderGroups[group].map((row) => ({ row, group }))), [commanderGroups])
   const commanderPeekEntry = commanderPeek ? commanderRows.find((entry) => entry.row.targetId === commanderPeek.targetId) : undefined
   // An agent that closed (or left the inbox) closes its reading pane.
@@ -3858,7 +3879,7 @@ function HostApp() {
     if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
     const identity = parsePrPanelKey(tab.key)
     if (identity) {
-      const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
+      const source = [...data.prs?.pullRequests ?? [], ...data.prs?.impacted ?? []].find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
       return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
         <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
           onSelectionApplied={() => setPrSelections((current) => {
@@ -3880,6 +3901,12 @@ function HostApp() {
       screenshotsApi={local ? paneScreenshotsApi : undefined} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
       onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
       onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)}
+      onOpenPr={(repo, number) => {
+        const key = prPanelKey(repo, number)
+        setOpenedPrTabs((current) => current[pane.id]?.includes(key) ? current : { ...current, [pane.id]: [...current[pane.id] ?? [], key] })
+        void revealPrTab(pane.id, repo, number, 'Description')
+      }}
+      processesApi={trackedProcessesApi}
       {...local ? {
         closedTabs: closedTabs[pane.targetId],
         onReopenClosedTab: (id: string) => webPanesApi.reopenClosedTab(pane.targetId, id),
@@ -4323,7 +4350,7 @@ function HostApp() {
                     titles={webPaneTitles}
                     onTabSets={rememberPanelTabs}
                     panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
-                    activeTabs={panelActiveTabs} dismissedPrTabs={dismissedPrTabs}
+                    activeTabs={panelActiveTabs} dismissedPrTabs={dismissedPrTabs} openedPrTabs={openedPrTabs}
                     onDismissPr={(tab, signature, next) => { void dismissPanePrTab(tab, signature, next) }}
                     onRestorePr={(tab) => { void restorePanePrTab(tab).then(() => revealBuiltinTab(tab.anchorPaneId, tab.key, false)).catch((error: unknown) => setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')) }}
                     sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}
@@ -4400,6 +4427,8 @@ function HostApp() {
                               onOpenPane: (paneId, targetId) => jumpToPane(paneId, targetId, true),
                               onRelay: (relay) => dispatchCommander({ type: 'commander_relay', relay }),
                               disabled: !connected,
+                              repoOptions: commanderRepos, onRepoFilter: setCommanderRepoFilter,
+                              ...(commanderState.repoFilter ? { repoFilter: commanderState.repoFilter } : {}),
                               ...(pane.id === commanderState.paneId ? {
                                 ...(commanderPeek ? { peekTargetId: commanderPeek.targetId } : {}),
                                 onPeek: (paneId: string, targetId: string) => setCommanderPeek({ paneId, targetId }),

@@ -88,6 +88,8 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
   const generation = useRef(0)
   /** When it last opened a sign-in page, which takes the window's focus. */
   const openedAt = useRef(0)
+  /** An authenticate in flight: the daemon may open its page, taking focus, before the answer arrives. */
+  const authenticating = useRef(false)
   const open = (url: string) => {
     openedAt.current = Date.now()
     return openUrl(url)
@@ -133,13 +135,19 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
     setPending({ server, action })
     setActionError(null)
     if (action === 'authenticate') setSignIn(null)
+    authenticating.current = action === 'authenticate'
     try {
       const result = await load({ action, server })
       apply(result)
       if (live.current && result.error) setActionError({ server, message: result.error })
-      if (live.current && result.authUrl) setSignIn({ server, url: result.authUrl, opened: open(result.authUrl) })
+      if (live.current && result.authUrl) {
+        // The daemon opens it on its own Mac; otherwise try here, where a slow answer can be blocked as a popup.
+        if (result.authOpened) openedAt.current = Date.now()
+        setSignIn({ server, url: result.authUrl, opened: result.authOpened || open(result.authUrl) })
+      }
     } finally {
       acting.current = false
+      authenticating.current = false
       if (live.current) setPending(null)
     }
   }
@@ -194,7 +202,7 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
   const loading = servers === null && !error
   let row = -1
   return (
-    <PanePaletteShell label="MCP servers" className="mcp-settings" onClose={onClose} keepOnBlur={() => Date.now() - openedAt.current < 3000}>
+    <PanePaletteShell label="MCP servers" className="mcp-settings" onClose={onClose} keepOnBlur={() => authenticating.current || Date.now() - openedAt.current < 3000}>
       {detail ? (
         <div className="mcp-detail" tabIndex={-1} ref={detailRef} onKeyDown={onDetailKeyDown}>
           <div className="palette-search">

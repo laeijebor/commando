@@ -94,7 +94,7 @@ class PrStore {
       const list = entry.snapshot.list
       return entry.foreground + entry.background > 0 && list && (
         'repo' in list ? list.repo.toLowerCase() === repo.toLowerCase()
-          : list.pullRequests.some((pr) => pr.repo.toLowerCase() === repo.toLowerCase())
+          : [...list.pullRequests, ...list.impacted ?? []].some((pr) => pr.repo.toLowerCase() === repo.toLowerCase())
       )
     })
     await Promise.all(entries.map(async (entry) => {

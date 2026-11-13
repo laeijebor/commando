@@ -42,6 +42,17 @@ async function openCi() {
 }
 
 describe('chat PR strip', () => {
+  it('leaves out PRs the pane only pushed to, reviewed or commented on', async () => {
+    const api = setup([pr(12)])
+    api.pane.mockResolvedValue({ targetId, totalCount: 1, pullRequests: [pr(12)], truncated: false, fetchedAt: Date.now(),
+      impacted: [{ ...pr(30), relation: 'reviewed', impactedAt: 1 }] } as never)
+    api.view.unmount()
+    render(<PrStrip paneId="%2" api={api} connected />)
+    const section = await screen.findByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).queryByText('#30')).not.toBeInTheDocument()
+    expect(within(section).getByText('#12')).toBeInTheDocument()
+  })
+
   it('renders every PR with open PRs first, diffs and external links', async () => {
     setup([pr(10, 'merged'), pr(11, 'closed'), pr(12), pr(13)])
     const section = await screen.findByRole('region', { name: 'Linked pull requests' })
@@ -84,6 +95,20 @@ describe('chat PR strip', () => {
     expect(screen.getByRole('link', { name: 'Open PR #12 on GitHub' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
     expect(screen.queryByRole('button', { name: /^Show/ })).not.toBeInTheDocument()
     expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual([])
+  })
+
+  it('dismisses every shown PR at once and restores them from Show more', async () => {
+    setup([pr(10, 'merged'), pr(11, 'merged'), pr(12)])
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss PR #11' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss all' }))
+    const section = screen.getByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).queryAllByRole('link')).toEqual([])
+    expect(screen.queryByRole('button', { name: 'Dismiss all' })).not.toBeInTheDocument()
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual(
+      [11, 12, 10].map((number) => `${targetId}:acme/widgets#${number}`))
+    fireEvent.click(screen.getByRole('button', { name: 'Show 3 more' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore PR #10' }))
+    expect(screen.getByRole('link', { name: 'Open PR #10 on GitHub' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
   })
 
   it('shows the shared HUD status chips for open PRs only', async () => {

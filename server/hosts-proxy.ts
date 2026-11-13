@@ -7,6 +7,7 @@ import { cleanHeaders, CONNECT_TIMEOUT_MS, hostFailure, hostLookupFor, HOST_RESP
 import { MAX_CLIENT_MESSAGE_BYTES } from './client-messages.js'
 import { MAX_CHAT_HISTORY_BYTES } from './chat-replay.js'
 import { HostWsForwarder } from './hosts-ws.js'
+import { isLocalClient } from './network-access.js'
 
 // Allow the daemon's 64 MiB chat replay plus JSON/envelope overhead.
 const MAX_REMOTE_MESSAGE_BYTES = MAX_CHAT_HISTORY_BYTES + 16 * 1024 * 1024
@@ -90,6 +91,8 @@ export class HostsProxy {
       target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
       const headers = cleanHeaders(request.headers, true)
       headers.host = target.host; headers.authorization = `Bearer ${host.token}`
+      // The target sees this daemon's loopback address, so name a remote user to keep it from acting on this Mac.
+      if (!isLocalClient(request)) headers['x-forwarded-for'] ??= request.socket.remoteAddress ?? 'unknown'
       const protocols = (request.headers['sec-websocket-protocol'] ?? '').split(',').map((value) => value.trim()).filter((value) => value && value !== 'commando-auth' && !value.startsWith('commando-auth.'))
       const remote = new WebSocket(target, protocols, { headers, followRedirects: false, handshakeTimeout: CONNECT_TIMEOUT_MS,
         maxPayload: MAX_REMOTE_MESSAGE_BYTES, perMessageDeflate: false, lookup: hostLookupFor(target) })

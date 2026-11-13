@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { isAbsolute } from 'node:path'
+import { safeAuthUrl } from '../shared/chat-mcp.js'
 
 const OPEN_TIMEOUT_MS = 3_000
 const OPEN_BUFFER_BYTES = 64 * 1024
@@ -56,6 +57,24 @@ export async function revealInFinder(
     throw new Error('File path must be absolute and contain no control characters')
   }
   await execute('/usr/bin/open', ['-R', file], {
+    encoding: 'utf8',
+    maxBuffer: OPEN_BUFFER_BYTES,
+    shell: false,
+    timeout: OPEN_TIMEOUT_MS,
+    windowsHide: true,
+  })
+}
+
+/** Opens a web page in the Mac's default browser; only http(s) URLs. */
+export async function openUrlInBrowser(
+  url: string,
+  execute: FolderOpenExecutor = defaultExecutor,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== 'darwin') throw new Error('Opening pages in the browser is only available on macOS')
+  const page = safeAuthUrl(url)
+  if (!page) throw new Error('Only web pages can be opened in the browser')
+  await execute('/usr/bin/open', [page], {
     encoding: 'utf8',
     maxBuffer: OPEN_BUFFER_BYTES,
     shell: false,
