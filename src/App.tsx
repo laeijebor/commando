@@ -1197,6 +1197,8 @@ function HostApp() {
   const [pendingSimulatorTileId, setPendingSimulatorTileId] = useState<string | null>(null)
   const [panelRevealRequest, setPanelRevealRequest] = useState<{ tabId: string; onVisible: () => void; onUnavailable?: () => void } | null>(null)
   const [dismissedPrTabs, setDismissedPrTabs] = useState<Record<string, Record<string, string>>>({})
+  // Impacted PRs only get a tab once opened from the worklog; created PRs always have one.
+  const [openedPrTabs, setOpenedPrTabs] = useState<Record<string, string[]>>({})
   const [panelActiveTabs, setPanelActiveTabs] = useState<Record<string, string>>({})
   const [sessionAttention, setSessionAttention] = useState<Record<string, boolean>>({})
   const [sessionWarnings, setSessionWarnings] = useState<Record<string, boolean>>({})
@@ -3869,7 +3871,7 @@ function HostApp() {
     if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
     const identity = parsePrPanelKey(tab.key)
     if (identity) {
-      const source = data.prs?.pullRequests.find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
+      const source = [...data.prs?.pullRequests ?? [], ...data.prs?.impacted ?? []].find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
       return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
         <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
           onSelectionApplied={() => setPrSelections((current) => {
@@ -3891,6 +3893,11 @@ function HostApp() {
       screenshotsApi={local ? paneScreenshotsApi : undefined} paneManagementApi={paneManagementApi} revealInFinder={revealInFinder}
       onOpenScreenshot={(folder, file, restoreFocus) => setScreenshotLightbox({ paneId: pane.id, folder, file, restoreFocus })}
       onTypeCommand={(data) => sendPaneInput(pane.id, data)} resume={agentResumes[pane.targetId]} onRetryResume={() => retryAgentResume(pane.targetId)}
+      onOpenPr={(repo, number) => {
+        const key = prPanelKey(repo, number)
+        setOpenedPrTabs((current) => current[pane.id]?.includes(key) ? current : { ...current, [pane.id]: [...current[pane.id] ?? [], key] })
+        void revealPrTab(pane.id, repo, number, 'Description')
+      }}
       processesApi={trackedProcessesApi} />
   }
 
@@ -4330,7 +4337,7 @@ function HostApp() {
                     titles={webPaneTitles}
                     onTabSets={rememberPanelTabs}
                     panes={groupPanes} gitApi={gitDiffApi} prsApi={prsApi} connected={connected}
-                    activeTabs={panelActiveTabs} dismissedPrTabs={dismissedPrTabs}
+                    activeTabs={panelActiveTabs} dismissedPrTabs={dismissedPrTabs} openedPrTabs={openedPrTabs}
                     onDismissPr={(tab, signature, next) => { void dismissPanePrTab(tab, signature, next) }}
                     onRestorePr={(tab) => { void restorePanePrTab(tab).then(() => revealBuiltinTab(tab.anchorPaneId, tab.key, false)).catch((error: unknown) => setPaneActionError(error instanceof Error ? error.message : 'Could not restore PR tab')) }}
                     sessionAttention={sessionAttention} sessionWarnings={sessionWarnings}

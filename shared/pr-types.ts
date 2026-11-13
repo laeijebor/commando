@@ -68,11 +68,20 @@ export type PanePrSummary = PrStatus & Pick<PrSummary, 'number' | 'title' | 'url
   repo: string
   preview?: PrSummary
 }
+/** How a pane's session touched a PR it did not create: pushed to its branch, or reviewed or commented on it. */
+export type PanePrImpact = 'pushed' | 'reviewed' | 'commented'
+/** A PR the pane only impacted; `impactedAt` is when it last did. */
+export type PaneImpactedPr = PanePrSummary & { relation: PanePrImpact; impactedAt: number }
 export type PanePrList = {
   targetId: string
   viewer?: string
   totalCount: number
   pullRequests: PanePrSummary[]
+  /**
+   * PRs the pane pushed to, reviewed or commented on but did not create. Kept
+   * apart from `pullRequests`, so tabs, counts and auto-fix only see created PRs.
+   */
+  impacted?: PaneImpactedPr[]
   truncated: boolean
   fetchedAt: number
 }

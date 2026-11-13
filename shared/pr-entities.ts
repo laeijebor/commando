@@ -30,7 +30,7 @@ export class PrEntities {
 
   /** Daemon query caches are bounded; do not retain their evicted PRs forever. */
   retain(lists: readonly (PanePrList | PrList)[]): void {
-    const keys = new Set(lists.flatMap((list) => list.pullRequests.map((pr) =>
+    const keys = new Set(lists.flatMap((list) => [...list.pullRequests, ...paneImpacted(list)].map((pr) =>
       this.key('repo' in list ? list.repo : (pr as PanePrSummary).repo, pr.number))))
     for (const key of this.entities.keys()) {
       if (keys.has(key)) continue
@@ -42,7 +42,7 @@ export class PrEntities {
   private key(repo: string, number: number): string { return `${repo.toLowerCase()}#${number}` }
 
   ingest(list: PanePrList | PrList, order: number): void {
-    for (const source of list.pullRequests) {
+    for (const source of [...list.pullRequests, ...paneImpacted(list)]) {
       const pr: PanePrSummary = 'repo' in list
         ? { ...source, repo: list.repo, preview: source as PrList['pullRequests'][number] }
         : source as PanePrSummary
@@ -81,8 +81,16 @@ export class PrEntities {
       if (next !== pr) changed = true
       return next
     })
-    const result = cached && sameItems(cached.list.pullRequests, pullRequests) ? cached.list
-      : changed ? { ...list, pullRequests } : list
+    // Impacted PRs take the shared status and keep how the pane touched them.
+    let impactedChanged = false
+    const impacted = list.impacted?.map((pr) => {
+      const entity = this.entities.get(this.key(pr.repo, pr.number))?.pr
+      if (!entity) return pr
+      impactedChanged = true
+      return { ...entity, relation: pr.relation, impactedAt: pr.impactedAt }
+    })
+    const result = !impactedChanged && cached && sameItems(cached.list.pullRequests, pullRequests) ? cached.list
+      : changed || impactedChanged ? { ...list, pullRequests, ...(impacted ? { impacted } : {}) } : list
     this.paneViews.set(list, { version: this.version, list: result })
     return result
   }
@@ -116,6 +124,10 @@ export class PrEntities {
     this.repoViews.set(list, { version: this.version, list: result })
     return result
   }
+}
+
+function paneImpacted(list: PanePrList | PrList): readonly PanePrSummary[] {
+  return 'impacted' in list ? list.impacted ?? [] : []
 }
 
 function sameItems<T>(left: readonly T[], right: readonly T[]): boolean {

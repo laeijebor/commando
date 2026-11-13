@@ -273,7 +273,29 @@ describe('PaneWorklog', () => {
     expect(await screen.findByLabelText('Open pull request')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Expand worklog for Tests' }))
     expect(screen.getByRole('status')).toHaveTextContent('No agent hook data received')
-    expect(screen.getByLabelText('Pull requests for pane %12')).toHaveTextContent('Linked work')
+    expect(screen.getByLabelText('Pull requests for Tests')).toHaveTextContent('Linked work')
+  })
+
+  it('puts Pull requests between Important terms and the plan, and opens a PR beside the pane', async () => {
+    const pr = (number: number, createdAt: string) => ({ repo: 'acme/app', number, title: `PR ${number}`, url: `https://example.test/pr/${number}`, state: 'open', isDraft: false, createdAt, updatedAt: createdAt, additions: 0, deletions: 0, checks: null, conflicting: false, unresolvedThreads: 0, threadsTruncated: false, reviewDecision: null })
+    const prsApi = {
+      pane: vi.fn().mockResolvedValue({ targetId: 'target', totalCount: 1, truncated: false, fetchedAt: Date.now(),
+        pullRequests: [pr(2, '2026-01-02T00:00:00Z')],
+        impacted: [{ ...pr(1, '2026-01-01T00:00:00Z'), relation: 'pushed', impactedAt: Date.parse('2026-01-03T00:00:00Z') }] }),
+      repoForPane: vi.fn().mockResolvedValue('acme/app'),
+    }
+    const onOpenPr = vi.fn()
+    render(<PaneWorklog brief={{ ...brief, references: [{ kind: 'feature_flag', value: 'checkout' }] }} paneLabel="Tests" prsApi={prsApi} onOpenPr={onOpenPr} fullWidth />)
+    const section = await screen.findByLabelText('Pull requests for Tests')
+    const order = [...document.querySelectorAll('.pane-worklog-scroll > section')].map((node) => node.getAttribute('aria-label'))
+    expect(order.indexOf('Pull requests for Tests')).toBe(order.indexOf('Important terms for Tests') + 1)
+    expect(order.indexOf('Plan for Tests')).toBe(order.indexOf('Pull requests for Tests') + 1)
+    // The PR pushed to most recently comes first.
+    expect(within(section).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Open open pull request acme/app #1: PR 1 (pushed)', 'Open open pull request acme/app #2: PR 2 (created)'])
+    fireEvent.click(within(section).getByRole('button', { name: /acme\/app #2/ }))
+    expect(onOpenPr).toHaveBeenCalledWith('acme/app', 2)
+    expect(prsApi.repoForPane).toHaveBeenCalledWith('%12')
   })
 
   it('starts minimized when the pane has no saved preference', () => {

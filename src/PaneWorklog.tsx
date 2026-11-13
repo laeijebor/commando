@@ -32,7 +32,8 @@ import remarkGfm from 'remark-gfm'
 
 import type { AgentProvider, AgentResume, AgentTaskStatus, EarlierAgentSession, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
 import { SESSION_AGENT_CHOICES } from '../shared/tmux-create'
-import { PanePullRequests, usePanePullRequests } from './PanePullRequests'
+import { usePanePullRequests } from './PanePullRequests'
+import { WorklogPullRequests } from './WorklogPullRequests'
 import type { PrsApiClient } from './prsApi'
 import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
 import type { PaneManagementApiClient } from './paneManagementApi'
@@ -301,6 +302,7 @@ export function PaneWorklog({
   hookConnected = true,
   resume,
   onRetryResume,
+  onOpenPr,
   fullWidth = false,
   visible = true,
   onAttentionChange,
@@ -311,7 +313,7 @@ export function PaneWorklog({
   onAttentionChange?: (paneId: string, unseen: boolean, warning?: boolean) => void
   brief: SessionBrief
   paneLabel: string
-  prsApi?: Pick<PrsApiClient, 'pane'>
+  prsApi?: Pick<PrsApiClient, 'pane'> & Partial<Pick<PrsApiClient, 'repoForPane'>>
   screenshotsApi?: PaneScreenshotsApiClient
   paneManagementApi?: Pick<PaneManagementApiClient, 'revealPaneScreenshot'>
   revealInFinder?: boolean
@@ -326,6 +328,8 @@ export function PaneWorklog({
   resume?: AgentResume
   /** Asks the daemon to resume the agent again after a failed attempt. */
   onRetryResume?: () => void
+  /** Opens one of the pane's PRs in its tab beside the pane. */
+  onOpenPr?: (repo: string, number: number) => void
   processesApi?: TrackedProcessesApiClient
 }) {
   const { local, activeHost } = useHost()
@@ -573,6 +577,7 @@ export function PaneWorklog({
           </section>
         ) : null}
 
+        <WorklogPullRequests paneId={brief.paneId} paneLabel={paneLabel} list={prList} repoForPane={prsApi?.repoForPane} onOpen={onOpenPr} />
         <WorklogProcesses api={processesApi} targetId={brief.targetId} paneLabel={paneLabel} connected={connected} visible={visible} />
 
         {tasks.length ? (
@@ -602,8 +607,6 @@ export function PaneWorklog({
             ) : null}
           </section>
         ) : null}
-
-        {!fullWidth && prsApi ? <PanePullRequests paneId={brief.paneId} api={prsApi} connected={connected} list={prList} /> : null}
 
         {screenshotFolders.length ? (
           <PaneScreenshots

@@ -33,6 +33,13 @@ it('counts unique open PRs across panes, includes drafts, and isolates sessions'
   expect(api.pane.mock.calls.filter(([id]) => id === '%1')).toHaveLength(1)
 })
 
+it('does not count PRs the pane only pushed to, reviewed or commented on', async () => {
+  const api = { pane: vi.fn(async () => ({ ...list([pr(1)]), impacted: [{ ...pr(7), relation: 'pushed' as const, impactedAt: 1 }] })) }
+  render(<SessionPrCount paneIds={['%1']} api={api} enabled sessionName="work" />)
+  // A second open PR would read "1 more open pull request".
+  expect(await screen.findByRole('img', { name: 'PR #1 in work: Checking merge readiness' })).toBeInTheDocument()
+})
+
 it('shares foreground polling and removes the badge after merging', async () => {
   vi.useFakeTimers()
   const api = { pane: vi.fn().mockResolvedValueOnce(list([pr(1)])).mockResolvedValue(list([pr(1, 'merged')])) }
