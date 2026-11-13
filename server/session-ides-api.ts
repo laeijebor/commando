@@ -2,7 +2,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import type { AddressInfo, Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { TmuxPane } from '../shared/protocol.js'
-import { SessionIdeService } from './session-ides.js'
+import { IdeWindowAmbiguousError, SessionIdeService } from './session-ides.js'
 
 export function idePathId(pathname: string): string | null {
   return /^\/ide\/(ide-[a-f0-9]{16})\//.exec(pathname)?.[1] ?? null
@@ -11,6 +11,21 @@ export function idePathId(pathname: string): string | null {
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
   response.end(JSON.stringify(body))
+}
+
+/** Small JSON object body; responds and returns null when it is not one. */
+async function readObject(request: IncomingMessage, response: ServerResponse): Promise<Record<string, unknown> | null> {
+  if (request.headers['content-type']?.split(';')[0] !== 'application/json') { json(response, 415, { error: 'Content-Type must be application/json' }); return null }
+  let text = ''
+  for await (const chunk of request) {
+    text += chunk.toString()
+    if (Buffer.byteLength(text) > 4096) { json(response, 413, { error: 'Request too large' }); return null }
+  }
+  try {
+    const body: unknown = JSON.parse(text)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error()
+    return body as Record<string, unknown>
+  } catch { json(response, 400, { error: 'Invalid JSON object' }); return null }
 }
 
 export class SessionIdeApi {
@@ -97,10 +112,27 @@ export class SessionIdeApi {
         json(response, 200, { ides: this.dependencies.service.list() })
         return true
       }
-      const match = /^\/api\/ides\/sessions\/([^/]+)$/.exec(url.pathname)
+      const match = /^\/api\/ides\/sessions\/([^/]+)(\/files)?$/.exec(url.pathname)
       if (!match) { json(response, 404, { error: 'Not found' }); return true }
       const sessionId = decodeURIComponent(match[1])
       if (!/^\$\d+$/.test(sessionId)) { json(response, 400, { error: 'Invalid session id' }); return true }
+      if (match[2]) {
+        if (request.method !== 'POST') { response.setHeader('Allow', 'POST'); json(response, 405, { error: 'Method not allowed' }); return true }
+        if (this.dependencies.isDeviceRequest?.(request)) { json(response, 403, { error: 'Paired devices cannot open IDE files' }); return true }
+        if (this.dependencies.service.forSession(sessionId)?.state !== 'ready') { json(response, 409, { error: 'Open this session’s IDE first' }); return true }
+        const body = await readObject(request, response)
+        if (!body) return true
+        if (typeof body.path !== 'string' || !body.path) { json(response, 400, { error: 'path is required' }); return true }
+        try {
+          await this.dependencies.service.openFile(sessionId, body.path)
+        } catch (error) {
+          if (!(error instanceof IdeWindowAmbiguousError)) throw error
+          json(response, 409, { error: error.message, reload: true })
+          return true
+        }
+        json(response, 200, { ok: true })
+        return true
+      }
       if (request.method === 'DELETE') {
         await this.dependencies.service.detach(sessionId)
         json(response, 200, { ok: true })
@@ -110,17 +142,8 @@ export class SessionIdeApi {
       if (this.dependencies.isDeviceRequest?.(request)) { json(response, 403, { error: 'Paired devices cannot create IDE sessions' }); return true }
       await this.dependencies.refresh()
       if (!this.dependencies.currentSessionIds().includes(sessionId)) { json(response, 404, { error: 'Session no longer exists' }); return true }
-      if (request.headers['content-type']?.split(';')[0] !== 'application/json') { json(response, 415, { error: 'Content-Type must be application/json' }); return true }
-      let text = ''
-      for await (const chunk of request) {
-        text += chunk.toString()
-        if (Buffer.byteLength(text) > 4096) { json(response, 413, { error: 'Request too large' }); return true }
-      }
-      let body: { paneId?: unknown }
-      try {
-        body = JSON.parse(text)
-        if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error()
-      } catch { json(response, 400, { error: 'Invalid JSON object' }); return true }
+      const body = await readObject(request, response)
+      if (!body) return true
       const panes = this.dependencies.currentPanes().filter((pane) => pane.sessionId === sessionId)
       const pane = body.paneId === undefined ? panes.find((value) => value.repo) ?? panes[0] : panes.find((value) => value.id === body.paneId)
       if (!pane) { json(response, 400, { error: 'Choose a pane in this session to open its workspace' }); return true }

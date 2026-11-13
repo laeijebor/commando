@@ -7,7 +7,7 @@ import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient } from './gitApi'
 import './git-diff.css'
 
-export function PrPanel({ paneId, panePath, source, api, gitApi, visible, selection, onSelectionApplied }: {
+export function PrPanel({ paneId, panePath, source, api, gitApi, visible, selection, onSelectionApplied, onOpenInIde }: {
   paneId: string
   panePath: string
   source: PanePrSummary
@@ -16,6 +16,7 @@ export function PrPanel({ paneId, panePath, source, api, gitApi, visible, select
   visible: boolean
   selection?: { tab: PrQuickLookTab; revision: number }
   onSelectionApplied?(): void
+  onOpenInIde?(file: string): void
 }) {
   const known = source.preview ?? cachedPrSummary(api, source.repo, source.number)
   const [resolved, setResolved] = useState<{ api: PrsApiClient; repo: string; pr: PrSummary } | null>(null)
@@ -68,7 +69,7 @@ export function PrPanel({ paneId, panePath, source, api, gitApi, visible, select
         initialSummary={null} visible={diffVisible} comparison={{ base: pr.baseRefOid, head: pr.headRefOid,
           ...(pr.baseRefName ? { baseFallbackRepo: source.repo, baseFallbackBranch: pr.baseRefName } : {}),
           baseLabel: pr.baseRefName || pr.baseRefOid.slice(0, 7), headLabel: pr.headRefName || pr.headRefOid.slice(0, 7) }}
-        errorHint={comparisonHint} />
+        errorHint={comparisonHint} onOpenInIde={onOpenInIde} />
     : <div className="pr-quick-message" role="alert">The PR’s comparison commits are unavailable.{comparisonHint}</div>
   return <div className="pr-quick-embedded">
     {error ? <p role="alert" className="pr-quick-message">{error} <button type="button" onClick={() => { void refresh() }}>Refresh PR</button></p> : null}

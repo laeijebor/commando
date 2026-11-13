@@ -476,6 +476,32 @@ describe('GitDiffView changed file navigation', () => {
   })
 })
 
+describe('GitDiffView open in IDE', () => {
+  const files = [
+    { path: 'src/a.ts', status: 'M', additions: 3, deletions: 1, binary: false },
+    { path: 'gone.ts', status: 'D', additions: 0, deletions: 4, binary: false },
+  ]
+
+  it('opens changed files at their worktree path from the row, a double-click or the diff toolbar', async () => {
+    const onOpenInIde = vi.fn()
+    const withFiles = { ...summary, files }
+    render(<GitDiffView paneId="%1" panePath="/repo" api={fakeApi(withFiles)} initialSummary={withFiles} onOpenInIde={onOpenInIde} />)
+    await screen.findByText('DIFF')
+    fireEvent.click(screen.getByRole('button', { name: 'Open src/a.ts in IDE' }))
+    fireEvent.doubleClick(screen.getByText('a.ts'))
+    expect(screen.queryByRole('button', { name: 'Open gone.ts in IDE' })).toBeNull()
+    fireEvent.click(screen.getByText('a.ts'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open in IDE' }))
+    expect(onOpenInIde.mock.calls).toEqual([['/repo/src/a.ts'], ['/repo/src/a.ts'], ['/repo/src/a.ts']])
+  })
+
+  it('offers no IDE actions without a session IDE', async () => {
+    renderView()
+    await screen.findByText('DIFF')
+    expect(screen.queryByRole('button', { name: /in IDE/ })).toBeNull()
+  })
+})
+
 describe('GitDiffView content search', () => {
   it('highlights ANSI-spanning matches in the current diff and navigates between them', async () => {
     const api = fakeApi()
