@@ -748,6 +748,14 @@ describe('models', () => {
     expect(onCreateSession.mock.calls[0]![0].agent).toMatchObject({ provider: 'claude-chat', model: 'opus', fast: true })
     // The form resets to fast off for the next session.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Fast mode' })).toHaveAttribute('aria-pressed', 'false'))
+    // Terminal Claude shares the model list but can't start fast, so neither shows nor sends it.
+    fireEvent.click(screen.getByRole('button', { name: 'Fast mode' }))
+    chooseAgent('claude')
+    expect(screen.queryByRole('button', { name: 'Fast mode' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'term' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Create session/ }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalledTimes(2))
+    expect(onCreateSession.mock.calls[1]![0].agent).not.toHaveProperty('fast')
   })
 })
 

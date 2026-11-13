@@ -430,7 +430,8 @@ export function TmuxCreateControls({
   const listKnown = Boolean(modelEntry)
   const selectedModel = models.find((model) => model.value === wantedModel)?.value
     ?? (!listKnown && wantedModel ? wantedModel : models[0]?.value ?? 'default')
-  const fastAvailable = Boolean(models.find((model) => model.value === selectedModel)?.supportsFast)
+  // Only chats take fast mode; terminal Claude and Codex share the catalog but not the flag.
+  const fastAvailable = isChatLaunchProvider(agentProvider) && Boolean(models.find((model) => model.value === selectedModel)?.supportsFast)
   const fast = fastAvailable && fastPick
   const modelChoicesShown = !listKnown && wantedModel && !models.some((model) => model.value === wantedModel)
     ? [...models, { value: wantedModel, displayName: wantedModel }]
@@ -791,7 +792,7 @@ export function TmuxCreateControls({
             onPick={(value) => { if (catalogKey) setModelPick({ key: catalogKey, value }) }}
           />
         ) : null}
-        {chatProvider && fastAvailable ? (
+        {fastAvailable ? (
           <NewSessionFastToggle on={fast} disabled={unavailable} onToggle={() => setFastPick(!fast)} />
         ) : null}
         {permissionModes.length ? (
