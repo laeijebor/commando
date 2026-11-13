@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SessionIdeService, type IdeLaunchOptions, type IdeRuntime } from './session-ides.js'
+import { IdeWindowAmbiguousError, SessionIdeService, type IdeLaunchOptions, type IdeRuntime } from './session-ides.js'
 
 let directory: string
 let service: SessionIdeService
@@ -207,5 +207,15 @@ describe('opening files in a loaded IDE window', () => {
     await service.openFile('$1', join(directory, 'a #1.ts'))
     expect(new Set(queries)).toEqual(new Set([join(workspace, '.commando-open-file')]))
     expect(opened).toEqual([{ type: 'open', fileURIs: [`file://${workspace}/a%20%231.ts`], folderURIs: [], forceReuseWindow: true }])
+  })
+
+  it('asks for a reload when an IDE on an ancestor folder could take the file', async () => {
+    launch.mockResolvedValue({ socketPath: '/test/socket', sessionSocketPath: join(directory, 'none.sock'), stop })
+    await writeFile(join(directory, 'other', 'a.ts'), '')
+    await service.attach('$1', join(directory, 'other'))
+    await service.attach('$2', directory)
+    await expect(service.openFile('$1', join(directory, 'other', 'a.ts'))).rejects.toBeInstanceOf(IdeWindowAmbiguousError)
+    // The ancestor's own window is unambiguous: nested folders do not contain its probe.
+    await expect(service.openFile('$2', join(directory, 'other', 'a.ts'), 0)).rejects.toThrow('not finished loading')
   })
 })

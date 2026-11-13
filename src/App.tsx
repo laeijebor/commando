@@ -130,7 +130,7 @@ import { AgentChatRequestCard } from './AgentChatRequestCard'
 import { PaneAttributionToast, usePaneAttribution } from './PaneAttributionToast'
 import { createAgentChatsApi } from './agentChatsApi'
 import type { LineageSnapshot } from './chatLineage'
-import { SessionIdeView } from './SessionIdeView'
+import { ideFrameKey, SessionIdeView, type IdeInitialFile } from './SessionIdeView'
 import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { createSessionNamingApi } from './sessionNamingApi'
@@ -1223,8 +1223,8 @@ function HostApp() {
   const closingPanelTabs = useRef(new Set<string>())
   const seenPanelTabs = useRef(new Map<string, number>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
-  const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
-  const [ideInitialFiles, setIdeInitialFiles] = useState<Record<string, string>>({})
+  const [openedIdeFrames, setOpenedIdeFrames] = useState<ReadonlySet<string>>(() => new Set())
+  const [ideInitialFiles, setIdeInitialFiles] = useState<Record<string, IdeInitialFile>>({})
   const [idePendingSessions, setIdePendingSessions] = useState<ReadonlySet<string>>(() => new Set())
   const [ideErrors, setIdeErrors] = useState<Record<string, string>>({})
   const ideRequests = useRef(new Set<string>())
@@ -2207,9 +2207,9 @@ function HostApp() {
       setSessionIdes((current) => current.some((item) => item.id === ide.id)
         ? current.map((item) => item.id === ide.id && item.generation === ide.generation ? { ...item, url: ide.url } : item)
         : [...current, ide])
-      if (options.file && openedIdeIds.has(ide.id)) await ides.openFile(sessionId, options.file)
-      else if (options.file) setIdeInitialFiles((current) => ({ ...current, [`${ide.id}:${ide.generation}`]: options.file! }))
-      setOpenedIdeIds((current) => new Set([...current, ide.id]))
+      if (options.file && openedIdeFrames.has(ideFrameKey(ide))) await openFileInLoadedIde(sessionId, ide, options.file)
+      else if (options.file) setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: options.file!, revision: 0 } }))
+      setOpenedIdeFrames((current) => new Set([...current, ideFrameKey(ide)]))
     } catch (error) {
       setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open IDE' }))
     } finally {
@@ -2218,15 +2218,21 @@ function HostApp() {
     }
   }
 
+  /** Opens `file` in the loaded window, reloading it on the file when the daemon cannot target it. */
+  const openFileInLoadedIde = async (sessionId: string, ide: SessionIde, file: string) => {
+    if (await createSessionIdesApi(token, daemonFetch).openFile(sessionId, file) !== 'reload') return
+    setIdeInitialFiles((current) => ({ ...current, [ideFrameKey(ide)]: { path: file, revision: (current[ideFrameKey(ide)]?.revision ?? 0) + 1 } }))
+  }
+
   /** From a diff: reuse the loaded IDE window, or start the IDE on this file. */
   const openFileInSessionIde = (sessionId: string, paneId: string, file: string) => {
     const ide = sessionIdes.find((item) => item.sessionIds.includes(sessionId))
-    if (ide?.state !== 'ready' || !openedIdeIds.has(ide.id)) { void openSessionIde(sessionId, { paneId, file }); return }
+    if (ide?.state !== 'ready' || !openedIdeFrames.has(ideFrameKey(ide))) { void openSessionIde(sessionId, { paneId, file }); return }
     setSelectedSessionId(sessionId)
     setArea('ide')
     setLeftPanelOpen(false)
     setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
-    createSessionIdesApi(token, daemonFetch).openFile(sessionId, file).catch((error: unknown) => {
+    openFileInLoadedIde(sessionId, ide, file).catch((error: unknown) => {
       setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open file in IDE' }))
     })
   }
@@ -4635,7 +4641,7 @@ function HostApp() {
             sessionName={selectedSession?.name ?? 'Session'}
             ide={sessionIdes.find((ide) => ide.sessionIds.includes(selectedSessionId ?? ''))}
             ides={sessionIdes}
-            openedIdeIds={openedIdeIds}
+            openedFrames={openedIdeFrames}
             initialFiles={ideInitialFiles}
             pending={idePendingSessions.has(selectedSessionId ?? '')}
             detaching={ideRequests.current.has(`detach:${selectedSessionId}`)}

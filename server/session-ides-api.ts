@@ -2,7 +2,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import type { AddressInfo, Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { TmuxPane } from '../shared/protocol.js'
-import { SessionIdeService } from './session-ides.js'
+import { IdeWindowAmbiguousError, SessionIdeService } from './session-ides.js'
 
 export function idePathId(pathname: string): string | null {
   return /^\/ide\/(ide-[a-f0-9]{16})\//.exec(pathname)?.[1] ?? null
@@ -123,7 +123,13 @@ export class SessionIdeApi {
         const body = await readObject(request, response)
         if (!body) return true
         if (typeof body.path !== 'string' || !body.path) { json(response, 400, { error: 'path is required' }); return true }
-        await this.dependencies.service.openFile(sessionId, body.path)
+        try {
+          await this.dependencies.service.openFile(sessionId, body.path)
+        } catch (error) {
+          if (!(error instanceof IdeWindowAmbiguousError)) throw error
+          json(response, 409, { error: error.message, reload: true })
+          return true
+        }
         json(response, 200, { ok: true })
         return true
       }

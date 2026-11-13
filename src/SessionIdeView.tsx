@@ -15,6 +15,12 @@ export function ideFrameUrl(url: string, file?: string): string {
   return url.startsWith('/') ? `${target.pathname}${target.search}` : target.href
 }
 
+/** A window load: a restarted IDE (new generation) must be authorized and opened again. */
+export const ideFrameKey = (ide: Pick<SessionIde, 'id' | 'generation'>) => `${ide.id}:${ide.generation}`
+
+/** `revision` reloads the window on `path`, when the loaded one cannot be targeted. */
+export type IdeInitialFile = { path: string; revision: number }
+
 function IdeFrame({ ide, file, hidden }: { ide: SessionIde; file?: string; hidden: boolean }) {
   // Fixed at mount: changing an iframe's src reloads the whole workbench.
   const [src] = useState(() => ideFrameUrl(ide.url, file))
@@ -29,16 +35,17 @@ function IdeFrame({ ide, file, hidden }: { ide: SessionIde; file?: string; hidde
 }
 
 export function SessionIdeView({
-  active, sessionId, sessionName, ide, ides, openedIdeIds, initialFiles = {}, pending, detaching = false, error, connected, onOpen, onDetach, onTerminal,
+  active, sessionId, sessionName, ide, ides, openedFrames, initialFiles = {}, pending, detaching = false, error, connected, onOpen, onDetach, onTerminal,
 }: {
   active: boolean
   sessionId?: string | null
   sessionName: string
   ide?: SessionIde
   ides: SessionIde[]
-  openedIdeIds: ReadonlySet<string>
-  /** File to show when an IDE's window first loads, by `${id}:${generation}`. */
-  initialFiles?: Readonly<Record<string, string>>
+  /** Windows this browser has authorized and loaded, by ideFrameKey. */
+  openedFrames: ReadonlySet<string>
+  /** File to show when an IDE's window loads, by ideFrameKey. */
+  initialFiles?: Readonly<Record<string, IdeInitialFile>>
   pending: boolean
   detaching?: boolean
   error: string
@@ -88,14 +95,14 @@ export function SessionIdeView({
     {ide?.state === 'failed' || (error && ide?.state !== 'ready') ? <div className="session-ide-message" role="alert">
       <Code2 /><h2>Unable to open IDE</h2><p>{error || ide?.error}</p>
       <button type="button" onClick={onOpen} disabled={!connected || pending}><RefreshCw /> Retry IDE</button>
-    </div> : !ide || ide.state === 'starting' || !openedIdeIds.has(ide.id) ? <div className="session-ide-message" role="status">
+    </div> : !ide || ide.state === 'starting' || !openedFrames.has(ideFrameKey(ide)) ? <div className="session-ide-message" role="status">
       {pending || ide?.state === 'starting' ? <><LoaderCircle className="spin" /><h2>Starting session IDE</h2><p>Opening this worktree in code-server…</p></> : <><Code2 /><h2>Open this session’s workspace</h2><p>One IDE per worktree. Reopening reuses the existing editor.</p><button type="button" onClick={onOpen} disabled={!connected}>Open IDE</button></>}
     </div> : null}
     {/* Keep each opened worktree's frame alive across session/area switches. */}
-    {ides.filter((item) => item.state === 'ready' && openedIdeIds.has(item.id)).map((item) => <IdeFrame
-      key={`${item.id}:${item.generation}`}
+    {ides.filter((item) => item.state === 'ready' && openedFrames.has(ideFrameKey(item))).map((item) => <IdeFrame
+      key={`${ideFrameKey(item)}:${initialFiles[ideFrameKey(item)]?.revision ?? 0}`}
       ide={item}
-      file={initialFiles[`${item.id}:${item.generation}`]}
+      file={initialFiles[ideFrameKey(item)]?.path}
       hidden={!active || item.id !== ide?.id}
     />)}
   </section>

@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { SessionIde, TmuxPane } from '../shared/protocol.js'
-import { SessionIdeService } from './session-ides.js'
+import { IdeWindowAmbiguousError, SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 
 let directory: string
@@ -160,4 +160,8 @@ it('opens files only in a session’s ready IDE', async () => {
   const failed = await post('/files', { path: '/gone.ts' })
   expect(failed.status).toBe(502)
   expect(await failed.json()).toEqual({ error: 'File no longer exists in this worktree' })
+  openFile.mockRejectedValueOnce(new IdeWindowAmbiguousError())
+  const ambiguous = await post('/files', { path: '/nested.ts' })
+  expect(ambiguous.status).toBe(409)
+  expect(await ambiguous.json()).toMatchObject({ reload: true })
 })

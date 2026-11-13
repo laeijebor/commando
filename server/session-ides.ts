@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/p
 import { constants } from 'node:fs'
 import { request } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { SessionIde } from '../shared/protocol.js'
@@ -153,6 +153,11 @@ export async function launchCodeServer(options: IdeLaunchOptions): Promise<IdeRu
     }
     throw new Error('code-server did not become ready within 30 seconds. Retry or check COMMANDO_CODE_SERVER_PATH.')
   } catch (error) { await stop(); throw error }
+}
+
+/** The daemon cannot single out the session's window; load it on the file instead. */
+export class IdeWindowAmbiguousError extends Error {
+  constructor() { super('Another IDE window also shows this worktree') }
 }
 
 export class SessionIdeService {
@@ -321,9 +326,16 @@ export class SessionIdeService {
     if (!isAbsolute(filePath)) throw new Error('File path must be absolute')
     const canonicalPath = await realpath(filePath).catch(() => { throw new Error('File no longer exists in this worktree') })
     if (!(await stat(canonicalPath)).isFile()) throw new Error('Only files can be opened in the IDE')
+    // code-server picks the latest window whose folder contains the probe, so a
+    // window on an ancestor folder (a repo holding nested worktrees) could take it.
+    const workspace = entry.public.workspacePath
+    if ([...this.entries.values()].some((other) => other !== entry && other.public.state === 'ready' &&
+      workspace.startsWith(other.public.workspacePath.endsWith(sep) ? other.public.workspacePath : other.public.workspacePath + sep))) {
+      throw new IdeWindowAmbiguousError()
+    }
     const deadline = Date.now() + waitMs
     for (;;) {
-      const windowSocket = await workbenchSocket(sessionSocketPath, entry.public.workspacePath)
+      const windowSocket = await workbenchSocket(sessionSocketPath, workspace)
       if (windowSocket) {
         // The window's CLI server, as `code-server --reuse-window <file>` would call it.
         const { status, text } = await unixRequest(windowSocket, '/', {

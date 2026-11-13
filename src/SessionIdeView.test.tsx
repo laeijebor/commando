@@ -8,7 +8,7 @@ import { ideFrameUrl, SessionIdeView } from './SessionIdeView'
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 const ide: SessionIde = { id: 'ide-1111111111111111', sessionIds: ['$1', '$2'], workspacePath: '/worktree', state: 'ready', generation: 1, url: '/ide/ide-1111111111111111/' }
 const props = {
-  active: true, sessionName: 'work', ide, ides: [ide], openedIdeIds: new Set([ide.id]),
+  active: true, sessionName: 'work', ide, ides: [ide], openedFrames: new Set([`${ide.id}:${ide.generation}`]),
   pending: false, error: '', connected: true, onOpen: vi.fn(), onDetach: vi.fn(), onTerminal: vi.fn(),
 }
 
@@ -84,14 +84,24 @@ it('shows detachment progress and keeps API errors visible without replacing the
 
 it('starts a newly loaded IDE on a requested file without reloading it later', () => {
   const key = `${ide.id}:${ide.generation}`
-  const { container, rerender } = render(<SessionIdeView {...props} initialFiles={{ [key]: '/worktree/src/a b#.ts' }} />)
+  const { container, rerender } = render(<SessionIdeView {...props} initialFiles={{ [key]: { path: '/worktree/src/a b#.ts', revision: 0 } }} />)
   const frame = container.querySelector('iframe')!
   const src = new URL(frame.getAttribute('src')!, window.location.href)
   expect(src.pathname).toBe('/ide/ide-1111111111111111/')
   expect(JSON.parse(src.searchParams.get('payload')!)).toEqual([['openFile', `vscode-remote://${window.location.host}/worktree/src/a%20b%23.ts`]])
-  rerender(<SessionIdeView {...props} initialFiles={{ [key]: '/worktree/other.ts' }} />)
+  rerender(<SessionIdeView {...props} initialFiles={{ [key]: { path: '/worktree/other.ts', revision: 0 } }} />)
   expect(container.querySelector('iframe')).toBe(frame)
   expect(frame.getAttribute('src')).toBe(`${src.pathname}${src.search}`)
+  // A new revision reloads the window on the file the daemon could not target.
+  rerender(<SessionIdeView {...props} initialFiles={{ [key]: { path: '/worktree/other.ts', revision: 1 } }} />)
+  const reloaded = container.querySelector('iframe')!
+  expect(reloaded).not.toBe(frame)
+  expect(reloaded.getAttribute('src')).toContain(encodeURIComponent('/worktree/other.ts'))
+})
+
+it('waits for a restarted IDE to be authorized before loading its window', () => {
+  const { container } = render(<SessionIdeView {...props} ides={[{ ...ide, generation: 2 }]} ide={{ ...ide, generation: 2 }} />)
+  expect(container.querySelector('iframe')).toBeNull()
 })
 
 it('keeps absolute editor origins and plain URLs without a file', () => {
