@@ -129,6 +129,7 @@ describe('chat PR strip', () => {
     setup([pr(12), pr(13)])
     expect(await screen.findByRole('button', { name: 'Dismiss all' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Dismiss finished' })).not.toBeInTheDocument()
+    expect(document.querySelector('.chat-pr-dismiss-all')).toHaveTextContent(/^Dismiss all$/)
   })
 
   it('shows the shared HUD status chips for open PRs only', async () => {

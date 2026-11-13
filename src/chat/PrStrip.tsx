@@ -250,7 +250,7 @@ export function PrStrip({ paneId, api, connected, onOpenPr, onSend, agentConnect
             <span className="chat-pr-dismiss-all">
               <button type="button" title="Hide every PR below; restore them from Show more" onClick={() => dismissPrs(shown)}>Dismiss all</button>
               {/* Only offered alongside open PRs; otherwise it would do the same as Dismiss all. */}
-              {finished.length && finished.length < shown.length ? <>
+              {finished.length > 0 && finished.length < shown.length ? <>
                 <span aria-hidden="true">/</span>
                 <button type="button" aria-label="Dismiss finished" title="Hide merged and closed PRs; restore them from Show more" onClick={() => dismissPrs(finished)}>finished</button>
               </> : null}
