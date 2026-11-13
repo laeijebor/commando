@@ -329,19 +329,23 @@ export class SessionIdeService {
     const canonicalPath = await realpath(filePath).catch(() => { throw new Error('File no longer exists in this worktree') })
     if (!(await stat(canonicalPath)).isFile()) throw new Error('Only files can be opened in the IDE')
     const workspace = entry.public.workspacePath
-    const others = [...this.entries.values()]
-      .filter((other) => other !== entry && other.public.state === 'ready')
-      .map((other) => other.public.workspacePath)
-    // A window on an ancestor folder (a repo holding nested worktrees) also contains the probe.
-    if (others.some((other) => workspace.startsWith(other.endsWith(sep) ? other : other + sep))) throw new IdeWindowAmbiguousError()
     const deadline = Date.now() + waitMs
     for (;;) {
+      // Re-read each pass: another IDE can become ready while this one's window loads.
+      const others = [...this.entries.values()]
+        .filter((other) => other !== entry && other.public.state === 'ready')
+        .map((other) => other.public.workspacePath)
+      // A window on an ancestor folder (a repo holding nested worktrees) also contains the probe.
+      if (others.some((other) => workspace.startsWith(other.endsWith(sep) ? other : other + sep))) throw new IdeWindowAmbiguousError()
+      // The registry falls back to the latest window when this worktree's has not
+      // registered yet. A window other than the latest must have matched; the latest
+      // is ours only if no other IDE's worktree lookup also lands on it. The latest
+      // is read on both sides so a window registering in between is not mistaken.
+      const latest = await registryLookup(sessionSocketPath, UNMATCHED_PROBE)
       const windowSocket = await registryLookup(sessionSocketPath, workspaceProbe(workspace))
-      if (windowSocket) {
-        // The registry falls back to the latest window when this worktree's has not
-        // registered yet. A window other than the latest must have matched; the latest
-        // is ours only if no other IDE's worktree lookup also lands on it.
-        if (windowSocket === await registryLookup(sessionSocketPath, UNMATCHED_PROBE)) {
+      const stable = latest === await registryLookup(sessionSocketPath, UNMATCHED_PROBE)
+      if (windowSocket && stable) {
+        if (windowSocket === latest) {
           const otherWindows = await Promise.all(others.map((other) => registryLookup(sessionSocketPath, workspaceProbe(other))))
           if (otherWindows.includes(windowSocket)) throw new IdeWindowAmbiguousError()
         }
