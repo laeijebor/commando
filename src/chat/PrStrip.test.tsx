@@ -111,6 +111,41 @@ describe('chat PR strip', () => {
     expect(screen.getByRole('link', { name: 'Open PR #10 on GitHub' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
   })
 
+  it('dismisses only merged and closed PRs with Dismiss finished', async () => {
+    setup([pr(10, 'merged'), pr(11, 'closed'), pr(12)])
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss finished' }))
+    const section = screen.getByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#12', 'Change 12'])
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual(
+      [10, 11].map((number) => `${targetId}:acme/widgets#${number}`))
+    expect(screen.getByRole('button', { name: 'Show 2 more' })).toBeInTheDocument()
+  })
+
+  it('reports dismissed PRs so their side-panel tabs can close, but not restored ones', async () => {
+    const onDismissPrs = vi.fn()
+    const api = { pane: vi.fn(async () => ({ targetId, totalCount: 3, pullRequests: [pr(10, 'merged'), pr(11, 'closed'), pr(12)], truncated: false, fetchedAt: Date.now() })),
+      autofixStatus: vi.fn(async () => null), setAutofix: vi.fn(), list: vi.fn(), merge: vi.fn() }
+    render(<PrStrip paneId="%1" api={api as never} connected onDismissPrs={onDismissPrs} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss finished' }))
+    expect(onDismissPrs).toHaveBeenLastCalledWith([expect.objectContaining({ number: 10 }), expect.objectContaining({ number: 11 })])
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss PR #12' }))
+    expect(onDismissPrs).toHaveBeenLastCalledWith([expect.objectContaining({ number: 12 })])
+    fireEvent.click(screen.getByRole('button', { name: 'Show 3 more' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore PR #12' }))
+    expect(onDismissPrs).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers Dismiss finished only when open and finished PRs are both shown', async () => {
+    const { view } = setup([pr(10, 'merged'), pr(11, 'merged')])
+    expect(await screen.findByRole('button', { name: 'Dismiss all' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dismiss finished' })).not.toBeInTheDocument()
+    view.unmount()
+    setup([pr(12), pr(13)])
+    expect(await screen.findByRole('button', { name: 'Dismiss all' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dismiss finished' })).not.toBeInTheDocument()
+    expect(document.querySelector('.chat-pr-dismiss-all')).toHaveTextContent(/^Dismiss all$/)
+  })
+
   it('shows the shared HUD status chips for open PRs only', async () => {
     const open = { ...pr(12), unresolvedThreads: 7, unansweredThreads: 2, conflicting: true }
     setup([open, { ...pr(10, 'merged'), unresolvedThreads: 4 }])
