@@ -1,4 +1,4 @@
-import { ChevronDown, Clock, Shield } from 'lucide-react'
+import { ChevronDown, Clock, Shield, Zap } from 'lucide-react'
 import { useState } from 'react'
 import type { ChatModelOption } from '../shared/agent-chat'
 import type { ChatPermissionMode } from '../shared/tmux-create'
@@ -111,6 +111,24 @@ export function NewSessionModelPicker({ models, selected, updatedAt, disabled, o
         </p>
       </PopoverPopup>
     </Popover>
+  )
+}
+
+/** Starts the chat in fast mode; shown only for a model that offers it. */
+export function NewSessionFastToggle({ on, disabled, onToggle }: { on: boolean; disabled: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className={cn(PILL, on && 'is-fast')}
+      aria-pressed={on}
+      aria-label="Fast mode"
+      title="Fast mode: faster replies, higher usage"
+      disabled={disabled}
+      onClick={onToggle}
+    >
+      <Zap aria-hidden="true" />
+      <span className="tmux-create__pill-text">{on ? 'Fast' : 'Fast off'}</span>
+    </button>
   )
 }
 

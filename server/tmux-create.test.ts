@@ -1024,6 +1024,8 @@ describe('Claude chat launches', () => {
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', images: Array.from({ length: 11 }, () => image) } })).rejects.toThrow(/images/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', model: '--yolo' } })).rejects.toThrow(/model/)
     await expect(creator.createSession({ name: 'x', agent: { provider: 'opencode', model: 'gpt' } })).rejects.toThrow(/model/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude', fast: true } })).rejects.toThrow(/Only a chat accepts fast mode/)
+    await expect(creator.createSession({ name: 'x', agent: { provider: 'claude-chat', fast: 'yes' } as never })).rejects.toThrow(/fast mode/)
   })
 
   it("launches a chat with its stashed plan's folder ahead of the prompt", async () => {

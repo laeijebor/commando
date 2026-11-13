@@ -154,7 +154,7 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
 function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess, model, images } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown; model?: unknown; images?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess, model, fast, images } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown; model?: unknown; fast?: unknown; images?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
@@ -168,6 +168,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (model !== undefined && (!isModelValue(model) || (!isChatLaunchProvider(provider) && provider !== 'claude' && provider !== 'codex'))) {
     throw new Error('Only a chat, Claude or Codex accepts a model id')
   }
+  if (fast !== undefined && (fast !== true || !isChatLaunchProvider(provider))) throw new Error('Only a chat accepts fast mode')
   if (images !== undefined && !isChatLaunchProvider(provider)) throw new Error('Only a chat accepts attached images')
   const imageRefs = images === undefined ? undefined : parseChatImageRefs(images)
   if (images !== undefined && !imageRefs) throw new Error('images must be up to 10 uploaded image or video ids')
@@ -192,6 +193,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     ...(typeof prompt === 'string' ? { prompt } : {}),
     ...(typeof configDir === 'string' ? { configDir } : {}),
     ...(typeof model === 'string' ? { model } : {}),
+    ...(fast === true ? { fast: true as const } : {}),
     ...(imageRefs?.length ? { images: imageRefs } : {}),
     ...(typeof permissionMode === 'string' ? { permissionMode: permissionMode as NonNullable<SessionAgentLaunch['permissionMode']> } : {}),
     ...(typeof readableDir === 'string' ? { readableDir } : {}),
