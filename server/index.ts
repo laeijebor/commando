@@ -55,7 +55,7 @@ import type {
   TmuxPane,
   WebPane,
 } from '../shared/protocol.js'
-import { isRedlineArtifactUrl, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
+import { isRedlineArtifactUrl, redlineArtifactId, tileEventMarker, tileFileName, tileSource } from '../shared/chat-tile-events.js'
 import { layoutSpecPaneIds } from '../shared/window-layout.js'
 import { inferAgentProcessStatus, inferAgentStatus } from './agent-status.js'
 import {
@@ -190,6 +190,7 @@ const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
 const TRACKED_PROCESS_SCAN_MS = 15_000
+const ARTIFACT_RETAIN_INTERVAL_MS = 60 * 60 * 1_000
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -664,11 +665,18 @@ async function main(): Promise<void> {
     spotlightRequests: canvasSpotlight.pending(),
     reloads: webPaneAgentRequests.reloads(),
   })
+  // Declared before publishWebPanes, which keeps tabs' artifact registrations alive.
+  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
+  /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
+  const retainTabArtifacts = (): void => {
+    redlineArtifacts.retain(webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []))
+  }
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
    * streams that no longer correspond to an open chromium tile, then
    * broadcasts the new list.
    */
+  let publishedClosedTabOwners = ''
   const publishWebPanes = (): void => {
     const streamable = new Set(
       webPanes
@@ -681,12 +689,14 @@ async function main(): Promise<void> {
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
-    canvasThreads.retain(new Set([...liveIds, ...webPanes.parkedIds()]))
+    canvasThreads.retain(new Set([...liveIds, ...webPanes.retainedIds()]))
     webPaneAgentRequests.retain(liveIds)
     canvasSpotlight.retain(liveIds)
     canvasPush?.retain(liveIds)
     guides?.retain(liveIds)
     canvasWatch.sync(webPanes.list())
+    retainTabArtifacts()
+    publishedClosedTabOwners = webPanes.closedTabOwners()
     broadcast(webPanesMessage())
   }
   const notes = new NoteVaultManager()
@@ -796,6 +806,8 @@ async function main(): Promise<void> {
   let snapshotReady = false
   // A lease's pane must be missing from two reads in a row, so one empty or failed tmux read releases nothing.
   let previousPaneIds = new Set<string>()
+  // Kept one snapshot past a pane's exit, so tabs pruned with it still find their owner.
+  const paneTargets = new Map<string, string>()
   // Releases wait for the listener, so a daemon that fails to bind its port never touches devices.
   let listening = false
   let snapshotRevision = 0
@@ -1710,7 +1722,11 @@ async function main(): Promise<void> {
           broadcast({ type: 'snapshot', snapshot })
           companion?.publish()
         }
+        for (const pane of snapshot.panes) paneTargets.set(pane.id, pane.targetId)
         const webPanesPruned = webPanes.prune(snapshot.windows)
+        if (snapshot.panes.length) {
+          for (const paneId of paneTargets.keys()) if (!paneForId(paneId)) paneTargets.delete(paneId)
+        }
         let webPaneConversationsChanged = false
         // Hooks can precede pane discovery, and loaded briefs need no new hook.
         for (const paneId of paneIds) {
@@ -1722,7 +1738,9 @@ async function main(): Promise<void> {
           const pane = paneForId(paneId)
           return pane ? { cols: pane.width, rows: pane.height } : undefined
         })
-        if (webPanesPruned || webPaneConversationsChanged || webPaneLayoutMetadataResolved) {
+        if (webPanesPruned || webPaneConversationsChanged || webPaneLayoutMetadataResolved ||
+          // A degraded (empty) snapshot would briefly hide every closed tab.
+          (snapshot.panes.length > 0 && webPanes.closedTabOwners() !== publishedClosedTabOwners)) {
           publishWebPanes()
         }
         for (const paneId of paneIds) emitAgentStatus(paneId, snapshot.capturedAt)
@@ -2059,6 +2077,12 @@ async function main(): Promise<void> {
     }
     return pane.title?.trim() || undefined
   }
+  webPanes.closedTabHooks = {
+    targetIdFor: (paneId) => paneForId(paneId)?.targetId ?? paneTargets.get(paneId),
+    titleFor: tileTitle,
+    liveTargets: () => new Set(snapshot.panes.map((pane) => pane.targetId)),
+    adopt: (closedId, liveId) => canvasThreads.reassign(closedId, liveId),
+  }
   canvasPush = new CanvasPush({
     sending: agentPushes,
     repoRoot: fileURLToPath(new URL('../', import.meta.url)),
@@ -2313,6 +2337,10 @@ async function main(): Promise<void> {
     },
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
+    paneForTarget: (targetId) => {
+      const pane = snapshot.panes.find((candidate) => candidate.targetId === targetId && !candidate.dead)
+      return pane ? { id: pane.id, sessionId: pane.sessionId, windowId: pane.windowId, width: pane.width, height: pane.height } : undefined
+    },
     paneForId: (paneId) => {
       const pane = paneForId(paneId)
       return pane
@@ -2361,12 +2389,11 @@ async function main(): Promise<void> {
       // adopts the unsent pills back (they expire with the TTL sweep).
     },
   })
-  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
   const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
   canvasSnapshots.prune()
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
   canvasWatch.sync(webPanes.list())
-  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.parkedIds()]))
+  canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.retainedIds()]))
   const redlineApi = new RedlineApi({
     agentToken: agentHookToken,
     ownerAuthorized: (request, url) => requestIsAuthorized(request, url),
@@ -3284,6 +3311,12 @@ async function main(): Promise<void> {
   const trackedProcessTimer = setInterval(() => {
     if (clients.size) void processTracker.list(TRACKED_PROCESS_SCAN_MS).catch((error: unknown) => console.warn('[commando] Process tracking scan failed', error))
   }, TRACKED_PROCESS_SCAN_MS)
+  // Tabs can sit untouched for longer than an artifact's TTL, so refresh outside web-pane changes too.
+  retainTabArtifacts()
+  const artifactRetainTimer = setInterval(() => {
+    try { retainTabArtifacts() }
+    catch (error) { console.warn('[commando] Could not refresh tab artifact registrations', error) }
+  }, ARTIFACT_RETAIN_INTERVAL_MS)
   const simPoolReaperTimer = simPoolReaper && setInterval(() => {
     void simPoolReaper.sweep().catch((error: unknown) => console.warn('[sim-pool] unleased simulator check failed', error))
   }, POOL_REAP_INTERVAL_MS)
@@ -3307,6 +3340,7 @@ async function main(): Promise<void> {
     hostsProxy.close()
     clearInterval(snapshotTimer)
     clearInterval(trackedProcessTimer)
+    clearInterval(artifactRetainTimer)
     if (simPoolReaperTimer) clearInterval(simPoolReaperTimer)
     externalAgents.close()
     prAutofix.stop()

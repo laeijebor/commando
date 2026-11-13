@@ -198,10 +198,16 @@ export function tileSource(pane: { content?: { kind: string } } | undefined): Ch
 
 /** A redline artifact served by the daemon (`/redline/artifacts/<id>/…` on loopback). */
 export function isRedlineArtifactUrl(url: string): boolean {
+  return redlineArtifactId(url) !== undefined
+}
+
+/** The registration id in a redline artifact URL, if the URL is one. */
+export function redlineArtifactId(url: string): string | undefined {
   try {
     const parsed = new URL(url)
-    return ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) && parsed.pathname.startsWith('/redline/artifacts/')
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)) return undefined
+    return /^\/redline\/artifacts\/([^/]+)(?:\/|$)/.exec(parsed.pathname)?.[1]
   } catch {
-    return false
+    return undefined
   }
 }

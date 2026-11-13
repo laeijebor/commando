@@ -30,7 +30,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import type { AgentProvider, AgentResume, AgentTaskStatus, EarlierAgentSession, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
+import type { AgentProvider, AgentResume, AgentTaskStatus, ClosedWebPane, EarlierAgentSession, SessionBrief, SessionBriefUpdateKind, SessionReference } from '../shared/protocol'
 import { SESSION_AGENT_CHOICES } from '../shared/tmux-create'
 import { usePanePullRequests } from './PanePullRequests'
 import { WorklogPullRequests } from './WorklogPullRequests'
@@ -39,6 +39,7 @@ import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
 import type { PaneManagementApiClient } from './paneManagementApi'
 import type { PaneScreenshotsApiClient } from './paneScreenshotsApi'
 import type { SimsApiClient } from './simsApi'
+import { WorklogClosedTabs } from './WorklogClosedTabs'
 import type { TrackedProcessesApiClient } from './trackedProcessesApi'
 import { WorklogProcesses } from './WorklogProcesses'
 
@@ -306,8 +307,15 @@ export function PaneWorklog({
   fullWidth = false,
   visible = true,
   onAttentionChange,
+  closedTabs = [],
+  onReopenClosedTab,
+  onForgetClosedTab,
   processesApi,
 }: {
+  /** Recently closed side-panel tabs owned by this pane's target. */
+  closedTabs?: readonly ClosedWebPane[]
+  onReopenClosedTab?: (id: string) => Promise<void>
+  onForgetClosedTab?: (id: string) => Promise<void>
   fullWidth?: boolean
   visible?: boolean
   onAttentionChange?: (paneId: string, unseen: boolean, warning?: boolean) => void
@@ -328,9 +336,9 @@ export function PaneWorklog({
   resume?: AgentResume
   /** Asks the daemon to resume the agent again after a failed attempt. */
   onRetryResume?: () => void
+  processesApi?: TrackedProcessesApiClient
   /** Opens one of the pane's PRs in its tab beside the pane. */
   onOpenPr?: (repo: string, number: number) => void
-  processesApi?: TrackedProcessesApiClient
 }) {
   const { local, activeHost } = useHost()
   const [preferences, setPreferences] = useState(() => storedPreferences(brief, activeHost))
@@ -578,7 +586,12 @@ export function PaneWorklog({
         ) : null}
 
         <WorklogPullRequests paneId={brief.paneId} paneLabel={paneLabel} list={prList} repoForPane={prsApi?.repoForPane} onOpen={onOpenPr} />
+
         <WorklogProcesses api={processesApi} targetId={brief.targetId} paneLabel={paneLabel} connected={connected} visible={visible} />
+
+        {onReopenClosedTab && onForgetClosedTab ? (
+          <WorklogClosedTabs tabs={closedTabs} paneLabel={paneLabel} connected={connected} onReopen={onReopenClosedTab} onForget={onForgetClosedTab} />
+        ) : null}
 
         {tasks.length ? (
           <section className="pane-worklog-plan" aria-label={`Plan for ${paneLabel}`}>

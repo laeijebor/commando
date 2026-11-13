@@ -119,6 +119,17 @@ export class CanvasThreadsStore {
     return structuredClone(thread)
   }
 
+  /** Moves a tab's discussions to another tab showing the same canvas, within the per-tab cap. */
+  reassign(fromWebPaneId: string, toWebPaneId: string): void {
+    if (fromWebPaneId === toWebPaneId || ![...this.threads.values()].some((thread) => thread.webPaneId === fromWebPaneId)) return
+    const next = new Map([...this.threads].map(([id, thread]) =>
+      [id, thread.webPaneId === fromWebPaneId ? { ...thread, webPaneId: toWebPaneId } : thread]))
+    this.persist(next)
+    this.threads = next
+    this.changed(fromWebPaneId)
+    this.changed(toWebPaneId)
+  }
+
   retain(liveIds: ReadonlySet<string>): void {
     const next = new Map([...this.threads].filter(([, thread]) => liveIds.has(thread.webPaneId)))
     if (next.size === this.threads.size) return

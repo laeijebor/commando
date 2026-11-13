@@ -2296,6 +2296,7 @@ kbd {
 .pane-worklog-recap,
 .pane-worklog-note,
 .pane-worklog-references,
+.pane-worklog-closed-tabs,
 .pane-worklog-plan,
 .pane-worklog-prs,
 .pane-worklog-screenshots,
@@ -2473,6 +2474,13 @@ a.pane-worklog-reference:hover { border-color: var(--border-strong); background:
 .pane-worklog-simulator-chips, .pane-worklog-simulator-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .pane-worklog-device.offered .pane-worklog-reference-icon, .pane-worklog-device.queued .pane-worklog-reference-icon { color: var(--amber); }
 .pane-worklog-device.held .pane-worklog-reference-icon { color: var(--green); }
+.pane-worklog-closed-tabs > .pane-worklog-section-toggle + .pane-worklog-reference-list { margin-top: 7px; }
+.pane-worklog-closed-tab .pane-worklog-reference-main { grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; }
+.pane-worklog-closed-tab-reopen { display: inline-flex; align-items: center; gap: 3px; color: var(--muted-dim); font: 600 6px/1 var(--mono); text-transform: uppercase; }
+.pane-worklog-closed-tab-reopen svg { width: 8px; height: 8px; }
+.pane-worklog-closed-tab .pane-worklog-reference-main:not(:disabled):hover .pane-worklog-closed-tab-reopen { color: var(--accent); }
+.pane-worklog-closed-tab .pane-worklog-reference-copy:disabled { cursor: default; opacity: .55; }
+.pane-worklog-closed-tabs-error { display: block; margin-top: 5px; color: var(--red); font: 600 7px/1.3 var(--mono); }
 .pane-worklog-simulator-chips small { margin: 0; padding: 3px 4px; border: 1px solid var(--border-mid); border-radius: 4px; }
 .pane-worklog-simulator-actions button { padding: 3px 4px; border: 1px solid var(--border-mid); border-radius: 4px; color: var(--text-soft); background: var(--surface-soft); font: 600 6px/1 var(--mono); }
 .pane-worklog-simulator-actions button:hover { border-color: var(--border-strong); background: var(--surface-hover); }
