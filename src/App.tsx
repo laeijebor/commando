@@ -1224,6 +1224,7 @@ function HostApp() {
   const seenPanelTabs = useRef(new Map<string, number>())
   const [sessionIdes, setSessionIdes] = useState<SessionIde[]>([])
   const [openedIdeIds, setOpenedIdeIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [ideInitialFiles, setIdeInitialFiles] = useState<Record<string, string>>({})
   const [idePendingSessions, setIdePendingSessions] = useState<ReadonlySet<string>>(() => new Set())
   const [ideErrors, setIdeErrors] = useState<Record<string, string>>({})
   const ideRequests = useRef(new Set<string>())
@@ -2187,7 +2188,8 @@ function HostApp() {
 
   const sessionHistory = useSessionHistory(local ? 'local' : activeHost, snapshot?.sessions, selectedSessionId, selectSession)
 
-  const openSessionIde = async (sessionId: string) => {
+  /** Opens (attaching if needed) the session's IDE; `file` is shown in it once loaded. */
+  const openSessionIde = async (sessionId: string, options: { paneId?: string; file?: string } = {}) => {
     if (!local) return
     setSelectedSessionId(sessionId)
     setArea('ide')
@@ -2197,13 +2199,16 @@ function HostApp() {
     setIdePendingSessions((current) => new Set([...current, sessionId]))
     setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
     try {
-      const focused = snapshot?.panes.find((pane) => pane.id === focusedPaneId && pane.sessionId === sessionId)
-      const ide = await createSessionIdesApi(token, daemonFetch).open(sessionId, focused?.id)
+      const paneId = options.paneId ?? snapshot?.panes.find((pane) => pane.id === focusedPaneId && pane.sessionId === sessionId)?.id
+      const ides = createSessionIdesApi(token, daemonFetch)
+      const ide = await ides.open(sessionId, paneId)
       // Live broadcasts are authoritative; an older HTTP response must not
       // replace a newer shared-session attachment list.
       setSessionIdes((current) => current.some((item) => item.id === ide.id)
         ? current.map((item) => item.id === ide.id && item.generation === ide.generation ? { ...item, url: ide.url } : item)
         : [...current, ide])
+      if (options.file && openedIdeIds.has(ide.id)) await ides.openFile(sessionId, options.file)
+      else if (options.file) setIdeInitialFiles((current) => ({ ...current, [`${ide.id}:${ide.generation}`]: options.file! }))
       setOpenedIdeIds((current) => new Set([...current, ide.id]))
     } catch (error) {
       setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open IDE' }))
@@ -2211,6 +2216,19 @@ function HostApp() {
       ideRequests.current.delete(sessionId)
       setIdePendingSessions((current) => new Set([...current].filter((id) => id !== sessionId)))
     }
+  }
+
+  /** From a diff: reuse the loaded IDE window, or start the IDE on this file. */
+  const openFileInSessionIde = (sessionId: string, paneId: string, file: string) => {
+    const ide = sessionIdes.find((item) => item.sessionIds.includes(sessionId))
+    if (ide?.state !== 'ready' || !openedIdeIds.has(ide.id)) { void openSessionIde(sessionId, { paneId, file }); return }
+    setSelectedSessionId(sessionId)
+    setArea('ide')
+    setLeftPanelOpen(false)
+    setIdeErrors((current) => ({ ...current, [sessionId]: '' }))
+    createSessionIdesApi(token, daemonFetch).openFile(sessionId, file).catch((error: unknown) => {
+      setIdeErrors((current) => ({ ...current, [sessionId]: error instanceof Error ? error.message : 'Unable to open file in IDE' }))
+    })
   }
 
   const detachSessionIde = async (sessionId: string) => {
@@ -3876,12 +3894,13 @@ function HostApp() {
   const renderBuiltinPanelTab = (tab: BuiltinPanelTab, visible: boolean, data: PanePanelData) => {
     const pane = paneMap.get(tab.anchorPaneId)
     if (!pane) return null
-    if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} />
+    const onOpenInIde = local ? (file: string) => openFileInSessionIde(pane.sessionId, pane.id, file) : undefined
+    if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} onOpenInIde={onOpenInIde} />
     const identity = parsePrPanelKey(tab.key)
     if (identity) {
       const source = [...data.prs?.pullRequests ?? [], ...data.prs?.impacted ?? []].find((pr) => pr.repo.toLowerCase() === identity.repo && pr.number === identity.number)
       return source ? <Suspense fallback={<p role="status">Loading quick look…</p>}>
-        <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]}
+        <PrPanel key={`${pane.targetId}:${source.repo}:${source.number}`} paneId={pane.id} panePath={pane.path} source={source} api={prsApi} gitApi={gitDiffApi} visible={visible} selection={prSelections[tab.id]} onOpenInIde={onOpenInIde}
           onSelectionApplied={() => setPrSelections((current) => {
             if (current[tab.id] !== prSelections[tab.id]) return current
             const next = { ...current }; delete next[tab.id]; return next
@@ -4617,6 +4636,7 @@ function HostApp() {
             ide={sessionIdes.find((ide) => ide.sessionIds.includes(selectedSessionId ?? ''))}
             ides={sessionIdes}
             openedIdeIds={openedIdeIds}
+            initialFiles={ideInitialFiles}
             pending={idePendingSessions.has(selectedSessionId ?? '')}
             detaching={ideRequests.current.has(`detach:${selectedSessionId}`)}
             error={ideErrors[selectedSessionId ?? ''] ?? ''}

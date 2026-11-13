@@ -1,9 +1,35 @@
 import { Code2, LoaderCircle, Minus, RefreshCw, Unplug } from 'lucide-react'
+import { useState } from 'react'
 import type { SessionIde } from '../shared/protocol'
 import './session-ide.css'
 
+/**
+ * Workbench URL that opens `file` as the window loads. code-server reads the
+ * `payload` query on startup; the authority is the host it is served from.
+ */
+export function ideFrameUrl(url: string, file?: string): string {
+  if (!file) return url
+  const target = new URL(url, window.location.href)
+  const path = file.split('/').map(encodeURIComponent).join('/')
+  target.searchParams.set('payload', JSON.stringify([['openFile', `vscode-remote://${target.host}${path}`]]))
+  return url.startsWith('/') ? `${target.pathname}${target.search}` : target.href
+}
+
+function IdeFrame({ ide, file, hidden }: { ide: SessionIde; file?: string; hidden: boolean }) {
+  // Fixed at mount: changing an iframe's src reloads the whole workbench.
+  const [src] = useState(() => ideFrameUrl(ide.url, file))
+  return <iframe
+    className="session-ide-frame"
+    hidden={hidden}
+    src={src}
+    title={`IDE: ${ide.workspacePath}`}
+    allow="clipboard-read; clipboard-write"
+    referrerPolicy="no-referrer"
+  />
+}
+
 export function SessionIdeView({
-  active, sessionId, sessionName, ide, ides, openedIdeIds, pending, detaching = false, error, connected, onOpen, onDetach, onTerminal,
+  active, sessionId, sessionName, ide, ides, openedIdeIds, initialFiles = {}, pending, detaching = false, error, connected, onOpen, onDetach, onTerminal,
 }: {
   active: boolean
   sessionId?: string | null
@@ -11,6 +37,8 @@ export function SessionIdeView({
   ide?: SessionIde
   ides: SessionIde[]
   openedIdeIds: ReadonlySet<string>
+  /** File to show when an IDE's window first loads, by `${id}:${generation}`. */
+  initialFiles?: Readonly<Record<string, string>>
   pending: boolean
   detaching?: boolean
   error: string
@@ -64,14 +92,11 @@ export function SessionIdeView({
       {pending || ide?.state === 'starting' ? <><LoaderCircle className="spin" /><h2>Starting session IDE</h2><p>Opening this worktree in code-server…</p></> : <><Code2 /><h2>Open this session’s workspace</h2><p>One IDE per worktree. Reopening reuses the existing editor.</p><button type="button" onClick={onOpen} disabled={!connected}>Open IDE</button></>}
     </div> : null}
     {/* Keep each opened worktree's frame alive across session/area switches. */}
-    {ides.filter((item) => item.state === 'ready' && openedIdeIds.has(item.id)).map((item) => <iframe
+    {ides.filter((item) => item.state === 'ready' && openedIdeIds.has(item.id)).map((item) => <IdeFrame
       key={`${item.id}:${item.generation}`}
-      className="session-ide-frame"
+      ide={item}
+      file={initialFiles[`${item.id}:${item.generation}`]}
       hidden={!active || item.id !== ide?.id}
-      src={item.url}
-      title={`IDE: ${item.workspacePath}`}
-      allow="clipboard-read; clipboard-write"
-      referrerPolicy="no-referrer"
     />)}
   </section>
 }

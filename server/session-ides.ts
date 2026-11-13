@@ -4,12 +4,14 @@ import { access, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/p
 import { constants } from 'node:fs'
 import { request } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { SessionIde } from '../shared/protocol.js'
 import { importIdeProfile } from './ide-profile.js'
 
-export type IdeRuntime = { socketPath: string; stop(): Promise<void> }
+/** sessionSocketPath is code-server's registry of open workbench windows (see openFile). */
+export type IdeRuntime = { socketPath: string; sessionSocketPath?: string; stop(): Promise<void> }
 export type IdeLaunchOptions = {
   workspacePath: string
   dataDirectory: string
@@ -31,6 +33,40 @@ async function codeServerBinary(): Promise<string> {
     try { await access(path, constants.X_OK); return path } catch { /* Try PATH next. */ }
   }
   return 'code-server'
+}
+
+function unixRequest(socketPath: string, path: string, body?: unknown): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request({
+      socketPath, path, method: body === undefined ? 'GET' : 'POST', timeout: 5_000,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    }, (res) => {
+      let text = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk: string) => { text += chunk })
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text }))
+      res.on('error', reject)
+    })
+    req.on('timeout', () => req.destroy(new Error('IDE did not respond')))
+    req.on('error', reject)
+    req.end(body === undefined ? undefined : JSON.stringify(body))
+  })
+}
+
+/**
+ * Ask code-server which loaded workbench window shows `workspacePath`. Each
+ * window's extension host registers its folders and CLI socket in the session
+ * registry; code-server ranks windows whose folder contains the probe path
+ * first, falling back to the most recent window when none does.
+ */
+async function workbenchSocket(sessionSocketPath: string, workspacePath: string): Promise<string | undefined> {
+  const probe = join(workspacePath, '.commando-open-file')
+  try {
+    const { status, text } = await unixRequest(sessionSocketPath, `/session?filePath=${encodeURIComponent(probe)}`)
+    if (status !== 200) return undefined
+    const socketPath = (JSON.parse(text) as { socketPath?: unknown }).socketPath
+    return typeof socketPath === 'string' && socketPath ? socketPath : undefined
+  } catch { return undefined }
 }
 
 function health(socketPath: string): Promise<boolean> {
@@ -65,8 +101,11 @@ export async function launchCodeServer(options: IdeLaunchOptions): Promise<IdeRu
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
   const socketDirectory = await mkdtemp(join(tmpdir(), 'ci-'))
   const socketPath = join(socketDirectory, 's.sock')
+  // Private per-launch registry, so daemons sharing a profile never cross-route file opens.
+  const sessionSocketPath = join(socketDirectory, 'session.sock')
   const child = spawn(binary, [
     '--socket', socketPath, '--socket-mode', '0600', '--auth', 'none',
+    '--session-socket', sessionSocketPath,
     '--config', join(options.dataDirectory, 'config.yaml'),
     '--user-data-dir', join(options.dataDirectory, 'user-data'),
     '--extensions-dir', join(options.dataDirectory, 'extensions'),
@@ -109,7 +148,7 @@ export async function launchCodeServer(options: IdeLaunchOptions): Promise<IdeRu
     while (Date.now() < deadline) {
       if (options.signal.aborted) throw new Error('IDE startup cancelled')
       if (ended) throw failure ?? new Error('code-server exited during startup. Check the installed binary and workspace access.')
-      if (await health(socketPath)) return { socketPath, stop }
+      if (await health(socketPath)) return { socketPath, sessionSocketPath, stop }
       await delay(100)
     }
     throw new Error('code-server did not become ready within 30 seconds. Retry or check COMMANDO_CODE_SERVER_PATH.')
@@ -181,7 +220,7 @@ export class SessionIdeService {
     entry.abort.signal.addEventListener('abort', abort, { once: true })
     try {
       const runtime = await owned.task
-      return { socketPath: runtime.socketPath, stop: async () => {
+      return { socketPath: runtime.socketPath, sessionSocketPath: runtime.sessionSocketPath, stop: async () => {
         entry.abort.signal.removeEventListener('abort', abort)
         await release()
       } }
@@ -268,6 +307,34 @@ export class SessionIdeService {
     await entry.task
     if (this.sessions.get(sessionId) !== entry) throw new Error('IDE was detached during startup')
     return this.get(entry.public.id)!
+  }
+
+  /**
+   * Open a file in the session's already-loaded IDE window, without reloading
+   * it. The window registers itself a moment after the workbench loads, so a
+   * short wait covers an IDE that was only just shown.
+   */
+  async openFile(sessionId: string, filePath: string, waitMs = 10_000): Promise<void> {
+    const entry = this.sessions.get(sessionId)
+    const sessionSocketPath = entry?.public.state === 'ready' ? entry.runtime?.sessionSocketPath : undefined
+    if (!entry || !sessionSocketPath) throw new Error('Open this session’s IDE first')
+    if (!isAbsolute(filePath)) throw new Error('File path must be absolute')
+    const canonicalPath = await realpath(filePath).catch(() => { throw new Error('File no longer exists in this worktree') })
+    if (!(await stat(canonicalPath)).isFile()) throw new Error('Only files can be opened in the IDE')
+    const deadline = Date.now() + waitMs
+    for (;;) {
+      const windowSocket = await workbenchSocket(sessionSocketPath, entry.public.workspacePath)
+      if (windowSocket) {
+        // The window's CLI server, as `code-server --reuse-window <file>` would call it.
+        const { status, text } = await unixRequest(windowSocket, '/', {
+          type: 'open', fileURIs: [pathToFileURL(canonicalPath).href], folderURIs: [], forceReuseWindow: true,
+        })
+        if (status !== 200) throw new Error(`The IDE could not open the file${text ? `: ${text.replace(/^"|"$/g, '')}` : ''}`)
+        return
+      }
+      if (Date.now() >= deadline) throw new Error('The IDE window has not finished loading. Try again in a moment.')
+      await delay(250)
+    }
   }
 
   async detach(sessionId: string): Promise<void> {
