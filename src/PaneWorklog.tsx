@@ -39,6 +39,8 @@ import { PaneScreenshots, type OpenPaneScreenshot } from './PaneScreenshots'
 import type { PaneManagementApiClient } from './paneManagementApi'
 import type { PaneScreenshotsApiClient } from './paneScreenshotsApi'
 import type { SimsApiClient } from './simsApi'
+import type { TrackedProcessesApiClient } from './trackedProcessesApi'
+import { WorklogProcesses } from './WorklogProcesses'
 
 const PREFERENCE_PREFIX = 'commando.pane-worklog.'
 
@@ -304,6 +306,7 @@ export function PaneWorklog({
   fullWidth = false,
   visible = true,
   onAttentionChange,
+  processesApi,
 }: {
   fullWidth?: boolean
   visible?: boolean
@@ -327,6 +330,7 @@ export function PaneWorklog({
   onRetryResume?: () => void
   /** Opens one of the pane's PRs in its tab beside the pane. */
   onOpenPr?: (repo: string, number: number) => void
+  processesApi?: TrackedProcessesApiClient
 }) {
   const { local, activeHost } = useHost()
   const [preferences, setPreferences] = useState(() => storedPreferences(brief, activeHost))
@@ -574,6 +578,7 @@ export function PaneWorklog({
         ) : null}
 
         <WorklogPullRequests paneId={brief.paneId} paneLabel={paneLabel} list={prList} repoForPane={prsApi?.repoForPane} onOpen={onOpenPr} />
+        <WorklogProcesses api={processesApi} targetId={brief.targetId} paneLabel={paneLabel} connected={connected} visible={visible} />
 
         {tasks.length ? (
           <section className="pane-worklog-plan" aria-label={`Plan for ${paneLabel}`}>

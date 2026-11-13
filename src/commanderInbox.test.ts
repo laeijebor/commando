@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatState } from '../shared/agent-chat'
 import type { CommanderRelay, TurnBrief } from '../shared/commander'
 import type { AgentStatus, SessionBrief, TmuxPane } from '../shared/protocol'
-import { commanderInbox, type CommanderInboxInput } from './commanderInbox'
+import { commanderInbox, commanderRepoOptions, type CommanderInboxInput } from './commanderInbox'
 
 const pane = (id: string, overrides: Partial<TmuxPane> = {}) => ({ id, targetId: `target-${id}`, title: `Pane ${id}`, sessionId: '$1', index: 0, ...overrides }) as TmuxPane
 const status = (paneId: string, overrides: Partial<AgentStatus> = {}): AgentStatus => ({ paneId, provider: 'codex', status: 'done', source: 'hook', summary: 'Headline', confidence: 'high', reason: '', updatedAt: 100, settledAt: 100, ...overrides })
@@ -97,4 +97,20 @@ it('keeps old queued receipts and only expires final receipts', () => {
   for (const status of ['delivered', 'failed'] as const) {
     expect(commanderInbox(input({ relays: { old: { ...relay, status } } })).finished[0].latestRelay).toBeUndefined()
   }
+})
+it('keeps only agents whose session is in a chosen repo, worktrees included, and lists the repos to choose from', () => {
+  const repo = (root: string, extra = {}) => ({ root, name: root.split('/').at(-1)!, branch: 'main', isWorktree: false, ...extra })
+  const session = (id: string, name: string) => ({ id, name, windowIds: [], activeWindowId: null, attached: false })
+  const snapshot = {
+    panes: [pane('%1', { sessionId: '$1', repo: repo('/dev/commando') }), pane('%2', { sessionId: '$2', repo: repo('/dev/commando', { isWorktree: true, branch: 'feat' }) }),
+      pane('%3', { sessionId: '$3', repo: repo('/dev/save-all') }), pane('%4', { sessionId: '$4' }), pane('%5', { sessionId: '$5' })],
+    sessions: [session('$1', 'Cloud'), session('$2', 'Slides'), session('$3', 'Save'), session('$4', 'Loose'), session('$5', 'Commander')],
+  }
+  const agentStatuses = Object.fromEntries(['%1', '%2', '%3', '%4'].map((id) => [id, status(id)]))
+  const ids = (repoFilter?: string[]) => Object.values(commanderInbox(input({ snapshot, agentStatuses, ...(repoFilter ? { repoFilter } : {}) }))).flat().map((row) => row.paneId).sort()
+  expect(ids()).toEqual(['%1', '%2', '%3', '%4'])
+  expect(ids(['/dev/commando'])).toEqual(['%1', '%2'])
+  expect(ids(['/dev/commando', 'no-repo'])).toEqual(['%1', '%2', '%4'])
+  expect(commanderRepoOptions(snapshot, ['/dev/vivifit'], '$5')).toEqual([
+    { key: '/dev/commando', name: 'commando' }, { key: '/dev/save-all', name: 'save-all' }, { key: '/dev/vivifit', name: 'vivifit' }, { key: 'no-repo', name: 'No repository' }])
 })

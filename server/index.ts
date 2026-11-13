@@ -8,6 +8,7 @@ import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
 import { AgentLoginProber, AgentProfilePreferences, handleAgentProfilesApi } from './agent-profiles.js'
+import { ClaudeProfileCache } from './claude-profile-cache.js'
 import { ModelCatalog } from './model-catalog.js'
 import { handleSessionNamingApi, loginFingerprint, SessionNamer } from './session-namer.js'
 import { ExternalAgentWatcher } from './external-agents/watcher.js'
@@ -18,6 +19,7 @@ import { CanvasSpotlightStore } from './canvas-spotlight.js'
 import { CanvasThreadsStore, defaultCanvasThreadsPath } from './canvas-threads.js'
 import { CanvasWatch } from './canvas-watch.js'
 import { Commander } from './commander.js'
+import { DiffFiltersStore } from './diff-filters.js'
 import { createCommanderStatusObserver } from './commander-observer.js'
 import { CommanderApi } from './commander-api.js'
 import { CommanderRelays } from './commander-relays.js'
@@ -106,6 +108,8 @@ import { SessionIdeService } from './session-ides.js'
 import { idePathId, SessionIdeApi } from './session-ides-api.js'
 import { PaneManagementApi } from './pane-management-api.js'
 import { PortManagementApi } from './port-management-api.js'
+import { ProcessTracker } from './tracked-processes.js'
+import { TrackedProcessesApi } from './tracked-processes-api.js'
 import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
 import { GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
 import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion, type SessionWorktreeDeletionDependencies } from './session-worktree-deletion.js'
@@ -126,7 +130,8 @@ import {
   createAuthService,
   disabledAuthBootstrap,
 } from './auth.js'
-import { createNetworkAccess, isLoopbackAddress } from './network-access.js'
+import { createNetworkAccess, isLocalClient, isLoopbackAddress } from './network-access.js'
+import { openUrlInBrowser } from './open-folder.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry, defaultDeviceLockStatePath, deviceLockClaimsByPane } from './device-locks.js'
 import { DeviceDiscovery, DeviceWallApi, deviceLockAlerts } from './device-wall.js'
@@ -184,6 +189,7 @@ import {
 const DEFAULT_PORT = 4310
 const DEVELOPMENT_WEB_PORT = 5173
 const SNAPSHOT_INTERVAL_MS = 1_000
+const TRACKED_PROCESS_SCAN_MS = 15_000
 const MAX_LIVE_MESSAGE_BYTES = 64 * 1024
 const MAX_INFERENCE_TAIL_CHARS = 32 * 1024
 const STATIC_ROOT = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -222,6 +228,8 @@ type ClientState = {
   chatHistoryBytes: number | undefined
   /** Chats this client fetched in full with `chat_history`, kept whole from then on. */
   fullChatPanes: Set<string>
+  /** Connected from this Mac, so a page the daemon opens shows where the user is. */
+  local: boolean
 }
 
 type PaneStreamState = {
@@ -1771,6 +1779,18 @@ async function main(): Promise<void> {
       })
   }
 
+  const processTracker = new ProcessTracker({
+    livePanes: () => {
+      const names = new Map(snapshot.sessions.map((session) => [session.id, session.name]))
+      return snapshot.panes.flatMap((pane) => pane.processId ? [{
+        paneId: pane.id, processId: pane.processId, sessionId: pane.sessionId,
+        sessionName: names.get(pane.sessionId) ?? pane.sessionId, targetId: pane.targetId,
+      }] : [])
+    },
+    tmuxServer: () => tmux.tmuxServer(),
+    protectedPorts,
+  })
+  const trackedProcessesApi = new TrackedProcessesApi(processTracker)
   const tmuxSessionActions = new TmuxSessionActions()
   const saveResurrectAfter = (change: string) => {
     void resurrectSaver.save().catch((error: unknown) => {
@@ -1810,6 +1830,7 @@ async function main(): Promise<void> {
       const repo = session && sessionRepo(session, snapshot.panes)
       return repo ? { root: repo.root, name: repo.name, ...(repo.branch ? { branch: repo.branch } : {}), ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch } : {}) } : undefined
     },
+    trackedProcesses: processTracker,
     afterSessionDeleted: () => saveResurrectAfter('session deletion'),
     afterSessionRestored: () => saveResurrectAfter('session restore'),
     beforeWindowDeleted: async (windowId) => {
@@ -2064,7 +2085,8 @@ async function main(): Promise<void> {
     sending: agentPushes,
   })
   const repoPrepareCommands = new RepoPrepareCommands(defaultRepoPrepareCommandsPath(port))
-  const agentProfilePreferences = new AgentProfilePreferences()
+  const claudeProfileCache = new ClaudeProfileCache()
+  const agentProfilePreferences = new AgentProfilePreferences(undefined, undefined, () => claudeProfileCache.list(), () => claudeProfileCache.refresh())
   const agentLoginProber = new AgentLoginProber()
   const agentChatsApi = new AgentChatsApi({
     agentToken: agentHookToken,
@@ -2091,7 +2113,10 @@ async function main(): Promise<void> {
   })
   // Its own resolver: the panes' one forgets every folder a request doesn't name.
   const conversationRepos = new PaneRepoResolver((directory) => gitWorktrees.probe(directory), { ttlMs: 5 * 60_000 })
-  const chatConversations = new ChatConversationIndex({ resolveRepos: (paths) => conversationRepos.resolve(paths) })
+  const chatConversations = new ChatConversationIndex({
+    resolveRepos: (paths) => conversationRepos.resolve(paths),
+    claudeConfigDirs: async () => (await claudeProfileCache.list()).map((profile) => profile.configDir),
+  })
   const commander = new Commander({
     statePath: `${sessionBriefs.statePath}.commander.json`, snapshot: () => snapshot,
     creator: tmuxCreator, refreshSnapshot: refreshSnapshotFresh,
@@ -2102,6 +2127,8 @@ async function main(): Promise<void> {
     },
   })
   await commander.load()
+  const diffFilters = new DiffFiltersStore({ changed: (filters) => broadcast({ type: 'diff_filters', filters }) })
+  await diffFilters.load()
   // Assigned once relays exist; relay updates report offer deliveries to it.
   let deviceLockApi: DeviceLockApi | undefined
   const commanderRelays = new CommanderRelays({
@@ -2143,7 +2170,8 @@ async function main(): Promise<void> {
   })
   await turnBriefs.load()
   const commanderStalls: CommanderStalls = new CommanderStalls({
-    agents: () => commanderApi.agents(), status: (id) => agentStatuses.get(id),
+    agents: () => commanderApi.agents({ all: true }), watched: () => new Set(commanderApi.agents().map((agent) => agent.targetId)),
+    status: (id) => agentStatuses.get(id),
     commander: () => commander.state(), relays: commanderRelays,
   })
   const codexRolloutLookups = new Map<string, ResumeRolloutLookup>()
@@ -2696,8 +2724,12 @@ async function main(): Promise<void> {
         return
       }
       case 'chat_mcp': {
-        void agentHosts.mcp(message.paneId, message.request).then((result) => {
-          send(client, { type: 'chat_mcp_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        void agentHosts.mcp(message.paneId, message.request).then(async (result) => {
+          // A browser blocks a page opened this long after the key press, so the daemon opens it on this Mac.
+          const authOpened = result.authUrl && client.local
+            ? await openUrlInBrowser(result.authUrl).then(() => true, () => false)
+            : false
+          send(client, { type: 'chat_mcp_result', paneId: message.paneId, requestId: message.requestId, ...result, ...(authOpened ? { authOpened } : {}) })
         })
         return
       }
@@ -2886,6 +2918,7 @@ async function main(): Promise<void> {
       backlog: new WsBacklog(),
       chatHistoryBytes: connectUrl ? chatHistoryBudget(connectUrl) : undefined,
       fullChatPanes: new Set(),
+      local: isLocalClient(request),
     }
     clients.add(client)
     send(client, { type: 'capabilities', capabilities: { revealInFinder: process.platform === 'darwin' } })
@@ -2898,6 +2931,7 @@ async function main(): Promise<void> {
       send(client, { type: 'commander_relay_snapshot', relays: commanderRelays.values() })
       send(client, { type: 'commander_state', state: commander.state() })
     })
+    send(client, { type: 'diff_filters', filters: diffFilters.get() })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
@@ -3054,6 +3088,7 @@ async function main(): Promise<void> {
           return
         }
         if (await hostsApi.handle(request, response, url)) return
+        if (await diffFilters.handle(request, response, url)) return
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
         if (await deviceWallApi.handle(request, response, url)) return
@@ -3091,6 +3126,7 @@ async function main(): Promise<void> {
         if (await agentRequestApi.handle(request, response, url)) return
         if (await pushApi.handle(request, response, url)) return
         if (await portManagement.handle(request, response, url)) return
+        if (await trackedProcessesApi.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
         if (await chatConversationsApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
@@ -3244,6 +3280,10 @@ async function main(): Promise<void> {
     void refreshSnapshot().catch(reportTmuxError)
   }, SNAPSHOT_INTERVAL_MS)
   resurrectSaver.start()
+  // Scanning reads every process's environment, so it runs slowly and only while someone is watching.
+  const trackedProcessTimer = setInterval(() => {
+    if (clients.size) void processTracker.list(TRACKED_PROCESS_SCAN_MS).catch((error: unknown) => console.warn('[commando] Process tracking scan failed', error))
+  }, TRACKED_PROCESS_SCAN_MS)
   const simPoolReaperTimer = simPoolReaper && setInterval(() => {
     void simPoolReaper.sweep().catch((error: unknown) => console.warn('[sim-pool] unleased simulator check failed', error))
   }, POOL_REAP_INTERVAL_MS)
@@ -3266,6 +3306,7 @@ async function main(): Promise<void> {
     hostsHealth.stop()
     hostsProxy.close()
     clearInterval(snapshotTimer)
+    clearInterval(trackedProcessTimer)
     if (simPoolReaperTimer) clearInterval(simPoolReaperTimer)
     externalAgents.close()
     prAutofix.stop()

@@ -1,3 +1,6 @@
+import type { TmuxPane, TmuxSession } from './protocol.js'
+import { sessionRepo } from './session-repositories.js'
+
 /**
  * Commander: one chat that briefs the user on every agent pane and relays
  * their messages. Shared contract between the daemon and the web UI.
@@ -68,6 +71,40 @@ export type CommanderState = {
   sessionId?: string
   /** The Claude profile Commander runs on; absent runs on the daemon's default login. */
   configDir?: string
+  /** Repo keys (see commanderRepoKey) Commander watches; absent watches every repo. */
+  repoFilter?: string[]
+}
+
+/** The filter key for sessions outside any git repository. */
+export const COMMANDER_NO_REPO = 'no-repo'
+export const COMMANDER_REPO_FILTER_MAX = 100
+
+/** A session's repo filter key: its main checkout root (shared by worktrees), or COMMANDER_NO_REPO. */
+export function commanderRepoKey(session: TmuxSession | undefined, panes: readonly TmuxPane[]): string {
+  return (session && sessionRepo(session, panes)?.root) || COMMANDER_NO_REPO
+}
+
+/** Which panes Commander watches under the filter; every pane when no filter is set. */
+export function commanderPaneFilter(
+  repoFilter: readonly string[] | undefined,
+  sessions: readonly TmuxSession[],
+  panes: readonly TmuxPane[],
+): (pane: TmuxPane) => boolean {
+  if (!repoFilter?.length) return () => true
+  const allowed = new Set(repoFilter)
+  const visible = new Set(sessions.filter((session) => allowed.has(commanderRepoKey(session, panes))).map((session) => session.id))
+  return (pane) => visible.has(pane.sessionId)
+}
+
+/** Dedupes and checks a requested filter; an empty list means every repo. Throws on bad input. */
+export function normalizeCommanderRepoFilter(value: unknown): string[] | undefined {
+  if (value === null || value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > COMMANDER_REPO_FILTER_MAX) throw new Error(`repos must be a list of at most ${COMMANDER_REPO_FILTER_MAX} repositories`)
+  for (const key of value) {
+    if (typeof key !== 'string' || (key !== COMMANDER_NO_REPO && (!key.startsWith('/') || key.length > 4096))) throw new Error('Each repo must be an absolute repository root or "no-repo"')
+  }
+  const repos = [...new Set(value as string[])]
+  return repos.length ? repos : undefined
 }
 
 /** One agent as Commander's `list` reports it (also the inbox row model on the daemon side). */

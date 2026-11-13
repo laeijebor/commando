@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http'
 import type { NetworkInterfaceInfo } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { createNetworkAccess, isLoopbackAddress, isTailscaleAddress } from './network-access.js'
+import { createNetworkAccess, isLocalClient, isLoopbackAddress, isTailscaleAddress } from './network-access.js'
 
 function request(options: {
   host: string
@@ -56,5 +56,25 @@ describe('Commando network access', () => {
 
   it('fails closed when Tailscale is requested but unavailable', () => {
     expect(() => createNetworkAccess(4310, { allowTailscale: 'true', interfaces: {} })).toThrow('no Tailscale interface')
+  })
+})
+
+describe('isLocalClient', () => {
+  const client = (remoteAddress: string, headers: Record<string, string | undefined>) =>
+    ({ headers, socket: { remoteAddress } }) as unknown as IncomingMessage
+
+  it('accepts a browser on this Mac, directly or through the Vite dev proxy', () => {
+    expect(isLocalClient(client('127.0.0.1', { host: '127.0.0.1:4310', origin: 'http://127.0.0.1:4310' }))).toBe(true)
+    expect(isLocalClient(client('::ffff:127.0.0.1', { host: 'localhost:5173', origin: 'http://localhost:5173' }))).toBe(true)
+    expect(isLocalClient(client('::1', { host: '[::1]:4310' }))).toBe(true)
+  })
+
+  it('rejects remote peers and remote users a local proxy forwards', () => {
+    expect(isLocalClient(client('100.101.102.104', { host: '100.101.102.103:4310', origin: 'http://100.101.102.103:4310' }))).toBe(false)
+    // Tailscale Serve: loopback peer, public Host and Origin, forwarding headers.
+    expect(isLocalClient(client('127.0.0.1', { host: 'machine.example-tailnet.ts.net', origin: 'https://machine.example-tailnet.ts.net', 'x-forwarded-for': '100.64.0.9', 'tailscale-user-login': 'ada@example.com' }))).toBe(false)
+    expect(isLocalClient(client('127.0.0.1', { host: '127.0.0.1:4310', origin: 'https://machine.example-tailnet.ts.net' }))).toBe(false)
+    expect(isLocalClient(client('127.0.0.1', { host: '127.0.0.1:4310', origin: 'http://127.0.0.1:4310', 'x-forwarded-for': '100.64.0.9' }))).toBe(false)
+    expect(isLocalClient(client('127.0.0.1', { host: '127.0.0.1:4310', origin: 'null' }))).toBe(false)
   })
 })

@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import type { ChatItem, ChatSessionInfo } from '../shared/agent-chat.js'
-import { NUDGE_TAG, RELAY_MAX_CHARS, RELAY_TAG, type CommanderAgent, type TurnBrief } from '../shared/commander.js'
+import { commanderPaneFilter, normalizeCommanderRepoFilter, NUDGE_TAG, RELAY_MAX_CHARS, RELAY_TAG, type CommanderAgent, type TurnBrief } from '../shared/commander.js'
 import type { AgentStatus, CommandoSnapshot, SessionBrief, TmuxPane } from '../shared/protocol.js'
 import type { ClaudeProfile } from '../shared/tmux-create.js'
 import { TokenBucketRateLimiter } from './client-messages.js'
@@ -101,7 +101,7 @@ export async function claudeTranscriptTurns(path: string): Promise<CommanderTurn
 type Dependencies = {
   agentToken: string; ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>
   snapshot: () => CommandoSnapshot; status: (id: string) => AgentStatus | undefined
-  commander: Pick<Commander, 'state' | 'ensure' | 'forget' | 'switchProfile'>; relays: Pick<CommanderRelays, 'enqueue' | 'cancel' | 'values'>
+  commander: Pick<Commander, 'state' | 'ensure' | 'forget' | 'switchProfile' | 'setRepoFilter'>; relays: Pick<CommanderRelays, 'enqueue' | 'cancel' | 'values'>
   stalls: Pick<CommanderStalls, 'stalled' | 'check' | 'takeNudge' | 'releaseNudge'>
   brief: (targetId: string) => TurnBrief | undefined; sessionBrief: (paneId: string) => SessionBrief | undefined
   chatSession: (paneId: string) => ChatSessionInfo | undefined; owns: (id: string) => boolean; items: (id: string) => ChatItem[]
@@ -120,11 +120,13 @@ export class CommanderApi {
     if (dependencies.agentToken.length < 32) throw new Error('Agent hook token must contain at least 32 characters')
     this.tokenDigest = digest(dependencies.agentToken)
   }
-  agents(): CommanderAgent[] {
-    const d = this.dependencies, snapshot = d.snapshot(), seen = d.seen()
+  /** Agents in the repos Commander watches; `all` ignores the user's repo filter. */
+  agents({ all = false } = {}): CommanderAgent[] {
+    const d = this.dependencies, snapshot = d.snapshot(), seen = d.seen(), state = d.commander.state()
+    const watched = commanderPaneFilter(all ? undefined : state.repoFilter, snapshot.sessions, snapshot.panes)
     return snapshot.panes.flatMap((pane) => {
       const status = d.status(pane.id), chat = d.chatSession(pane.id), brief = d.brief(pane.targetId), worklog = d.sessionBrief(pane.id)
-      if (pane.dead || pane.targetId === d.commander.state().targetId || ((!status || status.provider === 'unknown') && !d.owns(pane.id))) return []
+      if (pane.dead || pane.targetId === state.targetId || !watched(pane) || ((!status || status.provider === 'unknown') && !d.owns(pane.id))) return []
       // A summary of an earlier turn must never ask for attention on a later one (same rule as the inbox).
       const latestEnd = d.owns(pane.id) ? status?.settledAt : status?.details?.recap?.completedAt ?? status?.settledAt
       const currentBrief = brief && status?.status !== 'working' && latestEnd !== undefined && brief.endedAt === latestEnd ? brief : undefined
@@ -151,7 +153,8 @@ export class CommanderApi {
   }
   private target(id: unknown): TmuxPane {
     if (typeof id !== 'string' || !/^%\d+$/.test(id)) throw new HttpError(400, 'pane must be a tmux pane id')
-    const agent = this.agents().find((a) => a.paneId === id)
+    // Commander may still read or relay to an agent the repo filter hides.
+    const agent = this.agents({ all: true }).find((a) => a.paneId === id)
     if (!agent) throw new HttpError(404, 'Agent pane does not exist')
     return this.dependencies.snapshot().panes.find((p) => p.id === id)!
   }
@@ -201,8 +204,13 @@ export class CommanderApi {
         if (configDir !== null && !(await d.claudeProfiles?.() ?? []).some((profile) => profile.configDir === configDir)) throw new HttpError(400, 'Unknown Claude profile')
         json(response, 200, { ok: true, state: await d.commander.switchProfile(configDir) })
       }
+      else if (path === `${ROOT}/repos` && request.method === 'PUT') {
+        const { repos } = await body(request)
+        try { normalizeCommanderRepoFilter(repos) } catch (error) { throw new HttpError(400, (error as Error).message) }
+        json(response, 200, { ok: true, state: await d.commander.setRepoFilter(repos as string[] | null) })
+      }
       else if (path === `${ROOT}/transcript` && request.method === 'GET') json(response, 200, { ok: true, ...await this.transcript(this.target(url.searchParams.get('pane'))) })
-      else if (path === `${AGENT}/list` && request.method === 'GET') { await d.stalls.check(); json(response, 200, this.agents()) }
+      else if (path === `${AGENT}/list` && request.method === 'GET') { await d.stalls.check(); json(response, 200, this.agents({ all: url.searchParams.get('all') === '1' })) }
       else if (path === `${AGENT}/relays` && request.method === 'GET') {
         const limit = Number(url.searchParams.get('limit') ?? 20)
         if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new HttpError(400, 'limit must be 1–200')
@@ -210,7 +218,7 @@ export class CommanderApi {
       } else if (path === `${AGENT}/read` && request.method === 'GET') {
         const pane = this.target(url.searchParams.get('pane')), count = Number(url.searchParams.get('turns') ?? 3)
         if (!Number.isInteger(count) || count < 1 || count > 10) throw new HttpError(400, 'turns must be 1–10')
-        const agent = this.agents().find((a) => a.paneId === pane.id)!
+        const agent = this.agents({ all: true }).find((a) => a.paneId === pane.id)!
         let source: 'chat' | 'transcript' | 'screen' = 'screen', turns: CommanderTurn[] = []
         if (d.owns(pane.id)) { source = 'chat'; turns = chatTurns(d.items(pane.id)) }
         else {

@@ -139,6 +139,23 @@ describe('PaneWorklog', () => {
     expect(screen.getByText('Map current behavior')).toBeInTheDocument()
   })
 
+  it('shows the pane’s processes right after the important terms', async () => {
+    const targetId = '550e8400-e29b-41d4-a716-000000000012'
+    const processesApi = {
+      list: vi.fn().mockResolvedValue([{
+        key: '10:1', pid: 10, command: 'npm run dev', fullCommand: 'npm run dev', startedAt: Date.now(), cpuPercent: 0, rssKb: 0,
+        ports: [3000], childCount: 2, detached: true, paneId: '%12', paneOpen: true, targetId, sessionId: '$1', sessionName: 'commando',
+      }]),
+      stop: vi.fn(),
+    }
+    render(<PaneWorklog brief={{ ...brief, targetId, references: [{ kind: 'feature_flag', value: 'checkout' }] }} paneLabel="Tests" fullWidth processesApi={processesApi} />)
+    const processes = await screen.findByRole('region', { name: 'Processes for Tests' })
+    expect(processes).toHaveTextContent('npm run dev')
+    const follows = (earlier: Element, later: Element) => Boolean(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(follows(screen.getByLabelText('Important terms for Tests'), processes)).toBe(true)
+    expect(follows(processes, screen.getByLabelText('Plan for Tests'))).toBe(true)
+  })
+
   it('renders a simulator first, counts it with references and handles both actions', async () => {
     const simulator = { udid: 'sim-uuid', originalName: 'iPhone 17 Pro', label: 'Session · Check checkout', task: 'Check checkout', sessionName: 'Session', branch: 'feature/checkout', ports: [{ name: 'metro', port: 8101 }, { name: 'backend', port: 3001 }], idle: true }
     const simsApi = { open: vi.fn().mockResolvedValue({ ok: true, raised: true }) }

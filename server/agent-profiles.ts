@@ -35,6 +35,8 @@ export class AgentProfilePreferences {
     readonly path = defaultAgentProfilesPath(),
     private readonly home = homedir(),
     private readonly discover: (home: string) => Promise<ClaudeProfile[]> = listClaudeProfiles,
+    /** A scan that skips any cache `discover` answers from; checks for a just-added profile use it. */
+    private readonly rediscover: (home: string) => Promise<ClaudeProfile[]> = discover,
   ) {}
 
   private async read(): Promise<StoredPreferences> {
@@ -60,9 +62,9 @@ export class AgentProfilePreferences {
   }
 
   /** Discovered profiles with their Settings applied; pickers leave hidden ones out. */
-  async claudeProfiles({ includeHidden }: { includeHidden: boolean }): Promise<Array<ClaudeProfile & { hidden: boolean }>> {
+  async claudeProfiles({ includeHidden, fresh = false }: { includeHidden: boolean; fresh?: boolean }): Promise<Array<ClaudeProfile & { hidden: boolean }>> {
     await this.writes
-    const [found, stored] = await Promise.all([this.discover(this.home), this.read()])
+    const [found, stored] = await Promise.all([(fresh ? this.rediscover : this.discover)(this.home), this.read()])
     return found.flatMap((profile) => {
       const entry = stored.claude[profile.configDir] ?? {}
       const hidden = entry.hidden === true
@@ -78,7 +80,8 @@ export class AgentProfilePreferences {
 
   update(change: ClaudeProfilePreferenceChange): Promise<void> {
     const write = this.writes.then(async () => {
-      const profiles = await this.discover(this.home)
+      let profiles = await this.discover(this.home)
+      if (!profiles.some((profile) => profile.configDir === change.configDir)) profiles = await this.rediscover(this.home)
       if (!profiles.some((profile) => profile.configDir === change.configDir)) throw new Error('Unknown Claude profile')
       const stored = await this.read()
       const entry = { ...stored.claude[change.configDir] }
@@ -321,7 +324,7 @@ export async function handleAgentProfilesApi(request: IncomingMessage, response:
   try {
     if (route === AGENT_PROFILE_ROUTES.list && request.method === 'GET') {
       const refresh = url.searchParams.get('refresh') === '1'
-      const [profiles, others] = await Promise.all([deps.preferences.claudeProfiles({ includeHidden: true }), deps.prober.others(refresh)])
+      const [profiles, others] = await Promise.all([deps.preferences.claudeProfiles({ includeHidden: true, fresh: refresh }), deps.prober.others(refresh)])
       const claude: ClaudeProfileSettings[] = await Promise.all(profiles.map(async (profile) => ({ ...profile, status: await deps.prober.claude(profile.configDir, refresh) })))
       json(response, 200, { claude, others } satisfies AgentProfilesResponse)
       return true
@@ -343,6 +346,8 @@ export async function handleAgentProfilesApi(request: IncomingMessage, response:
       // Checked first, so a bad label never leaves a new folder behind.
       const kept = label === undefined || (typeof label === 'string' && !label.trim()) ? undefined : validLabel(label)
       const configDir = await addClaudeProfile(name, home)
+      // Rescan so pickers list the new profile straight away.
+      await deps.preferences.claudeProfiles({ includeHidden: true, fresh: true })
       if (kept) await deps.preferences.update({ configDir, label: kept })
       json(response, 201, { configDir })
       return true
@@ -350,8 +355,9 @@ export async function handleAgentProfilesApi(request: IncomingMessage, response:
     if (route === AGENT_PROFILE_ROUTES.claudeLogin && request.method === 'POST') {
       const { configDir } = await body(request)
       if (typeof configDir !== 'string') throw new Error('configDir is required')
-      const profiles = await deps.preferences.claudeProfiles({ includeHidden: true })
-      const profile = profiles.find((candidate) => candidate.configDir === configDir)
+      const known = (profiles: ClaudeProfile[]) => profiles.find((candidate) => candidate.configDir === configDir)
+      const profile = known(await deps.preferences.claudeProfiles({ includeHidden: true }))
+        ?? known(await deps.preferences.claudeProfiles({ includeHidden: true, fresh: true }))
       if (!profile) throw new Error('Unknown Claude profile')
       const claude = await (deps.resolveClaude ?? (() => resolveAgentExecutable('claude', process.env)))()
       const taken = new Set(deps.sessionNames())
