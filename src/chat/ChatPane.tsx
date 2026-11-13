@@ -27,7 +27,7 @@ import {
 import type { AgentStatus, TmuxPane } from '../../shared/protocol'
 import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from '../chatLineage'
 import type { PrQuickLookTab } from '../PrQuickLook'
-import type { PrsApiClient } from '../prsApi'
+import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
 import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError } from './ChatComposer'
 import { providerLabel } from './ComposerControls'
@@ -114,6 +114,7 @@ function ChatColumn({
   onConfigure,
   onRestart,
   onOpenPr,
+  onDismissPrs,
   services,
   sendError,
   onDismissSendError,
@@ -151,6 +152,8 @@ function ChatColumn({
   onRestart?: () => void
   /** Opens a linked PR in this pane's side panel. */
   onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
+  /** Closes the side-panel tabs of PRs dismissed from the PR strip. */
+  onDismissPrs?: (prs: PanePrSummary[]) => void
   /** File search, pull requests and image uploads for the composer's menus. */
   services?: ChatInputServices
   /** Why the daemon refused a send (e.g. an image it no longer has). */
@@ -391,7 +394,7 @@ function ChatColumn({
         />
       ) : null}
       {chat.session.login ? <CursorLoginBanner login={chat.session.login} disabled={!connected || !chat.hostConnected} onSend={onSend} /> : null}
-      {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} sendError={sendError} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
+      {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} sendError={sendError} {...(onOpenPr ? { onOpenPr } : {})} {...(onDismissPrs ? { onDismissPrs } : {})} /> : null}
       <ChatComposer
         session={chat.session}
         hostConnected={connected && chat.hostConnected}
