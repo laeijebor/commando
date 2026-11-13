@@ -111,6 +111,26 @@ describe('chat PR strip', () => {
     expect(screen.getByRole('link', { name: 'Open PR #10 on GitHub' }).closest('.chat-pr-row')).not.toHaveClass('dismissed')
   })
 
+  it('dismisses only merged and closed PRs with Dismiss finished', async () => {
+    setup([pr(10, 'merged'), pr(11, 'closed'), pr(12)])
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss finished' }))
+    const section = screen.getByRole('region', { name: 'Linked pull requests' })
+    expect(within(section).getAllByRole('link').map((link) => link.textContent)).toEqual(['#12', 'Change 12'])
+    expect(JSON.parse(window.localStorage.getItem(DISMISSED_PRS_STORAGE_KEY) ?? '[]')).toEqual(
+      [10, 11].map((number) => `${targetId}:acme/widgets#${number}`))
+    expect(screen.getByRole('button', { name: 'Show 2 more' })).toBeInTheDocument()
+  })
+
+  it('offers Dismiss finished only when open and finished PRs are both shown', async () => {
+    const { view } = setup([pr(10, 'merged'), pr(11, 'merged')])
+    expect(await screen.findByRole('button', { name: 'Dismiss all' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dismiss finished' })).not.toBeInTheDocument()
+    view.unmount()
+    setup([pr(12), pr(13)])
+    expect(await screen.findByRole('button', { name: 'Dismiss all' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dismiss finished' })).not.toBeInTheDocument()
+  })
+
   it('shows the shared HUD status chips for open PRs only', async () => {
     const open = { ...pr(12), unresolvedThreads: 7, unansweredThreads: 2, conflicting: true }
     setup([open, { ...pr(10, 'merged'), unresolvedThreads: 4 }])

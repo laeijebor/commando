@@ -232,7 +232,8 @@ export function PrStrip({ paneId, api, connected, onOpenPr, onSend, agentConnect
   const toggleMinimised = () => setMinimisedStrips(setStoredKey(minimisedKey, minimisedStrips, list.targetId, !minimised))
   const shown = prs.filter((pr) => !dismissed.includes(dismissKey(pr)))
   const hidden = prs.filter((pr) => dismissed.includes(dismissKey(pr)))
-  const dismissAll = () => setDismissed(setStoredKey(dismissedKey, dismissed, shown.map(dismissKey), true))
+  const finished = shown.filter((pr) => pr.state !== 'open')
+  const dismissPrs = (prs: PanePrSummary[]) => setDismissed(setStoredKey(dismissedKey, dismissed, prs.map(dismissKey), true))
   const restore = (pr: PanePrSummary) => {
     setDismissedPr(pr, false)
     if (hidden.length === 1) setExpanded(false)
@@ -245,9 +246,16 @@ export function PrStrip({ paneId, api, connected, onOpenPr, onSend, agentConnect
             {minimised ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
             <span>{stripSummary(prs)}</span>
           </button>
-          {!minimised && shown.length > 1
-            ? <button type="button" className="chat-pr-dismiss-all" title="Hide every PR below; restore them from Show more" onClick={dismissAll}>Dismiss all</button>
-            : null}
+          {!minimised && shown.length > 1 ? (
+            <span className="chat-pr-dismiss-all">
+              <button type="button" title="Hide every PR below; restore them from Show more" onClick={() => dismissPrs(shown)}>Dismiss all</button>
+              {/* Only offered alongside open PRs; otherwise it would do the same as Dismiss all. */}
+              {finished.length && finished.length < shown.length ? <>
+                <span aria-hidden="true">/</span>
+                <button type="button" aria-label="Dismiss finished" title="Hide merged and closed PRs; restore them from Show more" onClick={() => dismissPrs(finished)}>finished</button>
+              </> : null}
+            </span>
+          ) : null}
         </div>
       ) : null}
       {minimised ? null : <>
