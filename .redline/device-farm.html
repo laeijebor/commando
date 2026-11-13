@@ -26,7 +26,7 @@
   eyebrow="Commando → new repo"
   heading="Device farm for the team"
   summary="Shared always-on Macs with real phones, which ~7 engineers' agents lease for perf profiling. Trialled 4 ways today; recommendation and open questions inside."
-  status="Ready for review"></redline-nav>
+  status="Approved · building v0"></redline-nav>
 <main class="redline-shell redline-stack">
 
 <!-- ============ OVERVIEW ============ -->
@@ -130,7 +130,7 @@
 </section>
 
 <!-- ============ OPTIONS ============ -->
-<section id="options" data-redline-section data-redline-label="Options compared" data-redline-group="Options" class="redline-panel">
+<section id="options" data-redline-section data-redline-status="decided" data-redline-round="1" data-redline-label="Options compared" data-redline-group="Options" class="redline-panel">
   <h2>The options, compared</h2>
   <div class="redline-table-wrap">
   <table>
@@ -152,7 +152,7 @@
     <div id="opt-c" data-option="c" data-label="C · tunnelled CLIs"><p>Lovely for Android power users and for your existing scripts. It can't reach iPhones, so it can't be the foundation. It becomes D's escape hatch, behind the same lease gate.</p></div>
     <div id="opt-d" data-option="d" data-label="D · lease + gateway + jobs" data-recommended><p>One lease authority; one gateway in front of Argent and adb; a job runner on the host for repeatable measurements. Each of A, B and C is used for the part it's good at.</p></div>
   </redline-tradeoffs>
-  <redline-choice key="approach" prompt="Which approach should the new repo build toward?">
+  <redline-choice key="approach" prompt="Which approach should the new repo build toward?" resolved answer="D: lease service + gateway (Argent + adb) + host job runner (recommended)" answered-in="Round 1">
     <redline-option>D: lease service + gateway (Argent + adb) + host job runner (recommended)</redline-option>
     <redline-option>B only: lease service + Argent gateway, no job runner yet</redline-option>
     <redline-option>C first: lease service + adb gate + ssh for iOS scripts</redline-option>
@@ -160,7 +160,7 @@
   </redline-choice>
 </section>
 
-<section id="sol" data-redline-section data-redline-label="Sol's take" data-redline-group="Options" class="redline-panel">
+<section id="sol" data-redline-section data-redline-status="decided" data-redline-round="1" data-redline-label="Sol's take" data-redline-group="Options" class="redline-panel">
   <h2>Discussion with Sol (Codex, GPT-6.1)</h2>
   <p class="small">Two rounds. Round 1 was blind: it got the code and your three options. Round 2 got the trial results and my draft, and was asked to attack it.</p>
   <div id="sol-r1">
@@ -195,7 +195,7 @@
       <li><strong>Sol:</strong> v0 is the <em>job appliance</em>. Uploaded artifacts plus a plan, run unattended, with <strong>one active farm session per Mac</strong>, polling only, and no MCP, SSE or Commando integration yet. It gets the numbers right first.</li>
       <li><strong>Me:</strong> v0 is the <em>lease + Argent gateway</em>, because your engineers' first need is "my agent can use a real phone at all", and that is almost free. Jobs follow in v1. I would limit it to one <em>capture</em> per host at a time rather than one session, so interactive leases on different phones can still run side by side.</li>
     </ul>
-    <redline-choice key="v0" prompt="What should v0 (week 1) be?">
+    <redline-choice key="v0" prompt="What should v0 (week 1) be?" resolved answer="Lease + Argent gateway first (agents can use farm phones interactively); jobs in v1" answered-in="Round 1">
       <redline-option>Lease + Argent gateway first (agents can use farm phones interactively); jobs in v1</redline-option>
       <redline-option>Sol's job appliance first (unattended plan runs, one session per Mac); interactive later</redline-option>
       <redline-option>Both, thin: lease + gateway + a single registered Android recipe</redline-option>
@@ -298,7 +298,7 @@ farm job wait 7f3c    # streams progress; laptop may sleep
   <p>The plan format can start as <em>your existing</em> <code>plans/*.txt</code> (variant, ablation spec, deep link). Argent flows would be added later for scenarios that need taps.</p>
 </section>
 
-<section id="ios" data-redline-section data-redline-label="iPhones" data-redline-group="Proposal" class="redline-panel">
+<section id="ios" data-redline-section data-redline-status="decided" data-redline-round="1" data-redline-label="iPhones" data-redline-group="Proposal" class="redline-panel">
   <h2>iPhones specifically</h2>
   <ul>
     <li><strong>Everything runs on the host:</strong> <code>devicectl</code>, <code>xctrace</code> and Argent's iOS tools need the phone attached to the Mac running them. No laptop-side CLI path exists.</li>
@@ -306,7 +306,7 @@ farm job wait 7f3c    # streams progress; laptop may sleep
     <li><strong>Your xctrace scripts</strong> (<code>measure.sh</code>-style) become a <em>job type</em>: "run this script under my lease on the host", with only the leased device id in env, in a per-job temp dir, as a non-admin farm user. That's the iOS escape hatch, the equivalent of the adb gate.</li>
     <li><strong>Phones must stay cabled</strong> (Argent refuses Wi-Fi iPhones), and the host should keep them awake and unlocked (no passcode on farm devices).</li>
   </ul>
-  <redline-ask key="ios-builds" prompt="Where should iOS device builds come from: each engineer's laptop, CI, or the farm host itself (it has Xcode but would need signing keys)?"></redline-ask>
+  <redline-ask key="ios-builds" prompt="Where should iOS device builds come from: each engineer's laptop, CI, or the farm host itself (it has Xcode but would need signing keys)?" resolved answer="I think we should assume it’s each engineer’s laptop" answered-in="Round 1"></redline-ask>
 </section>
 
 <section id="hygiene" data-redline-section data-redline-label="Measurement hygiene" data-redline-group="Proposal" class="redline-panel">
@@ -320,7 +320,7 @@ farm job wait 7f3c    # streams progress; laptop may sleep
   </ul>
 </section>
 
-<section id="extraction" data-redline-section data-redline-label="Extraction from Commando" data-redline-group="Proposal" class="redline-panel">
+<section id="extraction" data-redline-section data-redline-status="decided" data-redline-round="1" data-redline-label="Extraction from Commando" data-redline-group="Proposal" class="redline-panel">
   <h2>What moves out of Commando</h2>
   <p class="small">The device-lock code is about 2,400 lines, with 58 tests across 4 files. Roughly: the scheduler moves as-is, identity and delivery get rewritten, and the UI is adapted.</p>
   <redline-file-tree id="extract-map" heading="Today's files → farm repo">
@@ -347,7 +347,7 @@ farm job wait 7f3c    # streams progress; laptop may sleep
       </li>
     </ul>
   </redline-file-tree>
-  <redline-choice key="local-queue" prompt="On your own Mac, should Commando keep its local queue, or treat this Mac as just another farm host?">
+  <redline-choice key="local-queue" prompt="On your own Mac, should Commando keep its local queue, or treat this Mac as just another farm host?" resolved answer="Run the farm service locally too; Commando is only a client (one code path)" answered-in="Round 1">
     <redline-option>Run the farm service locally too; Commando is only a client (one code path)</redline-option>
     <redline-option>Keep Commando's built-in queue for local, and talk to remote farms separately</redline-option>
   </redline-choice>
@@ -357,7 +357,7 @@ farm job wait 7f3c    # streams progress; laptop may sleep
   <h2>Milestones</h2>
   <redline-milestones id="ms" heading="Smallest useful thing first">
     <div id="m-pre" data-milestone="Before v0 · 1 day" data-status="proposed">Decisive trial: a wired iPhone and the Pixel run a real plan (your <code>measure.sh</code> / <code>android-run-plan.sh</code>) driven remotely, including laptop disconnect, cancel and cleanup. Done when results match a local run within noise, or we learn what breaks.</div>
-    <div id="m0" data-milestone="v0 · week 1" data-depends-on="Before v0 · 1 day" data-status="proposed">(Scope depends on the v0 question in "Sol's take".) New repo with the lease service (extracted registry, SQLite, heartbeats, tailnet identity) and the gateway in front of Argent + adb. Done when two engineers on different laptops can queue for the Pixel, and the holder installs, profiles and pulls a trace with stock Argent MCP while the other is refused.</div>
+    <div id="m0" data-milestone="v0 · week 1" data-depends-on="Before v0 · 1 day" data-status="proposed"><strong>Decided:</strong> lease + gateway first, plus a web dashboard, Slack notifications and a results-sharing endpoint. New repo with the lease service (extracted registry, SQLite, heartbeats, tailnet identity) and the gateway in front of Argent + adb. Done when two engineers on different laptops can queue for the Pixel, and the holder installs, profiles and pulls a trace with stock Argent MCP while the other is refused; the dashboard shows holders and queues; Slack posts "your turn" and shared results.</div>
     <div id="m1" data-milestone="v1 · jobs" data-depends-on="v0 · week 1" data-status="proposed">Job runner for Android: upload variants, plan file, interleaved N iterations, health gate, auto-restore of the standard app, results.jsonl + summary. Done when your <code>android-p5.txt</code> plan runs unattended from a laptop and matches a local run within noise.</div>
     <div id="m2" data-milestone="v2 · iOS" data-depends-on="v1 · jobs" data-status="proposed">Wired iPhone: Argent remote path verified, a script-under-lease job type for xctrace, signing guidance. Done when <code>measure.sh</code>-style runs work from a laptop.</div>
     <div id="m3" data-milestone="v3 · Commando client" data-depends-on="v0 · week 1" data-status="proposed">Commando's Devices view and pane offers backed by the farm; multiple hosts.</div>
@@ -377,23 +377,41 @@ farm job wait 7f3c    # streams progress; laptop may sleep
   </redline-risk>
 </section>
 
-<section id="questions" data-redline-section data-redline-label="Open questions" data-redline-group="Decisions" class="redline-panel">
+<section id="questions" data-redline-section data-redline-status="decided" data-redline-round="1" data-redline-label="Open questions" data-redline-group="Decisions" class="redline-panel">
   <h2>Open questions for you</h2>
-  <redline-choice key="first-host" prompt="What's the first farm host?">
+  <redline-choice key="first-host" prompt="What's the first farm host?" resolved answer="A dedicated Mac mini in the office" answered-in="Round 1">
     <redline-option>This Mac (your phones), opened to the team over Tailscale</redline-option>
     <redline-option>A dedicated Mac mini in the office</redline-option>
     <redline-option>Not decided yet</redline-option>
   </redline-choice>
-  <redline-choice key="repo" prompt="Where should the new repo live?">
+  <redline-choice key="repo" prompt="Where should the new repo live?" resolved answer="Your personal account first, move later" answered-in="Round 1">
     <redline-option>Company GitHub org, private (team can contribute)</redline-option>
     <redline-option>Your personal account first, move later</redline-option>
   </redline-choice>
-  <redline-choice key="identity" prompt="How should engineers authenticate to the farm?">
+  <redline-choice key="identity" prompt="How should engineers authenticate to the farm?" resolved answer="Tailscale + per-engineer token (works through other tunnels too)" answered-in="Round 1">
     <redline-option>Tailscale identity only (whois on each connection)</redline-option>
     <redline-option>Tailscale + per-engineer token (works through other tunnels too)</redline-option>
   </redline-choice>
-  <redline-ask key="v0-scope" prompt="Anything the v0 must include for the team to actually use it in week 1 (e.g. Slack notifications when your turn comes, a web dashboard)?"></redline-ask>
-  <redline-approve key="plan" prompt="Approve this direction (D, v0 first) so I can start the new repo?"></redline-approve>
+  <redline-ask key="v0-scope" prompt="Anything the v0 must include for the team to actually use it in week 1 (e.g. Slack notifications when your turn comes, a web dashboard)?" resolved answer="A web dashboard and Slack notifications (agents should be able to call an endpoint to share their results)" answered-in="Round 1"></redline-ask>
+  <redline-approve key="plan" prompt="Approve this direction (D, v0 first) so I can start the new repo?" resolved answer="approve" answered-in="Round 1"></redline-approve>
+</section>
+
+<section id="log" data-redline-section data-redline-label="Decision log" data-redline-group="Decisions" data-redline-status="decided" data-redline-changed="2" class="redline-panel redline-log">
+  <h2>Decision log</h2>
+  <div class="redline-table-wrap"><table>
+    <thead><tr><th>Round</th><th>Topic</th><th>Decision</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><a href="#options">Approach</a></td><td>D: lease service + gateway (Argent + adb) + host job runner</td></tr>
+      <tr><td>1</td><td><a href="#sol">v0 scope</a></td><td>Lease + Argent gateway first; jobs in v1</td></tr>
+      <tr><td>1</td><td><a href="#questions">v0 must-haves</a></td><td>Web dashboard; Slack notifications; an endpoint agents call to share results</td></tr>
+      <tr><td>1</td><td><a href="#ios">iOS builds</a></td><td>Built on each engineer's laptop and uploaded</td></tr>
+      <tr><td>1</td><td><a href="#extraction">Your Mac</a></td><td>Runs the farm service too; Commando becomes only a client</td></tr>
+      <tr><td>1</td><td><a href="#questions">First host</a></td><td>Dedicated Mac mini in the office</td></tr>
+      <tr><td>1</td><td><a href="#questions">Repo</a></td><td>Your personal GitHub account first, move to the org later</td></tr>
+      <tr><td>1</td><td><a href="#questions">Auth</a></td><td>Tailscale + per-engineer token</td></tr>
+      <tr><td>1</td><td><a href="#questions">Go-ahead</a></td><td>Approved</td></tr>
+    </tbody>
+  </table></div>
 </section>
 
 </main>
