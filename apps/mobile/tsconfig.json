@@ -55,6 +55,9 @@
       ],
       "@commando/chat-subagents": [
         "../../shared/chat-subagents.ts"
+      ],
+      "@commando/canvas-feedback": [
+        "../../shared/canvas-feedback.ts"
       ]
     }
   },
@@ -74,7 +77,8 @@
     "../../shared/pr-conversation.ts",
     "../../shared/redline-response.ts",
     "../../shared/canvas-manifest.ts",
-    "../../shared/chat-subagents.ts"
+    "../../shared/chat-subagents.ts",
+    "../../shared/canvas-feedback.ts"
   ],
   "exclude": [
     "node_modules"

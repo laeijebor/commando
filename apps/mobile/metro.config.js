@@ -38,6 +38,7 @@ config.resolver.extraNodeModules = {
   '@commando/pr-conversation': path.join(repoRoot, 'shared', 'pr-conversation.ts'),
   '@commando/redline-response': path.join(repoRoot, 'shared', 'redline-response.ts'),
   '@commando/canvas-manifest': path.join(repoRoot, 'shared', 'canvas-manifest.ts'),
+  '@commando/canvas-feedback': path.join(repoRoot, 'shared', 'canvas-feedback.ts'),
   '@commando/chat-subagents': path.join(repoRoot, 'shared', 'chat-subagents.ts'),
 }
 

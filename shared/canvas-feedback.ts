@@ -1,4 +1,4 @@
-import { CANVAS_STATUSES } from './canvas-manifest.js'
+import { CANVAS_STATUSES, type CanvasFrame, type CanvasSection } from './canvas-manifest.js'
 import type { CanvasNoteContext } from './protocol.js'
 
 /** Reject malformed context rather than silently losing a pin's anchor. */
@@ -46,4 +46,13 @@ export function canvasSentPageUrl(url: string): string {
   const key = canvasPageKey(url)
   const marker = key.indexOf('?canvas-frame=')
   return marker < 0 ? url : `${key.slice(0, marker)}/.commando-canvas-frame/${key.slice(marker + 14)}`
+}
+
+/** A frame comment's anchor: the frame, the point in it, and the manifest's section for it. */
+export function canvasNoteContext(frame: CanvasFrame, sections: CanvasSection[], point: { x: number; y: number }, label?: string, labelId?: string): CanvasNoteContext {
+  const section = sections.find((section) => section.frames.includes(frame.id))
+  return { frameId: frame.id, point, frameTitle: frame.title.slice(0, 1_024),
+    ...(label ? { label } : {}), ...(labelId ? { labelId } : {}),
+    ...(section ? { section: section.title.slice(0, 256), status: section.status, ...(section.ticket ? { ticket: section.ticket.slice(0, 256) } : {}) } : {}),
+    ...(frame.focus !== undefined ? { focus: frame.focus } : {}), interactive: frame.interactive ?? false }
 }

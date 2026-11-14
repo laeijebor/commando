@@ -194,7 +194,14 @@ export const NATIVE_TILE_PAGE_SCRIPT = `(function () {
       snippet: String(target.outerHTML || '').slice(0, 2048)
     };
     if (text) result.text = text.slice(0, 512);
-    post({ type: 'inspect', result: result });
+    /* Where in the document the tap landed, and the canvas label around it, anchor a frame comment. */
+    var anchor = { point: { x: event.pageX, y: event.pageY } };
+    var labelled = target.closest && target.closest('[data-canvas-label]');
+    if (labelled) {
+      anchor.label = String(labelled.getAttribute('data-canvas-label') || '').slice(0, 256);
+      if (labelled.hasAttribute('data-canvas-id')) anchor.labelId = String(labelled.getAttribute('data-canvas-id') || '').slice(0, 256);
+    }
+    post({ type: 'inspect', result: result, anchor: anchor });
   }, true);
 
   window.__commandoMobileTile = {
@@ -273,8 +280,28 @@ export type NativeTileEvent =
   | { type: 'ready'; url: string }
   | { type: 'response'; url: string; response: RedlinePageResponse }
   | { type: 'questions'; url: string; snapshot: RedlinePageQuestionSnapshot }
-  | { type: 'inspect'; url: string; result: TileInspectSuccess }
+  | { type: 'inspect'; url: string; result: TileInspectSuccess; anchor?: NativeTileAnchor }
   | { type: 'pin'; url: string; noteId: number }
+
+/** A Review tap's document position and enclosing `data-canvas-label`, for a canvas frame comment. */
+export type NativeTileAnchor = { point: { x: number; y: number }; label?: string; labelId?: string }
+
+const anchorCoordinate = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000
+const anchorText = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0 && value.length <= 256
+
+function parseAnchor(value: unknown): NativeTileAnchor | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const raw = value as Record<string, unknown>
+  const point = raw.point as Record<string, unknown> | undefined
+  if (!point || !anchorCoordinate(point.x) || !anchorCoordinate(point.y)) return undefined
+  return {
+    point: { x: point.x, y: point.y },
+    ...(anchorText(raw.label) ? { label: raw.label } : {}),
+    ...(anchorText(raw.labelId) ? { labelId: raw.labelId } : {}),
+  }
+}
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength
@@ -336,6 +363,7 @@ export function parseNativeTileMessage(data: unknown, reportedUrl: string): Nati
       if (typeof result !== 'object' || result === null || Array.isArray(result)) return null
       const parsed = parseTileInspectResult(result as Record<string, unknown>)
       if (!parsed.ok || parsed.selector.length > 1_024 || parsed.tag.length > 32) return null
+      const anchor = parseAnchor(record.anchor)
       return {
         type: 'inspect',
         url,
@@ -344,6 +372,7 @@ export function parseNativeTileMessage(data: unknown, reportedUrl: string): Nati
           ...(parsed.text !== undefined ? { text: parsed.text.slice(0, 512) } : {}),
           ...(parsed.snippet !== undefined ? { snippet: parsed.snippet.slice(0, 2_048) } : {}),
         },
+        ...(anchor ? { anchor } : {}),
       }
     }
     case 'pin': {

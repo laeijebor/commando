@@ -4,6 +4,8 @@ import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
 import type { WebPane } from '@commando/protocol'
+import { canvasNoteContext } from '@commando/canvas-feedback'
+import type { CanvasFrame, CanvasSection } from '@commando/canvas-manifest'
 import {
   EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
   redlinePageKey,
@@ -20,7 +22,7 @@ import { CommentCard } from '../CommentCard'
 import type { TileInspectSuccess } from '../protocol'
 import { useQueueActions } from '../useQueueActions'
 import { KeyboardAware } from './KeyboardAware'
-import { pinsForPage, type NativeTileEvent } from './bridge'
+import { pinsForPage, type NativeTileAnchor, type NativeTileEvent } from './bridge'
 import { NativeWebTile, type NativeWebTileHandle } from './NativeWebTile'
 import { QuestionCard } from './QuestionCard'
 import { QueueChrome } from './QueueChrome'
@@ -42,6 +44,7 @@ export function NativePageView({
   active,
   onLoadFailed,
   onPageUrl,
+  canvasFrame,
 }: {
   host: Host
   tile: WebPane
@@ -49,6 +52,8 @@ export function NativePageView({
   active: boolean
   onLoadFailed: (detail: string) => void
   onPageUrl?: (canonicalUrl: string) => void
+  /** The canvas frame on screen: its comments are anchored to it, so sending one starts a thread. */
+  canvasFrame?: { frame: CanvasFrame; sections: CanvasSection[] }
 }): React.JSX.Element {
   const theme = useTheme()
   const webView = useRef<NativeWebTileHandle>(null)
@@ -59,7 +64,7 @@ export function NativePageView({
     snapshot: EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
   })
   const [reviewMode, setReviewMode] = useState(false)
-  const [target, setTarget] = useState<TileInspectSuccess | null>(null)
+  const [target, setTarget] = useState<(TileInspectSuccess & { anchor?: NativeTileAnchor }) | null>(null)
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null)
   const [questionsOpen, setQuestionsOpen] = useState(false)
 
@@ -145,7 +150,7 @@ export function NativePageView({
         // Only a tap the owner made in Review names an element.
         if (!reviewRef.current) return
         void Haptics.selectionAsync()
-        setTarget(event.result)
+        setTarget(event.anchor ? { ...event.result, anchor: event.anchor } : event.result)
         return
       case 'pin':
         setSelectedNoteId(event.noteId)
@@ -155,6 +160,7 @@ export function NativePageView({
 
   const queueNote = useCallback((comment: string) => {
     if (!target) return
+    const canvas = canvasFrame ? frameCommentContext(canvasFrame.frame, canvasFrame.sections, target) : undefined
     void queue.run(async () => {
       apply(await addPendingNote(host, tile.id, {
         selector: target.selector,
@@ -163,10 +169,11 @@ export function NativePageView({
         rect: target.rect,
         comment,
         pageUrl: canonicalPage,
+        ...(canvas ? { canvas } : {}),
       }))
       setTarget(null)
     }, 'Could not queue the note')
-  }, [apply, canonicalPage, host, queue.run, target, tile.id])
+  }, [apply, canonicalPage, canvasFrame, host, queue.run, target, tile.id])
 
   return (
     <View style={styles.root}>
@@ -303,6 +310,21 @@ export function NativeLoadFailed({ detail, onRetry, onStream }: {
       {onStream ? <Button label="Stream it from the Mac" onPress={onStream} variant="primary" /> : null}
     </View>
   )
+}
+
+/**
+ * A frame comment's anchor, as the desktop canvas builds it: the tap's
+ * position in the frame (clamped to the frame's size, since the phone lays a
+ * frame out at its own width) and the label around the element.
+ */
+export function frameCommentContext(
+  frame: CanvasFrame,
+  sections: CanvasSection[],
+  target: TileInspectSuccess & { anchor?: NativeTileAnchor },
+) {
+  const raw = target.anchor?.point ?? { x: target.rect.x + target.rect.width / 2, y: target.rect.y + target.rect.height / 2 }
+  const point = { x: Math.round(Math.min(frame.w, Math.max(0, raw.x))), y: Math.round(Math.min(frame.h, Math.max(0, raw.y))) }
+  return canvasNoteContext(frame, sections, point, target.anchor?.label, target.anchor?.labelId)
 }
 
 const styles = StyleSheet.create({
