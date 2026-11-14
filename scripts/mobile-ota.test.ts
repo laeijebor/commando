@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error -- a plain ESM script without type declarations
-import { nativeVerdict, parseUpdateGroup, planRun, updateMessage } from './mobile-ota.mjs'
+import { baselineVerdict, nativeVerdict, parseUpdateGroup, planRun, updateMessage } from './mobile-ota.mjs'
 
 describe('mobile OTA continuous delivery', () => {
   it('only checks next when it moved and the move touched the mobile app', () => {
@@ -20,6 +20,13 @@ describe('mobile OTA continuous delivery', () => {
     expect(nativeVerdict(baseline, { runtime: '0.2.0', fingerprint: 'def' })).toMatchObject({ ok: false, reason: expect.stringContaining('Native code changed') })
     expect(nativeVerdict(baseline, { runtime: '0.3.0', fingerprint: 'abc' })).toMatchObject({ ok: false, reason: expect.stringContaining('0.3.0') })
     expect(nativeVerdict(undefined, { runtime: '0.2.0', fingerprint: 'abc' })).toMatchObject({ ok: false, reason: expect.stringContaining('baseline') })
+  })
+
+  it('refuses a new baseline whose native code changed under the same runtime version', () => {
+    expect(baselineVerdict(undefined, { runtime: '0.2.0', fingerprint: 'a' })).toEqual({ ok: true })
+    expect(baselineVerdict({ runtime: '0.2.0', fingerprint: 'a' }, { runtime: '0.2.0', fingerprint: 'a' })).toEqual({ ok: true })
+    expect(baselineVerdict({ runtime: '0.2.0', fingerprint: 'a' }, { runtime: '0.3.0', fingerprint: 'b' })).toEqual({ ok: true })
+    expect(baselineVerdict({ runtime: '0.2.0', fingerprint: 'a' }, { runtime: '0.2.0', fingerprint: 'b' })).toMatchObject({ ok: false, reason: expect.stringContaining('Bump expo.version') })
   })
 
   it('names the update after the commits it brings', () => {

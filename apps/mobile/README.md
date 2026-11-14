@@ -243,14 +243,21 @@ goes to `~/.commando/logs/mobile-ota.log`. State lives in
 
 ```sh
 node scripts/mobile-ota.mjs install    # once; re-run after moving the repo
-node scripts/mobile-ota.mjs baseline   # after installing a new native build
+node scripts/mobile-ota.mjs baseline <commit>   # the commit a new native build was made from
 node scripts/mobile-ota.mjs status
 node scripts/mobile-ota.mjs run --force   # publish now, even if next hasn't moved
 node scripts/mobile-ota.mjs uninstall
 ```
 
-After shipping a new native build, record its baseline from the same `next`
-the build was made from. Otherwise CD keeps refusing to publish.
+A native change needs a new build *and* a new `expo.version`: `baseline`
+refuses a different fingerprint under the same runtime version, because older
+builds of that version would then receive updates they can't run. After
+installing the new build, record its baseline with the commit it was built
+from; until then CD reports the native change and doesn't publish. The
+LaunchAgent runs a fixed launcher (`~/.commando/bin/mobile-ota-launch`), which
+notifies you if the CD worktree, Node or the script itself goes missing. The
+worktree is `git worktree lock`ed so cleanups leave it alone. `eas-cli` is
+pinned in the script.
 
 ## Pointing at a daemon over Tailscale
 
