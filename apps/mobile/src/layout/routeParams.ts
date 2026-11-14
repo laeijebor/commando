@@ -32,3 +32,11 @@ function mapValues<T extends Record<string, string | undefined>>(params: T, map:
   for (const [key, value] of Object.entries(params)) next[key] = value === undefined ? undefined : map(value)
   return next as T
 }
+
+/**
+ * The new-session screen's params. It is a hidden tab that stays mounted, so
+ * `at` makes a "+" for the same repository a new request it can react to.
+ */
+export function newSessionParams(hostId: string, repoRoot?: string): { hostId: string; repo?: string; at?: string } {
+  return repoRoot ? { hostId, repo: repoRoot, at: String(Date.now()) } : { hostId }
+}

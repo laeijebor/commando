@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useIsFocused, useRouter } from 'expo-router'
-import { routeParams, useRouteParams } from '../../../src/layout/routeParams'
+import { newSessionParams, routeParams, useRouteParams } from '../../../src/layout/routeParams'
 import { Pressable, StyleSheet, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import Feather from '@expo/vector-icons/Feather'
@@ -56,6 +56,11 @@ export default function SessionsScreen(): React.JSX.Element {
     })
   }
 
+  const newSession = (repoRoot?: string): void => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    router.push({ pathname: '/(host)/[hostId]/new-session', params: newSessionParams(hostId ?? '', repoRoot) })
+  }
+
   if (mode !== 'phone') {
     return (
       <WideCockpit
@@ -80,6 +85,7 @@ export default function SessionsScreen(): React.JSX.Element {
           void refreshReachability(hostId).finally(() => setRefreshing(false))
         }} hostId={hostId}
           onChangeView={changeView}
+          onNewSession={newSession}
           onSelectPane={openPane}
           onSelectRow={openRow}
           state={state}
@@ -89,10 +95,7 @@ export default function SessionsScreen(): React.JSX.Element {
       <Pressable
         accessibilityLabel="New session"
         accessibilityRole="button"
-        onPress={() => {
-          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-          router.push({ pathname: '/(host)/[hostId]/new-session', params: { hostId: hostId ?? '' } })
-        }}
+        onPress={() => newSession()}
         style={[styles.fab, { backgroundColor: theme.accent }]}
       >
         <Feather color={theme.accentInk} name="plus" size={24} />
