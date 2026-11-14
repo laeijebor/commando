@@ -54,7 +54,7 @@ function TileEventCard({ event, onOpen }: { event: ChatTileEvent; onOpen?: () =>
 
   const items = event.items ?? []
   return (
-    <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]} testID="tile-event-card">
+    <View style={[styles.card, styles.wide, { backgroundColor: theme.surface, borderColor: theme.border }]} testID="tile-event-card">
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
@@ -132,7 +132,7 @@ function AutofixCard({ event }: { event: ChatAutofixEvent }): React.JSX.Element 
   const name = `${event.repo.split('/').at(-1) ?? event.repo}#${event.number}`
   const summary = autofixSummary(event)
   return (
-    <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]} testID="autofix-card">
+    <View style={[styles.card, styles.wide, { backgroundColor: theme.surface, borderColor: theme.border }]} testID="autofix-card">
       <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen((value) => !value)} style={styles.row}>
         <Feather color={theme.muted} name="tool" size={14} />
         <View style={styles.headColumn}>
@@ -182,7 +182,9 @@ function AutofixCard({ event }: { event: ChatAutofixEvent }): React.JSX.Element 
 }
 
 const styles = StyleSheet.create({
-  card: { alignSelf: 'flex-end', maxWidth: '88%', minWidth: '60%', borderWidth: 1, borderRadius: 12 },
+  card: { alignSelf: 'flex-end', maxWidth: '88%', borderWidth: 1, borderRadius: 12 },
+  // An expandable card keeps one width, so opening it doesn't reflow the row.
+  wide: { width: '88%' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8 },
   headColumn: { flex: 1, minWidth: 0, gap: 1 },
   headText: { flexShrink: 1, fontSize: 14 },
