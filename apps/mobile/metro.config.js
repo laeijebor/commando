@@ -40,6 +40,7 @@ config.resolver.extraNodeModules = {
   '@commando/canvas-manifest': path.join(repoRoot, 'shared', 'canvas-manifest.ts'),
   '@commando/canvas-feedback': path.join(repoRoot, 'shared', 'canvas-feedback.ts'),
   '@commando/chat-subagents': path.join(repoRoot, 'shared', 'chat-subagents.ts'),
+  '@commando/chat-tile-events': path.join(repoRoot, 'shared', 'chat-tile-events.ts'),
 }
 
 // The shared files import each other as `./agent-chat.js` (the daemon runs them

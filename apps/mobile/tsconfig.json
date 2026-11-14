@@ -56,6 +56,9 @@
       "@commando/chat-subagents": [
         "../../shared/chat-subagents.ts"
       ],
+      "@commando/chat-tile-events": [
+        "../../shared/chat-tile-events.ts"
+      ],
       "@commando/canvas-feedback": [
         "../../shared/canvas-feedback.ts"
       ]
@@ -78,6 +81,7 @@
     "../../shared/redline-response.ts",
     "../../shared/canvas-manifest.ts",
     "../../shared/chat-subagents.ts",
+    "../../shared/chat-tile-events.ts",
     "../../shared/canvas-feedback.ts"
   ],
   "exclude": [

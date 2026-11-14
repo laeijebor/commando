@@ -5,6 +5,7 @@ import Feather from '@expo/vector-icons/Feather'
 import { hostTakesTurnFlow, type ChatItem, type ChatSessionStatus, type ChatState, type ChatSubagentTranscript, type ChatTaskAction } from '@commando/agent-chat'
 import { findSubagent, subagentLabel, subagentLive, switcherSubagents } from '@commando/chat-subagents'
 import { pendingRequests, withExternalAgentRuns, type SubagentItem } from '@commando/chat-timeline'
+import { parseTileEventIds, withTileEvents, type ChatCardEvent } from '@commando/chat-tile-events'
 
 import type { DaemonClient } from '../daemon/client'
 import type { ConnectionPhase } from '../daemon/state'
@@ -17,10 +18,24 @@ import { ChatComposer } from './ChatComposer'
 import { ChatTimeline } from './ChatTimeline'
 import { Markdown } from './Markdown'
 import { RequestCard } from './RequestCard'
-import { useExternalRuns } from './store'
+import { useExternalRuns, useTileEvents } from './store'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
+
+/**
+ * The cards that belong to the loaded part of the chat. The phone loads a
+ * bounded copy of a long chat, so a card from before its first message would
+ * otherwise sit at the top as if it had just happened; it shows again once
+ * "Load earlier" brings its turn in.
+ */
+export function loadedTileEvents(items: readonly ChatItem[], events: readonly ChatCardEvent[], omittedItems: number): readonly ChatCardEvent[] {
+  if (!omittedItems || !events.length) return events
+  const first = items.find((item) => !item.parentToolUseId)?.createdAt
+  if (first === undefined) return []
+  const referenced = new Set(items.flatMap((item) => (item.kind === 'user_message' ? parseTileEventIds(item.text) : [])))
+  return events.filter((event) => event.at >= first || referenced.has(event.id))
+}
 
 /** The nav subtitle's word for where the chat is. */
 export function chatStatusWord(status: ChatSessionStatus): string {
@@ -39,11 +54,15 @@ export function chatStatusWord(status: ChatSessionStatus): string {
  * request, and the composer. The phone's pane screen and the iPad cockpit's
  * centre column both show it, through `PaneView`.
  */
-export function ChatView({ host, chat, client, phase }: {
+export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }: {
   host: Host
   chat: ChatState
   client: DaemonClient | undefined
   phase: ConnectionPhase
+  /** Opens a redline or canvas tile from its chat card. */
+  onOpenTile?: ((webPaneId: string) => void) | undefined
+  /** The tiles that still exist, so a card for a closed one offers no Open. */
+  openTileIds?: ReadonlySet<string> | undefined
 }): React.JSX.Element {
   const theme = useTheme()
   const [sendVersion, setSendVersion] = useState(0)
@@ -51,6 +70,12 @@ export function ChatView({ host, chat, client, phase }: {
   const externalRuns = useExternalRuns(host.id, chat.paneId)
   // External runs (`codex exec`, `claude -p`) join the turn that launched them, as on the web.
   const items = useMemo(() => (externalRuns.length ? withExternalAgentRuns(chat.items, externalRuns) : chat.items), [chat.items, externalRuns])
+  const tileEvents = useTileEvents(host.id, chat.paneId)
+  // Cards only join the main timeline; requests and subagents read the conversation itself.
+  const timelineItems = useMemo(() => {
+    const shown = loadedTileEvents(items, tileEvents, chat.omittedItems ?? 0)
+    return shown.length ? withTileEvents(items, shown, chat.session.sessionId) : items
+  }, [items, tileEvents, chat.omittedItems, chat.session.sessionId])
   const requests = useMemo(() => pendingRequests(chat.items), [chat.items])
   const connected = phase === 'live'
   const hostConnected = connected && chat.hostConnected
@@ -102,9 +127,11 @@ export function ChatView({ host, chat, client, phase }: {
           onLoadEarlier={channel ? () => channel.loadHistory() : undefined}
           controlsDisabled={!connected}
           cwd={chat.session.cwd}
-          items={items}
+          items={timelineItems}
           onOpenSubagent={view.turnFlow ? view.select : undefined}
+          onOpenTile={onOpenTile}
           onTask={view.task}
+          openTileIds={openTileIds}
           provider={chat.session.provider}
           sendVersion={sendVersion}
           working={working}
