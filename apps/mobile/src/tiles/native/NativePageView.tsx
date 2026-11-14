@@ -22,7 +22,7 @@ import type { TileInspectSuccess } from '../protocol'
 import { useQueueActions } from '../useQueueActions'
 import { KeyboardAware } from './KeyboardAware'
 import { pinsForPage, type NativeTileAnchor, type NativeTileEvent } from './bridge'
-import { frameCommentContext } from './frameComment'
+import { frameCommentNote } from './frameComment'
 import { NativeWebTile, type NativeWebTileHandle } from './NativeWebTile'
 import { QuestionCard } from './QuestionCard'
 import { QueueChrome } from './QueueChrome'
@@ -160,17 +160,18 @@ export function NativePageView({
 
   const queueNote = useCallback((comment: string) => {
     if (!target) return
-    const canvas = canvasFrame ? frameCommentContext(canvasFrame.frame, canvasFrame.sections, target) : undefined
+    const note = canvasFrame
+      ? frameCommentNote(canvasFrame.frame, canvasFrame.sections, target, canonicalPage, comment)
+      : {
+          selector: target.selector,
+          tag: target.tag,
+          ...(target.text !== undefined ? { text: target.text } : {}),
+          rect: target.rect,
+          comment,
+          pageUrl: canonicalPage,
+        }
     void queue.run(async () => {
-      apply(await addPendingNote(host, tile.id, {
-        selector: target.selector,
-        tag: target.tag,
-        ...(target.text !== undefined ? { text: target.text } : {}),
-        rect: target.rect,
-        comment,
-        pageUrl: canonicalPage,
-        ...(canvas ? { canvas } : {}),
-      }))
+      apply(await addPendingNote(host, tile.id, note))
       setTarget(null)
     }, 'Could not queue the note')
   }, [apply, canonicalPage, canvasFrame, host, queue.run, target, tile.id])

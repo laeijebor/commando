@@ -90,38 +90,41 @@ export function CanvasThreadList({ threads, manifest, onReply, onStatus, onRevea
     return <EmptyState title="No threads yet" body="Comments you send from a frame in Review start a thread the agent can reply to." />
   }
   const sorted = sortThreads(threads)
-  const open = sorted.filter((thread) => thread.status === 'open')
-  const resolved = sorted.filter((thread) => thread.status === 'resolved')
-  const card = (thread: CanvasThread) => {
-    const frame = manifest?.frames.find((candidate) => candidate.id === thread.frameId)
-    return (
-      <ThreadCard
-        frameTitle={frame?.title ?? thread.canvas?.frameTitle ?? thread.frameId}
-        key={thread.id}
-        onReply={(text) => onReply(thread.id, text)}
-        {...(frame ? { onReveal: () => onReveal(frame.id) } : {})}
-        onStatus={(status) => onStatus(thread.id, status)}
-        thread={thread}
-      />
-    )
-  }
+  const open = sorted.filter((thread) => thread.status === 'open').length
+  const resolved = sorted.length - open
+  // One keyed list, so a thread that changes status keeps its card (and a half-typed reply).
   return (
     <View style={styles.list}>
-      {open.length ? open.map(card) : <EmptyState title="Nothing open" body="Every thread on this canvas is resolved." />}
-      {resolved.length ? (
-        <>
+      {open === 0 ? <EmptyState key="none-open" title="Nothing open" body="Every thread on this canvas is resolved." /> : null}
+      {sorted.flatMap((thread, index) => {
+        const frame = manifest?.frames.find((candidate) => candidate.id === thread.frameId)
+        const hidden = thread.status === 'resolved' && !showResolved
+        const card = (
+          <View key={thread.id} style={hidden ? styles.hidden : undefined}>
+            <ThreadCard
+              frameTitle={frame?.title ?? thread.canvas?.frameTitle ?? thread.frameId}
+              onReply={(text) => onReply(thread.id, text)}
+              {...(frame ? { onReveal: () => onReveal(frame.id) } : {})}
+              onStatus={(status) => onStatus(thread.id, status)}
+              thread={thread}
+            />
+          </View>
+        )
+        if (index !== open) return [card]
+        return [
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ expanded: showResolved }}
+            key="resolved-toggle"
             onPress={() => setShowResolved((value) => !value)}
             style={styles.resolvedToggle}
           >
-            <SectionHeader label={`Resolved · ${resolved.length}`} />
+            <SectionHeader label={`Resolved · ${resolved}`} />
             <Feather color={theme.muted} name={showResolved ? 'chevron-down' : 'chevron-right'} size={14} />
-          </Pressable>
-          {showResolved ? resolved.map(card) : null}
-        </>
-      ) : null}
+          </Pressable>,
+          card,
+        ]
+      })}
     </View>
   )
 }
@@ -234,5 +237,6 @@ const styles = StyleSheet.create({
   error: { fontSize: 13 },
   actions: { flexDirection: 'row', gap: 8 },
   action: { flex: 1, paddingVertical: 9 },
+  hidden: { display: 'none' },
   resolvedToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 4 },
 })

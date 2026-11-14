@@ -194,8 +194,12 @@ export const NATIVE_TILE_PAGE_SCRIPT = `(function () {
       snippet: String(target.outerHTML || '').slice(0, 2048)
     };
     if (text) result.text = text.slice(0, 512);
-    /* Where in the document the tap landed, and the canvas label around it, anchor a frame comment. */
-    var anchor = { point: { x: event.pageX, y: event.pageY } };
+    /* Where in the viewport the tap landed, the viewport and scroll, and the canvas label around it, anchor a frame comment. */
+    var anchor = {
+      point: { x: event.clientX, y: event.clientY },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      scroll: { x: window.scrollX, y: window.scrollY }
+    };
     var labelled = target.closest && target.closest('[data-canvas-label]');
     if (labelled) {
       anchor.label = String(labelled.getAttribute('data-canvas-label') || '').slice(0, 256);
@@ -283,21 +287,40 @@ export type NativeTileEvent =
   | { type: 'inspect'; url: string; result: TileInspectSuccess; anchor?: NativeTileAnchor }
   | { type: 'pin'; url: string; noteId: number }
 
-/** A Review tap's document position and enclosing `data-canvas-label`, for a canvas frame comment. */
-export type NativeTileAnchor = { point: { x: number; y: number }; label?: string; labelId?: string }
+/**
+ * A Review tap, for a canvas frame comment: its viewport position, the
+ * viewport and scroll it was made at, and the enclosing `data-canvas-label`.
+ */
+export type NativeTileAnchor = {
+  point: { x: number; y: number }
+  viewport?: { width: number; height: number }
+  scroll?: { x: number; y: number }
+  label?: string
+  labelId?: string
+}
 
 const anchorCoordinate = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000
 const anchorText = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.length <= 256
 
+function anchorPair<A extends string, B extends string>(value: unknown, a: A, b: B): Record<A | B, number> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const raw = value as Record<string, unknown>
+  return anchorCoordinate(raw[a]) && anchorCoordinate(raw[b]) ? { [a]: raw[a], [b]: raw[b] } as Record<A | B, number> : undefined
+}
+
 function parseAnchor(value: unknown): NativeTileAnchor | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const raw = value as Record<string, unknown>
-  const point = raw.point as Record<string, unknown> | undefined
-  if (!point || !anchorCoordinate(point.x) || !anchorCoordinate(point.y)) return undefined
+  const point = anchorPair(raw.point, 'x', 'y')
+  if (!point) return undefined
+  const viewport = anchorPair(raw.viewport, 'width', 'height')
+  const scroll = anchorPair(raw.scroll, 'x', 'y')
   return {
-    point: { x: point.x, y: point.y },
+    point,
+    ...(viewport && viewport.width > 0 && viewport.height > 0 ? { viewport } : {}),
+    ...(scroll ? { scroll } : {}),
     ...(anchorText(raw.label) ? { label: raw.label } : {}),
     ...(anchorText(raw.labelId) ? { labelId: raw.labelId } : {}),
   }

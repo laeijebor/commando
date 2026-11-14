@@ -4,7 +4,7 @@ import type { CanvasThread } from '@commando/protocol'
 import type { CanvasFrame } from '@commando/canvas-manifest'
 
 import { ThemeProvider } from '../../theme'
-import { frameCommentContext } from './frameComment'
+import { frameCommentContext, frameCommentNote } from './frameComment'
 import { CanvasThreadList, sortThreads } from './CanvasThreads'
 
 const thread = (id: string, status: CanvasThread['status'], at: number, messages: CanvasThread['messages'] = [{ author: 'user', text: `Note ${id}`, at }]): CanvasThread => ({
@@ -64,4 +64,29 @@ describe('frame comment context', () => {
   it('falls back to the element centre without an anchor', () => {
     expect(frameCommentContext(FRAME, [], target).point).toEqual({ x: 60, y: 40 })
   })
+
+  it('scales a phone-width tap into frame pixels', () => {
+    const wide = { ...FRAME, w: 1440, h: 900 }
+    expect(frameCommentContext(wide, [], { ...target, anchor: { point: { x: 195, y: 100 }, viewport: { width: 390, height: 844 } } }).point)
+      .toEqual({ x: 720, y: 369 })
+  })
+
+  it('queues what the desktop sends: the frame URL, a document rect and the anchor', () => {
+    const note = frameCommentNote(FRAME, [], { ...target, anchor: { point: { x: 10, y: 10 }, scroll: { x: 0, y: 300 } } }, 'http://127.0.0.1:4310/redline/artifacts/abc/home.html', 'Tighter')
+    expect(note).toMatchObject({
+      pageUrl: 'http://127.0.0.1:4310/redline/artifacts/abc/home.html?canvas-frame=home',
+      rect: { x: 10, y: 320, width: 100, height: 40 },
+      comment: 'Tighter',
+      canvas: { frameId: 'home', point: { x: 10, y: 10 } },
+    })
+  })
+})
+
+it('keeps a half-typed reply when the thread is resolved underneath it', () => {
+  const props = { manifest: null, onReply: jest.fn(async () => undefined), onReveal: jest.fn(), onStatus: jest.fn(async () => undefined) }
+  const view = render(<ThemeProvider><CanvasThreadList {...props} threads={[thread('a', 'open', 2)]} /></ThemeProvider>)
+  fireEvent.changeText(screen.getByLabelText('Reply to home › Composer'), 'Half a thought')
+  view.rerender(<ThemeProvider><CanvasThreadList {...props} threads={[thread('a', 'resolved', 3)]} /></ThemeProvider>)
+  fireEvent.press(screen.getByText('RESOLVED · 1'))
+  expect(screen.getByDisplayValue('Half a thought')).toBeTruthy()
 })

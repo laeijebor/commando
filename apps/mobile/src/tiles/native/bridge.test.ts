@@ -68,8 +68,9 @@ describe('parseNativeTileMessage', () => {
 
   it('keeps a valid canvas anchor beside an inspected element', () => {
     const result = { ok: true, selector: 'button', tag: 'button', rect: { x: 1, y: 2, width: 3, height: 4 } }
-    expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 40, y: 500 }, label: 'Composer', labelId: 'composer' } }), PAGE))
-      .toMatchObject({ anchor: { point: { x: 40, y: 500 }, label: 'Composer', labelId: 'composer' } })
+    expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 40, y: 500 }, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 120 }, label: 'Composer', labelId: 'composer' } }), PAGE))
+      .toMatchObject({ anchor: { point: { x: 40, y: 500 }, viewport: { width: 390, height: 844 }, scroll: { x: 0, y: 120 }, label: 'Composer', labelId: 'composer' } })
+    expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 1, y: 1 }, viewport: { width: 0, height: 844 } } }), PAGE)).not.toHaveProperty('anchor.viewport')
     expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 'a', y: 1 } } }), PAGE)).not.toHaveProperty('anchor')
     expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 1, y: 1 }, label: 'x'.repeat(300) } }), PAGE))
       .toMatchObject({ anchor: { point: { x: 1, y: 1 } } })
