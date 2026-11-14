@@ -55,6 +55,9 @@
       ],
       "@commando/chat-subagents": [
         "../../shared/chat-subagents.ts"
+      ],
+      "@commando/chat-tile-events": [
+        "../../shared/chat-tile-events.ts"
       ]
     }
   },
@@ -74,7 +77,8 @@
     "../../shared/pr-conversation.ts",
     "../../shared/redline-response.ts",
     "../../shared/canvas-manifest.ts",
-    "../../shared/chat-subagents.ts"
+    "../../shared/chat-subagents.ts",
+    "../../shared/chat-tile-events.ts"
   ],
   "exclude": [
     "node_modules"

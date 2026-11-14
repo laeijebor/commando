@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import { mergeChatItems, type ChatState, type ExternalAgentRun } from '@commando/agent-chat'
+import type { ChatCardEvent } from '@commando/chat-tile-events'
 import type { ServerMessage } from '@commando/protocol'
 
 /** One host's chat panes by pane id, as the daemon relays them. */
@@ -74,9 +75,32 @@ export function applyExternalRunsMessage(runs: HostExternalRuns, message: Server
   return runs
 }
 
+/** One host's chat cards (redline/canvas opened or sent, PR auto-fix) by chat pane. */
+export type HostTileEvents = Record<string, ChatCardEvent[]>
+
+const NO_EVENTS: HostTileEvents = {}
+const EMPTY_EVENTS: readonly ChatCardEvent[] = []
+
+/** Folds `chat_tile_events` (the daemon's whole list for a pane) into a host's cards, as the web's `App.tsx` does. */
+export function applyTileEventsMessage(events: HostTileEvents, message: ServerMessage): HostTileEvents {
+  // A snapshot starts afresh; the daemon re-sends every pane's cards on connect.
+  if (message.type === 'chat_snapshot') return Object.keys(events).length ? NO_EVENTS : events
+  if (message.type === 'chat_tile_events') {
+    if (!message.events.length && !(message.paneId in events)) return events
+    return { ...events, [message.paneId]: message.events }
+  }
+  if (message.type === 'chat_removed' && message.paneId in events) {
+    const next = { ...events }
+    delete next[message.paneId]
+    return next
+  }
+  return events
+}
+
 type ChatStoreState = {
   byHost: Record<string, HostChats>
   externalRuns: Record<string, HostExternalRuns>
+  tileEvents: Record<string, HostTileEvents>
   ingest: (hostId: string, message: ServerMessage) => void
 }
 
@@ -87,7 +111,11 @@ type ChatStoreState = {
 export const useChatStore = create<ChatStoreState>((set, get) => ({
   byHost: {},
   externalRuns: {},
+  tileEvents: {},
   ingest: (hostId, message) => {
+    const currentEvents = get().tileEvents[hostId] ?? NO_EVENTS
+    const nextEvents = applyTileEventsMessage(currentEvents, message)
+    if (nextEvents !== currentEvents) set({ tileEvents: { ...get().tileEvents, [hostId]: nextEvents } })
     const currentRuns = get().externalRuns[hostId] ?? NO_RUNS
     const nextRuns = applyExternalRunsMessage(currentRuns, message)
     if (nextRuns !== currentRuns) set({ externalRuns: { ...get().externalRuns, [hostId]: nextRuns } })
@@ -106,4 +134,9 @@ export function useChat(hostId: string | undefined, paneId: string | undefined):
 /** The external runs a chat pane launched, as the daemon last listed them. */
 export function useExternalRuns(hostId: string | undefined, paneId: string | undefined): readonly ExternalAgentRun[] {
   return useChatStore((state) => (hostId && paneId ? state.externalRuns[hostId]?.[paneId] : undefined) ?? EMPTY_RUNS)
+}
+
+/** The chat cards for a pane, as the daemon last listed them. */
+export function useTileEvents(hostId: string | undefined, paneId: string | undefined): readonly ChatCardEvent[] {
+  return useChatStore((state) => (hostId && paneId ? state.tileEvents[hostId]?.[paneId] : undefined) ?? EMPTY_EVENTS)
 }

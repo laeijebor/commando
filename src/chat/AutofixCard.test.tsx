@@ -5,8 +5,8 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatItem } from '../../shared/agent-chat'
-import { tileEventMarker, withTileEvents, type ChatAutofixEvent } from '../../shared/chat-tile-events'
-import { AutofixCard, readableComment } from './AutofixCard'
+import { readableComment, tileEventMarker, withTileEvents, type ChatAutofixEvent } from '../../shared/chat-tile-events'
+import { AutofixCard } from './AutofixCard'
 import { ChatTimeline } from './ChatTimeline'
 
 afterEach(cleanup)

@@ -68,6 +68,20 @@ export function stripHtmlComments(text: string): string {
   return text.replace(/<!--[\s\S]*?-->/g, '')
 }
 
+/** Bot comments carry HTML-comment state markers and Markdown heading marks; neither helps in plain text. */
+export function readableComment(body: string): string {
+  return stripHtmlComments(body).replace(/^#{1,6}\s+/gm, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** "2 failing checks, 1 comment, merge conflicts" */
+export function autofixSummary(event: Pick<ChatAutofixEvent, 'failingChecks' | 'comments' | 'conflictsWith'>): string {
+  return [
+    ...(event.failingChecks.length ? [plural(event.failingChecks.length, 'failing check', 'failing checks')] : []),
+    ...(event.comments.length ? [plural(event.comments.length, 'comment', 'comments')] : []),
+    ...(event.conflictsWith !== undefined ? ['merge conflicts'] : []),
+  ].join(', ')
+}
+
 export const MAX_TILE_EVENT_ITEMS = 50
 const MAX_TEXT = 2_000
 

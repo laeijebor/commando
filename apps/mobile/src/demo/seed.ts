@@ -1,5 +1,6 @@
 import type { AgentProvider, AgentStatus, CommandoSnapshot, ServerMessage, SessionBrief, WebPane } from '@commando/protocol'
 import type { ChatProvider, ChatState } from '@commando/agent-chat'
+import type { ChatCardEvent } from '@commando/chat-tile-events'
 import { deriveSessionIdentity } from '@commando/session-identity'
 import { SNAPSHOT, NEEDS_INPUT_STATUS, WORKING_STATUS, BRIEFS } from '../testing/fixtures'
 import { chatState, item, session } from '../chat/testing'
@@ -58,7 +59,19 @@ export function demoMessages(now = Date.now()): ServerMessage[] {
     { id: 'demo-canvas', title: 'Layout study', url: '', content: { kind: 'canvas', artifactId: 'demo', manifest: 'canvas.json' }, sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 3, engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: now - 40_000 },
     { id: DEMO_GUIDE.id, title: 'Review checklist', url: '', content: { kind: 'guide', artifactId: DEMO_GUIDE.artifactId, file: DEMO_GUIDE.file }, sessionId: sessions[0]!.id, windowId: '@demo0', anchorPaneId: '%demo0', placement: 'right', dock: 'panel', order: 4, engine: 'webkit', openedBy: 'agent', status: 'open', createdAt: now - 30_000 },
   ]
-  return [{ type: 'snapshot', snapshot }, { type: 'agent_status_snapshot', statuses }, { type: 'session_brief_snapshot', briefs }, { type: 'chat_snapshot', chats }, { type: 'web_panes', webPanes }, { type: 'chat_external_runs', paneId: DEMO_SUBAGENT_PANE, runs: demoExternalRuns(now) }]
+  // The canvas's chat cards: the agent opened it, then the owner sent answers the agent collected.
+  const tileEvents: ChatCardEvent[] = [
+    { id: 'demo-canvas-opened', kind: 'opened', paneId: '%demo0', webPaneId: 'demo-canvas', source: 'canvas', title: 'Layout study', fileName: 'canvas.json', at: now - 225_000 },
+    {
+      id: 'demo-canvas-sent', kind: 'sent', paneId: '%demo0', webPaneId: 'demo-canvas', source: 'canvas', title: 'Layout study', fileName: 'canvas.json',
+      at: now - 120_000, status: 'collected', collectedAt: now - 110_000,
+      items: [
+        { kind: 'answer', question: 'Which header treatment reads best on a phone?', answer: 'Compact header', note: 'Keep the session name visible' },
+        { kind: 'comment', target: 'Phone › Composer', comment: 'The send button needs more contrast.' },
+      ],
+    },
+  ]
+  return [{ type: 'snapshot', snapshot }, { type: 'agent_status_snapshot', statuses }, { type: 'session_brief_snapshot', briefs }, { type: 'chat_snapshot', chats }, { type: 'web_panes', webPanes }, { type: 'chat_external_runs', paneId: DEMO_SUBAGENT_PANE, runs: demoExternalRuns(now) }, { type: 'chat_tile_events', paneId: '%demo0', events: tileEvents }]
 }
 export function demoIdentities(): Record<string, ReturnType<typeof deriveSessionIdentity>> {
   return Object.fromEntries(['remote-chat', 'pane-tabs', 'feedback-retry', 'design-review', 'auth-refresh', 'native-preview', 'release-journal', 'search-garden'].map((name) => [name, deriveSessionIdentity(name)]))
