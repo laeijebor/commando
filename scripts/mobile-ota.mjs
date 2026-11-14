@@ -18,7 +18,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -176,16 +176,68 @@ function nativeIdentity(mobileDir) {
   return { runtime, fingerprint: JSON.parse(printed).hash }
 }
 
+const LOCK_STALE_MS = 60_000
+
+const codeOf = (error) => (error && typeof error === 'object' ? error.code : undefined)
+
+/**
+ * Creates the lock file exclusively; false when another run holds it. A dead
+ * holder's lock is taken over under a second exclusive file, so two contenders
+ * can't both take the same stale lock. A lock with no pid yet (just created)
+ * counts as held until it is a minute old.
+ */
+export function acquireLock(path, pid = process.pid, alive = (holder) => { try { process.kill(holder, 0); return true } catch { return false } }) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      writeFileSync(path, String(pid), { flag: 'wx' })
+      return true
+    } catch (error) {
+      if (codeOf(error) !== 'EEXIST') throw error
+    }
+    let raw
+    let age
+    try {
+      raw = readFileSync(path, 'utf8')
+      age = Date.now() - statSync(path).mtimeMs
+    } catch (error) {
+      if (codeOf(error) === 'ENOENT') continue // released while we looked
+      throw error
+    }
+    const holder = Number(raw)
+    if (Number.isInteger(holder) && holder > 0 ? alive(holder) : age < LOCK_STALE_MS) return false
+    const guard = `${path}.takeover`
+    try {
+      writeFileSync(guard, String(pid), { flag: 'wx' })
+    } catch (error) {
+      if (codeOf(error) !== 'EEXIST') throw error
+      // A takeover left behind by a crash would block every run.
+      try { if (Date.now() - statSync(guard).mtimeMs >= LOCK_STALE_MS) rmSync(guard, { force: true }) } catch { /* gone */ }
+      return false
+    }
+    try {
+      // Another contender may have taken it over between our read and the guard.
+      let current
+      try { current = readFileSync(path, 'utf8') } catch { current = undefined }
+      if (current === raw) rmSync(path, { force: true })
+    } finally {
+      rmSync(guard, { force: true })
+    }
+  }
+  return false
+}
+
 function withLock(work) {
   mkdirSync(commandoDir, { recursive: true })
+  if (!acquireLock(LOCK_PATH)) {
+    log('another run is in progress')
+    return
+  }
   try {
-    const holder = Number(readFileSync(LOCK_PATH, 'utf8'))
-    if (holder && holder !== process.pid) {
-      try { process.kill(holder, 0); log(`another run (pid ${holder}) is in progress`); return } catch { /* stale */ }
-    }
-  } catch { /* no lock */ }
-  writeFileSync(LOCK_PATH, String(process.pid))
-  try { return work() } finally { rmSync(LOCK_PATH, { force: true }) }
+    return work()
+  } finally {
+    // Remove only our own lock.
+    try { if (readFileSync(LOCK_PATH, 'utf8') === String(process.pid)) rmSync(LOCK_PATH, { force: true }) } catch { /* already gone */ }
+  }
 }
 
 function run({ force }) {
