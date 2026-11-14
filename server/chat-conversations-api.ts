@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isChatProvider, type ChatSessionInfo } from '../shared/agent-chat.js'
 import {
@@ -44,6 +44,28 @@ type Dependencies = {
   resumes: Pick<AgentResumeService, 'findConversation'>
   beforePaneCreated: (paneId: string) => Promise<void>
   refreshSnapshot: () => Promise<unknown>
+  /** Checks an existing branch out again as a worktree at `path`, from whichever candidate main checkout it came from; rejects if it can't. */
+  restoreWorktree?: (worktree: { candidates: string[]; branch: string; path: string }) => Promise<void>
+}
+
+const WORKTREES_SUFFIX = '-worktrees'
+
+const isDirectory = (path: string) => stat(path).then((info) => info.isDirectory(), () => false)
+
+/**
+ * Where a deleted Commando worktree lived, from its folder and branch: worktrees are
+ * created at `<parent>/<repo>-worktrees/<branch>`, and `folder` may be inside one.
+ */
+export function deletedWorktreeLocation(folder: string, branch: string): { path: string; repo: string; siblingMainRoot: string } | undefined {
+  for (let path = folder; path !== dirname(path); path = dirname(path)) {
+    if (!path.endsWith(`/${branch}`)) continue
+    const container = path.slice(0, -(branch.length + 1))
+    const name = basename(container)
+    if (name.length > WORKTREES_SUFFIX.length && name.endsWith(WORKTREES_SUFFIX)) {
+      return { path, repo: name.slice(0, -WORKTREES_SUFFIX.length), siblingMainRoot: container.slice(0, -WORKTREES_SUFFIX.length) }
+    }
+  }
+  return undefined
 }
 
 class HttpError extends Error {
@@ -188,7 +210,7 @@ export class ChatConversationsApi {
       // Only a conversation the daemon listed: its folder and profile come from the transcript, not the request.
       const conversation = await this.dependencies.index.find(provider as ChatConversationProvider, sessionId)
       if (!conversation) throw new HttpError(404, 'That conversation was not found')
-      if (!(await stat(conversation.cwd).then((info) => info.isDirectory(), () => false))) throw new HttpError(409, `Its folder no longer exists: ${conversation.cwd}`)
+      if (!(await isDirectory(conversation.cwd))) await this.restoreFolder(conversation)
       const record = this.dependencies.resumes.findConversation(provider, sessionId)
       // Cursor SDK chats (`agent-…`) have their own store: they resume as a Cursor chat, never in the CLI.
       const cursorChat = provider === 'cursor' && sessionId.startsWith('agent-')
@@ -231,6 +253,26 @@ export class ChatConversationsApi {
       if (launched) setTimeout(() => this.reserved.delete(key), REGISTER_GRACE_MS).unref()
       else this.reserved.delete(key)
     }
+  }
+
+  /** A deleted worktree comes back from its branch, where it was, so its chat can reopen there. */
+  private async restoreFolder(conversation: ChatConversation): Promise<void> {
+    const missing = `Its folder no longer exists: ${conversation.cwd}`
+    const location = conversation.branch ? deletedWorktreeLocation(conversation.cwd, conversation.branch) : undefined
+    if (!location || !conversation.branch || !this.dependencies.restoreWorktree) throw new HttpError(409, missing)
+    // The main checkout sits beside its worktrees unless a worktree root moved them; then another listed chat in that repo names it.
+    const listed = await this.dependencies.index.list().catch(() => [] as ChatConversation[])
+    const named = [...new Set([location.siblingMainRoot, ...listed.flatMap((entry) => entry.repoRoot ? [entry.repoRoot] : [])])]
+      .filter((root) => basename(root) === location.repo)
+    const candidates: string[] = []
+    for (const root of named) if (await isDirectory(root)) candidates.push(root)
+    if (!candidates.length) throw new HttpError(409, missing)
+    try {
+      await this.dependencies.restoreWorktree({ candidates, branch: conversation.branch, path: location.path })
+    } catch (error) {
+      throw new HttpError(409, `${missing}. Could not check out ${conversation.branch} there again: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (!(await isDirectory(conversation.cwd))) throw new HttpError(409, missing)
   }
 
   /** `started` reserves the conversation even if refreshing the snapshot fails. */

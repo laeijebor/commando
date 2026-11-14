@@ -2299,6 +2299,11 @@ async function main(): Promise<void> {
       if (windowId) await tmux.releaseWindowPaneResizes(windowId)
     },
     refreshSnapshot: refreshSnapshotFresh,
+    restoreWorktree: async ({ candidates, branch, path }) => {
+      const mainRoot = await gitWorktrees.mainCheckoutFor(candidates, path, branch)
+      if (!mainRoot) throw new Error(`could not tell which repository ${path} belonged to`)
+      await gitWorktrees.createWorktree({ mainRoot, branch, path, existingBranchOnly: true })
+    },
   })
   // The first scan reads every transcript's head; do it before anyone opens the picker.
   setTimeout(() => { void chatConversations.list().catch((error: unknown) => console.warn('[commando] Could not list chat conversations', error)) }, 5_000).unref()

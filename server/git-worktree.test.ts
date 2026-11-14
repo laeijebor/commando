@@ -477,6 +477,71 @@ describe('GitWorktreeService.removeWorktree', () => {
     }
   })
 
+  it('checks a branch out again where its deleted worktree was, leaving other missing worktrees registered', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const main = path.join(base, 'repo')
+    const linked = path.join(base, 'repo-worktrees', 'feature')
+    const unplugged = path.join(base, 'repo-worktrees', 'other')
+    const service = new GitWorktreeService()
+    try {
+      run(base, 'init', '-q', main)
+      writeFileSync(path.join(main, 'README.md'), 'hi\n')
+      run(main, 'add', 'README.md')
+      run(main, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init')
+      run(main, 'worktree', 'add', '-q', '-b', 'feature', linked)
+      run(main, 'worktree', 'add', '-q', '-b', 'other', unplugged)
+      rmSync(linked, { recursive: true, force: true })
+      rmSync(unplugged, { recursive: true, force: true })
+      // Without existingBranchOnly the stale registration still needs a person to prune it.
+      await expect(service.createWorktree({ mainRoot: main, branch: 'feature', path: linked })).rejects.toMatchObject({ message: expect.stringMatching(/registered but missing/) })
+      await service.createWorktree({ mainRoot: main, branch: 'feature', path: linked, existingBranchOnly: true })
+      expect(readdirSync(linked).sort()).toEqual(['.git', 'README.md'])
+      expect(run(linked, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('feature')
+      expect(run(main, 'worktree', 'list', '--porcelain')).toContain(`worktree ${unplugged}\n`)
+
+      // A branch already recovered elsewhere (with --force) is not checked out a second time.
+      const recovered = path.join(base, 'recovered')
+      rmSync(linked, { recursive: true, force: true })
+      run(main, 'worktree', 'add', '-q', '--force', recovered, 'feature')
+      await expect(service.createWorktree({ mainRoot: main, branch: 'feature', path: linked, existingBranchOnly: true }))
+        .rejects.toMatchObject({ kind: 'branch-checked-out', message: `Branch feature is already checked out at ${recovered}` })
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('tells which main checkout a deleted worktree came from, or that it cannot tell', async () => {
+    const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
+    const repo = (name: string, ...branches: string[]) => {
+      const root = path.join(base, name)
+      run(base, 'init', '-q', root)
+      run(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init')
+      for (const branch of branches) run(root, 'branch', branch)
+      return root
+    }
+    const service = new GitWorktreeService()
+    try {
+      const work = repo('work/api', 'fix')
+      const oss = repo('oss/api', 'fix')
+      const solo = repo('solo/api', 'only')
+      const plain = path.join(base, 'plain', 'api')
+      mkdirSync(plain, { recursive: true })
+      const linked = path.join(base, 'trees', 'api-worktrees', 'fix')
+      run(oss, 'worktree', 'add', '-q', linked, 'fix')
+      rmSync(linked, { recursive: true, force: true })
+      // Still registered: that repo wins even though another has the branch too.
+      expect(await service.mainCheckoutFor([plain, work, oss], linked, 'fix')).toBe(oss)
+      run(oss, 'worktree', 'prune')
+      expect(await service.mainCheckoutFor([plain, work, oss], linked, 'fix')).toBeUndefined()
+      expect(await service.mainCheckoutFor([plain, work, solo], path.join(base, 'trees', 'api-worktrees', 'only'), 'only')).toBe(solo)
+      expect(await service.mainCheckoutFor([path.join(work, 'sub'), plain], linked, 'fix')).toBeUndefined()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it('refuses a work-in-progress commit that would only point at a nested repository', async () => {
     const base = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-worktree-')))
     const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' })
