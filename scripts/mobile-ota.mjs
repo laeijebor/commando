@@ -275,7 +275,7 @@ function install() {
 SCRIPT=${shell(script)}
 NODE=${shell(node)}
 [ -x "$NODE" ] || NODE=$(command -v node)
-alert() { /usr/bin/osascript -e "display notification \"$1\" with title \"Commando app CD stopped\""; echo "$(date -u +%FT%TZ) launcher: $1" >> ${shell(LOG_PATH)}; exit 1; }
+alert() { /usr/bin/osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "Commando app CD stopped"' -e 'end run' "$1"; echo "$(date -u +%FT%TZ) launcher: $1" >> ${shell(LOG_PATH)}; exit 1; }
 [ -n "$NODE" ] || alert "No node binary found. Re-run: node scripts/mobile-ota.mjs install"
 [ -f "$SCRIPT" ] || alert "The CD worktree is missing. Re-run: node scripts/mobile-ota.mjs install"
 "$NODE" "$SCRIPT" run
