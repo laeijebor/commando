@@ -4,6 +4,7 @@ import { tileEventMarker, withTileEvents, type ChatAutofixEvent, type ChatTileEv
 
 import { ThemeProvider } from '../theme'
 import { ChatTimeline } from './ChatTimeline'
+import { loadedTileEvents } from './ChatView'
 import { item } from './testing'
 
 const opened: ChatTileEvent = { id: 'open-1', kind: 'opened', paneId: '%7', webPaneId: 'wp-canvas', source: 'canvas', title: 'Layout study', fileName: 'canvas.json', at: 1_000 }
@@ -17,7 +18,10 @@ const sent: ChatTileEvent = {
 }
 const autofix: ChatAutofixEvent = {
   id: 'fix-1', kind: 'autofix', paneId: '%7', at: 7_000, repo: 'me/app', number: 12, url: 'https://github.com/me/app/pull/12',
-  round: 2, maxRounds: 3, failingChecks: ['typecheck'], comments: [{ author: 'bot', body: '<!-- state -->\n## Fix the lint', url: 'https://x' }],
+  round: 2, maxRounds: 3, failingChecks: ['typecheck'], comments: [
+    { author: 'bot', body: '<!-- state -->\n## Fix the lint', url: 'https://x' },
+    { author: 'reviewer', body: ['One', 'Two', 'Three', 'Four', 'Five', 'Six'].join('\n'), url: 'https://y' },
+  ],
 }
 
 function renderTimeline(onOpenTile = jest.fn(), openTileIds: ReadonlySet<string> = new Set(['wp-canvas', 'wp-plan'])) {
@@ -52,10 +56,26 @@ it('shows redline, canvas and auto-fix cards instead of the prompt Commando type
   fireEvent.press(screen.getByText('app#12'))
   expect(screen.getByText('typecheck')).toBeTruthy()
   expect(screen.getByText('Fix the lint')).toBeTruthy()
+  expect(screen.getByLabelText("View reviewer's comment on GitHub")).toBeTruthy()
+  fireEvent.press(screen.getByText('Show more'))
+  expect(screen.getByText('Show less')).toBeTruthy()
 })
 
 it('offers no Open for a tile that has closed', async () => {
   renderTimeline(jest.fn(), new Set())
   await act(async () => undefined)
   expect(screen.queryByLabelText('Open canvas Layout study')).toBeNull()
+})
+
+describe('cards in a bounded history', () => {
+  const firstLoaded = item('user_message', { id: 'loaded', text: 'Later', createdAt: 4_000 })
+  it('keeps every card when the whole chat is loaded', () => {
+    expect(loadedTileEvents([firstLoaded], [opened, sent], 0)).toEqual([opened, sent])
+  })
+  it('drops cards from before the loaded turns unless a loaded message carries them', () => {
+    const pushed = item('user_message', { id: 'pushed', text: `Answers\n${tileEventMarker(['early'])}`, createdAt: 4_500 })
+    const early: ChatTileEvent = { ...sent, id: 'early', at: 3_900 }
+    expect(loadedTileEvents([firstLoaded, pushed], [opened, early, sent], 40)).toEqual([early, sent])
+    expect(loadedTileEvents([], [opened], 40)).toEqual([])
+  })
 })

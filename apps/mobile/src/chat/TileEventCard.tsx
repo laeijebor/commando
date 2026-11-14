@@ -157,12 +157,7 @@ function AutofixCard({ event }: { event: ChatAutofixEvent }): React.JSX.Element 
               ))}
             </View>
           ) : null}
-          {event.comments.map((comment, index) => (
-            <View key={`${comment.url}-${index}`} style={[styles.item, { borderTopColor: theme.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
-              <Text numberOfLines={1} style={[styles.label, { color: theme.text }]}>{comment.author}</Text>
-              <Text numberOfLines={6} selectable style={[styles.text, { color: theme.textSoft }]}>{readableComment(comment.body) || '(no text)'}</Text>
-            </View>
-          ))}
+          {event.comments.map((comment, index) => <AutofixComment key={`${comment.url}-${index}`} {...comment} />)}
           {event.conflictsWith !== undefined ? (
             <View style={[styles.item, styles.check]}>
               <Feather color={theme.red} name="git-merge" size={11} />
@@ -176,6 +171,30 @@ function AutofixCard({ event }: { event: ChatAutofixEvent }): React.JSX.Element 
             <Text style={[styles.meta, styles.footerTime, { color: theme.muted }]}>Sent {time(event.at)}</Text>
           </View>
         </View>
+      ) : null}
+    </View>
+  )
+}
+
+/** A review comment the round answered; a long one folds, as on the web. */
+function AutofixComment({ author, body, url }: ChatAutofixEvent['comments'][number]): React.JSX.Element {
+  const theme = useTheme()
+  const [open, setOpen] = useState(false)
+  const text = readableComment(body) || '(no text)'
+  const long = text.length > 280 || text.split('\n').length > 4
+  return (
+    <View style={[styles.item, { borderTopColor: theme.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
+      <View style={styles.check}>
+        <Text numberOfLines={1} style={[styles.label, styles.author, { color: theme.text }]}>{author}</Text>
+        <Pressable accessibilityLabel={`View ${author}'s comment on GitHub`} accessibilityRole="link" hitSlop={8} onPress={() => void Linking.openURL(url)}>
+          <Text style={[styles.link, { color: theme.accent }]}>View</Text>
+        </Pressable>
+      </View>
+      <Text numberOfLines={open || !long ? undefined : 4} selectable style={[styles.text, { color: theme.textSoft }]}>{text}</Text>
+      {long ? (
+        <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} hitSlop={6} onPress={() => setOpen((value) => !value)}>
+          <Text style={[styles.meta, { color: theme.accent }]}>{open ? 'Show less' : 'Show more'}</Text>
+        </Pressable>
       ) : null}
     </View>
   )
@@ -196,6 +215,7 @@ const styles = StyleSheet.create({
   body: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingBottom: 10 },
   item: { paddingVertical: 7, gap: 3 },
   label: { fontSize: 12 },
+  author: { flex: 1, minWidth: 0 },
   answer: { alignSelf: 'flex-start', fontSize: 13, borderWidth: 1, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden' },
   skipped: { fontSize: 13, fontStyle: 'italic' },
   note: { fontSize: 13, borderLeftWidth: 2, paddingLeft: 8 },

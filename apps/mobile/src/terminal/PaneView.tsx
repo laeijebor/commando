@@ -85,10 +85,15 @@ function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: Pa
   const identities = useSessionPreferences((store) => store.identities[host.id])
   const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
   const openTileIds = useMemo(() => new Set(state.webPanes.map((tile) => tile.id)), [state.webPanes])
+  // Stable, so the timeline's rows don't re-render for every chat or daemon update.
+  const tiles = useRef(state.webPanes)
+  tiles.current = state.webPanes
+  const openTile = useRef(onOpenTile)
+  openTile.current = onOpenTile
   const openTileById = useCallback((webPaneId: string) => {
-    const tile = state.webPanes.find((candidate) => candidate.id === webPaneId)
-    if (tile) onOpenTile(tile)
-  }, [state.webPanes, onOpenTile])
+    const tile = tiles.current.find((candidate) => candidate.id === webPaneId)
+    if (tile) openTile.current(tile)
+  }, [])
   return (
     <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} active={active} chat header={
       <PaneNav
