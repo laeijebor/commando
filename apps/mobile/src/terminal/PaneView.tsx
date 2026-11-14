@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Dimensions,
   Keyboard,
@@ -84,6 +84,11 @@ function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: Pa
   const keyboard = useKeyboardOverlap()
   const identities = useSessionPreferences((store) => store.identities[host.id])
   const context = buildPaneContext(state.snapshot, state.agentStatuses, state.webPanes, paneId, paneId ? state.agentStatuses[paneId] : undefined)
+  const openTileIds = useMemo(() => new Set(state.webPanes.map((tile) => tile.id)), [state.webPanes])
+  const openTileById = useCallback((webPaneId: string) => {
+    const tile = state.webPanes.find((candidate) => candidate.id === webPaneId)
+    if (tile) onOpenTile(tile)
+  }, [state.webPanes, onOpenTile])
   return (
     <PaneTabs key={`${host?.id}:${paneId}`} host={host} paneId={paneId} active={active} chat header={
       <PaneNav
@@ -99,7 +104,7 @@ function ChatPane({ host, paneId, chat, active, onBack, onInfo, onOpenTile }: Pa
             <Text style={[styles.chatFailed, { color: theme.red }]}>The chat view failed to render: {error.message}</Text>
           )}
         >
-          <ChatView chat={chat} client={client} host={host} phase={state.phase} />
+          <ChatView chat={chat} client={client} host={host} onOpenTile={openTileById} openTileIds={openTileIds} phase={state.phase} />
         </ChatErrorBoundary>
       </View>
     </PaneTabs>

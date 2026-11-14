@@ -1,25 +1,11 @@
 import { useState } from 'react'
 import { ChevronRight, CircleX, GitMerge, Wrench } from 'lucide-react'
 
-import { stripHtmlComments, type ChatAutofixEvent } from '../../shared/chat-tile-events'
+import { autofixSummary, readableComment, type ChatAutofixEvent } from '../../shared/chat-tile-events'
 import type { PrQuickLookTab } from '../PrQuickLook'
 import { cn } from './cn'
 
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
-
-/** Bot comments carry HTML-comment state markers and Markdown heading marks; neither helps in plain text. */
-export function readableComment(body: string): string {
-  return stripHtmlComments(body).replace(/^#{1,6}\s+/gm, '').replace(/\n{3,}/g, '\n\n').trim()
-}
-
-export function autofixSummary(event: Pick<ChatAutofixEvent, 'failingChecks' | 'comments' | 'conflictsWith'>): string {
-  return [
-    ...(event.failingChecks.length ? [plural(event.failingChecks.length, 'failing check', 'failing checks')] : []),
-    ...(event.comments.length ? [plural(event.comments.length, 'comment', 'comments')] : []),
-    ...(event.conflictsWith !== undefined ? ['merge conflicts'] : []),
-  ].join(', ')
-}
 
 function Comment({ author, body, url }: ChatAutofixEvent['comments'][number]) {
   const [open, setOpen] = useState(false)
