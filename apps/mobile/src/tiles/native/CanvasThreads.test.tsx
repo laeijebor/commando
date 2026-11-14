@@ -71,13 +71,18 @@ describe('frame comment context', () => {
       .toEqual({ x: 720, y: 369 })
   })
 
+  it('adds the scroll offset, so a tap after scrolling lands on the same spot of the frame', () => {
+    expect(frameCommentContext(FRAME, [], { ...target, anchor: { point: { x: 20, y: 100 }, scroll: { x: 0, y: 400 }, viewport: { width: 390, height: 844 } } }).point)
+      .toEqual({ x: 20, y: 500 })
+  })
+
   it('queues what the desktop sends: the frame URL, a document rect and the anchor', () => {
     const note = frameCommentNote(FRAME, [], { ...target, anchor: { point: { x: 10, y: 10 }, scroll: { x: 0, y: 300 } } }, 'http://127.0.0.1:4310/redline/artifacts/abc/home.html', 'Tighter')
     expect(note).toMatchObject({
       pageUrl: 'http://127.0.0.1:4310/redline/artifacts/abc/home.html?canvas-frame=home',
       rect: { x: 10, y: 320, width: 100, height: 40 },
       comment: 'Tighter',
-      canvas: { frameId: 'home', point: { x: 10, y: 10 } },
+      canvas: { frameId: 'home', point: { x: 10, y: 310 } },
     })
   })
 })
