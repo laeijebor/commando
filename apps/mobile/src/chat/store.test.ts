@@ -1,4 +1,6 @@
-import { applyChatMessage, applyExternalRunsMessage, useChatStore } from './store'
+import type { ChatTileEvent } from '@commando/chat-tile-events'
+
+import { applyChatMessage, applyExternalRunsMessage, applyTileEventsMessage, useChatStore } from './store'
 import { chatState, item, session } from './testing'
 
 describe('the chat store', () => {
@@ -60,5 +62,19 @@ describe('the chat store', () => {
     expect(applyExternalRunsMessage({ '%7': [run] }, { type: 'chat_snapshot', chats: [] })).toEqual({})
     useChatStore.getState().ingest('h', { type: 'chat_external_runs', paneId: '%7', runs: [run] })
     expect(useChatStore.getState().externalRuns.h).toEqual({ '%7': [run] })
+  })
+
+  it('keeps each pane\'s chat cards as the daemon last listed them', () => {
+    const card: ChatTileEvent = { id: 'e1', kind: 'opened', paneId: '%7', webPaneId: 'wp1', source: 'canvas', fileName: 'canvas.json', at: 1 }
+    let events = applyTileEventsMessage({}, { type: 'chat_tile_events', paneId: '%7', events: [card] })
+    expect(events).toEqual({ '%7': [card] })
+    expect(applyTileEventsMessage(events, { type: 'provider_usage', usage: [] })).toBe(events)
+    expect(applyTileEventsMessage({}, { type: 'chat_tile_events', paneId: '%8', events: [] })).toEqual({})
+    events = applyTileEventsMessage(events, { type: 'chat_removed', paneId: '%7' })
+    expect(events).toEqual({})
+    // A reconnect's snapshot starts afresh; the daemon re-sends every pane's cards after it.
+    expect(applyTileEventsMessage({ '%7': [card] }, { type: 'chat_snapshot', chats: [] })).toEqual({})
+    useChatStore.getState().ingest('h', { type: 'chat_tile_events', paneId: '%7', events: [card] })
+    expect(useChatStore.getState().tileEvents.h).toEqual({ '%7': [card] })
   })
 })

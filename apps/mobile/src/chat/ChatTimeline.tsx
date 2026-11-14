@@ -31,12 +31,19 @@ import { chatImageUri } from './images'
 import { VideoTile } from './VideoTile'
 import { Markdown } from './Markdown'
 import { SubagentGroup, useNow, type SubagentTask } from './Subagents'
+import { ChatEventCard } from './TileEventCard'
 import { isNearTimelineEnd, shouldFollowTimeline, type TimelineScrollReason } from './timelineScroll'
 
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
-/** What rows need beyond their own item: where images load from and the session folder. */
-const TimelineContext = createContext<{ baseUrl: string; cwd: string; provider: string }>({ baseUrl: '', cwd: '', provider: 'Agent' })
+/** What rows need beyond their own item: where images load from, the session folder, and how a chat card opens its tile. */
+const TimelineContext = createContext<{
+  baseUrl: string
+  cwd: string
+  provider: string
+  onOpenTile?: ((webPaneId: string) => void) | undefined
+  openTileIds?: ReadonlySet<string> | undefined
+}>({ baseUrl: '', cwd: '', provider: 'Agent' })
 
 /**
  * What subagent rows need: every item (their metrics read the subagent's own),
@@ -60,7 +67,7 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
  * follows the newest turn on open/send and while already near the bottom.
  * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled }: {
+export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled, onOpenTile, openTileIds }: {
   sendVersion?: number
   /** Older items the daemon left on the Mac (a bounded replay), and how to fetch them. */
   omittedItems?: number
@@ -80,17 +87,21 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   onOpenSubagent?: ((toolUseId: string) => void) | undefined
   onTask?: SubagentTask | undefined
   controlsDisabled?: boolean | undefined
+  /** Opens a redline or canvas tile from its chat card; only tiles in `openTileIds` still exist. */
+  onOpenTile?: ((webPaneId: string) => void) | undefined
+  openTileIds?: ReadonlySet<string> | undefined
 }): React.JSX.Element {
   const theme = useTheme()
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
-  const last = rows.at(-1)
+  // A card the user sent after the latest activity doesn't end that activity.
+  const last = rows.findLast((row) => !(row.kind === 'user' && row.item.tileEvents?.length))
   const streaming = last?.kind === 'assistant' && last.item.status === 'running'
   const liveWork = (last?.kind === 'activity' || last?.kind === 'subagents') && last.live
   const data = useMemo<Entry[]>(() => {
     const entries: Entry[] = rows.slice()
     return working && !streaming && !liveWork ? [...entries, { kind: 'working', id: 'working' }] : entries
   }, [rows, working, streaming, liveWork])
-  const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name }), [baseUrl, cwd, provider])
+  const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name, onOpenTile, openTileIds }), [baseUrl, cwd, provider, onOpenTile, openTileIds])
   const now = useNow(rows.some((row) => row.kind === 'subagents' && row.live))
   const subagents = useMemo(() => ({ items, now, provider: context.provider, onOpenSubagent, onTask, controlsDisabled }), [items, now, context.provider, onOpenSubagent, onTask, controlsDisabled])
   const list = useRef<FlatList<Entry>>(null)
@@ -240,7 +251,21 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
 
 function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }): React.JSX.Element {
   const theme = useTheme()
-  const { provider } = use(TimelineContext)
+  const { provider, onOpenTile, openTileIds } = use(TimelineContext)
+  // A message Commando sent for a redline, canvas or auto-fix is its card, not the prompt it typed.
+  if (item.tileEvents?.length) {
+    return (
+      <View style={styles.cards}>
+        {item.tileEvents.map((event) => (
+          <ChatEventCard
+            event={event}
+            key={event.id}
+            onOpenTile={event.kind !== 'autofix' && openTileIds?.has(event.webPaneId) ? onOpenTile : undefined}
+          />
+        ))}
+      </View>
+    )
+  }
   return (
     <View style={styles.userRow}>
       {item.steered || item.relayTo ? (
@@ -541,6 +566,7 @@ function SubagentRow({ row }: { row: Extract<TimelineRow, { kind: 'subagents' }>
 }
 
 const styles = StyleSheet.create({
+  cards: { gap: 6, paddingTop: 4, paddingBottom: 20 },
   // Height belongs to the flex viewport, never to the transcript's intrinsic size.
   viewport: { flex: 1, height: 0, minHeight: 0, overflow: 'hidden' },
   list: { flex: 1, height: 0, minHeight: 0 },
