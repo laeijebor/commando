@@ -69,6 +69,7 @@
       "^\\./chat-mcp\\.js$": "<rootDir>/../../shared/chat-mcp.ts",
       "^\\./tile-inspect\\.js$": "<rootDir>/../../shared/tile-inspect.ts",
       "^\\./protocol\\.js$": "<rootDir>/../../shared/protocol.ts",
+      "^\\./canvas-manifest\\.js$": "<rootDir>/../../shared/canvas-manifest.ts",
       "^marked$": "<rootDir>/node_modules/marked/lib/marked.umd.js",
       "^@/(.*)$": "<rootDir>/src/$1",
       "^@commando/session-identity$": "<rootDir>/../../shared/session-identity.ts",

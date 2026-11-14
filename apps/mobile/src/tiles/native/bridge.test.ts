@@ -66,6 +66,15 @@ describe('parseNativeTileMessage', () => {
     expect(parseNativeTileMessage(message({ type: 'inspect', result: { ok: true, selector: '', tag: 'h1', rect: {} } }), PAGE)).toBeNull()
   })
 
+  it('keeps a valid canvas anchor beside an inspected element', () => {
+    const result = { ok: true, selector: 'button', tag: 'button', rect: { x: 1, y: 2, width: 3, height: 4 } }
+    expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 40, y: 500 }, label: 'Composer', labelId: 'composer' } }), PAGE))
+      .toMatchObject({ anchor: { point: { x: 40, y: 500 }, label: 'Composer', labelId: 'composer' } })
+    expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 'a', y: 1 } } }), PAGE)).not.toHaveProperty('anchor')
+    expect(parseNativeTileMessage(message({ type: 'inspect', result, anchor: { point: { x: 1, y: 1 }, label: 'x'.repeat(300) } }), PAGE))
+      .toMatchObject({ anchor: { point: { x: 1, y: 1 } } })
+  })
+
   it('reads a pin tap', () => {
     expect(parseNativeTileMessage(message({ type: 'pin', noteId: 7 }), PAGE)).toEqual({ type: 'pin', url: PAGE, noteId: 7 })
   })

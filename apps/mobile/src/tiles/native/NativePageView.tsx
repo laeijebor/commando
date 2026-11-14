@@ -4,7 +4,6 @@ import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
 import type { WebPane } from '@commando/protocol'
-import { canvasNoteContext } from '@commando/canvas-feedback'
 import type { CanvasFrame, CanvasSection } from '@commando/canvas-manifest'
 import {
   EMPTY_REDLINE_PAGE_QUESTION_SNAPSHOT,
@@ -23,6 +22,7 @@ import type { TileInspectSuccess } from '../protocol'
 import { useQueueActions } from '../useQueueActions'
 import { KeyboardAware } from './KeyboardAware'
 import { pinsForPage, type NativeTileAnchor, type NativeTileEvent } from './bridge'
+import { frameCommentContext } from './frameComment'
 import { NativeWebTile, type NativeWebTileHandle } from './NativeWebTile'
 import { QuestionCard } from './QuestionCard'
 import { QueueChrome } from './QueueChrome'
@@ -310,21 +310,6 @@ export function NativeLoadFailed({ detail, onRetry, onStream }: {
       {onStream ? <Button label="Stream it from the Mac" onPress={onStream} variant="primary" /> : null}
     </View>
   )
-}
-
-/**
- * A frame comment's anchor, as the desktop canvas builds it: the tap's
- * position in the frame (clamped to the frame's size, since the phone lays a
- * frame out at its own width) and the label around the element.
- */
-export function frameCommentContext(
-  frame: CanvasFrame,
-  sections: CanvasSection[],
-  target: TileInspectSuccess & { anchor?: NativeTileAnchor },
-) {
-  const raw = target.anchor?.point ?? { x: target.rect.x + target.rect.width / 2, y: target.rect.y + target.rect.height / 2 }
-  const point = { x: Math.round(Math.min(frame.w, Math.max(0, raw.x))), y: Math.round(Math.min(frame.h, Math.max(0, raw.y))) }
-  return canvasNoteContext(frame, sections, point, target.anchor?.label, target.anchor?.labelId)
 }
 
 const styles = StyleSheet.create({
