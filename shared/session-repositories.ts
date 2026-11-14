@@ -27,7 +27,8 @@ export function sessionRepo(session: TmuxSession, panes: readonly TmuxPane[]): P
     (windowOrder.get(left.windowId) ?? Number.MAX_SAFE_INTEGER) - (windowOrder.get(right.windowId) ?? Number.MAX_SAFE_INTEGER) ||
     left.index - right.index,
   )
-  if (ordered[0].repo) return ordered[0].repo
+  const first = ordered[0]?.repo
+  if (first) return first
   const counts = new Map<string, { repo: PaneRepo; count: number }>()
   for (const pane of ordered) {
     if (!pane.repo) continue
