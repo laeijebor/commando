@@ -5,10 +5,13 @@ import {
   markTileSeen,
   confirmTile,
   dismissDroppedAnswers,
+  fetchCanvasThreads,
   fetchPendingNotes,
   openTile,
   removePendingNote,
+  replyCanvasThread,
   sendPendingNotes,
+  setCanvasThreadStatus,
   sendPendingNotesAndBuild,
   toPendingSnapshot,
   updatePendingNote,
@@ -203,4 +206,24 @@ describe('snapshot normalisation', () => {
 it('acknowledges a viewed tile through its authenticated seen route', async () => {
   await markTileSeen(HOST, 'w-0badcafe')
   expect(calls[0]).toMatchObject({ url: `${HOST.baseUrl}/api/web-panes/w-0badcafe/seen`, method: 'POST', headers: { Authorization: 'Bearer secret-token' } })
+})
+
+describe('canvas threads', () => {
+  const thread = { id: 'ct-0123456789abcdef01234567', webPaneId: 'w-0badcafe', frameId: 'home', point: { x: 1, y: 2 }, status: 'open', createdAt: 1, messages: [{ author: 'user', text: 'Tighter', at: 1 }] }
+
+  it('reads the threads and drops malformed entries', async () => {
+    respond({ ok: true, threads: [thread, { id: 'broken' }] })
+    await expect(fetchCanvasThreads(HOST, 'w-0badcafe')).resolves.toEqual([thread])
+    expect(calls[0]).toMatchObject({ url: 'http://studio.tail-1a2b.ts.net:4310/api/web-panes/w-0badcafe/threads', method: 'GET' })
+  })
+
+  it('replies as the owner and changes status', async () => {
+    respond({ thread })
+    await replyCanvasThread(HOST, 'w-0badcafe', thread.id, 'Sounds good')
+    await setCanvasThreadStatus(HOST, 'w-0badcafe', thread.id, 'resolved')
+    expect(calls).toMatchObject([
+      { url: `http://studio.tail-1a2b.ts.net:4310/api/web-panes/w-0badcafe/threads/${thread.id}/replies`, method: 'POST', body: { text: 'Sounds good', author: 'user' } },
+      { url: `http://studio.tail-1a2b.ts.net:4310/api/web-panes/w-0badcafe/threads/${thread.id}/status`, method: 'POST', body: { status: 'resolved' } },
+    ])
+  })
 })

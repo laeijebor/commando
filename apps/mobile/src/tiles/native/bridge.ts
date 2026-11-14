@@ -194,7 +194,18 @@ export const NATIVE_TILE_PAGE_SCRIPT = `(function () {
       snippet: String(target.outerHTML || '').slice(0, 2048)
     };
     if (text) result.text = text.slice(0, 512);
-    post({ type: 'inspect', result: result });
+    /* Where in the viewport the tap landed, the viewport and scroll, and the canvas label around it, anchor a frame comment. */
+    var anchor = {
+      point: { x: event.clientX, y: event.clientY },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      scroll: { x: window.scrollX, y: window.scrollY }
+    };
+    var labelled = target.closest && target.closest('[data-canvas-label]');
+    if (labelled) {
+      anchor.label = String(labelled.getAttribute('data-canvas-label') || '').slice(0, 256);
+      if (labelled.hasAttribute('data-canvas-id')) anchor.labelId = String(labelled.getAttribute('data-canvas-id') || '').slice(0, 256);
+    }
+    post({ type: 'inspect', result: result, anchor: anchor });
   }, true);
 
   window.__commandoMobileTile = {
@@ -273,8 +284,47 @@ export type NativeTileEvent =
   | { type: 'ready'; url: string }
   | { type: 'response'; url: string; response: RedlinePageResponse }
   | { type: 'questions'; url: string; snapshot: RedlinePageQuestionSnapshot }
-  | { type: 'inspect'; url: string; result: TileInspectSuccess }
+  | { type: 'inspect'; url: string; result: TileInspectSuccess; anchor?: NativeTileAnchor }
   | { type: 'pin'; url: string; noteId: number }
+
+/**
+ * A Review tap, for a canvas frame comment: its viewport position, the
+ * viewport and scroll it was made at, and the enclosing `data-canvas-label`.
+ */
+export type NativeTileAnchor = {
+  point: { x: number; y: number }
+  viewport?: { width: number; height: number }
+  scroll?: { x: number; y: number }
+  label?: string
+  labelId?: string
+}
+
+const anchorCoordinate = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000
+const anchorText = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0 && value.length <= 256
+
+function anchorPair<A extends string, B extends string>(value: unknown, a: A, b: B): Record<A | B, number> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const raw = value as Record<string, unknown>
+  return anchorCoordinate(raw[a]) && anchorCoordinate(raw[b]) ? { [a]: raw[a], [b]: raw[b] } as Record<A | B, number> : undefined
+}
+
+function parseAnchor(value: unknown): NativeTileAnchor | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const raw = value as Record<string, unknown>
+  const point = anchorPair(raw.point, 'x', 'y')
+  if (!point) return undefined
+  const viewport = anchorPair(raw.viewport, 'width', 'height')
+  const scroll = anchorPair(raw.scroll, 'x', 'y')
+  return {
+    point,
+    ...(viewport && viewport.width > 0 && viewport.height > 0 ? { viewport } : {}),
+    ...(scroll ? { scroll } : {}),
+    ...(anchorText(raw.label) ? { label: raw.label } : {}),
+    ...(anchorText(raw.labelId) ? { labelId: raw.labelId } : {}),
+  }
+}
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength
@@ -336,6 +386,7 @@ export function parseNativeTileMessage(data: unknown, reportedUrl: string): Nati
       if (typeof result !== 'object' || result === null || Array.isArray(result)) return null
       const parsed = parseTileInspectResult(result as Record<string, unknown>)
       if (!parsed.ok || parsed.selector.length > 1_024 || parsed.tag.length > 32) return null
+      const anchor = parseAnchor(record.anchor)
       return {
         type: 'inspect',
         url,
@@ -344,6 +395,7 @@ export function parseNativeTileMessage(data: unknown, reportedUrl: string): Nati
           ...(parsed.text !== undefined ? { text: parsed.text.slice(0, 512) } : {}),
           ...(parsed.snippet !== undefined ? { snippet: parsed.snippet.slice(0, 2_048) } : {}),
         },
+        ...(anchor ? { anchor } : {}),
       }
     }
     case 'pin': {
