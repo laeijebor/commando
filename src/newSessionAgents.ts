@@ -1,13 +1,12 @@
-import type { ChatModelOption, ChatProvider } from '../shared/agent-chat'
 import {
   claudeProfileLabel,
   isChatLaunchProvider,
-  modelCatalogKey,
   type ClaudeProfile,
-  type ModelCatalogEntry,
-  type ModelCatalogs,
   type SessionAgentProvider,
 } from '../shared/tmux-create'
+
+// The model helpers live in shared code so the phone's create screen uses the same rules.
+export { DEFAULT_MODEL, modelCatalogFor, modelChoices, modelProvider } from '../shared/tmux-create'
 
 /** `none` starts the session with an empty pane that offers to launch something later. */
 export type StartWith = SessionAgentProvider | 'shell' | 'none'
@@ -61,41 +60,6 @@ export function takesPrompt(provider: StartWith): boolean {
 /** Only chats can be sent pasted images. */
 export function takesImages(provider: StartWith): boolean {
   return isChatLaunchProvider(provider)
-}
-
-/** The provider whose model list applies, or null when the agent has no model choice here. */
-export function modelProvider(provider: StartWith): ChatProvider | null {
-  switch (provider) {
-    case 'claude-chat': case 'claude': return 'claude'
-    case 'codex-chat': case 'codex': return 'codex'
-    case 'muse-chat': return 'muse'
-    case 'cursor-chat': return 'cursor'
-    case 'deepseek-chat': return 'deepseek'
-    default: return null
-  }
-}
-
-export const DEFAULT_MODEL: ChatModelOption = { value: 'default', displayName: 'Default' }
-
-/**
- * The cached list for this agent and profile. A Claude profile that has never run a chat
- * borrows the newest Claude list, since logins rarely differ in what they offer.
- */
-export function modelCatalogFor(catalogs: ModelCatalogs | null, provider: StartWith, configDir: string | undefined): ModelCatalogEntry | null {
-  const chatProvider = modelProvider(provider)
-  if (!catalogs || !chatProvider) return null
-  const exact = catalogs[modelCatalogKey(chatProvider, configDir)]
-  if (exact || chatProvider !== 'claude') return exact ?? null
-  return Object.entries(catalogs)
-    .filter(([key]) => key === 'claude' || key.startsWith('claude:'))
-    .map(([, entry]) => entry)
-    .sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null
-}
-
-/** The picker's options: the cached list, always led by the provider's own default. */
-export function modelChoices(entry: ModelCatalogEntry | null): ChatModelOption[] {
-  const models = entry?.models ?? []
-  return models.some((model) => model.value === 'default') ? models : [DEFAULT_MODEL, ...models]
 }
 
 export const MODEL_STORAGE_KEY = 'commando.tmux-create.model-by-agent'
