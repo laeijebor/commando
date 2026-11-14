@@ -87,6 +87,7 @@ export default function NewSessionScreen(): React.JSX.Element {
   const [name, setName] = useState('')
   const [directory, setDirectory] = useState(repoParam ?? '')
   const [directoryHistory, setDirectoryHistory] = useState<string[]>([])
+  const [historyLoaded, setHistoryLoaded] = useState(false)
   const [prepareByRepo, setPrepareByRepo] = useState<Record<string, string>>({})
   const [repoPickerOpen, setRepoPickerOpen] = useState(false)
   const [repo, setRepo] = useState<GitRepoInfo | null>(null)
@@ -156,20 +157,37 @@ export default function NewSessionScreen(): React.JSX.Element {
   const promptAccepted = agent !== 'shell' && agent !== 'opencode'
 
   useEffect(() => {
-    void loadDirectoryHistory().then(setDirectoryHistory)
+    void loadDirectoryHistory()
+      .then(setDirectoryHistory, () => undefined)
+      .finally(() => setHistoryLoaded(true))
     void loadPrepareCommands().then(setPrepareByRepo)
     void loadLaunchStore().then(setLaunchStore, () => setLaunchStore({}))
   }, [])
 
+  // A session created but not opened (its launch unconfirmed, or a later step failed) belongs to
+  // that visit; leaving, or a new "+", starts a fresh request rather than offering it again.
+  const forgetCreated = useCallback(() => {
+    if (!createdTarget.current) return
+    createdTarget.current = null
+    setError(null)
+  }, [])
+  useEffect(() => { if (!focused) forgetCreated() }, [focused, forgetCreated])
+
   // A "+" beside a repository asks for a session there, even when the screen is already open.
   useEffect(() => {
     if (!repoParam) return
+    forgetCreated()
     setDirectory(repoParam)
     setPathEdit(null)
-  }, [repoParam, requestedAt])
+  }, [repoParam, requestedAt, forgetCreated])
 
+  // Remembered settings apply on the first read, then whenever the directory reaches a repository
+  // (or folder) with its own record. Typing a path through others keeps what was picked here.
+  const launchApplied = useRef(false)
   useEffect(() => {
     if (!launchStore) return
+    if (launchApplied.current && !(repoKey && launchStore[repoKey])) return
+    launchApplied.current = true
     setAgent(launch.startWith ?? DEFAULT_AGENT_CHOICE)
     setPermissions(launch.permissions ?? {})
     setProfilePick(launch.configDir)
@@ -181,12 +199,13 @@ export default function NewSessionScreen(): React.JSX.Element {
   }, [launchStore === null, repoKey])
 
   // Nothing is selected on the first render, so the newest remembered
-  // directory (or the first repo a pane is sitting in) becomes the default.
+  // directory (or the first repo a pane is sitting in) becomes the default,
+  // once the history has been read rather than whichever arrives first.
   useEffect(() => {
-    if (directory) return
+    if (directory || !historyLoaded) return
     const fallback = directoryHistory[0] ?? repos[0]?.root
     if (fallback) setDirectory(fallback)
-  }, [directory, directoryHistory, repos])
+  }, [directory, directoryHistory, historyLoaded, repos])
 
   // Profiles and model lists are read again on each visit, as the desktop does on each open.
   useEffect(() => {

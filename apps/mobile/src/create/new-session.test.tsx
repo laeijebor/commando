@@ -7,16 +7,17 @@ import NewSessionScreen from '../../app/(host)/[hostId]/new-session'
 import { useHostsStore } from '../hosts/store'
 import { ThemeProvider } from '../theme'
 import { createTmuxSession, fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, runInPane } from '../daemon/paneApi'
-import { LAUNCH_KEY, rememberDirectory } from './prefs'
+import { LAUNCH_KEY, loadDirectoryHistory, rememberDirectory } from './prefs'
 
 const mockRouter = { replace: jest.fn(), back: jest.fn() }
 let mockParams: Record<string, string> = { hostId: 'host-1' }
 jest.mock('expo-router', () => ({ useLocalSearchParams: () => mockParams, useRouter: () => mockRouter, useIsFocused: () => true }))
-jest.mock('../daemon/useDaemonConnection', () => ({ useDaemonConnection: () => ({ snapshot: null }) }))
+let mockSnapshot: unknown = null
+jest.mock('../daemon/useDaemonConnection', () => ({ useDaemonConnection: () => ({ snapshot: mockSnapshot }) }))
 jest.mock('../daemon/paneApi', () => ({ createTmuxSession: jest.fn(), fetchClaudeProfiles: jest.fn(async () => []), fetchModelCatalogs: jest.fn(async () => ({})), fetchRepoInfo: jest.fn(async () => ({ isRepo: false })), runInPane: jest.fn() }))
 jest.mock('./prefs', () => ({
   ...jest.requireActual('./prefs'),
-  loadDirectoryHistory: async () => [],
+  loadDirectoryHistory: jest.fn(async () => []),
   loadPrepareCommands: async () => ({}),
   rememberDirectory: jest.fn(async () => []),
   rememberPrepareCommand: jest.fn(),
@@ -39,6 +40,8 @@ beforeEach(() => {
   jest.restoreAllMocks()
   store.clear()
   mockParams = { hostId: 'host-1' }
+  mockSnapshot = null
+  ;(loadDirectoryHistory as jest.Mock).mockResolvedValue([])
   ;(createTmuxSession as jest.Mock).mockImplementation(async (_host: unknown, input: CreateTmuxSessionRequest) => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
   ;(rememberDirectory as jest.Mock).mockResolvedValue([])
   ;(fetchClaudeProfiles as jest.Mock).mockResolvedValue([])
@@ -261,4 +264,41 @@ it('sends uploaded images with a chat’s opening prompt', async () => {
   await create()
   expect(lastRequest().agent).toEqual({ provider: 'claude-chat', permissionMode: 'default', prompt: 'What is wrong here?', images: [mockImageRef] })
   expect(screen.queryByLabelText('Remove shot.png')).toBeNull()
+})
+
+it('keeps the picked settings while a directory without a record is typed', async () => {
+  ;(fetchClaudeProfiles as jest.Mock).mockResolvedValue(PROFILES)
+  ;(fetchModelCatalogs as jest.Mock).mockResolvedValue(CATALOGS)
+  await openScreen()
+  answerSheets('Opus', 'Plan mode')
+  await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Model: Default model' })) })
+  await act(async () => { fireEvent.press(screen.getByRole('button', { name: /^Permissions:/u })) })
+  fireEvent.changeText(screen.getByLabelText('Directory'), '/t')
+  fireEvent.changeText(screen.getByLabelText('Directory'), '/tmp')
+  await act(async () => undefined)
+  expect(screen.getByRole('button', { name: 'Model: Opus' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Permissions: Plan mode' })).toBeTruthy()
+})
+
+it('treats a new "+" as a fresh request after a create that was not opened', async () => {
+  ;(rememberDirectory as jest.Mock).mockRejectedValue(new Error('Storage unavailable'))
+  await openScreen()
+  await create()
+  expect(screen.getByRole('button', { name: 'Open session' })).toBeTruthy()
+  mockParams = { hostId: 'host-1', repo: '/code/other', at: '2' }
+  screen.rerender(<ThemeProvider><NewSessionScreen /></ThemeProvider>)
+  await act(async () => undefined)
+  expect(screen.queryByText(/preferences could not be saved/u)).toBeNull()
+  expect(screen.getByLabelText('Directory').props.value).toBe('/code/other')
+  ;(rememberDirectory as jest.Mock).mockResolvedValue([])
+  await create()
+  expect(createTmuxSession).toHaveBeenCalledTimes(2)
+  expect(lastRequest().cwd).toBe('/code/other')
+})
+
+it('defaults to the last directory used, not the first repository a pane is in', async () => {
+  mockSnapshot = { panes: [{ id: '%1', repo: { root: '/code/alpha', name: 'alpha' } }] }
+  ;(loadDirectoryHistory as jest.Mock).mockResolvedValue(['/tmp/last'])
+  await openScreen()
+  expect(screen.getByLabelText('Directory').props.value).toBe('/tmp/last')
 })
