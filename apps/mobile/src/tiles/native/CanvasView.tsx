@@ -13,6 +13,7 @@ import { EmptyState, Segmented, SectionHeader } from '../../ui/primitives'
 import { addPendingResponse } from '../api'
 import { useQueueActions } from '../useQueueActions'
 import { NativePageView } from './NativePageView'
+import { CanvasThreadList, useCanvasThreads } from './CanvasThreads'
 import { QuestionCard } from './QuestionCard'
 import { QueueChrome } from './QueueChrome'
 import { canvasQuestions, canvasQuestionsPage, pendingForQuestion, sentForQuestion } from './questions'
@@ -53,13 +54,15 @@ export function CanvasView({ host, tile, source, active }: {
   const theme = useTheme()
   const [manifest, setManifest] = useState<CanvasManifest | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<'questions' | 'frames'>('questions')
+  const [view, setView] = useState<'questions' | 'frames' | 'threads'>('questions')
   const [frameId, setFrameId] = useState<string | null>(null)
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null)
   const questionsPage = canvasQuestionsPage(source.canonicalBase, source.manifest)
 
   const { pending, apply } = usePendingQueue(host, tile, questionsPage, active && frameId === null)
   const queue = useQueueActions({ host, webPaneId: tile.id, pending, onSnapshot: apply })
+  const threads = useCanvasThreads(host, tile.id, active)
+  const openThreads = threads.threads?.filter((thread) => thread.status === 'open').length ?? 0
 
   const load = useCallback(() => {
     void fetchManifest(host, source)
@@ -109,6 +112,7 @@ export function CanvasView({ host, tile, source, active }: {
             daemonServed: true,
           }}
           tile={tile}
+          canvasFrame={{ frame, sections: manifest?.sections ?? [] }}
         />
       </View>
     )
@@ -127,13 +131,25 @@ export function CanvasView({ host, tile, source, active }: {
           options={[
             { value: 'questions', label: openCount ? `Questions · ${openCount}` : 'Questions' },
             { value: 'frames', label: `Frames · ${manifest?.frames.length ?? 0}` },
+            { value: 'threads', label: openThreads ? `Threads · ${openThreads}` : 'Threads' },
           ]}
           value={view}
         />
       </View>
       <ScrollView automaticallyAdjustKeyboardInsets contentContainerStyle={styles.list} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
         {error ? <Text accessibilityRole="alert" style={[styles.error, { color: theme.red }]}>{error}</Text> : null}
-        {!manifest ? (
+        {view === 'threads' ? (
+          <>
+            {threads.error ? <Text accessibilityRole="alert" style={[styles.error, { color: theme.red }]}>{threads.error}</Text> : null}
+            <CanvasThreadList
+              manifest={manifest}
+              onReply={threads.reply}
+              onReveal={setFrameId}
+              onStatus={threads.setStatus}
+              threads={threads.threads}
+            />
+          </>
+        ) : !manifest ? (
           <EmptyState title="Reading the canvas…" />
         ) : view === 'questions' ? (
           questions.length === 0 ? (

@@ -1,4 +1,6 @@
 import type {
+  CanvasNoteContext,
+  CanvasThread,
   WebPaneEngine,
   WebPanePendingNote,
   WebPanePendingSnapshot,
@@ -20,6 +22,8 @@ export type PendingNoteDraft = {
   comment: string
   pageUrl?: string
   queueKey?: string
+  /** A canvas frame comment's anchor; sending one starts a thread. */
+  canvas?: CanvasNoteContext
 }
 
 export type PendingSendTarget = { id: number; revision: number }
@@ -218,4 +222,40 @@ export async function dismissDroppedAnswers(
     method: 'POST',
     body: {},
   }))
+}
+
+/** `GET …/threads` — a canvas tab's discussions: sent pins with the agent's replies. */
+export async function fetchCanvasThreads(host: Host, webPaneId: string): Promise<CanvasThread[]> {
+  const body = await call(host, tilePath(webPaneId, '/threads'))
+  const threads = (body as { threads?: unknown } | null)?.threads
+  return Array.isArray(threads) ? threads.filter(isCanvasThread) : []
+}
+
+function isCanvasThread(value: unknown): value is CanvasThread {
+  if (typeof value !== 'object' || value === null) return false
+  const thread = value as Partial<CanvasThread>
+  return typeof thread.id === 'string' && typeof thread.frameId === 'string' &&
+    (thread.status === 'open' || thread.status === 'resolved') && Array.isArray(thread.messages) &&
+    thread.messages.every((message) => typeof message?.text === 'string' && (message.author === 'user' || message.author === 'agent'))
+}
+
+/**
+ * `POST …/threads/:threadId/replies` as the owner. The daemon sends it to the
+ * agent at once, like a pin's Send this, and a reply reopens a resolved thread.
+ */
+export async function replyCanvasThread(host: Host, webPaneId: string, threadId: string, text: string): Promise<CanvasThread> {
+  const body = await call(host, tilePath(webPaneId, `/threads/${encodeURIComponent(threadId)}/replies`), {
+    method: 'POST',
+    body: { text, author: 'user' },
+  })
+  return (body as { thread: CanvasThread }).thread
+}
+
+/** `POST …/threads/:threadId/status` — resolve or reopen. */
+export async function setCanvasThreadStatus(host: Host, webPaneId: string, threadId: string, status: CanvasThread['status']): Promise<CanvasThread> {
+  const body = await call(host, tilePath(webPaneId, `/threads/${encodeURIComponent(threadId)}/status`), {
+    method: 'POST',
+    body: { status },
+  })
+  return (body as { thread: CanvasThread }).thread
 }

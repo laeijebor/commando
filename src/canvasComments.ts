@@ -1,8 +1,11 @@
 import type { CanvasFrame, CanvasSection } from '../shared/canvas-manifest.js'
+import { canvasNoteContext } from '../shared/canvas-feedback.js'
 import type { CanvasNoteContext, WebPanePendingNote } from '../shared/protocol.js'
 import { MAX_QUESTION_SNAPSHOT_BYTES, MAX_RESPONSE_PAYLOAD_BYTES, parseRedlinePageQuestionSnapshot, parseRedlinePageResponse } from '../shared/redline-response.js'
 import { MAX_INSPECT_SELECTOR, MAX_INSPECT_TAG, MAX_INSPECT_TEXT } from '../shared/tile-inspect.js'
 import type { CanvasBounds } from './canvasCamera.js'
+
+export { canvasNoteContext }
 
 export type CanvasHit = { selector: string; rect: CanvasBounds; label?: string; labelId?: string; tag: string; text?: string }
 export type CanvasDraft = { comment?: string; canvas: CanvasNoteContext; hit: CanvasHit; pageUrl: string }
@@ -30,14 +33,6 @@ export function canvasRedlineResponse(payload: unknown) {
   try { value = JSON.parse(payload) } catch { return null }
   if (parseRedlinePageQuestionSnapshot(value)) return null
   return bytes <= MAX_RESPONSE_PAYLOAD_BYTES ? parseRedlinePageResponse(value) : null
-}
-
-export function canvasNoteContext(frame: CanvasFrame, sections: CanvasSection[], point: { x: number; y: number }, label?: string, labelId?: string): CanvasNoteContext {
-  const section = sections.find((section) => section.frames.includes(frame.id))
-  return { frameId: frame.id, point, frameTitle: frame.title.slice(0, 1_024),
-    ...(label ? { label } : {}), ...(labelId ? { labelId } : {}),
-    ...(section ? { section: section.title.slice(0, 256), status: section.status, ...(section.ticket ? { ticket: section.ticket.slice(0, 256) } : {}) } : {}),
-    ...(frame.focus !== undefined ? { focus: frame.focus } : {}), interactive: frame.interactive ?? false }
 }
 
 export function canvasSectionStatusNote(frame: CanvasFrame, section: CanvasSection, status: CanvasSection['status'], pageUrl: string): Omit<WebPanePendingNote, 'id' | 'revision' | 'attachments'> {
