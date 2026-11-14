@@ -223,6 +223,35 @@ npx eas-cli upload --platform ios --build-path /tmp/Commando-ipa/Commando.ipa
 Only devices in that profile can install it. Builds made before EAS Update was
 added never check for updates and must be replaced once.
 
+### Continuous delivery from `next`
+
+`scripts/mobile-ota.mjs` publishes an update whenever local `next` moves and
+the change touches `apps/mobile/` or `shared/`. A LaunchAgent
+(`com.commando.mobile-ota`) watches the `next` ref, with a 15-minute poll as a
+fallback, so it runs while the Mac is awake. Each run:
+
+1. checks `next` out in its own detached worktree (`../commando-mobile-ota`);
+2. compares the native fingerprint and runtime version with the baseline
+   recorded for the installed build, and stops if they differ, because that
+   change needs a new build;
+3. runs the mobile typecheck and tests;
+4. runs `eas update` on `production`, named after the mobile commits it brings.
+
+Each outcome (published, or blocked and why) raises a macOS notification and
+goes to `~/.commando/logs/mobile-ota.log`. State lives in
+`~/.commando/mobile-ota.json`.
+
+```sh
+node scripts/mobile-ota.mjs install    # once; re-run after moving the repo
+node scripts/mobile-ota.mjs baseline   # after installing a new native build
+node scripts/mobile-ota.mjs status
+node scripts/mobile-ota.mjs run --force   # publish now, even if next hasn't moved
+node scripts/mobile-ota.mjs uninstall
+```
+
+After shipping a new native build, record its baseline from the same `next`
+the build was made from. Otherwise CD keeps refusing to publish.
+
 ## Pointing at a daemon over Tailscale
 
 Start the daemon on the Mac with Tailscale binding enabled:
