@@ -204,7 +204,9 @@ export class GitWorktreeService {
     const worktrees = branchExists || await this.pathExists(target)
       ? parseWorktreeList((await this.git(cwd, ['worktree', 'list', '--porcelain'])).stdout)
       : []
-    const attached = worktrees.find((entry) => entry.branch === branch)
+    // A branch can be registered twice (a stale entry plus a forced checkout); any other path counts as checked out.
+    const attached = worktrees.find((entry) => entry.branch === branch && path.normalize(entry.path) !== target)
+      ?? worktrees.find((entry) => entry.branch === branch)
     if (attached && path.normalize(attached.path) === target) {
       if (await this.pathExists(target)) return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: async () => undefined }
       if (!input.existingBranchOnly) {

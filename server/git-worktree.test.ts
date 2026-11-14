@@ -499,6 +499,13 @@ describe('GitWorktreeService.removeWorktree', () => {
       expect(readdirSync(linked).sort()).toEqual(['.git', 'README.md'])
       expect(run(linked, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('feature')
       expect(run(main, 'worktree', 'list', '--porcelain')).toContain(`worktree ${unplugged}\n`)
+
+      // A branch already recovered elsewhere (with --force) is not checked out a second time.
+      const recovered = path.join(base, 'recovered')
+      rmSync(linked, { recursive: true, force: true })
+      run(main, 'worktree', 'add', '-q', '--force', recovered, 'feature')
+      await expect(service.createWorktree({ mainRoot: main, branch: 'feature', path: linked, existingBranchOnly: true }))
+        .rejects.toMatchObject({ kind: 'branch-checked-out', message: `Branch feature is already checked out at ${recovered}` })
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
