@@ -4,6 +4,7 @@ import {
   DEFAULT_AGENT_CHOICE,
   baseLabel,
   buildSessionRequest,
+  defaultPermission,
   effectiveBranch,
   previewWorktreePath,
   repoOptions,
@@ -64,9 +65,10 @@ describe('the create form model', () => {
     expect(buildSessionRequest({ ...FORM, worktreeEnabled: false }, REPO).worktree).toBeUndefined()
   })
 
-  it('sends a Claude profile only for a Claude chat', () => {
+  it('sends a Claude profile only for Claude, as a chat or in a terminal', () => {
     const configDir = '/Users/leo/.claudep'
     expect(buildSessionRequest({ ...FORM, agent: 'claude-chat', configDir }, null).agent).toEqual({ provider: 'claude-chat', permissionMode: 'default', configDir })
+    expect(buildSessionRequest({ ...FORM, agent: 'claude', configDir }, null).agent).toEqual({ provider: 'claude', configDir })
     expect(buildSessionRequest({ ...FORM, agent: 'codex-chat', configDir }, null).agent).not.toHaveProperty('configDir')
     expect(buildSessionRequest({ ...FORM, agent: 'claude-chat' }, null).agent).not.toHaveProperty('configDir')
   })
@@ -112,4 +114,27 @@ it.each(['claude-chat', 'codex-chat', 'muse-chat'] as const)('mirrors the deskto
 it('allows provider-supported permission modes and rejects incompatible selections', () => {
   expect(buildSessionRequest({ ...FORM, agent: 'codex-chat', permissionMode: 'plan' }, REPO).agent).toEqual({ provider: 'codex-chat', permissionMode: 'plan' })
   expect(() => buildSessionRequest({ ...FORM, agent: 'muse-chat', permissionMode: 'plan' }, REPO)).toThrow('supported permission mode')
+})
+
+it('sends the model, fast mode and images only where the agent takes them', () => {
+  const images = [{ id: `${'a'.repeat(64)}.png`, name: 'shot.png' }]
+  const extras = { model: 'opus', fast: true, images }
+  expect(buildSessionRequest({ ...FORM, agent: 'claude-chat', ...extras }, null).agent)
+    .toEqual({ provider: 'claude-chat', permissionMode: 'default', model: 'opus', fast: true, images })
+  // Terminal Claude and Codex take a model but neither fast mode nor images.
+  expect(buildSessionRequest({ ...FORM, agent: 'claude', ...extras }, null).agent).toEqual({ provider: 'claude', model: 'opus' })
+  expect(buildSessionRequest({ ...FORM, agent: 'cursor', ...extras }, null).agent).toEqual({ provider: 'cursor' })
+  expect(buildSessionRequest({ ...FORM, agent: 'codex-chat', model: 'default', fast: false }, null).agent).toEqual({ provider: 'codex-chat', permissionMode: 'default' })
+})
+
+it('marks Muse full access the way the desktop does', () => {
+  expect(buildSessionRequest({ ...FORM, agent: 'muse-chat', permissionMode: 'bypassPermissions' }, null).agent)
+    .toEqual({ provider: 'muse-chat', permissionMode: 'bypassPermissions', fullAccess: true })
+})
+
+it('starts each chat on its remembered permission, else its own default', () => {
+  expect(defaultPermission('claude-chat')).toBe('default')
+  expect(defaultPermission('cursor-chat')).toBe('bypassPermissions')
+  expect(defaultPermission('codex-chat', 'plan')).toBe('plan')
+  expect(defaultPermission('muse-chat', 'plan')).toBe('default')
 })
