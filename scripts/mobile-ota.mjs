@@ -249,14 +249,27 @@ function baseline({ commit, force }) {
   if (!commit) throw new Error('usage: mobile-ota.mjs baseline <commit the installed build was made from>')
   const where = locations()
   const sha = git(where.mainCheckout, 'rev-parse', '--verify', `${commit}^{commit}`)
-  ensureWorktree(where, sha)
-  const deps = installDependencies(where.worktree, readState())
-  if (!deps.ok) throw new Error('npm ci failed; see ~/.commando/logs/mobile-ota.log')
-  const identity = nativeIdentity(join(where.worktree, 'apps/mobile'))
-  const verdict = baselineVerdict(readState().baseline, identity)
-  if (!verdict.ok && !force) throw new Error(`${verdict.reason} (--force records it anyway)`)
-  writeState({ ...readState(), lockHash: deps.lockHash, baseline: { ...identity, commit: sha, recordedAt: new Date().toISOString() } })
-  log(`baseline: runtime ${identity.runtime}, fingerprint ${identity.fingerprint} at ${sha.slice(0, 8)}`)
+  // A throwaway worktree: the delivery worktree (and its installed packages)
+  // stays on next, so the launcher and the next run never see the build commit.
+  const scratch = `${where.worktree}-baseline`
+  const removeScratch = () => {
+    spawnSync('git', ['-C', where.mainCheckout, 'worktree', 'remove', '--force', scratch], { stdio: 'ignore' })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+  removeScratch()
+  git(where.mainCheckout, 'worktree', 'add', '--detach', scratch, sha)
+  try {
+    if (!installDependencies(scratch, {}).ok) throw new Error('npm ci failed; see ~/.commando/logs/mobile-ota.log')
+    const identity = nativeIdentity(join(scratch, 'apps/mobile'))
+    const verdict = baselineVerdict(readState().baseline, identity)
+    if (!verdict.ok && !force) throw new Error(`${verdict.reason} (--force records it anyway)`)
+    // Forget the last commit seen: one blocked for this native change is now publishable.
+    const { lastSeen: _forgotten, ...state } = readState()
+    writeState({ ...state, baseline: { ...identity, commit: sha, recordedAt: new Date().toISOString() } })
+    log(`baseline: runtime ${identity.runtime}, fingerprint ${identity.fingerprint} at ${sha.slice(0, 8)}`)
+  } finally {
+    removeScratch()
+  }
 }
 
 function install() {
