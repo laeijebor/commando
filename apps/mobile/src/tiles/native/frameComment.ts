@@ -10,13 +10,16 @@ type Target = TileInspectSuccess & { anchor?: NativeTileAnchor }
 
 /**
  * A frame comment's anchor, in the desktop's terms: frame-local CSS pixels.
- * The phone lays a frame out at its own width, so the tap's viewport position
+ * The phone lays a frame out at its own width, so the tap's document position
  * is scaled by the frame's width over the phone's (one factor for both axes,
  * as the layout scales) and clamped to the frame. The label names the element
  * either way.
  */
 export function frameCommentContext(frame: CanvasFrame, sections: CanvasSection[], target: Target): CanvasNoteContext {
-  const raw = target.anchor?.point ?? { x: target.rect.x + target.rect.width / 2, y: target.rect.y + target.rect.height / 2 }
+  // Document coordinates: the desktop draws a pin at that spot on the unscrolled frame.
+  const scroll = target.anchor?.scroll ?? { x: 0, y: 0 }
+  const tap = target.anchor?.point ?? { x: target.rect.x + target.rect.width / 2, y: target.rect.y + target.rect.height / 2 }
+  const raw = { x: tap.x + scroll.x, y: tap.y + scroll.y }
   const viewportWidth = target.anchor?.viewport?.width
   const scale = viewportWidth ? frame.w / viewportWidth : 1
   const clamp = (value: number, max: number) => Math.round(Math.min(max, Math.max(0, value * scale)))
