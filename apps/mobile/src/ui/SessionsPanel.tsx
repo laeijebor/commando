@@ -62,6 +62,8 @@ export type SessionsPanelProps = {
   /** A row tap: the answer screen on the phone, a focus change in the cockpit. */
   onSelectRow: (row: AgentRow) => void
   onSelectPane: (paneId: string) => void
+  /** A repository's "+" in the chat list: a new session there. */
+  onNewSession?: (repoRoot: string) => void
   /** The cockpit's focused pane, highlighted in both views. */
   selectedPaneId?: string | undefined
 }
@@ -82,6 +84,7 @@ export function SessionsPanel({
   onChangeView,
   onSelectRow,
   onSelectPane,
+  onNewSession,
   selectedPaneId,
 }: SessionsPanelProps): React.JSX.Element {
   const theme = useTheme()
@@ -112,7 +115,7 @@ export function SessionsPanel({
 
       </View>
       {view === 'chats' ? (
-        <ChatList active={active} refreshing={refreshing} onRefresh={onRefresh} onSelectRow={onSelectRow} hostId={hostId} state={state} onSelectPane={onSelectPane} selectedPaneId={selectedPaneId} />
+        <ChatList active={active} refreshing={refreshing} onRefresh={onRefresh} onSelectRow={onSelectRow} onNewSession={onNewSession} hostId={hostId} state={state} onSelectPane={onSelectPane} selectedPaneId={selectedPaneId} />
       ) : <ScrollView keyboardShouldPersistTaps="handled" refreshControl={onRefresh ? <RefreshControl refreshing={Boolean(refreshing)} onRefresh={onRefresh} tintColor={theme.muted} /> : undefined} contentContainerStyle={styles.scroll}>{view === 'attention' ? (
         <AttentionList
           groups={groups}

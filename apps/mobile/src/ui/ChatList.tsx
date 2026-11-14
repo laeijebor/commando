@@ -23,6 +23,8 @@ import { EmptyState, withAlpha } from './primitives'
 
 const EMPTY_IDENTITIES: SessionIdentities = {}
 const EMPTY_SEEN: Record<string, number> = {}
+/** `buildChatGroups` ids a repository's group by its main checkout. */
+const REPO_GROUP = 'repo:'
 type SessionRow = {
   id: string; name: string; identity: SessionIdentity
   indicator: ReturnType<typeof buildChatGroups>[number]['sessions'][number]['indicator']
@@ -30,11 +32,13 @@ type SessionRow = {
   paneIds: string[]; selected: boolean
   children: { id: string; title: string; provider?: string; attention: Attention; selected: boolean }[]
 }
-type Entry = { kind: 'header'; key: string; name: string; count: number; collapsed: boolean } | { kind: 'session'; key: string; row: SessionRow }
+type Entry = { kind: 'header'; key: string; name: string; count: number; collapsed: boolean; repoRoot?: string } | { kind: 'session'; key: string; row: SessionRow }
 
-export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelectRow, active = true, refreshing = false, onRefresh }: {
+export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelectRow, onNewSession, active = true, refreshing = false, onRefresh }: {
   state: HostDaemonState; hostId?: string; selectedPaneId?: string; onSelectPane: (id: string) => void
   onSelectRow?: (row: AgentRow) => void; active?: boolean; refreshing?: boolean; onRefresh?: () => void
+  /** A repository header's "+": a new session in that repository. */
+  onNewSession?: ((repoRoot: string) => void) | undefined
 }): React.JSX.Element {
   const theme = useTheme()
   const foreground = useAppActive(active)
@@ -48,8 +52,9 @@ export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelect
   const collapseRef = useRef(collapsed)
   const touched = useRef(false)
   const [visible, setVisible] = useState<Set<string>>(new Set())
-  const callbacks = useRef({ state, chats, onSelectPane, onSelectRow })
-  callbacks.current = { state, chats, onSelectPane, onSelectRow }
+  const callbacks = useRef({ state, chats, onSelectPane, onSelectRow, onNewSession })
+  callbacks.current = { state, chats, onSelectPane, onSelectRow, onNewSession }
+  const newSession = useCallback((repoRoot: string) => callbacks.current.onNewSession?.(repoRoot), [])
   useEffect(() => {
     let live = true
     void readPreference('commando.chats.collapsed').then((stored) => {
@@ -78,7 +83,7 @@ export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelect
     else current.onSelectPane(paneId)
   }, [])
   const entries = useMemo<Entry[]>(() => groups.flatMap((group) => [
-    { kind: 'header' as const, key: group.id, name: group.name, count: group.sessions.length, collapsed: Boolean(collapsed[group.id]) },
+    { kind: 'header' as const, key: group.id, name: group.name, count: group.sessions.length, collapsed: Boolean(collapsed[group.id]), ...(group.id.startsWith(REPO_GROUP) ? { repoRoot: group.id.slice(REPO_GROUP.length) } : {}) },
     ...(!collapsed[group.id] ? group.sessions.map((row): Entry => ({ kind: 'session', key: row.session.id, row: {
       id: row.session.id, name: row.session.name, identity: row.identity, indicator: row.indicator,
       subtitle: row.subtitle, provider: row.provider, updatedAt: row.updatedAt, pending: row.pending, openPaneId: row.openPaneId,
@@ -104,18 +109,26 @@ export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelect
     refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.muted} /> : undefined}
     ListEmptyComponent={<EmptyState title="No chats yet" body="Your sessions will appear when the daemon connects." />}
     renderItem={({ item }) => item.kind === 'header'
-      ? <GroupHeader entry={item} toggle={toggle} />
+      ? <GroupHeader entry={item} toggle={toggle} onNew={onNewSession ? newSession : undefined} />
       : <SessionListRow row={item.row} host={host} active={foreground && visible.has(item.key)} select={select} />}
   />
 }
-const GroupHeader = memo(function GroupHeader({ entry, toggle }: { entry: Extract<Entry, { kind: 'header' }>; toggle: (id: string) => void }) {
+const GroupHeader = memo(function GroupHeader({ entry, toggle, onNew }: { entry: Extract<Entry, { kind: 'header' }>; toggle: (id: string) => void; onNew?: ((repoRoot: string) => void) | undefined }) {
   const theme = useTheme()
-  return <Pressable accessibilityRole="button" accessibilityState={{ expanded: !entry.collapsed }} onPress={() => toggle(entry.key)} style={styles.groupHead}>
-    <Feather name={entry.collapsed ? 'chevron-right' : 'chevron-down'} size={14} color={theme.muted} />
-    <Text numberOfLines={1} style={[styles.groupName, { color: entry.key === 'background' ? theme.muted : theme.text }]}>{entry.name}</Text>
-    <Text style={[styles.count, { color: theme.textDim }]}>{entry.count}</Text>
-    <View style={[styles.rule, { backgroundColor: theme.border }]} />
-  </Pressable>
+  const repoRoot = entry.repoRoot
+  return <View style={styles.groupHead}>
+    <Pressable accessibilityRole="button" accessibilityState={{ expanded: !entry.collapsed }} onPress={() => toggle(entry.key)} style={styles.groupToggle}>
+      <Feather name={entry.collapsed ? 'chevron-right' : 'chevron-down'} size={14} color={theme.muted} />
+      <Text numberOfLines={1} style={[styles.groupName, { color: entry.key === 'background' ? theme.muted : theme.text }]}>{entry.name}</Text>
+      <Text style={[styles.count, { color: theme.textDim }]}>{entry.count}</Text>
+      <View style={[styles.rule, { backgroundColor: theme.border }]} />
+    </Pressable>
+    {onNew && repoRoot ? (
+      <Pressable accessibilityRole="button" accessibilityLabel={`New session in ${entry.name}`} hitSlop={8} onPress={() => onNew(repoRoot)} style={({ pressed }) => [styles.groupAdd, { borderColor: theme.border, backgroundColor: pressed ? theme.surfaceHover : theme.surfaceRaised }]}>
+        <Feather name="plus" size={14} color={theme.muted} />
+      </Pressable>
+    ) : null}
+  </View>
 })
 const SessionListRow = memo(function SessionListRow({ row, host, active, select }: { row: SessionRow; host?: Host; active: boolean; select: (paneId: string) => void }) {
   const theme = useTheme()
@@ -149,7 +162,9 @@ const SessionListRow = memo(function SessionListRow({ row, host, active, select 
 }, (a, b) => a.host === b.host && a.active === b.active && a.select === b.select && JSON.stringify(a.row) === JSON.stringify(b.row))
 const styles = StyleSheet.create({
   list: { flex: 1, minHeight: 0, overflow: 'hidden' }, content: { paddingHorizontal: 16, paddingBottom: 112 },
-  groupHead: { minHeight: 48, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 4 },
+  groupHead: { minHeight: 48, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4 },
+  groupToggle: { flex: 1, minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  groupAdd: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   groupName: { fontSize: 14, fontWeight: '600', flexShrink: 1 }, count: { fontSize: 12, fontVariant: ['tabular-nums'] }, rule: { height: StyleSheet.hairlineWidth, flex: 1, marginLeft: 3 },
   row: { minHeight: 70, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 6, paddingVertical: 10, borderRadius: 9 }, indicator: { width: 12, alignItems: 'center' },
   text: { flex: 1, minWidth: 0, gap: 5 }, name: { fontSize: 16, fontWeight: '600' }, subtitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 }, subtitle: { fontSize: 13, flex: 1 },

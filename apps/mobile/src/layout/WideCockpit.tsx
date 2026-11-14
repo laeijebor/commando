@@ -21,7 +21,7 @@ import { SessionsPanel, useSessionsView } from '../ui/SessionsPanel'
 import { chooseFocusedPane } from './focus'
 import { useFocusedPaneId, useFocusStore } from './focusStore'
 import { HUD_COLUMN_WIDTH, SESSIONS_COLUMN_WIDTH, type LayoutMode } from './useLayoutMode'
-import { routeParams } from './routeParams'
+import { newSessionParams, routeParams } from './routeParams'
 
 /** The HUD column shows everything but the screenshots, which stay in the sheet. */
 const HUD_SECTIONS = ['worklog', 'changes', 'pr', 'ports'] as const
@@ -89,9 +89,15 @@ export function WideCockpit({
     onSheetOpenChange(false)
   }
 
+  const newSession = (repoRoot?: string): void => {
+    onSheetOpenChange(false)
+    router.push({ pathname: '/(host)/[hostId]/new-session', params: newSessionParams(hostId, repoRoot) })
+  }
+
   const sessions = (
     <SessionsPanel active={screenFocused && (mode === 'wide' || sheetOpen)} hostId={hostId}
       onChangeView={changeView}
+      onNewSession={(repoRoot) => newSession(repoRoot)}
       onSelectPane={focusPane}
       onSelectRow={(row) => focusPane(row.paneId)}
       selectedPaneId={paneId}
@@ -106,10 +112,7 @@ export function WideCockpit({
       <View style={[styles.sessionsFooter, { borderTopColor: theme.border }]}>
         <Button
           label="+ New session"
-          onPress={() => {
-            onSheetOpenChange(false)
-            router.push({ pathname: '/(host)/[hostId]/new-session', params: { hostId } })
-          }}
+          onPress={() => newSession()}
         />
       </View>
     </View>

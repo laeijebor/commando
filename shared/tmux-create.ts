@@ -385,6 +385,41 @@ export function modelCatalogKey(provider: ChatProvider, configDir?: string): str
   return provider === 'claude' && configDir ? `claude:${configDir}` : provider
 }
 
+/** The provider whose model list applies to a start-with choice, or null when it has no model choice. */
+export function modelProvider(provider: string): ChatProvider | null {
+  switch (provider) {
+    case 'claude-chat': case 'claude': return 'claude'
+    case 'codex-chat': case 'codex': return 'codex'
+    case 'muse-chat': return 'muse'
+    case 'cursor-chat': return 'cursor'
+    case 'deepseek-chat': return 'deepseek'
+    default: return null
+  }
+}
+
+export const DEFAULT_MODEL: ChatModelOption = { value: 'default', displayName: 'Default' }
+
+/**
+ * The cached list for this agent and profile. A Claude profile that has never run a chat
+ * borrows the newest Claude list, since logins rarely differ in what they offer.
+ */
+export function modelCatalogFor(catalogs: ModelCatalogs | null, provider: string, configDir: string | undefined): ModelCatalogEntry | null {
+  const chatProvider = modelProvider(provider)
+  if (!catalogs || !chatProvider) return null
+  const exact = catalogs[modelCatalogKey(chatProvider, configDir)]
+  if (exact || chatProvider !== 'claude') return exact ?? null
+  return Object.entries(catalogs)
+    .filter(([key]) => key === 'claude' || key.startsWith('claude:'))
+    .map(([, entry]) => entry)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null
+}
+
+/** The picker's options: the cached list, always led by the provider's own default. */
+export function modelChoices(entry: ModelCatalogEntry | null): ChatModelOption[] {
+  const models = entry?.models ?? []
+  return models.some((model) => model.value === 'default') ? models : [DEFAULT_MODEL, ...models]
+}
+
 const AUTO_NAME_WORDS = 6
 const AUTO_NAME_LENGTH = 40
 

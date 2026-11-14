@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
@@ -8,7 +8,6 @@ import {
   hostTakesInput,
   hostTakesSettings,
   hostTakesTurnFlow,
-  isChatVideoId,
   type ChatCarriedDraft,
   type ChatCommand,
   type ChatFileSearchResult,
@@ -29,18 +28,16 @@ import {
 
 import type { Host } from '../hosts/types'
 import { providerPresentation } from '../ui/providerPresentation'
-import { useTheme } from '../theme'
 import { withAlpha } from '../ui/primitives'
+import { useTheme } from '../theme'
 import { CHAT_SEND_REFUSAL_MS, type ChatChannel, type ChatSendError } from './channel'
-import { ContextMeter, IconButton, QueueList, SettingsPills, showSheet, TriggerMenu, type MenuItem } from './ComposerParts'
+import { ContextMeter, IconButton, QueueList, SettingsPills, TriggerMenu, type MenuItem } from './ComposerParts'
 import { pastedImage, useClipboardImage, type ClipboardImageData } from './clipboard'
 import { spliceDictation, useDictation } from './dictation'
-import { VideoTile } from './VideoTile'
-import { chatImageUri, pickImages, prepareImage, takePhoto, uploadChatImage, type PickedImage } from './images'
+import { chatImageUri } from './images'
+import { attachmentKey, AttachmentStrip, pickFromSheet, useAttachmentUploads, type Attachment } from './attachments'
 import { PasteImageBar } from './PasteImageBar'
 import { RelayChip } from './Subagents'
-
-type Attachment = { key: string; name: string; uri: string; ref?: ChatImageRef }
 
 /** A pane's unsent draft, kept while the chat is off screen so it comes back on return. */
 type Draft = { text: string; attachments: Attachment[] }
@@ -53,12 +50,6 @@ const FILE_SEARCH_DEBOUNCE_MS = 80
 
 /** Stands in for the dictation caret while the composer rewrites the draft around it. */
 const DICTATION_MARK = '\u0000'
-
-let attachmentCounter = 0
-function attachmentKey(prefix: string): string {
-  attachmentCounter += 1
-  return `${prefix}-${Date.now().toString(36)}-${attachmentCounter}`
-}
 
 function restored(refs: readonly ChatImageRef[], baseUrl: string, prefix: string): Attachment[] {
   return refs.map((ref) => ({ key: attachmentKey(prefix), name: ref.name ?? 'image', uri: chatImageUri(baseUrl, ref.id), ref }))
@@ -141,8 +132,8 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const theme = useTheme()
   const draftKey = `${host.id}:${session.paneId}`
   const [text, setText] = useState(() => drafts.get(draftKey)?.text ?? '')
-  const [attachments, setAttachments] = useState<Attachment[]>(() => drafts.get(draftKey)?.attachments ?? [])
   const [attachError, setAttachError] = useState<string | null>(null)
+  const { attachments, setAttachments, add: addImages, remove: removeAttachment, uploading } = useAttachmentUploads(host, setAttachError, () => drafts.get(draftKey)?.attachments ?? [])
   const [selection, setSelection] = useState({ start: text.length, end: text.length })
   /** Set for one render after a pick rewrites the text, to move the caret. */
   const [forcedSelection, setForcedSelection] = useState<{ start: number; end: number } | undefined>()
@@ -165,7 +156,6 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const richInput = hostTakesInput(session)
   const turnFlow = hostTakesTurnFlow(session)
   const queue = turnFlow ? session.queue ?? [] : []
-  const uploading = attachments.some((attachment) => !attachment.ref)
   const canSend = !disabled && !uploading && Boolean(text.trim() || attachments.length)
 
   const candidate = selection.start === selection.end ? detectTrigger(text, selection.start) : null
@@ -220,40 +210,14 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     return Math.max(0, room)
   }
 
-  /** Picked or pasted images join the draft at once, then shrink and upload behind a spinner. */
-  const addImages = (images: readonly PickedImage[]) => {
-    for (const image of images) {
-      const key = attachmentKey('picked')
-      setAttachments((current) => [...current, { key, name: image.name, uri: image.uri }])
-      const drop = (error: string) => {
-        if (!mounted.current) return
-        setAttachments((current) => current.filter((attachment) => attachment.key !== key))
-        setAttachError(error)
-      }
-      void (async () => {
-        try {
-          const prepared = await prepareImage(image)
-          if (!prepared.ok) return drop(prepared.error)
-          const ref = await uploadChatImage(host, prepared.image)
-          if (!mounted.current) return
-          setAttachments((current) => current.map((attachment) => (attachment.key === key ? { ...attachment, name: prepared.image.name, uri: prepared.image.uri, ref } : attachment)))
-        } catch (error) {
-          drop(`${image.name} didn't upload: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      })()
-    }
-  }
-
   /** The paperclip offers the camera or the library. */
   const attachButton = useRef<View>(null)
   const attach = async () => {
     const room = roomForImages()
     if (!room) return
-    const choice = await showSheet(attachButton.current, 'Attach images', ['Take Photo', 'Choose from Library'], -1)
-    if (choice === null || !mounted.current) return
     let picked
     try {
-      picked = await (choice === 0 ? takePhoto() : pickImages(room))
+      picked = await pickFromSheet(attachButton.current, room)
     } catch (error) {
       setAttachError(error instanceof Error ? error.message : String(error))
       return
@@ -439,32 +403,14 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           <TriggerMenu items={menu.items} label={menu.label} onDismiss={() => setDismissed(trigger)} onPick={pick} status={menu.status} />
         ) : null}
         {attachments.length ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachments} keyboardShouldPersistTaps="always">
-            {attachments.map((attachment) => (
-              <View key={attachment.key} style={styles.thumb}>
-                {attachment.ref && isChatVideoId(attachment.ref.id)
-                  ? <VideoTile name={attachment.name} style={styles.thumbImage} />
-                  : <Image accessibilityLabel={attachment.name} source={{ uri: attachment.uri }} style={[styles.thumbImage, { borderColor: theme.border }]} />}
-                {attachment.ref ? null : (
-                  <View style={[styles.thumbBusy, { backgroundColor: withAlpha(theme.bg, 0.55) }]}>
-                    <ActivityIndicator color={theme.text} size="small" />
-                  </View>
-                )}
-                <Pressable
-                  accessibilityLabel={`Remove ${attachment.name}`}
-                  accessibilityRole="button"
-                  hitSlop={6}
-                  onPress={() => {
-                    setAttachError(null)
-                    setAttachments((current) => current.filter((entry) => entry.key !== attachment.key))
-                  }}
-                  style={[styles.thumbRemove, { backgroundColor: theme.surfaceSoft, borderColor: theme.borderMid }]}
-                >
-                  <Feather color={theme.text} name="x" size={11} />
-                </Pressable>
-              </View>
-            ))}
-          </ScrollView>
+          <AttachmentStrip
+            attachments={attachments}
+            onRemove={(attachment) => {
+              setAttachError(null)
+              removeAttachment(attachment.key)
+            }}
+            style={styles.attachments}
+          />
         ) : null}
         {shownError ? (
           <View style={styles.error}>
@@ -578,10 +524,6 @@ const styles = StyleSheet.create({
   wrap: { width: '100%', maxWidth: 776, alignSelf: 'center', flexShrink: 0, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 },
   box: { borderWidth: 1, borderRadius: 20, overflow: 'hidden' },
   attachments: { gap: 8, paddingHorizontal: 12, paddingTop: 10 },
-  thumb: { width: 56, height: 56 },
-  thumbImage: { width: 56, height: 56, borderRadius: 10, borderWidth: 1 },
-  thumbBusy: { ...StyleSheet.absoluteFill, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  thumbRemove: { position: 'absolute', top: -4, right: -4, width: 20, height: 20, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   error: { flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 14, paddingRight: 4, paddingTop: 8 },
   errorText: { flex: 1, fontSize: 12.5, lineHeight: 17, paddingTop: 6 },
   hint: { fontSize: 12.5, lineHeight: 17, paddingHorizontal: 14, paddingTop: 8 },
