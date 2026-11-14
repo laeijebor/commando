@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { access, readdir, rename } from 'node:fs/promises'
+import { access, readdir, realpath, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
@@ -206,10 +206,13 @@ export class GitWorktreeService {
       : []
     const attached = worktrees.find((entry) => entry.branch === branch)
     if (attached && path.normalize(attached.path) === target) {
-      if (!await this.pathExists(target)) {
+      if (await this.pathExists(target)) return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: async () => undefined }
+      if (!input.existingBranchOnly) {
         throw new GitWorktreeError('exec', `Worktree ${target} is registered but missing on disk; run git worktree prune in ${cwd}`)
       }
-      return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: async () => undefined }
+      // Checking it out again where it was: --force reuses only this registration, leaving any other missing worktree's alone.
+      await this.worktreeAdd(cwd, ['--force', target, branch])
+      return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: () => this.remove(cwd, target) }
     }
     if (attached) {
       throw new GitWorktreeError('branch-checked-out', `Branch ${branch} is already checked out at ${attached.path}`)
@@ -429,6 +432,25 @@ export class GitWorktreeService {
       if (await this.refExists(cwd, `refs/remotes/${REMOTE}/${candidate}`)) return candidate
     }
     return undefined
+  }
+
+  /**
+   * Which of `candidates` (main checkouts) a deleted worktree at `worktreePath` on `branch` came from:
+   * the one still registering that path, else the only one with the branch. Undefined when it can't tell.
+   */
+  async mainCheckoutFor(candidates: readonly string[], worktreePath: string, branch: string): Promise<string | undefined> {
+    const target = path.normalize(worktreePath)
+    const withBranch: string[] = []
+    for (const candidate of candidates) {
+      const root = await realpath(candidate).catch(() => undefined)
+      const identity = root ? await this.repositoryIdentity(root) : undefined
+      if (!root || !identity || identity.root !== identity.mainRoot || path.normalize(identity.root) !== path.normalize(root)) continue
+      const registered = parseWorktreeList((await this.git(root, ['worktree', 'list', '--porcelain'])).stdout)
+        .some((entry) => path.normalize(entry.path) === target)
+      if (registered) return root
+      if (await this.refExists(root, `refs/heads/${branch}`)) withBranch.push(root)
+    }
+    return withBranch.length === 1 ? withBranch[0] : undefined
   }
 
   private async refExists(cwd: string, ref: string): Promise<boolean> {
