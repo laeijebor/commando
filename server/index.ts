@@ -96,6 +96,7 @@ import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { AgentSessionArchiveApi } from './agent-session-archive-api.js'
 import { TmuxSessionActions } from './tmux-session-actions.js'
 import { SessionArchives } from './session-archives.js'
 import { releaseClosedSimLease, runSimTool } from './sim-lease-release.js'
@@ -1858,6 +1859,16 @@ async function main(): Promise<void> {
       await refreshSnapshot()
     },
   })
+  const agentSessionArchiveApi = new AgentSessionArchiveApi({
+    token: agentHookToken,
+    paneSession: (paneId) => {
+      const pane = paneForId(paneId)
+      const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+      return session ? { id: session.id, name: session.name } : null
+    },
+    sessions: () => snapshot.sessions,
+    archive: (sessionId) => sessionManagement.archiveSession(sessionId),
+  })
   const gitDiffApi = new GitDiffApi({
     inspector: new GitDiffInspector(githubOffReason
       ? (file, args, options) => file === 'gh' ? Promise.reject(new Error(githubOffReason)) : defaultGitProcessExecutor(file, args, options)
@@ -3080,6 +3091,7 @@ async function main(): Promise<void> {
       if (await webPanesApi.handle(request, response, url)) return
       if (await commanderApi.handle(request, response, url)) return
       if (await agentChatsApi.handle(request, response, url)) return
+      if (await agentSessionArchiveApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
       if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
       if (await handleChatImage(request, response, url, chatImages)) return

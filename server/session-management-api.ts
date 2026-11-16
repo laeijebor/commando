@@ -242,25 +242,7 @@ export class SessionManagementApi {
           const body = record(await readJson(request))
           if (body.confirmSessionId !== route.sessionId) throw new HttpError(400, `${paused ? 'Pausing' : 'Archiving'} requires an exact confirmSessionId`)
           const toStop = await this.processesToStop(route.sessionId, body.stopProcessKeys)
-          const name = this.dependencies.currentSessions().find((session) => session.id === route.sessionId)!.name
-          // Planned while the session runs: afterwards its panes, which locate the worktree, are gone.
-          const plan = await this.planWorktreeRemoval(async () => {
-            if (!this.dependencies.prepareSessionWorktreeDeletion) throw new HttpError(501, 'Worktree removal is not available')
-            return this.dependencies.prepareSessionWorktreeDeletion(route.sessionId)
-          })
-          const repo = this.dependencies.sessionRepo?.(route.sessionId)
-          const archive = await this.archives.archive(route.sessionId, name, { paused, ...(repo ? { repo } : {}) })
-          this.dependencies.afterSessionDeleted?.(route.sessionId)
-          if (paused) {
-            await this.closeBackgroundSessions(plan.plan)
-            try { await this.preferences.holdPlaceByName(route.sessionId, name) }
-            catch (error) { console.warn('[commando] Could not keep a paused session’s place in the session tree', error) }
-          }
-          // Stopped before the worktree goes, so no dev server is still writing into it.
-          const processes = await this.stopProcesses(toStop)
-          const result = paused ? { archive } : await this.removeArchivedWorktree(archive, async () => plan)
-          await this.dependencies.onSessionsChanged?.()
-          writeJson(response, 200, { ok: true, ...result, ...processes })
+          writeJson(response, 200, { ok: true, ...await this.archiveSession(route.sessionId, { paused, toStop }) })
           return true
         }
 
@@ -376,6 +358,34 @@ export class SessionManagementApi {
    * so they are stopped by these pids. Processes that exited since the confirmation are dropped;
    * another session's process is refused.
    */
+  /**
+   * Archives (or pauses) a live session: its layout and agent chats are kept for restore, and an archive
+   * commits uncommitted work and removes the worktree, which restore checks out again.
+   */
+  async archiveSession(sessionId: string, options: { paused?: boolean; toStop?: ProcessSelection } = {}) {
+    const paused = options.paused === true
+    const session = this.dependencies.currentSessions().find((entry) => entry.id === sessionId)
+    if (!session) throw new HttpError(404, 'Tmux session does not exist')
+    // Planned while the session runs: afterwards its panes, which locate the worktree, are gone.
+    const plan = await this.planWorktreeRemoval(async () => {
+      if (!this.dependencies.prepareSessionWorktreeDeletion) throw new HttpError(501, 'Worktree removal is not available')
+      return this.dependencies.prepareSessionWorktreeDeletion(sessionId)
+    })
+    const repo = this.dependencies.sessionRepo?.(sessionId)
+    const archive = await this.archives.archive(sessionId, session.name, { paused, ...(repo ? { repo } : {}) })
+    this.dependencies.afterSessionDeleted?.(sessionId)
+    if (paused) {
+      await this.closeBackgroundSessions(plan.plan)
+      try { await this.preferences.holdPlaceByName(sessionId, session.name) }
+      catch (error) { console.warn('[commando] Could not keep a paused session’s place in the session tree', error) }
+    }
+    // Stopped before the worktree goes, so no dev server is still writing into it.
+    const processes = await this.stopProcesses(options.toStop)
+    const result: { archive: ArchiveSummary; worktreeKept?: string } = paused ? { archive } : await this.removeArchivedWorktree(archive, async () => plan)
+    await this.dependencies.onSessionsChanged?.()
+    return { ...result, ...processes }
+  }
+
   private async processesToStop(sessionId: string, value: unknown): Promise<ProcessSelection | undefined> {
     if (value === undefined) return undefined
     const keys = parseProcessKeys(value)
