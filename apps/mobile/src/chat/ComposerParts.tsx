@@ -236,22 +236,23 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   )
 }
 
-function Pill({ label, a11y, disabled, onPress, ref }: { label: string; a11y: string; disabled: boolean; onPress: () => void; ref: React.Ref<View> }): React.JSX.Element {
+/** A settings pill; `on` marks a toggle that is switched on (fast mode). */
+export function Pill({ label, a11y, disabled, onPress, ref, on }: { label: string; a11y: string; disabled: boolean; onPress: () => void; ref?: React.Ref<View>; on?: boolean }): React.JSX.Element {
   const theme = useTheme()
   return (
     <Pressable
       accessibilityLabel={`${a11y}: ${label}`}
       accessibilityRole="button"
-      accessibilityState={{ disabled }}
+      accessibilityState={on === undefined ? { disabled } : { disabled, checked: on }}
       disabled={disabled}
       onPress={() => {
         void Haptics.selectionAsync()
         onPress()
       }}
       ref={ref}
-      style={[styles.pill, { borderColor: theme.border, opacity: disabled ? 0.6 : 1 }]}
+      style={[styles.pill, { borderColor: on ? theme.accent : theme.border, opacity: disabled ? 0.6 : 1 }]}
     >
-      <Text numberOfLines={1} style={[styles.pillText, { color: theme.muted }]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.pillText, { color: on ? theme.text : theme.muted }]}>{label}</Text>
     </Pressable>
   )
 }

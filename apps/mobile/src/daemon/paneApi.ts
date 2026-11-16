@@ -5,6 +5,7 @@ import type {
   CreateTmuxSessionRequest,
   CreateTmuxWindowRequest,
   GitRepoInfo,
+  ModelCatalogs,
   TmuxCreateResponse,
 } from '@commando/tmux-create'
 import { TMUX_CREATE_ROUTES, parseTmuxCreateResponse, requireSessionAgentLaunch } from '@commando/tmux-create'
@@ -118,6 +119,12 @@ export function fetchFileDiff(host: Host, paneId: string, file: string): Promise
 export async function fetchClaudeProfiles(host: Host): Promise<ClaudeProfile[]> {
   const body = await json<{ profiles: ClaudeProfile[] }>(host, TMUX_CREATE_ROUTES.claudeProfiles, 'Profile lookup failed')
   return body.profiles
+}
+
+/** `GET /api/tmux/models` — each provider's model list, as the daemon last saw it in a chat. */
+export async function fetchModelCatalogs(host: Host): Promise<ModelCatalogs> {
+  const body = await json<{ catalogs?: ModelCatalogs }>(host, TMUX_CREATE_ROUTES.models, 'Model lookup failed')
+  return body.catalogs ?? {}
 }
 
 /** `GET /api/git/repo?path=…` — whether a directory is a checkout, and which one. */

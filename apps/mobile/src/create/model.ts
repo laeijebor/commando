@@ -1,6 +1,7 @@
 import type { CommandoSnapshot } from '@commando/protocol'
-import type { CreateTmuxSessionRequest, GitRepoInfo, SessionAgentProvider, ChatPermissionMode } from '@commando/tmux-create'
-import { defaultWorktreePath, sanitizeBranchName, SESSION_AGENT_CHOICES, isChatLaunchProvider, chatPermissionModes } from '@commando/tmux-create'
+import type { ChatImageRef } from '@commando/agent-chat'
+import type { CreateTmuxSessionRequest, GitRepoInfo, SessionAgentProvider, ChatLaunchProvider, ChatPermissionMode } from '@commando/tmux-create'
+import { chatLaunchPermission, defaultWorktreePath, modelProvider, sanitizeBranchName, SESSION_AGENT_CHOICES, isChatLaunchProvider, chatPermissionModes } from '@commando/tmux-create'
 
 /**
  * Everything screen 07 computes, kept away from the view so the branch name,
@@ -13,6 +14,24 @@ export type AgentChoice = SessionAgentProvider | 'shell'
 export const DEFAULT_AGENT_CHOICE: AgentChoice = 'claude-chat'
 
 export const AGENT_CHOICES: readonly { value: AgentChoice; label: string }[] = SESSION_AGENT_CHOICES
+
+/** Claude chats and Claude in a terminal both pick a login (profile). */
+export function usesClaudeProfile(agent: AgentChoice): agent is 'claude-chat' | 'claude' {
+  return agent === 'claude-chat' || agent === 'claude'
+}
+
+/** Only chats are sent images with the opening prompt. */
+export function takesImages(agent: AgentChoice): agent is ChatLaunchProvider {
+  return isChatLaunchProvider(agent)
+}
+
+/** A chat's permission mode before one is remembered: Cursor runs unattended, the rest ask. */
+export function defaultPermission(provider: ChatLaunchProvider, remembered?: ChatPermissionMode): ChatPermissionMode {
+  const modes = chatPermissionModes(provider)
+  if (remembered && modes.some((mode) => mode.value === remembered)) return remembered
+  const fallback: ChatPermissionMode = provider === 'cursor-chat' ? 'bypassPermissions' : 'default'
+  return modes.some((mode) => mode.value === fallback) ? fallback : modes[0]?.value ?? 'default'
+}
 
 export type RepoOption = {
   /** Main checkout root; also the key the preparation command is stored under. */
@@ -92,8 +111,12 @@ export type SessionFormState = {
   agent?: AgentChoice
   prompt?: string
   permissionMode?: ChatPermissionMode
-  /** The Claude profile a Claude chat starts with; without one the daemon uses the default. */
+  /** The Claude profile Claude starts with; without one the daemon uses the default. */
   configDir?: string
+  /** A picker value; `default` (or none) leaves the choice to the agent. */
+  model?: string
+  fast?: boolean
+  images?: readonly ChatImageRef[]
 }
 
 /**
@@ -106,15 +129,21 @@ export function buildSessionRequest(
   repo: GitRepoInfo | null,
 ): CreateTmuxSessionRequest {
   const request: CreateTmuxSessionRequest = { name: form.name.trim() }
-  if (form.agent && form.agent !== 'shell') {
+  const agent = form.agent
+  if (agent && agent !== 'shell') {
+    const chat = isChatLaunchProvider(agent)
+    const permissionMode = form.permissionMode ?? 'default'
+    if (chat && !chatPermissionModes(agent).some((mode) => mode.value === permissionMode)) throw new Error('Choose a supported permission mode for this chat provider')
     request.agent = {
-      provider: form.agent,
-      ...(isChatLaunchProvider(form.agent) ? { permissionMode: form.permissionMode ?? 'default' } : {}),
-      ...(form.agent === 'claude-chat' && form.configDir ? { configDir: form.configDir } : {}),
-      ...(form.agent !== 'opencode' && form.prompt?.trim() ? { prompt: form.prompt } : {}),
+      provider: agent,
+      ...(chat ? chatLaunchPermission(agent, permissionMode) : {}),
+      ...(usesClaudeProfile(agent) && form.configDir ? { configDir: form.configDir } : {}),
+      ...(agent !== 'opencode' && form.prompt?.trim() ? { prompt: form.prompt } : {}),
+      ...(chat && form.images?.length ? { images: [...form.images] } : {}),
+      ...(modelProvider(agent) && form.model && form.model !== 'default' ? { model: form.model } : {}),
+      ...(chat && form.fast ? { fast: true as const } : {}),
     }
   }
-  if (form.agent && isChatLaunchProvider(form.agent) && !chatPermissionModes(form.agent).some((mode) => mode.value === (form.permissionMode ?? 'default'))) throw new Error('Choose a supported permission mode for this chat provider')
   const cwd = form.directory.trim()
   if (cwd) request.cwd = cwd
   const wantsWorktree = form.worktreeEnabled && Boolean(repo?.isRepo && repo.mainRoot)
