@@ -97,6 +97,7 @@ import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
 import { AgentSessionArchiveApi } from './agent-session-archive-api.js'
+import { auxiliarySessionIds } from '../shared/auxiliary-session.js'
 import { TmuxSessionActions } from './tmux-session-actions.js'
 import { SessionArchives } from './session-archives.js'
 import { releaseClosedSimLease, runSimTool } from './sim-lease-release.js'
@@ -1867,6 +1868,7 @@ async function main(): Promise<void> {
       return session ? { id: session.id, name: session.name } : null
     },
     sessions: () => snapshot.sessions,
+    isAuxiliary: (sessionId) => auxiliarySessionIds(snapshot.sessions, snapshot.panes).has(sessionId),
     archive: (sessionId) => sessionManagement.archiveSession(sessionId),
   })
   const gitDiffApi = new GitDiffApi({

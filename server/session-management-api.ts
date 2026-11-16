@@ -354,11 +354,6 @@ export class SessionManagementApi {
   }
 
   /**
-   * The chosen processes of this session, taken before it closes: closing it regroups what is left,
-   * so they are stopped by these pids. Processes that exited since the confirmation are dropped;
-   * another session's process is refused.
-   */
-  /**
    * Archives (or pauses) a live session: its layout and agent chats are kept for restore, and an archive
    * commits uncommitted work and removes the worktree, which restore checks out again.
    */
@@ -386,6 +381,11 @@ export class SessionManagementApi {
     return { ...result, ...processes }
   }
 
+  /**
+   * The chosen processes of this session, taken before it closes: closing it regroups what is left,
+   * so they are stopped by these pids. Processes that exited since the confirmation are dropped;
+   * another session's process is refused.
+   */
   private async processesToStop(sessionId: string, value: unknown): Promise<ProcessSelection | undefined> {
     if (value === undefined) return undefined
     const keys = parseProcessKeys(value)

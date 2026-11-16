@@ -14,7 +14,8 @@ beforeEach(async () => {
   const api = new AgentSessionArchiveApi({
     token,
     paneSession: (paneId) => paneId === '%1' ? { id: '$1', name: 'cleanup' } : null,
-    sessions: () => [{ id: '$1', name: 'cleanup' }, { id: '$2', name: 'old work' }],
+    sessions: () => [{ id: '$1', name: 'cleanup' }, { id: '$2', name: 'old work' }, { id: '$3', name: 'tilt-old-work' }],
+    isAuxiliary: (sessionId) => sessionId === '$3',
     archive,
   })
   server = createServer((request, response) => {
@@ -60,6 +61,12 @@ describe('AgentSessionArchiveApi', () => {
 
   it('refuses to archive the caller’s own session', async () => {
     const response = await post({ sessionId: '$1', sessionName: 'cleanup' })
+    expect(response.status).toBe(409)
+    expect(archive).not.toHaveBeenCalled()
+  })
+
+  it('refuses a helper session, which closes with its owner', async () => {
+    const response = await post({ sessionId: '$3', sessionName: 'tilt-old-work' })
     expect(response.status).toBe(409)
     expect(archive).not.toHaveBeenCalled()
   })

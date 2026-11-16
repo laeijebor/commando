@@ -13,6 +13,8 @@ export type AgentSessionArchiveDependencies = {
   /** The session a pane belongs to, or null when the pane is gone. */
   paneSession: (paneId: string) => { id: string; name: string } | null
   sessions: () => ReadonlyArray<{ id: string; name: string }>
+  /** Generated helper sessions (tilt-…, native_app-…) close with their owner and are never archived alone. */
+  isAuxiliary: (sessionId: string) => boolean
   /** Archives as Commando's own Archive does: uncommitted work is committed and the worktree removed, both restorable. */
   archive: (sessionId: string) => Promise<{ archive: { id: string; name: string; worktree?: unknown }; worktreeKept?: string }>
 }
@@ -48,6 +50,7 @@ export class AgentSessionArchiveApi {
       const session = this.dependencies.sessions().find((entry) => entry.id === body.sessionId)
       if (!session || session.name !== body.sessionName) return fail(response, 404, `Session "${body.sessionName}" no longer exists`)
       if (session.id === caller.id) return fail(response, 409, 'A session cannot archive itself')
+      if (this.dependencies.isAuxiliary(session.id)) return fail(response, 409, `"${session.name}" is a helper session; archive the session it supports`)
       writeJson(response, 200, { ok: true, ...await this.dependencies.archive(session.id) })
     } catch (error) {
       const status = typeof (error as { status?: unknown }).status === 'number' ? (error as { status: number }).status : 500
