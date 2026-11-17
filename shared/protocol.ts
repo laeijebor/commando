@@ -787,6 +787,8 @@ export type ServerMessage =
   | { type: 'pane_mark_removed'; targetId: string }
   /** When the user last viewed each pane, by daemon clock. A snapshot replaces; an update merges. */
   | { type: 'pane_seen'; seen: Record<string, number>; snapshot?: true }
+  /** When each pane's agent last did real work (daemon clock); see server/pane-activity.ts. */
+  | { type: 'pane_activity'; activity: Record<string, number>; snapshot?: true }
   | {
       type: 'workspace'
       sessionId: string

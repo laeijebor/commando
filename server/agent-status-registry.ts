@@ -812,6 +812,13 @@ export const PANE_EVICTION_GRACE_MS = 30_000
 
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
+
+  /**
+   * `lastActivity` is when a pane's agent last did real work, kept across daemon
+   * restarts. A `done` first seen without a turn behind it (after a restart, or
+   * an agent re-reporting on reconnect) settles at that time instead of now.
+   */
+  constructor(private readonly options: { lastActivity?: (paneId: string) => number | undefined } = {}) {}
   // Private model context: never part of AgentDetails or client snapshots.
   private readonly finalMessages = new Map<string, string>()
 
@@ -1894,9 +1901,12 @@ export class AgentStatusRegistry {
     const recap = status.details?.recap
     const endsTurn = recap !== undefined && recap.completedAt !== previous?.details?.recap?.completedAt
     if (kind === 'done') {
-      status.settledAt = previous?.status === 'done' && previous.settledAt !== undefined && !endsTurn
-        ? previous.settledAt
-        : status.updatedAt
+      const continues = previous?.status === 'done' && previous.settledAt !== undefined && !endsTurn
+      const turnEnded = endsTurn || previous?.status === 'working' || previous?.status === 'needs_input' || previous?.status === 'failed'
+      const lastActivity = turnEnded ? undefined : this.options.lastActivity?.(paneId)
+      status.settledAt = continues ? previous.settledAt
+        : lastActivity !== undefined ? Math.min(lastActivity, status.updatedAt)
+          : status.updatedAt
     }
     // The recap carries the declaration even while a chat host still says
     // working; the dot only reads it once the pane is done.

@@ -158,20 +158,24 @@ export class CommanderApi {
     if (!agent) throw new HttpError(404, 'Agent pane does not exist')
     return this.dependencies.snapshot().panes.find((p) => p.id === id)!
   }
+  /** Where a terminal Claude or Codex agent's conversation is written, when it can be found. */
+  async transcriptFile(pane: TmuxPane): Promise<string | undefined> {
+    const d = this.dependencies, status = d.status(pane.id), sessionId = status?.agentSessionId ?? ''
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return undefined
+    if (status?.provider === 'claude') {
+      const config = await d.configDir(pane)
+      return config ? join(config, 'projects', pane.path.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`) : undefined
+    }
+    return status?.provider === 'codex' ? d.codexRollout?.(sessionId) : undefined
+  }
   /** A terminal agent's recent conversation for Commander's reading pane; its screen when no transcript is found. */
   private async transcript(pane: TmuxPane): Promise<CommanderTranscript> {
-    const d = this.dependencies, status = d.status(pane.id), sessionId = status?.agentSessionId ?? ''
-    if (/^[A-Za-z0-9_-]+$/.test(sessionId)) {
-      try {
-        let file: string | undefined
-        if (status?.provider === 'claude') {
-          const config = await d.configDir(pane)
-          if (config) file = join(config, 'projects', pane.path.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`)
-        } else if (status?.provider === 'codex') file = await d.codexRollout?.(sessionId)
-        const items = !file ? [] : status?.provider === 'claude' ? await claudeTranscriptFileItems(file) : codexRolloutItems((await tailJsonLines(file)).lines)
-        if (items.length) return { source: 'transcript', items }
-      } catch { /* Missing/unreadable transcripts fall back to the rendered screen. */ }
-    }
+    const d = this.dependencies
+    try {
+      const file = await this.transcriptFile(pane)
+      const items = !file ? [] : d.status(pane.id)?.provider === 'claude' ? await claudeTranscriptFileItems(file) : codexRolloutItems((await tailJsonLines(file)).lines)
+      if (items.length) return { source: 'transcript', items }
+    } catch { /* Missing/unreadable transcripts fall back to the rendered screen. */ }
     return { source: 'screen', items: [], screen: stripVTControlCharacters(await d.screen(pane)).slice(-20_000) }
   }
   private take(caller: TmuxPane): boolean {

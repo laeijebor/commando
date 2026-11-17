@@ -720,6 +720,21 @@ describe('AgentStatusRegistry', () => {
     expect(registry.get(paneId)?.settledAt).toBe(80)
   })
 
+  it('settles a done first seen after a restart at the last recorded activity', () => {
+    const registry = new AgentStatusRegistry({ lastActivity: (id) => id === paneId ? 40 : undefined })
+    registry.applyInferred(inferred({ status: 'done', updatedAt: 500 }))
+    expect(registry.get(paneId)?.settledAt).toBe(40)
+
+    // A turn that runs in this daemon settles when it ends, whatever was recorded before.
+    registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 600)
+    registry.applyClaudeHook(paneId, claudePayload('Stop', { finalMessage: 'Done' }), 700)
+    expect(registry.get(paneId)?.settledAt).toBe(700)
+
+    const fresh = new AgentStatusRegistry()
+    fresh.applyInferred(inferred({ status: 'done', updatedAt: 500 }))
+    expect(fresh.get(paneId)?.settledAt).toBe(500)
+  })
+
   it('marks the turn declared when the agent ran --state complete', () => {
     const registry = new AgentStatusRegistry()
     registry.applyClaudeHook(paneId, claudePayload('UserPromptSubmit', { prompt_id: 'one' }), 1)
