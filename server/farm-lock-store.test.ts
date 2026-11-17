@@ -181,4 +181,28 @@ describe('FarmLockStore', () => {
     client.stop()
     expect(client.changes?.snapshot.resources[0].id).toBe('after-restart')
   })
+
+  it('won\'t send an any-* request to a farm whose matching devices include one hidden by an id clash', async () => {
+    const { store, local, remote } = await setup()
+    local.changes.snapshot.resources = [{ id: 'phone', name: 'Local Android', kind: 'android', serial: 'A1' }]
+    remote.changes.snapshot.resources = [{ id: 'phone', name: 'Remote iPhone', kind: 'ios', serial: 'I9' }, { id: 'iphone', name: 'Shelf iPhone', kind: 'ios', serial: 'I1' }]
+    await store.ready()
+    await expect(store.lock({ paneId: '%1', sessionName: 'x', request: 'any-ios', task: 't' })).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/phone shares an id/) })
+    expect(remote.calls.some((call) => call.path === '/api/lock')).toBe(false)
+    // With no visible iPhone at all, the clash is still the reason given.
+    remote.changes.snapshot.resources = [{ id: 'phone', name: 'Remote iPhone', kind: 'ios', serial: 'I9' }]
+    await store.ready()
+    await expect(store.lock({ paneId: '%1', sessionName: 'x', request: 'any-ios', task: 't' })).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/phone shares an id/) })
+  })
+
+  it('keeps the relay message id on a lapsed offer, so its message can be withdrawn', async () => {
+    const { store, local } = await setup()
+    local.changes.snapshot.queue = [entry('commando', 'cmd:%7', 'q1', ['pixel'], { offer: { resourceId: 'pixel', at: 50 } })]
+    await store.ready()
+    store.offerMessage('q1', 50, 'relay-1')
+    local.changes.snapshot.queue = [entry('commando', 'cmd:%7', 'q1', ['pixel'], { skips: 1 })]
+    await store.ready()
+    const { expired } = await store.sweep({ paneExists: () => true, pidAlive: () => true })
+    expect(expired).toEqual([expect.objectContaining({ id: 'q1', dropped: false, offer: expect.objectContaining({ messageId: 'relay-1' }) })])
+  })
 })

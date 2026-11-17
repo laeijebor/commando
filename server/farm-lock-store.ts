@@ -388,8 +388,11 @@ export class FarmLockStore implements DeviceLockStore {
       const now = snapshot.queue.find((entry) => entry.id === id)
       // Only a missed turn counts (the farm moved the request back); a pause or a device turning unhealthy also takes
       // an offer back, and that isn't the agent's lapse.
-      if (now && !now.offer && (now.skips ?? 0) > previous.skips) this.pendingExpired.push({ ...now, offer: { resourceId: previous.resourceId, at: previous.at }, dropped: false })
-      else if (!now && previous.skips + 1 >= MAX_SKIPS) this.pendingExpired.push({ ...previous.entry, dropped: true })
+      // The lapsed offer keeps its relay message id, so its "is yours" message can still be withdrawn.
+      const message = this.messages.get(id)
+      const lapsedOffer = { resourceId: previous.resourceId, at: previous.at, ...(message?.at === previous.at ? { messageId: message.messageId } : {}) }
+      if (now && !now.offer && (now.skips ?? 0) > previous.skips) this.pendingExpired.push({ ...now, offer: lapsedOffer, dropped: false })
+      else if (!now && previous.skips + 1 >= MAX_SKIPS) this.pendingExpired.push({ ...previous.entry, offer: lapsedOffer, dropped: true })
     }
     this.previousOffers = offers
     let changed = fresh.length > 0
@@ -437,10 +440,19 @@ export class FarmLockStore implements DeviceLockStore {
   /** A named device's farm; an any-* request goes to the first farm (this Mac's first) that has a matching device. */
   private clientForRequest(request: string): FarmClient {
     const kinds: Record<string, string[]> = { any: ['android', 'ios', 'emulator'], 'any-phone': ['android', 'ios'], 'any-android': ['android'], 'any-ios': ['ios'] }
-    const client = kinds[request]
-      ? this.clients.find((candidate) => candidate.changes?.snapshot.resources.some((resource) => kinds[request].includes(resource.kind)))
-      : this.clientOf(request)
+    const visible = new Set(this.snapshot().resources.map((resource) => `${this.clientOf(resource.id)?.name}:${resource.id}`))
+    const matching = (candidate: FarmClient) => (candidate.changes?.snapshot.resources ?? []).filter((resource) => kinds[request]?.includes(resource.kind))
+    const client = kinds[request] ? this.clients.find((candidate) => matching(candidate).some((resource) => visible.has(`${candidate.name}:${resource.id}`))) : this.clientOf(request)
+    if (client && kinds[request]) {
+      // The farm picks among all its matching devices, including one hidden here because its id clashes with a device
+      // on this Mac's farm: a lock on it would be invisible to Commando. Refuse rather than risk that.
+      const hidden = matching(client).filter((resource) => !visible.has(`${client.name}:${resource.id}`))
+      if (hidden.length) throw new DeviceLockError(409, `The ${client.name} farm's ${hidden.map((resource) => resource.id).join(', ')} shares an id with a device on this Mac; rename one, or lock a device by name`)
+    }
     if (client) return client
+    // Only hidden (clashing) devices match: say why, rather than that there are none.
+    const clash = kinds[request] && this.clients.flatMap((candidate) => matching(candidate).filter((resource) => !visible.has(`${candidate.name}:${resource.id}`)))
+    if (clash && clash.length) throw new DeviceLockError(409, `${clash.map((resource) => resource.id).join(', ')} shares an id with a device on this Mac; rename one, or lock a device by name`)
     // A farm that hasn't answered yet (or is down) may well have the device: say so rather than "no such device".
     const missing = this.clients.find((candidate) => !candidate.changes || candidate.error)
     if (missing) throw new DeviceLockError(503, `The ${missing.name} device farm isn't answering${missing.error ? ` (${missing.error})` : ''}; try again shortly`)
