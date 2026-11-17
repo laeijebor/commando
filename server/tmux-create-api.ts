@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { ClaudeProfile, ModelCatalogs, TmuxCreateResponse } from '../shared/tmux-create.js'
+import { TMUX_CREATE_ROUTES, type ClaudeProfile, type ModelCatalogs, type TmuxCreateResponse } from '../shared/tmux-create.js'
 import { GitWorktreeError, type GitWorktreeErrorKind } from './git-worktree.js'
 import type { SessionCreations } from './session-creations.js'
 import { listClaudeProfiles, TmuxCreateCommandError, TmuxCreator } from './tmux-create.js'
@@ -15,7 +15,7 @@ const WORKTREE_ERROR_STATUS: Record<GitWorktreeErrorKind, number> = {
 }
 
 const ROOT = '/api/tmux'
-const CREATIONS = `${ROOT}/session-creations`
+const CREATIONS = TMUX_CREATE_ROUTES.sessionCreations
 const MAX_BODY_BYTES = 16 * 1024
 
 function json(response: ServerResponse, status: number, value: unknown): void {

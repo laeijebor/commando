@@ -6,6 +6,8 @@ export const TMUX_CREATE_ROUTES = {
   claudeProfiles: '/api/tmux/claude-profiles',
   models: '/api/tmux/models',
   launch: '/api/tmux/panes/launch',
+  /** POST to start; `/:id/retry` (POST) and `/:id` (DELETE) for a failed or finished one. */
+  sessionCreations: '/api/tmux/session-creations',
 } as const
 
 /** Pane option marking a pane that idles until something is launched into it. */

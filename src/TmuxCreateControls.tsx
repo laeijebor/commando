@@ -14,6 +14,8 @@ import {
   type CreateTmuxSessionRequest,
   type ModelCatalogs,
   type GitRepoInfo,
+  type SessionCreation,
+  type StartSessionCreationRequest,
   type TmuxCreatedTarget,
   type TmuxCreatedWorktree,
   type TmuxCreateResponse,
@@ -73,6 +75,10 @@ export type TmuxCreateControlsProps = {
   onCreateSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
   onCreated?: (created: TmuxCreatedTarget, sessionGroupId?: string, worktree?: TmuxCreatedWorktree) => void | Promise<void>
   onPendingChange?: (pending: boolean) => void
+  /** Creates the session in the background once its slow part starts; without it, `onCreateSession` is awaited. */
+  onStartSession?: (input: StartSessionCreationRequest) => Promise<SessionCreation>
+  /** The session is still being created (see `onStartSession`); the form has been reset. */
+  onStarted?: (creation: SessionCreation, request: CreateTmuxSessionRequest, sessionGroupId: string) => void
   /** Describes the repository behind a directory; without it the worktree block never appears. */
   probeRepo?: (directory: string) => Promise<GitRepoInfo>
   /** Claude profiles (config dirs) a chat pane can start with. */
@@ -228,6 +234,8 @@ export function TmuxCreateControls({
   sessionCreateRequest = null,
   onCreateSession,
   onCreated,
+  onStartSession,
+  onStarted,
   onPendingChange,
   probeRepo,
   loadClaudeProfiles,
@@ -662,11 +670,21 @@ export function TmuxCreateControls({
         void createAgentChatsApi(token, daemonFetch).setPrepareCommand(repo.mainRoot, prepareCommand.trim() ? prepareCommand : '')
           .catch((cause: unknown) => console.warn('Unable to sync repository prepare command', cause))
       }
-      const result = requireSessionAgentLaunch(request, await onCreateSession(request))
+      const creation = onStartSession
+        ? await onStartSession({ ...request, ...(sessionGroupId !== 'ungrouped' ? { groupId: sessionGroupId } : {}) })
+        : undefined
+      const response = creation ? creation.result : await onCreateSession(request)
       saveStartWith(repoKey, agentProvider)
       const nextHistory = saveWorkingDirectoryHistory(cwd, workingDirectoryHistory, host)
       setWorkingDirectoryHistory(nextHistory)
       setDirectoryHistoryOpen(false)
+      if (!response) {
+        // Still fetching or checking out: the sidebar shows it until it is ready, so the form is done.
+        if (creation) onStarted?.(creation, request, sessionGroupId)
+        resetForm(formElement)
+        return
+      }
+      const result = requireSessionAgentLaunch(request, response)
       const { created, worktree } = result
       setStatus(worktree
         ? `Created session ${created.paneId} in ${created.sessionName} on branch ${worktree.branch} at ${worktree.path}${prepareRequested ? '. Preparation started in the new pane' : ''}${worktree.warning ? `. ${worktree.warning}` : ''}`

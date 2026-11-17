@@ -176,7 +176,7 @@ import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type Chat
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch, type SessionCreation } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   hostTakesMcp,
@@ -1166,6 +1166,7 @@ function HostApp() {
   const [commanderOpening, setCommanderOpening] = useState(false)
   const commanderStateVersion = useRef(0)
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
+  const [sessionCreations, setSessionCreations] = useState<SessionCreation[]>([])
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
   const [tileEvents, setTileEvents] = useState<Record<string, ChatCardEvent[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
@@ -1590,6 +1591,9 @@ function HostApp() {
         break
       case 'agent_resume':
         setAgentResumes((current) => ({ ...current, [message.resume.targetId]: message.resume }))
+        break
+      case 'session_creations':
+        setSessionCreations(message.creations)
         break
       case 'agent_resume_snapshot':
         setAgentResumes(Object.fromEntries(message.resumes.map((resume) => [resume.targetId, resume])))
@@ -4200,9 +4204,13 @@ function HostApp() {
               onOpenIde={local ? (sessionId) => { void openSessionIde(sessionId) } : undefined}
               onResumeChat={resumeSessionChat}
               actionsRef={sessionActionsRef}
+              creations={sessionCreations}
               creation={{
                 disabled: !connected,
                 onCreateSession: tmuxCreateApi.createSession,
+                onStartSession: tmuxCreateApi.startSession,
+                onRetryCreation: tmuxCreateApi.retrySessionCreation,
+                onDismissCreation: tmuxCreateApi.dismissSessionCreation,
                 probeRepo: (directory) => gitDiffApi.repo(directory),
                 loadClaudeProfiles: tmuxCreateApi.claudeProfiles,
                 loadModelCatalogs: tmuxCreateApi.models,
