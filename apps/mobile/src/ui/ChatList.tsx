@@ -1,8 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native'
 import Feather from '@expo/vector-icons/Feather'
 import type { SessionIdentities, SessionIdentity } from '@commando/session-identity'
+import { sessionCreationStatus, type SessionCreation } from '@commando/tmux-create'
 import type { AgentRow } from '../agents/selectors'
+import { dismissSessionCreation, retrySessionCreation } from '../daemon/paneApi'
+import { forgetSessionCreation } from '../daemon/sessionCreations'
 import type { HostDaemonState } from '../daemon/state'
 import { useAppActive } from '../daemon/useAppActive'
 import { useHostsStore } from '../hosts/store'
@@ -12,19 +15,21 @@ import { usePanePrs } from '../pane/usePanePrs'
 import { readPreference, writePreference } from '../prefs'
 import { useTheme } from '../theme'
 import { relativeTime } from '../time'
-import { buildChatGroups, chatPaneAttention, type Attention } from './chatListModel'
+import { buildChatGroups, chatPaneAttention, placeSessionCreations, type Attention } from './chatListModel'
 import { createChatRowSelector } from './chatRowMetadata'
 import { chatListDestination } from './chatListSelection'
 import { SessionAvatar } from './SessionAvatar'
 import { useSessionPreferences } from './sessionPreferences'
 import { ChatIndicator } from './ChatIndicator'
 import { ProviderMark } from './ProviderMark'
-import { EmptyState, withAlpha } from './primitives'
+import { Button, EmptyState, ProgressBar, withAlpha } from './primitives'
 
 const EMPTY_IDENTITIES: SessionIdentities = {}
 const EMPTY_SEEN: Record<string, number> = {}
 /** `buildChatGroups` ids a repository's group by its main checkout. */
 const REPO_GROUP = 'repo:'
+/** The section for creations that match no repository group. */
+const CREATIONS_GROUP = 'creations'
 type SessionRow = {
   id: string; name: string; identity: SessionIdentity
   indicator: ReturnType<typeof buildChatGroups>[number]['sessions'][number]['indicator']
@@ -32,7 +37,7 @@ type SessionRow = {
   paneIds: string[]; selected: boolean
   children: { id: string; title: string; provider?: string; attention: Attention; selected: boolean }[]
 }
-type Entry = { kind: 'header'; key: string; name: string; count: number; collapsed: boolean; repoRoot?: string } | { kind: 'session'; key: string; row: SessionRow }
+type Entry = { kind: 'header'; key: string; name: string; count: number; collapsed: boolean; repoRoot?: string } | { kind: 'session'; key: string; row: SessionRow } | { kind: 'creation'; key: string; creation: SessionCreation }
 
 export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelectRow, onNewSession, active = true, refreshing = false, onRefresh }: {
   state: HostDaemonState; hostId?: string; selectedPaneId?: string; onSelectPane: (id: string) => void
@@ -82,15 +87,28 @@ export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelect
     if (destination.kind === 'answer' && current.onSelectRow) current.onSelectRow(destination.row)
     else current.onSelectPane(paneId)
   }, [])
-  const entries = useMemo<Entry[]>(() => groups.flatMap((group) => [
-    { kind: 'header' as const, key: group.id, name: group.name, count: group.sessions.length, collapsed: Boolean(collapsed[group.id]), ...(group.id.startsWith(REPO_GROUP) ? { repoRoot: group.id.slice(REPO_GROUP.length) } : {}) },
-    ...(!collapsed[group.id] ? group.sessions.map((row): Entry => ({ kind: 'session', key: row.session.id, row: {
-      id: row.session.id, name: row.session.name, identity: row.identity, indicator: row.indicator,
-      subtitle: row.subtitle, provider: row.provider, updatedAt: row.updatedAt, pending: row.pending, openPaneId: row.openPaneId,
-      paneIds: row.agents.map((pane) => pane.id), selected: row.openPaneId === selectedPaneId || row.agents.some((pane) => pane.id === selectedPaneId),
-      children: row.agents.length > 1 ? row.agents.map((pane) => ({ id: pane.id, title: chats[pane.id]?.session.title || pane.title || 'Agent', provider: chats[pane.id]?.session.provider ?? state.agentStatuses[pane.id]?.provider, attention: chatPaneAttention(state.agentStatuses[pane.id], chats[pane.id], seen[pane.id]), selected: pane.id === selectedPaneId })) : [],
-    } })) : []),
-  ]), [groups, collapsed, selectedPaneId, chats, state.agentStatuses, seen])
+  const creations = useMemo(() => placeSessionCreations(state.sessionCreations, groups.map((group) => group.id)), [state.sessionCreations, groups])
+  const entries = useMemo<Entry[]>(() => {
+    const creationEntries = (groupId: string): Entry[] => (creations.get(groupId) ?? []).map((creation) => ({ kind: 'creation', key: `creation:${creation.id}`, creation }))
+    const unplaced = creations.get('') ?? []
+    return [
+      ...(unplaced.length ? [
+        { kind: 'header' as const, key: CREATIONS_GROUP, name: 'New sessions', count: unplaced.length, collapsed: Boolean(collapsed[CREATIONS_GROUP]) },
+        ...(!collapsed[CREATIONS_GROUP] ? creationEntries('') : []),
+      ] : []),
+      ...groups.flatMap((group) => [
+        { kind: 'header' as const, key: group.id, name: group.name, count: group.sessions.length, collapsed: Boolean(collapsed[group.id]), ...(group.id.startsWith(REPO_GROUP) ? { repoRoot: group.id.slice(REPO_GROUP.length) } : {}) },
+        // Shown even in a collapsed group: the session was just asked for, and its progress is the point.
+        ...creationEntries(group.id),
+        ...(!collapsed[group.id] ? group.sessions.map((row): Entry => ({ kind: 'session', key: row.session.id, row: {
+          id: row.session.id, name: row.session.name, identity: row.identity, indicator: row.indicator,
+          subtitle: row.subtitle, provider: row.provider, updatedAt: row.updatedAt, pending: row.pending, openPaneId: row.openPaneId,
+          paneIds: row.agents.map((pane) => pane.id), selected: row.openPaneId === selectedPaneId || row.agents.some((pane) => pane.id === selectedPaneId),
+          children: row.agents.length > 1 ? row.agents.map((pane) => ({ id: pane.id, title: chats[pane.id]?.session.title || pane.title || 'Agent', provider: chats[pane.id]?.session.provider ?? state.agentStatuses[pane.id]?.provider, attention: chatPaneAttention(state.agentStatuses[pane.id], chats[pane.id], seen[pane.id]), selected: pane.id === selectedPaneId })) : [],
+        } })) : []),
+      ]),
+    ]
+  }, [groups, creations, collapsed, selectedPaneId, chats, state.agentStatuses, seen])
   const viewability = useRef({ itemVisiblePercentThreshold: 1 }).current
   const onVisible = useRef(({ viewableItems }: { viewableItems: { item: Entry; isViewable: boolean }[] }) => {
     setVisible(new Set(viewableItems.filter((entry) => entry.isViewable && entry.item.kind === 'session').map((entry) => entry.item.key)))
@@ -110,7 +128,9 @@ export function ChatList({ state, hostId, selectedPaneId, onSelectPane, onSelect
     ListEmptyComponent={<EmptyState title="No chats yet" body="Your sessions will appear when the daemon connects." />}
     renderItem={({ item }) => item.kind === 'header'
       ? <GroupHeader entry={item} toggle={toggle} onNew={onNewSession ? newSession : undefined} />
-      : <SessionListRow row={item.row} host={host} active={foreground && visible.has(item.key)} select={select} />}
+      : item.kind === 'creation'
+        ? <CreationRow creation={item.creation} host={host} />
+        : <SessionListRow row={item.row} host={host} active={foreground && visible.has(item.key)} select={select} />}
   />
 }
 const GroupHeader = memo(function GroupHeader({ entry, toggle, onNew }: { entry: Extract<Entry, { kind: 'header' }>; toggle: (id: string) => void; onNew?: ((repoRoot: string) => void) | undefined }) {
@@ -160,6 +180,50 @@ const SessionListRow = memo(function SessionListRow({ row, host, active, select 
       </Pressable>)}</View> : null}
   </View>
 }, (a, b) => a.host === b.host && a.active === b.active && a.select === b.select && JSON.stringify(a.row) === JSON.stringify(b.row))
+/** A session the daemon is still creating, or failed to: progress, else the error with Retry and Dismiss. */
+const CreationRow = memo(function CreationRow({ creation, host }: { creation: SessionCreation; host?: Host }) {
+  const theme = useTheme()
+  const [busy, setBusy] = useState<'retry' | 'dismiss' | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  const failed = creation.stage === 'failed'
+  const act = async (action: 'retry' | 'dismiss') => {
+    if (!host) return
+    setBusy(action)
+    setActionError(null)
+    try {
+      if (action === 'retry') await retrySessionCreation(host, creation.id)
+      else {
+        await dismissSessionCreation(host, creation.id)
+        forgetSessionCreation(host.id, creation.id)
+      }
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(null)
+    }
+  }
+  const status = [creation.branch ? `⎇ ${creation.branch}` : '', sessionCreationStatus(creation)].filter(Boolean).join(' · ')
+  return <View accessibilityLabel={`${creation.name || 'New session'}, ${sessionCreationStatus(creation)}`} style={[styles.row, styles.creation]}>
+    <View style={styles.indicator} />
+    <View style={styles.creationIcon}>{failed ? <Feather name="alert-circle" size={18} color={theme.red} /> : <ActivityIndicator size="small" color={theme.muted} />}</View>
+    <View style={styles.text}>
+      <Text numberOfLines={1} style={[styles.name, { color: creation.name ? theme.text : theme.muted }]}>{creation.name || 'New session'}</Text>
+      <Text numberOfLines={1} style={[styles.subtitle, { color: failed ? theme.red : theme.muted }]}>{status}</Text>
+      {!failed && creation.percent !== undefined ? <ProgressBar ratio={creation.percent / 100} /> : null}
+      {failed && creation.error ? (
+        <Pressable accessibilityRole="button" accessibilityHint={expanded ? 'Shows less of the error' : 'Shows the whole error'} onPress={() => setExpanded((value) => !value)}>
+          <Text numberOfLines={expanded ? undefined : 3} selectable style={[styles.creationError, { color: theme.textSoft }]}>{creation.error}</Text>
+        </Pressable>
+      ) : null}
+      {actionError ? <Text style={[styles.creationError, { color: theme.red }]}>{actionError}</Text> : null}
+      {failed ? <View style={styles.creationActions}>
+        <Button label="Retry" onPress={() => void act('retry')} busy={busy === 'retry'} disabled={!host || busy !== null} style={styles.creationButton} />
+        <Button label="Dismiss" onPress={() => void act('dismiss')} busy={busy === 'dismiss'} disabled={!host || busy !== null} style={styles.creationButton} />
+      </View> : null}
+    </View>
+  </View>
+})
 const styles = StyleSheet.create({
   list: { flex: 1, minHeight: 0, overflow: 'hidden' }, content: { paddingHorizontal: 16, paddingBottom: 112 },
   groupHead: { minHeight: 48, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4 },
@@ -169,5 +233,7 @@ const styles = StyleSheet.create({
   row: { minHeight: 70, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 6, paddingVertical: 10, borderRadius: 9 }, indicator: { width: 12, alignItems: 'center' },
   text: { flex: 1, minWidth: 0, gap: 5 }, name: { fontSize: 16, fontWeight: '600' }, subtitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 }, subtitle: { fontSize: 13, flex: 1 },
   meta: { alignItems: 'flex-end', gap: 6 }, time: { fontSize: 11.5 }, prBadge: { flexDirection: 'row', alignItems: 'center', gap: 3 }, badge: { fontSize: 11, fontWeight: '600', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 5 },
+  creation: { alignItems: 'flex-start' }, creationIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  creationError: { fontSize: 12.5, lineHeight: 17 }, creationActions: { flexDirection: 'row', gap: 8, marginTop: 4 }, creationButton: { minHeight: 36, paddingVertical: 7, paddingHorizontal: 14 },
   children: { marginLeft: 39, borderLeftWidth: 1, paddingLeft: 10, marginBottom: 6 }, child: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, borderRadius: 7 }, childName: { fontSize: 13, flex: 1 },
 })

@@ -32,7 +32,8 @@ import { AttachmentStrip, pickFromSheet, useAttachmentUploads } from '../../../s
 import { pastedImage, useClipboardImage, type ClipboardImageData } from '../../../src/chat/clipboard'
 import { IconButton, Pill, showSheet } from '../../../src/chat/ComposerParts'
 import { PasteImageBar } from '../../../src/chat/PasteImageBar'
-import { createTmuxSession, fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo } from '../../../src/daemon/paneApi'
+import { fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, startSessionCreation } from '../../../src/daemon/paneApi'
+import { whenSessionCreated } from '../../../src/daemon/sessionCreations'
 import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
 import {
   AGENT_CHOICES,
@@ -347,25 +348,41 @@ export default function NewSessionScreen(): React.JSX.Element {
         },
         repo,
       )
-      const { created } = requireSessionAgentLaunch(request, await createTmuxSession(host, request))
-      createdTarget.current = created
-      setDirectoryHistory(await rememberDirectory(directory))
-      if (repo?.mainRoot) await rememberPrepareCommand(repo.mainRoot, prepareCommand)
-      // Only what was picked here is remembered for the model, never a fallback to the default.
-      setLaunchStore(await rememberLaunch(repoKey, {
-        startWith: agent,
-        ...(chat ? { permissions: { [chat]: permissionMode } } : {}),
-        ...(configDir ? { configDir } : {}),
-        ...(catalogKey && modelPick?.key === catalogKey ? { models: { [catalogKey]: selectedModel } } : {}),
-        ...(fastAvailable ? { fast: fastPick } : {}),
-      }))
+      const creation = await startSessionCreation(host, request)
+      const rememberChoices = async () => {
+        setDirectoryHistory(await rememberDirectory(directory))
+        if (repo?.mainRoot) await rememberPrepareCommand(repo.mainRoot, prepareCommand)
+        // Only what was picked here is remembered for the model, never a fallback to the default.
+        setLaunchStore(await rememberLaunch(repoKey, {
+          startWith: agent,
+          ...(chat ? { permissions: { [chat]: permissionMode } } : {}),
+          ...(configDir ? { configDir } : {}),
+          ...(catalogKey && modelPick?.key === catalogKey ? { models: { [catalogKey]: selectedModel } } : {}),
+          ...(fastAvailable ? { fast: fastPick } : {}),
+        }))
+      }
       // The daemon evaluates push rules per device, so "notify me" is the
       // absence of the session from the muted list rather than a local flag.
-      const push = usePushStore.getState()
-      const muted = push.rules.mutedSessions.includes(created.sessionName)
-      if (muted === notify) {
-        await push.setRules(toggleMutedSession(push.rules, created.sessionName), useHostsStore.getState().hosts)
+      const applyNotify = async (sessionName: string) => {
+        const push = usePushStore.getState()
+        const muted = push.rules.mutedSessions.includes(sessionName)
+        if (muted === notify) {
+          await push.setRules(toggleMutedSession(push.rules, sessionName), useHostsStore.getState().hosts)
+        }
       }
+      if (creation.stage !== 'done' || !creation.result) {
+        // A worktree checkout can take minutes: the chat list shows its progress in the
+        // meantime, and the push rule is set once the session's name is known.
+        whenSessionCreated(host.id, creation.id, (result) => applyNotify(result.created.sessionName))
+        await rememberChoices().catch((rememberError: unknown) => console.warn('Remembering the new session settings failed', rememberError))
+        resetForm()
+        router.back()
+        return
+      }
+      const { created } = requireSessionAgentLaunch(request, creation.result)
+      createdTarget.current = created
+      await rememberChoices()
+      await applyNotify(created.sessionName)
       openPane(created.paneId)
     } catch (createError) {
       const compatibilityError = createError instanceof TmuxAgentLaunchCompatibilityError
@@ -397,6 +414,8 @@ export default function NewSessionScreen(): React.JSX.Element {
     permissionMode,
     repo,
     repoKey,
+    resetForm,
+    router,
     selectedModel,
     uploads.refs,
     worktreeEnabled,

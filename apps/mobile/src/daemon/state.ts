@@ -8,6 +8,7 @@ import type {
   WebPane,
   WebPaneFeedbackInfo,
 } from '@commando/protocol'
+import { parseSessionCreation, type SessionCreation } from '@commando/tmux-create'
 
 export type ConnectionPhase =
   | 'idle'
@@ -29,6 +30,8 @@ export type HostDaemonState = {
   webPanes: WebPane[]
   feedback: Record<string, WebPaneFeedbackInfo>
   usage: ProviderUsage[]
+  /** Sessions the daemon is creating in the background, and recently finished or failed ones. */
+  sessionCreations: SessionCreation[]
   lastError: { code: string; message: string; at: number } | null
   updatedAt: number
 }
@@ -44,6 +47,7 @@ export const EMPTY_HOST_STATE: HostDaemonState = {
   webPanes: [],
   feedback: {},
   usage: [],
+  sessionCreations: [],
   lastError: null,
   updatedAt: 0,
 }
@@ -134,6 +138,12 @@ export function applyServerMessage(
 
     case 'provider_usage':
       return stamped({ usage: message.usage })
+
+    case 'session_creations':
+      return stamped({ sessionCreations: message.creations.flatMap((creation) => {
+        // One malformed entry from a newer daemon must not hide the others.
+        try { return [parseSessionCreation(creation)] } catch { return [] }
+      }) })
 
     case 'error':
       return stamped({
