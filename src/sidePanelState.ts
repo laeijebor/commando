@@ -59,7 +59,7 @@ export type BuiltinPanelTab = {
 export type PanelTab = WebPane | BuiltinPanelTab
 export function isBuiltinTab(tab: PanelTab): tab is BuiltinPanelTab { return 'key' in tab }
 export function panelTabKey(tab: PanelTab): string { return isBuiltinTab(tab) ? tab.key : tab.id }
-export function builtinPanelTab(anchorPaneId: string, key: BuiltinPanelKey, label: string = key === 'session' ? 'Session' : key === 'changes' ? 'Changes' : `#${parsePrPanelKey(key)?.number}`): BuiltinPanelTab {
+export function builtinPanelTab(anchorPaneId: string, key: BuiltinPanelKey, label: string = key === 'session' ? 'Session' : key === 'terminal' ? 'Terminal' : key === 'changes' ? 'Changes' : `#${parsePrPanelKey(key)?.number}`): BuiltinPanelTab {
   return { id: `panel:${anchorPaneId}:${key}`, key, anchorPaneId, label }
 }
 export function hasPaneChanges(summary: GitDiffSummary | null): boolean {
@@ -87,7 +87,7 @@ export function primaryPanePr(prs: readonly PanePrSummary[]): PanePrSummary | un
   return orderedPanePrs(prs)[0]
 }
 export function combinedPanelTabs(anchor: string, webTabs: readonly WebPane[], summary: GitDiffSummary | null, prs: readonly PanePrSummary[], sessionUnseen = false, sessionWarning = false, dismissed: Readonly<Record<string, string>> = {}): PanelTab[] {
-  const tabs: PanelTab[] = [{ ...builtinPanelTab(anchor, 'session'), unseen: sessionUnseen, warning: sessionWarning }]
+  const tabs: PanelTab[] = [{ ...builtinPanelTab(anchor, 'session'), unseen: sessionUnseen, warning: sessionWarning }, builtinPanelTab(anchor, 'terminal')]
   if (hasPaneChanges(summary)) tabs.push({ ...builtinPanelTab(anchor, 'changes'), additions: summary?.additions ?? 0, deletions: summary?.deletions ?? 0 })
   const counts = new Map<number, number>()
   for (const pr of prs) counts.set(pr.number, (counts.get(pr.number) ?? 0) + 1)
@@ -112,7 +112,8 @@ export function resolveActivePanelTab(tabs: readonly PanelTab[], stored?: string
   if (selected) return selected
   const index = previous.findIndex((tab) => panelTabKey(tab) === stored)
   if (index >= 0) {
-    const surviving = new Set(tabs.map(panelTabKey))
+    // Never onto Terminal: its shell starts only when the user opens the tab.
+    const surviving = new Set(tabs.map(panelTabKey).filter((key) => key !== 'terminal'))
     const neighbour = previous.slice(index + 1).find((tab) => surviving.has(panelTabKey(tab)))
       ?? [...previous.slice(0, index)].reverse().find((tab) => surviving.has(panelTabKey(tab)))
     if (neighbour) return tabs.find((tab) => panelTabKey(tab) === panelTabKey(neighbour))
@@ -127,4 +128,24 @@ export function defaultPanelCollapsed(hasWebTabs: boolean, remembered: string | 
 export function openedPanelTabs(tabs: readonly WebPane[], previous: ReadonlyMap<string, number>): WebPane[] {
   return tabs.filter((tab) => tab.dock !== 'split' &&
     (!previous.has(tab.id) || (tab.openRevision ?? 0) > previous.get(tab.id)!))
+}
+
+export type PanelTabsOrientation = 'horizontal' | 'vertical'
+const TABS_ORIENTATION_KEY = 'commando.side-panel.tabs-orientation'
+const orientationListeners = new Set<() => void>()
+/** One choice for every window's panel, remembered on this machine. */
+export const panelTabsOrientation = {
+  get(): PanelTabsOrientation {
+    try { return localStorage.getItem(TABS_ORIENTATION_KEY) === 'vertical' ? 'vertical' : 'horizontal' } catch { return 'horizontal' }
+  },
+  set(value: PanelTabsOrientation): void {
+    try { localStorage.setItem(TABS_ORIENTATION_KEY, value) } catch { /* Best effort: the choice then lasts until reload. */ }
+    orientationListeners.forEach((listener) => listener())
+  },
+  subscribe(listener: () => void): () => void {
+    const onStorage = (event: StorageEvent) => { if (event.key === TABS_ORIENTATION_KEY) listener() }
+    orientationListeners.add(listener)
+    window.addEventListener('storage', onStorage)
+    return () => { orientationListeners.delete(listener); window.removeEventListener('storage', onStorage) }
+  },
 }

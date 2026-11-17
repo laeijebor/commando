@@ -117,6 +117,7 @@ import { THEMES, activeTheme, applyTheme, onThemeChange, storedTheme, type Theme
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { useChatPaneMeasurement } from './chatPaneMeasurement'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
+import { PaneShellTab } from './PaneShellTab'
 import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
@@ -1215,6 +1216,12 @@ function HostApp() {
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
   const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
+  /** Terminal-tab shells on screen now; their output is streamed only while they are. */
+  const [visibleShellIds, setVisibleShellIds] = useState<readonly string[]>([])
+  const reportShellVisible = useCallback((shellPaneId: string, visible: boolean) => {
+    setVisibleShellIds((current) => current.includes(shellPaneId) === visible ? current
+      : visible ? [...current, shellPaneId] : current.filter((id) => id !== shellPaneId))
+  }, [])
   const panelTabSets = useRef(new Map<string, PanelTab[]>())
   const rememberPanelTabs = useCallback((tabs: PanelTab[]) => {
     setMaximizedBuiltinTab((current) => current && !tabs.some((tab) => tab.id === current.id) ? null : current)
@@ -1976,7 +1983,11 @@ function HostApp() {
         .filter((pane) => pane.sessionId === selectedSessionId && !subscribedPaneIds.includes(pane.id))
         .map((pane) => pane.id)
     : []
-  const subscriptionKey = subscribedPaneIds.join('\u0000')
+  // The daemon rejects a subscription to a pane it no longer lists, so a shell that ended is dropped here.
+  const shellSubscriptionIds = area === 'workspace'
+    ? visibleShellIds.filter((id) => snapshot?.shells?.some((shell) => shell.pane.id === id))
+    : []
+  const subscriptionKey = [...subscribedPaneIds, ...shellSubscriptionIds].join('\u0000')
   const statusSubscriptionKey = statusOnlyPaneIds.join('\u0000')
   // The selected session's panes are in front of the user while the window is
   // active, so a turn that ended there is seen rather than left to review.
@@ -3927,6 +3938,17 @@ function HostApp() {
     const pane = paneMap.get(tab.anchorPaneId)
     if (!pane) return null
     const onOpenInIde = local ? (file: string) => openFileInSessionIde(pane.sessionId, pane.id, file) : undefined
+    if (tab.key === 'terminal') {
+      const shell = snapshot?.shells?.find((candidate) => candidate.anchorPaneId === pane.id)?.pane
+      return <PaneShellTab key={pane.targetId} shell={shell} visible={visible} connected={connected}
+        streaming={Boolean(shell && shellSubscriptionIds.includes(shell.id))} resizeActive={resizeAuthorityActive}
+        ensureShell={() => paneManagementApi.ensurePaneShell(pane.id)} onVisible={reportShellVisible}
+        terminal={{
+          onInput: sendPaneInput, onInputBytes: sendPaneInputBytes, onKey: sendPaneKey, onPaste: sendPanePaste,
+          onResize: (paneId, cols, rows) => { send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('shell-resize') }) },
+          onRequestReset: requestPaneReset, onSelectionCopied: () => {}, registerSink: registerTerminalSink,
+        }} />
+    }
     if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} onOpenInIde={onOpenInIde} />
     const identity = parsePrPanelKey(tab.key)
     if (identity) {

@@ -101,7 +101,7 @@ describe('SidePanel', () => {
     expect(screen.getAllByRole('button', { name: 'Open PRs' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:4' }))
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', '#4', '#3', '#2', '#1'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', 'Terminal', '#4', '#3', '#2', '#1'])
     expect(screen.getByRole('tab', { name: '#4 open' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getAllByRole('button', { name: /Close PR #\d+ tab/ })).toHaveLength(4)
     expect(screen.queryByRole('button', { name: 'Close Session' })).not.toBeInTheDocument()
@@ -123,7 +123,7 @@ describe('SidePanel', () => {
     expect(screen.getByRole('tab', { name: '#3 draft' })).toHaveAttribute('aria-selected', 'true')
     prs = []
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', 'Terminal'])
     expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
   })
 

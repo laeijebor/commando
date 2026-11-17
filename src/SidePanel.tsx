@@ -1,9 +1,9 @@
 import { useHost } from './HostContext'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { FileDiff, GitPullRequest, LayoutDashboard, Presentation, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelRightClose, PanelRightOpen, Smartphone, Wrench, X, type LucideIcon } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { FileDiff, GitPullRequest, LayoutDashboard, Presentation, ListChecks, Maximize2, Minimize2, NotebookText, Plus, Globe, PanelLeft, PanelRightClose, PanelRightOpen, PanelTop, Smartphone, SquareTerminal, Wrench, X, type LucideIcon } from 'lucide-react'
 import { parsePrPanelKey, prPanelKey } from '../shared/web-pane-placement'
 import type { TmuxPane, WebPane, WebPaneEngine } from '../shared/protocol'
-import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, panelPanePrs, panelScrimClipPath, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
+import { activePanelTab, builtinPanelTab, closedPanePrs, combinedPanelTabs, panelPanePrs, panelScrimClipPath, clampDrawerHeight, rememberedDrawerHeight, defaultPanelCollapsed, isBuiltinTab, panelTabKey, panelTabsOrientation, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
 import type { PanePrList, PrsApiClient } from './prsApi'
 import { usePaneGitSummary } from './paneGitStore'
@@ -45,7 +45,7 @@ function loadDrawerHeight(windowId: string): number {
 
 /** A panel tab's icon, shared with Commander's reading pane. */
 export function panelTabIcon(tab: PanelTab): LucideIcon {
-  if (isBuiltinTab(tab)) return tab.key === 'session' ? NotebookText : tab.key === 'changes' ? FileDiff : GitPullRequest
+  if (isBuiltinTab(tab)) return tab.key === 'session' ? NotebookText : tab.key === 'terminal' ? SquareTerminal : tab.key === 'changes' ? FileDiff : GitPullRequest
   return tab.content?.kind === 'canvas' ? (isDeckPath(tab.content.manifest) ? Presentation : LayoutDashboard) : tab.content?.kind === 'guide' ? ListChecks : tab.content?.kind === 'simulator' ? Smartphone : /devtools/i.test(tab.url) ? Wrench : Globe
 }
 
@@ -117,6 +117,8 @@ export function SidePanel({
     setCollapsed(value)
     try { localStorage.setItem(`commando.side-panel.collapsed.${storageWindowId}`, String(value)) } catch { /* Best effort. */ }
   }
+  // The bottom drawer is too short for a column of tabs, so it keeps the strip.
+  const verticalTabs = useSyncExternalStore(panelTabsOrientation.subscribe, panelTabsOrientation.get) === 'vertical' && !narrowMode
   const [paneData, setPaneData] = useState<Record<string, PanePanelData>>({})
   const onData = useCallback((id: string, data: PanePanelData) => {
     setPaneData((current) => current[id]?.summary === data.summary && current[id]?.prs === data.prs ? current : { ...current, [id]: data })
@@ -291,7 +293,7 @@ export function SidePanel({
         onPointerUp={() => { dragRef.current = null }}
         onPointerCancel={() => { dragRef.current = null }}
         onLostPointerCapture={() => { dragRef.current = null }} />
-      <aside ref={drawerRef} className="side-panel" hidden={!paneIds.length || gridMaximized} aria-label="Pane tabs"
+      <aside ref={drawerRef} className={`side-panel${verticalTabs && expanded ? ' has-vertical-tabs' : ''}`} hidden={!paneIds.length || gridMaximized} aria-label="Pane tabs"
         aria-hidden={narrowMode && !expanded ? true : undefined} inert={narrowMode && !expanded}
         data-native-terminal-occluder={narrowMode && !gridMaximized && (expanded || drawerOccluding) ? '' : undefined}
         onTransitionEnd={(event) => {
@@ -327,7 +329,7 @@ export function SidePanel({
           })}
         </div> : (
           <header className="side-panel-head">
-            <div className="side-panel-tabs" role="tablist" aria-label={`Tabs for ${paneLabel}`}>
+            <div className="side-panel-tabs" role="tablist" aria-orientation={verticalTabs ? 'vertical' : 'horizontal'} aria-label={`Tabs for ${paneLabel}`}>
               {focusedTabs.map((tab) => {
                 if (isBuiltinTab(tab)) {
                   const pr = parsePrPanelKey(tab.key)
@@ -356,9 +358,13 @@ export function SidePanel({
               })}
               <button type="button" disabled={!local} title={!local ? 'Only on this Mac for now' : undefined} className="web-pane-button side-panel-add" aria-label="Add web tab" aria-expanded={adding !== null} onClick={() => setAdding(adding ? null : 'webkit')}><Plus /></button>
             </div>
+            <div className="side-panel-actions">
             <span className="side-panel-owner" title={paneLabel}>{paneLabel}</span>
+            {!narrowMode && <button className="web-pane-button" type="button" aria-label={verticalTabs ? 'Show tabs along the top' : 'Show tabs down the side'} title={verticalTabs ? 'Show tabs along the top' : 'Show tabs down the side'}
+              onClick={() => panelTabsOrientation.set(verticalTabs ? 'horizontal' : 'vertical')}>{verticalTabs ? <PanelTop /> : <PanelLeft />}</button>}
             {active && onMaximize && <button className="web-pane-button" type="button" aria-label={maximizedTab ? 'Restore panel tab' : 'Maximize panel tab'} onClick={() => onMaximize(active)}>{maximizedTab ? <Minimize2 /> : <Maximize2 />}</button>}
             {!maximizedTab && <button className="web-pane-button" type="button" aria-label={narrowMode ? "Close tabs drawer" : "Collapse side panel"} onClick={() => narrowMode ? closeDrawer() : changeCollapsed(true)}>{narrowMode ? <X /> : <PanelRightClose />}</button>}
+            </div>
           </header>
         )}
         {expanded && adding && <div className="side-panel-add-menu">
