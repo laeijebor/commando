@@ -116,7 +116,7 @@ function DeviceCard({ resource, snapshot, api, run, onOpenPane }: {
         {flags[index] ? <span className={flags[index]!.tone === 'red' ? 'idle' : 'ended'}>{flags[index]!.text}</span> : null}
       </div>
       <div className="sims-actions">
-        {onOpenPane ? <button type="button" onClick={() => onOpenPane(holder.paneId)}>Open pane</button> : null}
+        {onOpenPane && holder.paneId.startsWith('%') ? <button type="button" onClick={() => onOpenPane(holder.paneId)}>Open pane</button> : null}
         <button type="button" className="danger" disabled={busy} onClick={() => { if (window.confirm(`Release ${resource.name} from ${who(holder)}? They will be told to stop using it.`)) act(() => api.release(resource.id)) }}>Release</button>
       </div>
     </section>)}
@@ -128,7 +128,7 @@ function DeviceCard({ resource, snapshot, api, run, onOpenPane }: {
       <div className="sims-meta"><span className="ended">{offered.offer!.deliveredAt === undefined ? 'message not delivered yet · lapses in ' : 'must claim within '}
         {duration(Math.max(0, (offered.claimBy ?? now) - now) + 59_999)}</span></div>
       <div className="sims-actions">
-        {onOpenPane ? <button type="button" onClick={() => onOpenPane(offered.paneId)}>Open pane</button> : null}
+        {onOpenPane && offered.paneId.startsWith('%') ? <button type="button" onClick={() => onOpenPane(offered.paneId)}>Open pane</button> : null}
         <button type="button" disabled={busy} onClick={() => act(() => api.remove(offered.id))}>Skip to next</button>
       </div>
     </section> : null}
