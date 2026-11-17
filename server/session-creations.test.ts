@@ -64,8 +64,10 @@ describe('SessionCreations', () => {
     ])
     expect(creations.list()[0]).toMatchObject({ id: creation.id, stage: 'done', result: RESPONSE })
 
-    // Kept for a while so the client that started it can finish it, even after reconnecting.
-    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    // Kept until the client that started it dismisses it, or for an hour should it never come back.
+    await vi.advanceTimersByTimeAsync(59 * 60_000)
+    expect(creations.list()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(creations.list()).toEqual([])
   })
 

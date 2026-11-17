@@ -9,8 +9,11 @@ import type {
 
 type CreateSession = (input: CreateTmuxSessionRequest, onProgress: SessionCreationProgress) => Promise<TmuxCreateResponse>
 
-/** Long enough for the client that started it to pick up the result after a reconnect. */
-const DONE_KEPT_MS = 2 * 60_000
+/**
+ * The client that started a creation dismisses it once it has finished it. This is only the
+ * fallback, long enough for a phone that was asleep through the checkout to reconnect.
+ */
+const DONE_KEPT_MS = 60 * 60_000
 const FAILED_KEPT = 20
 
 type Job = { creation: SessionCreation; request: CreateTmuxSessionRequest }

@@ -32,7 +32,7 @@ import { AttachmentStrip, pickFromSheet, useAttachmentUploads } from '../../../s
 import { pastedImage, useClipboardImage, type ClipboardImageData } from '../../../src/chat/clipboard'
 import { IconButton, Pill, showSheet } from '../../../src/chat/ComposerParts'
 import { PasteImageBar } from '../../../src/chat/PasteImageBar'
-import { fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, startSessionCreation } from '../../../src/daemon/paneApi'
+import { dismissSessionCreation, fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, startSessionCreation } from '../../../src/daemon/paneApi'
 import { whenSessionCreated } from '../../../src/daemon/sessionCreations'
 import { useDaemonConnection } from '../../../src/daemon/useDaemonConnection'
 import {
@@ -373,7 +373,11 @@ export default function NewSessionScreen(): React.JSX.Element {
       if (creation.stage !== 'done' || !creation.result) {
         // A worktree checkout can take minutes: the chat list shows its progress in the
         // meantime, and the push rule is set once the session's name is known.
-        whenSessionCreated(host.id, creation.id, (result) => applyNotify(result.created.sessionName))
+        whenSessionCreated(host.id, creation.id, async (result) => {
+          await applyNotify(result.created.sessionName)
+          // Finished here, so the daemon need not keep it for this phone any longer.
+          await dismissSessionCreation(host, creation.id).catch(() => undefined)
+        })
         await rememberChoices().catch((rememberError: unknown) => console.warn('Remembering the new session settings failed', rememberError))
         resetForm()
         router.back()

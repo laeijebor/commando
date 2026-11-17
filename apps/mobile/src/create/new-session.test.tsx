@@ -6,7 +6,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import NewSessionScreen from '../../app/(host)/[hostId]/new-session'
 import { useHostsStore } from '../hosts/store'
 import { ThemeProvider } from '../theme'
-import { createTmuxSession, fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, runInPane, startSessionCreation } from '../daemon/paneApi'
+import { createTmuxSession, dismissSessionCreation, fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, runInPane, startSessionCreation } from '../daemon/paneApi'
 import { whenSessionCreated } from '../daemon/sessionCreations'
 import { toggleMutedSession } from '../notifications'
 import { LAUNCH_KEY, loadDirectoryHistory, rememberDirectory } from './prefs'
@@ -18,7 +18,7 @@ let mockSnapshot: unknown = null
 jest.mock('../daemon/useDaemonConnection', () => ({ useDaemonConnection: () => ({ snapshot: mockSnapshot }) }))
 jest.mock('../daemon/sessionCreations', () => ({ whenSessionCreated: jest.fn() }))
 // `createTmuxSession` stands for the daemon's create: by default it finishes quickly, as a done creation.
-jest.mock('../daemon/paneApi', () => ({ createTmuxSession: jest.fn(), startSessionCreation: jest.fn(), fetchClaudeProfiles: jest.fn(async () => []), fetchModelCatalogs: jest.fn(async () => ({})), fetchRepoInfo: jest.fn(async () => ({ isRepo: false })), runInPane: jest.fn() }))
+jest.mock('../daemon/paneApi', () => ({ createTmuxSession: jest.fn(), startSessionCreation: jest.fn(), dismissSessionCreation: jest.fn(async () => undefined), fetchClaudeProfiles: jest.fn(async () => []), fetchModelCatalogs: jest.fn(async () => ({})), fetchRepoInfo: jest.fn(async () => ({ isRepo: false })), runInPane: jest.fn() }))
 jest.mock('./prefs', () => ({
   ...jest.requireActual('./prefs'),
   loadDirectoryHistory: jest.fn(async () => []),
@@ -120,6 +120,7 @@ it('leaves for the chat list while a slow worktree checkout runs, and sets the p
   await finish({ created: { ...created, sessionName: 'cursor-2' } })
   expect(toggleMutedSession).toHaveBeenCalledWith({ mutedSessions: [] }, 'cursor-2')
   expect(mockSetRules).toHaveBeenCalledTimes(1)
+  expect(dismissSessionCreation).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-1' }), 'c1')
 })
 
 it('keeps the form and shows creation errors without detached launch or navigation', async () => {

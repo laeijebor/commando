@@ -1166,6 +1166,25 @@ describe('SessionTree', () => {
       expect(onDismissCreation).toHaveBeenCalledWith('job-1')
       expect(screen.queryByRole('article', { name: /^cd-failure:/ })).not.toBeInTheDocument()
     })
+
+    it('says so when a creation it started vanishes before finishing, as when the daemon restarts', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const running: SessionCreation = { id: 'job-2', name: 'cd-failure', cwd: SAVE_ALL.root, stage: 'checking-out', startedAt: 1 }
+      const creation = { onCreateSession: vi.fn(), onStartSession: vi.fn(async () => running), onDismissCreation: vi.fn(async () => undefined) }
+      const view = renderTree({ creation })
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New session' })
+      fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'cd-failure' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      const rerender = (creations: SessionCreation[]) => view.rerender(
+        <SessionTree token="token" sessions={sessions} panes={panes} displayedPaneIds={[]} statuses={{}} selectedSessionId={null}
+          onSelectSession={vi.fn()} onSelectPane={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} creation={creation} creations={creations} />,
+      )
+      rerender([running])
+      rerender([])
+      expect(await screen.findByText('The daemon restarted while creating cd-failure; create it again')).toBeInTheDocument()
+    })
   })
 })
 

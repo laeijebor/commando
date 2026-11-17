@@ -39,3 +39,13 @@ it('finishes straight away for a creation already done, and not at all for a dis
   expect(done).toHaveBeenCalledTimes(1)
   expect(dismissed).not.toHaveBeenCalled()
 })
+
+it('stops waiting for a creation that was listed and then vanished, as after a daemon restart', async () => {
+  const finish = jest.fn()
+  whenSessionCreated('h1', 'c1', finish)
+  report('checking-out')
+  useDaemonStore.getState().ingest('h1', { type: 'session_creations', creations: [] })
+  report('done')
+  await flush()
+  expect(finish).not.toHaveBeenCalled()
+})

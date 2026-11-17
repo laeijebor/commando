@@ -190,7 +190,7 @@ export function SessionTree(props: Props) {
   const [archivesExpanded, setArchivesExpanded] = useState(false)
   const sessionCreateRequestId = useRef(0)
   /** Creations started here: once ready they are placed and opened here, as a quick creation is. */
-  const ownCreations = useRef(new Map<string, { request: CreateTmuxSessionRequest; groupId: string; selectedAtStart: string | null; seen: boolean }>())
+  const ownCreations = useRef(new Map<string, { request: CreateTmuxSessionRequest; groupId: string; selectedAtStart: string | null; failed: boolean; seen: boolean }>())
   const sessionCreateTrigger = useRef<HTMLElement | null>(null)
   const preferenceSaveVersion = useRef(0)
   const marks = props.marks ?? {}
@@ -542,15 +542,22 @@ export function SessionTree(props: Props) {
   }
 
   const startedCreation = (creation: SessionCreation, request: CreateTmuxSessionRequest, groupId: string) => {
-    ownCreations.current.set(creation.id, { request, groupId, selectedAtStart: props.selectedSessionId, seen: false })
+    ownCreations.current.set(creation.id, { request, groupId, selectedAtStart: props.selectedSessionId, failed: false, seen: false })
   }
   useEffect(() => {
     if (!props.creations) return
     for (const [id, own] of ownCreations.current) {
       const creation = props.creations.find((candidate) => candidate.id === id)
-      // Gone without finishing: the daemon restarted.
-      if (!creation) { if (own.seen) ownCreations.current.delete(id); continue }
+      if (!creation) {
+        if (own.seen) {
+          ownCreations.current.delete(id)
+          // A failed one may have been dismissed elsewhere; a running one only vanishes with the daemon.
+          if (!own.failed) setError(`The daemon restarted while creating ${own.request.name || 'a session'}; create it again`)
+        }
+        continue
+      }
       own.seen = true
+      own.failed = creation.stage === 'failed'
       if (creation.stage !== 'done' || !creation.result) continue
       ownCreations.current.delete(id)
       try { requireSessionAgentLaunch(own.request, creation.result) } catch (cause) { setError(cause instanceof Error ? cause.message : 'The agent did not start') }

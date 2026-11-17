@@ -5,13 +5,17 @@ import { useDaemonStore } from './store'
 type Finish = (result: TmuxCreateResponse) => void | Promise<void>
 
 /** Creations this device started and left running, keyed by host and creation id. */
-const waiting = new Map<string, { hostId: string; id: string; finish: Finish }>()
+const waiting = new Map<string, { hostId: string; id: string; finish: Finish; seen: boolean }>()
 let unsubscribe: (() => void) | null = null
 
 function settle(): void {
   const byHost = useDaemonStore.getState().byHost
   for (const [key, entry] of waiting) {
-    const creation = byHost[entry.hostId]?.sessionCreations.find((candidate) => candidate.id === entry.id)
+    const host = byHost[entry.hostId]
+    const creation = host?.sessionCreations.find((candidate) => candidate.id === entry.id)
+    // Listed once and now gone: dismissed elsewhere, or the daemon restarted. Nothing will finish it.
+    if (!creation && entry.seen && host) waiting.delete(key)
+    if (creation) entry.seen = true
     if (creation?.stage !== 'done' || !creation.result) continue
     waiting.delete(key)
     // Nothing is on screen to report to by now; the session itself has appeared in the list.
@@ -31,7 +35,7 @@ function settle(): void {
  * only for bookkeeping that does not navigate.
  */
 export function whenSessionCreated(hostId: string, id: string, finish: Finish): void {
-  waiting.set(`${hostId}\n${id}`, { hostId, id, finish })
+  waiting.set(`${hostId}\n${id}`, { hostId, id, finish, seen: false })
   unsubscribe ??= useDaemonStore.subscribe(settle)
   settle()
 }
