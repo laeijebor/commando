@@ -319,7 +319,11 @@ export class DeviceLockApi {
     const seconds = Math.min(MAX_WAIT_SECONDS, Math.max(0, Number(url.searchParams.get('wait') ?? 0) || 0))
     const { registry } = this.dependencies
     // Just after a restart onto a farm, its state may not have been read yet: an entry isn't gone, it's not loaded.
-    for (let waited = 0; registry.loading?.() && waited < seconds * 1_000; waited += 200) await new Promise((resolve) => setTimeout(resolve, 200))
+    // Wait within the caller's budget, and say "try again" rather than "gone" if it still isn't.
+    const started = Date.now()
+    while (registry.loading?.() && Date.now() - started < seconds * 1_000) await new Promise((resolve) => setTimeout(resolve, 200))
+    if (registry.loading?.()) throw new DeviceLockError(503, 'The device farm hasn\'t been read yet; try again shortly')
+    const remaining = Math.max(0, seconds - Math.floor((Date.now() - started) / 1_000))
     const state = () => {
       const entry = registry.entry(id)
       if (entry?.offer) return { status: 'offered', entry, resource: registry.resource(entry.offer.resourceId) }
@@ -328,11 +332,11 @@ export class DeviceLockApi {
       return holder ? { status: 'held', holder, resource: registry.resource(holder.resourceId) } : { status: 'gone' }
     }
     const initial = state()
-    if (!seconds || initial.status === 'held' || initial.status === 'gone') return initial
+    if (!remaining || initial.status === 'held' || initial.status === 'gone') return initial
     const before = JSON.stringify(initial)
     return await new Promise((resolve) => {
       const finish = () => { clearTimeout(timer); unsubscribe(); resolve(state()) }
-      const timer = setTimeout(finish, seconds * 1_000)
+      const timer = setTimeout(finish, remaining * 1_000)
       const unsubscribe = registry.onChange(() => { if (JSON.stringify(state()) !== before) finish() })
     })
   }

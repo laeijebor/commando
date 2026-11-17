@@ -118,7 +118,12 @@ describe('FarmLockStore', () => {
   it('says a farm isn\'t answering rather than that a device doesn\'t exist', async () => {
     const down = new FarmLockStore([new FarmClient({ name: 'local', url: 'http://local', token: 't', fetcher: (async () => { throw new Error('ECONNREFUSED') }) as typeof fetch })])
     await down.ready()
-    await expect(down.lock({ paneId: '%1', sessionName: 'x', request: 'pixel', task: 't' })).rejects.toMatchObject({ status: 503, message: expect.stringMatching(/local device farm isn't answering/) })
+    await expect(down.lock({ paneId: '%1', sessionName: 'x', request: 'pixel', task: 't' })).rejects.toMatchObject({ status: 503, message: expect.stringMatching(/local device farm hasn't been read yet/) })
+    // Every write waits for a complete mirror, not just lock: "you hold nothing" would strand the farm's entries.
+    await expect(down.release({ paneId: '%1', sessionName: 'x' })).rejects.toMatchObject({ status: 503 })
+    await expect(down.withdraw('%1', 'q1')).rejects.toMatchObject({ status: 503 })
+    expect(down.loading()).toBe(true)
+    expect(await down.sweep({ paneExists: () => false, pidAlive: () => false })).toEqual({ expired: [], ended: [], dropped: [] })
   })
 
   it('uses this daemon\'s own session prefix, and doesn\'t announce an offer again after a restart', async () => {

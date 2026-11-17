@@ -215,7 +215,8 @@ export class DeviceFarmController {
 
   private idle(): boolean {
     const { held, queued } = this.waitingOn()
-    return !held && !queued && !(this.settings.use === 'farm' && this.farm && this.farm.pending > 0)
+    // On the farm, "nothing held" only means something once every farm has been read and no write is in flight.
+    return !held && !queued && !(this.settings.use === 'farm' && this.farm && (this.farm.pending > 0 || this.farm.loading()))
   }
 
   private async trySwitch(): Promise<void> {

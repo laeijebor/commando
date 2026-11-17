@@ -125,4 +125,18 @@ describe('DeviceFarmController', () => {
     expect(offers).toEqual(['q1'])
     restarted.stop()
   })
+
+  it('won\'t switch back to the built-in queue while the farm hasn\'t been read', async () => {
+    const { controller, store, builtin, checkout, settingsPath } = setup()
+    await controller.setupLocal(checkout)
+    await controller.requestSwitch('farm')
+    controller.stop()
+    const unreachable = new DeviceFarmController({ path: settingsPath, store, builtin, commandoLocksPath: join(settingsPath, '..', 'locks.json'), daemonPort: 4310,
+      run: async () => '{}', fetcher: (async () => { throw new Error('ECONNREFUSED') }) as typeof fetch })
+    unreachable.start()
+    const status = await unreachable.requestSwitch('builtin')
+    expect(status).toMatchObject({ use: 'farm', switching: 'builtin' })
+    expect(store.store).not.toBe(builtin)
+    unreachable.stop()
+  })
 })

@@ -133,8 +133,14 @@ export class FarmLockStore implements DeviceLockStore {
     for (const client of clients) client.onUpdate(() => this.updated())
   }
 
-  /** Until every farm has been read once (or has failed to answer), reads would look empty. */
-  loading(): boolean { return this.clients.some((client) => !client.changes && !client.error) }
+  /** Until every farm has been read at least once, the mirror is incomplete: reads look empty and writes would guess. */
+  loading(): boolean { return this.clients.some((client) => !client.changes) }
+
+  /** Writes wait for a complete mirror: "you hold nothing" from a half-read farm would leave its entries stranded. */
+  private requireLoaded(): void {
+    const unread = this.clients.find((client) => !client.changes)
+    if (unread) throw new DeviceLockError(503, `The ${unread.name} device farm hasn't been read yet${unread.error ? ` (${unread.error})` : ''}; try again shortly`)
+  }
 
   /** Writes still on their way to a farm. */
   get pending(): number { return this.inFlight }
@@ -217,6 +223,7 @@ export class FarmLockStore implements DeviceLockStore {
   // ---- Changes, over HTTP ----
 
   async lock(input: Record<string, unknown>): Promise<LockResult> {
+    this.requireLoaded()
     const request = String(input.request ?? '')
     const client = this.clientForRequest(request)
     const owner = input as unknown as LockOwner
@@ -226,6 +233,7 @@ export class FarmLockStore implements DeviceLockStore {
   }
 
   async claim(ownerInput: LockOwner | Record<string, unknown>, resourceId?: string): Promise<LockResult> {
+    this.requireLoaded()
     const owner = ownerInput as LockOwner
     const client = (resourceId ? this.clientOf(resourceId) : undefined) ?? this.clientWithOfferFor(owner) ?? this.clients[0]
     const pending = this.snapshot().queue.find((entry) => sameOwner(entry, owner) && entry.offer)
@@ -235,6 +243,7 @@ export class FarmLockStore implements DeviceLockStore {
   }
 
   async release(ownerInput: LockOwner | Record<string, unknown>, resourceId?: string): Promise<DeviceHolder[]> {
+    this.requireLoaded()
     const owner = ownerInput as LockOwner
     const targets = resourceId ? [this.clientOf(resourceId) ?? this.clients[0]] : this.clientsHolding(owner)
     if (!targets.length) throw new DeviceLockError(404, resourceId ? `You don't hold ${resourceId}` : 'You hold no device locks')
@@ -247,6 +256,7 @@ export class FarmLockStore implements DeviceLockStore {
   }
 
   async cancel(ownerInput: LockOwner | Record<string, unknown>, request?: string): Promise<QueueEntry[]> {
+    this.requireLoaded()
     const owner = ownerInput as LockOwner
     const mine = this.snapshot().queue.filter((entry) => sameOwner(entry, owner) && (!request || entry.request === request || entry.resourceIds.includes(request)))
     if (!mine.length) throw new DeviceLockError(404, request ? `You are not queued for ${request}` : 'You are not queued for any device')
@@ -260,6 +270,7 @@ export class FarmLockStore implements DeviceLockStore {
   }
 
   async withdraw(paneId: string, entryId: string): Promise<'cancelled' | 'released' | 'gone'> {
+    this.requireLoaded()
     const client = this.clientOfEntry(entryId) ?? this.clients.find((candidate) => candidate.changes?.snapshot.holders.some((holder) => holder.entryId === entryId))
     const ours = this.entry(entryId) ?? this.snapshot().holders.find((holder) => holder.entryId === entryId)
     if (!client || !ours || ours.paneId !== paneId) return 'gone'
@@ -273,6 +284,8 @@ export class FarmLockStore implements DeviceLockStore {
    * farm otherwise ends idle holds), and reports offers the farm let lapse since the last sweep.
    */
   async sweep(context: SweepContext): Promise<SweepEvents> {
+    // Nothing to judge until the farms have been read (and the keep-alive slot isn't spent on an empty list).
+    if (this.loading()) return { expired: [], ended: [], dropped: [] }
     const alive = (owner: LockOwner) => context.paneExists(owner.paneId) && (owner.pid === undefined || context.pidAlive(owner.pid))
     const snapshot = this.snapshot()
     const ended: SweepEvents['ended'] = [], dropped: QueueEntry[] = []
@@ -333,6 +346,7 @@ export class FarmLockStore implements DeviceLockStore {
   // ---- Helpers ----
 
   private async admin<T = Record<string, unknown>>(client: FarmClient | undefined, path: string, body: unknown): Promise<T> {
+    this.requireLoaded()
     if (!client) throw new DeviceLockError(404, 'That request is no longer queued')
     return this.write<T>(client, path, body)
   }
@@ -373,7 +387,8 @@ export class FarmLockStore implements DeviceLockStore {
     }
     this.previousOffers = offers
     let changed = fresh.length > 0
-    for (const id of [...this.messages.keys()]) if (!offers.has(id)) { this.messages.delete(id); changed = true }
+    // An offer isn't over just because its farm hasn't been read yet; keep its message so it can still be withdrawn.
+    if (!this.loading()) for (const id of [...this.messages.keys()]) if (!offers.has(id)) { this.messages.delete(id); changed = true }
     if (changed) this.save()
     this.emit()
     if (fresh.length) for (const listener of this.offerListeners) listener(fresh)
