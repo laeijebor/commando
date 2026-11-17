@@ -80,7 +80,10 @@ export class FarmClient {
         if (!this.changes || !this.me) await this.refresh()
         else {
           const before = this.changes.version, started = Date.now()
-          this.apply(await this.request<FarmChanges>('GET', `/api/changes?since=${before}&wait=50`, undefined, 60_000))
+          const answer = await this.request<FarmChanges>('GET', `/api/changes?since=${before}&wait=50`, undefined, 60_000)
+          // Within one run a farm never answers below the version asked about, so a lower one means it restarted
+          // (an older build counting from 0, or a clock that stepped back): take it, rather than staying stuck.
+          this.apply(answer, answer.version < before)
           // A farm that answers at once with nothing new (no long-poll support) mustn't be polled in a tight loop.
           if (this.changes.version === before && Date.now() - started < 500) await new Promise((resolve) => setTimeout(resolve, 1_000).unref())
         }
@@ -96,7 +99,10 @@ export class FarmClient {
   /** Stops following the feed and abandons the request in flight, so nothing keeps the daemon waiting. */
   stop(): void { this.stopped = true; this.abort.abort() }
 
-  private apply(changes: FarmChanges): void {
+  private apply(changes: FarmChanges, restarted = false): void {
+    // The feed and the refresh after a write run side by side, so answers can arrive out of order; an older one must
+    // never replace a newer mirror (it could hide a lock that was just granted).
+    if (this.changes && changes.version < this.changes.version && !restarted) return
     const changed = this.error !== undefined || !this.changes || changes.version !== this.changes.version
     this.changes = changes
     this.error = undefined

@@ -153,4 +153,32 @@ describe('FarmLockStore', () => {
     expect(counts).toEqual([1])
     expect(store.pending).toBe(0)
   })
+
+  it('ignores a change-feed answer older than the mirror it already has', async () => {
+    const { store, local } = await setup()
+    local.changes.version = 3
+    local.changes.snapshot.holders = [holder('commando', 'cmd:%9', 'pixel')]
+    await store.ready()
+    const client = (store as unknown as { clients: FarmClient[] }).clients[0]
+    ;(client as unknown as { apply: (changes: FarmChanges) => void }).apply({ ...local.changes, version: 2, snapshot: { ...local.changes.snapshot, holders: [] } })
+    expect(store.snapshot().holders).toHaveLength(1)
+  })
+
+  it('follows a farm whose version went backwards because it restarted', async () => {
+    const answers: number[] = [100, 100, 5]
+    let served = 0
+    const fetcher = (async (input: string | URL) => {
+      const url = new URL(String(input))
+      const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
+      if (url.pathname === '/api/state') return json({ me: { id: 'commando', name: 'c', admin: true } })
+      const version = answers[Math.min(served++, answers.length - 1)]
+      return json({ version, snapshot: { resources: [{ id: version === 5 ? 'after-restart' : 'before', name: 'x', kind: 'host' }], holders: [], queue: [], paused: [], cleaning: [] },
+        positions: {}, health: {}, waitingFor: {}, timing: {}, engineers: [] })
+    }) as typeof fetch
+    const client = new FarmClient({ name: 'local', url: 'http://local', token: 't', fetcher })
+    void client.run()
+    for (let waited = 0; client.changes?.version !== 5 && waited < 3_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50))
+    client.stop()
+    expect(client.changes?.snapshot.resources[0].id).toBe('after-restart')
+  })
 })

@@ -139,4 +139,16 @@ describe('DeviceFarmController', () => {
     expect(store.store).not.toBe(builtin)
     unreachable.stop()
   })
+
+  it('won\'t replace the remote farm while a farm hasn\'t been read', async () => {
+    const { controller, store, builtin, checkout, settingsPath } = setup()
+    await controller.setupLocal(checkout)
+    await controller.requestSwitch('farm')
+    controller.stop()
+    const unreachable = new DeviceFarmController({ path: settingsPath, store, builtin, commandoLocksPath: join(settingsPath, '..', 'locks.json'), daemonPort: 4310,
+      run: async () => '{}', fetcher: (async () => { throw new Error('ECONNREFUSED') }) as typeof fetch })
+    unreachable.start()
+    await expect(unreachable.setRemote(undefined)).rejects.toThrow(/farms have been read/)
+    unreachable.stop()
+  })
 })

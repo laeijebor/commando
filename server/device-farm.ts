@@ -171,10 +171,12 @@ export class DeviceFarmController {
 
   /** Saves (after checking it answers with a valid token) or removes the remote farm. */
   async setRemote(input: Record<string, unknown> | undefined) {
-    const snapshot = this.settings.use === 'farm' ? this.farm?.snapshot() : undefined
-    if (snapshot && [...snapshot.holders, ...snapshot.queue].some((owner) => owner.paneId.startsWith('%'))) {
-      throw new DeviceLockError(409, 'Wait until your agents hold and queue for no devices before changing the remote farm')
-    }
+    // Replacing the connection drops the old store: only safe once every farm has been read, nothing of ours is held
+    // or queued, and no write is in flight. Checked again after the token check below, which awaits.
+    const settled = () => this.settings.use !== 'farm' || !this.farm || (!this.farm.loading() && this.farm.pending === 0 &&
+      ![...this.farm.snapshot().holders, ...this.farm.snapshot().queue].some((owner) => owner.paneId.startsWith('%')))
+    const busy = () => new DeviceLockError(409, 'Wait until your agents hold and queue for no devices (and the farms have been read) before changing the remote farm')
+    if (!settled()) throw busy()
     if (input) {
       const url = typeof input.url === 'string' ? input.url.trim().replace(/\/$/, '') : ''
       const token = typeof input.token === 'string' ? input.token.trim() : ''
@@ -182,6 +184,7 @@ export class DeviceFarmController {
       const client = new FarmClient({ name: 'remote', url, token, fetcher: this.fetcher })
       await client.refresh()
       if (!client.me || !FARM_ID.test(client.me.id)) throw new DeviceLockError(400, 'That farm didn\'t recognise the token')
+      if (!settled()) throw busy()
       this.settings.remote = { url, token }
     } else delete this.settings.remote
     this.save()
