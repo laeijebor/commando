@@ -100,4 +100,29 @@ describe('DeviceFarmController', () => {
     expect(status).toMatchObject({ use: 'builtin', switching: 'farm', waitingOn: { held: 1 } })
     controller.stop()
   })
+
+  it('goes straight onto the farm store after a restart, and relays an offer that arrived while Commando was stopped', async () => {
+    const { controller, store, builtin, checkout, settingsPath } = setup()
+    await controller.setupLocal(checkout)
+    await controller.requestSwitch('farm')
+    controller.stop()
+    // Restart: a new controller over the same settings.
+    const restarted = new DeviceFarmController({ path: settingsPath, store, builtin, commandoLocksPath: join(settingsPath, '..', 'locks.json'), daemonPort: 4310,
+      run: async () => '{}', fetcher: (async (input: string | URL) => {
+        const url = new URL(String(input))
+        const ok = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
+        if (url.pathname === '/api/state') return ok({ me: { id: 'commando-4310', name: 'Commando', admin: true } })
+        if (url.pathname === '/api/changes') return ok({ version: 7, snapshot: { resources: [{ id: 'pixel', name: 'Pixel', kind: 'android', serial: 'P1' }], holders: [],
+          queue: [{ engineer: 'commando-4310', session: 'cmd4310:%3', id: 'q1', request: 'pixel', resourceIds: ['pixel'], task: 't', mode: 'notify', enqueuedAt: 1, offer: { resourceId: 'pixel', at: 5 } }],
+          paused: [], cleaning: [] }, positions: {}, health: {}, waitingFor: {}, timing: {}, engineers: [] })
+        return ok({})
+      }) as typeof fetch })
+    const offers: string[] = []
+    store.onOffered((entries) => offers.push(...entries.map((entry) => entry.id)))
+    restarted.start()
+    expect(store.store).not.toBe(builtin)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(offers).toEqual(['q1'])
+    restarted.stop()
+  })
 })

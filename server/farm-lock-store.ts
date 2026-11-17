@@ -133,6 +133,9 @@ export class FarmLockStore implements DeviceLockStore {
     for (const client of clients) client.onUpdate(() => this.updated())
   }
 
+  /** Until every farm has been read once (or has failed to answer), reads would look empty. */
+  loading(): boolean { return this.clients.some((client) => !client.changes && !client.error) }
+
   /** Writes still on their way to a farm. */
   get pending(): number { return this.inFlight }
 
@@ -217,9 +220,8 @@ export class FarmLockStore implements DeviceLockStore {
     const request = String(input.request ?? '')
     const client = this.clientForRequest(request)
     const owner = input as unknown as LockOwner
-    const result = await this.track(() => client.request<FarmResult>('POST', '/api/lock', { ...farmOwner(owner, client, this.prefix), request, task: input.task,
-      ...(input.estimateMs !== undefined ? { estimateMs: input.estimateMs } : {}), ...(input.mode === 'wait' ? { mode: 'wait' } : {}) }))
-    await this.settle(client)
+    const result = await this.write<FarmResult>(client, '/api/lock', { ...farmOwner(owner, client, this.prefix), request, task: input.task,
+      ...(input.estimateMs !== undefined ? { estimateMs: input.estimateMs } : {}), ...(input.mode === 'wait' ? { mode: 'wait' } : {}) })
     return this.toResult(result, client)
   }
 
@@ -227,9 +229,8 @@ export class FarmLockStore implements DeviceLockStore {
     const owner = ownerInput as LockOwner
     const client = (resourceId ? this.clientOf(resourceId) : undefined) ?? this.clientWithOfferFor(owner) ?? this.clients[0]
     const pending = this.snapshot().queue.find((entry) => sameOwner(entry, owner) && entry.offer)
-    const result = await this.track(() => client.request<FarmResult>('POST', '/api/claim', { ...farmOwner(owner, client, this.prefix), ...(resourceId ? { request: resourceId } : {}) }))
     if (pending) this.removedByUs.add(pending.id)
-    await this.settle(client)
+    const result = await this.write<FarmResult>(client, '/api/claim', { ...farmOwner(owner, client, this.prefix), ...(resourceId ? { request: resourceId } : {}) })
     return this.toResult(result, client)
   }
 
@@ -239,9 +240,8 @@ export class FarmLockStore implements DeviceLockStore {
     if (!targets.length) throw new DeviceLockError(404, resourceId ? `You don't hold ${resourceId}` : 'You hold no device locks')
     const released: DeviceHolder[] = []
     for (const client of targets) {
-      const result = await client.request<{ released: FarmHolder[] }>('POST', '/api/release', { ...farmOwner(owner, client, this.prefix), ...(resourceId ? { request: resourceId } : {}) })
+      const result = await this.write<{ released: FarmHolder[] }>(client, '/api/release', { ...farmOwner(owner, client, this.prefix), ...(resourceId ? { request: resourceId } : {}) })
       released.push(...result.released.map((holder) => this.toHolder(holder, client)))
-      await this.settle(client)
     }
     return released
   }
@@ -253,9 +253,8 @@ export class FarmLockStore implements DeviceLockStore {
     const cancelled: QueueEntry[] = []
     for (const client of new Set(mine.map((entry) => this.clientOfEntry(entry.id)!))) {
       for (const entry of mine) this.removedByUs.add(entry.id)
-      const result = await client.request<{ cancelled: FarmQueueEntry[] }>('POST', '/api/cancel', { ...farmOwner(owner, client, this.prefix), ...(request ? { request } : {}) })
+      const result = await this.write<{ cancelled: FarmQueueEntry[] }>(client, '/api/cancel', { ...farmOwner(owner, client, this.prefix), ...(request ? { request } : {}) })
       cancelled.push(...result.cancelled.map((entry) => this.toEntry(entry, client)))
-      await this.settle(client)
     }
     return cancelled
   }
@@ -265,8 +264,7 @@ export class FarmLockStore implements DeviceLockStore {
     const ours = this.entry(entryId) ?? this.snapshot().holders.find((holder) => holder.entryId === entryId)
     if (!client || !ours || ours.paneId !== paneId) return 'gone'
     this.removedByUs.add(entryId)
-    const result = await client.request<{ result: 'cancelled' | 'released' | 'gone' }>('POST', '/api/withdraw', { entryId })
-    await this.settle(client)
+    const result = await this.write<{ result: 'cancelled' | 'released' | 'gone' }>(client, '/api/withdraw', { entryId })
     return result.result
   }
 
@@ -336,9 +334,17 @@ export class FarmLockStore implements DeviceLockStore {
 
   private async admin<T = Record<string, unknown>>(client: FarmClient | undefined, path: string, body: unknown): Promise<T> {
     if (!client) throw new DeviceLockError(404, 'That request is no longer queued')
-    const result = await client.request<T>('POST', path, body)
-    await this.settle(client)
-    return result
+    return this.write<T>(client, path, body)
+  }
+
+  /**
+   * Sends a change and refreshes that farm's mirror, counting it as in flight until both are done: until the mirror
+   * shows the result, a switch away from the farm mustn't conclude that nothing is held or queued.
+   */
+  private write<T>(client: FarmClient, path: string, body: unknown): Promise<T> {
+    return this.track(async () => {
+      try { return await client.request<T>('POST', path, body) } finally { await this.settle(client) }
+    })
   }
 
   /** Refreshes a farm's mirror after a change, so what Commando reads next includes it. */

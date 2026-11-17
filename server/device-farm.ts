@@ -69,6 +69,8 @@ export class DeviceFarmController {
 
   /** Commando starts on whatever queue was in use last time. */
   start(): void {
+    // Straight onto the farm store, even before it has read the farm: until then it answers lock calls with "not
+    // answering, try again" (503), rather than the built-in queue handing out devices the farm doesn't know about.
     if (this.settings.use === 'farm') void this.useFarm()
     this.timer = setInterval(() => { void this.tick() }, 5_000)
     this.timer.unref()
@@ -224,12 +226,12 @@ export class DeviceFarmController {
       try { await this.waitHealthy(this.settings.local.url) } catch (error) { this.lastError = (error as Error).message; return }
       next = this.farmStore()
       if (!next) return
-      await next.ready()
     }
     // Everything above awaited: a lock may have been taken, or the switch cancelled, meanwhile. Decide again, with
     // nothing awaited between this check and the switch.
     if (this.settings.switching !== target || !this.idle()) { next?.stop(); return }
     if (next) {
+      // Listeners attach first, then the farm is read: an offer already waiting is then relayed, not lost.
       this.farm = next
       this.store.switchTo(next)
     } else {
@@ -241,6 +243,7 @@ export class DeviceFarmController {
     delete this.settings.switching
     this.lastError = undefined
     this.save()
+    await next?.ready()
   }
 
   /** Farm status for the Devices view: which farms Commando is on and whether they answer. */
@@ -256,15 +259,17 @@ export class DeviceFarmController {
     return store
   }
 
-  /** Points Commando's locks at the farms, once their state has been read (so nothing looks gone meanwhile). */
+  /** Points Commando's locks at the farms (this Mac's, and the remote one if set). */
   private async useFarm(): Promise<void> {
     const next = this.farmStore()
     if (!next) return
-    await next.ready()
     const previous = this.farm
+    // Listeners attach before the first read, so offers that came while Commando was stopped are relayed; writes get
+    // a 503 until the read is done.
     this.farm = next
     this.store.switchTo(next)
     previous?.stop()
+    await next.ready()
   }
 
   private load(): DeviceFarmSettings {

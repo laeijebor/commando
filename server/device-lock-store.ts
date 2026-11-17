@@ -33,6 +33,9 @@ export interface DeviceLockStore {
   forceRelease(resourceId: string, busy?: BusyCheck): Awaitable<DeviceHolder[]>
   remove(entryId: string, busy?: BusyCheck): Awaitable<QueueEntry>
 
+  /** True while the store hasn't read its state yet (a farm store just after a restart): reads would look empty. */
+  loading?(): boolean
+
   /** Why a device is held back by something outside the queue (a build running for `heavy`), when the store knows. */
   waitingFor?(resource: DeviceResource, requesters: QueueEntry[]): string | undefined
 }
@@ -92,4 +95,5 @@ export class SwitchableLockStore implements DeviceLockStore {
   forceRelease(resourceId: string, busy?: BusyCheck) { return this.current.forceRelease(resourceId, busy) }
   remove(entryId: string, busy?: BusyCheck) { return this.current.remove(entryId, busy) }
   waitingFor(resource: DeviceResource, requesters: QueueEntry[]) { return this.current.waitingFor?.(resource, requesters) }
+  loading() { return this.current.loading?.() ?? false }
 }

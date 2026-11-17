@@ -318,6 +318,8 @@ export class DeviceLockApi {
     const id = url.searchParams.get('id') ?? ''
     const seconds = Math.min(MAX_WAIT_SECONDS, Math.max(0, Number(url.searchParams.get('wait') ?? 0) || 0))
     const { registry } = this.dependencies
+    // Just after a restart onto a farm, its state may not have been read yet: an entry isn't gone, it's not loaded.
+    for (let waited = 0; registry.loading?.() && waited < seconds * 1_000; waited += 200) await new Promise((resolve) => setTimeout(resolve, 200))
     const state = () => {
       const entry = registry.entry(id)
       if (entry?.offer) return { status: 'offered', entry, resource: registry.resource(entry.offer.resourceId) }

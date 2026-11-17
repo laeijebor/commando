@@ -136,4 +136,16 @@ describe('FarmLockStore', () => {
     await second.ready()
     expect(offers).toEqual(['q1'])
   })
+
+  it('counts a write as in flight until the mirror shows its result', async () => {
+    const { store, local } = await setup()
+    local.replies['/api/lock'] = { status: 'held', holder: holder('commando', 'cmd:%9', 'pixel'), resource: { id: 'pixel', name: 'Pixel 5', kind: 'android' } }
+    const counts: number[] = []
+    const originalRefresh = FarmClient.prototype.refresh
+    const client = (store as unknown as { clients: FarmClient[] }).clients[0]
+    client.refresh = async function () { counts.push(store.pending); return originalRefresh.call(this) }
+    await store.lock({ paneId: '%9', sessionName: 'x', request: 'pixel', task: 't' })
+    expect(counts).toEqual([1])
+    expect(store.pending).toBe(0)
+  })
 })
