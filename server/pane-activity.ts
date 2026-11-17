@@ -75,5 +75,10 @@ export class PaneActivity {
     return { [paneId]: at }
   }
 
-  forget(paneId: string): void { this.kinds.delete(paneId) }
+  /** The pane's agent is gone: whatever turn it was in will not end. */
+  forget(paneId: string): void {
+    this.kinds.delete(paneId)
+    const entry = this.entries.get(paneId)
+    if (entry?.working) this.entries.set(paneId, entry.at === undefined ? {} : { at: entry.at })
+  }
 }

@@ -60,6 +60,7 @@ describe('PaneActivity', () => {
     const activity = bound()
     activity.record(status('working', 10))
     activity.forget('%1')
+    expect(activity.settledAt('%1')).toBe(10)
     expect(activity.record(status('done', 20))).toBeNull()
   })
 
