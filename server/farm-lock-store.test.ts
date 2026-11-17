@@ -205,4 +205,21 @@ describe('FarmLockStore', () => {
     const { expired } = await store.sweep({ paneExists: () => true, pidAlive: () => true })
     expect(expired).toEqual([expect.objectContaining({ id: 'q1', dropped: false, offer: expect.objectContaining({ messageId: 'relay-1' }) })])
   })
+
+  it('returns removed and paused-away offers with their relay message id, so their messages can be withdrawn', async () => {
+    const { store, local } = await setup()
+    const offered = entry('commando', 'cmd:%7', 'q1', ['pixel'], { offer: { resourceId: 'pixel', at: 50 } })
+    local.changes.snapshot.queue = [offered]
+    await store.ready()
+    store.offerMessage('q1', 50, 'relay-1')
+    local.changes.snapshot.queue = []
+    local.replies['/api/admin/remove'] = { removed: offered }
+    expect((await store.remove('q1')).offer?.messageId).toBe('relay-1')
+    local.changes.snapshot.queue = [offered]
+    await store.ready()
+    store.offerMessage('q1', 50, 'relay-2')
+    local.changes.snapshot.queue = [{ ...offered, offer: undefined }]
+    local.replies['/api/admin/pause'] = { withdrawn: [offered] }
+    expect((await store.setPaused('pixel', true))[0].offer?.messageId).toBe('relay-2')
+  })
 })

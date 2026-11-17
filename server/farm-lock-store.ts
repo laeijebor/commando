@@ -326,8 +326,9 @@ export class FarmLockStore implements DeviceLockStore {
 
   async setPaused(resourceId: string, paused: boolean): Promise<QueueEntry[]> {
     const client = this.requireClientOf(resourceId)
+    const messages = new Map(this.messages)
     const result = await this.admin<{ withdrawn: FarmQueueEntry[] }>(client, '/api/admin/pause', { resourceId, paused })
-    return result.withdrawn.map((entry) => this.toEntry(entry, client))
+    return result.withdrawn.map((entry) => this.withMessage(this.toEntry(entry, client), messages))
   }
 
   async forceRelease(resourceId: string): Promise<DeviceHolder[]> {
@@ -338,8 +339,9 @@ export class FarmLockStore implements DeviceLockStore {
 
   async remove(entryId: string): Promise<QueueEntry> {
     const client = this.clientOfEntry(entryId)
+    const messages = new Map(this.messages)
     const result = await this.admin<{ removed: FarmQueueEntry }>(client, '/api/admin/remove', { entryId })
-    return this.toEntry(result.removed, client!)
+    return this.withMessage(this.toEntry(result.removed, client!), messages)
   }
 
   async addResource(input: Record<string, unknown>): Promise<DeviceResource> {
@@ -350,6 +352,15 @@ export class FarmLockStore implements DeviceLockStore {
   async removeResource(id: string): Promise<void> { await this.admin(this.requireClientOf(id), '/api/admin/resources/remove', { resourceId: id }) }
 
   // ---- Helpers ----
+
+  /**
+   * Puts back the relay message id of an offer that a change just ended: the refresh after the change has already
+   * forgotten it, and the caller needs it to withdraw the queued "is yours" message.
+   */
+  private withMessage(entry: QueueEntry, saved: Map<string, { at: number; messageId: string }>): QueueEntry {
+    const message = saved.get(entry.id)
+    return entry.offer && message && message.at === entry.offer.at && !entry.offer.messageId ? { ...entry, offer: { ...entry.offer, messageId: message.messageId } } : entry
+  }
 
   private async admin<T = Record<string, unknown>>(client: FarmClient | undefined, path: string, body: unknown): Promise<T> {
     this.requireLoaded()
