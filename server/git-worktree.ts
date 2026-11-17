@@ -301,16 +301,6 @@ export class GitWorktreeService {
   }
 
   /**
-   * Remove a linked worktree without waiting for its files to be deleted.
-   *
-   * `git worktree remove` deletes every file (node_modules included) before it
-   * unregisters the worktree, which can take minutes. Cut short, it leaves a
-   * half-deleted folder that git still lists. Instead the folder is renamed
-   * aside, which is instant within one directory, `git worktree prune` drops
-   * the registration, and a detached process deletes the renamed folder, so a
-   * daemon restart does not interrupt it.
-   */
-  /**
    * Commit everything git tracks or could track (gitignored files excepted) so
    * the worktree can be removed without losing work. Returns the identity with
    * its new head, or the same identity when there was nothing to commit.
@@ -357,13 +347,22 @@ export class GitWorktreeService {
     }
   }
 
+  /**
+   * Remove a linked worktree without waiting for its files to be deleted.
+   *
+   * `git worktree remove` deletes every file (node_modules included) before it
+   * unregisters the worktree, which can take minutes. Cut short, it leaves a
+   * half-deleted folder that git still lists. Instead the folder is renamed
+   * aside, which is instant within one directory, `git worktree prune` drops
+   * the registration, and a detached process deletes the renamed folder, so a
+   * daemon restart does not interrupt it.
+   */
   async removeWorktree(worktree: GitWorktreeIdentity): Promise<void> {
     const root = path.normalize(worktree.root)
     const mainRoot = path.normalize(worktree.mainRoot)
     if (!path.isAbsolute(root) || !path.isAbsolute(mainRoot) || root === mainRoot) {
       throw new GitWorktreeError('bad-path', 'Refusing to remove the main repository checkout')
     }
-    const aside = path.join(path.dirname(root), `.${path.basename(root)}${DELETING_MARKER}${Date.now()}`)
     try {
       const registered = await this.registeredWorktree(mainRoot, root)
       if (!registered) throw new GitWorktreeError('bad-path', `${root} is not a registered git worktree`)
@@ -372,22 +371,27 @@ export class GitWorktreeService {
         throw new GitWorktreeError('bad-path', `Worktree identity changed at ${root}; refusing to remove it`)
       }
       if (registered.locked) throw new GitWorktreeError('bad-path', `Worktree ${root} is locked; unlock it before deleting it`)
-
-      try {
-        await this.renamePath(root, aside)
-      } catch (error) {
-        throw new GitWorktreeError('exec', `Could not move ${root} aside for deletion: ${error instanceof Error ? error.message : 'rename failed'}`)
-      }
-      // Prune can exit 0 without dropping the entry (e.g. its admin dir is not
-      // writable) or fail after dropping it, so trust only the worktree list.
-      const pruneError = await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS).then(() => undefined, (error: unknown) => error)
-      if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
-        await this.renamePath(aside, root).catch(() => undefined)
-        throw pruneError ?? new GitWorktreeError('exec', `git worktree prune left ${root} registered; the folder was put back`)
-      }
+      await this.discard(mainRoot, root)
     } catch (error) {
       if (error instanceof GitWorktreeError) throw error
       throw new GitWorktreeError('exec', `git worktree remove failed: ${failureDetail(error)}`)
+    }
+  }
+
+  /** Move `root` aside, unregister it, and delete its files in the background. */
+  private async discard(mainRoot: string, root: string): Promise<void> {
+    const aside = path.join(path.dirname(root), `.${path.basename(root)}${DELETING_MARKER}${Date.now()}`)
+    try {
+      await this.renamePath(root, aside)
+    } catch (error) {
+      throw new GitWorktreeError('exec', `Could not move ${root} aside for deletion: ${error instanceof Error ? error.message : 'rename failed'}`)
+    }
+    // Prune can exit 0 without dropping the entry (e.g. its admin dir is not
+    // writable) or fail after dropping it, so trust only the worktree list.
+    const pruneError = await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS).then(() => undefined, (error: unknown) => error)
+    if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
+      await this.renamePath(aside, root).catch(() => undefined)
+      throw pruneError ?? new GitWorktreeError('exec', `git worktree prune left ${root} registered; the folder was put back`)
     }
     void this.removeTree(aside)
       .catch((error) => console.warn(`[commando] Could not delete removed worktree folder ${aside}`, error))
@@ -462,8 +466,9 @@ export class GitWorktreeService {
     }
   }
 
+  /** Rollback of a worktree this service just made: `git worktree remove` would delete every file before returning. */
   private async remove(cwd: string, target: string): Promise<void> {
-    await this.git(cwd, ['worktree', 'remove', '--force', target], WORKTREE_TIMEOUT_MS).catch(() => undefined)
+    await this.discard(cwd, target).catch(() => undefined)
   }
 
   private async defaultBranch(cwd: string): Promise<string | undefined> {

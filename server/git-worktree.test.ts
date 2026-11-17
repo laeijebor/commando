@@ -286,28 +286,36 @@ describe('GitWorktreeService.createWorktree', () => {
     expect(git.execute).not.toHaveBeenCalled()
   })
 
-  it('rollback removes the worktree and deletes only a branch this call created', async () => {
+  it('rollback moves the worktree aside instead of waiting for git to delete it, and deletes only a branch this call created', async () => {
+    const list = `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\n`
     const created = fakeGit([
       [['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], exit(1)],
       [[...ADD], ''],
-      [['worktree', 'remove', '--force', target], ''],
+      [['worktree', 'prune'], ''],
+      [['worktree', 'list', '--porcelain'], list],
       [['branch', '-D', 'bot-rematch-flow'], ''],
     ])
-    const fresh = await new GitWorktreeService(created.execute, { pathExists: async () => false })
+    const renamePath = vi.fn(async () => undefined)
+    const removeTree = vi.fn(async () => undefined)
+    const fresh = await new GitWorktreeService(created.execute, { pathExists: async () => false, renamePath, removeTree })
       .createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target })
     await fresh.rollback()
-    expect(created.calls.slice(-2).map((call) => call.args)).toEqual([
-      ['worktree', 'remove', '--force', target],
+    const aside = expect.stringMatching(/\/\.bot-rematch-flow\.commando-deleting-\d+$/u)
+    expect(renamePath).toHaveBeenCalledWith(target, aside)
+    expect(removeTree).toHaveBeenCalledWith(aside)
+    expect(created.calls.slice(-3).map((call) => call.args)).toEqual([
+      ['worktree', 'prune'],
+      ['worktree', 'list', '--porcelain'],
       ['branch', '-D', 'bot-rematch-flow'],
     ])
 
     const reused = fakeGit([
       [['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], 'abc\n'],
-      [['worktree', 'list', '--porcelain'], `worktree ${MAIN}\nHEAD abc\nbranch refs/heads/main\n\n`],
+      [['worktree', 'list', '--porcelain'], list],
       [[...ADD], ''],
-      [['worktree', 'remove', '--force', target], ''],
+      [['worktree', 'prune'], ''],
     ])
-    const existing = await new GitWorktreeService(reused.execute, { pathExists: async () => false })
+    const existing = await new GitWorktreeService(reused.execute, { pathExists: async () => false, renamePath, removeTree })
       .createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target })
     await existing.rollback()
     expect(reused.calls.some((call) => call.args[0] === 'branch')).toBe(false)
