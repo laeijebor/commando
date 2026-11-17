@@ -5,12 +5,16 @@ import { PaneStore } from './pane-times.js'
 /** A busy agent republishes often; clients only need its age to the minute. */
 const PUBLISH_INTERVAL_MS = 60_000
 
-/** `working` marks a pane that was mid-turn, so a restart can tell a turn ended while it was down. */
-type Entry = { at?: number; working?: true }
+/**
+ * `inTurn` marks a pane last seen in a state a turn is still in (working,
+ * blocked, failed, stale), so a restart can tell that a `done` it sees first
+ * ended that turn while the daemon was down.
+ */
+type Entry = { at?: number; inTurn?: true }
 const isEntry = (value: unknown): value is Entry => {
   if (!value || typeof value !== 'object') return false
-  const { at, working } = value as Record<string, unknown>
-  return (at === undefined || (typeof at === 'number' && Number.isFinite(at))) && (working === undefined || working === true)
+  const { at, inTurn } = value as Record<string, unknown>
+  return (at === undefined || (typeof at === 'number' && Number.isFinite(at))) && (inTurn === undefined || inTurn === true)
 }
 
 /**
@@ -44,7 +48,7 @@ export class PaneActivity {
    */
   settledAt(paneId: string): number | undefined {
     const entry = this.entries.get(paneId)
-    return entry?.working || this.kinds.get(paneId) === 'working' ? undefined : entry?.at
+    return entry?.inTurn ? undefined : entry?.at
   }
 
   /** Records a published status; returns the entry to broadcast, if any. */
@@ -54,20 +58,20 @@ export class PaneActivity {
     this.kinds.set(paneId, kind)
     const entry = this.entries.get(paneId) ?? {}
     // Any source: Codex reports its working state only through inference.
-    // `unknown` and `stale` say nothing about the turn ending, so a pending one stays pending.
-    const working = kind === 'working' || ((kind === 'unknown' || kind === 'stale') && entry.working === true)
-    // Wherever the registry settles a turn now (`settle()`), from any source, the
-    // saved time must say now too, or the next restart reads the turn as seen: a
-    // working turn the first settling state ends (including one a restart
-    // interrupted), and a `done` after any state a turn is still in.
-    const endsPendingTurn = entry.working === true && !working
-    const endsTurn = kind === 'done' && previousKind !== undefined && TURN_STATES.has(previousKind)
-    const at = endsPendingTurn || endsTurn ? updatedAt
+    // `unknown` says nothing about the turn ending, so a pending one stays pending.
+    const inTurn = TURN_STATES.has(kind) || (kind === 'unknown' && entry.inTurn === true)
+    // Wherever the registry settles a turn now (`settle()`: a `done` after a state a
+    // turn is still in, in this run or saved before a restart), from any source,
+    // the saved time must say now too, or the next restart reads the turn as seen.
+    const endsTurn = entry.inTurn === true && !inTurn
+    // Leaving working (into blocked, failed or done) is the agent's latest work, from any source.
+    const stopsWorking = previousKind === 'working' && kind !== 'working'
+    const at = endsTurn || stopsWorking ? updatedAt
       : status.source !== 'hook' ? undefined
-        : kind === 'working' || previousKind === 'working' ? updatedAt : status.details?.recap?.completedAt
+        : kind === 'working' ? updatedAt : status.details?.recap?.completedAt
     const advances = at !== undefined && at > (entry.at ?? -Infinity)
-    if (advances || working !== (entry.working === true)) {
-      this.entries.set(paneId, { ...(advances ? { at } : entry.at !== undefined ? { at: entry.at } : {}), ...(working ? { working: true as const } : {}) })
+    if (advances || inTurn !== (entry.inTurn === true)) {
+      this.entries.set(paneId, { ...(advances ? { at } : entry.at !== undefined ? { at: entry.at } : {}), ...(inTurn ? { inTurn: true as const } : {}) })
     }
     if (!advances) return null
     const lastPublished = this.published.get(paneId)
@@ -88,6 +92,6 @@ export class PaneActivity {
   forget(paneId: string): void {
     this.kinds.delete(paneId)
     const entry = this.entries.get(paneId)
-    if (entry?.working) this.entries.set(paneId, entry.at === undefined ? {} : { at: entry.at })
+    if (entry?.inTurn) this.entries.set(paneId, entry.at === undefined ? {} : { at: entry.at })
   }
 }
