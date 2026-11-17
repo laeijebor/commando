@@ -304,20 +304,28 @@ export class GitWorktreeService {
         }
       }
     }
+    // The branch is made first, on its own: git refuses a name another process took meanwhile, so
+    // the cleanup below only ever deletes a branch this call made. (`worktree add -b` would keep the
+    // branch when its checkout fails, and fail the same way when the name was taken.)
     try {
-      await this.worktreeAdd(cwd, ['-b', branch, target, base])
+      await this.git(cwd, ['branch', '--', branch, base])
     } catch (error) {
-      // git makes the branch before checking files out and keeps it when the checkout fails or is
-      // killed (it does delete the half-made folder), so a retry would find the name taken.
+      if (await this.refExists(cwd, `refs/heads/${branch}`)) throw new GitWorktreeError('branch-exists', `Branch ${branch} already exists`)
+      throw new GitWorktreeError('exec', `Cannot create branch ${branch} from ${base}: ${failureDetail(error)}`)
+    }
+    try {
+      await this.worktreeAdd(cwd, [target, branch])
+    } catch (error) {
+      // git deletes a half-made folder itself; the branch would make a retry find the name taken.
       await this.git(cwd, ['worktree', 'prune']).catch(() => undefined)
-      await this.git(cwd, ['branch', '-D', branch]).catch(() => undefined)
+      await this.git(cwd, ['branch', '-D', '--', branch]).catch(() => undefined)
       throw error
     }
     return {
       worktree: { path: target, branch, base, reusedBranch: false, ...(warning ? { warning } : {}) },
       rollback: async () => {
         await this.remove(cwd, target)
-        await this.git(cwd, ['branch', '-D', branch]).catch(() => undefined)
+        await this.git(cwd, ['branch', '-D', '--', branch]).catch(() => undefined)
       },
     }
   }
