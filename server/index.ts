@@ -994,8 +994,10 @@ async function main(): Promise<void> {
     }
   }
 
+  /** Any pane a client can stream: the listed ones, and the Terminal-tab shells beside them. */
   const paneForId = (paneId: string) =>
-    snapshot.panes.find((pane) => pane.id === paneId)
+    snapshot.panes.find((pane) => pane.id === paneId) ??
+    snapshot.shells?.find((shell) => shell.pane.id === paneId)?.pane
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
   const leasePaneExists = (paneId: string): boolean => !snapshotReady || paneExists(paneId) || previousPaneIds.has(paneId)

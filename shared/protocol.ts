@@ -382,6 +382,12 @@ export type TmuxSession = {
   windowIds: string[]
 }
 
+/** A hidden shell kept beside a pane; its side panel's Terminal tab shows it. */
+export type PaneShell = {
+  anchorPaneId: string
+  pane: TmuxPane
+}
+
 export type OpenPort = {
   port: number
   processName: string
@@ -396,6 +402,8 @@ export type CommandoSnapshot = {
   windows: TmuxWindow[]
   panes: TmuxPane[]
   ports: OpenPort[]
+  /** Terminal-tab shells. Their sessions, windows and panes are left out of the lists above. */
+  shells?: PaneShell[]
 }
 
 /** One workbench per canonical checkout, backed by the daemon's shared editor. */

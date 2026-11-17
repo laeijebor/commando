@@ -11,6 +11,7 @@ import {
   PANE_IDENTITY_DISCOVERY_FORMAT,
   SESSION_FORMAT,
   WINDOW_FORMAT,
+  orphanedShellSessions,
   parsePaneProcesses,
   parsePaneIdentityDiscovery,
   parseTmuxSnapshot,
@@ -135,6 +136,8 @@ export class TmuxClient {
   private readonly openPorts: OpenPortScanner
   private readonly paneIdentities = new TmuxPaneIdentityStore()
   private discoveredServerId: string | null = null
+  /** Terminal-tab shell pane -> the pane it belongs to, from the latest discovery. */
+  private shellAnchors = new Map<string, { paneId: string; sessionId: string }>()
   private readonly persistPaneTarget = (paneId: string, value: string) =>
     this.run(
       ['set-option', '-p', '-t', paneId, TMUX_PANE_TARGET_OPTION, value],
@@ -179,7 +182,14 @@ export class TmuxClient {
       const targetIds = await this.paneTargets.reconcile(restored)
       await this.paneIdentities.remember(serverId, restored, targetIds)
       const snapshot = parseTmuxSnapshot(sessions, windows, panes, revision, capturedAt, targetIds)
-      snapshot.ports = await this.openPorts.scan(parsePaneProcesses(panes), capturedAt)
+      this.shellAnchors = new Map((snapshot.shells ?? []).flatMap((shell) => {
+        const anchor = snapshot.panes.find((pane) => pane.id === shell.anchorPaneId)
+        return anchor ? [[shell.pane.id, { paneId: anchor.id, sessionId: anchor.sessionId }] as const] : []
+      }))
+      for (const sessionId of orphanedShellSessions(sessions, panes)) {
+        void this.run(['kill-session', '-t', sessionId], { timeout: DISCOVERY_TIMEOUT_MS, maxBuffer: 64 * 1024 }).catch(() => undefined)
+      }
+      snapshot.ports = await this.openPorts.scan(this.portProcesses(panes), capturedAt)
       return snapshot
     } catch (error) {
       if (isNoServer(error)) {
@@ -196,12 +206,17 @@ export class TmuxClient {
     }
   }
 
+  /** A port opened from a pane's Terminal tab belongs to that pane. */
+  private portProcesses(paneOutput: string) {
+    return parsePaneProcesses(paneOutput).map((process) => ({ ...process, ...this.shellAnchors.get(process.paneId) }))
+  }
+
   async terminatePort(target: OpenPortTarget): Promise<CommandoSnapshot['ports'][number]> {
     const panes = await this.run(['list-panes', '-a', '-F', PANE_FORMAT], {
       timeout: DISCOVERY_TIMEOUT_MS,
       maxBuffer: DISCOVERY_BUFFER_BYTES,
     })
-    return this.openPorts.terminatePort(parsePaneProcesses(panes), target)
+    return this.openPorts.terminatePort(this.portProcesses(panes), target)
   }
 
   async terminateSessionPorts(
@@ -212,7 +227,7 @@ export class TmuxClient {
       timeout: DISCOVERY_TIMEOUT_MS,
       maxBuffer: DISCOVERY_BUFFER_BYTES,
     })
-    return this.openPorts.terminateSessionPorts(parsePaneProcesses(panes), sessionId, expectedTargets)
+    return this.openPorts.terminateSessionPorts(this.portProcesses(panes), sessionId, expectedTargets)
   }
 
   /** This daemon's tmux server: its socket and pid, which processes started in its panes carry in TMUX. */
