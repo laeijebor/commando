@@ -640,6 +640,43 @@ describe('SessionTree', () => {
     expect(indicator()).toHaveAttribute('title', 'Claude: idle - Claude pane')
   })
 
+  it('marks sessions that need you, are unread or have gone quiet, with ages and group counts', async () => {
+    const now = Date.now()
+    const day = 86_400_000
+    const panes = [pane('%1', 0, 'Blocked'), { ...pane('%2', 0, 'Unread'), sessionId: '$2' }, { ...pane('%3', 0, 'Quiet'), sessionId: '$3' }]
+    const blocked = { ...agentStatus('%1', 'claude', 'needs_input'), details: { recentActivities: [], checks: [], attention: 'Allow Bash: xcodebuild' } }
+    const { container } = render(
+      <SessionTree
+        token="token"
+        sessions={[
+          { id: '$1', name: 'blocked', attached: true, activeWindowId: '@1', windowIds: ['@1'] },
+          { id: '$2', name: 'unread', attached: false, activeWindowId: '@1', windowIds: ['@1'] },
+          { id: '$3', name: 'quiet', attached: false, activeWindowId: '@1', windowIds: ['@1'] },
+        ]}
+        panes={panes}
+        displayedPaneIds={[]}
+        statuses={{ '%1': blocked, '%2': { ...agentStatus('%2', 'claude', 'done'), settledAt: now - 60_000 }, '%3': { ...agentStatus('%3', 'claude', 'done'), settledAt: now - 3 * day } }}
+        seen={{ '%3': now }}
+        activity={{ '%1': now - 4 * 60_000, '%2': now - 60_000, '%3': now - 3 * day }}
+        selectedSessionId={null}
+        onSelectSession={vi.fn()}
+        onSelectPane={vi.fn()}
+        onSessionsChanged={vi.fn()}
+        onPreferencesChanged={vi.fn()}
+      />,
+    )
+    const row = (name: string) => screen.getByText(name, { selector: '.session-identity-name' }).closest('article')!
+    await waitFor(() => expect(row('blocked')).toHaveClass('needs-you', 'unread'))
+    expect(within(row('blocked')).getByText('Allow Bash: xcodebuild')).toHaveClass('session-row-reason')
+    expect(within(row('blocked')).getByText('Needs you')).toHaveClass('session-attention-pill')
+    expect(within(row('blocked')).getByText('4m')).toHaveClass('session-row-age')
+    expect(row('unread')).toHaveClass('unread')
+    expect(row('unread')).not.toHaveClass('needs-you', 'quiet')
+    expect(row('quiet')).toHaveClass('quiet')
+    expect(within(row('quiet')).getByText('3d')).toBeInTheDocument()
+    expect(container.querySelector('.session-group-counts')).toHaveAttribute('aria-label', '1 needs you · 1 finished since you looked')
+  })
+
   it('folds pane marks into the status indicator', () => {
     const panes = [pane('%1', 0, 'Release pane'), pane('%2', 1, 'API pane')]
     const onSelectPane = vi.fn()

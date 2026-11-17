@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentStatus, PaneMark } from '../shared/protocol'
-import { paneAttention, sessionIndicator } from './sessionIndicator'
+import { compactAge, isQuiet, paneAttention, QUIET_AFTER_MS, sessionAttention, sessionIndicator } from './sessionIndicator'
 
 const status = (paneId: string, value: AgentStatus['status'], extra: Partial<AgentStatus> = {}): AgentStatus => ({
   paneId, provider: 'claude', status: value, summary: '', source: 'hook', confidence: 'high', reason: '', updatedAt: 1, ...extra,
@@ -76,5 +76,42 @@ describe('paneAttention', () => {
       details: { recentActivities: [], checks: [], recap: { outcome: 'follow_up', summary: 'More', completedAt: 10, declared: true } },
     })
     expect(paneAttention(followUp, 20)).toBe('idle')
+  })
+})
+
+describe('sessionAttention', () => {
+  const day = 86_400_000
+  it('takes the most urgent agent state, ignoring pane marks, and the newest activity', () => {
+    expect(sessionAttention(panes, { '%1': status('%1', 'working'), '%2': ended('%2', 50) }, { '%2': 10 }, { '%1': 40, '%3': 90 }))
+      .toEqual({ attention: 'review', lastActivityAt: 90 })
+  })
+
+  it('says what a blocked agent is waiting on, preferring its question', () => {
+    const asking = status('%1', 'needs_input', { summary: 'Waiting', details: { recentActivities: [], checks: [], attention: 'Claude needs your permission',
+      requests: [{ id: 'r', kind: 'question', prompt: 'Pick one', createdAt: 1, questions: [{ header: 'Q', question: 'Ship it now?', options: [], multiple: false, custom: true }] }] } })
+    expect(sessionAttention(panes, { '%1': asking }, {}, {}).reason).toBe('Ship it now?')
+    const permission = status('%1', 'needs_input', { summary: 'Waiting', details: { recentActivities: [], checks: [], attention: 'Allow Bash: xcodebuild' } })
+    expect(sessionAttention(panes, { '%1': permission }, {}, {}).reason).toBe('Allow Bash: xcodebuild')
+    expect(sessionAttention(panes, { '%1': status('%1', 'failed', { summary: 'Rate limited' }) }, {}, {}).reason).toBe('Rate limited')
+    expect(sessionAttention(panes, { '%1': status('%1', 'working', { summary: 'Editing' }) }, {}, {}).reason).toBeUndefined()
+  })
+
+  it('counts a session as quiet after two days without activity, unless it needs you or is working', () => {
+    const now = 10 * day
+    expect(isQuiet({ attention: 'idle', lastActivityAt: now - QUIET_AFTER_MS }, now)).toBe(true)
+    expect(isQuiet({ attention: 'idle', lastActivityAt: now - QUIET_AFTER_MS + 1 }, now)).toBe(false)
+    expect(isQuiet({ lastActivityAt: now - 5 * day }, now)).toBe(true)
+    expect(isQuiet({ attention: 'idle' }, now)).toBe(false)
+    for (const attention of ['needs_input', 'failed', 'review', 'working'] as const) {
+      expect(isQuiet({ attention, lastActivityAt: now - 5 * day }, now)).toBe(false)
+    }
+  })
+
+  it('formats compact ages', () => {
+    expect(compactAge(1_000, 30_000)).toBe('now')
+    expect(compactAge(0, 4 * 60_000)).toBe('4m')
+    expect(compactAge(0, 3 * 3_600_000 + 5)).toBe('3h')
+    expect(compactAge(0, 6 * day)).toBe('6d')
+    expect(compactAge(100, 50)).toBe('now')
   })
 })

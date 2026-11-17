@@ -1161,6 +1161,7 @@ function HostApp() {
   const [paneBriefs, setPaneBriefs] = useState<Record<string, SessionBrief>>({})
   const [paneMarks, setPaneMarks] = useState<Record<string, PaneMark>>({})
   const [paneSeen, setPaneSeen] = useState<Record<string, number>>({})
+  const [paneActivity, setPaneActivity] = useState<Record<string, number>>({})
   const [{ turnBriefs, relays, commanderState }, dispatchCommander] = useReducer(reduceCommanderMessage, initialCommanderClientState)
   // The agent whose chat Commander's reading pane shows.
   const [commanderPeek, setCommanderPeek] = useState<{ paneId: string; targetId: string } | null>(null)
@@ -1584,6 +1585,9 @@ function HostApp() {
         break
       case 'pane_seen':
         setPaneSeen((current) => message.snapshot ? message.seen : { ...current, ...message.seen })
+        break
+      case 'pane_activity':
+        setPaneActivity((current) => message.snapshot ? message.activity : { ...current, ...message.activity })
         break
       case 'pane_mark_snapshot':
         setPaneMarks(Object.fromEntries(message.marks.map((mark) => [mark.targetId, mark])))
@@ -4222,6 +4226,7 @@ function HostApp() {
               agentChatRequests={agentChatRequests}
               marks={paneMarks}
               seen={paneSeen}
+              activity={paneActivity}
               simulators={paneSimulators}
               devices={paneDevices}
               onShowDevices={local ? () => { setArea('devices'); setLeftPanelOpen(false) } : undefined}
