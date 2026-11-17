@@ -14,10 +14,11 @@ const isEntry = (value: unknown): value is Entry => {
 
 /**
  * When each pane's agent last did real work: a hook-reported working state, the
- * end of one, or a turn recap (at its completion time). Any other status first
- * seen after a restart is not activity: an agent re-reporting `done` on
- * reconnect did nothing new. Saved to `path` when given, so ages and the
- * sidebar's quiet sessions survive restarts.
+ * end of any working turn (hooked or inferred, including one that ended while
+ * the daemon was down), or a turn recap (at its completion time). Any other
+ * status first seen after a restart is not activity: an agent re-reporting
+ * `done` on reconnect did nothing new. Saved to `path` when given, so ages and
+ * the sidebar's quiet sessions survive restarts.
  */
 export class PaneActivity {
   private readonly entries: PaneStore<Entry>
@@ -54,8 +55,14 @@ export class PaneActivity {
     // Any source: Codex reports its working state only through inference.
     // `unknown` and `stale` say nothing about the turn ending, so a pending one stays pending.
     const working = kind === 'working' || ((kind === 'unknown' || kind === 'stale') && entry.working === true)
-    const at = status.source !== 'hook' ? undefined
-      : kind === 'working' || previousKind === 'working' ? updatedAt : status.details?.recap?.completedAt
+    // A working turn ends at the first state that settles it, from any source (an
+    // inferred one, or the first after a restart that interrupted it): the registry
+    // settles it now, so the saved time must say now too or the next restart reads
+    // the turn as seen.
+    const endsPendingTurn = entry.working === true && !working
+    const at = endsPendingTurn ? updatedAt
+      : status.source !== 'hook' ? undefined
+        : kind === 'working' || previousKind === 'working' ? updatedAt : status.details?.recap?.completedAt
     const advances = at !== undefined && at > (entry.at ?? -Infinity)
     if (advances || working !== (entry.working === true)) {
       this.entries.set(paneId, { ...(advances ? { at } : entry.at !== undefined ? { at: entry.at } : {}), ...(working ? { working: true as const } : {}) })

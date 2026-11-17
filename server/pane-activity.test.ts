@@ -33,10 +33,12 @@ describe('PaneActivity', () => {
     expect(activity.record({ ...recapped, updatedAt: 600 })).toBeNull()
   })
 
-  it('does not count inferred statuses as activity', () => {
+  it('does not count inferred working as activity, but does count the end of that turn', () => {
     const activity = bound()
     expect(activity.record(status('working', 10, 'heuristic'))).toBeNull()
     expect(activity.has('%1')).toBe(false)
+    expect(activity.record(status('done', 20, 'heuristic'))).toEqual({ '%1': 20 })
+    expect(activity.record(status('done', 30, 'heuristic'))).toBeNull()
   })
 
   it('stores every working update but publishes a busy agent at most once a minute', () => {
@@ -82,8 +84,13 @@ describe('PaneActivity', () => {
     // An inferred `unknown` while restarting keeps the turn pending; the `done` clears it.
     after.record(status('unknown', 40, 'heuristic'))
     expect(after.settledAt('%1')).toBeUndefined()
-    after.record(status('done', 50, 'heuristic'))
-    expect(after.settledAt('%1')).toBe(20)
+    // That turn ended unseen while the daemon was down; its end is saved for the next restart.
+    expect(after.record(status('done', 50, 'heuristic'))).toEqual({ '%1': 50 })
+    expect(after.settledAt('%1')).toBe(50)
+    after.flush()
+    const again = new PaneActivity(path)
+    again.bindServer('1:1')
+    expect(again.settledAt('%1')).toBe(50)
   })
 
   it('drops saved panes from another tmux server', () => {
