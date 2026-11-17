@@ -113,13 +113,14 @@ import { PortManagementApi } from './port-management-api.js'
 import { ProcessTracker } from './tracked-processes.js'
 import { TrackedProcessesApi } from './tracked-processes-api.js'
 import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
-import { GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
+import { GitWorktreeService, stopRunningGit, worktreesParentFromEnv } from './git-worktree.js'
 import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion, type SessionWorktreeDeletionDependencies } from './session-worktree-deletion.js'
 import { sessionRepo } from '../shared/session-repositories.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { SessionCreations } from './session-creations.js'
 import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
@@ -1775,6 +1776,18 @@ async function main(): Promise<void> {
     return refreshSnapshot()
   }
 
+  const sessionCreations = new SessionCreations(
+    async (input, onProgress) => {
+      const result = await tmuxCreator.createSession(input, undefined, onProgress)
+      // Clients finish a creation by opening the new session, so it must be in the snapshot first;
+      // a refresh already under way may have looked at tmux before the session existed. The session
+      // exists either way, so a failed refresh must not fail it: Retry would create it a second time.
+      await refreshSnapshotFresh().catch((error: unknown) => console.warn('[commando] snapshot refresh after creating a session failed', error))
+      return result
+    },
+    (creations) => broadcast({ type: 'session_creations', creations }),
+  )
+
   const sessionIdes = new SessionIdeService({
     dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides'),
     legacyDataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides', String(port)),
@@ -2996,6 +3009,7 @@ async function main(): Promise<void> {
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
+    send(client, { type: 'session_creations', creations: sessionCreations.list() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
     for (const { paneId, runs } of externalAgents.snapshots()) send(client, { type: 'chat_external_runs', paneId, runs })
     for (const { paneId, events } of chatTileEvents.snapshots()) send(client, { type: 'chat_tile_events', paneId, events })
@@ -3205,6 +3219,7 @@ async function main(): Promise<void> {
           },
           () => agentProfilePreferences.claudeProfiles({ includeHidden: false }),
           () => modelCatalog.list(),
+          sessionCreations,
         )) return
         writeJson(response, 404, { error: 'Not found' })
         return
@@ -3371,6 +3386,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (shuttingDown) return
     shuttingDown = true
+    stopRunningGit()
     hostsHealth.stop()
     hostsProxy.close()
     clearInterval(snapshotTimer)

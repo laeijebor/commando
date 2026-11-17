@@ -5,7 +5,8 @@ import { SessionAvatar } from './SessionAvatar'
 import { Bot, Archive, ArrowDown, ArrowUp, ChevronDown, ChevronRight, Code2, FolderGit2, FolderPlus, FolderX, ListTree, MoreHorizontal, Pause, Pencil, Play, Plus, RotateCcw, Smartphone, SmartphoneCharging, Trash2, X } from 'lucide-react'
 import { type DragEvent, type KeyboardEvent, type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { AgentStatus, DeviceLockClaim, PaneMark, PaneRepo, SessionIde, SimulatorClaim, TmuxPane, TmuxSession } from '../shared/protocol'
-import type { TmuxCreatedTarget, TmuxCreatedWorktree } from '../shared/tmux-create'
+import { requireSessionAgentLaunch, type CreateTmuxSessionRequest, type SessionCreation, type TmuxCreatedTarget, type TmuxCreatedWorktree } from '../shared/tmux-create'
+import { SessionCreationRow } from './SessionCreationRow'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
 import { createSessionManagementApi, type RepositorySessionGroup, type SessionArchiveResult, type SessionArchiveSummary, type SessionGroupingMode, type SessionPreferenceGroup, type SessionTreePreferences } from './sessionManagementApi'
 import { moveRepositoryItem, repositoryContainers, repositoryItemId, ungroupRepositoryItem } from '../shared/session-repositories'
@@ -27,8 +28,10 @@ import type { TrackedProcess } from '../shared/tracked-processes'
 import { createTrackedProcessesApi, useTrackedProcesses } from './trackedProcessesApi'
 import { SessionCloseDialog, type SessionCloseRequest } from './SessionCloseDialog'
 
-type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'probeRepo' | 'loadClaudeProfiles' | 'loadModelCatalogs' | 'naming'> & {
+type SessionTreeCreation = Pick<TmuxCreateControlsProps, 'disabled' | 'onCreateSession' | 'onStartSession' | 'probeRepo' | 'loadClaudeProfiles' | 'loadModelCatalogs' | 'naming'> & {
   onCreated?: (created: TmuxCreatedTarget, worktree?: TmuxCreatedWorktree) => void
+  onRetryCreation?: (id: string) => Promise<unknown>
+  onDismissCreation?: (id: string) => Promise<unknown>
 }
 
 /**
@@ -73,6 +76,8 @@ type Props = {
   onSessionsChanged: () => void
   onPreferencesChanged: (preferences: SessionTreePreferences) => void
   creation?: SessionTreeCreation
+  /** Sessions the daemon is creating in the background (see `SessionCreation`). */
+  creations?: SessionCreation[]
   ides?: SessionIde[]
   ideSessionId?: string | null
   onOpenIde?: (sessionId: string) => void
@@ -184,6 +189,9 @@ export function SessionTree(props: Props) {
   const [archives, setArchives] = useState<SessionArchiveSummary[]>([])
   const [archivesExpanded, setArchivesExpanded] = useState(false)
   const sessionCreateRequestId = useRef(0)
+  /** Creations started here: once ready they are placed and opened here, as a quick creation is. */
+  const [ownCreationsVersion, setOwnCreationsVersion] = useState(0)
+  const ownCreations = useRef(new Map<string, { request: CreateTmuxSessionRequest; groupId: string; selectedAtStart: string | null; failed: boolean; seen: boolean }>())
   const sessionCreateTrigger = useRef<HTMLElement | null>(null)
   const preferenceSaveVersion = useRef(0)
   const marks = props.marks ?? {}
@@ -515,7 +523,7 @@ export function SessionTree(props: Props) {
     finally { setResumingIds((current) => new Set([...current].filter((id) => id !== archive.id))) }
   }
 
-  const finishCreated = (created: TmuxCreatedTarget, sessionGroupId: string | undefined, worktree: TmuxCreatedWorktree | undefined) => {
+  const finishCreated = (created: TmuxCreatedTarget, sessionGroupId: string | undefined, worktree: TmuxCreatedWorktree | undefined, open = true) => {
     if (created.kind === 'session' && sessionGroupId?.startsWith('group:')) {
       // The new session may not be present in the next tmux snapshot yet.
       const current = preferencesRef.current
@@ -529,9 +537,48 @@ export function SessionTree(props: Props) {
     } else if (created.kind === 'session' && manual && sessionGroupId && sessionGroupId !== 'ungrouped') {
       moveToContainer(created.sessionId, sessionGroupId)
     }
-    if (worktree) props.creation?.onCreated?.(created, worktree)
+    if (!open) props.onSessionsChanged()
+    else if (worktree) props.creation?.onCreated?.(created, worktree)
     else props.creation?.onCreated?.(created)
   }
+
+  const startedCreation = (creation: SessionCreation, request: CreateTmuxSessionRequest, groupId: string) => {
+    ownCreations.current.set(creation.id, { request, groupId, selectedAtStart: props.selectedSessionId, failed: false, seen: false })
+    // The websocket can report it done before this response arrives, so the current list is checked too.
+    setOwnCreationsVersion((version) => version + 1)
+  }
+  useEffect(() => {
+    if (!props.creations) return
+    for (const [id, own] of ownCreations.current) {
+      const creation = props.creations.find((candidate) => candidate.id === id)
+      if (!creation) {
+        if (own.seen) {
+          ownCreations.current.delete(id)
+          // A failed one may have been dismissed elsewhere; a running one only vanishes with the daemon.
+          if (!own.failed) setError(`The daemon restarted while creating ${own.request.name || 'a session'}; create it again`)
+        }
+        continue
+      }
+      own.seen = true
+      own.failed = creation.stage === 'failed'
+      if (creation.stage !== 'done' || !creation.result) continue
+      ownCreations.current.delete(id)
+      try { requireSessionAgentLaunch(own.request, creation.result) } catch (cause) { setError(cause instanceof Error ? cause.message : 'The agent did not start') }
+      // Opened only if nothing else was picked meanwhile: a checkout can take minutes.
+      finishCreated(creation.result.created, own.groupId, creation.result.worktree, props.selectedSessionId === own.selectedAtStart)
+      void props.creation?.onDismissCreation?.(id).catch(() => undefined)
+    }
+  // finishCreated reads the latest preferences through refs; only a new list or a new own creation is worth a look.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.creations, ownCreationsVersion])
+  const pendingCreations = (props.creations ?? []).filter((creation) => creation.stage !== 'done')
+  // Shown at the top of the container it was started from, even when that is collapsed.
+  const creationBelongsTo = (container: SessionTreeContainer, groupId: string | undefined) => Boolean(groupId) && (groupId === container.id
+    || Boolean(container.items?.some((item) => item.kind === 'group' && `group:${item.group.id}` === groupId)))
+  const renderCreations = (matches: (groupId: string | undefined) => boolean) => pendingCreations
+    .filter((creation) => matches(creation.groupId))
+    .map((creation) => <SessionCreationRow key={creation.id} creation={creation}
+      onRetry={props.creation?.onRetryCreation ?? (async () => undefined)} onDismiss={props.creation?.onDismissCreation ?? (async () => undefined)} />)
 
   const openMenu = (sessionId: string, x: number, y: number) => setMenu({ sessionId, x, y })
   const menuKey = (event: KeyboardEvent, sessionId: string) => {
@@ -592,6 +639,7 @@ export function SessionTree(props: Props) {
         {props.commanderNeedsYou ? <span className="session-commander-count" aria-label={`${props.commanderNeedsYou} agents need you`}>{props.commanderNeedsYou}</span> : null}
         {props.commanderUnreadFinished ? <span className="session-commander-unread" aria-label="Unread finished turns" /> : null}
       </button> : null}
+      {renderCreations((groupId) => !containers.some((container) => creationBelongsTo(container, groupId)))}
       {containers.map((container) => {
         const groupIndex = container.group ? preferences.groups.findIndex((group) => group.id === container.id) : -1
         const collapsed = collapsedContainerIds.has(container.id)
@@ -734,6 +782,7 @@ export function SessionTree(props: Props) {
             {props.creation && container.kind !== 'no-repo' && container.kind !== 'auxiliary' ? <button type="button" onClick={(event) => createSessionInContainer(container, event.currentTarget)} aria-label={`Create a new session in ${container.name}`} title={`Create a new session in ${container.name}`}><Plus /></button> : null}
             {container.group ? <><button type="button" onClick={() => moveGroup(container.id, -1)} disabled={groupIndex === 0} aria-label={`Move ${container.name} up`}><ArrowUp /></button><button type="button" onClick={() => moveGroup(container.id, 1)} disabled={groupIndex === preferences.groups.length - 1} aria-label={`Move ${container.name} down`}><ArrowDown /></button><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}
           </header>
+          {renderCreations((groupId) => creationBelongsTo(container, groupId))}
           <div id={groupBodyId} hidden={collapsed}>
             {container.items ? container.items.map((item, itemIndex) => {
               const nextItemId = container.items![itemIndex + 1] ? repositoryItemId(container.items![itemIndex + 1]) : undefined
@@ -820,6 +869,7 @@ export function SessionTree(props: Props) {
         loadModelCatalogs={props.creation.loadModelCatalogs}
         naming={props.creation.naming}
         onCreated={(created, sessionGroupId, worktree) => finishCreated(created, sessionGroupId, worktree)}
+        {...(props.creation.onStartSession ? { onStartSession: props.creation.onStartSession, onStarted: startedCreation } : {})}
       /> : null}
       {props.creation && sessionCreateRequest ? <SessionCreateDialog
         request={sessionCreateRequest}
@@ -831,6 +881,7 @@ export function SessionTree(props: Props) {
         loadModelCatalogs={props.creation.loadModelCatalogs}
         naming={props.creation.naming}
         onCreated={(created, sessionGroupId, worktree) => { finishCreated(created, sessionGroupId, worktree); closeSessionDialog() }}
+        {...(props.creation.onStartSession ? { onStartSession: props.creation.onStartSession, onStarted: (creation: SessionCreation, request: CreateTmuxSessionRequest, groupId: string) => { startedCreation(creation, request, groupId); closeSessionDialog() } } : {})}
         onClose={closeSessionDialog}
       /> : null}
       {menu && menuArchive ? <div className="session-context-menu" data-native-terminal-occluder="" style={{ left: menu.x, top: menu.y }} role="menu" onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setMenu(null) }}>

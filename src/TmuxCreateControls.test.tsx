@@ -67,6 +67,27 @@ describe('TmuxCreateControls', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   })
 
+  it('hands a creation that is still checking out to the sidebar and resets, or finishes a quick one as before', async () => {
+    const onCreateSession = vi.fn()
+    const onCreated = vi.fn()
+    const onStarted = vi.fn()
+    const running = { id: 'c1', name: 'work', cwd: '', stage: 'checking-out' as const, startedAt: 1 }
+    const onStartSession = vi.fn().mockResolvedValueOnce(running).mockResolvedValueOnce({ ...running, id: 'c2', stage: 'done' as const, result: { created } })
+    render(<TmuxCreateControls variant="dialog" onCreateSession={onCreateSession} onStartSession={onStartSession} onStarted={onStarted} onCreated={onCreated} />)
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith(running, expect.objectContaining({ name: 'work', empty: true }), 'ungrouped'))
+    expect(onStartSession.mock.calls[0]![0]).not.toHaveProperty('groupId')
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Session name')).toHaveValue('')
+
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'work' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create session' }))
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created, 'ungrouped', undefined))
+    expect(onStarted).toHaveBeenCalledOnce()
+    expect(onCreateSession).not.toHaveBeenCalled()
+  })
+
   it('opens an old-host target once and creates a second Shell session in the same mounted inline form', async () => {
     const nextCreated = { ...created, sessionId: '$4', sessionName: 'next', paneId: '%5' }
     const onCreateSession = vi.fn().mockResolvedValueOnce({ created }).mockResolvedValueOnce({ created: nextCreated })

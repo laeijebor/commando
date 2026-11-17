@@ -6,6 +6,8 @@ export const TMUX_CREATE_ROUTES = {
   claudeProfiles: '/api/tmux/claude-profiles',
   models: '/api/tmux/models',
   launch: '/api/tmux/panes/launch',
+  /** POST to start; `/:id/retry` (POST) and `/:id` (DELETE) for a failed or finished one. */
+  sessionCreations: '/api/tmux/session-creations',
 } as const
 
 /** Pane option marking a pane that idles until something is launched into it. */
@@ -259,6 +261,69 @@ export type TmuxCreateResponse = {
   created: TmuxCreatedTarget
   worktree?: TmuxCreatedWorktree
   agentLaunch?: SessionAgentLaunchAcknowledgment
+}
+
+/** How far a session being created in the background has got. */
+export type SessionCreationStage = 'preparing' | 'fetching' | 'checking-out' | 'launching' | 'done' | 'failed'
+
+/** The slow steps of creating a session, reported as they start. */
+export type SessionCreationProgress = (stage: 'fetching' | 'checking-out' | 'launching', percent?: number) => void
+
+/**
+ * A session the daemon is creating in the background: the New session modal closes as soon as the
+ * slow part (fetching, checking a worktree out) starts, and clients show this in its place.
+ */
+export type SessionCreation = {
+  id: string
+  /** The name asked for; empty when the daemon picks one. */
+  name: string
+  cwd: string
+  /** The worktree branch asked for, when there is one. */
+  branch?: string
+  /** The sidebar group the session was started from, so a finished one lands there. */
+  groupId?: string
+  stage: SessionCreationStage
+  /** Files checked out so far, 0-100, while `stage` is `checking-out`. */
+  percent?: number
+  startedAt: number
+  error?: string
+  result?: TmuxCreateResponse
+}
+
+export type StartSessionCreationRequest = CreateTmuxSessionRequest & { groupId?: string }
+
+const SESSION_CREATION_STAGES: readonly SessionCreationStage[] = ['preparing', 'fetching', 'checking-out', 'launching', 'done', 'failed']
+
+export function parseSessionCreation(value: unknown): SessionCreation {
+  const body = (value && typeof value === 'object' ? value : {}) as Partial<SessionCreation>
+  if (typeof body.id !== 'string' || typeof body.name !== 'string' || typeof body.cwd !== 'string'
+    || !SESSION_CREATION_STAGES.includes(body.stage as SessionCreationStage) || typeof body.startedAt !== 'number') {
+    throw new Error('session creation did not match the protocol')
+  }
+  return {
+    id: body.id,
+    name: body.name,
+    cwd: body.cwd,
+    stage: body.stage as SessionCreationStage,
+    startedAt: body.startedAt,
+    ...(typeof body.branch === 'string' ? { branch: body.branch } : {}),
+    ...(typeof body.groupId === 'string' ? { groupId: body.groupId } : {}),
+    ...(typeof body.percent === 'number' ? { percent: body.percent } : {}),
+    ...(typeof body.error === 'string' ? { error: body.error } : {}),
+    ...(body.result ? { result: parseTmuxCreateResponse(body.result) } : {}),
+  }
+}
+
+/** What a placeholder row says about a creation that has not finished. */
+export function sessionCreationStatus(creation: Pick<SessionCreation, 'stage' | 'percent'>): string {
+  switch (creation.stage) {
+    case 'preparing': return 'Preparing…'
+    case 'fetching': return 'Fetching the latest base branch…'
+    case 'checking-out': return creation.percent === undefined ? 'Checking out files…' : `Checking out files… ${creation.percent}%`
+    case 'launching': return 'Starting…'
+    case 'done': return 'Ready'
+    case 'failed': return 'Could not start'
+  }
 }
 
 /** The owned pane has been created with the PTY launch command installed.

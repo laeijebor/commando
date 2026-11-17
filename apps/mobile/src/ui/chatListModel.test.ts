@@ -1,7 +1,7 @@
 import { deriveSessionIdentity } from '@commando/session-identity'
 import { EMPTY_HOST_STATE } from '../daemon/state'
 import { SNAPSHOT, NEEDS_INPUT_STATUS, WORKING_STATUS, DONE_STATUS } from '../testing/fixtures'
-import { buildChatGroups, paneAttention, sessionIndicator } from './chatListModel'
+import { buildChatGroups, paneAttention, placeSessionCreations, sessionIndicator } from './chatListModel'
 
 const state = { ...EMPTY_HOST_STATE, snapshot: SNAPSHOT, agentStatuses: { '%14': NEEDS_INPUT_STATUS, '%20': WORKING_STATUS } }
 it('groups by repo, resolves identities, and opens the only agent rather than a shell', () => {
@@ -60,4 +60,15 @@ it('opens the active pane of the active window for shell-only sessions', () => {
   const row = buildChatGroups({ ...EMPTY_HOST_STATE, snapshot }).flatMap((group) => group.sessions).find((entry) => entry.session.id === '$1')!
   expect(row.agents).toHaveLength(0)
   expect(row.openPaneId).toBe('%15')
+})
+it('places unfinished creations in their repository group, else in a section of their own', () => {
+  const base = { name: 'x', startedAt: 1 }
+  const placed = placeSessionCreations([
+    { ...base, id: 'a', cwd: '/src/commando/', stage: 'checking-out' },
+    { ...base, id: 'b', cwd: '/elsewhere', stage: 'failed', error: 'boom' },
+    { ...base, id: 'c', cwd: '/src/commando', stage: 'done' },
+  ], ['repo:/src/commando', 'no-repo'])
+  expect(placed.get('repo:/src/commando')?.map((creation) => creation.id)).toEqual(['a'])
+  expect(placed.get('')?.map((creation) => creation.id)).toEqual(['b'])
+  expect([...placed.keys()]).toHaveLength(2)
 })

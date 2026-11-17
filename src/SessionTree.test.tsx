@@ -4,7 +4,7 @@ import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within }
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatus, PaneRepo, TmuxPane } from '../shared/protocol'
-import type { TmuxCreatedTarget } from '../shared/tmux-create'
+import type { SessionCreation, TmuxCreatedTarget } from '../shared/tmux-create'
 import { deriveSessionIdentity } from '../shared/session-identity'
 import { SessionTree, type SessionActions } from './SessionTree'
 import { openWorkspace } from './newSessionTestHelpers'
@@ -1128,6 +1128,85 @@ describe('SessionTree', () => {
         },
       })
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    })
+
+    it('closes the dialog once a worktree checkout is under way, shows its progress in the repository, then opens it when ready', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const created: TmuxCreatedTarget = { kind: 'session', sessionId: '$5', sessionName: 'cd-failure', windowId: '@5', windowIndex: 0, windowName: 'shell', paneId: '%5', paneIndex: 0, panePath: `${SAVE_ALL.root}-worktrees/cd-failure` }
+      const running: SessionCreation = { id: 'job-1', name: 'cd-failure', cwd: SAVE_ALL.root, branch: 'cd-failure', stage: 'checking-out', startedAt: 1 }
+      const onStartSession = vi.fn(async (input: { groupId?: string }) => ({ ...running, ...(input.groupId ? { groupId: input.groupId } : {}) }))
+      const onCreated = vi.fn()
+      const onDismissCreation = vi.fn(async () => undefined)
+      const onRetryCreation = vi.fn(async () => undefined)
+      const creation = { onCreateSession: vi.fn(), onStartSession, onCreated, onDismissCreation, onRetryCreation }
+      const view = renderTree({ creation })
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New session' })
+      fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'cd-failure' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      const groupId = onStartSession.mock.calls[0]![0].groupId
+      expect(groupId).toBeTruthy()
+
+      const rerender = (creations: SessionCreation[], extra: Partial<Parameters<typeof SessionTree>[0]> = {}) => view.rerender(
+        <SessionTree token="token" sessions={sessions} panes={panes} displayedPaneIds={[]} statuses={{}} selectedSessionId={null}
+          onSelectSession={vi.fn()} onSelectPane={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} creation={creation} creations={creations} {...extra} />,
+      )
+      rerender([{ ...running, groupId, percent: 42 }])
+      const saveAll = screen.getByRole('button', { name: 'Collapse Save-All' }).closest('section')!
+      expect(within(saveAll).getByRole('article', { name: 'cd-failure: Checking out files… 42%' })).toBeInTheDocument()
+
+      rerender([{ ...running, groupId, stage: 'failed', error: 'git worktree add failed: fatal: disk full' }])
+      expect(within(saveAll).getByText('git worktree add failed: fatal: disk full')).toBeInTheDocument()
+      fireEvent.click(within(saveAll).getByRole('button', { name: 'Retry creating cd-failure' }))
+      await waitFor(() => expect(onRetryCreation).toHaveBeenCalledWith('job-1'))
+
+      rerender([{ ...running, groupId, stage: 'done', result: { created } }])
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created))
+      expect(onDismissCreation).toHaveBeenCalledWith('job-1')
+      expect(screen.queryByRole('article', { name: /^cd-failure:/ })).not.toBeInTheDocument()
+    })
+
+    it('finishes a creation reported done before its start request answered', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const created: TmuxCreatedTarget = { kind: 'session', sessionId: '$6', sessionName: 'quick', windowId: '@6', windowIndex: 0, windowName: 'shell', paneId: '%6', paneIndex: 0, panePath: SAVE_ALL.root }
+      const running: SessionCreation = { id: 'job-3', name: 'quick', cwd: SAVE_ALL.root, stage: 'checking-out', startedAt: 1 }
+      let answer: ((creation: SessionCreation) => void) | undefined
+      const onCreated = vi.fn()
+      const onDismissCreation = vi.fn(async () => undefined)
+      const creation = { onCreateSession: vi.fn(), onStartSession: vi.fn(() => new Promise<SessionCreation>((resolve) => { answer = resolve })), onCreated, onDismissCreation }
+      const view = renderTree({ creation })
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New session' })
+      fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'quick' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
+      await waitFor(() => expect(creation.onStartSession).toHaveBeenCalled())
+      // The websocket reports it done first; the request answers afterwards with the running state.
+      view.rerender(<SessionTree token="token" sessions={sessions} panes={panes} displayedPaneIds={[]} statuses={{}} selectedSessionId={null}
+        onSelectSession={vi.fn()} onSelectPane={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} creation={creation}
+        creations={[{ ...running, stage: 'done', result: { created } }]} />)
+      answer?.(running)
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created))
+      expect(onDismissCreation).toHaveBeenCalledWith('job-3')
+    })
+
+    it('says so when a creation it started vanishes before finishing, as when the daemon restarts', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const running: SessionCreation = { id: 'job-2', name: 'cd-failure', cwd: SAVE_ALL.root, stage: 'checking-out', startedAt: 1 }
+      const creation = { onCreateSession: vi.fn(), onStartSession: vi.fn(async () => running), onDismissCreation: vi.fn(async () => undefined) }
+      const view = renderTree({ creation })
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New session' })
+      fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'cd-failure' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      const rerender = (creations: SessionCreation[]) => view.rerender(
+        <SessionTree token="token" sessions={sessions} panes={panes} displayedPaneIds={[]} statuses={{}} selectedSessionId={null}
+          onSelectSession={vi.fn()} onSelectPane={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} creation={creation} creations={creations} />,
+      )
+      rerender([running])
+      rerender([])
+      expect(await screen.findByText('The daemon restarted while creating cd-failure; create it again')).toBeInTheDocument()
     })
   })
 })

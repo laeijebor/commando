@@ -1,5 +1,6 @@
 import type { AgentStatus, PaneMark, TmuxPane } from '@commando/protocol'
 import { sessionIdentityForName, type SessionIdentities } from '@commando/session-identity'
+import type { SessionCreation } from '@commando/tmux-create'
 import type { HostDaemonState } from '../daemon/state'
 import { rowPending, rowUpdatedAt, type ListChat } from './chatRowMetadata'
 import { buildSessionTree } from '../agents/selectors'
@@ -92,4 +93,20 @@ export function buildChatGroups(state: HostDaemonState, chats: Record<string, Li
       pending: agents.some((pane) => state.agentStatuses[pane.id]?.details?.requests?.length || rowPending(chats[pane.id])),
     }
   }) }))
+}
+
+/**
+ * Placeholders for sessions still being created (or failed), by the repository group they will
+ * land in. A creation started in a repository's main checkout matches its group; the rest go
+ * under `''`, a section of their own.
+ */
+export function placeSessionCreations(creations: readonly SessionCreation[], groupIds: readonly string[]): Map<string, SessionCreation[]> {
+  const placed = new Map<string, SessionCreation[]>()
+  for (const creation of creations) {
+    if (creation.stage === 'done') continue
+    const id = `repo:${creation.cwd.replace(/(.)\/+$/u, '$1')}`
+    const key = groupIds.includes(id) ? id : ''
+    placed.set(key, [...placed.get(key) ?? [], creation])
+  }
+  return placed
 }

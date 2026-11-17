@@ -24,6 +24,7 @@ import {
   type TmuxCreateResponse,
   type TmuxCreatedWorktree,
   type SessionAgentLaunchAcknowledgment,
+  type SessionCreationProgress,
 } from '../shared/tmux-create.js'
 import { isChatConversationSessionId } from '../shared/chat-conversations.js'
 import { isModelValue, parseChatImageRefs } from '../shared/agent-chat.js'
@@ -477,7 +478,7 @@ export class TmuxCreator {
   ) {}
 
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */
-  async createSession(input: CreateTmuxSessionRequest, resumeCommand?: string): Promise<TmuxCreateResponse> {
+  async createSession(input: CreateTmuxSessionRequest, resumeCommand?: string, onProgress?: SessionCreationProgress): Promise<TmuxCreateResponse> {
     if (input.autoName !== undefined && typeof input.autoName !== 'boolean') throw new Error('autoName must be a boolean')
     const autoName = input.autoName === true
     const windowName = optionalName(input.windowName, 'window name')
@@ -492,6 +493,7 @@ export class TmuxCreator {
       ? { agentLaunch: { version: 1, provider: agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } }
       : {}
     if (input.worktree === undefined) {
+      onProgress?.('launching')
       if (!autoName) {
         const created = await this.newSession(names[0]!, windowName, cwd, undefined, agentArgv, empty)
         return { created, ...acknowledgment(created) }
@@ -534,6 +536,7 @@ export class TmuxCreator {
           path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch, repo.worktreesParent),
           ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
           ...(branchFromName ? { newBranchOnly: true } : {}),
+          ...(onProgress ? { onProgress } : {}),
         })
       } catch (error) {
         // A path the user typed stays the same whatever the name, so it is not retried.
@@ -541,6 +544,7 @@ export class TmuxCreator {
         if (branchFromName && taken && index < names.length - 1) continue
         throw error
       }
+      onProgress?.('launching')
       const target = await this.sessionInWorktree(name, windowName, created, prepareCommand, agentArgv, empty)
       return { created: target, worktree: created.worktree, ...acknowledgment(target) }
     }
