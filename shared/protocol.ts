@@ -1,3 +1,4 @@
+import type { SessionCreation } from './tmux-create.js'
 import type { CommanderRelay, CommanderState, TurnBrief } from './commander.js'
 import type { DiffFilters } from './diff-filters.js'
 import type { AgentChatRequest } from './agent-chats.js'
@@ -769,6 +770,8 @@ export type ServerMessage =
   | { type: 'agent_resume'; resume: AgentResume }
   | { type: 'agent_resume_snapshot'; resumes: AgentResume[] }
   | { type: 'agent_resume_removed'; targetId: string }
+  /** Sessions being created in the background; replaces the previous list. */
+  | { type: 'session_creations'; creations: SessionCreation[] }
   | { type: 'session_brief'; brief: SessionBrief }
   | { type: 'session_brief_snapshot'; briefs: SessionBrief[] }
   | { type: 'pane_mark'; mark: PaneMark }

@@ -38,6 +38,8 @@ export type GitExecutorOptions = {
   input?: string
   /** Non-zero exit codes treated as success (diff tools exit 1 on differences). */
   allowExitCodes?: readonly number[]
+  /** Sees stderr as it arrives, e.g. to follow git's progress meter. */
+  onStderr?: (text: string) => void
 }
 
 export type GitProcessExecutor = (

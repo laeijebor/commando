@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { access, readdir, realpath, rename } from 'node:fs/promises'
 import path from 'node:path'
-import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
+import type { GitRepoInfo, SessionCreationProgress, TmuxCreatedWorktree } from '../shared/tmux-create.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
 
 const COMMAND_TIMEOUT_MS = 5_000
@@ -16,6 +16,9 @@ const BUFFER_BYTES = 1024 * 1024
 /** About 3 million tracked files at roughly 85 bytes each. */
 const INDEX_LISTING_BYTES = 256 * 1024 * 1024
 const DEFAULT_BRANCH_CANDIDATES = ['main', 'master']
+/** git's checkout meter: `Updating files:  42% (16922/40289)`, redrawn with carriage returns. */
+const CHECKOUT_PROGRESS = /Updating files:\s+(\d+)%/gu
+const PROGRESS_METER = /Updating files:[^\r\n]*?(?:\(\d+\/\d+\)(?:, done\.)?|$)[\r\n]*/gmu
 const REMOTE = 'origin'
 /** Conservative subset of `git check-ref-format --branch`. */
 const BRANCH_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u
@@ -39,6 +42,8 @@ export type CreateWorktreeInput = {
   newBranchOnly?: boolean
   /** Refuse to create the branch: the caller is checking an existing one out again. */
   existingBranchOnly?: boolean
+  /** Told when the fetch and the checkout start, then how much of the checkout is done. */
+  onProgress?: SessionCreationProgress
 }
 
 export type CreateWorktreeResult = {
@@ -114,7 +119,7 @@ export function stopRunningGit(): void {
  * Runs git in a process group of its own and stops the whole group on timeout. `git worktree add`
  * checks files out in a child `git reset --hard`, which kept writing after its parent was killed.
  */
-const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, maxBuffer }) =>
+const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, maxBuffer, onStderr }) =>
   new Promise((resolve, reject) => {
     const child = spawn(file, [...args], { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     const pid = child.pid
@@ -129,6 +134,7 @@ const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, ma
     }
     for (const stream of ['stdout', 'stderr'] as const) {
       child[stream].on('data', (chunk: Buffer) => {
+        if (stream === 'stderr') onStderr?.(chunk.toString('utf8'))
         output[stream].push(chunk)
         bytes += chunk.length
         if (bytes > maxBuffer) stop('overflow')
@@ -149,7 +155,8 @@ const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, ma
         return
       }
       const message = stopped === 'timeout' ? `${file} timed out` : stopped === 'overflow' ? `${file} output exceeded ${maxBuffer} bytes` : `${file} failed`
-      reject(new GitCommandFailure(message, text('stderr').slice(0, 4_000), false, stopped === 'timeout'))
+      // The end holds the error; a progress meter can fill the start.
+      reject(new GitCommandFailure(message, text('stderr').slice(-4_000), false, stopped === 'timeout'))
     })
   })
 
@@ -277,7 +284,7 @@ export class GitWorktreeService {
     }
 
     if (branchExists) {
-      await this.worktreeAdd(cwd, [target, branch])
+      await this.worktreeAdd(cwd, [target, branch], input.onProgress)
       return {
         worktree: { path: target, branch, base: '', reusedBranch: true },
         rollback: () => this.remove(cwd, target),
@@ -289,6 +296,7 @@ export class GitWorktreeService {
     if (input.defaultBranch) {
       const remote = input.remote ?? REMOTE
       const remoteRef = `${remote}/${input.defaultBranch}`
+      input.onProgress?.('fetching')
       try {
         await this.git(cwd, ['fetch', remote, input.defaultBranch], this.fetchTimeoutMs)
         base = remoteRef
@@ -314,7 +322,7 @@ export class GitWorktreeService {
       throw new GitWorktreeError('exec', `Cannot create branch ${branch} from ${base}: ${failureDetail(error)}`)
     }
     try {
-      await this.worktreeAdd(cwd, [target, branch])
+      await this.worktreeAdd(cwd, [target, branch], input.onProgress)
     } catch (error) {
       // git deletes a half-made folder itself; the branch would make a retry find the name taken.
       await this.git(cwd, ['worktree', 'prune']).catch(() => undefined)
@@ -483,16 +491,25 @@ export class GitWorktreeService {
     }
   }
 
-  private async worktreeAdd(cwd: string, args: string[]): Promise<void> {
+  private async worktreeAdd(cwd: string, args: string[], onProgress?: SessionCreationProgress): Promise<void> {
+    onProgress?.('checking-out')
+    let percent = -1
+    // Without --quiet git prints a progress meter even to a pipe: it is followed for `onProgress`
+    // and dropped from the error, where it used to bury the real message.
+    const onStderr = onProgress && ((text: string) => {
+      const last = [...text.matchAll(CHECKOUT_PROGRESS)].at(-1)
+      const next = last ? Number(last[1]) : percent
+      if (next > percent) onProgress('checking-out', percent = next)
+    })
     try {
-      // --quiet keeps git's progress meter out of stderr, where it buried the real error.
       // checkout.workers=0 writes files on every core (git 2.32+; older versions ignore it).
-      await this.git(cwd, ['-c', 'checkout.workers=0', 'worktree', 'add', '--quiet', ...args], WORKTREE_ADD_TIMEOUT_MS)
+      await this.git(cwd, ['-c', 'checkout.workers=0', 'worktree', 'add', ...(onProgress ? [] : ['--quiet']), ...args], WORKTREE_ADD_TIMEOUT_MS, BUFFER_BYTES, onStderr)
     } catch (error) {
       if (error instanceof GitCommandFailure && error.timedOut) {
         throw new GitWorktreeError('exec', `git worktree add was still checking out files after ${WORKTREE_ADD_TIMEOUT_MS / 60_000} minutes and was stopped`)
       }
-      throw new GitWorktreeError('exec', `git worktree add failed: ${failureDetail(error)}`)
+      const detail = failureDetail(error).replace(PROGRESS_METER, '').replace(/^Preparing worktree[^\n]*\n?/u, '').trim()
+      throw new GitWorktreeError('exec', `git worktree add failed: ${detail || 'git exited with an error'}`)
     }
   }
 
@@ -544,7 +561,7 @@ export class GitWorktreeService {
     }
   }
 
-  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES): Promise<{ stdout: string; stderr: string }> {
+  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES, onStderr?: (text: string) => void): Promise<{ stdout: string; stderr: string }> {
     const options: GitExecutorOptions = {
       cwd,
       encoding: 'utf8',
@@ -553,6 +570,7 @@ export class GitWorktreeService {
       shell: false,
       timeout,
       windowsHide: true,
+      ...(onStderr ? { onStderr } : {}),
     }
     return this.execute('git', args, options)
   }

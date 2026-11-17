@@ -118,6 +118,7 @@ import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { SessionCreations } from './session-creations.js'
 import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
@@ -1752,6 +1753,16 @@ async function main(): Promise<void> {
     return snapshotRefresh
   }
 
+  const sessionCreations = new SessionCreations(
+    async (input, onProgress) => {
+      const result = await tmuxCreator.createSession(input, undefined, onProgress)
+      // Clients finish a creation by opening the new session, so it must be in the snapshot first.
+      await refreshSnapshot()
+      return result
+    },
+    (creations) => broadcast({ type: 'session_creations', creations }),
+  )
+
   const refreshSnapshotFresh = async (): Promise<CommandoSnapshot> => {
     if (snapshotRefresh) await snapshotRefresh
     return refreshSnapshot()
@@ -2967,6 +2978,7 @@ async function main(): Promise<void> {
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
+    send(client, { type: 'session_creations', creations: sessionCreations.list() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
     for (const { paneId, runs } of externalAgents.snapshots()) send(client, { type: 'chat_external_runs', paneId, runs })
     for (const { paneId, events } of chatTileEvents.snapshots()) send(client, { type: 'chat_tile_events', paneId, events })
@@ -3175,6 +3187,7 @@ async function main(): Promise<void> {
           },
           () => agentProfilePreferences.claudeProfiles({ includeHidden: false }),
           () => modelCatalog.list(),
+          sessionCreations,
         )) return
         writeJson(response, 404, { error: 'Not found' })
         return

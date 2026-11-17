@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ClaudeProfile, ModelCatalogs, TmuxCreateResponse } from '../shared/tmux-create.js'
 import { GitWorktreeError, type GitWorktreeErrorKind } from './git-worktree.js'
+import type { SessionCreations } from './session-creations.js'
 import { listClaudeProfiles, TmuxCreateCommandError, TmuxCreator } from './tmux-create.js'
 
 const WORKTREE_ERROR_STATUS: Record<GitWorktreeErrorKind, number> = {
@@ -14,6 +15,7 @@ const WORKTREE_ERROR_STATUS: Record<GitWorktreeErrorKind, number> = {
 }
 
 const ROOT = '/api/tmux'
+const CREATIONS = `${ROOT}/session-creations`
 const MAX_BODY_BYTES = 16 * 1024
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -62,6 +64,8 @@ export async function handleTmuxCreateApi(
   claudeProfiles: () => Promise<ClaudeProfile[]> = listClaudeProfiles,
   /** The model lists the New session modal offers, remembered from earlier chats. */
   modelCatalogs: () => Promise<ModelCatalogs> = async () => ({}),
+  /** Sessions created in the background; see `SessionCreations`. */
+  creations?: SessionCreations,
 ): Promise<boolean> {
   if (!url.pathname.startsWith(`${ROOT}/`)) return false
   if (url.pathname === `${ROOT}/claude-profiles` && request.method === 'GET') {
@@ -70,6 +74,18 @@ export async function handleTmuxCreateApi(
   }
   if (url.pathname === `${ROOT}/models` && request.method === 'GET') {
     json(response, 200, { catalogs: await modelCatalogs() })
+    return true
+  }
+  const creationId = creations && url.pathname.startsWith(`${CREATIONS}/`) ? decodeURIComponent(url.pathname.slice(CREATIONS.length + 1)) : undefined
+  if (creations && creationId && request.method === 'DELETE') {
+    if (creations.dismiss(creationId)) response.writeHead(204).end()
+    else json(response, 404, { error: 'No finished session creation with that id' })
+    return true
+  }
+  if (creations && creationId?.endsWith('/retry') && request.method === 'POST') {
+    const creation = creations.retry(creationId.slice(0, -'/retry'.length))
+    if (creation) json(response, 202, { creation })
+    else json(response, 404, { error: 'No failed session creation with that id' })
     return true
   }
   if (request.method !== 'POST') {
@@ -84,6 +100,11 @@ export async function handleTmuxCreateApi(
       await creator.launchInEmptyPane(input as never)
       await onCreated()
       json(response, 200, { launched: true })
+      return true
+    }
+    if (creations && url.pathname === CREATIONS) {
+      const creation = await creations.start(input as never)
+      json(response, creation.stage === 'done' ? 201 : 202, { creation })
       return true
     }
     let result: TmuxCreateResponse | null = null

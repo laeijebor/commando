@@ -375,6 +375,24 @@ describe('GitWorktreeService.createWorktree', () => {
     ])
   })
 
+  it('follows the checkout meter for progress, and keeps it out of the error', async () => {
+    const meter = 'Preparing worktree (new branch \'bot-rematch-flow\')\nUpdating files:   2% (806/40291)\rUpdating files:  41% (16520/40291)\r'
+    const execute = vi.fn(async (_file: string, args: readonly string[], options: GitExecutorOptions) => {
+      if (args[0] === 'rev-parse') throw exit(1)
+      if (args.includes('add')) {
+        options.onStderr?.(meter)
+        throw new GitCommandFailure('git failed', `${meter}fatal: unable to write new index file\n`, false)
+      }
+      return { stdout: '', stderr: '' }
+    })
+    const progress: Array<[string, number?]> = []
+    await expect(new GitWorktreeService(execute, { pathExists: async () => false }).createWorktree({
+      mainRoot: MAIN, branch: 'bot-rematch-flow', path: target, onProgress: (stage, percent) => progress.push(percent === undefined ? [stage] : [stage, percent]),
+    })).rejects.toMatchObject({ message: 'git worktree add failed: fatal: unable to write new index file' })
+    expect(progress).toEqual([['checking-out'], ['checking-out', 41]])
+    expect(execute.mock.calls.find(([, args]) => args.includes('add'))?.[1]).not.toContain('--quiet')
+  })
+
   it('deletes the branch a failed checkout left behind, so the name can be used again', async () => {
     const fresh = fakeGit([
       [['rev-parse', '--verify', '--quiet', 'refs/heads/bot-rematch-flow'], exit(1)],
