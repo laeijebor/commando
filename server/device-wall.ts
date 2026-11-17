@@ -121,6 +121,8 @@ export class DeviceWallApi {
     /** When the pane's agent last went idle, or undefined while it works. */
     idleSince: (paneId: string) => number | undefined
     message: (paneId: string, text: string) => Promise<unknown>
+    /** The device farms the locks run on, when they run on farms (for the view's connection banner). */
+    farms?: () => Array<{ name: string; url: string; connected: boolean; error?: string }> | undefined
   }) {}
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
@@ -159,7 +161,8 @@ export class DeviceWallApi {
     discovery.poke()
     const view = locks.view()
     const panes = new Set([...view.holders, ...view.queue].map((entry) => entry.paneId))
-    return { ...view, now: Date.now(),
+    const farms = this.dependencies.farms?.()
+    return { ...view, now: Date.now(), ...(farms ? { farms } : {}),
       connections: Object.fromEntries(view.resources.map((resource) => [resource.id, discovery.connection(resource)])),
       idleSince: Object.fromEntries([...panes].map((paneId) => [paneId, idleSince(paneId)]).filter(([, since]) => since !== undefined)) }
   }

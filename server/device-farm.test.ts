@@ -28,8 +28,10 @@ function setup() {
     if (args[2] === 'service-status') return JSON.stringify({ installed: true, state: 'running', healthy: true })
     return '{}'
   }
+  const hooks: { beforeHealthy?: () => void } = {}
   const fetcher = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input))
+    if (url.pathname === '/healthz') hooks.beforeHealthy?.()
     const ok = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
     if (url.pathname === '/healthz') return ok({ ok: true })
     if (url.pathname === '/api/state') {
@@ -42,8 +44,8 @@ function setup() {
   const builtin = new DeviceLockRegistry({ statePath: join(directory, 'locks.json') })
   builtin.addResource({ id: 'pixel', name: 'Pixel 5', kind: 'android', serial: 'P1' })
   const store = new SwitchableLockStore(builtin)
-  const controller = new DeviceFarmController({ path: settingsPath, store, builtin, commandoLocksPath: join(directory, 'locks.json'), run, fetcher })
-  return { controller, store, builtin, commands, checkout, settingsPath }
+  const controller = new DeviceFarmController({ path: settingsPath, store, builtin, commandoLocksPath: join(directory, 'locks.json'), daemonPort: 4310, run, fetcher })
+  return { controller, store, builtin, commands, checkout, settingsPath, hooks }
 }
 const owner = { paneId: '%3', sessionName: 'mascot' }
 
@@ -53,6 +55,8 @@ describe('DeviceFarmController', () => {
     const status = await controller.setupLocal(checkout)
     expect(commands.map((command) => command.slice(0, 2).join(' '))).toEqual(['host init', 'host import-commando', 'host add-engineer', 'host install-service', 'host service-status'])
     expect(commands[0]).toEqual(expect.arrayContaining(['--listen-host', '127.0.0.1']))
+    // Each daemon is its own engineer on the farm, so a test daemon on another port can't take this one's token.
+    expect(commands[2]).toEqual(expect.arrayContaining(['add-engineer', 'commando-4310']))
     expect(status.local).toMatchObject({ configured: true, hasToken: true, checkout })
     expect(JSON.parse(readFileSync(settingsPath, 'utf8')).local.token).toBe('farm_commando')
     // Again: the config and token exist, so only the import and the service are redone.
@@ -84,6 +88,16 @@ describe('DeviceFarmController', () => {
     expect((await controller.status()).switching).toBeUndefined()
     await controller.requestSwitch('builtin')
     expect(store.store).toBe(builtin)
+    controller.stop()
+  })
+
+  it('doesn\'t switch if a lock is taken while it waits for the farm', async () => {
+    const { controller, store, builtin, checkout, hooks } = setup()
+    await controller.setupLocal(checkout)
+    hooks.beforeHealthy = () => { hooks.beforeHealthy = undefined; builtin.lock({ ...owner, request: 'pixel', task: 'snuck in' }) }
+    const status = await controller.requestSwitch('farm')
+    expect(store.store).toBe(builtin)
+    expect(status).toMatchObject({ use: 'builtin', switching: 'farm', waitingOn: { held: 1 } })
     controller.stop()
   })
 })

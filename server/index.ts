@@ -2232,7 +2232,7 @@ async function main(): Promise<void> {
   const deviceLockRegistry = new SwitchableLockStore(builtinDeviceLocks)
   const busyProcesses = new BusyProcessWatch()
   const deviceFarm = new DeviceFarmController({ path: defaultDeviceFarmSettingsPath(port), store: deviceLockRegistry, builtin: builtinDeviceLocks,
-    commandoLocksPath: defaultDeviceLockStatePath(port) })
+    commandoLocksPath: defaultDeviceLockStatePath(port), daemonPort: port })
   deviceFarm.start()
   // A finished turn means the agent is idle; `settledAt` marks when that run began.
   const deviceIdleSince = (paneId: string): number | undefined => {
@@ -2290,7 +2290,7 @@ async function main(): Promise<void> {
     devicePublish.unref()
   })
   const deviceWallApi = new DeviceWallApi({
-    registry: deviceLockRegistry, locks: deviceLockApi, discovery: new DeviceDiscovery(),
+    registry: deviceLockRegistry, locks: deviceLockApi, discovery: new DeviceDiscovery(), farms: () => deviceFarm.farmStatus(),
     idleSince: deviceIdleSince,
     message: (paneId, text) => commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text }),
   })

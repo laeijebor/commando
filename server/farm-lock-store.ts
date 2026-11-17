@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { DeviceLockError, type DeviceHolder, type DeviceLockSnapshot, type DeviceResource, type LockOwner, type LockResult, type QueueEntry, type SweepContext, type SweepEvents } from './device-locks.js'
 import type { DeviceLockStore } from './device-lock-store.js'
 
@@ -24,7 +26,6 @@ export type FarmChanges = {
 }
 type Fetcher = typeof fetch
 
-const SESSION_PREFIX = 'cmd:'
 const MAX_SKIPS = 3
 const HEARTBEAT_MS = 60_000
 
@@ -38,6 +39,7 @@ export class FarmClient {
   me?: { id: string; name: string; admin: boolean }
   error?: string
   private stopped = false
+  private readonly abort = new AbortController()
   private readonly listeners = new Set<() => void>()
 
   constructor(options: { name: 'local' | 'remote'; url: string; token: string; fetcher?: Fetcher }) {
@@ -55,7 +57,7 @@ export class FarmClient {
     try {
       response = await this.fetcher(`${this.url}${path}`, {
         method, headers: { authorization: `Bearer ${this.token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs),
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), this.abort.signal]),
       })
     } catch (error) { throw new DeviceLockError(503, `The ${this.name} device farm is unreachable (${(error as Error).message})`) }
     const text = await response.text()
@@ -80,17 +82,19 @@ export class FarmClient {
           const before = this.changes.version, started = Date.now()
           this.apply(await this.request<FarmChanges>('GET', `/api/changes?since=${before}&wait=50`, undefined, 60_000))
           // A farm that answers at once with nothing new (no long-poll support) mustn't be polled in a tight loop.
-          if (this.changes.version === before && Date.now() - started < 500) await new Promise((resolve) => setTimeout(resolve, 1_000))
+          if (this.changes.version === before && Date.now() - started < 500) await new Promise((resolve) => setTimeout(resolve, 1_000).unref())
         }
       } catch (error) {
+        if (this.stopped) return
         const message = (error as Error).message
         if (this.error !== message) { this.error = message; for (const listener of this.listeners) listener() }
-        await new Promise((resolve) => setTimeout(resolve, 5_000))
+        await new Promise((resolve) => setTimeout(resolve, 5_000).unref())
       }
     }
   }
 
-  stop(): void { this.stopped = true }
+  /** Stops following the feed and abandons the request in flight, so nothing keeps the daemon waiting. */
+  stop(): void { this.stopped = true; this.abort.abort() }
 
   private apply(changes: FarmChanges): void {
     const changed = this.error !== undefined || !this.changes || changes.version !== this.changes.version
@@ -113,12 +117,41 @@ export class FarmLockStore implements DeviceLockStore {
   private previousOffers = new Map<string, { at: number; skips: number; resourceId: string; entry: QueueEntry }>()
   private pendingExpired: SweepEvents['expired'] = []
   private lastHeartbeat = 0
+  /** Writes sent to a farm that haven't come back yet; a switch away waits for them. */
+  private inFlight = 0
   private readonly now: () => number
+  /** Session names start with this, unique per Commando daemon (port), so two daemons on one Mac never share sessions. */
+  private readonly prefix: string
+  private readonly statePath?: string
 
-  constructor(clients: FarmClient[], options: { now?: () => number } = {}) {
+  constructor(clients: FarmClient[], options: { now?: () => number; sessionPrefix?: string; statePath?: string } = {}) {
     this.clients = clients
     this.now = options.now ?? Date.now
+    this.prefix = options.sessionPrefix ?? 'cmd:'
+    this.statePath = options.statePath
+    this.load()
     for (const client of clients) client.onUpdate(() => this.updated())
+  }
+
+  /** Writes still on their way to a farm. */
+  get pending(): number { return this.inFlight }
+
+  /** Offers already announced to panes, and their messages, survive a daemon restart so no agent hears twice. */
+  private load(): void {
+    if (!this.statePath) return
+    try {
+      const saved = JSON.parse(readFileSync(this.statePath, 'utf8')) as { announced?: string[]; messages?: Array<[string, { at: number; messageId: string }]> }
+      for (const key of saved.announced ?? []) this.announced.add(key)
+      for (const [entryId, message] of saved.messages ?? []) this.messages.set(entryId, message)
+    } catch { /* first run */ }
+  }
+
+  private save(): void {
+    if (!this.statePath) return
+    mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 })
+    const temporary = `${this.statePath}.${process.pid}.tmp`
+    writeFileSync(temporary, JSON.stringify({ announced: [...this.announced].slice(-500), messages: [...this.messages] }), { mode: 0o600 })
+    renameSync(temporary, this.statePath)
   }
 
   /** Resolves once every farm has been read once (or failed to answer). */
@@ -161,6 +194,7 @@ export class FarmLockStore implements DeviceLockStore {
   offerMessage(entryId: string, offerAt: number, messageId: string): boolean {
     if (this.entry(entryId)?.offer?.at !== offerAt) return false
     this.messages.set(entryId, { at: offerAt, messageId })
+    this.save()
     this.emit()
     return true
   }
@@ -171,7 +205,7 @@ export class FarmLockStore implements DeviceLockStore {
     const entry = entryId ? this.entry(entryId) : undefined
     const client = entryId ? this.clientOfEntry(entryId) : undefined
     if (!entry || !client) return
-    void client.request('POST', '/api/heartbeat', farmOwner(entry, client)).catch((error) => console.warn('[device-farm] could not confirm an offer', error.message))
+    void client.request('POST', '/api/heartbeat', farmOwner(entry, client, this.prefix)).catch((error) => console.warn('[device-farm] could not confirm an offer', error.message))
   }
 
   alertSent(key: string): boolean { return this.alerts.has(key) }
@@ -183,8 +217,8 @@ export class FarmLockStore implements DeviceLockStore {
     const request = String(input.request ?? '')
     const client = this.clientForRequest(request)
     const owner = input as unknown as LockOwner
-    const result = await client.request<FarmResult>('POST', '/api/lock', { ...farmOwner(owner, client), request, task: input.task,
-      ...(input.estimateMs !== undefined ? { estimateMs: input.estimateMs } : {}), ...(input.mode === 'wait' ? { mode: 'wait' } : {}) })
+    const result = await this.track(() => client.request<FarmResult>('POST', '/api/lock', { ...farmOwner(owner, client, this.prefix), request, task: input.task,
+      ...(input.estimateMs !== undefined ? { estimateMs: input.estimateMs } : {}), ...(input.mode === 'wait' ? { mode: 'wait' } : {}) }))
     await this.settle(client)
     return this.toResult(result, client)
   }
@@ -193,7 +227,7 @@ export class FarmLockStore implements DeviceLockStore {
     const owner = ownerInput as LockOwner
     const client = (resourceId ? this.clientOf(resourceId) : undefined) ?? this.clientWithOfferFor(owner) ?? this.clients[0]
     const pending = this.snapshot().queue.find((entry) => sameOwner(entry, owner) && entry.offer)
-    const result = await client.request<FarmResult>('POST', '/api/claim', { ...farmOwner(owner, client), ...(resourceId ? { request: resourceId } : {}) })
+    const result = await this.track(() => client.request<FarmResult>('POST', '/api/claim', { ...farmOwner(owner, client, this.prefix), ...(resourceId ? { request: resourceId } : {}) }))
     if (pending) this.removedByUs.add(pending.id)
     await this.settle(client)
     return this.toResult(result, client)
@@ -205,7 +239,7 @@ export class FarmLockStore implements DeviceLockStore {
     if (!targets.length) throw new DeviceLockError(404, resourceId ? `You don't hold ${resourceId}` : 'You hold no device locks')
     const released: DeviceHolder[] = []
     for (const client of targets) {
-      const result = await client.request<{ released: FarmHolder[] }>('POST', '/api/release', { ...farmOwner(owner, client), ...(resourceId ? { request: resourceId } : {}) })
+      const result = await client.request<{ released: FarmHolder[] }>('POST', '/api/release', { ...farmOwner(owner, client, this.prefix), ...(resourceId ? { request: resourceId } : {}) })
       released.push(...result.released.map((holder) => this.toHolder(holder, client)))
       await this.settle(client)
     }
@@ -219,7 +253,7 @@ export class FarmLockStore implements DeviceLockStore {
     const cancelled: QueueEntry[] = []
     for (const client of new Set(mine.map((entry) => this.clientOfEntry(entry.id)!))) {
       for (const entry of mine) this.removedByUs.add(entry.id)
-      const result = await client.request<{ cancelled: FarmQueueEntry[] }>('POST', '/api/cancel', { ...farmOwner(owner, client), ...(request ? { request } : {}) })
+      const result = await client.request<{ cancelled: FarmQueueEntry[] }>('POST', '/api/cancel', { ...farmOwner(owner, client, this.prefix), ...(request ? { request } : {}) })
       cancelled.push(...result.cancelled.map((entry) => this.toEntry(entry, client)))
       await this.settle(client)
     }
@@ -247,7 +281,7 @@ export class FarmLockStore implements DeviceLockStore {
     for (const holder of snapshot.holders.filter((candidate) => this.isOurs(candidate) && !alive(candidate))) {
       const client = this.clientOf(holder.resourceId)
       if (!client) continue
-      await client.request('POST', '/api/release', { ...farmOwner(holder, client), request: holder.resourceId }).catch(() => undefined)
+      await client.request('POST', '/api/release', { ...farmOwner(holder, client, this.prefix), request: holder.resourceId }).catch(() => undefined)
       ended.push({ ...holder, reason: context.paneExists(holder.paneId) ? 'process-exited' : 'pane-closed' })
     }
     for (const entry of snapshot.queue.filter((candidate) => this.isOurs(candidate) && !alive(candidate))) {
@@ -261,7 +295,7 @@ export class FarmLockStore implements DeviceLockStore {
       this.lastHeartbeat = this.now()
       for (const client of this.clients) {
         const owners = snapshot.holders.filter((holder) => this.isOurs(holder) && alive(holder) && this.clientOf(holder.resourceId) === client)
-          .map((holder) => farmOwner(holder, client))
+          .map((holder) => farmOwner(holder, client, this.prefix))
         if (owners.length) await client.request('POST', '/api/heartbeat', { owners }).catch((error) => console.warn('[device-farm] heartbeat failed', error.message))
       }
     }
@@ -326,11 +360,15 @@ export class FarmLockStore implements DeviceLockStore {
     for (const [id, previous] of this.previousOffers) {
       if (offers.has(id) || holders.has(id) || this.removedByUs.has(id)) continue
       const now = snapshot.queue.find((entry) => entry.id === id)
-      if (now && !now.offer) this.pendingExpired.push({ ...now, offer: { resourceId: previous.resourceId, at: previous.at }, dropped: false })
+      // Only a missed turn counts (the farm moved the request back); a pause or a device turning unhealthy also takes
+      // an offer back, and that isn't the agent's lapse.
+      if (now && !now.offer && (now.skips ?? 0) > previous.skips) this.pendingExpired.push({ ...now, offer: { resourceId: previous.resourceId, at: previous.at }, dropped: false })
       else if (!now && previous.skips + 1 >= MAX_SKIPS) this.pendingExpired.push({ ...previous.entry, dropped: true })
     }
     this.previousOffers = offers
-    for (const id of [...this.messages.keys()]) if (!offers.has(id)) this.messages.delete(id)
+    let changed = fresh.length > 0
+    for (const id of [...this.messages.keys()]) if (!offers.has(id)) { this.messages.delete(id); changed = true }
+    if (changed) this.save()
     this.emit()
     if (fresh.length) for (const listener of this.offerListeners) listener(fresh)
   }
@@ -339,12 +377,19 @@ export class FarmLockStore implements DeviceLockStore {
 
   private isOurs(owner: { paneId: string }): boolean { return owner.paneId.startsWith('%') }
 
+  /** Counts a write as in flight while it runs, so a switch away from the farm can wait for it. */
+  private async track<T>(work: () => Promise<T>): Promise<T> {
+    this.inFlight++
+    try { return await work() } finally { this.inFlight-- }
+  }
+
   private clientOf(resourceId: string): FarmClient | undefined {
     return this.clients.find((client) => client.changes?.snapshot.resources.some((resource) => resource.id === resourceId))
   }
 
   private requireClientOf(resourceId: string): FarmClient {
     const client = this.clientOf(resourceId)
+    if (!client && this.clients.some((candidate) => !candidate.changes || candidate.error)) throw new DeviceLockError(503, 'A device farm isn\'t answering; try again shortly')
     if (!client) throw new DeviceLockError(404, `No device lock named ${resourceId}`)
     return client
   }
@@ -369,6 +414,9 @@ export class FarmLockStore implements DeviceLockStore {
       ? this.clients.find((candidate) => candidate.changes?.snapshot.resources.some((resource) => kinds[request].includes(resource.kind)))
       : this.clientOf(request)
     if (client) return client
+    // A farm that hasn't answered yet (or is down) may well have the device: say so rather than "no such device".
+    const missing = this.clients.find((candidate) => !candidate.changes || candidate.error)
+    if (missing) throw new DeviceLockError(503, `The ${missing.name} device farm isn't answering${missing.error ? ` (${missing.error})` : ''}; try again shortly`)
     const known = this.snapshot().resources.map((resource) => resource.id).join(', ') || 'none yet'
     throw new DeviceLockError(404, kinds[request] ? `No ${request.replace('any-', '')} devices are registered` : `No device lock named ${request} (known: ${known})`)
   }
@@ -381,12 +429,12 @@ export class FarmLockStore implements DeviceLockStore {
 
   private toOwner(owner: FarmOwner, client: FarmClient): LockOwner {
     const name = client.changes?.engineers.find((engineer) => engineer.id === owner.engineer)?.name ?? owner.engineer
-    const mine = owner.engineer === client.me?.id && owner.session.startsWith(SESSION_PREFIX)
+    const mine = owner.engineer === client.me?.id && owner.session.startsWith(this.prefix)
     if (!mine) {
       // Someone else on a shared farm: shown by name, never addressed as a pane here.
       return { paneId: `@${owner.engineer}`, sessionName: owner.label ? `${name} · ${owner.label}` : name, ...(owner.as ? { as: owner.as } : {}) }
     }
-    const [, paneId, pid] = /^cmd:(%\d+)(?::(\d+))?$/.exec(owner.session) ?? []
+    const [, paneId, pid] = /^(%\d+)(?::(\d+))?$/.exec(owner.session.slice(this.prefix.length)) ?? []
     return { paneId: paneId ?? owner.session, sessionName: owner.label ?? paneId ?? owner.session, ...(owner.as ? { as: owner.as } : {}), ...(pid ? { pid: Number(pid) } : {}) }
   }
 
@@ -406,9 +454,9 @@ export class FarmLockStore implements DeviceLockStore {
 
 type FarmResult = { status: 'held' | 'offered' | 'queued'; holder?: FarmHolder; resource?: FarmResource; entry?: FarmQueueEntry; position?: number }
 
-/** A Commando owner (pane, `as`, script pid) as a farm session of Commando's engineer. */
-export function farmOwner(owner: { paneId: string; sessionName?: string; as?: string; pid?: number }, client: FarmClient) {
-  return { session: `${SESSION_PREFIX}${owner.paneId}${owner.pid ? `:${owner.pid}` : ''}`, ...(owner.as ? { as: owner.as } : {}),
+/** A Commando owner (pane, `as`, script pid) as a farm session of this daemon's engineer. */
+export function farmOwner(owner: { paneId: string; sessionName?: string; as?: string; pid?: number }, client: FarmClient, prefix = 'cmd:') {
+  return { session: `${prefix}${owner.paneId}${owner.pid ? `:${owner.pid}` : ''}`, ...(owner.as ? { as: owner.as } : {}),
     ...(owner.sessionName && owner.sessionName !== owner.paneId ? { label: owner.sessionName } : {}), ...(owner.pid && client.name === 'local' ? { pid: owner.pid } : {}) }
 }
 

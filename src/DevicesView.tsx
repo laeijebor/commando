@@ -15,6 +15,8 @@ type Entry = Owner & {
 export type DevicesSnapshot = {
   resources: Resource[]; holders: Holder[]; queue: Entry[]; paused: string[]; now: number
   waitingFor: Record<string, string>; connections: Record<string, 'connected' | 'missing' | 'unknown' | 'no-serial'>; idleSince: Record<string, number>
+  /** Present when the locks run on device farms (Settings > Device farm). */
+  farms?: Array<{ name: string; url: string; connected: boolean; error?: string }>
 }
 /** Runs a Devices action; resolves when it settled (the view applies the newest answer). */
 type Run = (work: () => Promise<DevicesSnapshot>) => Promise<void>
@@ -221,6 +223,9 @@ export function DevicesView({ token, onOpenPane, api: injected }: { token: strin
       </> : null}
     </header>
     {error ? <p className="sims-error" role="alert">{error}</p> : null}
+    {snapshot?.farms?.filter((farm) => !farm.connected).map((farm) => <p key={farm.name} className="sims-error" role="alert">
+      The {farm.name} device farm ({farm.url.replace(/^https?:\/\//, '')}) isn&apos;t answering{farm.error ? `: ${farm.error}` : ''}. Its devices may be missing or out of date here.
+    </p>)}
     {!snapshot && !error ? <p className="sims-empty" role="status">Loading devices…</p> : null}
     {snapshot && !snapshot.resources.length ? <p className="sims-empty">No device locks yet. An agent can add one with <code>commando-device.mjs resource add pixel --name "Pixel 5" --kind android --serial &lt;adb serial&gt;</code>.</p> : null}
     {snapshot ? <div className="devices-grid">{snapshot.resources.map((resource) => <DeviceCard key={resource.id} resource={resource} snapshot={snapshot} api={api} run={track} onOpenPane={onOpenPane} />)}</div> : null}

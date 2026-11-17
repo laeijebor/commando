@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { QueueEntry } from './device-locks.js'
 import { FarmClient, FarmLockStore, type FarmChanges } from './farm-lock-store.js'
@@ -101,5 +104,36 @@ describe('FarmLockStore', () => {
     await store.ready()
     await store.sweep({ paneExists: () => true, pidAlive: () => true })
     expect(local.calls.filter((call) => call.path === '/api/heartbeat').at(-1)?.body).toEqual({ owners: [{ session: 'cmd:%5' }, { session: 'cmd:%6' }] })
+  })
+
+  it('treats only a missed turn as a lapse: a pause or a device turning unhealthy takes an offer back silently', async () => {
+    const { store, local } = await setup()
+    local.changes.snapshot.queue = [entry('commando', 'cmd:%7', 'q1', ['pixel'], { offer: { resourceId: 'pixel', at: 50 } })]
+    await store.ready()
+    local.changes.snapshot.queue = [entry('commando', 'cmd:%7', 'q1', ['pixel'])]
+    await store.ready()
+    expect((await store.sweep({ paneExists: () => true, pidAlive: () => true })).expired).toEqual([])
+  })
+
+  it('says a farm isn\'t answering rather than that a device doesn\'t exist', async () => {
+    const down = new FarmLockStore([new FarmClient({ name: 'local', url: 'http://local', token: 't', fetcher: (async () => { throw new Error('ECONNREFUSED') }) as typeof fetch })])
+    await down.ready()
+    await expect(down.lock({ paneId: '%1', sessionName: 'x', request: 'pixel', task: 't' })).rejects.toMatchObject({ status: 503, message: expect.stringMatching(/local device farm isn't answering/) })
+  })
+
+  it('uses this daemon\'s own session prefix, and doesn\'t announce an offer again after a restart', async () => {
+    const local = fakeFarm('commando-4310', [{ id: 'pixel', name: 'Pixel 5', kind: 'android', serial: 'P1' }])
+    local.changes.snapshot.queue = [entry('commando-4310', 'cmd4310:%7', 'q1', ['pixel'], { offer: { resourceId: 'pixel', at: 50 } }), entry('commando-4410', 'cmd4410:%7', 'q2', ['pixel'])]
+    const statePath = join(mkdtempSync(join(tmpdir(), 'farm-offers-')), 'offers.json')
+    const make = () => new FarmLockStore([new FarmClient({ name: 'local', url: 'http://local', token: 't', fetcher: local.fetcher })], { sessionPrefix: 'cmd4310:', statePath })
+    const first = make(), offers: string[] = []
+    first.onOffered((entries) => offers.push(...entries.map((offer) => offer.id)))
+    await first.ready()
+    expect(first.snapshot().queue.map((queued) => queued.paneId)).toEqual(['%7', '@commando-4410'])
+    expect(offers).toEqual(['q1'])
+    const second = make()
+    second.onOffered((entries) => offers.push(...entries.map((offer) => offer.id)))
+    await second.ready()
+    expect(offers).toEqual(['q1'])
   })
 })

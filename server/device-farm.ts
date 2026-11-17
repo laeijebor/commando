@@ -41,7 +41,11 @@ export class DeviceFarmController {
   private farm?: FarmLockStore
   private timer?: ReturnType<typeof setInterval>
   private setupRunning?: Promise<unknown>
+  private ticking?: Promise<void>
   private lastError?: string
+  /** This daemon's identity on the farm: several Commando daemons (a test one on another port) can share one farm. */
+  private readonly engineer: string
+  private readonly sessionPrefix: string
   private readonly path: string
   private readonly store: SwitchableLockStore
   private readonly builtin: DeviceLockRegistry
@@ -49,8 +53,10 @@ export class DeviceFarmController {
   private readonly run: Run
   private readonly fetcher: typeof fetch
 
-  constructor(options: { path: string; store: SwitchableLockStore; builtin: DeviceLockRegistry; commandoLocksPath: string; run?: Run; fetcher?: typeof fetch }) {
+  constructor(options: { path: string; store: SwitchableLockStore; builtin: DeviceLockRegistry; commandoLocksPath: string; daemonPort: number; run?: Run; fetcher?: typeof fetch }) {
     this.path = options.path
+    this.engineer = `commando-${options.daemonPort}`
+    this.sessionPrefix = `cmd${options.daemonPort}:`
     this.store = options.store
     this.builtin = options.builtin
     this.commandoLocksPath = options.commandoLocksPath
@@ -63,7 +69,7 @@ export class DeviceFarmController {
 
   /** Commando starts on whatever queue was in use last time. */
   start(): void {
-    if (this.settings.use === 'farm') this.useFarm()
+    if (this.settings.use === 'farm') void this.useFarm()
     this.timer = setInterval(() => { void this.tick() }, 5_000)
     this.timer.unref()
   }
@@ -129,7 +135,7 @@ export class DeviceFarmController {
       }
       await this.farmCli(checkout, ['host', 'import-commando', '--state', this.commandoLocksPath, '--json'])
       if (!this.settings.local.token) {
-        const out = JSON.parse(await this.farmCli(checkout, ['host', 'add-engineer', 'commando', '--name', `Commando (${hostname().split('.')[0]})`, '--admin', '--json'])) as { token: string }
+        const out = JSON.parse(await this.farmCli(checkout, ['host', 'add-engineer', this.engineer, '--name', `Commando (${hostname().split('.')[0]}, ${this.engineer.replace('commando-', 'port ')})`, '--admin', '--json'])) as { token: string }
         this.settings.local.token = out.token
       }
       this.save()
@@ -163,8 +169,9 @@ export class DeviceFarmController {
 
   /** Saves (after checking it answers with a valid token) or removes the remote farm. */
   async setRemote(input: Record<string, unknown> | undefined) {
-    if (this.settings.use === 'farm' && this.farm?.snapshot().holders.some((holder) => holder.paneId.startsWith('%'))) {
-      throw new DeviceLockError(409, 'Release the devices your agents hold before changing the remote farm')
+    const snapshot = this.settings.use === 'farm' ? this.farm?.snapshot() : undefined
+    if (snapshot && [...snapshot.holders, ...snapshot.queue].some((owner) => owner.paneId.startsWith('%'))) {
+      throw new DeviceLockError(409, 'Wait until your agents hold and queue for no devices before changing the remote farm')
     }
     if (input) {
       const url = typeof input.url === 'string' ? input.url.trim().replace(/\/$/, '') : ''
@@ -176,7 +183,7 @@ export class DeviceFarmController {
       this.settings.remote = { url, token }
     } else delete this.settings.remote
     this.save()
-    if (this.settings.use === 'farm') this.useFarm()
+    if (this.settings.use === 'farm') await this.useFarm()
     return this.status()
   }
 
@@ -198,16 +205,33 @@ export class DeviceFarmController {
     return { held: snapshot.holders.filter(ours).length, queued: snapshot.queue.filter(ours).length }
   }
 
-  /** Completes a pending switch once the queue being left is empty. */
-  async tick(): Promise<void> {
-    const target = this.settings.switching
-    if (!target) return
+  /** Completes a pending switch once the queue being left is empty. One at a time. */
+  tick(): Promise<void> {
+    this.ticking ??= this.trySwitch().finally(() => { this.ticking = undefined })
+    return this.ticking
+  }
+
+  private idle(): boolean {
     const { held, queued } = this.waitingOn()
-    if (held || queued) return
+    return !held && !queued && !(this.settings.use === 'farm' && this.farm && this.farm.pending > 0)
+  }
+
+  private async trySwitch(): Promise<void> {
+    const target = this.settings.switching
+    if (!target || !this.idle()) return
+    let next: FarmLockStore | undefined
     if (target === 'farm') {
       try { await this.waitHealthy(this.settings.local.url) } catch (error) { this.lastError = (error as Error).message; return }
-      this.useFarm()
-      await this.farm?.ready()
+      next = this.farmStore()
+      if (!next) return
+      await next.ready()
+    }
+    // Everything above awaited: a lock may have been taken, or the switch cancelled, meanwhile. Decide again, with
+    // nothing awaited between this check and the switch.
+    if (this.settings.switching !== target || !this.idle()) { next?.stop(); return }
+    if (next) {
+      this.farm = next
+      this.store.switchTo(next)
     } else {
       this.store.switchTo(this.builtin)
       this.farm?.stop()
@@ -219,15 +243,28 @@ export class DeviceFarmController {
     this.save()
   }
 
-  /** Points Commando's locks at this Mac's farm (and the remote one, if set). */
-  private useFarm(): void {
-    if (!this.settings.local.token) return
-    this.farm?.stop()
+  /** Farm status for the Devices view: which farms Commando is on and whether they answer. */
+  farmStatus() { return this.settings.use === 'farm' ? this.farm?.status() ?? [] : undefined }
+
+  /** A store over this Mac's farm (and the remote one, if set), following their change feeds. */
+  private farmStore(): FarmLockStore | undefined {
+    if (!this.settings.local.token) return undefined
     const clients = [new FarmClient({ name: 'local', url: this.settings.local.url, token: this.settings.local.token, fetcher: this.fetcher })]
     if (this.settings.remote) clients.push(new FarmClient({ name: 'remote', url: this.settings.remote.url, token: this.settings.remote.token, fetcher: this.fetcher }))
-    this.farm = new FarmLockStore(clients)
-    this.farm.start()
-    this.store.switchTo(this.farm)
+    const store = new FarmLockStore(clients, { sessionPrefix: this.sessionPrefix, statePath: `${this.path.replace(/\.json$/, '')}.offers.json` })
+    store.start()
+    return store
+  }
+
+  /** Points Commando's locks at the farms, once their state has been read (so nothing looks gone meanwhile). */
+  private async useFarm(): Promise<void> {
+    const next = this.farmStore()
+    if (!next) return
+    await next.ready()
+    const previous = this.farm
+    this.farm = next
+    this.store.switchTo(next)
+    previous?.stop()
   }
 
   private load(): DeviceFarmSettings {
