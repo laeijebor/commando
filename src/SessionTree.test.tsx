@@ -1167,6 +1167,29 @@ describe('SessionTree', () => {
       expect(screen.queryByRole('article', { name: /^cd-failure:/ })).not.toBeInTheDocument()
     })
 
+    it('finishes a creation reported done before its start request answered', async () => {
+      sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
+      const created: TmuxCreatedTarget = { kind: 'session', sessionId: '$6', sessionName: 'quick', windowId: '@6', windowIndex: 0, windowName: 'shell', paneId: '%6', paneIndex: 0, panePath: SAVE_ALL.root }
+      const running: SessionCreation = { id: 'job-3', name: 'quick', cwd: SAVE_ALL.root, stage: 'checking-out', startedAt: 1 }
+      let answer: ((creation: SessionCreation) => void) | undefined
+      const onCreated = vi.fn()
+      const onDismissCreation = vi.fn(async () => undefined)
+      const creation = { onCreateSession: vi.fn(), onStartSession: vi.fn(() => new Promise<SessionCreation>((resolve) => { answer = resolve })), onCreated, onDismissCreation }
+      const view = renderTree({ creation })
+      fireEvent.click(await screen.findByRole('button', { name: 'Create a new session in Save-All' }))
+      const dialog = await screen.findByRole('dialog', { name: 'New session' })
+      fireEvent.change(within(dialog).getByLabelText('Session name'), { target: { value: 'quick' } })
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create session' }))
+      await waitFor(() => expect(creation.onStartSession).toHaveBeenCalled())
+      // The websocket reports it done first; the request answers afterwards with the running state.
+      view.rerender(<SessionTree token="token" sessions={sessions} panes={panes} displayedPaneIds={[]} statuses={{}} selectedSessionId={null}
+        onSelectSession={vi.fn()} onSelectPane={vi.fn()} onSessionsChanged={vi.fn()} onPreferencesChanged={vi.fn()} creation={creation}
+        creations={[{ ...running, stage: 'done', result: { created } }]} />)
+      answer?.(running)
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created))
+      expect(onDismissCreation).toHaveBeenCalledWith('job-3')
+    })
+
     it('says so when a creation it started vanishes before finishing, as when the daemon restarts', async () => {
       sessionApi.loadPreferences.mockResolvedValue({ version: 1, groups: [], ungroupedSessionIds: [] })
       const running: SessionCreation = { id: 'job-2', name: 'cd-failure', cwd: SAVE_ALL.root, stage: 'checking-out', startedAt: 1 }

@@ -190,6 +190,7 @@ export function SessionTree(props: Props) {
   const [archivesExpanded, setArchivesExpanded] = useState(false)
   const sessionCreateRequestId = useRef(0)
   /** Creations started here: once ready they are placed and opened here, as a quick creation is. */
+  const [ownCreationsVersion, setOwnCreationsVersion] = useState(0)
   const ownCreations = useRef(new Map<string, { request: CreateTmuxSessionRequest; groupId: string; selectedAtStart: string | null; failed: boolean; seen: boolean }>())
   const sessionCreateTrigger = useRef<HTMLElement | null>(null)
   const preferenceSaveVersion = useRef(0)
@@ -543,6 +544,8 @@ export function SessionTree(props: Props) {
 
   const startedCreation = (creation: SessionCreation, request: CreateTmuxSessionRequest, groupId: string) => {
     ownCreations.current.set(creation.id, { request, groupId, selectedAtStart: props.selectedSessionId, failed: false, seen: false })
+    // The websocket can report it done before this response arrives, so the current list is checked too.
+    setOwnCreationsVersion((version) => version + 1)
   }
   useEffect(() => {
     if (!props.creations) return
@@ -565,9 +568,9 @@ export function SessionTree(props: Props) {
       finishCreated(creation.result.created, own.groupId, creation.result.worktree, props.selectedSessionId === own.selectedAtStart)
       void props.creation?.onDismissCreation?.(id).catch(() => undefined)
     }
-  // finishCreated reads the latest preferences through refs; only a new list is worth a look.
+  // finishCreated reads the latest preferences through refs; only a new list or a new own creation is worth a look.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.creations])
+  }, [props.creations, ownCreationsVersion])
   const pendingCreations = (props.creations ?? []).filter((creation) => creation.stage !== 'done')
   // Shown at the top of the container it was started from, even when that is collapsed.
   const creationBelongsTo = (container: SessionTreeContainer, groupId: string | undefined) => Boolean(groupId) && (groupId === container.id
