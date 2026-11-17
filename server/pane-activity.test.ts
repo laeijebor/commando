@@ -41,6 +41,19 @@ describe('PaneActivity', () => {
     expect(activity.record(status('done', 30, 'heuristic'))).toBeNull()
   })
 
+  it('saves a done after a blocked or failed state, as the registry settles it now, across a restart', () => {
+    for (const source of ['heuristic', 'hook'] as const) {
+      for (const before of ['needs_input', 'failed', 'stale'] as const) {
+        const path = tempPath('activity.json')
+        const activity = bound(path)
+        activity.record(status(before, 10, source))
+        expect(activity.record(status('done', 20, source))).toEqual({ '%1': 20 })
+        activity.flush()
+        expect(bound(path).settledAt('%1')).toBe(20)
+      }
+    }
+  })
+
   it('stores every working update but publishes a busy agent at most once a minute', () => {
     const activity = bound()
     expect(activity.record(status('working', 1_000))).toEqual({ '%1': 1_000 })

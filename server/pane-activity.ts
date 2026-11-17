@@ -1,4 +1,5 @@
 import type { AgentStatus, AgentStatusKind } from '../shared/protocol.js'
+import { TURN_STATES } from './agent-status-registry.js'
 import { PaneStore } from './pane-times.js'
 
 /** A busy agent republishes often; clients only need its age to the minute. */
@@ -14,11 +15,11 @@ const isEntry = (value: unknown): value is Entry => {
 
 /**
  * When each pane's agent last did real work: a hook-reported working state, the
- * end of any working turn (hooked or inferred, including one that ended while
- * the daemon was down), or a turn recap (at its completion time). Any other
- * status first seen after a restart is not activity: an agent re-reporting
- * `done` on reconnect did nothing new. Saved to `path` when given, so ages and
- * the sidebar's quiet sessions survive restarts.
+ * end of any turn the registry counts as ending now (hooked or inferred,
+ * including one a restart interrupted), or a turn recap (at its completion
+ * time). Any other status first seen after a restart is not activity: an agent
+ * re-reporting `done` on reconnect did nothing new. Saved to `path` when given,
+ * so ages and the sidebar's quiet sessions survive restarts.
  */
 export class PaneActivity {
   private readonly entries: PaneStore<Entry>
@@ -55,12 +56,13 @@ export class PaneActivity {
     // Any source: Codex reports its working state only through inference.
     // `unknown` and `stale` say nothing about the turn ending, so a pending one stays pending.
     const working = kind === 'working' || ((kind === 'unknown' || kind === 'stale') && entry.working === true)
-    // A working turn ends at the first state that settles it, from any source (an
-    // inferred one, or the first after a restart that interrupted it): the registry
-    // settles it now, so the saved time must say now too or the next restart reads
-    // the turn as seen.
+    // Wherever the registry settles a turn now (`settle()`), from any source, the
+    // saved time must say now too, or the next restart reads the turn as seen: a
+    // working turn the first settling state ends (including one a restart
+    // interrupted), and a `done` after any state a turn is still in.
     const endsPendingTurn = entry.working === true && !working
-    const at = endsPendingTurn ? updatedAt
+    const endsTurn = kind === 'done' && previousKind !== undefined && TURN_STATES.has(previousKind)
+    const at = endsPendingTurn || endsTurn ? updatedAt
       : status.source !== 'hook' ? undefined
         : kind === 'working' || previousKind === 'working' ? updatedAt : status.details?.recap?.completedAt
     const advances = at !== undefined && at > (entry.at ?? -Infinity)

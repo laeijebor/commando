@@ -810,6 +810,9 @@ function withChatHost(record: RegistryRecord, chat: ChatHostState): RegistryReco
 
 export const PANE_EVICTION_GRACE_MS = 30_000
 
+/** States a turn is still in: moving from one to `done` ends that turn now. */
+export const TURN_STATES: ReadonlySet<AgentStatusKind> = new Set(['working', 'needs_input', 'failed', 'stale'])
+
 export class AgentStatusRegistry {
   private readonly records = new Map<string, RegistryRecord>()
 
@@ -1903,7 +1906,7 @@ export class AgentStatusRegistry {
     const endsTurn = recap !== undefined && recap.completedAt !== previous?.details?.recap?.completedAt
     if (kind === 'done') {
       const continues = previous?.status === 'done' && previous.settledAt !== undefined && !endsTurn
-      const turnEnded = endsTurn || previous?.status === 'working' || previous?.status === 'needs_input' || previous?.status === 'failed' || previous?.status === 'stale'
+      const turnEnded = endsTurn || (previous !== undefined && TURN_STATES.has(previous.status))
       const lastActivity = turnEnded ? undefined : this.options.lastActivity?.(paneId)
       status.settledAt = continues ? previous.settledAt
         : lastActivity !== undefined ? Math.min(lastActivity, status.updatedAt)
