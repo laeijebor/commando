@@ -106,14 +106,16 @@ describe('DeviceFarmController', () => {
     await controller.setupLocal(checkout)
     await controller.requestSwitch('farm')
     controller.stop()
-    // Restart: a new controller over the same settings.
+    // Restart: a new controller over the same settings, keeping this Mac's host id.
+    const hostId = JSON.parse(readFileSync(settingsPath, 'utf8')).hostId as string
+    expect(hostId).toMatch(/^[0-9a-f]{8}$/)
     const restarted = new DeviceFarmController({ path: settingsPath, store, builtin, commandoLocksPath: join(settingsPath, '..', 'locks.json'), daemonPort: 4310,
       run: async () => '{}', fetcher: (async (input: string | URL) => {
         const url = new URL(String(input))
         const ok = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
         if (url.pathname === '/api/state') return ok({ me: { id: 'commando-4310', name: 'Commando', admin: true } })
         if (url.pathname === '/api/changes') return ok({ version: 7, snapshot: { resources: [{ id: 'pixel', name: 'Pixel', kind: 'android', serial: 'P1' }], holders: [],
-          queue: [{ engineer: 'commando-4310', session: 'cmd4310:%3', id: 'q1', request: 'pixel', resourceIds: ['pixel'], task: 't', mode: 'notify', enqueuedAt: 1, offer: { resourceId: 'pixel', at: 5 } }],
+          queue: [{ engineer: 'commando-4310', session: `cmd4310@${hostId}:%3`, id: 'q1', request: 'pixel', resourceIds: ['pixel'], task: 't', mode: 'notify', enqueuedAt: 1, offer: { resourceId: 'pixel', at: 5 } }],
           paused: [], cleaning: [] }, positions: {}, health: {}, waitingFor: {}, timing: {}, engineers: [] })
         return ok({})
       }) as typeof fetch })
@@ -150,5 +152,15 @@ describe('DeviceFarmController', () => {
     unreachable.start()
     await expect(unreachable.setRemote(undefined)).rejects.toThrow(/farms have been read/)
     unreachable.stop()
+  })
+
+  it('names farm sessions after the daemon port and a host id that survives restarts', async () => {
+    const first = setup()
+    const hostId = JSON.parse(readFileSync(first.settingsPath, 'utf8')).hostId as string
+    const second = new DeviceFarmController({ path: first.settingsPath, store: first.store, builtin: first.builtin, commandoLocksPath: 'x', daemonPort: 4310 })
+    expect((second as unknown as { sessionPrefix: string }).sessionPrefix).toBe(`cmd4310@${hostId}:`)
+    // Another Mac (its own settings file) gets its own id.
+    const other = setup()
+    expect(JSON.parse(readFileSync(other.settingsPath, 'utf8')).hostId).not.toBe(hostId)
   })
 })

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, hostname } from 'node:os'
@@ -21,6 +22,8 @@ export type DeviceFarmSettings = {
   /** A switch the user asked for, waiting for the current queue to be empty. */
   switching?: 'farm' | 'builtin'
   local: { checkout?: string; url: string; token?: string; config: string }
+  /** A random id for this Mac, made once: part of every farm session name, so two Macs sharing a token never collide. */
+  hostId?: string
   remote?: { url: string; token: string }
 }
 
@@ -45,7 +48,8 @@ export class DeviceFarmController {
   private lastError?: string
   /** This daemon's identity on the farm: several Commando daemons (a test one on another port) can share one farm. */
   private readonly engineer: string
-  private readonly sessionPrefix: string
+  private sessionPrefix = ''
+  private readonly daemonPort: number
   private readonly path: string
   private readonly store: SwitchableLockStore
   private readonly builtin: DeviceLockRegistry
@@ -56,7 +60,7 @@ export class DeviceFarmController {
   constructor(options: { path: string; store: SwitchableLockStore; builtin: DeviceLockRegistry; commandoLocksPath: string; daemonPort: number; run?: Run; fetcher?: typeof fetch }) {
     this.path = options.path
     this.engineer = `commando-${options.daemonPort}`
-    this.sessionPrefix = `cmd${options.daemonPort}:`
+    this.daemonPort = options.daemonPort
     this.store = options.store
     this.builtin = options.builtin
     this.commandoLocksPath = options.commandoLocksPath
@@ -65,6 +69,14 @@ export class DeviceFarmController {
       execFile(process.execPath, args, { env: { ...process.env, ...env }, timeout: 60_000 }, (error, stdout, stderr) => error ? reject(new Error((stderr || error.message).trim().split('\n').pop())) : resolve(stdout))
     }))
     this.settings = this.load()
+    // Port and host: two daemons on one Mac (another port) and two Macs on one remote farm (same token and port, e.g. a
+    // laptop and a desktop) must never take each other's sessions for their own panes.
+    if (!this.settings.hostId) {
+      this.settings.hostId = randomBytes(4).toString('hex')
+      // A settings file that exists but doesn't parse (hand-edited) is left for the user to fix, not overwritten.
+      if (!existsSync(this.path) || this.loadedCleanly) this.save()
+    }
+    this.sessionPrefix = `cmd${this.daemonPort}@${this.settings.hostId}:`
   }
 
   /** Commando starts on whatever queue was in use last time. */
@@ -276,10 +288,13 @@ export class DeviceFarmController {
     await next.ready()
   }
 
+  private loadedCleanly = false
+
   private load(): DeviceFarmSettings {
     try {
       const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<DeviceFarmSettings>
       const base = defaults()
+      this.loadedCleanly = true
       return { ...base, ...parsed, use: parsed.use === 'farm' ? 'farm' : 'builtin', local: { ...base.local, ...parsed.local } }
     } catch { return defaults() }
   }
