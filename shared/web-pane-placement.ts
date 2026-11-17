@@ -33,7 +33,7 @@ export function neighbouringTab(tabs: readonly WebPane[], removedId: string): st
   return index < 0 ? tabs[0]?.id : (tabs[index + 1] ?? tabs[index - 1])?.id
 }
 
-export const BUILTIN_PANEL_KEYS = ['session', 'changes'] as const
+export const BUILTIN_PANEL_KEYS = ['session', 'terminal', 'changes'] as const
 export type PrPanelKey = `pr:${string}:${string}:${number}`
 export type BuiltinPanelKey = typeof BUILTIN_PANEL_KEYS[number] | PrPanelKey
 

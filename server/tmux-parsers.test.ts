@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  orphanedShellSessions,
   TMUX_FIELD_SEPARATOR,
   parsePaneProcesses,
   parsePaneIdentityDiscovery,
@@ -320,5 +321,24 @@ describe('tmux format parsers', () => {
       paneId: '%8',
       storedValue: `v1:%8:${targetIds.get('%8')}`,
     }])
+  })
+
+  it('reports a Terminal-tab shell with its pane instead of as a session', () => {
+    const sessions = `${row('$1', 'work', '1', '')}\n${row('$7', 'commando-shell-8', '0', '%8')}\n${row('$9', 'commando-shell-99', '0', '%99')}\n`
+    const windows = [row('@3', '0', '$1', 'editor', '1', 'aaaa,120x40,0,0,8'), row('@20', '0', '$7', 'zsh', '1', 'bbbb,80x24,0,0,30'), row('@21', '0', '$9', 'zsh', '1', 'cccc,80x24,0,0,31')].join('\n')
+    const panes = [
+      paneRow('%8', '0', '@3', '$1', 'Claude Code', 'claude', '/repo', '1', '0', '120', '40', '0', '0'),
+      paneRow('%9', '0', '@20', '$7', 'shell', 'zsh', '/repo', '1', '0', '80', '24', '0', '0'),
+      paneRow('%10', '0', '@21', '$9', 'shell', 'zsh', '/gone', '1', '0', '80', '24', '0', '0'),
+    ].join('\n')
+    const snapshot = parseTmuxSnapshot(sessions, windows, panes, 1, 0, targetIds)
+
+    expect(snapshot.sessions.map((session) => session.id)).toEqual(['$1'])
+    expect(snapshot.windows.map((window) => window.id)).toEqual(['@3'])
+    expect(snapshot.panes.map((pane) => pane.id)).toEqual(['%8'])
+    // The shell whose pane is gone is not offered to clients, and is the one to end.
+    expect(snapshot.shells).toEqual([{ anchorPaneId: '%8', pane: expect.objectContaining({ id: '%9', sessionId: '$7', path: '/repo' }) }])
+    expect(orphanedShellSessions(sessions, panes)).toEqual(['$9'])
+    expect(parseTmuxSnapshot(row('$1', 'work', '1'), windows, panes, 1, 0, targetIds).shells).toBeUndefined()
   })
 })

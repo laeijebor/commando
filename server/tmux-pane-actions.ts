@@ -5,7 +5,7 @@ import {
   type TmuxSocketEnvironment,
 } from './tmux-session-actions.js'
 import { emptyPaneCommand } from './tmux-create.js'
-import { EMPTY_PANE_OPTION } from '../shared/tmux-create.js'
+import { EMPTY_PANE_OPTION, PANE_SHELL_OPTION, paneShellSessionName } from '../shared/tmux-create.js'
 
 const PANE_ID = /^%\d+$/
 const ACTION_TIMEOUT_MS = 3_000
@@ -60,6 +60,7 @@ const defaultExecutor: TmuxProcessExecutor = (file, args, options) =>
 
 export class TmuxPaneActions {
   private readonly socketArgs: string[]
+  private readonly startingShells = new Map<string, Promise<string>>()
 
   constructor(
     private readonly execute: TmuxProcessExecutor = defaultExecutor,
@@ -94,6 +95,45 @@ export class TmuxPaneActions {
       ';', 'select-pane', '-t', target, '-T', '',
     ])
     return 'emptied'
+  }
+
+  /**
+   * The pane's Terminal-tab shell: a detached session of its own, so it never reflows the
+   * pane's window. Started in `cwd` on first use and reused afterwards.
+   */
+  ensureShell(paneId: string, cwd?: string): Promise<string> {
+    const anchor = validateTmuxPaneId(paneId)
+    // Two clients opening the tab at once share one start, or the second would collide on the name.
+    const pending = this.startingShells.get(anchor) ?? this.startShell(anchor, cwd).finally(() => this.startingShells.delete(anchor))
+    this.startingShells.set(anchor, pending)
+    return pending
+  }
+
+  private async startShell(anchor: string, cwd?: string): Promise<string> {
+    const existing = await this.shellSession(anchor)
+    if (existing) {
+      const shellPaneId = (await this.run(['list-panes', '-t', existing, '-F', '#{pane_id}'])).split('\n', 1)[0].trim()
+      if (PANE_ID.test(shellPaneId)) return shellPaneId
+    }
+    const name = paneShellSessionName(anchor)
+    // One tmux command list, so the session is never listed without its marker.
+    const created = (await this.run([
+      'new-session', '-d', '-P', '-F', '#{pane_id}', '-s', name, ...(cwd ? ['-c', cwd] : []),
+      ';', 'set-option', '-t', `=${name}:`, PANE_SHELL_OPTION, anchor,
+    ])).trim()
+    if (!PANE_ID.test(created)) throw new TmuxPaneActionError('tmux did not report the new shell pane')
+    return created
+  }
+
+  /** Ends the pane's Terminal-tab shell, if it has one. */
+  async closeShell(paneId: string): Promise<void> {
+    const session = await this.shellSession(validateTmuxPaneId(paneId))
+    if (session) await this.run(['kill-session', '-t', session])
+  }
+
+  private async shellSession(anchorPaneId: string): Promise<string | undefined> {
+    const sessions = await this.run(['list-sessions', '-F', `#{session_id} #{${PANE_SHELL_OPTION}}`])
+    return sessions.split('\n').map((line) => line.trim().split(' ')).find(([, anchor]) => anchor === anchorPaneId)?.[0]
   }
 
   private async run(args: readonly string[]): Promise<string> {

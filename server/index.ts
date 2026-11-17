@@ -998,6 +998,14 @@ async function main(): Promise<void> {
     snapshot.panes.find((pane) => pane.id === paneId)
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
+  const shellPaneForId = (paneId: string) =>
+    snapshot.shells?.find((shell) => shell.pane.id === paneId)?.pane
+  /**
+   * A pane a client can stream and type into: a listed one, or a Terminal-tab shell. Shells are
+   * terminals only; agent status, hooks, tabs and everything else keep to `paneForId`.
+   */
+  const streamPaneForId = (paneId: string) => paneForId(paneId) ?? shellPaneForId(paneId)
+  const streamPaneExists = (paneId: string): boolean => streamPaneForId(paneId) !== undefined
   const leasePaneExists = (paneId: string): boolean => !snapshotReady || paneExists(paneId) || previousPaneIds.has(paneId)
 
   // Chat panes: agent hosts inside tmux panes connect here (see agent-host/).
@@ -1164,7 +1172,7 @@ async function main(): Promise<void> {
         for (const client of clients) {
           if (client.socket.readyState !== WebSocket.OPEN) continue
           for (const paneId of [...client.subscribedPaneIds, ...client.statusPaneIds]) {
-            const pane = paneForId(paneId)
+            const pane = streamPaneForId(paneId)
             if (pane) {
               observedPaneIds.add(paneId)
               sessionIds.add(pane.sessionId)
@@ -1343,11 +1351,17 @@ async function main(): Promise<void> {
   }
 
   const handlePaneOutput = (sessionId: string, paneId: string, data: Buffer): void => {
-    const pane = paneForId(paneId)
+    const pane = streamPaneForId(paneId)
     if (!pane || pane.sessionId !== sessionId) return
     const subscribers = [...clients].filter((client) =>
       client.subscribedPaneIds.has(paneId),
     )
+    if (shellPaneForId(paneId)) {
+      for (const client of subscribers) {
+        if (client.paneStreams.get(paneId)?.seeding === false) sendPaneData(client, paneId, data)
+      }
+      return
+    }
     const observed =
       subscribers.length > 0 ||
       [...clients].some((client) => client.statusPaneIds.has(paneId)) ||
@@ -1451,7 +1465,7 @@ async function main(): Promise<void> {
           return
         }
 
-        const pane = paneForId(paneId)
+        const pane = streamPaneForId(paneId)
         if (!pane) return
         const generation = stream.requestedGeneration
         let delivered = false
@@ -1474,7 +1488,7 @@ async function main(): Promise<void> {
               return
             }
 
-            const currentPane = paneForId(paneId)
+            const currentPane = streamPaneForId(paneId)
             if (!currentPane || currentPane.sessionId !== pane.sessionId) return
             const normalizedCapture = normalizeCaptureLineEndings(capture)
             const normalizedNormalCapture = normalCapture
@@ -1555,7 +1569,7 @@ async function main(): Promise<void> {
     onReady: (sessionId) => {
       for (const client of clients) {
         for (const paneId of client.subscribedPaneIds) {
-          const pane = paneForId(paneId)
+          const pane = streamPaneForId(paneId)
           const stream = client.paneStreams.get(paneId)
           if (pane?.sessionId === sessionId && !stream?.task) {
             requestPaneSeed(client, paneId)
@@ -1566,7 +1580,7 @@ async function main(): Promise<void> {
     onError: (sessionId, error) => {
       for (const client of clients) {
         for (const paneId of client.subscribedPaneIds) {
-          if (paneForId(paneId)?.sessionId === sessionId) {
+          if (streamPaneForId(paneId)?.sessionId === sessionId) {
             requestPaneSeed(client, paneId)
           }
         }
@@ -1587,11 +1601,13 @@ async function main(): Promise<void> {
           if (repo) pane.repo = repo
         }
         const snapshotStateChanged = !snapshotsHaveSameState(snapshot, nextSnapshot)
+        // Terminal-tab shells are streamed like listed panes, so their reseeds are judged here too.
+        const previousStreamPanes = [...snapshot.panes, ...(snapshot.shells ?? []).map((shell) => shell.pane)]
         const previousRenderingState = new Map(
-          snapshot.panes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
+          previousStreamPanes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
         )
         const previousCommands = new Map(
-          snapshot.panes.map((pane) => [pane.id, pane.command]),
+          previousStreamPanes.map((pane) => [pane.id, pane.command]),
         )
         const previousPanes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
         const sessionRenames = detectSessionRenames(
@@ -1696,14 +1712,14 @@ async function main(): Promise<void> {
             }
           }
           for (const paneId of [...client.subscribedPaneIds]) {
-            if (!paneIds.has(paneId)) {
+            if (!streamPaneExists(paneId)) {
               client.subscribedPaneIds.delete(paneId)
               client.paneStreams.delete(paneId)
               client.paneResetGate.forget(paneId)
               client.lastStatus.delete(paneId)
               continue
             }
-            const pane = paneForId(paneId)
+            const pane = streamPaneForId(paneId)
             if (
               pane &&
               previousRenderingState.get(paneId) !== undefined &&
@@ -1784,7 +1800,7 @@ async function main(): Promise<void> {
     client.inputQueue = client.inputQueue
       .then(async () => {
         if (client.socket.readyState !== WebSocket.OPEN) return
-        if (!paneExists(paneId)) throw new Error('Pane no longer exists')
+        if (!streamPaneExists(paneId)) throw new Error('Pane no longer exists')
         await action()
       })
       .catch((error: unknown) => {
@@ -2418,8 +2434,8 @@ async function main(): Promise<void> {
       case 'subscribe': {
         const statusPaneIds = message.statusPaneIds ?? []
         if (
-          message.paneIds.some((paneId) => !paneExists(paneId)) ||
-          statusPaneIds.some((paneId) => !paneExists(paneId))
+          message.paneIds.some((paneId) => !streamPaneExists(paneId)) ||
+          statusPaneIds.some((paneId) => !streamPaneExists(paneId))
         ) {
           violation(client, 'invalid_pane', 'Subscription references an unknown pane')
           return
@@ -2461,7 +2477,7 @@ async function main(): Promise<void> {
           sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
           return
         }
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2477,7 +2493,7 @@ async function main(): Promise<void> {
           sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
           return
         }
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2488,7 +2504,7 @@ async function main(): Promise<void> {
         return
       }
       case 'paste': {
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2503,7 +2519,7 @@ async function main(): Promise<void> {
           sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
           return
         }
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2513,7 +2529,7 @@ async function main(): Promise<void> {
         )
         return
       case 'request_pane_reset': {
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane || !client.subscribedPaneIds.has(message.paneId)) {
           sendError(
             client,
@@ -2541,7 +2557,7 @@ async function main(): Promise<void> {
         return
       }
       case 'resize_pane': {
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane || !client.subscribedPaneIds.has(message.paneId)) {
           sendError(client, 'invalid_pane', 'Resize references an unavailable pane', message.requestId)
           return

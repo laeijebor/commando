@@ -430,3 +430,10 @@ export function autoSessionName(text: string): string {
   const words = sentence.split(/\s+/u).slice(0, AUTO_NAME_WORDS).join(' ')
   return sanitizeBranchName(words).replace(/\./gu, '-').slice(0, AUTO_NAME_LENGTH).replace(/-+$/u, '')
 }
+
+/** Session option naming the pane a hidden Terminal-tab shell belongs to. */
+export const PANE_SHELL_OPTION = '@commando_shell'
+
+export function paneShellSessionName(anchorPaneId: string): string {
+  return `commando-shell-${anchorPaneId.replace(/^%/, '')}`
+}

@@ -6,6 +6,8 @@ export interface PaneManagementApiClient {
   openPanePath(paneId: string): Promise<void>
   revealPaneScreenshot(paneId: string, folderId: string, file?: string): Promise<void>
   runInPanePath(paneId: string, command: string): Promise<void>
+  /** Starts the pane's Terminal-tab shell if it has none, and returns the shell's pane id. */
+  ensurePaneShell(paneId: string): Promise<string>
   setPaneMark(paneId: string, targetId: string, label: string, tone: PaneMarkTone): Promise<void>
   acknowledgePaneMark(paneId: string, targetId: string): Promise<void>
   clearPaneMark(paneId: string, targetId: string): Promise<void>
@@ -25,7 +27,7 @@ export function createPaneManagementApi(
   token: string,
   fetcher: typeof fetch = fetch,
 ): PaneManagementApiClient {
-  const request = async (path: string, init: RequestInit): Promise<void> => {
+  const request = async (path: string, init: RequestInit): Promise<unknown> => {
     const response = await fetcher(`/api/pane-management${path}`, {
       ...init,
       credentials: 'same-origin',
@@ -38,37 +40,44 @@ export function createPaneManagementApi(
     })
     const body = await response.json().catch(() => null) as unknown
     if (!response.ok) throw apiError(response.status, body)
+    return body
   }
+  const send = async (path: string, init: RequestInit): Promise<void> => { await request(path, init) }
 
   return {
-    renamePane: (paneId, title) => request(`/panes/${encodeURIComponent(paneId)}/rename`, {
+    renamePane: (paneId, title) => send(`/panes/${encodeURIComponent(paneId)}/rename`, {
       method: 'POST',
       body: JSON.stringify({ title }),
     }),
-    deletePane: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/delete`, {
+    deletePane: (paneId) => send(`/panes/${encodeURIComponent(paneId)}/delete`, {
       method: 'DELETE',
       body: JSON.stringify({ confirmPaneId: paneId }),
     }),
-    openPanePath: (paneId) => request(`/panes/${encodeURIComponent(paneId)}/open`, {
+    openPanePath: (paneId) => send(`/panes/${encodeURIComponent(paneId)}/open`, {
       method: 'POST',
     }),
-    revealPaneScreenshot: (paneId, folderId, file) => request(`/panes/${encodeURIComponent(paneId)}/reveal`, {
+    revealPaneScreenshot: (paneId, folderId, file) => send(`/panes/${encodeURIComponent(paneId)}/reveal`, {
       method: 'POST',
       body: JSON.stringify({ folderId, ...(file ? { file } : {}) }),
     }),
-    runInPanePath: (paneId, command) => request(`/panes/${encodeURIComponent(paneId)}/run`, {
+    runInPanePath: (paneId, command) => send(`/panes/${encodeURIComponent(paneId)}/run`, {
       method: 'POST',
       body: JSON.stringify({ command }),
     }),
-    setPaneMark: (paneId, targetId, label, tone) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
+    ensurePaneShell: async (paneId) => {
+      const body = await request(`/panes/${encodeURIComponent(paneId)}/shell`, { method: 'POST' }) as { shellPaneId?: unknown } | null
+      if (typeof body?.shellPaneId !== 'string') throw new Error('The daemon did not report a shell pane')
+      return body.shellPaneId
+    },
+    setPaneMark: (paneId, targetId, label, tone) => send(`/panes/${encodeURIComponent(paneId)}/mark`, {
       method: 'POST',
       body: JSON.stringify({ targetId, label, tone }),
     }),
-    acknowledgePaneMark: (paneId, targetId) => request(`/panes/${encodeURIComponent(paneId)}/mark/acknowledge`, {
+    acknowledgePaneMark: (paneId, targetId) => send(`/panes/${encodeURIComponent(paneId)}/mark/acknowledge`, {
       method: 'POST',
       body: JSON.stringify({ targetId }),
     }),
-    clearPaneMark: (paneId, targetId) => request(`/panes/${encodeURIComponent(paneId)}/mark`, {
+    clearPaneMark: (paneId, targetId) => send(`/panes/${encodeURIComponent(paneId)}/mark`, {
       method: 'DELETE',
       body: JSON.stringify({ targetId }),
     }),

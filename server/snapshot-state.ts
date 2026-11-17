@@ -25,6 +25,7 @@ function snapshotPublicationState(snapshot: CommandoSnapshot) {
     windows: snapshot.windows,
     panes: snapshot.panes.map(panePublicationState),
     ports: snapshot.ports,
+    shells: (snapshot.shells ?? []).map((shell) => ({ ...shell, pane: panePublicationState(shell.pane) })),
   }
 }
 

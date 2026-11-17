@@ -5,7 +5,7 @@ import type {
   TmuxSession,
   TmuxWindow,
 } from '../shared/protocol.js'
-import { EMPTY_PANE_OPTION } from '../shared/tmux-create.js'
+import { EMPTY_PANE_OPTION, PANE_SHELL_OPTION } from '../shared/tmux-create.js'
 import { parseWindowLayout } from '../shared/window-layout.js'
 import type { PaneTargetObservation } from './tmux-pane-targets.js'
 import type { PaneIdentityObservation } from './tmux-pane-identity-store.js'
@@ -16,6 +16,7 @@ export const SESSION_FORMAT = [
   '#{session_id}',
   '#{session_name}',
   '#{session_attached}',
+  `#{${PANE_SHELL_OPTION}}`,
 ].join(TMUX_FIELD_SEPARATOR)
 
 export const WINDOW_FORMAT = [
@@ -256,12 +257,17 @@ function parseTerminalState(fields: string[]): PaneTerminalState | null {
   }
 }
 
-export function parseSessions(output: string): TmuxSession[] {
+export function parseSessions(output: string, shellAnchors?: Map<string, string>): TmuxSession[] {
   const sessions: TmuxSession[] = []
 
-  for (const [id, name, attachedValue] of rows(output, 3)) {
+  for (const [id, name, attachedValue, shellAnchor] of rows(output, 4, 3)) {
     const attachedClients = integer(attachedValue)
     if (!SESSION_ID.test(id) || attachedClients === null) continue
+    // A Terminal-tab shell is not a session the user made: it is reported with its pane instead.
+    if (shellAnchor && shellAnchors) {
+      shellAnchors.set(id, shellAnchor)
+      continue
+    }
 
     sessions.push({
       id,
@@ -418,7 +424,8 @@ export function parseTmuxSnapshot(
   capturedAt: number,
   targetIds: ReadonlyMap<string, string>,
 ): CommandoSnapshot {
-  const sessions = parseSessions(sessionOutput)
+  const shellAnchors = new Map<string, string>()
+  const sessions = parseSessions(sessionOutput, shellAnchors)
   const sessionIds = new Set(sessions.map((session) => session.id))
   const windows = parseWindows(windowOutput)
     .filter((window) => sessionIds.has(window.sessionId))
@@ -428,7 +435,8 @@ export function parseTmuxSnapshot(
         : left.sessionId.localeCompare(right.sessionId),
     )
   const windowIds = new Set(windows.map((window) => window.id))
-  const panes = parsePanes(paneOutput, targetIds)
+  const allPanes = parsePanes(paneOutput, targetIds)
+  const panes = allPanes
     .filter(
       (pane) => sessionIds.has(pane.sessionId) && windowIds.has(pane.windowId),
     )
@@ -455,5 +463,25 @@ export function parseTmuxSnapshot(
 
   sessions.sort((left, right) => left.name.localeCompare(right.name))
 
-  return { revision, capturedAt, sessions, windows, panes, ports: [] }
+  const snapshot: CommandoSnapshot = { revision, capturedAt, sessions, windows, panes, ports: [] }
+  if (shellAnchors.size) {
+    const paneIds = new Set(panes.map((pane) => pane.id))
+    snapshot.shells = [...shellAnchors].flatMap(([sessionId, anchorPaneId]) => {
+      const pane = allPanes.find((candidate) => candidate.sessionId === sessionId)
+      return pane && paneIds.has(anchorPaneId) ? [{ anchorPaneId, pane }] : []
+    })
+  }
+  return snapshot
+}
+
+/**
+ * Terminal-tab shell sessions whose pane is gone. Judged against every listed pane, so a pane
+ * that is only between windows for a moment still keeps its shell.
+ */
+export function orphanedShellSessions(sessionOutput: string, paneOutput: string): string[] {
+  const shellAnchors = new Map<string, string>()
+  parseSessions(sessionOutput, shellAnchors)
+  if (!shellAnchors.size) return []
+  const paneIds = new Set(parsePaneProcesses(paneOutput).map((pane) => pane.paneId))
+  return [...shellAnchors].filter(([, anchorPaneId]) => !paneIds.has(anchorPaneId)).map(([sessionId]) => sessionId)
 }

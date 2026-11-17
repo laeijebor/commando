@@ -59,4 +59,12 @@ describe('pane management API client', () => {
 
     await expect(api.renamePane('%99', 'gone')).rejects.toThrow('Tmux pane does not exist')
   })
+
+  it('asks the daemon for the pane shell and returns its pane id', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, shellPaneId: '%30' }))
+    await expect(createPaneManagementApi('', fetcher).ensurePaneShell('%12')).resolves.toBe('%30')
+    expect(fetcher.mock.calls[0][0]).toBe('/api/pane-management/panes/%2512/shell')
+    fetcher.mockResolvedValue(Response.json({ ok: true }))
+    await expect(createPaneManagementApi('', fetcher).ensurePaneShell('%12')).rejects.toThrow('did not report a shell pane')
+  })
 })

@@ -294,4 +294,21 @@ describe('pane management API', () => {
     expect(response.status).toBe(400)
     expect(execute).not.toHaveBeenCalled()
   })
+
+  it('starts the Terminal-tab shell for an existing pane in its folder', async () => {
+    const actions = new TmuxPaneActions(vi.fn<TmuxProcessExecutor>(), {})
+    const ensureShell = vi.spyOn(actions, 'ensureShell').mockResolvedValue('%30')
+    const onPanesChanged = vi.fn()
+    const baseUrl = await startApi(new PaneManagementApi({ actions, currentPaneIds: () => ['%12'], panePath: () => '/work/app', onPanesChanged }))
+
+    const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/shell`, { method: 'POST' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, paneId: '%12', shellPaneId: '%30' })
+    expect(ensureShell).toHaveBeenCalledWith('%12', '/work/app')
+    expect(onPanesChanged).toHaveBeenCalledOnce()
+
+    expect((await fetch(`${baseUrl}/api/pane-management/panes/%2599/shell`, { method: 'POST' })).status).toBe(404)
+    expect((await fetch(`${baseUrl}/api/pane-management/panes/%2512/shell`)).status).toBe(405)
+    expect(ensureShell).toHaveBeenCalledOnce()
+  })
 })

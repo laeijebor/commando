@@ -34,7 +34,9 @@ export function CommanderPeekTabs({ pane, chat, webTabs, gitApi, prsApi, connect
   const summary = usePaneGitSummary(pane.id, pane.path, gitApi, connected)
   const list = usePanePrs(pane.id, prsApi, { background: false, enabled: connected })
   const prs = list?.targetId === pane.targetId ? list : null
+  // The Terminal tab stays with the pane's own side panel: a shell streams to one view at a time.
   const tabs = combinedPanelTabs(pane.id, webTabs, summary, prs?.pullRequests ?? [], sessionUnseen, sessionWarning, dismissedPrs)
+    .filter((tab) => !isBuiltinTab(tab) || tab.key !== 'terminal')
   const [selectedId, setSelectedId] = useState<string>()
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set())
   const select = (id: string) => {
