@@ -1752,6 +1752,9 @@ function HostApp() {
               : current)
           }
         }
+        // A Terminal-tab shell another client is sizing just keeps that size: it is not part of
+        // this window's layout, so it raises no layout error and no grid retry.
+        if (message.requestId?.startsWith('shell-resize-')) break
         if (
           message.code === 'tmux_layout_failed' ||
           message.code === 'invalid_window_layout' ||
@@ -3950,8 +3953,9 @@ function HostApp() {
           // A terminal measures itself as it mounts, before this render's subscription is sent;
           // the daemon only sizes panes the client is subscribed to, so the resize follows it.
           onResize: (paneId, cols, rows) => { window.setTimeout(() => {
-            if (shellSubscriptionIdsRef.current.includes(paneId)) send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('shell-resize') })
+            if (resizeAuthorityActiveRef.current && shellSubscriptionIdsRef.current.includes(paneId)) send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('shell-resize') })
           }, 0) },
+          onRelease: (paneId) => { if (connected) send({ type: 'release_resize', paneId, requestId: requestId('shell-release') }) },
           onRequestReset: requestPaneReset, onSelectionCopied: () => {}, registerSink: registerTerminalSink,
         }} />
     }

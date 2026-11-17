@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SpecialKey, TmuxPane } from '../shared/protocol'
 import type { PaneTerminalSink } from './paneStream'
 import { TerminalPaneRenderer } from './TerminalPaneRenderer'
@@ -9,11 +9,15 @@ export type PaneShellTerminal = {
   onKey: (paneId: string, key: SpecialKey) => void
   onPaste: (paneId: string, data: string) => void
   onResize: (paneId: string, cols: number, rows: number) => void
+  /** Gives up this client's hold on the shell's size, so another client can size it. */
+  onRelease: (paneId: string) => void
   onRequestReset: (paneId: string) => void
   onSelectionCopied: () => void
   registerSink: (paneId: string, sink: PaneTerminalSink) => () => void
 }
 
+/** How long a started shell may take to show up in the daemon's snapshot. */
+export const SHELL_APPEAR_TIMEOUT_MS = 8_000
 const noop = () => {}
 
 /**
@@ -34,19 +38,43 @@ export function PaneShellTab({ shell, visible, connected, streaming, resizeActiv
   terminal: PaneShellTerminal
 }) {
   const [error, setError] = useState<string | null>(null)
-  const [attempt, setAttempt] = useState(0)
+  /** The shell was listed and is gone: the user left it, so only they start another. */
+  const [ended, setEnded] = useState(false)
+  const autoStarted = useRef(false)
+  const appearTimer = useRef<number | undefined>(undefined)
+  const ensureShellRef = useRef(ensureShell)
+  ensureShellRef.current = ensureShell
+  const releaseRef = useRef(terminal.onRelease)
+  releaseRef.current = terminal.onRelease
   const shellId = shell?.id
 
-  useEffect(() => {
-    if (!visible || shellId || !connected) return
-    let current = true
+  const start = useCallback(() => {
     setError(null)
-    ensureShell().catch((cause: unknown) => {
-      if (current) setError(cause instanceof Error ? cause.message : 'The shell could not be started')
+    setEnded(false)
+    window.clearTimeout(appearTimer.current)
+    ensureShellRef.current().then(() => {
+      // A shell that dies at once is never listed; say so instead of waiting for ever.
+      appearTimer.current = window.setTimeout(() => setError('The shell started but did not stay open'), SHELL_APPEAR_TIMEOUT_MS)
+    }, (cause: unknown) => {
+      setError(cause instanceof Error ? cause.message : 'The shell could not be started')
     })
-    return () => { current = false }
-    // ensureShell is a new function each render; the pane it starts a shell for does not change.
-  }, [visible, shellId, connected, attempt])
+  }, [])
+
+  // Once per tab: a shell that exits, or keeps dying, is not restarted behind the user's back.
+  useEffect(() => {
+    if (!visible || shellId || !connected || autoStarted.current) return
+    autoStarted.current = true
+    start()
+  }, [visible, shellId, connected, start])
+
+  useEffect(() => {
+    if (!shellId) return
+    autoStarted.current = true
+    window.clearTimeout(appearTimer.current)
+    setError(null)
+    return () => setEnded(true)
+  }, [shellId])
+  useEffect(() => () => window.clearTimeout(appearTimer.current), [])
 
   useEffect(() => {
     if (!visible || !shellId) return
@@ -54,16 +82,22 @@ export function PaneShellTab({ shell, visible, connected, streaming, resizeActiv
     return () => onVisible(shellId, false)
   }, [visible, shellId, onVisible])
 
+  const shown = Boolean(shellId) && visible && streaming
+  useEffect(() => {
+    if (!shown || !shellId) return
+    return () => releaseRef.current(shellId)
+  }, [shown, shellId])
+
   if (!shell) {
     return <div className="pane-shell-tab is-pending">
-      {error
-        ? <p role="alert">{error} <button type="button" onClick={() => setAttempt((value) => value + 1)}>Try again</button></p>
+      {error ? <p role="alert">{error} <button type="button" onClick={start}>Try again</button></p>
+        : ended ? <p role="status">The shell ended. <button type="button" disabled={!connected} onClick={start}>Start a new shell</button></p>
         : <p role="status">{connected ? 'Starting a shell…' : 'Reconnect to start a shell.'}</p>}
     </div>
   }
   // The daemon refuses resets and resizes for a pane this client is not subscribed to, so the
   // terminal mounts with the subscription and is seeded afresh each time the tab is shown.
-  if (!visible || !streaming) return <div className="pane-shell-tab" />
+  if (!shown) return <div className="pane-shell-tab" />
   return <div className="terminal-pane-body pane-shell-tab">
     <TerminalPaneRenderer
       paneId={shell.id} cols={shell.width} rows={shell.height} terminalState={shell}

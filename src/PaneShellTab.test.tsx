@@ -3,18 +3,18 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { TmuxPane } from '../shared/protocol'
-import { PaneShellTab, type PaneShellTerminal } from './PaneShellTab'
+import { PaneShellTab, SHELL_APPEAR_TIMEOUT_MS, type PaneShellTerminal } from './PaneShellTab'
 
 vi.mock('./TerminalPaneRenderer', () => ({
   TerminalPaneRenderer: ({ paneId, resizeOwner, onInput, onResize }: { paneId: string; resizeOwner: boolean; onInput: (data: string) => void; onResize: (cols: number, rows: number) => void }) =>
     <button type="button" data-resize-owner={resizeOwner} onClick={() => { onInput('ls\r'); onResize(90, 30) }}>terminal {paneId}</button>,
 }))
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers() })
 
 const shell = { id: '%30', width: 80, height: 24 } as TmuxPane
 const terminal = (): PaneShellTerminal => ({
-  onInput: vi.fn(), onInputBytes: vi.fn(), onKey: vi.fn(), onPaste: vi.fn(), onResize: vi.fn(), onRequestReset: vi.fn(),
+  onInput: vi.fn(), onInputBytes: vi.fn(), onKey: vi.fn(), onPaste: vi.fn(), onResize: vi.fn(), onRelease: vi.fn(), onRequestReset: vi.fn(),
   onSelectionCopied: vi.fn(), registerSink: vi.fn(() => () => {}),
 })
 const tab = (props: Partial<Parameters<typeof PaneShellTab>[0]>) => <PaneShellTab shell={undefined} visible connected streaming={false} resizeActive
@@ -58,7 +58,31 @@ it('reports the shell while it is on screen, and mounts the terminal only once i
   expect(io.onInput).toHaveBeenCalledWith('%30', 'ls\r')
   expect(io.onResize).toHaveBeenCalledWith('%30', 90, 30)
 
+  expect(io.onRelease).not.toHaveBeenCalled()
   view.rerender(tab({ shell, visible: false, streaming: true, onVisible, terminal: io }))
   expect(onVisible).toHaveBeenLastCalledWith('%30', false)
+  // Hiding the tab gives up its hold on the shell's size.
+  expect(io.onRelease).toHaveBeenCalledWith('%30')
   expect(screen.queryByRole('button', { name: 'terminal %30' })).not.toBeInTheDocument()
+})
+
+it('does not restart a shell the user left, until they ask', async () => {
+  const ensureShell = vi.fn(async () => '%30')
+  const view = render(tab({ shell, ensureShell }))
+  await act(async () => { view.rerender(tab({ ensureShell })) })
+  expect(ensureShell).not.toHaveBeenCalled()
+  expect(screen.getByRole('status')).toHaveTextContent('The shell ended.')
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start a new shell' })) })
+  expect(ensureShell).toHaveBeenCalledOnce()
+  expect(screen.getByRole('status')).toHaveTextContent('Starting a shell…')
+})
+
+it('reports a shell that started but never appeared', async () => {
+  vi.useFakeTimers()
+  const ensureShell = vi.fn(async () => '%30')
+  await act(async () => { render(tab({ ensureShell })) })
+  expect(screen.getByRole('status')).toHaveTextContent('Starting a shell…')
+  await act(async () => { await vi.advanceTimersByTimeAsync(SHELL_APPEAR_TIMEOUT_MS) })
+  expect(screen.getByRole('alert')).toHaveTextContent('did not stay open')
+  expect(ensureShell).toHaveBeenCalledOnce()
 })
