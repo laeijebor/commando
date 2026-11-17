@@ -120,7 +120,7 @@ type ResolvedBase = {
 }
 
 export class GitCommandFailure extends Error {
-  constructor(message: string, readonly stderr: string, readonly missingBinary: boolean) {
+  constructor(message: string, readonly stderr: string, readonly missingBinary: boolean, readonly timedOut = false) {
     super(message)
     this.name = 'GitCommandFailure'
   }
@@ -140,6 +140,7 @@ export const defaultGitProcessExecutor: GitProcessExecutor = (file, args, option
             error.killed ? `${file} timed out` : `${file} failed`,
             (stderr ?? '').slice(0, 4_000),
             code === 'ENOENT',
+            error.killed === true,
           ),
         )
         return

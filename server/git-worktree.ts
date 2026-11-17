@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { access, readdir, realpath, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
@@ -6,6 +6,11 @@ import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } f
 
 const COMMAND_TIMEOUT_MS = 5_000
 const WORKTREE_TIMEOUT_MS = 30_000
+/**
+ * Checking out a large repository is slow: 40k files (700 MB) take 15 s on an idle Mac and well
+ * over 30 s while builds and simulators share the disk. Killing it part-way throws all of that away.
+ */
+const WORKTREE_ADD_TIMEOUT_MS = 10 * 60_000
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const BUFFER_BYTES = 1024 * 1024
 /** About 3 million tracked files at roughly 85 bytes each. */
@@ -84,19 +89,45 @@ const defaultRemoveTree = (target: string) => new Promise<void>((resolve, reject
   child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`rm -rf exited with ${code}`)))
 })
 
-const defaultExecutor: GitProcessExecutor = (file, args, options) =>
+/**
+ * Runs git in a process group of its own and stops the whole group on timeout. `git worktree add`
+ * checks files out in a child `git reset --hard`, which kept writing after its parent was killed.
+ */
+const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, maxBuffer }) =>
   new Promise((resolve, reject) => {
-    execFile(file, [...args], options, (error, stdout, stderr) => {
-      if (error) {
-        const code = (error as NodeJS.ErrnoException).code
-        reject(new GitCommandFailure(
-          error.killed ? `${file} timed out` : `${file} failed`,
-          (stderr ?? '').slice(0, 4_000),
-          code === 'ENOENT',
-        ))
+    const child = spawn(file, [...args], { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] }
+    let bytes = 0
+    let stopped: 'timeout' | 'overflow' | undefined
+    const stop = (reason: 'timeout' | 'overflow') => {
+      stopped ??= reason
+      try {
+        process.kill(-child.pid!, 'SIGTERM')
+      } catch {
+        child.kill('SIGTERM')
+      }
+    }
+    for (const stream of ['stdout', 'stderr'] as const) {
+      child[stream].on('data', (chunk: Buffer) => {
+        output[stream].push(chunk)
+        bytes += chunk.length
+        if (bytes > maxBuffer) stop('overflow')
+      })
+    }
+    const timer = setTimeout(() => stop('timeout'), timeout)
+    const text = (stream: 'stdout' | 'stderr') => Buffer.concat(output[stream]).toString('utf8')
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer)
+      reject(new GitCommandFailure(`${file} failed`, '', error.code === 'ENOENT'))
+    })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0 && !stopped) {
+        resolve({ stdout: text('stdout'), stderr: text('stderr') })
         return
       }
-      resolve({ stdout, stderr })
+      const message = stopped === 'timeout' ? `${file} timed out` : stopped === 'overflow' ? `${file} output exceeded ${maxBuffer} bytes` : `${file} failed`
+      reject(new GitCommandFailure(message, text('stderr').slice(0, 4_000), false, stopped === 'timeout'))
     })
   })
 
@@ -251,7 +282,15 @@ export class GitWorktreeService {
         }
       }
     }
-    await this.worktreeAdd(cwd, ['-b', branch, target, base])
+    try {
+      await this.worktreeAdd(cwd, ['-b', branch, target, base])
+    } catch (error) {
+      // git makes the branch before checking files out and keeps it when the checkout fails or is
+      // killed (it does delete the half-made folder), so a retry would find the name taken.
+      await this.git(cwd, ['worktree', 'prune']).catch(() => undefined)
+      await this.git(cwd, ['branch', '-D', branch]).catch(() => undefined)
+      throw error
+    }
     return {
       worktree: { path: target, branch, base, reusedBranch: false, ...(warning ? { warning } : {}) },
       rollback: async () => {
@@ -412,8 +451,13 @@ export class GitWorktreeService {
 
   private async worktreeAdd(cwd: string, args: string[]): Promise<void> {
     try {
-      await this.git(cwd, ['worktree', 'add', ...args], WORKTREE_TIMEOUT_MS)
+      // --quiet keeps git's progress meter out of stderr, where it buried the real error.
+      // checkout.workers=0 writes files on every core (git 2.32+; older versions ignore it).
+      await this.git(cwd, ['-c', 'checkout.workers=0', 'worktree', 'add', '--quiet', ...args], WORKTREE_ADD_TIMEOUT_MS)
     } catch (error) {
+      if (error instanceof GitCommandFailure && error.timedOut) {
+        throw new GitWorktreeError('exec', `git worktree add was still checking out files after ${WORKTREE_ADD_TIMEOUT_MS / 60_000} minutes and was stopped`)
+      }
       throw new GitWorktreeError('exec', `git worktree add failed: ${failureDetail(error)}`)
     }
   }
