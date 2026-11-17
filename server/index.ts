@@ -1753,20 +1753,22 @@ async function main(): Promise<void> {
     return snapshotRefresh
   }
 
-  const sessionCreations = new SessionCreations(
-    async (input, onProgress) => {
-      const result = await tmuxCreator.createSession(input, undefined, onProgress)
-      // Clients finish a creation by opening the new session, so it must be in the snapshot first.
-      await refreshSnapshot()
-      return result
-    },
-    (creations) => broadcast({ type: 'session_creations', creations }),
-  )
-
   const refreshSnapshotFresh = async (): Promise<CommandoSnapshot> => {
     if (snapshotRefresh) await snapshotRefresh
     return refreshSnapshot()
   }
+
+  const sessionCreations = new SessionCreations(
+    async (input, onProgress) => {
+      const result = await tmuxCreator.createSession(input, undefined, onProgress)
+      // Clients finish a creation by opening the new session, so it must be in the snapshot first;
+      // a refresh already under way may have looked at tmux before the session existed. The session
+      // exists either way, so a failed refresh must not fail it: Retry would create it a second time.
+      await refreshSnapshotFresh().catch((error: unknown) => console.warn('[commando] snapshot refresh after creating a session failed', error))
+      return result
+    },
+    (creations) => broadcast({ type: 'session_creations', creations }),
+  )
 
   const sessionIdes = new SessionIdeService({
     dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides'),
