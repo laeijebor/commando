@@ -730,7 +730,7 @@ async function main(): Promise<void> {
   const companionOutputTails = new Map<string, string>()
   // Pane ids belong to the tmux server, which outlives daemon restarts.
   const paneActivity = new PaneActivity(join(homedir(), '.commando', `pane-activity${tmuxSocketStateSuffix()}.json`))
-  const agentStatuses = new AgentStatusRegistry({ lastActivity: (paneId) => paneActivity.get(paneId) })
+  const agentStatuses = new AgentStatusRegistry({ lastActivity: (paneId) => paneActivity.settledAt(paneId) })
   const isWebPaneAgentRunning = (paneId: string): boolean => {
     const pane = paneForId(paneId)
     if (!pane || pane.dead) return false
@@ -1608,6 +1608,11 @@ async function main(): Promise<void> {
       .discover(snapshotRevision + 1)
       .then(async (nextSnapshot) => {
         const nextServerId = tmux.serverId
+        // Saved pane times only apply to the tmux server that numbered those panes.
+        if (nextServerId) {
+          if (paneSeen.bindServer(nextServerId)) broadcast({ type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
+          if (paneActivity.bindServer(nextServerId)) broadcast({ type: 'pane_activity', activity: paneActivity.snapshot(), snapshot: true })
+        }
         const repos = await paneRepos.resolve(nextSnapshot.panes.map((pane) => pane.path))
         for (const pane of nextSnapshot.panes) {
           const repo = repos.get(pane.path)

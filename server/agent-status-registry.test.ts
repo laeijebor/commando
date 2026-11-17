@@ -733,6 +733,12 @@ describe('AgentStatusRegistry', () => {
     const fresh = new AgentStatusRegistry()
     fresh.applyInferred(inferred({ status: 'done', updatedAt: 500 }))
     expect(fresh.get(paneId)?.settledAt).toBe(500)
+
+    // Quiet working output that then finishes is a turn ending now.
+    const quiet = new AgentStatusRegistry({ lastActivity: () => 40 })
+    quiet.applyInferred(inferred({ status: 'stale', updatedAt: 800 }))
+    quiet.applyInferred(inferred({ status: 'done', updatedAt: 900 }))
+    expect(quiet.get(paneId)?.settledAt).toBe(900)
   })
 
   it('marks the turn declared when the agent ran --state complete', () => {
