@@ -111,7 +111,7 @@ import { PortManagementApi } from './port-management-api.js'
 import { ProcessTracker } from './tracked-processes.js'
 import { TrackedProcessesApi } from './tracked-processes-api.js'
 import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
-import { GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
+import { GitWorktreeService, stopRunningGit, worktreesParentFromEnv } from './git-worktree.js'
 import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion, type SessionWorktreeDeletionDependencies } from './session-worktree-deletion.js'
 import { sessionRepo } from '../shared/session-repositories.js'
 import { PaneRepoResolver } from './pane-repos.js'
@@ -3341,6 +3341,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (shuttingDown) return
     shuttingDown = true
+    stopRunningGit()
     hostsHealth.stop()
     hostsProxy.close()
     clearInterval(snapshotTimer)

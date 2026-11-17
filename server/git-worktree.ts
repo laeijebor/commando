@@ -89,6 +89,27 @@ const defaultRemoveTree = (target: string) => new Promise<void>((resolve, reject
   child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`rm -rf exited with ${code}`)))
 })
 
+/** Process groups of git commands still running, stopped when the daemon shuts down. */
+const runningGroups = new Set<number>()
+
+function stopGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * Stops every git command this module started. They run detached so a timeout can stop a whole
+ * checkout, which also means a daemon restart would not: a checkout left running would finish
+ * into a worktree no session knows about. Stopped, git deletes its half-made folder itself.
+ */
+export function stopRunningGit(): void {
+  for (const pid of runningGroups) stopGroup(pid)
+  runningGroups.clear()
+}
+
 /**
  * Runs git in a process group of its own and stops the whole group on timeout. `git worktree add`
  * checks files out in a child `git reset --hard`, which kept writing after its parent was killed.
@@ -96,16 +117,15 @@ const defaultRemoveTree = (target: string) => new Promise<void>((resolve, reject
 const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, maxBuffer }) =>
   new Promise((resolve, reject) => {
     const child = spawn(file, [...args], { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    const pid = child.pid
+    if (pid) runningGroups.add(pid)
     const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] }
     let bytes = 0
     let stopped: 'timeout' | 'overflow' | undefined
     const stop = (reason: 'timeout' | 'overflow') => {
       stopped ??= reason
-      try {
-        process.kill(-child.pid!, 'SIGTERM')
-      } catch {
-        child.kill('SIGTERM')
-      }
+      if (pid) stopGroup(pid)
+      else child.kill('SIGTERM')
     }
     for (const stream of ['stdout', 'stderr'] as const) {
       child[stream].on('data', (chunk: Buffer) => {
@@ -118,10 +138,12 @@ const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, ma
     const text = (stream: 'stdout' | 'stderr') => Buffer.concat(output[stream]).toString('utf8')
     child.once('error', (error: NodeJS.ErrnoException) => {
       clearTimeout(timer)
+      if (pid) runningGroups.delete(pid)
       reject(new GitCommandFailure(`${file} failed`, '', error.code === 'ENOENT'))
     })
     child.once('close', (code) => {
       clearTimeout(timer)
+      if (pid) runningGroups.delete(pid)
       if (code === 0 && !stopped) {
         resolve({ stdout: text('stdout'), stderr: text('stderr') })
         return
