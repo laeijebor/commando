@@ -76,7 +76,12 @@ export class FarmClient {
     while (!this.stopped) {
       try {
         if (!this.changes || !this.me) await this.refresh()
-        else this.apply(await this.request<FarmChanges>('GET', `/api/changes?since=${this.changes.version}&wait=50`, undefined, 60_000))
+        else {
+          const before = this.changes.version, started = Date.now()
+          this.apply(await this.request<FarmChanges>('GET', `/api/changes?since=${before}&wait=50`, undefined, 60_000))
+          // A farm that answers at once with nothing new (no long-poll support) mustn't be polled in a tight loop.
+          if (this.changes.version === before && Date.now() - started < 500) await new Promise((resolve) => setTimeout(resolve, 1_000))
+        }
       } catch (error) {
         const message = (error as Error).message
         if (this.error !== message) { this.error = message; for (const listener of this.listeners) listener() }
@@ -404,7 +409,7 @@ type FarmResult = { status: 'held' | 'offered' | 'queued'; holder?: FarmHolder; 
 /** A Commando owner (pane, `as`, script pid) as a farm session of Commando's engineer. */
 export function farmOwner(owner: { paneId: string; sessionName?: string; as?: string; pid?: number }, client: FarmClient) {
   return { session: `${SESSION_PREFIX}${owner.paneId}${owner.pid ? `:${owner.pid}` : ''}`, ...(owner.as ? { as: owner.as } : {}),
-    ...(owner.sessionName ? { label: owner.sessionName } : {}), ...(owner.pid && client.name === 'local' ? { pid: owner.pid } : {}) }
+    ...(owner.sessionName && owner.sessionName !== owner.paneId ? { label: owner.sessionName } : {}), ...(owner.pid && client.name === 'local' ? { pid: owner.pid } : {}) }
 }
 
 const sameOwner = (a: LockOwner, b: LockOwner): boolean => a.paneId === b.paneId && (a.as ?? '') === (b.as ?? '') && (a.pid ?? 0) === (b.pid ?? 0)
