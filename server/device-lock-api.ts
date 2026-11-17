@@ -2,8 +2,9 @@ import { execFile } from 'node:child_process'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
-  DeviceLockError, MAX_SKIPS, OFFER_TIMEOUT_MS, UNDELIVERED_OFFER_TIMEOUT_MS, type BusyCheck, type DeviceHolder, type DeviceLockRegistry, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
+  DeviceLockError, MAX_SKIPS, OFFER_TIMEOUT_MS, UNDELIVERED_OFFER_TIMEOUT_MS, type BusyCheck, type DeviceHolder, type DeviceResource, type LockResult, type QueueEntry, type SweepEvents,
 } from './device-locks.js'
+import type { DeviceLockStore } from './device-lock-store.js'
 
 const PANE_ID = /^%\d+$/
 const MAX_WAIT_SECONDS = 55
@@ -112,10 +113,10 @@ export async function readJson(request: IncomingMessage): Promise<Record<string,
 
 export type DeviceLockApiDependencies = {
   token: string
-  registry: DeviceLockRegistry
+  registry: DeviceLockStore
   paneExists: (paneId: string) => boolean
   sessionName: (paneId: string) => Promise<string | null>
-  processes: BusyProcessWatch
+  processes: Pick<BusyProcessWatch, 'refresh' | 'busy'>
   /** Queues a message for an agent pane, delivered when its turn ends; returns an id to follow it. */
   message: (paneId: string, text: string) => Promise<string | undefined>
   /** Withdraws a message that has not been delivered yet. */
@@ -177,7 +178,7 @@ export class DeviceLockApi {
       try {
         await this.refreshProcesses()
         const { registry, paneExists } = this.dependencies
-        this.lapsed(registry.sweep({ paneExists, pidAlive: this.dependencies.pidAlive ?? pidAlive, busy: this.dependencies.processes.busy }))
+        this.lapsed(await registry.sweep({ paneExists, pidAlive: this.dependencies.pidAlive ?? pidAlive, busy: this.dependencies.processes.busy }))
       } catch (error) { console.warn('[device-locks] sweep failed', error) }
       finally { this.sweeping = undefined }
     })()
@@ -232,15 +233,15 @@ export class DeviceLockApi {
       }
       const body = await readJson(request)
       if (path === '/api/device-locks/resources') {
-        if (request.method === 'POST') writeJson(response, 200, { resource: registry.addResource(body, await this.busyCheck()) })
-        else { registry.removeResource(String(body.id ?? '')); writeJson(response, 200, { ok: true }) }
+        if (request.method === 'POST') writeJson(response, 200, { resource: await registry.addResource(body, await this.busyCheck()) })
+        else { await registry.removeResource(String(body.id ?? '')); writeJson(response, 200, { ok: true }) }
         return true
       }
       const owner = await this.owner(request, body)
       const busy = await this.busyCheck()
       // Claiming, cancelling or withdrawing ends an offer; its "is yours" message must not go out afterwards.
       const announced = this.announcedOffers()
-      try { this.agentRequest(path, body, owner, busy, response) }
+      try { await this.agentRequest(path, body, owner, busy, response) }
       finally { this.withdrawEndedOffers(announced) }
     } catch (error) {
       if (!(error instanceof DeviceLockError)) console.warn('[device-locks] request failed', error)
@@ -250,13 +251,13 @@ export class DeviceLockApi {
   }
 
   /** The owner comes from the pane header plus `as`/`pid` from the body; the registry validates it. */
-  private agentRequest(path: string, body: Record<string, unknown>, owner: Record<string, unknown> & { paneId: string }, busy: BusyCheck, response: ServerResponse): void {
+  private async agentRequest(path: string, body: Record<string, unknown>, owner: Record<string, unknown> & { paneId: string }, busy: BusyCheck, response: ServerResponse): Promise<void> {
     const { registry } = this.dependencies
-    if (path === '/api/device-locks/lock') writeJson(response, 200, this.describe(registry.lock({ ...body, ...owner }, busy)))
-    else if (path === '/api/device-locks/claim') writeJson(response, 200, this.describe(registry.claim(owner, optionalText(body.request))))
-    else if (path === '/api/device-locks/release') writeJson(response, 200, { released: registry.release(owner, optionalText(body.request), busy) })
-    else if (typeof body.entryId === 'string') writeJson(response, 200, { withdrawn: registry.withdraw(owner.paneId, body.entryId, busy) })
-    else writeJson(response, 200, { cancelled: registry.cancel(owner, optionalText(body.request), busy) })
+    if (path === '/api/device-locks/lock') writeJson(response, 200, this.describe(await registry.lock({ ...body, ...owner }, busy)))
+    else if (path === '/api/device-locks/claim') writeJson(response, 200, this.describe(await registry.claim(owner, optionalText(body.request))))
+    else if (path === '/api/device-locks/release') writeJson(response, 200, { released: await registry.release(owner, optionalText(body.request), busy) })
+    else if (typeof body.entryId === 'string') writeJson(response, 200, { withdrawn: await registry.withdraw(owner.paneId, body.entryId, busy) })
+    else writeJson(response, 200, { cancelled: await registry.cancel(owner, optionalText(body.request), busy) })
   }
 
   /** Offer messages already queued, by the entry and offer they announce. */

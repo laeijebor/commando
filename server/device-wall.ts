@@ -4,7 +4,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readJson, releasedByUserMessage, removedByUserMessage, writeJson, type DeviceLockApi } from './device-lock-api.js'
-import { DeviceLockError, holderRef, type DeviceLockRegistry, type DeviceLockSnapshot, type DeviceResource } from './device-locks.js'
+import { DeviceLockError, holderRef, type DeviceLockSnapshot, type DeviceResource } from './device-locks.js'
+import type { DeviceLockStore } from './device-lock-store.js'
 
 /** `unknown`: the tool isn't available or hasn't answered yet; `no-serial`: the lock has no serial to look for. */
 export type DeviceConnection = 'connected' | 'missing' | 'unknown' | 'no-serial'
@@ -114,7 +115,7 @@ export function deviceLockAlerts(snapshot: DeviceLockSnapshot, now: number, idle
  */
 export class DeviceWallApi {
   constructor(private readonly dependencies: {
-    registry: DeviceLockRegistry
+    registry: DeviceLockStore
     locks: DeviceLockApi
     discovery: DeviceDiscovery
     /** When the pane's agent last went idle, or undefined while it works. */
@@ -134,13 +135,13 @@ export class DeviceWallApi {
         const [, id, action] = resourceAction
         if (action === 'release') {
           const resource = registry.resource(id)
-          for (const holder of registry.forceRelease(id, await locks.busyCheck())) this.send(holder.paneId, releasedByUserMessage(holder, resource!))
-        } else for (const entry of registry.setPaused(id, action === 'pause', await locks.busyCheck())) locks.withdrawOffer(entry)
+          for (const holder of await registry.forceRelease(id, await locks.busyCheck())) this.send(holder.paneId, releasedByUserMessage(holder, resource!))
+        } else for (const entry of await registry.setPaused(id, action === 'pause', await locks.busyCheck())) locks.withdrawOffer(entry)
       } else if (queueAction && queueAction[2] && request.method === 'POST') {
         const body = await readJson(request)
-        registry.reorder(queueAction[1], typeof body.before === 'string' ? body.before : undefined)
+        await registry.reorder(queueAction[1], typeof body.before === 'string' ? body.before : undefined)
       } else if (queueAction && !queueAction[2] && request.method === 'DELETE') {
-        const removed = registry.remove(queueAction[1], await locks.busyCheck())
+        const removed = await registry.remove(queueAction[1], await locks.busyCheck())
         locks.withdrawOffer(removed)
         const resource = registry.resource(removed.offer?.resourceId ?? removed.resourceIds[0])
         if (resource && removed.mode === 'notify') this.send(removed.paneId, removedByUserMessage(removed, resource))
@@ -164,6 +165,8 @@ export class DeviceWallApi {
   }
 
   private send(paneId: string, text: string): void {
+    // Holders on a shared farm who aren't panes here (another engineer) can't be messaged from this Mac.
+    if (!paneId.startsWith('%')) return
     void this.dependencies.message(paneId, text).catch((error) => console.warn('[devices] could not message', paneId, error))
   }
 }
