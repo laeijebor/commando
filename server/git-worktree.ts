@@ -1,16 +1,24 @@
-import { execFile, spawn } from 'node:child_process'
-import { access, readdir, rename } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { access, readdir, realpath, rename } from 'node:fs/promises'
 import path from 'node:path'
-import type { GitRepoInfo, TmuxCreatedWorktree } from '../shared/tmux-create.js'
+import type { GitRepoInfo, SessionCreationProgress, TmuxCreatedWorktree } from '../shared/tmux-create.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
 
 const COMMAND_TIMEOUT_MS = 5_000
 const WORKTREE_TIMEOUT_MS = 30_000
+/**
+ * Checking out a large repository is slow: 40k files (700 MB) take 15 s on an idle Mac and well
+ * over 30 s while builds and simulators share the disk. Killing it part-way throws all of that away.
+ */
+const WORKTREE_ADD_TIMEOUT_MS = 10 * 60_000
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
 const BUFFER_BYTES = 1024 * 1024
 /** About 3 million tracked files at roughly 85 bytes each. */
 const INDEX_LISTING_BYTES = 256 * 1024 * 1024
 const DEFAULT_BRANCH_CANDIDATES = ['main', 'master']
+/** git's checkout meter: `Updating files:  42% (16922/40289)`, redrawn with carriage returns. */
+const CHECKOUT_PROGRESS = /Updating files:\s+(\d+)%/gu
+const PROGRESS_METER = /Updating files:[^\r\n]*?(?:\(\d+\/\d+\)(?:, done\.)?|$)[\r\n]*/gmu
 const REMOTE = 'origin'
 /** Conservative subset of `git check-ref-format --branch`. */
 const BRANCH_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u
@@ -34,6 +42,8 @@ export type CreateWorktreeInput = {
   newBranchOnly?: boolean
   /** Refuse to create the branch: the caller is checking an existing one out again. */
   existingBranchOnly?: boolean
+  /** Told when the fetch and the checkout start, then how much of the checkout is done. */
+  onProgress?: SessionCreationProgress
 }
 
 export type CreateWorktreeResult = {
@@ -84,19 +94,69 @@ const defaultRemoveTree = (target: string) => new Promise<void>((resolve, reject
   child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`rm -rf exited with ${code}`)))
 })
 
-const defaultExecutor: GitProcessExecutor = (file, args, options) =>
+/** Process groups of git commands still running, stopped when the daemon shuts down. */
+const runningGroups = new Set<number>()
+
+function stopGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * Stops every git command this module started. They run detached so a timeout can stop a whole
+ * checkout, which also means a daemon restart would not: a checkout left running would finish
+ * into a worktree no session knows about. Stopped, git deletes its half-made folder itself.
+ */
+export function stopRunningGit(): void {
+  for (const pid of runningGroups) stopGroup(pid)
+  runningGroups.clear()
+}
+
+/**
+ * Runs git in a process group of its own and stops the whole group on timeout. `git worktree add`
+ * checks files out in a child `git reset --hard`, which kept writing after its parent was killed.
+ */
+const defaultExecutor: GitProcessExecutor = (file, args, { cwd, env, timeout, maxBuffer, onStderr }) =>
   new Promise((resolve, reject) => {
-    execFile(file, [...args], options, (error, stdout, stderr) => {
-      if (error) {
-        const code = (error as NodeJS.ErrnoException).code
-        reject(new GitCommandFailure(
-          error.killed ? `${file} timed out` : `${file} failed`,
-          (stderr ?? '').slice(0, 4_000),
-          code === 'ENOENT',
-        ))
+    const child = spawn(file, [...args], { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    const pid = child.pid
+    if (pid) runningGroups.add(pid)
+    const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] }
+    let bytes = 0
+    let stopped: 'timeout' | 'overflow' | undefined
+    const stop = (reason: 'timeout' | 'overflow') => {
+      stopped ??= reason
+      if (pid) stopGroup(pid)
+      else child.kill('SIGTERM')
+    }
+    for (const stream of ['stdout', 'stderr'] as const) {
+      child[stream].on('data', (chunk: Buffer) => {
+        if (stream === 'stderr') onStderr?.(chunk.toString('utf8'))
+        output[stream].push(chunk)
+        bytes += chunk.length
+        if (bytes > maxBuffer) stop('overflow')
+      })
+    }
+    const timer = setTimeout(() => stop('timeout'), timeout)
+    const text = (stream: 'stdout' | 'stderr') => Buffer.concat(output[stream]).toString('utf8')
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer)
+      if (pid) runningGroups.delete(pid)
+      reject(new GitCommandFailure(`${file} failed`, '', error.code === 'ENOENT'))
+    })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      if (pid) runningGroups.delete(pid)
+      if (code === 0 && !stopped) {
+        resolve({ stdout: text('stdout'), stderr: text('stderr') })
         return
       }
-      resolve({ stdout, stderr })
+      const message = stopped === 'timeout' ? `${file} timed out` : stopped === 'overflow' ? `${file} output exceeded ${maxBuffer} bytes` : `${file} failed`
+      // The end holds the error; a progress meter can fill the start.
+      reject(new GitCommandFailure(message, text('stderr').slice(-4_000), false, stopped === 'timeout'))
     })
   })
 
@@ -204,12 +264,17 @@ export class GitWorktreeService {
     const worktrees = branchExists || await this.pathExists(target)
       ? parseWorktreeList((await this.git(cwd, ['worktree', 'list', '--porcelain'])).stdout)
       : []
-    const attached = worktrees.find((entry) => entry.branch === branch)
+    // A branch can be registered twice (a stale entry plus a forced checkout); any other path counts as checked out.
+    const attached = worktrees.find((entry) => entry.branch === branch && path.normalize(entry.path) !== target)
+      ?? worktrees.find((entry) => entry.branch === branch)
     if (attached && path.normalize(attached.path) === target) {
-      if (!await this.pathExists(target)) {
+      if (await this.pathExists(target)) return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: async () => undefined }
+      if (!input.existingBranchOnly) {
         throw new GitWorktreeError('exec', `Worktree ${target} is registered but missing on disk; run git worktree prune in ${cwd}`)
       }
-      return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: async () => undefined }
+      // Checking it out again where it was: --force reuses only this registration, leaving any other missing worktree's alone.
+      await this.worktreeAdd(cwd, ['--force', target, branch])
+      return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: () => this.remove(cwd, target) }
     }
     if (attached) {
       throw new GitWorktreeError('branch-checked-out', `Branch ${branch} is already checked out at ${attached.path}`)
@@ -219,7 +284,7 @@ export class GitWorktreeService {
     }
 
     if (branchExists) {
-      await this.worktreeAdd(cwd, [target, branch])
+      await this.worktreeAdd(cwd, [target, branch], input.onProgress)
       return {
         worktree: { path: target, branch, base: '', reusedBranch: true },
         rollback: () => this.remove(cwd, target),
@@ -231,6 +296,7 @@ export class GitWorktreeService {
     if (input.defaultBranch) {
       const remote = input.remote ?? REMOTE
       const remoteRef = `${remote}/${input.defaultBranch}`
+      input.onProgress?.('fetching')
       try {
         await this.git(cwd, ['fetch', remote, input.defaultBranch], this.fetchTimeoutMs)
         base = remoteRef
@@ -246,26 +312,32 @@ export class GitWorktreeService {
         }
       }
     }
-    await this.worktreeAdd(cwd, ['-b', branch, target, base])
+    // The branch is made first, on its own: git refuses a name another process took meanwhile, so
+    // the cleanup below only ever deletes a branch this call made. (`worktree add -b` would keep the
+    // branch when its checkout fails, and fail the same way when the name was taken.)
+    try {
+      await this.git(cwd, ['branch', '--', branch, base])
+    } catch (error) {
+      if (await this.refExists(cwd, `refs/heads/${branch}`)) throw new GitWorktreeError('branch-exists', `Branch ${branch} already exists`)
+      throw new GitWorktreeError('exec', `Cannot create branch ${branch} from ${base}: ${failureDetail(error)}`)
+    }
+    try {
+      await this.worktreeAdd(cwd, [target, branch], input.onProgress)
+    } catch (error) {
+      // git deletes a half-made folder itself; the branch would make a retry find the name taken.
+      await this.git(cwd, ['worktree', 'prune']).catch(() => undefined)
+      await this.git(cwd, ['branch', '-D', '--', branch]).catch(() => undefined)
+      throw error
+    }
     return {
       worktree: { path: target, branch, base, reusedBranch: false, ...(warning ? { warning } : {}) },
       rollback: async () => {
         await this.remove(cwd, target)
-        await this.git(cwd, ['branch', '-D', branch]).catch(() => undefined)
+        await this.git(cwd, ['branch', '-D', '--', branch]).catch(() => undefined)
       },
     }
   }
 
-  /**
-   * Remove a linked worktree without waiting for its files to be deleted.
-   *
-   * `git worktree remove` deletes every file (node_modules included) before it
-   * unregisters the worktree, which can take minutes. Cut short, it leaves a
-   * half-deleted folder that git still lists. Instead the folder is renamed
-   * aside, which is instant within one directory, `git worktree prune` drops
-   * the registration, and a detached process deletes the renamed folder, so a
-   * daemon restart does not interrupt it.
-   */
   /**
    * Commit everything git tracks or could track (gitignored files excepted) so
    * the worktree can be removed without losing work. Returns the identity with
@@ -313,13 +385,22 @@ export class GitWorktreeService {
     }
   }
 
+  /**
+   * Remove a linked worktree without waiting for its files to be deleted.
+   *
+   * `git worktree remove` deletes every file (node_modules included) before it
+   * unregisters the worktree, which can take minutes. Cut short, it leaves a
+   * half-deleted folder that git still lists. Instead the folder is renamed
+   * aside, which is instant within one directory, `git worktree prune` drops
+   * the registration, and a detached process deletes the renamed folder, so a
+   * daemon restart does not interrupt it.
+   */
   async removeWorktree(worktree: GitWorktreeIdentity): Promise<void> {
     const root = path.normalize(worktree.root)
     const mainRoot = path.normalize(worktree.mainRoot)
     if (!path.isAbsolute(root) || !path.isAbsolute(mainRoot) || root === mainRoot) {
       throw new GitWorktreeError('bad-path', 'Refusing to remove the main repository checkout')
     }
-    const aside = path.join(path.dirname(root), `.${path.basename(root)}${DELETING_MARKER}${Date.now()}`)
     try {
       const registered = await this.registeredWorktree(mainRoot, root)
       if (!registered) throw new GitWorktreeError('bad-path', `${root} is not a registered git worktree`)
@@ -328,22 +409,27 @@ export class GitWorktreeService {
         throw new GitWorktreeError('bad-path', `Worktree identity changed at ${root}; refusing to remove it`)
       }
       if (registered.locked) throw new GitWorktreeError('bad-path', `Worktree ${root} is locked; unlock it before deleting it`)
-
-      try {
-        await this.renamePath(root, aside)
-      } catch (error) {
-        throw new GitWorktreeError('exec', `Could not move ${root} aside for deletion: ${error instanceof Error ? error.message : 'rename failed'}`)
-      }
-      // Prune can exit 0 without dropping the entry (e.g. its admin dir is not
-      // writable) or fail after dropping it, so trust only the worktree list.
-      const pruneError = await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS).then(() => undefined, (error: unknown) => error)
-      if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
-        await this.renamePath(aside, root).catch(() => undefined)
-        throw pruneError ?? new GitWorktreeError('exec', `git worktree prune left ${root} registered; the folder was put back`)
-      }
+      await this.discard(mainRoot, root)
     } catch (error) {
       if (error instanceof GitWorktreeError) throw error
       throw new GitWorktreeError('exec', `git worktree remove failed: ${failureDetail(error)}`)
+    }
+  }
+
+  /** Move `root` aside, unregister it, and delete its files in the background. */
+  private async discard(mainRoot: string, root: string): Promise<void> {
+    const aside = path.join(path.dirname(root), `.${path.basename(root)}${DELETING_MARKER}${Date.now()}`)
+    try {
+      await this.renamePath(root, aside)
+    } catch (error) {
+      throw new GitWorktreeError('exec', `Could not move ${root} aside for deletion: ${error instanceof Error ? error.message : 'rename failed'}`)
+    }
+    // Prune can exit 0 without dropping the entry (e.g. its admin dir is not
+    // writable) or fail after dropping it, so trust only the worktree list.
+    const pruneError = await this.git(mainRoot, ['worktree', 'prune'], WORKTREE_TIMEOUT_MS).then(() => undefined, (error: unknown) => error)
+    if (await this.registeredWorktree(mainRoot, root).catch(() => true)) {
+      await this.renamePath(aside, root).catch(() => undefined)
+      throw pruneError ?? new GitWorktreeError('exec', `git worktree prune left ${root} registered; the folder was put back`)
     }
     void this.removeTree(aside)
       .catch((error) => console.warn(`[commando] Could not delete removed worktree folder ${aside}`, error))
@@ -405,16 +491,31 @@ export class GitWorktreeService {
     }
   }
 
-  private async worktreeAdd(cwd: string, args: string[]): Promise<void> {
+  private async worktreeAdd(cwd: string, args: string[], onProgress?: SessionCreationProgress): Promise<void> {
+    onProgress?.('checking-out')
+    let percent = -1
+    // Without --quiet git prints a progress meter even to a pipe: it is followed for `onProgress`
+    // and dropped from the error, where it used to bury the real message.
+    const onStderr = onProgress && ((text: string) => {
+      const last = [...text.matchAll(CHECKOUT_PROGRESS)].at(-1)
+      const next = last ? Number(last[1]) : percent
+      if (next > percent) onProgress('checking-out', percent = next)
+    })
     try {
-      await this.git(cwd, ['worktree', 'add', ...args], WORKTREE_TIMEOUT_MS)
+      // checkout.workers=0 writes files on every core (git 2.32+; older versions ignore it).
+      await this.git(cwd, ['-c', 'checkout.workers=0', 'worktree', 'add', ...(onProgress ? [] : ['--quiet']), ...args], WORKTREE_ADD_TIMEOUT_MS, BUFFER_BYTES, onStderr)
     } catch (error) {
-      throw new GitWorktreeError('exec', `git worktree add failed: ${failureDetail(error)}`)
+      if (error instanceof GitCommandFailure && error.timedOut) {
+        throw new GitWorktreeError('exec', `git worktree add was still checking out files after ${WORKTREE_ADD_TIMEOUT_MS / 60_000} minutes and was stopped`)
+      }
+      const detail = failureDetail(error).replace(PROGRESS_METER, '').replace(/^Preparing worktree[^\n]*\n?/u, '').trim()
+      throw new GitWorktreeError('exec', `git worktree add failed: ${detail || 'git exited with an error'}`)
     }
   }
 
+  /** Rollback of a worktree this service just made: `git worktree remove` would delete every file before returning. */
   private async remove(cwd: string, target: string): Promise<void> {
-    await this.git(cwd, ['worktree', 'remove', '--force', target], WORKTREE_TIMEOUT_MS).catch(() => undefined)
+    await this.discard(cwd, target).catch(() => undefined)
   }
 
   private async defaultBranch(cwd: string): Promise<string | undefined> {
@@ -431,6 +532,25 @@ export class GitWorktreeService {
     return undefined
   }
 
+  /**
+   * Which of `candidates` (main checkouts) a deleted worktree at `worktreePath` on `branch` came from:
+   * the one still registering that path, else the only one with the branch. Undefined when it can't tell.
+   */
+  async mainCheckoutFor(candidates: readonly string[], worktreePath: string, branch: string): Promise<string | undefined> {
+    const target = path.normalize(worktreePath)
+    const withBranch: string[] = []
+    for (const candidate of candidates) {
+      const root = await realpath(candidate).catch(() => undefined)
+      const identity = root ? await this.repositoryIdentity(root) : undefined
+      if (!root || !identity || identity.root !== identity.mainRoot || path.normalize(identity.root) !== path.normalize(root)) continue
+      const registered = parseWorktreeList((await this.git(root, ['worktree', 'list', '--porcelain'])).stdout)
+        .some((entry) => path.normalize(entry.path) === target)
+      if (registered) return root
+      if (await this.refExists(root, `refs/heads/${branch}`)) withBranch.push(root)
+    }
+    return withBranch.length === 1 ? withBranch[0] : undefined
+  }
+
   private async refExists(cwd: string, ref: string): Promise<boolean> {
     try {
       const verb = ref.startsWith('refs/heads/') ? ['rev-parse', '--verify', '--quiet', ref] : ['show-ref', '--verify', '--quiet', ref]
@@ -441,7 +561,7 @@ export class GitWorktreeService {
     }
   }
 
-  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES): Promise<{ stdout: string; stderr: string }> {
+  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES, onStderr?: (text: string) => void): Promise<{ stdout: string; stderr: string }> {
     const options: GitExecutorOptions = {
       cwd,
       encoding: 'utf8',
@@ -450,6 +570,7 @@ export class GitWorktreeService {
       shell: false,
       timeout,
       windowsHide: true,
+      ...(onStderr ? { onStderr } : {}),
     }
     return this.execute('git', args, options)
   }

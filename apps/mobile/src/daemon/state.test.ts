@@ -71,6 +71,13 @@ describe('applyServerMessage', () => {
     expect(state.briefs['%40']?.headline).toBe('🟢 Visor shortcut works on non-notch Macs')
   })
 
+  it('keeps the latest session creations and drops a malformed one', () => {
+    const creation = { id: 'c1', name: 'big', cwd: '/repo', stage: 'fetching' as const, startedAt: 1 }
+    const state = applyServerMessage(EMPTY_HOST_STATE, { type: 'session_creations', creations: [creation, { id: 'bad' } as never] })
+    expect(state.sessionCreations).toEqual([creation])
+    expect(applyServerMessage(state, { type: 'session_creations', creations: [] }).sessionCreations).toEqual([])
+  })
+
   it('keeps the latest provider usage', () => {
     const state = applyServerMessage(EMPTY_HOST_STATE, { type: 'provider_usage', usage: USAGE })
     expect(state.usage).toHaveLength(3)

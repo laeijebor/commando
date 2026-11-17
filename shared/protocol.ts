@@ -1,3 +1,4 @@
+import type { SessionCreation } from './tmux-create.js'
 import type { CommanderRelay, CommanderState, TurnBrief } from './commander.js'
 import type { DiffFilters } from './diff-filters.js'
 import type { AgentChatRequest } from './agent-chats.js'
@@ -382,6 +383,12 @@ export type TmuxSession = {
   windowIds: string[]
 }
 
+/** A hidden shell kept beside a pane; its side panel's Terminal tab shows it. */
+export type PaneShell = {
+  anchorPaneId: string
+  pane: TmuxPane
+}
+
 export type OpenPort = {
   port: number
   processName: string
@@ -396,6 +403,8 @@ export type CommandoSnapshot = {
   windows: TmuxWindow[]
   panes: TmuxPane[]
   ports: OpenPort[]
+  /** Terminal-tab shells. Their sessions, windows and panes are left out of the lists above. */
+  shells?: PaneShell[]
 }
 
 /** One workbench per canonical checkout, backed by the daemon's shared editor. */
@@ -769,6 +778,8 @@ export type ServerMessage =
   | { type: 'agent_resume'; resume: AgentResume }
   | { type: 'agent_resume_snapshot'; resumes: AgentResume[] }
   | { type: 'agent_resume_removed'; targetId: string }
+  /** Sessions being created in the background; replaces the previous list. */
+  | { type: 'session_creations'; creations: SessionCreation[] }
   | { type: 'session_brief'; brief: SessionBrief }
   | { type: 'session_brief_snapshot'; briefs: SessionBrief[] }
   | { type: 'pane_mark'; mark: PaneMark }

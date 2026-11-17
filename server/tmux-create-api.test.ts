@@ -45,3 +45,38 @@ it("offers pickers the profiles Settings allows, with their labels and default, 
     { name: 'claudep', configDir: '/h/.claudep' },
   ] })
 })
+
+it('starts a session creation, answering 202 while it runs on and 201 when it was quick, and retries or dismisses it', async () => {
+  const send = async (method: string, path: string, input?: unknown) => {
+    const response: { writeHead: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn>; setHeader: ReturnType<typeof vi.fn> } = { writeHead: vi.fn(() => response), end: vi.fn((_body?: string) => undefined), setHeader: vi.fn() }
+    const incoming = input === undefined
+      ? Object.assign(Readable.from([]), { method, headers: {} }) as IncomingMessage
+      : Object.assign(request(input), { method })
+    await handleTmuxCreateApi(incoming, response as unknown as ServerResponse, new URL(`http://localhost${path}`), new TmuxCreator(vi.fn(), []), vi.fn(), vi.fn(), undefined, undefined, creations)
+    const body = response.end.mock.calls[0]?.[0]
+    return { status: response.writeHead.mock.calls[0]?.[0], body: body ? JSON.parse(body) : undefined }
+  }
+  const { SessionCreations } = await import('./session-creations.js')
+  let slow = true
+  const creations = new SessionCreations(async (_input, progress) => {
+    if (slow) {
+      progress('checking-out')
+      throw new Error('git worktree add failed: fatal: disk full')
+    }
+    return { created: { kind: 'session', sessionId: '$1', sessionName: 'a', windowId: '@1', windowIndex: 0, windowName: 'a', paneId: '%1', paneIndex: 0, panePath: '/r' } }
+  }, vi.fn())
+
+  const started = await send('POST', '/api/tmux/session-creations', { name: 'a', cwd: '/r', worktree: { branch: 'a' } })
+  expect(started).toMatchObject({ status: 202, body: { creation: { stage: 'checking-out' } } })
+  const id = started.body.creation.id as string
+  await new Promise((resolve) => setImmediate(resolve))
+  expect(creations.list()[0]).toMatchObject({ id, stage: 'failed' })
+
+  slow = false
+  expect(await send('POST', `/api/tmux/session-creations/${id}/retry`, {})).toMatchObject({ status: 202, body: { creation: { id, stage: 'preparing' } } })
+  await new Promise((resolve) => setImmediate(resolve))
+  expect(await send('DELETE', `/api/tmux/session-creations/${id}`)).toEqual({ status: 204, body: undefined })
+  expect(await send('DELETE', `/api/tmux/session-creations/${id}`)).toMatchObject({ status: 404 })
+
+  expect(await send('POST', '/api/tmux/session-creations', { name: 'a', cwd: '/r' })).toMatchObject({ status: 201, body: { creation: { stage: 'done', result: { created: { paneId: '%1' } } } } })
+})

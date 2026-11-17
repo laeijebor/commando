@@ -4896,6 +4896,26 @@ body.is-resizing-hud-pinned-note {
 .side-panel-new.is-warning { background: var(--amber); }
 .side-panel-add { flex-shrink: 0; }
 
+/* The owner label and panel buttons: part of the strip, or the foot of the tab column. */
+.side-panel-actions { display: contents; }
+
+.side-panel.has-vertical-tabs { display: grid; grid-template-columns: var(--side-panel-tabs-width, 172px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.side-panel.has-vertical-tabs .side-panel-head { flex-direction: column; align-items: stretch; min-height: 0; border-bottom: 0; border-right: 1px solid var(--surface-hover); }
+.side-panel.has-vertical-tabs .side-panel-tabs { flex-direction: column; overflow-x: hidden; overflow-y: auto; }
+.side-panel.has-vertical-tabs .side-panel-tab { border-right: 0; }
+.side-panel.has-vertical-tabs .side-panel-tab [role="tab"] { flex: 1; min-width: 0; }
+.side-panel.has-vertical-tabs .side-panel-tab [role="tab"] > span:first-of-type { flex: 1; max-width: none; text-align: left; }
+.side-panel.has-vertical-tabs .side-panel-tab.is-active { box-shadow: inset 2px 0 var(--accent); }
+.side-panel.has-vertical-tabs .side-panel-tab.first-web-tab { margin: 5px 0 0; border-left: 0; border-top: 1px solid var(--border-mid); }
+.side-panel.has-vertical-tabs .side-panel-add { align-self: flex-start; }
+.side-panel.has-vertical-tabs .side-panel-actions { display: flex; flex-shrink: 0; align-items: center; min-width: 0; border-top: 1px solid var(--surface-hover); }
+.side-panel.has-vertical-tabs .side-panel-owner { flex: 1; min-width: 0; max-width: none; }
+.side-panel.has-vertical-tabs .side-panel-add-menu { top: 6px; right: auto; left: calc(var(--side-panel-tabs-width, 172px) + 6px); }
+
+.side-panel-tab-body > .pane-shell-tab { flex: 1; min-width: 0; grid-template-rows: minmax(0, 1fr); background: var(--terminal-bg, var(--bg)); }
+.pane-shell-tab.is-pending { display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.pane-shell-tab.is-pending button { margin-left: 6px; border: 1px solid var(--border-mid); border-radius: 3px; padding: 3px 8px; background: var(--surface-raised); color: var(--text); font: inherit; cursor: pointer; }
+
 .side-panel-pr-state.open, .side-panel-pr-indicator.open { color: var(--green); }
 .side-panel-pr-state.draft, .side-panel-pr-indicator.draft { color: var(--muted); }
 .side-panel-pr-state.merged, .side-panel-pr-indicator.merged { color: var(--purple); }

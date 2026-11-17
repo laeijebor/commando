@@ -6,9 +6,11 @@ import type {
   CreateTmuxWindowRequest,
   GitRepoInfo,
   ModelCatalogs,
+  SessionCreation,
+  StartSessionCreationRequest,
   TmuxCreateResponse,
 } from '@commando/tmux-create'
-import { TMUX_CREATE_ROUTES, parseTmuxCreateResponse, requireSessionAgentLaunch } from '@commando/tmux-create'
+import { TMUX_CREATE_ROUTES, parseSessionCreation, parseTmuxCreateResponse, requireSessionAgentLaunch } from '@commando/tmux-create'
 
 import type { PrDetail } from '../pane/prs'
 import type { PrPreview } from '../pr/api'
@@ -179,8 +181,8 @@ export function screenshotImageSource(
   return Object.keys(headers).length ? { uri, headers } : { uri }
 }
 
-async function post<T>(host: Host, path: string, body: unknown, fallback: string): Promise<T> {
-  const response = await daemonFetch(host, path, { method: 'POST', body, timeoutMs: 20_000 })
+async function post<T>(host: Host, path: string, body: unknown, fallback: string, timeoutMs = 20_000): Promise<T> {
+  const response = await daemonFetch(host, path, { method: 'POST', body, timeoutMs })
   if (!response.ok) {
     throw new DaemonHttpError(response.status, await errorMessage(response, `${fallback} (${response.status})`))
   }
@@ -197,8 +199,44 @@ export function runInPane(host: Host, paneId: string, command: string): Promise<
   )
 }
 
+/** A synchronous create waits for the whole worktree checkout, which takes minutes on a large repository. */
+const SYNC_CREATE_TIMEOUT_MS = 10 * 60_000
+/** The daemon answers once the slow part starts, but probing the repository and fetching come first. */
+const START_CREATION_TIMEOUT_MS = 90_000
+
 export async function createTmuxSession(host: Host, input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> {
-  return requireSessionAgentLaunch(input, parseTmuxCreateResponse(await post(host, TMUX_CREATE_ROUTES.session, input, 'Creating the session failed')))
+  return requireSessionAgentLaunch(input, parseTmuxCreateResponse(await post(host, TMUX_CREATE_ROUTES.session, input, 'Creating the session failed', SYNC_CREATE_TIMEOUT_MS)))
+}
+
+/**
+ * `POST /api/tmux/session-creations` — done when the daemon finished quickly, else still running
+ * and reported over the socket's `session_creations`. A daemon without the route creates the
+ * session synchronously instead, answered as an already-done creation.
+ */
+export async function startSessionCreation(host: Host, input: StartSessionCreationRequest): Promise<SessionCreation> {
+  const startedAt = Date.now()
+  try {
+    const body = await post<{ creation?: unknown }>(host, TMUX_CREATE_ROUTES.sessionCreations, input, 'Creating the session failed', START_CREATION_TIMEOUT_MS)
+    return parseSessionCreation(body.creation)
+  } catch (error) {
+    if (!(error instanceof DaemonHttpError && error.status === 404)) throw error
+  }
+  const result = await createTmuxSession(host, input)
+  return { id: `sync-${startedAt}`, name: result.created.sessionName, cwd: input.cwd ?? '', stage: 'done', startedAt, result }
+}
+
+/** `POST /api/tmux/session-creations/:id/retry` — runs a failed creation again. */
+export async function retrySessionCreation(host: Host, id: string): Promise<SessionCreation> {
+  const body = await post<{ creation?: unknown }>(host, `${TMUX_CREATE_ROUTES.sessionCreations}/${encodeURIComponent(id)}/retry`, {}, 'Retrying the session failed')
+  return parseSessionCreation(body.creation)
+}
+
+/** `DELETE /api/tmux/session-creations/:id` — forgets a failed or finished creation. */
+export async function dismissSessionCreation(host: Host, id: string): Promise<void> {
+  const response = await daemonFetch(host, `${TMUX_CREATE_ROUTES.sessionCreations}/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!response.ok) {
+    throw new DaemonHttpError(response.status, await errorMessage(response, `Dismissing the session failed (${response.status})`))
+  }
 }
 
 export function createTmuxWindow(host: Host, input: CreateTmuxWindowRequest): Promise<TmuxCreateResponse> {

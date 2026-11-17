@@ -96,6 +96,8 @@ import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
 import { handleNoteVaultsApi } from './note-vaults-api.js'
 import { NoteVaultManager } from './note-vaults.js'
 import { SessionManagementApi } from './session-management-api.js'
+import { AgentSessionArchiveApi } from './agent-session-archive-api.js'
+import { auxiliarySessionIds } from '../shared/auxiliary-session.js'
 import { TmuxSessionActions } from './tmux-session-actions.js'
 import { SessionArchives } from './session-archives.js'
 import { releaseClosedSimLease, runSimTool } from './sim-lease-release.js'
@@ -111,13 +113,14 @@ import { PortManagementApi } from './port-management-api.js'
 import { ProcessTracker } from './tracked-processes.js'
 import { TrackedProcessesApi } from './tracked-processes-api.js'
 import { COMMANDO_AGENT_LAUNCHER, runTmuxCreateCommand, tmuxSocketArgsFromEnv, TmuxCreator } from './tmux-create.js'
-import { GitWorktreeService, worktreesParentFromEnv } from './git-worktree.js'
+import { GitWorktreeService, stopRunningGit, worktreesParentFromEnv } from './git-worktree.js'
 import { prepareDirectoriesWorktreeDeletion, prepareSessionWorktreeDeletion, type SessionWorktreeDeletionDependencies } from './session-worktree-deletion.js'
 import { sessionRepo } from '../shared/session-repositories.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
+import { SessionCreations } from './session-creations.js'
 import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
@@ -1000,6 +1003,14 @@ async function main(): Promise<void> {
     snapshot.panes.find((pane) => pane.id === paneId)
 
   const paneExists = (paneId: string): boolean => paneForId(paneId) !== undefined
+  const shellPaneForId = (paneId: string) =>
+    snapshot.shells?.find((shell) => shell.pane.id === paneId)?.pane
+  /**
+   * A pane a client can stream and type into: a listed one, or a Terminal-tab shell. Shells are
+   * terminals only; agent status, hooks, tabs and everything else keep to `paneForId`.
+   */
+  const streamPaneForId = (paneId: string) => paneForId(paneId) ?? shellPaneForId(paneId)
+  const streamPaneExists = (paneId: string): boolean => streamPaneForId(paneId) !== undefined
   const leasePaneExists = (paneId: string): boolean => !snapshotReady || paneExists(paneId) || previousPaneIds.has(paneId)
 
   // Chat panes: agent hosts inside tmux panes connect here (see agent-host/).
@@ -1166,7 +1177,7 @@ async function main(): Promise<void> {
         for (const client of clients) {
           if (client.socket.readyState !== WebSocket.OPEN) continue
           for (const paneId of [...client.subscribedPaneIds, ...client.statusPaneIds]) {
-            const pane = paneForId(paneId)
+            const pane = streamPaneForId(paneId)
             if (pane) {
               observedPaneIds.add(paneId)
               sessionIds.add(pane.sessionId)
@@ -1345,11 +1356,17 @@ async function main(): Promise<void> {
   }
 
   const handlePaneOutput = (sessionId: string, paneId: string, data: Buffer): void => {
-    const pane = paneForId(paneId)
+    const pane = streamPaneForId(paneId)
     if (!pane || pane.sessionId !== sessionId) return
     const subscribers = [...clients].filter((client) =>
       client.subscribedPaneIds.has(paneId),
     )
+    if (shellPaneForId(paneId)) {
+      for (const client of subscribers) {
+        if (client.paneStreams.get(paneId)?.seeding === false) sendPaneData(client, paneId, data)
+      }
+      return
+    }
     const observed =
       subscribers.length > 0 ||
       [...clients].some((client) => client.statusPaneIds.has(paneId)) ||
@@ -1453,7 +1470,7 @@ async function main(): Promise<void> {
           return
         }
 
-        const pane = paneForId(paneId)
+        const pane = streamPaneForId(paneId)
         if (!pane) return
         const generation = stream.requestedGeneration
         let delivered = false
@@ -1476,7 +1493,7 @@ async function main(): Promise<void> {
               return
             }
 
-            const currentPane = paneForId(paneId)
+            const currentPane = streamPaneForId(paneId)
             if (!currentPane || currentPane.sessionId !== pane.sessionId) return
             const normalizedCapture = normalizeCaptureLineEndings(capture)
             const normalizedNormalCapture = normalCapture
@@ -1557,7 +1574,7 @@ async function main(): Promise<void> {
     onReady: (sessionId) => {
       for (const client of clients) {
         for (const paneId of client.subscribedPaneIds) {
-          const pane = paneForId(paneId)
+          const pane = streamPaneForId(paneId)
           const stream = client.paneStreams.get(paneId)
           if (pane?.sessionId === sessionId && !stream?.task) {
             requestPaneSeed(client, paneId)
@@ -1568,7 +1585,7 @@ async function main(): Promise<void> {
     onError: (sessionId, error) => {
       for (const client of clients) {
         for (const paneId of client.subscribedPaneIds) {
-          if (paneForId(paneId)?.sessionId === sessionId) {
+          if (streamPaneForId(paneId)?.sessionId === sessionId) {
             requestPaneSeed(client, paneId)
           }
         }
@@ -1589,11 +1606,13 @@ async function main(): Promise<void> {
           if (repo) pane.repo = repo
         }
         const snapshotStateChanged = !snapshotsHaveSameState(snapshot, nextSnapshot)
+        // Terminal-tab shells are streamed like listed panes, so their reseeds are judged here too.
+        const previousStreamPanes = [...snapshot.panes, ...(snapshot.shells ?? []).map((shell) => shell.pane)]
         const previousRenderingState = new Map(
-          snapshot.panes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
+          previousStreamPanes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
         )
         const previousCommands = new Map(
-          snapshot.panes.map((pane) => [pane.id, pane.command]),
+          previousStreamPanes.map((pane) => [pane.id, pane.command]),
         )
         const previousPanes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
         const sessionRenames = detectSessionRenames(
@@ -1698,14 +1717,14 @@ async function main(): Promise<void> {
             }
           }
           for (const paneId of [...client.subscribedPaneIds]) {
-            if (!paneIds.has(paneId)) {
+            if (!streamPaneExists(paneId)) {
               client.subscribedPaneIds.delete(paneId)
               client.paneStreams.delete(paneId)
               client.paneResetGate.forget(paneId)
               client.lastStatus.delete(paneId)
               continue
             }
-            const pane = paneForId(paneId)
+            const pane = streamPaneForId(paneId)
             if (
               pane &&
               previousRenderingState.get(paneId) !== undefined &&
@@ -1759,6 +1778,18 @@ async function main(): Promise<void> {
     return refreshSnapshot()
   }
 
+  const sessionCreations = new SessionCreations(
+    async (input, onProgress) => {
+      const result = await tmuxCreator.createSession(input, undefined, onProgress)
+      // Clients finish a creation by opening the new session, so it must be in the snapshot first;
+      // a refresh already under way may have looked at tmux before the session existed. The session
+      // exists either way, so a failed refresh must not fail it: Retry would create it a second time.
+      await refreshSnapshotFresh().catch((error: unknown) => console.warn('[commando] snapshot refresh after creating a session failed', error))
+      return result
+    },
+    (creations) => broadcast({ type: 'session_creations', creations }),
+  )
+
   const sessionIdes = new SessionIdeService({
     dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides'),
     legacyDataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides', String(port)),
@@ -1786,7 +1817,7 @@ async function main(): Promise<void> {
     client.inputQueue = client.inputQueue
       .then(async () => {
         if (client.socket.readyState !== WebSocket.OPEN) return
-        if (!paneExists(paneId)) throw new Error('Pane no longer exists')
+        if (!streamPaneExists(paneId)) throw new Error('Pane no longer exists')
         await action()
       })
       .catch((error: unknown) => {
@@ -1859,6 +1890,17 @@ async function main(): Promise<void> {
     onSessionsChanged: async () => {
       await refreshSnapshot()
     },
+  })
+  const agentSessionArchiveApi = new AgentSessionArchiveApi({
+    token: agentHookToken,
+    paneSession: (paneId) => {
+      const pane = paneForId(paneId)
+      const session = pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)
+      return session ? { id: session.id, name: session.name } : null
+    },
+    sessions: () => snapshot.sessions,
+    isAuxiliary: (sessionId) => auxiliarySessionIds(snapshot.sessions, snapshot.panes).has(sessionId),
+    archive: (sessionId) => sessionManagement.archiveSession(sessionId),
   })
   const gitDiffApi = new GitDiffApi({
     inspector: new GitDiffInspector(githubOffReason
@@ -2312,6 +2354,11 @@ async function main(): Promise<void> {
       if (windowId) await tmux.releaseWindowPaneResizes(windowId)
     },
     refreshSnapshot: refreshSnapshotFresh,
+    restoreWorktree: async ({ candidates, branch, path }) => {
+      const mainRoot = await gitWorktrees.mainCheckoutFor(candidates, path, branch)
+      if (!mainRoot) throw new Error(`could not tell which repository ${path} belonged to`)
+      await gitWorktrees.createWorktree({ mainRoot, branch, path, existingBranchOnly: true })
+    },
   })
   // The first scan reads every transcript's head; do it before anyone opens the picker.
   setTimeout(() => { void chatConversations.list().catch((error: unknown) => console.warn('[commando] Could not list chat conversations', error)) }, 5_000).unref()
@@ -2426,8 +2473,8 @@ async function main(): Promise<void> {
       case 'subscribe': {
         const statusPaneIds = message.statusPaneIds ?? []
         if (
-          message.paneIds.some((paneId) => !paneExists(paneId)) ||
-          statusPaneIds.some((paneId) => !paneExists(paneId))
+          message.paneIds.some((paneId) => !streamPaneExists(paneId)) ||
+          statusPaneIds.some((paneId) => !streamPaneExists(paneId))
         ) {
           violation(client, 'invalid_pane', 'Subscription references an unknown pane')
           return
@@ -2469,7 +2516,7 @@ async function main(): Promise<void> {
           sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
           return
         }
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2485,7 +2532,7 @@ async function main(): Promise<void> {
           sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
           return
         }
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2496,7 +2543,7 @@ async function main(): Promise<void> {
         return
       }
       case 'paste': {
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2511,7 +2558,7 @@ async function main(): Promise<void> {
           sendError(client, 'rate_limited', 'Input rate limit exceeded', message.requestId)
           return
         }
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane) {
           sendError(client, 'invalid_pane', 'Pane does not exist', message.requestId)
           return
@@ -2521,7 +2568,7 @@ async function main(): Promise<void> {
         )
         return
       case 'request_pane_reset': {
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane || !client.subscribedPaneIds.has(message.paneId)) {
           sendError(
             client,
@@ -2549,7 +2596,7 @@ async function main(): Promise<void> {
         return
       }
       case 'resize_pane': {
-        const pane = paneForId(message.paneId)
+        const pane = streamPaneForId(message.paneId)
         if (!pane || !client.subscribedPaneIds.has(message.paneId)) {
           sendError(client, 'invalid_pane', 'Resize references an unavailable pane', message.requestId)
           return
@@ -2975,6 +3022,7 @@ async function main(): Promise<void> {
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
+    send(client, { type: 'session_creations', creations: sessionCreations.list() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
     for (const { paneId, runs } of externalAgents.snapshots()) send(client, { type: 'chat_external_runs', paneId, runs })
     for (const { paneId, events } of chatTileEvents.snapshots()) send(client, { type: 'chat_tile_events', paneId, events })
@@ -3088,6 +3136,7 @@ async function main(): Promise<void> {
       if (await webPanesApi.handle(request, response, url)) return
       if (await commanderApi.handle(request, response, url)) return
       if (await agentChatsApi.handle(request, response, url)) return
+      if (await agentSessionArchiveApi.handle(request, response, url)) return
       if (await redlineApi.handle(request, response, url)) return
       if (await handlePaneScreenshotImage(request, response, url, paneScreenshots)) return
       if (await handleChatImage(request, response, url, chatImages)) return
@@ -3184,6 +3233,7 @@ async function main(): Promise<void> {
           },
           () => agentProfilePreferences.claudeProfiles({ includeHidden: false }),
           () => modelCatalog.list(),
+          sessionCreations,
         )) return
         writeJson(response, 404, { error: 'Not found' })
         return
@@ -3350,6 +3400,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (shuttingDown) return
     shuttingDown = true
+    stopRunningGit()
     hostsHealth.stop()
     hostsProxy.close()
     clearInterval(snapshotTimer)

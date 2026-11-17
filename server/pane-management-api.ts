@@ -74,10 +74,10 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
-type PaneAction = 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'mark' | 'acknowledge-mark'
+type PaneAction = 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'shell' | 'mark' | 'acknowledge-mark'
 
 function paneRoute(pathname: string): { paneId: string; action: PaneAction } | null {
-  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|reveal|run|mark)(?:\/(acknowledge))?$/.exec(pathname)
+  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|reveal|run|shell|mark)(?:\/(acknowledge))?$/.exec(pathname)
   if (!match) return null
   try {
     return {
@@ -174,6 +174,14 @@ export class PaneManagementApi {
         return true
       }
 
+      if (route.action === 'shell') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const shellPaneId = await this.actions.ensureShell(route.paneId, this.dependencies.panePath(route.paneId))
+        await this.dependencies.onPanesChanged?.()
+        writeJson(response, 200, { ok: true, paneId: route.paneId, shellPaneId })
+        return true
+      }
+
       if (route.action === 'mark' || route.action === 'acknowledge-mark') {
         const targetId = this.dependencies.paneTargetId?.(route.paneId)
         if (!targetId) throw new HttpError(404, 'Pane target is unavailable')
@@ -221,6 +229,8 @@ export class PaneManagementApi {
       }
       await this.dependencies.beforePaneDeleted?.(route.paneId)
       const outcome = await this.actions.delete(route.paneId, this.dependencies.panePath(route.paneId))
+      // An emptied pane keeps its id, so its Terminal-tab shell would otherwise outlive the close.
+      await this.actions.closeShell(route.paneId).catch(() => undefined)
       await this.dependencies.onPanesChanged?.()
       writeJson(response, 200, { ok: true, paneId: route.paneId, ...(outcome === 'emptied' ? { emptied: true } : {}) })
       return true

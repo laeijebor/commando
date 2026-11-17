@@ -1,5 +1,6 @@
 import {
   TMUX_CREATE_ROUTES,
+  parseSessionCreation,
   parseTmuxCreateResponse,
   requireSessionAgentLaunch,
   type CreateTmuxPaneRequest,
@@ -8,6 +9,8 @@ import {
   type CreateTmuxWindowRequest,
   type LaunchTmuxPaneRequest,
   type ModelCatalogs,
+  type SessionCreation,
+  type StartSessionCreationRequest,
   type TmuxCreatedTarget,
   type TmuxCreateResponse,
 } from '../shared/tmux-create'
@@ -15,6 +18,13 @@ import { parseChatModelOptions } from '../shared/agent-chat'
 
 export type TmuxCreateApi = {
   createSession: (input: CreateTmuxSessionRequest) => Promise<TmuxCreateResponse>
+  /**
+   * Creates a session, answering once it is done or once its slow part (a worktree checkout) has
+   * started, after which it finishes in the background and is followed over the websocket.
+   */
+  startSession: (input: StartSessionCreationRequest) => Promise<SessionCreation>
+  retrySessionCreation: (id: string) => Promise<SessionCreation>
+  dismissSessionCreation: (id: string) => Promise<void>
   createWindow: (input: CreateTmuxWindowRequest) => Promise<TmuxCreatedTarget>
   createPane: (input: CreateTmuxPaneRequest) => Promise<TmuxCreatedTarget>
   /** Starts a shell, or `agent`, in a pane that a session started empty. */
@@ -58,13 +68,33 @@ export function createTmuxHttpApi(token: string, fetcher: typeof fetch = fetch):
       },
       body: JSON.stringify(input),
     })
-    if (!response.ok) throw new Error(await responseError(response))
+    if (!response.ok) throw Object.assign(new Error(await responseError(response)), { status: response.status })
     return response.json()
   }
   const post = async (route: string, input: object): Promise<TmuxCreateResponse> => parseTmuxCreateResponse(await send(route, input))
 
   return {
     createSession: async (input) => requireSessionAgentLaunch(input, await post(TMUX_CREATE_ROUTES.session, input)),
+    startSession: async (input) => {
+      try {
+        return parseSessionCreation(((await send(TMUX_CREATE_ROUTES.sessionCreations, input)) as { creation?: unknown }).creation)
+      } catch (error) {
+        // A daemon from before background creation: create in one request, as before.
+        if ((error as { status?: unknown }).status !== 404) throw error
+        const { groupId, ...request } = input
+        const result = parseTmuxCreateResponse(await send(TMUX_CREATE_ROUTES.session, request))
+        return { id: `sync-${result.created.sessionId}`, name: request.name, cwd: request.cwd ?? '', ...(groupId ? { groupId } : {}), stage: 'done', startedAt: Date.now(), result }
+      }
+    },
+    retrySessionCreation: async (id) => parseSessionCreation(((await send(`${TMUX_CREATE_ROUTES.sessionCreations}/${encodeURIComponent(id)}/retry`, {})) as { creation?: unknown }).creation),
+    dismissSessionCreation: async (id) => {
+      const response = await fetcher(`${TMUX_CREATE_ROUTES.sessionCreations}/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!response.ok && response.status !== 404) throw new Error(await responseError(response))
+    },
     createWindow: async (input) => (await post(TMUX_CREATE_ROUTES.window, input)).created,
     createPane: async (input) => (await post(TMUX_CREATE_ROUTES.pane, input)).created,
     launchInEmptyPane: async (input) => { await send(TMUX_CREATE_ROUTES.launch, input) },

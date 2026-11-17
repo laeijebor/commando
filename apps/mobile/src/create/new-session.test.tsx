@@ -6,7 +6,9 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import NewSessionScreen from '../../app/(host)/[hostId]/new-session'
 import { useHostsStore } from '../hosts/store'
 import { ThemeProvider } from '../theme'
-import { createTmuxSession, fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, runInPane } from '../daemon/paneApi'
+import { createTmuxSession, dismissSessionCreation, fetchClaudeProfiles, fetchModelCatalogs, fetchRepoInfo, runInPane, startSessionCreation } from '../daemon/paneApi'
+import { whenSessionCreated } from '../daemon/sessionCreations'
+import { toggleMutedSession } from '../notifications'
 import { LAUNCH_KEY, loadDirectoryHistory, rememberDirectory } from './prefs'
 
 const mockRouter = { replace: jest.fn(), back: jest.fn() }
@@ -14,7 +16,9 @@ let mockParams: Record<string, string> = { hostId: 'host-1' }
 jest.mock('expo-router', () => ({ useLocalSearchParams: () => mockParams, useRouter: () => mockRouter, useIsFocused: () => true }))
 let mockSnapshot: unknown = null
 jest.mock('../daemon/useDaemonConnection', () => ({ useDaemonConnection: () => ({ snapshot: mockSnapshot }) }))
-jest.mock('../daemon/paneApi', () => ({ createTmuxSession: jest.fn(), fetchClaudeProfiles: jest.fn(async () => []), fetchModelCatalogs: jest.fn(async () => ({})), fetchRepoInfo: jest.fn(async () => ({ isRepo: false })), runInPane: jest.fn() }))
+jest.mock('../daemon/sessionCreations', () => ({ whenSessionCreated: jest.fn() }))
+// `createTmuxSession` stands for the daemon's create: by default it finishes quickly, as a done creation.
+jest.mock('../daemon/paneApi', () => ({ createTmuxSession: jest.fn(), startSessionCreation: jest.fn(), dismissSessionCreation: jest.fn(async () => undefined), fetchClaudeProfiles: jest.fn(async () => []), fetchModelCatalogs: jest.fn(async () => ({})), fetchRepoInfo: jest.fn(async () => ({ isRepo: false })), runInPane: jest.fn() }))
 jest.mock('./prefs', () => ({
   ...jest.requireActual('./prefs'),
   loadDirectoryHistory: jest.fn(async () => []),
@@ -22,7 +26,8 @@ jest.mock('./prefs', () => ({
   rememberDirectory: jest.fn(async () => []),
   rememberPrepareCommand: jest.fn(),
 }))
-jest.mock('../notifications', () => ({ usePushStore: { getState: () => ({ rules: { mutedSessions: [] } }) }, toggleMutedSession: jest.fn() }))
+const mockSetRules = jest.fn(async () => undefined)
+jest.mock('../notifications', () => ({ usePushStore: { getState: () => ({ rules: { mutedSessions: [] }, setRules: mockSetRules }) }, toggleMutedSession: jest.fn() }))
 jest.mock('../chat/clipboard', () => ({ ...jest.requireActual('../chat/clipboard'), useClipboardImage: () => ({ available: false, recheck: jest.fn(), dismiss: jest.fn() }) }))
 const mockImageRef = { id: `${'e'.repeat(64)}.png`, name: 'shot.png' }
 jest.mock('../chat/images', () => ({
@@ -43,6 +48,7 @@ beforeEach(() => {
   mockSnapshot = null
   ;(loadDirectoryHistory as jest.Mock).mockResolvedValue([])
   ;(createTmuxSession as jest.Mock).mockImplementation(async (_host: unknown, input: CreateTmuxSessionRequest) => ({ created, ...(input.agent ? { agentLaunch: { version: 1, provider: input.agent.provider, paneId: created.paneId, mode: 'interactive-pty', state: 'initiated' } } : {}) }))
+  ;(startSessionCreation as jest.Mock).mockImplementation(async (host: unknown, input: CreateTmuxSessionRequest) => ({ id: 'c1', name: input.name, cwd: input.cwd ?? '', stage: 'done', startedAt: 0, result: await (createTmuxSession as jest.Mock)(host, input) }))
   ;(rememberDirectory as jest.Mock).mockResolvedValue([])
   ;(fetchClaudeProfiles as jest.Mock).mockResolvedValue([])
   ;(fetchModelCatalogs as jest.Mock).mockResolvedValue({})
@@ -97,6 +103,24 @@ it('resets the form after a create, so the next visit is not stuck on a spinner'
   // Ready again once a name is typed: no spinner, no "Open session" left over.
   fireEvent.changeText(screen.getByLabelText('Name'), 'next')
   expect(screen.getByRole('button', { name: 'Create' }).props.accessibilityState.disabled).toBe(false)
+})
+
+it('leaves for the chat list while a slow worktree checkout runs, and sets the push rule once it is done', async () => {
+  ;(startSessionCreation as jest.Mock).mockResolvedValue({ id: 'c1', name: 'cursor', cwd: '', stage: 'checking-out', percent: 3, startedAt: 0 })
+  await openScreen()
+  fireEvent.press(screen.getByRole('switch', { name: 'Notify me when it needs input or finishes' }))
+  await create()
+  expect(mockRouter.back).toHaveBeenCalledTimes(1)
+  expect(mockRouter.replace).not.toHaveBeenCalled()
+  expect(rememberDirectory).toHaveBeenCalled()
+  expect(screen.getByLabelText('Name').props.value).toBe('')
+  expect(whenSessionCreated).toHaveBeenCalledWith('host-1', 'c1', expect.any(Function))
+  expect(toggleMutedSession).not.toHaveBeenCalled()
+  const finish = (whenSessionCreated as jest.Mock).mock.calls[0][2] as (result: { created: typeof created }) => Promise<void>
+  await finish({ created: { ...created, sessionName: 'cursor-2' } })
+  expect(toggleMutedSession).toHaveBeenCalledWith({ mutedSessions: [] }, 'cursor-2')
+  expect(mockSetRules).toHaveBeenCalledTimes(1)
+  expect(dismissSessionCreation).toHaveBeenCalledWith(expect.objectContaining({ id: 'host-1' }), 'c1')
 })
 
 it('keeps the form and shows creation errors without detached launch or navigation', async () => {

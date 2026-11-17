@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { PassThrough } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
@@ -12,7 +12,7 @@ import { buildChatResumeCommand, buildChatReturnCommand } from './agent-resume-c
 import type { ConversationBriefRecord } from './session-briefs.js'
 import { AgentStatusRegistry } from './agent-status-registry.js'
 import { inferAgentProcessStatus } from './agent-status.js'
-import { ChatConversationsApi } from './chat-conversations-api.js'
+import { ChatConversationsApi, deletedWorktreeLocation } from './chat-conversations-api.js'
 import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
@@ -46,7 +46,7 @@ function openAgentSessions(registry: AgentStatusRegistry, panes: Pick<TmuxPane, 
   }).provider) ?? [])
 }
 
-function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: (Pick<TmuxPane, 'id'> & Partial<Pick<TmuxPane, 'sessionId' | 'windowId' | 'index' | 'repo' | 'command'>>)[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'loadReadOnly'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; agentSessions?: AgentStatus[] | (() => AgentStatus[]); serverId?: string; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: (Pick<TmuxPane, 'id'> & Partial<Pick<TmuxPane, 'sessionId' | 'windowId' | 'index' | 'repo' | 'command'>>)[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'loadReadOnly'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; agentSessions?: AgentStatus[] | (() => AgentStatus[]); serverId?: string; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>; listed?: Partial<ChatConversation>[]; restoreWorktree?: (worktree: { candidates: string[]; branch: string; path: string }) => Promise<void> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
   const chats = options.chats ?? [chat()]
   const creator = {
@@ -56,7 +56,7 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     createPane: vi.fn(async () => ({ paneId: '%9' }) as never),
   }
   const api = new ChatConversationsApi({
-    index: { list: vi.fn(async () => [conversation]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
+    index: { list: vi.fn(async () => [conversation, ...(options.listed ?? []).map((entry, index) => ({ ...conversation, sessionId: `listed-${index}`, ...entry }))]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
     resumes: { findConversation: (provider, sessionId) => options.resumeRecord ? { targetId: 'target', provider, sessionId, path: folder, command: 'env codex resume ' + ID, serverId: 'test', updatedAt: 1, ...options.resumeRecord } : undefined },
     briefs: { conversationRecords: () => options.records ?? [] },
     sessionPreferences: options.sessionPreferences ?? { loadReadOnly: async () => ({ version: 1, groups: options.groups ?? [], ungroupedSessionIds: [], groupingMode: options.groupingMode }) },
@@ -68,6 +68,7 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
     refreshSnapshot: vi.fn(async () => {}),
+    ...(options.restoreWorktree ? { restoreWorktree: options.restoreWorktree } : {}),
   })
   const resume = async (input: Record<string, unknown>) => {
     const { fake, result } = response()
@@ -354,6 +355,56 @@ describe('ChatConversationsApi', () => {
     expect(await gone.resume({})).toMatchObject({ status: 409, body: { error: expect.stringContaining('no longer exists') } })
     expect(await setup().resume({ placement: 'elsewhere' })).toMatchObject({ status: 400 })
     expect(open.creator.respawnChatPane).not.toHaveBeenCalled()
+  })
+
+  describe('a closed chat whose worktree was deleted', () => {
+    const recreate = () => vi.fn(async (worktree: { candidates: string[]; path: string }) => { await mkdir(join(worktree.path, 'web'), { recursive: true }) })
+
+    it('checks its branch out again where it was, then reopens in its folder', async () => {
+      await mkdir(join(folder, 'app'))
+      const cwd = join(folder, 'app-worktrees', 'feature', 'plan', 'web')
+      const restoreWorktree = recreate()
+      const { creator, resume } = setup({ conversation: { cwd, branch: 'feature/plan' }, restoreWorktree })
+      expect(await resume({})).toMatchObject({ status: 200, body: { paneId: '%1' } })
+      expect(restoreWorktree).toHaveBeenCalledWith({ candidates: [join(folder, 'app')], branch: 'feature/plan', path: join(folder, 'app-worktrees', 'feature', 'plan') })
+      expect(creator.respawnChatPane).toHaveBeenCalledWith('%1', cwd, expect.anything())
+    })
+
+    it('offers main checkouts kept apart from their worktrees, named by other chats in a repo of that name', async () => {
+      for (const root of ['code/app', 'oss/app', 'code/other']) await mkdir(join(folder, root), { recursive: true })
+      const restoreWorktree = recreate()
+      const listed = ['code/other', 'code/app', 'oss/app', 'gone/app'].map((root) => ({ repoRoot: join(folder, root) }))
+      const { resume } = setup({ conversation: { cwd: join(folder, 'trees', 'app-worktrees', 'plan'), branch: 'plan' }, listed, restoreWorktree })
+      expect((await resume({})).status).toBe(200)
+      expect(restoreWorktree).toHaveBeenCalledWith({ candidates: [join(folder, 'code', 'app'), join(folder, 'oss', 'app')], branch: 'plan', path: join(folder, 'trees', 'app-worktrees', 'plan') })
+    })
+
+    it('says why when the branch cannot be checked out again', async () => {
+      await mkdir(join(folder, 'app'))
+      const cwd = join(folder, 'app-worktrees', 'plan')
+      const { creator, resume } = setup({ conversation: { cwd, branch: 'plan' }, restoreWorktree: vi.fn(async () => { throw new Error('Branch plan no longer exists') }) })
+      expect(await resume({})).toMatchObject({ status: 409, body: { error: `Its folder no longer exists: ${cwd}. Could not check out plan there again: Branch plan no longer exists` } })
+      expect(creator.respawnChatPane).not.toHaveBeenCalled()
+    })
+
+    it('leaves folders that were not Commando worktrees, or have no branch, as missing', async () => {
+      await mkdir(join(folder, 'app'))
+      for (const conversation of [{ cwd: join(folder, 'app-worktrees', 'plan') }, { cwd: join(folder, 'scratch', 'plan'), branch: 'plan' }, { cwd: join(folder, 'nowhere-worktrees', 'plan'), branch: 'plan' }]) {
+        const restoreWorktree = recreate()
+        expect(await setup({ conversation, restoreWorktree }).resume({})).toMatchObject({ status: 409, body: { error: `Its folder no longer exists: ${conversation.cwd}` } })
+        expect(restoreWorktree).not.toHaveBeenCalled()
+      }
+    })
+  })
+
+  it.each([
+    ['/r/app-worktrees/plan', 'plan', { path: '/r/app-worktrees/plan', repo: 'app', siblingMainRoot: '/r/app' }],
+    ['/r/app-worktrees/feature/x/web/src', 'feature/x', { path: '/r/app-worktrees/feature/x', repo: 'app', siblingMainRoot: '/r/app' }],
+    ['/r/app-worktrees/feature/x', 'x', undefined],
+    ['/r/-worktrees/plan', 'plan', undefined],
+    ['/r/app/plan', 'plan', undefined],
+  ] as const)('locates the deleted worktree of %s on %s', (folderPath, branch, expected) => {
+    expect(deletedWorktreeLocation(folderPath, branch)).toEqual(expected)
   })
 
   it.each(['claude', 'codex', 'muse', 'cursor', 'opencode'] as const)('refuses a hook-reported %s conversation in another live pane after the reservation expires', async (provider) => {

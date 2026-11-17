@@ -117,6 +117,7 @@ import { THEMES, activeTheme, applyTheme, onThemeChange, storedTheme, type Theme
 import { type ConnectionPhase, useDaemon } from './useDaemon'
 import { useChatPaneMeasurement } from './chatPaneMeasurement'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
+import { PaneShellTab } from './PaneShellTab'
 import { LinearSection } from './LinearSection'
 import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
@@ -177,7 +178,7 @@ import { CHAT_SEND_REFUSAL_MS, type ChatDraft, type ChatInputServices, type Chat
 import { PaneAgentSwitch, paneChatHandoff } from './PaneAgentSwitch'
 import { openPullRequestsForPane, saveChatPlan, stashChatPlan, uploadChatImage, uploadChatVideo } from './chatInputApi'
 import { loadChatLaunch } from './chatLaunchPreferences'
-import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch } from '../shared/tmux-create'
+import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch, type SessionCreation } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
   hostTakesMcp,
@@ -1167,6 +1168,7 @@ function HostApp() {
   const [commanderOpening, setCommanderOpening] = useState(false)
   const commanderStateVersion = useRef(0)
   const [agentResumes, setAgentResumes] = useState<Record<string, AgentResume>>({})
+  const [sessionCreations, setSessionCreations] = useState<SessionCreation[]>([])
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
   const [tileEvents, setTileEvents] = useState<Record<string, ChatCardEvent[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
@@ -1216,6 +1218,12 @@ function HostApp() {
   const [webPanes, setWebPanes] = useState<WebPane[]>([])
   const [simulatorNames, setSimulatorNames] = useState<Record<string, string>>({})
   const [webPaneTitles, setWebPaneTitles] = useState<Record<string, string>>({})
+  /** Terminal-tab shells on screen now; their output is streamed only while they are. */
+  const [visibleShellIds, setVisibleShellIds] = useState<readonly string[]>([])
+  const reportShellVisible = useCallback((shellPaneId: string, visible: boolean) => {
+    setVisibleShellIds((current) => current.includes(shellPaneId) === visible ? current
+      : visible ? [...current, shellPaneId] : current.filter((id) => id !== shellPaneId))
+  }, [])
   const panelTabSets = useRef(new Map<string, PanelTab[]>())
   const rememberPanelTabs = useCallback((tabs: PanelTab[]) => {
     setMaximizedBuiltinTab((current) => current && !tabs.some((tab) => tab.id === current.id) ? null : current)
@@ -1592,6 +1600,9 @@ function HostApp() {
       case 'agent_resume':
         setAgentResumes((current) => ({ ...current, [message.resume.targetId]: message.resume }))
         break
+      case 'session_creations':
+        setSessionCreations(message.creations)
+        break
       case 'agent_resume_snapshot':
         setAgentResumes(Object.fromEntries(message.resumes.map((resume) => [resume.targetId, resume])))
         break
@@ -1746,6 +1757,9 @@ function HostApp() {
               : current)
           }
         }
+        // A Terminal-tab shell another client is sizing just keeps that size: it is not part of
+        // this window's layout, so it raises no layout error and no grid retry.
+        if (message.requestId?.startsWith('shell-resize-')) break
         if (
           message.code === 'tmux_layout_failed' ||
           message.code === 'invalid_window_layout' ||
@@ -1977,7 +1991,13 @@ function HostApp() {
         .filter((pane) => pane.sessionId === selectedSessionId && !subscribedPaneIds.includes(pane.id))
         .map((pane) => pane.id)
     : []
-  const subscriptionKey = subscribedPaneIds.join('\u0000')
+  // The daemon rejects a subscription to a pane it no longer lists, so a shell that ended is dropped here.
+  const shellSubscriptionIds = area === 'workspace'
+    ? visibleShellIds.filter((id) => snapshot?.shells?.some((shell) => shell.pane.id === id))
+    : []
+  const subscriptionKey = [...subscribedPaneIds, ...shellSubscriptionIds].join('\u0000')
+  const shellSubscriptionIdsRef = useRef(shellSubscriptionIds)
+  shellSubscriptionIdsRef.current = shellSubscriptionIds
   const statusSubscriptionKey = statusOnlyPaneIds.join('\u0000')
   // The selected session's panes are in front of the user while the window is
   // active, so a turn that ended there is seen rather than left to review.
@@ -3929,6 +3949,22 @@ function HostApp() {
     const pane = paneMap.get(tab.anchorPaneId)
     if (!pane) return null
     const onOpenInIde = local ? (file: string) => openFileInSessionIde(pane.sessionId, pane.id, file) : undefined
+    if (tab.key === 'terminal') {
+      const shell = snapshot?.shells?.find((candidate) => candidate.anchorPaneId === pane.id)?.pane
+      return <PaneShellTab key={pane.targetId} shell={shell} visible={visible} connected={connected}
+        streaming={Boolean(shell && shellSubscriptionIds.includes(shell.id))} resizeActive={resizeAuthorityActive}
+        ensureShell={() => paneManagementApi.ensurePaneShell(pane.id)} onVisible={reportShellVisible}
+        terminal={{
+          onInput: sendPaneInput, onInputBytes: sendPaneInputBytes, onKey: sendPaneKey, onPaste: sendPanePaste,
+          // A terminal measures itself as it mounts, before this render's subscription is sent;
+          // the daemon only sizes panes the client is subscribed to, so the resize follows it.
+          onResize: (paneId, cols, rows) => { window.setTimeout(() => {
+            if (resizeAuthorityActiveRef.current && shellSubscriptionIdsRef.current.includes(paneId)) send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('shell-resize') })
+          }, 0) },
+          onRelease: (paneId) => { if (connected) send({ type: 'release_resize', paneId, requestId: requestId('shell-release') }) },
+          onRequestReset: requestPaneReset, onSelectionCopied: () => {}, registerSink: registerTerminalSink,
+        }} />
+    }
     if (tab.key === 'changes') return <GitDiffView paneId={pane.id} panePath={pane.path} api={gitDiffApi} initialSummary={data.summary} visible={visible} onOpenInIde={onOpenInIde} />
     const identity = parsePrPanelKey(tab.key)
     if (identity) {
@@ -4202,9 +4238,13 @@ function HostApp() {
               onOpenIde={local ? (sessionId) => { void openSessionIde(sessionId) } : undefined}
               onResumeChat={resumeSessionChat}
               actionsRef={sessionActionsRef}
+              creations={sessionCreations}
               creation={{
                 disabled: !connected,
                 onCreateSession: tmuxCreateApi.createSession,
+                onStartSession: tmuxCreateApi.startSession,
+                onRetryCreation: tmuxCreateApi.retrySessionCreation,
+                onDismissCreation: tmuxCreateApi.dismissSessionCreation,
                 probeRepo: (directory) => gitDiffApi.repo(directory),
                 loadClaudeProfiles: tmuxCreateApi.claudeProfiles,
                 loadModelCatalogs: tmuxCreateApi.models,

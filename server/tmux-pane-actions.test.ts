@@ -53,4 +53,34 @@ describe('tmux pane actions', () => {
     await expect(actions.delete('%12;kill-server')).rejects.toThrow('Invalid tmux pane id')
     expect(execute).not.toHaveBeenCalled()
   })
+
+  it('starts a marked shell session in the pane folder, and reuses it afterwards', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>()
+      .mockResolvedValueOnce({ stdout: '$1 \n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '%30\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '$1 \n$7 %12\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '%30\n', stderr: '' })
+    const actions = new TmuxPaneActions(execute, {})
+
+    await expect(actions.ensureShell('%12', '/work/app')).resolves.toBe('%30')
+    await expect(actions.ensureShell('%12', '/work/app')).resolves.toBe('%30')
+
+    expect(execute.mock.calls.map((call) => call[1])).toEqual([
+      ['list-sessions', '-F', '#{session_id} #{@commando_shell}'],
+      ['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', 'commando-shell-12', '-c', '/work/app',
+        ';', 'set-option', '-t', '=commando-shell-12:', '@commando_shell', '%12'],
+      ['list-sessions', '-F', '#{session_id} #{@commando_shell}'],
+      ['list-panes', '-t', '$7', '-F', '#{pane_id}'],
+    ])
+  })
+
+  it('ends only the shell session marked for the pane', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '$1 \n$7 %12\n$8 %13\n', stderr: '' })
+    const actions = new TmuxPaneActions(execute, {})
+
+    await actions.closeShell('%12')
+    await actions.closeShell('%14')
+
+    expect(execute.mock.calls.map((call) => call[1]).filter((args) => args[0] === 'kill-session')).toEqual([['kill-session', '-t', '$7']])
+  })
 })

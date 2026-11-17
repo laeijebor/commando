@@ -101,7 +101,7 @@ describe('SidePanel', () => {
     expect(screen.getAllByRole('button', { name: 'Open PRs' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Open PRs' }))
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'pr:acme:widgets:4' }))
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', '#4', '#3', '#2', '#1'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', 'Terminal', '#4', '#3', '#2', '#1'])
     expect(screen.getByRole('tab', { name: '#4 open' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getAllByRole('button', { name: /Close PR #\d+ tab/ })).toHaveLength(4)
     expect(screen.queryByRole('button', { name: 'Close Session' })).not.toBeInTheDocument()
@@ -123,7 +123,7 @@ describe('SidePanel', () => {
     expect(screen.getByRole('tab', { name: '#3 draft' })).toHaveAttribute('aria-selected', 'true')
     prs = []
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Session', 'Terminal'])
     expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -618,5 +618,40 @@ describe('narrow tabs drawer', () => {
     render(<Drawer />)
     fireEvent.click(screen.getByRole('button', { name: 'Pane tabs' }))
     expect(screen.getByRole('separator', { name: 'Resize tabs drawer' })).toHaveAttribute('aria-valuenow', '60')
+  })
+
+  it('switches the tab strip to a column for every panel, and back, but never in the narrow drawer', () => {
+    localStorage.setItem('commando.side-panel.collapsed.@1', 'false')
+    const view = render(panel())
+    const side = () => view.container.querySelector('.side-panel')!
+    expect(screen.getByRole('tablist')).toHaveAttribute('aria-orientation', 'horizontal')
+    fireEvent.click(screen.getByRole('button', { name: 'Show tabs down the side' }))
+    expect(screen.getByRole('tablist')).toHaveAttribute('aria-orientation', 'vertical')
+    expect(side()).toHaveClass('has-vertical-tabs')
+    expect(localStorage.getItem('commando.side-panel.tabs-orientation')).toBe('vertical')
+
+    view.rerender(<SidePanel windowId="@1" narrowMode drawerOpen tabs={tabs} focusedPaneId="%12" paneLabel="pane" simulatorNames={{}} titles={{}}
+      onSelect={() => undefined} onClose={() => undefined} onOpen={vi.fn()} renderTab={() => null}>{null}</SidePanel>)
+    expect(side()).not.toHaveClass('has-vertical-tabs')
+    expect(screen.queryByRole('button', { name: /Show tabs/ })).not.toBeInTheDocument()
+
+    view.rerender(panel())
+    fireEvent.click(screen.getByRole('button', { name: 'Show tabs along the top' }))
+    expect(side()).not.toHaveClass('has-vertical-tabs')
+    expect(localStorage.getItem('commando.side-panel.tabs-orientation')).toBe('horizontal')
+  })
+
+  it('always offers a Terminal tab and renders its body only once it is opened', () => {
+    localStorage.setItem('commando.side-panel.collapsed.@1', 'false')
+    const renderBuiltin = vi.fn((tab: { key: string }) => <p>{`body of ${tab.key}`}</p>)
+    const element = (stored: string) => <SidePanel windowId="@1" tabs={[]} focusedPaneId="%12" activeTabs={{ '%12': stored }} paneLabel="pane" simulatorNames={{}} titles={{}}
+      onSelect={() => undefined} onClose={() => undefined} onOpen={vi.fn()} renderTab={() => null} renderBuiltin={renderBuiltin}>{null}</SidePanel>
+    const view = render(element('session'))
+    expect(screen.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.queryByText('body of terminal')).not.toBeInTheDocument()
+    view.rerender(element('terminal'))
+    expect(screen.getByText('body of terminal')).toBeVisible()
+    view.rerender(element('session'))
+    expect(screen.getByText('body of terminal')).not.toBeVisible()
   })
 })
