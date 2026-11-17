@@ -60,6 +60,7 @@ const defaultExecutor: TmuxProcessExecutor = (file, args, options) =>
 
 export class TmuxPaneActions {
   private readonly socketArgs: string[]
+  private readonly startingShells = new Map<string, Promise<string>>()
 
   constructor(
     private readonly execute: TmuxProcessExecutor = defaultExecutor,
@@ -100,8 +101,15 @@ export class TmuxPaneActions {
    * The pane's Terminal-tab shell: a detached session of its own, so it never reflows the
    * pane's window. Started in `cwd` on first use and reused afterwards.
    */
-  async ensureShell(paneId: string, cwd?: string): Promise<string> {
+  ensureShell(paneId: string, cwd?: string): Promise<string> {
     const anchor = validateTmuxPaneId(paneId)
+    // Two clients opening the tab at once share one start, or the second would collide on the name.
+    const pending = this.startingShells.get(anchor) ?? this.startShell(anchor, cwd).finally(() => this.startingShells.delete(anchor))
+    this.startingShells.set(anchor, pending)
+    return pending
+  }
+
+  private async startShell(anchor: string, cwd?: string): Promise<string> {
     const existing = await this.shellSession(anchor)
     if (existing) {
       const shellPaneId = (await this.run(['list-panes', '-t', existing, '-F', '#{pane_id}'])).split('\n', 1)[0].trim()
@@ -111,7 +119,7 @@ export class TmuxPaneActions {
     // One tmux command list, so the session is never listed without its marker.
     const created = (await this.run([
       'new-session', '-d', '-P', '-F', '#{pane_id}', '-s', name, ...(cwd ? ['-c', cwd] : []),
-      ';', 'set-option', '-t', `=${name}`, PANE_SHELL_OPTION, anchor,
+      ';', 'set-option', '-t', `=${name}:`, PANE_SHELL_OPTION, anchor,
     ])).trim()
     if (!PANE_ID.test(created)) throw new TmuxPaneActionError('tmux did not report the new shell pane')
     return created

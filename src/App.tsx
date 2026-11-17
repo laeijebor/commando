@@ -1988,6 +1988,8 @@ function HostApp() {
     ? visibleShellIds.filter((id) => snapshot?.shells?.some((shell) => shell.pane.id === id))
     : []
   const subscriptionKey = [...subscribedPaneIds, ...shellSubscriptionIds].join('\u0000')
+  const shellSubscriptionIdsRef = useRef(shellSubscriptionIds)
+  shellSubscriptionIdsRef.current = shellSubscriptionIds
   const statusSubscriptionKey = statusOnlyPaneIds.join('\u0000')
   // The selected session's panes are in front of the user while the window is
   // active, so a turn that ended there is seen rather than left to review.
@@ -3945,7 +3947,11 @@ function HostApp() {
         ensureShell={() => paneManagementApi.ensurePaneShell(pane.id)} onVisible={reportShellVisible}
         terminal={{
           onInput: sendPaneInput, onInputBytes: sendPaneInputBytes, onKey: sendPaneKey, onPaste: sendPanePaste,
-          onResize: (paneId, cols, rows) => { send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('shell-resize') }) },
+          // A terminal measures itself as it mounts, before this render's subscription is sent;
+          // the daemon only sizes panes the client is subscribed to, so the resize follows it.
+          onResize: (paneId, cols, rows) => { window.setTimeout(() => {
+            if (shellSubscriptionIdsRef.current.includes(paneId)) send({ type: 'resize_pane', paneId, cols, rows, requestId: requestId('shell-resize') })
+          }, 0) },
           onRequestReset: requestPaneReset, onSelectionCopied: () => {}, registerSink: registerTerminalSink,
         }} />
     }

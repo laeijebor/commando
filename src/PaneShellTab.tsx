@@ -61,11 +61,13 @@ export function PaneShellTab({ shell, visible, connected, streaming, resizeActiv
         : <p role="status">{connected ? 'Starting a shell…' : 'Reconnect to start a shell.'}</p>}
     </div>
   }
-  const sizing = visible && streaming && resizeActive
+  // The daemon refuses resets and resizes for a pane this client is not subscribed to, so the
+  // terminal mounts with the subscription and is seeded afresh each time the tab is shown.
+  if (!visible || !streaming) return <div className="pane-shell-tab" />
   return <div className="terminal-pane-body pane-shell-tab">
     <TerminalPaneRenderer
       paneId={shell.id} cols={shell.width} rows={shell.height} terminalState={shell}
-      connected={connected} resizeOwner={sizing} measurementKey={`shell:${sizing}`}
+      connected={connected} resizeOwner={resizeActive} measurementKey={`shell:${resizeActive}`}
       ariaLabel={`Terminal tab input${connected ? '' : ', disconnected'}`}
       // The desktop app's native terminal views belong to the pane grid; a tab uses xterm.
       order={0} useXtermFallback

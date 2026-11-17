@@ -1589,11 +1589,13 @@ async function main(): Promise<void> {
           if (repo) pane.repo = repo
         }
         const snapshotStateChanged = !snapshotsHaveSameState(snapshot, nextSnapshot)
+        // Terminal-tab shells are streamed like listed panes, so their reseeds are judged here too.
+        const previousStreamPanes = [...snapshot.panes, ...(snapshot.shells ?? []).map((shell) => shell.pane)]
         const previousRenderingState = new Map(
-          snapshot.panes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
+          previousStreamPanes.map((pane) => [pane.id, paneRenderingFingerprint(pane)]),
         )
         const previousCommands = new Map(
-          snapshot.panes.map((pane) => [pane.id, pane.command]),
+          previousStreamPanes.map((pane) => [pane.id, pane.command]),
         )
         const previousPanes = new Map(snapshot.panes.map((pane) => [pane.id, pane]))
         const sessionRenames = detectSessionRenames(
@@ -1698,7 +1700,7 @@ async function main(): Promise<void> {
             }
           }
           for (const paneId of [...client.subscribedPaneIds]) {
-            if (!paneIds.has(paneId)) {
+            if (!paneExists(paneId)) {
               client.subscribedPaneIds.delete(paneId)
               client.paneStreams.delete(paneId)
               client.paneResetGate.forget(paneId)
