@@ -22,7 +22,7 @@ import type { AgentChatRequest } from '../shared/agent-chats'
 import './session-ide.css'
 import type { PrsApiClient } from './prsApi'
 import { SessionPrCount } from './SessionPrCount'
-import { paneAttention, paneAttentionLabels, sessionIndicator } from './sessionIndicator'
+import { compactAge, isQuiet, isUnread, needsYou, paneAttention, paneAttentionLabels, sessionAttention, sessionIndicator } from './sessionIndicator'
 import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE } from './sessionProcesses'
 import type { TrackedProcess } from '../shared/tracked-processes'
 import { createTrackedProcessesApi, useTrackedProcesses } from './trackedProcessesApi'
@@ -63,6 +63,8 @@ type Props = {
   marks?: Record<string, PaneMark>
   /** When the user last viewed each pane, by daemon clock. */
   seen?: Record<string, number>
+  /** When each pane's agent last did real work, by daemon clock. */
+  activity?: Record<string, number>
   agentChatRequests?: Record<string, AgentChatRequest>
   /** Leased simulators keyed by pane id. */
   simulators?: Record<string, SimulatorClaim>
@@ -108,6 +110,18 @@ function statusLabel(status: AgentStatus, seenAt: number | undefined, pane: Tmux
 function markLabel(mark: PaneMark, pane: TmuxPane): string {
   return `${mark.label}${mark.activityCount ? `, ${mark.activityCount} ${mark.activityCount === 1 ? 'activity' : 'activities'} since mark` : ''} - ${paneLabel(pane)}`
 }
+
+/** Ages in the tree are shown to the minute. */
+function useMinuteClock(): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  return now
+}
+
+const attentionPill: Partial<Record<string, string>> = { needs_input: 'Needs you', failed: 'Failed' }
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
 const processCount = (count: number) => `${count} process${count === 1 ? '' : 'es'}`
@@ -196,6 +210,9 @@ export function SessionTree(props: Props) {
   const preferenceSaveVersion = useRef(0)
   const marks = props.marks ?? {}
   const seen = props.seen ?? {}
+  const activity = props.activity ?? {}
+  const now = useMinuteClock()
+  const attentionOf = (sessionId: string) => sessionAttention(props.panes.filter((pane) => pane.sessionId === sessionId), props.statuses, seen, activity)
   const lineageSnapshot = { panes: props.panes, sessions: props.sessions }
   const displayedPaneOrder = new Map(props.displayedPaneIds.map((paneId, index) => [paneId, index]))
   const sessionMap = new Map(props.sessions.map((session) => [session.id, session]))
@@ -580,6 +597,19 @@ export function SessionTree(props: Props) {
     .map((creation) => <SessionCreationRow key={creation.id} creation={creation}
       onRetry={props.creation?.onRetryCreation ?? (async () => undefined)} onDismiss={props.creation?.onDismissCreation ?? (async () => undefined)} />)
 
+  // Blocked or failed sessions, then turns that ended since you looked.
+  const containerCounts = (sessionIds: readonly string[]) => {
+    const attentions = sessionIds.filter((id) => sessionMap.has(id)).map((id) => attentionOf(id).attention)
+    const blocked = attentions.filter(needsYou).length
+    const unread = attentions.filter((attention) => attention === 'review').length
+    if (!blocked && !unread) return null
+    const label = [blocked ? `${blocked} need${blocked === 1 ? 's' : ''} you` : '', unread ? `${unread} finished since you looked` : ''].filter(Boolean).join(' · ')
+    return <span className="session-group-counts" title={label} aria-label={label}>
+      {blocked ? <span className="needs-you">{blocked}</span> : null}
+      {unread ? <span className="unread">{unread}</span> : null}
+    </span>
+  }
+
   const openMenu = (sessionId: string, x: number, y: number) => setMenu({ sessionId, x, y })
   const menuKey = (event: KeyboardEvent, sessionId: string) => {
     if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
@@ -717,8 +747,10 @@ export function SessionTree(props: Props) {
           const simulator = simulatorPane && props.simulators?.[simulatorPane.id]
           const devices = sessionPanes.flatMap((pane) => props.devices?.[pane.id] ?? [])
           const holding = devices.filter((device) => device.state === 'held')
+          const attention = sessionAttention(sessionPanes, props.statuses, seen, activity)
+          const attentionClass = `${needsYou(attention.attention) ? ` needs-you attention-${attention.attention}` : ''}${isUnread(attention.attention) ? ' unread' : ''}${!selected && isQuiet(attention, now) ? ' quiet' : ''}`
           return <article
-            className={`managed-session${selected ? ' selected' : ''}${draggedSessionId === session.id ? ' dragging' : ''}${dropMarkerClass(session.id)}`}
+            className={`managed-session${selected ? ' selected' : ''}${attentionClass}${draggedSessionId === session.id ? ' dragging' : ''}${dropMarkerClass(session.id)}`}
             draggable={container.kind !== 'auxiliary'}
             onDragStart={(event) => {
               event.dataTransfer?.setData('text/plain', session.id)
@@ -737,7 +769,7 @@ export function SessionTree(props: Props) {
                 aria-label={indicatorLabel}
                 title={indicatorLabel}
               /> : <span className="session-indicator" aria-hidden="true" />}
-              <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={[`${session.name} — ${identity.codename}`, branch, `${plural(session.windowIds.length, 'window')} / ${plural(sessionPanes.length, 'pane')}`].filter(Boolean).join(' · ')}><SessionAvatar identity={identity} /><span className="session-identity-name">{session.name}</span></button>
+              <button type="button" className="managed-session-main" onClick={() => props.onSelectSession(session.id)} onContextMenu={(event) => { event.preventDefault(); openMenu(session.id, event.clientX, event.clientY) }} onKeyDown={(event) => menuKey(event, session.id)} aria-current={selected || undefined} title={[`${session.name} — ${identity.codename}`, branch, `${plural(session.windowIds.length, 'window')} / ${plural(sessionPanes.length, 'pane')}`, attention.reason].filter(Boolean).join(' · ')}><SessionAvatar identity={identity} /><span className="session-row-text"><span className="session-identity-name">{session.name}</span>{attention.reason ? <span className="session-row-reason">{attention.reason}</span> : null}</span></button>
               <span className="session-row-meta">
                 {props.prsApi ? <SessionPrCount paneIds={sessionPanes.map((pane) => pane.id)} api={props.prsApi} previewApi={props.prsApi} enabled={props.connected ?? true} sessionName={session.name} liveTargetIds={liveTargetIds} onJumpToTarget={jumpToTarget} /> : null}
                 {ide ? <button type="button" className={`session-ide-glyph state-${ide.state}`} aria-pressed={props.ideSessionId === session.id} aria-label={`Open attached IDE for ${session.name}`} title={`${ide.state === 'ready' ? 'IDE attached' : ide.state === 'starting' ? 'IDE starting' : 'IDE failed'} · ${ide.workspacePath}`} onClick={() => props.onOpenIde?.(session.id)}><Code2 /></button> : null}
@@ -748,6 +780,8 @@ export function SessionTree(props: Props) {
                   title={devices.map((device) => device.state === 'held' ? `Holding ${device.name}` : device.state === 'offered' ? `${device.name} offered` : `Waiting for ${device.name} (#${device.position})`).join(' · ')}
                   onClick={() => props.onShowDevices?.()}><SmartphoneCharging /></button> : null}
                 {simulator && simulatorPane ? <button type="button" className={`session-sim-glyph${simulator.idle ? ' idle' : ''}`} aria-label={`Show leased simulator for ${session.name}`} title={`Simulator · ${simulator.label}${simulator.task ? ` · ${simulator.task}` : ''}`} onClick={() => props.onShowSimulator?.(simulator.udid, simulatorPane.id)}><Smartphone /></button> : null}
+                {attention.attention && attentionPill[attention.attention] ? <span className={`session-attention-pill attention-${attention.attention}`}>{attentionPill[attention.attention]}</span> : null}
+                {attention.lastActivityAt !== undefined ? <span className="session-row-age" title={`Last agent activity ${new Date(attention.lastActivityAt).toLocaleString()}`}>{compactAge(attention.lastActivityAt, now)}</span> : null}
               </span>
               <span className="session-row-actions"><button type="button" onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); openMenu(session.id, bounds.left, bounds.bottom) }} aria-label={`Actions for ${session.name}`}><MoreHorizontal /></button></span>
             </div>
@@ -778,6 +812,7 @@ export function SessionTree(props: Props) {
               {collapsed ? <ChevronRight /> : <ChevronDown />}
               <strong>{container.name}</strong>
               <small>{sessionCount}</small>
+              {containerCounts(container.sessionIds)}
             </button>
             {props.creation && container.kind !== 'no-repo' && container.kind !== 'auxiliary' ? <button type="button" onClick={(event) => createSessionInContainer(container, event.currentTarget)} aria-label={`Create a new session in ${container.name}`} title={`Create a new session in ${container.name}`}><Plus /></button> : null}
             {container.group ? <><button type="button" onClick={() => moveGroup(container.id, -1)} disabled={groupIndex === 0} aria-label={`Move ${container.name} up`}><ArrowUp /></button><button type="button" onClick={() => moveGroup(container.id, 1)} disabled={groupIndex === preferences.groups.length - 1} aria-label={`Move ${container.name} down`}><ArrowDown /></button><button type="button" onClick={() => { const name = window.prompt('Rename group', container.name)?.trim(); if (name) save({ ...preferences, groups: preferences.groups.map((group) => group.id === container.id ? { ...group, name } : group) }) }} aria-label={`Rename ${container.name}`}><Pencil /></button><button type="button" onClick={() => save({ ...preferences, groups: preferences.groups.filter((group) => group.id !== container.id), ungroupedSessionIds: [...preferences.ungroupedSessionIds, ...container.sessionIds] })} aria-label={`Delete ${container.name}`}><Trash2 /></button></> : null}

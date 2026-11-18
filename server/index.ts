@@ -163,6 +163,8 @@ import {
 } from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
 import { PaneSeen } from './pane-seen.js'
+import { PaneActivity } from './pane-activity.js'
+import { tmuxSocketStateSuffix } from './tmux-socket-scope.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
 import { brokerChatInteractions } from './chat-interactions.js'
 import { AgentRequestApi } from './agent-request-api.js'
@@ -726,7 +728,9 @@ async function main(): Promise<void> {
   const clients = new Set<ClientState>()
   const paneTextTails = new Map<string, PaneTextTail>()
   const companionOutputTails = new Map<string, string>()
-  const agentStatuses = new AgentStatusRegistry()
+  // Pane ids belong to the tmux server, which outlives daemon restarts.
+  const paneActivity = new PaneActivity(join(homedir(), '.commando', `pane-activity${tmuxSocketStateSuffix()}.json`))
+  const agentStatuses = new AgentStatusRegistry({ lastActivity: (paneId) => paneActivity.settledAt(paneId) })
   const isWebPaneAgentRunning = (paneId: string): boolean => {
     const pane = paneForId(paneId)
     if (!pane || pane.dead) return false
@@ -748,7 +752,7 @@ async function main(): Promise<void> {
     if (brief?.agentSessionEnded || brief?.targetId !== pane.targetId || brief.sessionId !== pane.sessionId) return undefined
     return brief.agentSession
   }
-  const paneSeen = new PaneSeen()
+  const paneSeen = new PaneSeen(join(homedir(), '.commando', `pane-seen${tmuxSocketStateSuffix()}.json`))
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
   let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
@@ -934,11 +938,17 @@ async function main(): Promise<void> {
   }
 
   let observeCommanderStatus: ((change: AgentStatusChange, restored?: boolean) => void) | undefined
+  // Set once Commander's transcript lookup exists; statuses can publish before then.
+  let seedPaneActivity: ((status: AgentStatus) => void) | undefined
   let reconcileCommander: (() => void) | undefined
 
   const publishAgentStatusChange = (change: AgentStatusChange, restored = false): void => {
     observeCommanderStatus?.(change, restored)
+    if (change?.type === 'remove') paneActivity.forget(change.paneId)
     if (change?.type === 'upsert') {
+      const activity = paneActivity.record(change.status)
+      if (activity) broadcast({ type: 'pane_activity', activity })
+      seedPaneActivity?.(change.status)
       if (reconcileWebPaneAgentSession(change.status.paneId)) publishWebPanes()
       void canvasPush?.statusChanged(change.status.paneId)
       void guides?.statusChanged(change.status.paneId)
@@ -1598,6 +1608,11 @@ async function main(): Promise<void> {
       .discover(snapshotRevision + 1)
       .then(async (nextSnapshot) => {
         const nextServerId = tmux.serverId
+        // Saved pane times only apply to the tmux server that numbered those panes.
+        if (nextServerId) {
+          if (paneSeen.bindServer(nextServerId)) broadcast({ type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
+          if (paneActivity.bindServer(nextServerId)) broadcast({ type: 'pane_activity', activity: paneActivity.snapshot(), snapshot: true })
+        }
         const repos = await paneRepos.resolve(nextSnapshot.panes.map((pane) => pane.path))
         for (const pane of nextSnapshot.panes) {
           const repo = repos.get(pane.path)
@@ -2252,6 +2267,18 @@ async function main(): Promise<void> {
     screen: async (pane) => (await captureRenderedCompanionOutput(tmux, pane.sessionId, pane.id)).output,
     codexRollout: async (sessionId) => (await findResumeRollout(join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions'), sessionId, Date.now(), codexRolloutLookups))?.path,
   })
+  // Backfills panes with no recorded activity (first run, or work done before this
+  // daemon tracked it) from when their transcript was last written.
+  const activitySeedAttempts = new Set<string>()
+  seedPaneActivity = (status) => {
+    const pane = paneForId(status.paneId)
+    if (!pane || !status.agentSessionId || paneActivity.has(pane.id) || activitySeedAttempts.has(pane.id)) return
+    activitySeedAttempts.add(pane.id)
+    void commanderApi.transcriptFile(pane)
+      .then(async (file) => file ? paneActivity.seed(pane.id, (await stat(file)).mtimeMs) : null)
+      .then((activity) => { if (activity) broadcast({ type: 'pane_activity', activity }) })
+      .catch(() => undefined)
+  }
   observeCommanderStatus = createCommanderStatusObserver({
     pane: paneForId, owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id),
     finalMessage: (id) => agentStatuses.finalMessage(id), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
@@ -3008,6 +3035,7 @@ async function main(): Promise<void> {
     send(client, { type: 'diff_filters', filters: diffFilters.get() })
     send(client, { type: 'pane_mark_snapshot', marks: paneMarks.values() })
     send(client, { type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
+    send(client, { type: 'pane_activity', activity: paneActivity.snapshot(), snapshot: true })
     send(client, { type: 'agent_resume_snapshot', resumes: agentResume.snapshot() })
     send(client, { type: 'session_creations', creations: sessionCreations.list() })
     send(client, { type: 'chat_snapshot', chats: agentHosts.states() })
@@ -3386,6 +3414,8 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     if (shuttingDown) return
     shuttingDown = true
+    paneActivity.flush()
+    paneSeen.flush()
     stopRunningGit()
     hostsHealth.stop()
     hostsProxy.close()
