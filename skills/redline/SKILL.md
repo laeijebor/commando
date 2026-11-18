@@ -399,13 +399,19 @@ Send).
 
 ## 3. The loop
 
-1. Start a continuous long-poll loop in a background task
-   (`scripts/commando-feedback <webPaneId>` in the commando repo, else the
-   skill's curl). Empty notes after ~30s are heartbeats, not completion, so
-   immediately re-poll. Keep the loop alive until the user ends review or the
-   endpoint returns 404; if the task runner times out, restart it while review
-   is active. Do not claim to be watching for notes unless a poll is actually
-   running. Delivery is at-least-once: notes are journaled daemon-side until
+1. Watch in a background task with exactly
+   `<commando repo>/scripts/commando-feedback <webPaneId> --until-notes`. It
+   polls through empty heartbeats and daemon restarts and exits only when it
+   prints a batch with notes (exit 0), the review ended (exit 4), or the daemon
+   stayed down (exit 1). Do not wrap it in your own `while` loop or re-parse
+   its output in shell: under zsh, `echo "$out"` turns the JSON's `\n`
+   escapes into raw newlines, the parse fails, and a fallback that treats
+   that as "no notes" silently acknowledges and drops the user's answers.
+   Without a commando checkout, loop over the curl in show-in-commando and
+   check for notes with `grep -q '"notes":\[{'` on the saved response file.
+   After handling a batch, start the watcher again; if the task runner times
+   it out, restart it while review is active. Do not claim to be watching for
+   notes unless the watcher is actually running. Delivery is at-least-once: notes are journaled daemon-side until
    acked (the script handles the response `cursor`), so re-polling recovers
    unread notes. Correlate review identity by `reviewKey`, then `deliveryKey`,
    then note `id`; this ordering keeps pre-upgrade retries deduplicated. Track

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # commando-feedback — drain one batch of review feedback from a chromium tile.
 #
-#   commando-feedback <webPaneId> [--wait <seconds>]
+#   commando-feedback <webPaneId> [--wait <seconds>] [--until-notes]
 #
 # Long-polls GET /api/web-panes/<id>/feedback for up to --wait seconds
 # (default 30, max 60) and prints the JSON body:
 # {"ok":true,"cursor":N,"notes":[...]}.
+# With --until-notes it keeps polling through empty heartbeats and brief
+# daemon outages, and exits only once a batch with notes is printed (0), the
+# tile is gone (4), or the daemon stays unreachable for minutes (1). Run that
+# form as the background watcher; never wrap the script in your own loop that
+# re-parses its output (zsh `echo` mangles the JSON and drops the notes).
 # Each note carries id, selector, tag, text, rect, comment, pageUrl,
 # capturedAt, and optional reviewKey/reviewRevision/response/attachments/handoff.
 # Correlate by reviewKey, then deliveryKey, then id; absent reviewRevision means
@@ -26,6 +31,7 @@ set -euo pipefail
 
 pane_id=""
 wait_seconds=30
+until_notes=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --wait)
@@ -34,6 +40,10 @@ while [ $# -gt 0 ]; do
       ;;
     --wait=*)
       wait_seconds="${1#--wait=}"
+      shift
+      ;;
+    --until-notes)
+      until_notes=1
       shift
       ;;
     -*)
@@ -57,46 +67,100 @@ if [ ! -f "$token_path" ]; then
   exit 1
 fi
 
+# A zero wait answers at once, which would make the watcher spin.
+if [ "$until_notes" = 1 ]; then
+  [ "$wait_seconds" -ge 1 ] 2>/dev/null || wait_seconds=30
+fi
+
 port="${COMMANDO_PORT:-4310}"
-url="http://127.0.0.1:${port}/api/web-panes/${pane_id}/feedback?wait=${wait_seconds}"
+base_url="http://127.0.0.1:${port}/api/web-panes/${pane_id}/feedback?wait=${wait_seconds}"
 
 # Passing the previous response's cursor back acknowledges those notes; the
 # daemon redelivers anything unacked, so a lost response is recoverable.
 cursor_dir="${COMMANDO_FEEDBACK_CURSOR_DIR:-$HOME/.commando/feedback-cursors}"
 cursor_file="${cursor_dir}/${pane_id}"
-if [ -f "$cursor_file" ]; then
-  prev_cursor=$(cat "$cursor_file" 2>/dev/null || true)
-  case "$prev_cursor" in
-    ''|*[!0-9]*) ;;
-    *) url="${url}&cursor=${prev_cursor}" ;;
-  esac
-fi
 
 body_file=$(mktemp "${TMPDIR:-/tmp}/commando-feedback-body.XXXXXX")
 trap 'rm -f "$body_file"' EXIT
 
-status=$(curl -sS -o "$body_file" -w '%{http_code}' \
-  --max-time "$((wait_seconds + 15))" \
-  -H "Authorization: Bearer $(cat "$token_path")" \
-  "$url") || { echo "commando-feedback: daemon unreachable" >&2; exit 1; }
-body=$(cat "$body_file")
+# One long-poll round: sets $status (000 when the daemon is unreachable) and $body.
+poll_once() {
+  local url="$base_url" prev_cursor
+  if [ -f "$cursor_file" ]; then
+    prev_cursor=$(cat "$cursor_file" 2>/dev/null || true)
+    case "$prev_cursor" in
+      ''|*[!0-9]*) ;;
+      *) url="${url}&cursor=${prev_cursor}" ;;
+    esac
+  fi
+  : > "$body_file"
+  status=$(curl -sS -o "$body_file" -w '%{http_code}' \
+    --max-time "$((wait_seconds + 15))" \
+    -H "Authorization: Bearer $(cat "$token_path")" \
+    "$url" 2>/dev/null) || status=000
+  body=$(cat "$body_file")
+  [ "$status" = 404 ] && rm -f "$cursor_file"
+  return 0
+}
+
+# Save the cursor only after the body is printed: the next poll sends it back
+# and acknowledges those notes, so it must never cover notes nobody has seen.
+save_cursor() {
+  # The daemon serializes cursor before notes, so the first match is ours,
+  # not user text from a comment.
+  local next_cursor
+  next_cursor=$(printf '%s' "$body" | grep -o '"cursor":[0-9]*' | head -n1 | cut -d: -f2 || true)
+  if [ -n "$next_cursor" ]; then
+    mkdir -p -m 700 "$cursor_dir"
+    printf '%s' "$next_cursor" > "$cursor_file"
+  fi
+}
+
 # printf, not echo: under macOS /bin/sh (bash with xpg_echo) echo expands the \n escapes inside
 # note comments into raw newlines, and the printed body stops being valid JSON.
-printf '%s\n' "$body"
-case "$status" in
-  200)
-    # The daemon serializes cursor before notes, so the first match is ours,
-    # not user text from a comment.
-    next_cursor=$(printf '%s' "$body" | grep -o '"cursor":[0-9]*' | head -n1 | cut -d: -f2 || true)
-    if [ -n "$next_cursor" ]; then
-      mkdir -p -m 700 "$cursor_dir"
-      printf '%s' "$next_cursor" > "$cursor_file"
-    fi
-    exit 0
-    ;;
-  404)
-    rm -f "$cursor_file"
-    exit 4
-    ;;
-  *) echo "commando-feedback: HTTP $status" >&2; exit 1 ;;
-esac
+if [ "$until_notes" = 0 ]; then
+  poll_once
+  [ "$status" = 000 ] && { echo "commando-feedback: daemon unreachable" >&2; exit 1; }
+  printf '%s\n' "$body"
+  case "$status" in
+    200) save_cursor; exit 0 ;;
+    404) exit 4 ;;
+    *) echo "commando-feedback: HTTP $status" >&2; exit 1 ;;
+  esac
+fi
+
+# --until-notes: an empty batch is a heartbeat, so poll again without saving
+# its cursor (that cursor can cover notes handed to another poller). The
+# daemon writes `notes` last, so only an empty top-level list ends the body
+# with `"notes":[]}`; a note's own data can't.
+retry_sleep="${COMMANDO_FEEDBACK_RETRY_SLEEP:-5}"
+max_failures="${COMMANDO_FEEDBACK_MAX_FAILURES:-24}"
+failures=0
+while :; do
+  poll_once
+  case "$status" in
+    200)
+      failures=0
+      case "$body" in
+        *'"notes":[]}') continue ;;
+      esac
+      printf '%s\n' "$body"
+      save_cursor
+      exit 0
+      ;;
+    404)
+      printf '%s\n' "$body"
+      exit 4
+      ;;
+    *)
+      # The daemon restarts (tsx watch) or briefly errors: keep watching.
+      failures=$((failures + 1))
+      if [ "$failures" -ge "$max_failures" ]; then
+        [ -n "$body" ] && printf '%s\n' "$body"
+        echo "commando-feedback: gave up after $failures failed polls (last HTTP $status)" >&2
+        exit 1
+      fi
+      sleep "$retry_sleep"
+      ;;
+  esac
+done

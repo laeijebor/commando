@@ -164,7 +164,11 @@ curl -sS "http://127.0.0.1:${COMMANDO_PORT:-4310}/api/web-panes/<webPaneId>/feed
 ```
 
 (With a commando checkout handy, `scripts/commando-feedback <webPaneId>` wraps
-this — including the cursor bookkeeping below; exit 4 means the review ended.)
+this — including the cursor bookkeeping below; exit 4 means the review ended.
+For a background watcher run `scripts/commando-feedback <webPaneId>
+--until-notes`: it re-polls through empty heartbeats itself and exits only
+with notes, so never wrap it in a shell loop that re-parses `echo "$out"` —
+zsh's `echo` breaks the JSON and the notes get acknowledged unread.)
 
 - Empty `notes` after ~30s is normal — re-poll.
 - Delivery is at-least-once: notes stay journaled on the daemon until acked,
