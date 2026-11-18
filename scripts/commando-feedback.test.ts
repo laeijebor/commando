@@ -107,9 +107,26 @@ describe('commando-feedback', () => {
       expect(result.code).toBe(0)
       expect(JSON.parse(result.stdout)).toEqual(JSON.parse(notes))
       expect(urls).toHaveLength(3)
-      expect(urls[0]).not.toContain('cursor=')
-      expect(urls[1]).toContain('cursor=3')
+      expect(urls.some((url) => url.includes('cursor='))).toBe(false)
       expect(await readFile(join(directory, 'cursors', 'w-test'), 'utf8')).toBe('9')
+    })
+
+    it('reads a note whose own data holds an empty notes list as a real batch', async () => {
+      const nested = JSON.stringify({ ok: true, webPaneId: 'w-test', cursor: 4, notes: [{ id: 4, comment: 'B', response: { question: 'Q', answer: 'B', data: { notes: [] } } }] })
+      const { port, urls } = await scripted([{ status: 200, body: nested }])
+      const directory = await home()
+      const result = await run(['bash'], port, directory, ['--until-notes'])
+      expect(result.code).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual(JSON.parse(nested))
+      expect(urls).toHaveLength(1)
+    })
+
+    it('does not save the cursor of an empty heartbeat', async () => {
+      // A heartbeat's cursor can cover notes another poller took; acking it would drop them.
+      const { port, urls } = await scripted([empty(5), { status: 200, body: notes }])
+      const directory = await home()
+      await run(['bash'], port, directory, ['--until-notes'])
+      expect(urls[1]).not.toContain('cursor=')
     })
 
     it('keeps watching through a daemon error, then delivers', async () => {
