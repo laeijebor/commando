@@ -18,10 +18,16 @@ afterEach(async () => {
 
 /** A stand-in daemon that answers every feedback poll with `status` and `body`, recording the URLs it saw. */
 async function daemon(status: number, body: string) {
+  return scripted([{ status, body }])
+}
+
+/** A stand-in daemon that walks through `replies` in order, repeating the last one. */
+async function scripted(replies: { status: number; body: string }[]) {
   const urls: string[] = []
   const server = createServer((request, response) => {
     urls.push(request.url ?? '')
-    response.writeHead(status, { 'Content-Type': 'application/json' }).end(body)
+    const reply = replies[Math.min(urls.length, replies.length) - 1]!
+    response.writeHead(reply.status, { 'Content-Type': 'application/json' }).end(reply.body)
   })
   servers.push(server)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -37,15 +43,16 @@ async function home() {
 }
 
 /** `shell` is the interpreter plus its flags, e.g. ['bash'] or ['bash', '-O', 'xpg_echo']. */
-function run(shell: string[], port: number, directory: string) {
+function run(shell: string[], port: number, directory: string, flags: string[] = [], extraEnv: Record<string, string> = {}) {
   const env = {
     ...process.env,
     COMMANDO_PORT: String(port),
     COMMANDO_AGENT_HOOK_TOKEN_PATH: join(directory, 'token'),
     COMMANDO_FEEDBACK_CURSOR_DIR: join(directory, 'cursors'),
+    ...extraEnv,
   }
   return new Promise<{ code: number; stdout: string }>((resolve) => {
-    execFile(shell[0]!, [...shell.slice(1), script, 'w-test', '--wait', '1'], { env }, (error, stdout) => {
+    execFile(shell[0]!, [...shell.slice(1), script, 'w-test', '--wait', '1', ...flags], { env }, (error, stdout) => {
       resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout })
     })
   })
@@ -86,5 +93,47 @@ describe('commando-feedback', () => {
     const result = await run(['bash'], gone.port, directory)
     expect(result.code).toBe(4)
     await expect(readFile(join(directory, 'cursors', 'w-test'), 'utf8')).rejects.toThrow()
+  })
+
+  describe('--until-notes', () => {
+    const empty = (cursor: number) => ({ status: 200, body: JSON.stringify({ ok: true, webPaneId: 'w-test', cursor, notes: [] }) })
+    // Note text that mentions the empty-list shape must not read as a heartbeat: it arrives JSON-escaped.
+    const notes = JSON.stringify({ ok: true, webPaneId: 'w-test', cursor: 9, notes: [{ id: 9, comment: 'Line one\nsee "notes":[] here' }] })
+
+    it('polls through empty heartbeats and exits with the first batch of notes', async () => {
+      const { port, urls } = await scripted([empty(3), empty(3), { status: 200, body: notes }])
+      const directory = await home()
+      const result = await run(['bash', '-O', 'xpg_echo'], port, directory, ['--until-notes'])
+      expect(result.code).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual(JSON.parse(notes))
+      expect(urls).toHaveLength(3)
+      expect(urls[0]).not.toContain('cursor=')
+      expect(urls[1]).toContain('cursor=3')
+      expect(await readFile(join(directory, 'cursors', 'w-test'), 'utf8')).toBe('9')
+    })
+
+    it('keeps watching through a daemon error, then delivers', async () => {
+      const { port, urls } = await scripted([{ status: 503, body: '{}' }, { status: 200, body: notes }])
+      const directory = await home()
+      const result = await run(['bash'], port, directory, ['--until-notes'], { COMMANDO_FEEDBACK_RETRY_SLEEP: '0' })
+      expect(result.code).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual(JSON.parse(notes))
+      expect(urls).toHaveLength(2)
+    })
+
+    it('exits 4 when the tile is gone', async () => {
+      const { port } = await scripted([empty(1), { status: 404, body: JSON.stringify({ ok: false }) }])
+      const directory = await home()
+      const result = await run(['bash'], port, directory, ['--until-notes'])
+      expect(result.code).toBe(4)
+    })
+
+    it('gives up after repeated failures so the agent hears about it', async () => {
+      const { port, urls } = await scripted([{ status: 500, body: '{}' }])
+      const directory = await home()
+      const result = await run(['bash'], port, directory, ['--until-notes'], { COMMANDO_FEEDBACK_RETRY_SLEEP: '0', COMMANDO_FEEDBACK_MAX_FAILURES: '3' })
+      expect(result.code).toBe(1)
+      expect(urls).toHaveLength(3)
+    })
   })
 })
