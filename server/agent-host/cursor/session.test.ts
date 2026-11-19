@@ -3,6 +3,7 @@ import type { AgentOptions, ModelListItem, RunResult, SDKUserMessage, SendOption
 import { MAX_CHAT_IMAGES, MAX_CHAT_ITEMS, MAX_QUEUED_MESSAGES, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 import type { AgentSessionSpec } from '../session.js'
 import { CURSOR_SETTING_SOURCES, CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
+import type { CursorMcpCli, CursorMcpLoginProcess } from './mcp.js'
 import type { CursorAgent, CursorHistory, CursorRun, CursorSdk } from './sdk.js'
 
 const models: ModelListItem[] = [
@@ -47,6 +48,7 @@ class FakeSdk implements CursorSdk {
       this.runs.push(run)
       return run
     },
+    reload: vi.fn(async () => undefined),
     close: vi.fn(),
   }
   authStatus = vi.fn(async (): ReturnType<CursorSdk['authStatus']> => ({ status: 'logged-in' }))
@@ -61,9 +63,9 @@ class FakeSdk implements CursorSdk {
   history = vi.fn(async (_id: string, _cwd: string): Promise<CursorHistory> => ({ turns: [], skipped: 0 }))
   delta(update: unknown, index = this.sends.length - 1) { this.sends[index].options.onDelta?.({ update: update as Parameters<NonNullable<SendOptions['onDelta']>>[0]['update'] }) }
 }
-function harness(spec: Partial<AgentSessionSpec> = {}) {
+function harness(spec: Partial<AgentSessionSpec> = {}, mcpCli: CursorMcpCli | null = null) {
   const sdk = new FakeSdk()
-  const session = new CursorChatSession({ paneId: '%3', cwd: '/tmp', permissionMode: 'bypassPermissions', env: {}, ...spec }, sdk)
+  const session = new CursorChatSession({ paneId: '%3', cwd: '/tmp', permissionMode: 'bypassPermissions', env: {}, ...spec }, sdk, mcpCli)
   return { session, sdk }
 }
 async function running(spec: Partial<AgentSessionSpec> = {}) {
@@ -624,5 +626,56 @@ describe('CursorChatSession', () => {
     expect(sdk.agent.close).toHaveBeenCalledTimes(1)
     expect(closed).toHaveBeenCalledTimes(1)
     expect(session.snapshot().session.status).toBe('closed')
+  })
+
+  it('manages MCP servers via reload and requests restart when auth changes after executor start', async () => {
+    const loginDone = deferred<{ ok: boolean; error?: string }>()
+    const cancel = vi.fn()
+    const cli: CursorMcpCli = {
+      run: vi.fn(async (args) => {
+        if (args[1] === 'list') return { stdout: 'linear: requires_authentication\n', stderr: '', exitCode: 0 }
+        return { stdout: '', stderr: '', exitCode: 0 }
+      }),
+      startLogin: vi.fn(async (): Promise<CursorMcpLoginProcess> => ({
+        authUrl: Promise.resolve('https://mcp.linear.app/oauth/authorize'),
+        done: loginDone.promise,
+        cancel,
+      })),
+    }
+    // Before an agent executor has been created, auth changes do not need a host restart.
+    const beforeExec = harness({}, cli)
+    const beforeRestart = vi.fn()
+    beforeExec.session.on('restart', beforeRestart)
+    await beforeExec.session.start()
+    const authResult = await beforeExec.session.mcp({ action: 'authenticate', server: 'linear' })
+    expect(authResult.authUrl).toBe('https://mcp.linear.app/oauth/authorize')
+    loginDone.resolve({ ok: true })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(beforeRestart).not.toHaveBeenCalled()
+    beforeExec.session.close()
+
+    // Once an agent executor has started, reconnect reloads it and auth completion triggers a restart.
+    const secondDone = deferred<{ ok: boolean; error?: string }>()
+    vi.mocked(cli.startLogin).mockResolvedValueOnce({
+      authUrl: Promise.resolve('https://mcp.linear.app/oauth/authorize?two=1'),
+      done: secondDone.promise,
+      cancel: vi.fn(),
+    })
+    const { session, sdk } = harness({}, cli)
+    const restart = vi.fn()
+    session.on('restart', restart)
+    await session.start()
+    session.send('Hi'); await tick()
+    sdk.runs[0].finish(); await tick()
+
+    await session.mcp({ action: 'reconnect', server: 'linear' })
+    expect(sdk.agent.reload).toHaveBeenCalledTimes(1)
+
+    const secondAuth = await session.mcp({ action: 'authenticate', server: 'linear' })
+    expect(secondAuth.authUrl).toBe('https://mcp.linear.app/oauth/authorize?two=1')
+    secondDone.resolve({ ok: true })
+    await vi.waitFor(() => expect(restart).toHaveBeenCalledTimes(1))
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('MCP credentials updated for linear') })
+    session.close()
   })
 })

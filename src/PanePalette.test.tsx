@@ -13,6 +13,7 @@ describe('pane palette entries', () => {
     const claude = { provider: 'claude', providerLabel: 'Claude', hostConnected: true, takesMcp: true }
     expect(panePaletteEntries(claude)[1]).toMatchObject({ screen: 'mcp' })
     expect(panePaletteEntries(claude)[1]!.unavailable).toBeUndefined()
+    expect(panePaletteEntries({ ...claude, provider: 'cursor', providerLabel: 'Cursor' })[1]!.unavailable).toBeUndefined()
     expect(panePaletteEntries({ ...claude, provider: 'codex', providerLabel: 'Codex' })[1]!.unavailable).toBe('Not available for Codex chats yet')
     expect(panePaletteEntries({ ...claude, hostConnected: false })[1]!.unavailable).toMatch(/disconnected/)
     expect(panePaletteEntries({ ...claude, takesMcp: false })[1]!.unavailable).toMatch(/Restart this chat/)

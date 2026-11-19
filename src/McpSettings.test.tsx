@@ -83,6 +83,11 @@ describe('McpSettings', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent("This session isn't running")
     expect(screen.getByText('github')).toBeInTheDocument()
   })
+
+  it('shows Cursor-specific config instructions when a Cursor chat has no MCP servers', async () => {
+    renderSettings(() => ({ servers: [] }), { agentLabel: 'Cursor', provider: 'cursor' })
+    expect(await screen.findByText(/\.cursor\/mcp\.json/)).toBeInTheDocument()
+  })
 })
 
 describe('McpSettings action errors', () => {
