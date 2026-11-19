@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentOptions, ModelListItem, ModelSelection, SDKImage } from '@cursor/sdk'
+import type { AgentOptions, ModelListItem, ModelSelection, SDKImage, SettingSource } from '@cursor/sdk'
 import {
   AGENT_HOST_PROTOCOL_VERSION, MAX_CHAT_IMAGES, MAX_QUEUED_MESSAGES, takeQueueBatch, attachmentNote, isChatEffort, isChatVideoId, isModelValue,
   type ChatAnswer, type ChatCommand, type ChatEffort, type ChatFileSearchResult, type ChatImageRef, type ChatItem,
@@ -15,6 +15,8 @@ import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from 
 const errorText = (error: unknown) => string(record(error).message) ?? String(error)
 const EFFORT_PARAMETERS = ['effort', 'reasoning_effort', 'reasoning']
 const AUTH_CODES = new Set(['UNAUTHENTICATED', 'NOT_LOGGED_IN', 'INVALID_AUTH_ID', 'AGENT_REQUIRES_LOGIN', 'AUTH_TOKEN_NOT_FOUND', 'AUTH_TOKEN_EXPIRED', 'UNAUTHORIZED', 'BAD_API_KEY', 'BAD_USER_API_KEY'])
+/** Ambient Cursor settings layers enabled for local SDK chats, including project, user and plugin MCPs. */
+export const CURSOR_SETTING_SOURCES: readonly SettingSource[] = ['project', 'user', 'plugins']
 export function cursorPermissions(mode: ChatSessionPermissionMode, prePlan?: ChatSessionPermissionMode): { sandboxOptions: { enabled: boolean }; autoReview?: boolean } {
   if (mode === 'plan') return prePlan && prePlan !== 'plan' ? cursorPermissions(prePlan) : { sandboxOptions: { enabled: true } }
   if (mode === 'bypassPermissions') return { sandboxOptions: { enabled: false } }
@@ -152,7 +154,15 @@ export class CursorChatSession implements ChatProviderSession {
   }
   private agentOptions(): AgentOptions {
     // Local runs silently refuse askQuestion; the agent should ask in plain text instead.
-    return { model: this.model(), disallowedTools: ['askQuestion'], local: { cwd: this.spec.cwd, ...cursorPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.info.prePlanPermissionMode) } }
+    return {
+      model: this.model(),
+      disallowedTools: ['askQuestion'],
+      local: {
+        cwd: this.spec.cwd,
+        settingSources: [...CURSOR_SETTING_SOURCES],
+        ...cursorPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.info.prePlanPermissionMode),
+      },
+    }
   }
   private async ready(): Promise<void> {
     await this.reloadModels()

@@ -10,6 +10,7 @@ export interface CursorRun {
 export interface CursorAgent {
   readonly agentId: string
   send(message: SDKUserMessage, options: SendOptions): Promise<CursorRun>
+  reload?(): Promise<void>
   close(): void
 }
 export interface CursorHistory {

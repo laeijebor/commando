@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AgentOptions, ModelListItem, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_IMAGES, MAX_CHAT_ITEMS, MAX_QUEUED_MESSAGES, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 import type { AgentSessionSpec } from '../session.js'
-import { CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
+import { CURSOR_SETTING_SOURCES, CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
 import type { CursorAgent, CursorHistory, CursorRun, CursorSdk } from './sdk.js'
 
 const models: ModelListItem[] = [
@@ -141,7 +141,7 @@ describe('CursorChatSession', () => {
     const prompt = `  ${'A'.repeat(100)}  `
     session.send(prompt); await tick()
     const model = { id: 'gpt-5.5', params: [{ id: 'reasoning', value: 'extra-high' }, { id: 'fast', value: 'true' }] }
-    expect(sdk.create).toHaveBeenCalledWith({ name: 'A'.repeat(80), model, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
+    expect(sdk.create).toHaveBeenCalledWith({ name: 'A'.repeat(80), model, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } })
     expect(sdk.sends[0]).toMatchObject({ message: { text: 'A'.repeat(100) }, options: { model } })
     expect(session.snapshot().session.sessionId).toBe('agent-123')
     session.close()
@@ -216,7 +216,7 @@ describe('CursorChatSession', () => {
     expect(sdk.create).not.toHaveBeenCalled()
     expect(session.snapshot().session.sessionId).toBeUndefined()
     session.send('Hello'); await tick()
-    expect(sdk.create).toHaveBeenCalledWith({ name: 'Hello', model: { id: 'test-model', params: [{ id: 'reasoning_effort', value: 'high' }, { id: 'fast', value: 'true' }] }, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
+    expect(sdk.create).toHaveBeenCalledWith({ name: 'Hello', model: { id: 'test-model', params: [{ id: 'reasoning_effort', value: 'high' }, { id: 'fast', value: 'true' }] }, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } })
     expect(parseChatSessionInfo(session.snapshot().session)).not.toBeNull()
     session.close()
   })
@@ -323,7 +323,7 @@ describe('CursorChatSession', () => {
     sdk.runs[0].finish(); await tick()
     session.send('Next'); await tick()
     expect(sdk.agent.close).toHaveBeenCalledTimes(1)
-    expect(sdk.resume).toHaveBeenCalledWith('agent-123', { model: cursorModelSelection(models[1], 'high', true), disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false }, autoReview: true } })
+    expect(sdk.resume).toHaveBeenCalledWith('agent-123', { model: cursorModelSelection(models[1], 'high', true), disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false }, autoReview: true } })
     expect(sdk.sends[1].options.model).toEqual(cursorModelSelection(models[1], 'high', true))
     await session.configure({ effort: 'medium' })
     await session.configure({ model: 'unknown' })
@@ -340,7 +340,7 @@ describe('CursorChatSession', () => {
     await session.start()
     session.send('Plan'); await tick()
     expect(sdk.sends[0].options.mode).toBe('plan')
-    expect(sdk.create.mock.calls[0][0].local).toEqual({ cwd: '/tmp', sandboxOptions: { enabled: false } })
+    expect(sdk.create.mock.calls[0][0].local).toEqual({ cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } })
     expect(session.snapshot().session.prePlanPermissionMode).toBe('bypassPermissions')
     sdk.delta({ type: 'tool-call-completed', callId: 'p', toolCall: { type: 'createPlan', args: { plan: '# Plan\nDo this' } } })
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'plan', text: '# Plan\nDo this' })
@@ -348,7 +348,7 @@ describe('CursorChatSession', () => {
     session.send('Implement', [], { permissionMode: 'bypassPermissions' }); await tick()
     expect(sdk.sends[1].options.mode).toBe('agent')
     expect(session.snapshot().session.prePlanPermissionMode).toBeUndefined()
-    expect(sdk.resume).toHaveBeenCalledWith('agent-123', expect.objectContaining({ local: { cwd: '/tmp', sandboxOptions: { enabled: false } } }))
+    expect(sdk.resume).toHaveBeenCalledWith('agent-123', expect.objectContaining({ local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } }))
     session.close()
   })
   it('requests a restart with current settings when an unsandboxed chat switches to sandboxing', async () => {
@@ -440,7 +440,7 @@ describe('CursorChatSession', () => {
     const { session, sdk } = harness({ resume: 'old-agent' })
     sdk.history.mockResolvedValue({ skipped: 0, turns: Array.from({ length: MAX_CHAT_ITEMS + 1 }, (_, i) => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text: String(i) } }] } })) })
     await session.start()
-    expect(sdk.resume).toHaveBeenCalledWith('old-agent', expect.objectContaining({ disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } }))
+    expect(sdk.resume).toHaveBeenCalledWith('old-agent', expect.objectContaining({ disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } }))
     expect(sdk.history).toHaveBeenCalledWith('agent-123', '/tmp')
     expect(session.snapshot().items).toHaveLength(MAX_CHAT_ITEMS)
     expect(session.snapshot().items[0]).toMatchObject({ text: '1' })
