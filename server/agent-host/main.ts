@@ -158,9 +158,15 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
 /** Variables a respawned host needs to find the same daemon. */
 const DAEMON_ENV_KEYS = ['COMMANDO_PORT', 'COMMANDO_AGENT_HOOK_TOKEN_PATH', 'COMMANDO_TMUX_SOCKET_NAME', 'COMMANDO_TMUX_SOCKET_PATH', 'COMMANDO_CHAT_IMAGES_DIR', 'COMMANDO_CHAT_PLANS_DIR', 'ARGENT_SIMULATOR_NO_WINDOW'] as const
 
-/** Preserve pane-local daemon settings and the Codex account/config on restart. */
+/** Preserve pane-local daemon settings and provider config directories on restart. */
 export function restartEnv(provider: ChatProvider, env: Record<string, string | undefined>): string[] {
-  const keys = provider === 'codex' ? [...DAEMON_ENV_KEYS, 'CODEX_HOME'] : provider === 'muse' ? [...DAEMON_ENV_KEYS, 'XDG_CONFIG_HOME', 'XDG_DATA_HOME'] : DAEMON_ENV_KEYS
+  const keys = provider === 'codex'
+    ? [...DAEMON_ENV_KEYS, 'CODEX_HOME']
+    : provider === 'muse'
+      ? [...DAEMON_ENV_KEYS, 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']
+      : provider === 'cursor'
+        ? [...DAEMON_ENV_KEYS, 'CURSOR_DATA_DIR', 'CURSOR_CONFIG_DIR']
+        : DAEMON_ENV_KEYS
   return keys.flatMap((key) => env[key] ? ['-e', `${key}=${env[key]}`] : [])
 }
 

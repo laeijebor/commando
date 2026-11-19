@@ -59,9 +59,15 @@ function StatusDot({ status }: { status: ChatMcpServer['status'] }) {
   return <span className={`mcp-status-dot mcp-status-${status}`} aria-hidden="true" />
 }
 
+function emptyMcpMessage(agentLabel: string, provider?: string): string {
+  if (provider === 'cursor') return `${agentLabel} has no MCP servers. Add them in .cursor/mcp.json or ~/.cursor/mcp.json.`
+  return `${agentLabel} has no MCP servers. Add them with \`claude mcp add\` or a .mcp.json file.`
+}
+
 /** A chat agent's MCP servers, like Claude Code's `/mcp`: a list, then one server's details and actions. */
-export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openInBrowser, pollMs = POLL_MS }: {
+export function McpSettings({ agentLabel, provider, load, onBack, onClose, openUrl = openInBrowser, pollMs = POLL_MS }: {
   agentLabel: string
+  provider?: string
   load: (request: ChatMcpRequest) => Promise<ChatMcpResult>
   onBack: () => void
   onClose: () => void
@@ -287,7 +293,7 @@ export function McpSettings({ agentLabel, load, onBack, onClose, openUrl = openI
             {error ? <div className="conversation-picker-error" role="alert">{error}</div> : null}
           </div>
           <div className="command-results" id="mcp-server-results" role="listbox" ref={list}>
-            {servers && !rows.length ? <div className="palette-empty">{query ? `No server matches "${query}".` : `${agentLabel} has no MCP servers. Add them with \`claude mcp add\` or a .mcp.json file.`}</div> : null}
+            {servers && !rows.length ? <div className="palette-empty">{query ? `No server matches "${query}".` : emptyMcpMessage(agentLabel, provider)}</div> : null}
             {groups.map((group) => (
               <div role="group" aria-label={group.label} key={group.scope}>
                 <div className="conversation-picker-group"><span>{group.label}</span><span>{group.servers.length}</span></div>

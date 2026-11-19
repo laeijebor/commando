@@ -3565,6 +3565,7 @@ function HostApp() {
         <McpSettings
           key={`${conversationPane.id}:mcp`}
           agentLabel={providerLabel(conversationChat.session)}
+          provider={conversationChat.session.provider}
           load={chatMcpFor(conversationPane.id)}
           onBack={backToPaneMenu}
           onClose={() => setPanePalette(null)}

@@ -1,20 +1,24 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentOptions, ModelListItem, ModelSelection, SDKImage } from '@cursor/sdk'
+import type { AgentOptions, ModelListItem, ModelSelection, SDKImage, SettingSource } from '@cursor/sdk'
 import {
   AGENT_HOST_PROTOCOL_VERSION, MAX_CHAT_IMAGES, MAX_QUEUED_MESSAGES, takeQueueBatch, attachmentNote, isChatEffort, isChatVideoId, isModelValue,
   type ChatAnswer, type ChatCommand, type ChatEffort, type ChatFileSearchResult, type ChatImageRef, type ChatItem,
   type ChatModelOption, type ChatQueueAction, type ChatQueuedMessage, type ChatSendOptions, type ChatSessionInfo,
   type ChatSessionPermissionMode, type ChatSettingsChange, type ChatSubagentTranscript, type ChatTaskAction,
 } from '../../../shared/agent-chat.js'
+import type { ChatMcpRequest, ChatMcpResult } from '../../../shared/chat-mcp.js'
 import { WorkspaceFileIndex } from '../file-index.js'
 import type { ChatProviderSession, ChatProviderSessionEvents } from '../provider.js'
 import { hasInitialTurn, type AgentSessionSpec } from '../session.js'
 import { CursorItemMapper, record, string } from './items.js'
+import { CursorMcpController, type CursorMcpCli } from './mcp.js'
 import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from './sdk.js'
 
 const errorText = (error: unknown) => string(record(error).message) ?? String(error)
 const EFFORT_PARAMETERS = ['effort', 'reasoning_effort', 'reasoning']
 const AUTH_CODES = new Set(['UNAUTHENTICATED', 'NOT_LOGGED_IN', 'INVALID_AUTH_ID', 'AGENT_REQUIRES_LOGIN', 'AUTH_TOKEN_NOT_FOUND', 'AUTH_TOKEN_EXPIRED', 'UNAUTHORIZED', 'BAD_API_KEY', 'BAD_USER_API_KEY'])
+/** Ambient Cursor settings layers enabled for local SDK chats, including project, user and plugin MCPs. */
+export const CURSOR_SETTING_SOURCES: readonly SettingSource[] = ['project', 'user', 'plugins']
 export function cursorPermissions(mode: ChatSessionPermissionMode, prePlan?: ChatSessionPermissionMode): { sandboxOptions: { enabled: boolean }; autoReview?: boolean } {
   if (mode === 'plan') return prePlan && prePlan !== 'plan' ? cursorPermissions(prePlan) : { sandboxOptions: { enabled: true } }
   if (mode === 'bypassPermissions') return { sandboxOptions: { enabled: false } }
@@ -63,6 +67,7 @@ export class CursorChatSession implements ChatProviderSession {
   /** The folder attached videos are copied to; Cursor's agent id isn't known before its first run. */
   private readonly attachmentFolder = randomUUID()
   private readonly files: WorkspaceFileIndex
+  private readonly mcpController: CursorMcpController
   private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private info: ChatSessionInfo
   private modelItems: ModelListItem[] = []
@@ -73,6 +78,9 @@ export class CursorChatSession implements ChatProviderSession {
   private historyLoaded = false
   private readyToSend = false
   private ranUnsandboxed = false
+  /** True once the SDK has created/resumed a local agent (and cached mcp-auth.json in-process). */
+  private executorStarted = false
+  private authRestartTimer?: ReturnType<typeof setTimeout>
   private active?: ActiveRun
   private stale = false
   private sending = 0
@@ -84,11 +92,20 @@ export class CursorChatSession implements ChatProviderSession {
   private interrupting = false
   private initialSent = false
 
-  constructor(private readonly spec: AgentSessionSpec, sdk?: CursorSdk) {
+  constructor(private readonly spec: AgentSessionSpec, sdk?: CursorSdk, mcpCli?: CursorMcpCli | null) {
     cursorPermissions(spec.permissionMode, spec.prePlanPermissionMode)
     this.apiKey = spec.env.CURSOR_API_KEY
     this.sdk = sdk
     this.files = new WorkspaceFileIndex(spec.cwd)
+    this.mcpController = new CursorMcpController({
+      cwd: spec.cwd,
+      env: spec.env,
+      ...(mcpCli !== undefined ? { cli: mcpCli } : {}),
+      callbacks: {
+        reloadAgent: () => this.reloadMcp(),
+        onAuthChanged: (server) => this.handleMcpAuthChanged(server),
+      },
+    })
     this.info = {
       paneId: spec.paneId, provider: 'cursor', cwd: spec.cwd, status: 'starting', models: [],
       hostPid: process.pid, hostVersion: AGENT_HOST_PROTOCOL_VERSION, bypassAllowed: true,
@@ -152,13 +169,22 @@ export class CursorChatSession implements ChatProviderSession {
   }
   private agentOptions(): AgentOptions {
     // Local runs silently refuse askQuestion; the agent should ask in plain text instead.
-    return { model: this.model(), disallowedTools: ['askQuestion'], local: { cwd: this.spec.cwd, ...cursorPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.info.prePlanPermissionMode) } }
+    return {
+      model: this.model(),
+      disallowedTools: ['askQuestion'],
+      local: {
+        cwd: this.spec.cwd,
+        settingSources: [...CURSOR_SETTING_SOURCES],
+        ...cursorPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.info.prePlanPermissionMode),
+      },
+    }
   }
   private async ready(): Promise<void> {
     await this.reloadModels()
     if (this.closing) return
     const id = this.info.sessionId
     if (id) {
+      this.executorStarted = true
       const agent = await this.sdk!.resume(id, this.agentOptions())
       if (this.closing) { agent.close(); return }
       this.agent = agent
@@ -312,6 +338,7 @@ export class CursorChatSession implements ChatProviderSession {
       const id = this.info.sessionId
       this.agent?.close()
       this.agent = undefined
+      this.executorStarted = true
       const agent = id ? await this.sdk!.resume(id, agentOptions) : await this.sdk!.create({ ...agentOptions, name: text.trim().slice(0, 80) })
       if (this.closing) { agent.close(); return }
       this.agent = agent
@@ -424,11 +451,33 @@ export class CursorChatSession implements ChatProviderSession {
   }
   hostNotice(level: 'info' | 'error', text: string): void { this.emitItems(this.mapper.notice(level, text)) }
   searchFiles(query: string): Promise<ChatFileSearchResult> { return this.files.search(query) }
+  mcp(request: ChatMcpRequest): Promise<ChatMcpResult> { return this.mcpController.handle(request) }
+  private async reloadMcp(): Promise<void> {
+    if (this.closing || !this.agent) return
+    if (this.agent.reload) await this.agent.reload()
+    else this.stale = true
+  }
+  private handleMcpAuthChanged(server: string): void {
+    if (this.closing) return
+    if (!this.executorStarted) return
+    this.emitItems(this.mapper.notice('info', this.busy
+      ? `MCP credentials updated for ${server}. Restarting this Cursor chat once it is idle so it picks them up.`
+      : `MCP credentials updated for ${server}. Restarting this Cursor chat so it picks them up.`))
+    if (this.authRestartTimer) clearTimeout(this.authRestartTimer)
+    // Allow any in-flight mcp_result response to reach the daemon before tmux respawns this host.
+    this.authRestartTimer = setTimeout(() => {
+      this.authRestartTimer = undefined
+      if (!this.closing) this.listeners.restart.forEach((listener) => listener())
+    }, 250)
+    this.authRestartTimer.unref?.()
+  }
   async controlTask(_action: ChatTaskAction, _agentId: string, _toolUseId: string): Promise<void> { throw new Error('Cursor subagent controls are not available in this chat') }
   async subagentTranscript(_agentId: string): Promise<ChatSubagentTranscript> { return { items: [], error: 'Cursor subagent transcripts are not available in this chat' } }
   close(): void {
     if (this.closing) return
     this.closing = true
+    if (this.authRestartTimer) { clearTimeout(this.authRestartTimer); this.authRestartTimer = undefined }
+    this.mcpController.dispose()
     this.loginController?.abort()
     void (async () => {
       if (this.active) await this.active.run.cancel().catch(() => {})

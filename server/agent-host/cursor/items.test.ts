@@ -76,6 +76,44 @@ describe('CursorItemMapper', () => {
     expect(item.detail?.length).toBe(200_000)
     expect(item.output?.length).toBe(200_000)
   })
+  it('formats MCP tool calls with server, tool name, text content and tool-level errors', () => {
+    const mapper = new CursorItemMapper()
+    const ok = tool(mapper, 'mcp', {
+      providerIdentifier: 'github',
+      toolName: 'create_issue',
+      args: { title: 'Fix bug' },
+    }, {
+      status: 'success',
+      value: { content: [{ text: { text: 'Created #42' } }, { text: { text: 'https://github.com/o/r/issues/42' } }], isError: false },
+    })
+    expect(ok).toMatchObject({
+      kind: 'tool',
+      toolName: 'mcp',
+      title: 'github · create_issue',
+      status: 'completed',
+      detail: JSON.stringify({ title: 'Fix bug' }, null, 2),
+      output: 'Created #42\nhttps://github.com/o/r/issues/42',
+    })
+    expect(ok).not.toHaveProperty('isError')
+    const toolErr = tool(mapper, 'mcp', {
+      providerIdentifier: 'linear',
+      toolName: 'list_issues',
+      args: {},
+    }, {
+      status: 'success',
+      value: { content: [{ text: { text: 'Unauthorized' } }], isError: true },
+    })
+    expect(toolErr).toMatchObject({
+      kind: 'tool',
+      title: 'linear · list_issues',
+      status: 'failed',
+      isError: true,
+      output: 'Unauthorized',
+    })
+    expect(tool(mapper, 'mcp', { toolName: 'ping' })).toMatchObject({ title: 'MCP · ping' })
+    expect(tool(mapper, 'mcp', { providerIdentifier: 'docs' })).toMatchObject({ title: 'MCP · docs' })
+    expect(mapper.list().every((item) => parseChatItem(item))).toBe(true)
+  })
   it('replays user, assistant, thinking, tool and shell turns with stable item updates', () => {
     const mapper = new CursorItemMapper()
     mapper.replay({ type: 'agentConversationTurn', turn: { userMessage: { text: 'Old' }, steps: [

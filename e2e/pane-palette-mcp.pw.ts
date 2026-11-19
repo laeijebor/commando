@@ -135,3 +135,50 @@ test('⌘P opens the pane palette, whose MCP screen lists and manages the agent\
   await expect(chatArticle.getByRole('dialog', { name: 'Conversations' })).toBeVisible()
   expect(errors).toEqual([])
 })
+
+test('⌘P opens MCP settings on a Cursor chat and shows Cursor config instructions when empty', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.stack ?? error.message))
+  const snapshot: CommandoSnapshot = {
+    revision: 1, capturedAt: Date.now(), ports: [], panes: [pane],
+    sessions: [{ id: '$3', name: 'mcp-fixture', attached: true, activeWindowId: '@2', windowIds: ['@2'] }],
+    windows: [{ id: '@2', index: 0, sessionId: '$3', name: 'mcp-fixture', active: true, layout: 'aaaa,120x40,0,0,12', paneIds: ['%12'] }],
+  }
+  const chat: ChatState = {
+    paneId: pane.id, targetId: pane.targetId, items: [], hostConnected: true,
+    session: { paneId: pane.id, provider: 'cursor', cwd: pane.path, status: 'idle', hostPid: 1, hostVersion: 6 },
+  }
+  await page.routeWebSocket((url) => url.pathname === '/ws', (socket) => {
+    socket.send(JSON.stringify({ type: 'snapshot', snapshot }))
+    socket.send(JSON.stringify({ type: 'chat_snapshot', chats: [chat] }))
+    socket.onMessage((raw) => {
+      const message = JSON.parse(String(raw)) as { type: string; requestId: string }
+      if (message.type !== 'chat_mcp') return
+      socket.send(JSON.stringify({ type: 'chat_mcp_result', paneId: pane.id, requestId: message.requestId, servers: [] }))
+    })
+  })
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    let json: unknown
+    if (path === '/api/auth/bootstrap') json = { enabled: false, needsOwner: false, ownerEmail: null }
+    else if (path === '/api/snapshot') json = snapshot
+    else if (path === '/api/session-management/preferences') json = { preferences: { version: 1, groups: [], ungroupedSessionIds: ['$3'] } }
+    else if (path === '/api/session-management/archives') json = { archives: [] }
+    else if (path === '/api/git/summary') json = { isRepo: false }
+    else if (path === '/api/chat-conversations') json = { conversations: [] }
+    else { await route.abort(); return }
+    await route.fulfill({ json })
+  })
+  await page.goto(`${baseUrl}/#token=cursor-mcp-fixture`)
+
+  const chatArticle = page.locator('[data-pane-id="%12"]')
+  await expect(chatArticle).toBeVisible()
+  await chatArticle.getByRole('textbox').first().click()
+  await page.keyboard.press('Meta+p')
+
+  const menu = chatArticle.getByRole('dialog', { name: 'Pane palette' })
+  await menu.getByRole('option', { name: /MCP servers/ }).click()
+  const mcp = chatArticle.getByRole('dialog', { name: 'MCP servers' })
+  await expect(mcp.getByText(/\.cursor\/mcp\.json/)).toBeVisible()
+  expect(errors).toEqual([])
+})

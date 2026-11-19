@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AgentOptions, ModelListItem, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_IMAGES, MAX_CHAT_ITEMS, MAX_QUEUED_MESSAGES, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 import type { AgentSessionSpec } from '../session.js'
-import { CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
+import { CURSOR_SETTING_SOURCES, CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
+import type { CursorMcpCli, CursorMcpLoginProcess } from './mcp.js'
 import type { CursorAgent, CursorHistory, CursorRun, CursorSdk } from './sdk.js'
 
 const models: ModelListItem[] = [
@@ -47,6 +48,7 @@ class FakeSdk implements CursorSdk {
       this.runs.push(run)
       return run
     },
+    reload: vi.fn(async () => undefined),
     close: vi.fn(),
   }
   authStatus = vi.fn(async (): ReturnType<CursorSdk['authStatus']> => ({ status: 'logged-in' }))
@@ -61,9 +63,9 @@ class FakeSdk implements CursorSdk {
   history = vi.fn(async (_id: string, _cwd: string): Promise<CursorHistory> => ({ turns: [], skipped: 0 }))
   delta(update: unknown, index = this.sends.length - 1) { this.sends[index].options.onDelta?.({ update: update as Parameters<NonNullable<SendOptions['onDelta']>>[0]['update'] }) }
 }
-function harness(spec: Partial<AgentSessionSpec> = {}) {
+function harness(spec: Partial<AgentSessionSpec> = {}, mcpCli: CursorMcpCli | null = null) {
   const sdk = new FakeSdk()
-  const session = new CursorChatSession({ paneId: '%3', cwd: '/tmp', permissionMode: 'bypassPermissions', env: {}, ...spec }, sdk)
+  const session = new CursorChatSession({ paneId: '%3', cwd: '/tmp', permissionMode: 'bypassPermissions', env: {}, ...spec }, sdk, mcpCli)
   return { session, sdk }
 }
 async function running(spec: Partial<AgentSessionSpec> = {}) {
@@ -141,7 +143,7 @@ describe('CursorChatSession', () => {
     const prompt = `  ${'A'.repeat(100)}  `
     session.send(prompt); await tick()
     const model = { id: 'gpt-5.5', params: [{ id: 'reasoning', value: 'extra-high' }, { id: 'fast', value: 'true' }] }
-    expect(sdk.create).toHaveBeenCalledWith({ name: 'A'.repeat(80), model, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
+    expect(sdk.create).toHaveBeenCalledWith({ name: 'A'.repeat(80), model, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } })
     expect(sdk.sends[0]).toMatchObject({ message: { text: 'A'.repeat(100) }, options: { model } })
     expect(session.snapshot().session.sessionId).toBe('agent-123')
     session.close()
@@ -216,7 +218,7 @@ describe('CursorChatSession', () => {
     expect(sdk.create).not.toHaveBeenCalled()
     expect(session.snapshot().session.sessionId).toBeUndefined()
     session.send('Hello'); await tick()
-    expect(sdk.create).toHaveBeenCalledWith({ name: 'Hello', model: { id: 'test-model', params: [{ id: 'reasoning_effort', value: 'high' }, { id: 'fast', value: 'true' }] }, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } })
+    expect(sdk.create).toHaveBeenCalledWith({ name: 'Hello', model: { id: 'test-model', params: [{ id: 'reasoning_effort', value: 'high' }, { id: 'fast', value: 'true' }] }, disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } })
     expect(parseChatSessionInfo(session.snapshot().session)).not.toBeNull()
     session.close()
   })
@@ -323,7 +325,7 @@ describe('CursorChatSession', () => {
     sdk.runs[0].finish(); await tick()
     session.send('Next'); await tick()
     expect(sdk.agent.close).toHaveBeenCalledTimes(1)
-    expect(sdk.resume).toHaveBeenCalledWith('agent-123', { model: cursorModelSelection(models[1], 'high', true), disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false }, autoReview: true } })
+    expect(sdk.resume).toHaveBeenCalledWith('agent-123', { model: cursorModelSelection(models[1], 'high', true), disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false }, autoReview: true } })
     expect(sdk.sends[1].options.model).toEqual(cursorModelSelection(models[1], 'high', true))
     await session.configure({ effort: 'medium' })
     await session.configure({ model: 'unknown' })
@@ -340,7 +342,7 @@ describe('CursorChatSession', () => {
     await session.start()
     session.send('Plan'); await tick()
     expect(sdk.sends[0].options.mode).toBe('plan')
-    expect(sdk.create.mock.calls[0][0].local).toEqual({ cwd: '/tmp', sandboxOptions: { enabled: false } })
+    expect(sdk.create.mock.calls[0][0].local).toEqual({ cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } })
     expect(session.snapshot().session.prePlanPermissionMode).toBe('bypassPermissions')
     sdk.delta({ type: 'tool-call-completed', callId: 'p', toolCall: { type: 'createPlan', args: { plan: '# Plan\nDo this' } } })
     expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'plan', text: '# Plan\nDo this' })
@@ -348,7 +350,7 @@ describe('CursorChatSession', () => {
     session.send('Implement', [], { permissionMode: 'bypassPermissions' }); await tick()
     expect(sdk.sends[1].options.mode).toBe('agent')
     expect(session.snapshot().session.prePlanPermissionMode).toBeUndefined()
-    expect(sdk.resume).toHaveBeenCalledWith('agent-123', expect.objectContaining({ local: { cwd: '/tmp', sandboxOptions: { enabled: false } } }))
+    expect(sdk.resume).toHaveBeenCalledWith('agent-123', expect.objectContaining({ local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } }))
     session.close()
   })
   it('requests a restart with current settings when an unsandboxed chat switches to sandboxing', async () => {
@@ -440,7 +442,7 @@ describe('CursorChatSession', () => {
     const { session, sdk } = harness({ resume: 'old-agent' })
     sdk.history.mockResolvedValue({ skipped: 0, turns: Array.from({ length: MAX_CHAT_ITEMS + 1 }, (_, i) => ({ type: 'agentConversationTurn', turn: { steps: [{ type: 'assistantMessage', message: { text: String(i) } }] } })) })
     await session.start()
-    expect(sdk.resume).toHaveBeenCalledWith('old-agent', expect.objectContaining({ disallowedTools: ['askQuestion'], local: { cwd: '/tmp', sandboxOptions: { enabled: false } } }))
+    expect(sdk.resume).toHaveBeenCalledWith('old-agent', expect.objectContaining({ disallowedTools: ['askQuestion'], local: { cwd: '/tmp', settingSources: [...CURSOR_SETTING_SOURCES], sandboxOptions: { enabled: false } } }))
     expect(sdk.history).toHaveBeenCalledWith('agent-123', '/tmp')
     expect(session.snapshot().items).toHaveLength(MAX_CHAT_ITEMS)
     expect(session.snapshot().items[0]).toMatchObject({ text: '1' })
@@ -624,5 +626,56 @@ describe('CursorChatSession', () => {
     expect(sdk.agent.close).toHaveBeenCalledTimes(1)
     expect(closed).toHaveBeenCalledTimes(1)
     expect(session.snapshot().session.status).toBe('closed')
+  })
+
+  it('manages MCP servers via reload and requests restart when auth changes after executor start', async () => {
+    const loginDone = deferred<{ ok: boolean; error?: string }>()
+    const cancel = vi.fn()
+    const cli: CursorMcpCli = {
+      run: vi.fn(async (args) => {
+        if (args[1] === 'list') return { stdout: 'linear: requires_authentication\n', stderr: '', exitCode: 0 }
+        return { stdout: '', stderr: '', exitCode: 0 }
+      }),
+      startLogin: vi.fn(async (): Promise<CursorMcpLoginProcess> => ({
+        authUrl: Promise.resolve('https://mcp.linear.app/oauth/authorize'),
+        done: loginDone.promise,
+        cancel,
+      })),
+    }
+    // Before an agent executor has been created, auth changes do not need a host restart.
+    const beforeExec = harness({}, cli)
+    const beforeRestart = vi.fn()
+    beforeExec.session.on('restart', beforeRestart)
+    await beforeExec.session.start()
+    const authResult = await beforeExec.session.mcp({ action: 'authenticate', server: 'linear' })
+    expect(authResult.authUrl).toBe('https://mcp.linear.app/oauth/authorize')
+    loginDone.resolve({ ok: true })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(beforeRestart).not.toHaveBeenCalled()
+    beforeExec.session.close()
+
+    // Once an agent executor has started, reconnect reloads it and auth completion triggers a restart.
+    const secondDone = deferred<{ ok: boolean; error?: string }>()
+    vi.mocked(cli.startLogin).mockResolvedValueOnce({
+      authUrl: Promise.resolve('https://mcp.linear.app/oauth/authorize?two=1'),
+      done: secondDone.promise,
+      cancel: vi.fn(),
+    })
+    const { session, sdk } = harness({}, cli)
+    const restart = vi.fn()
+    session.on('restart', restart)
+    await session.start()
+    session.send('Hi'); await tick()
+    sdk.runs[0].finish(); await tick()
+
+    await session.mcp({ action: 'reconnect', server: 'linear' })
+    expect(sdk.agent.reload).toHaveBeenCalledTimes(1)
+
+    const secondAuth = await session.mcp({ action: 'authenticate', server: 'linear' })
+    expect(secondAuth.authUrl).toBe('https://mcp.linear.app/oauth/authorize?two=1')
+    secondDone.resolve({ ok: true })
+    await vi.waitFor(() => expect(restart).toHaveBeenCalledTimes(1))
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', text: expect.stringContaining('MCP credentials updated for linear') })
+    session.close()
   })
 })

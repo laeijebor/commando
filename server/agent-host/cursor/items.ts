@@ -29,6 +29,24 @@ function changes(args: Record<string, unknown>, edit?: Record<string, unknown>):
 export const QUESTION_REFUSED = "Cursor tried to ask a question, which it can't do in a Commando chat; it continues without an answer. Reply in the chat if it needs one."
 const TITLES: Record<string, string> = { read: 'Read file', grep: 'Search text', glob: 'Find files', ls: 'List files', mcp: 'MCP tool', semSearch: 'Search code', readLints: 'Read diagnostics', generateImage: 'Generate image' }
 
+function mcpTitle(args: Record<string, unknown>): string {
+  const provider = string(args.providerIdentifier)
+  const tool = string(args.toolName)
+  if (provider && tool) return `${provider} · ${tool}`
+  if (tool) return `MCP · ${tool}`
+  if (provider) return `MCP · ${provider}`
+  return TITLES.mcp
+}
+
+function mcpOutput(callResult: unknown, result: Record<string, unknown>, value: Record<string, unknown>): string {
+  if (result.status === 'error') return detail(result.error)
+  const texts = list(value.content).flatMap((entry) => {
+    const content = string(record(record(entry).text).text)
+    return content !== undefined ? [content] : []
+  })
+  return texts.length ? texts.join('\n').slice(0, MAX_TEXT) : detail(callResult)
+}
+
 export class CursorItemMapper {
   private readonly items = new Map<string, ChatItem>()
   private turnId = 'cursor'
@@ -155,6 +173,20 @@ export class CursorItemMapper {
         state: failed ? 'failed' : complete ? 'completed' : 'running', prompt: text(args.prompt), model: string(args.model),
         subagentType: string(record(args.subagentType).name) ?? string(record(args.subagentType).kind),
         ...(call.result !== undefined ? { output: detail(call.result) } : {}) })]
+      case 'mcp': {
+        const mcpFailed = failed || value.isError === true
+        const mcpBase = this.base(id, mcpFailed ? 'failed' : complete ? 'completed' : 'running')
+        return [this.put({
+          ...mcpBase,
+          kind: 'tool',
+          toolUseId: callId,
+          toolName: type,
+          title: mcpTitle(args),
+          detail: detail(args.args !== undefined ? args.args : call.args),
+          ...(call.result !== undefined ? { output: mcpOutput(call.result, result, value) } : {}),
+          ...(mcpFailed ? { isError: true as const } : {}),
+        })]
+      }
       default: return [this.put({ ...base, kind: 'tool', toolUseId: callId, toolName: type, title: `${TITLES[type] ?? type.replace(/([a-z])([A-Z])/g, '$1 $2')}${string(args.path) ? `: ${text(args.path)}` : ''}`,
         detail: detail(call.args), ...(call.result !== undefined ? { output: detail(call.result) } : {}), ...error })]
     }
