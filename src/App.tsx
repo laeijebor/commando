@@ -123,6 +123,7 @@ import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
 import { createAgentProfilesApi } from './agentProfilesApi'
+import { createDeviceFarmApi } from './DeviceFarmSettings'
 import { SessionTree, type SessionActions } from './SessionTree'
 import { auxiliarySessionIds } from '../shared/auxiliary-session'
 import { ARCHIVE_RESTORE_NOTE, PAUSE_RESUME_NOTE, sessionProcesses, sessionProcessesWarning } from './sessionProcesses'
@@ -2787,6 +2788,7 @@ function HostApp() {
   const prsApi = useMemo(() => createPrsApi(token, daemonFetch), [token])
   const trackedProcessesApi = useMemo(() => createTrackedProcessesApi(token, daemonFetch), [token])
   const agentProfilesApi = useMemo(() => createAgentProfilesApi(token, daemonFetch), [token])
+  const deviceFarmApi = useMemo(() => createDeviceFarmApi(token, daemonFetch), [token])
   /**
    * "Implement in a new chat pane": splits the chat's pane and starts a fresh
    * chat with the same profile and folder, in the mode the chat had before plan
@@ -4737,7 +4739,7 @@ function HostApp() {
           {area === 'settings' ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening settings...</p></section>}>
               <HostsSettings token={token} />
-              <SettingsView api={agentProfilesApi} naming={sessionNamingSettings} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
+              <SettingsView api={agentProfilesApi} naming={sessionNamingSettings} deviceFarm={deviceFarmApi} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
                 commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
           ) : null}

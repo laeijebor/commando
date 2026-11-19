@@ -138,6 +138,8 @@ import { openUrlInBrowser } from './open-folder.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry, defaultDeviceLockStatePath, deviceLockClaimsByPane } from './device-locks.js'
 import { DeviceDiscovery, DeviceWallApi, deviceLockAlerts } from './device-wall.js'
+import { SwitchableLockStore } from './device-lock-store.js'
+import { DeviceFarmController, defaultDeviceFarmSettingsPath } from './device-farm.js'
 import { SimLeaseApi, SimLeaseRegistry, SimPoolRegistry, defaultSimPoolStatePath, defaultSimLeaseStatePath } from './sim-leases.js'
 import { SimLiveService, simLiveUdid } from './sim-live.js'
 import { SimLogsService, simLogsUdid } from './sim-logs.js'
@@ -2293,7 +2295,14 @@ async function main(): Promise<void> {
   turnBriefs.start()
   commanderRelays.start()
   commanderStalls.start()
-  const deviceLockRegistry = new DeviceLockRegistry({ statePath: defaultDeviceLockStatePath(port) })
+  const builtinDeviceLocks = new DeviceLockRegistry({ statePath: defaultDeviceLockStatePath(port) })
+  // Device locks run on Commando's built-in queue or on device farms (Settings > Device farm); the store can switch
+  // between them while Commando runs.
+  const deviceLockRegistry = new SwitchableLockStore(builtinDeviceLocks)
+  const busyProcesses = new BusyProcessWatch()
+  const deviceFarm = new DeviceFarmController({ path: defaultDeviceFarmSettingsPath(port), store: deviceLockRegistry, builtin: builtinDeviceLocks,
+    commandoLocksPath: defaultDeviceLockStatePath(port), daemonPort: port })
+  deviceFarm.start()
   // A finished turn means the agent is idle; `settledAt` marks when that run began.
   const deviceIdleSince = (paneId: string): number | undefined => {
     const status = agentStatuses.get(paneId)
@@ -2307,7 +2316,11 @@ async function main(): Promise<void> {
       const pane = paneForId(paneId)
       return (pane && snapshot.sessions.find((candidate) => candidate.id === pane.sessionId)?.name) ?? null
     },
-    processes: new BusyProcessWatch(),
+    // On a farm, the farm itself watches for builds outside the lock and says what a device is waiting for.
+    processes: {
+      refresh: () => deviceLockRegistry.store === builtinDeviceLocks ? busyProcesses.refresh() : Promise.resolve(),
+      busy: (resource, requesters) => deviceLockRegistry.store === builtinDeviceLocks ? busyProcesses.busy(resource, requesters) : deviceLockRegistry.waitingFor(resource, []),
+    },
     // Delivered like a Commander relay: queued until the agent's turn ends.
     message: async (paneId, text) => (await commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text })).id,
     cancelMessage: async (id) => { await commanderRelays.cancel(id) },
@@ -2320,7 +2333,7 @@ async function main(): Promise<void> {
   // Pushes to the companion app when a device queue needs the owner (idle or overrunning holder, long wait).
   const deviceAlertTimer = setInterval(() => {
     if (!pushNotifier) return
-    for (const alert of deviceLockAlerts(deviceLockRegistry.snapshot(), Date.now(), deviceIdleSince)) {
+    for (const alert of deviceLockAlerts(deviceLockRegistry.snapshot(), Date.now(), deviceIdleSince).filter((candidate) => candidate.paneId.startsWith('%'))) {
       if (deviceLockRegistry.alertSent(alert.dedupeKey)) continue
       if (pushNotifier.alert({ ...alert, provider: agentStatuses.get(alert.paneId)?.provider ?? 'unknown' })) deviceLockRegistry.recordAlert(alert.dedupeKey, alert.ref)
     }
@@ -2346,7 +2359,7 @@ async function main(): Promise<void> {
     devicePublish.unref()
   })
   const deviceWallApi = new DeviceWallApi({
-    registry: deviceLockRegistry, locks: deviceLockApi, discovery: new DeviceDiscovery(),
+    registry: deviceLockRegistry, locks: deviceLockApi, discovery: new DeviceDiscovery(), farms: () => deviceFarm.farmStatus(),
     idleSince: deviceIdleSince,
     message: (paneId, text) => commanderRelays.enqueue({ paneId, origin: 'devices', kind: 'relay', delivery: 'queue', text }),
   })
@@ -3196,6 +3209,7 @@ async function main(): Promise<void> {
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
         if (await deviceWallApi.handle(request, response, url)) return
+        if (await deviceFarm.handle(request, response, url)) return
         if (/^\/api\/(?:cloud-tasks|cloud-providers|cloud-operations)(?:\/|$)/.test(url.pathname)) {
           if (!cloudTasks) {
             writeJson(response, 503, { code: 'cloud_storage_unavailable', error: 'Cloud task storage is unavailable. Saved history has not been reset.' })
@@ -3440,6 +3454,7 @@ async function main(): Promise<void> {
     commanderRelays.stop()
     commanderStalls.stop()
     deviceLockApi?.stop()
+    deviceFarm.stop()
     clearInterval(deviceAlertTimer)
     clearTimeout(devicePublish)
     conversationTitles.stop()
