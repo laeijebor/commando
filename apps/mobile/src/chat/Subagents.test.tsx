@@ -150,4 +150,12 @@ describe('subagents in the phone chat', () => {
     fireEvent.press(screen.getByLabelText('Stop messaging this subagent'))
     expect(screen.queryByTestId('relay-chip')).toBeNull()
   })
+
+  it.each(['cursor', 'codex', 'muse'] as const)('hides the subagent Message button for %s chats', async (provider) => {
+    renderChat(chatState({ session: session({ provider, status: 'running' }), items: ITEMS }))
+    await settle()
+    fireEvent.press(screen.getByLabelText('Open subagent Port the metrics'))
+    expect(screen.getByTestId('subagent-header')).toBeTruthy()
+    expect(screen.queryByLabelText('Message Port the metrics')).toBeNull()
+  })
 })
