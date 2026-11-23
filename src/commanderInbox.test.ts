@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatState } from '../shared/agent-chat'
 import type { CommanderRelay, TurnBrief } from '../shared/commander'
 import type { AgentStatus, SessionBrief, TmuxPane } from '../shared/protocol'
-import { commanderInbox, commanderRepoOptions, keepNeedsYouOrder, type CommanderInboxInput, type NeedsYouOrder } from './commanderInbox'
+import { commanderInbox, commanderRepoOptions, keepNeedsYouOrder, NEEDS_YOU_GRACE_MS, type CommanderInboxInput, type NeedsYouOrder } from './commanderInbox'
 
 const pane = (id: string, overrides: Partial<TmuxPane> = {}) => ({ id, targetId: `target-${id}`, title: `Pane ${id}`, sessionId: '$1', index: 0, ...overrides }) as TmuxPane
 const status = (paneId: string, overrides: Partial<AgentStatus> = {}): AgentStatus => ({ paneId, provider: 'codex', status: 'done', source: 'hook', summary: 'Headline', confidence: 'high', reason: '', updatedAt: 100, settledAt: 100, ...overrides })
@@ -120,17 +120,30 @@ describe('keepNeedsYouOrder', () => {
     const statuses = Object.entries(updates).map(([id, updatedAt]) => status(id, { status: 'needs_input', updatedAt }))
     return commanderInbox(input({ snapshot: { panes: statuses.map((s) => pane(s.paneId)), sessions: [] }, agentStatuses: Object.fromEntries(statuses.map((s) => [s.paneId, s])) }))
   }
-  const ids = (order: NeedsYouOrder, updates: Record<string, number>) => keepNeedsYouOrder(needing(updates), order)
+  const ids = (order: NeedsYouOrder, updates: Record<string, number>, now = 0) => keepNeedsYouOrder(needing(updates), order, now)
+  const rows = (result: ReturnType<typeof ids>) => result.groups.needs_you.map((row) => row.paneId)
   it('lists agents that arrive together oldest first', () => {
-    expect(ids(new Map(), { '%1': 300, '%2': 100, '%3': 200 }).groups.needs_you.map((row) => row.paneId)).toEqual(['%2', '%3', '%1'])
+    expect(rows(ids(new Map(), { '%1': 300, '%2': 100, '%3': 200 }))).toEqual(['%2', '%3', '%1'])
   })
-  it('keeps places through status updates, adds newcomers last, and forgets agents that leave', () => {
+  it('keeps places through status updates and adds newcomers last', () => {
     const first = ids(new Map(), { '%1': 100, '%2': 200 })
-    const updated = ids(first.order, { '%1': 900, '%2': 200, '%3': 50 })
-    expect(updated.groups.needs_you.map((row) => row.paneId)).toEqual(['%1', '%2', '%3'])
-    const left = ids(updated.order, { '%2': 200, '%3': 50 })
-    expect(left.groups.needs_you.map((row) => row.paneId)).toEqual(['%2', '%3'])
-    expect(ids(left.order, { '%1': 1000, '%2': 200, '%3': 50 }).groups.needs_you.map((row) => row.paneId)).toEqual(['%2', '%3', '%1'])
+    expect(rows(ids(first.order, { '%1': 900, '%2': 200, '%3': 50 }))).toEqual(['%1', '%2', '%3'])
+  })
+  it('gives an agent that comes back within the grace period its old place', () => {
+    const all = ids(new Map(), { '%1': 100, '%2': 200, '%3': 300 })
+    const left = ids(all.order, { '%2': 200, '%3': 300 }, 1_000)
+    expect(rows(left)).toEqual(['%2', '%3'])
+    // Recomputing while it is away must not restart its grace period.
+    const later = ids(left.order, { '%2': 200, '%3': 300 }, 1_000 + NEEDS_YOU_GRACE_MS - 10)
+    expect(rows(ids(later.order, { '%1': 900, '%2': 200, '%3': 300 }, 1_000 + NEEDS_YOU_GRACE_MS))).toEqual(['%1', '%2', '%3'])
+  })
+  it('sends an agent that comes back after the grace period to the end, and forgets it meanwhile', () => {
+    const all = ids(new Map(), { '%1': 100, '%2': 200 })
+    const left = ids(all.order, { '%2': 200 }, 1_000)
+    const expired = ids(left.order, { '%2': 200 }, 1_001 + NEEDS_YOU_GRACE_MS)
+    expect([...expired.order.keys()]).toEqual(['target-%2'])
+    expect(rows(ids(expired.order, { '%1': 900, '%2': 200 }, 1_002 + NEEDS_YOU_GRACE_MS))).toEqual(['%2', '%1'])
+    expect(rows(ids(left.order, { '%1': 900, '%2': 200 }, 1_001 + NEEDS_YOU_GRACE_MS))).toEqual(['%2', '%1'])
   })
   it('leaves the other groups as sorted', () => {
     const groups = commanderInbox(input({ snapshot: { panes: [pane('%1'), pane('%2')], sessions: [] }, agentStatuses: { '%1': status('%1', { settledAt: 100 }), '%2': status('%2', { settledAt: 200 }) } }))
