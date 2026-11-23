@@ -480,7 +480,7 @@ describe('AgentChatsApi', () => {
     expect((await s.call('POST', '/report', { message: 'Done' }, TOKEN, '%10')).status).toBe(200)
   })
 
-  it.each(['claude-chat', 'codex'] as const)('stashes the full long brief for %s', async (agent) => {
+  it.each(['claude-chat', 'cursor-chat', 'codex'] as const)('stashes the full long brief for %s', async (agent) => {
     const s = await setup()
     const prompt = 'é'.repeat(4200)
     expect((await s.call('POST', '', { ...s.input, agent, prompt })).status).toBe(200)
@@ -489,7 +489,7 @@ describe('AgentChatsApi', () => {
     const launch = s.createSession.mock.calls[0][0].agent!
     expect(launch.prompt).toContain(stashed.path)
     expect(Buffer.byteLength(launch.prompt!)).toBeLessThan(8192)
-    expect(launch.readableDir).toBe(agent === 'claude-chat' ? stashed.dir : undefined)
+    expect(launch.readableDir).toBe(agent === 'claude-chat' || agent === 'cursor-chat' ? stashed.dir : undefined)
   })
 
   it('returns explicit worktree conflicts and preserves created targets for unacknowledged launches', async () => {

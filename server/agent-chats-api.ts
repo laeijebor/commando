@@ -390,7 +390,7 @@ export class AgentChatsApi {
       if (Buffer.byteLength(prompt) > MAX_PANE_PROMPT_BYTES) {
         const file = await this.dependencies.plans.stash(prompt)
         agent.prompt = `Read the full opening brief at ${JSON.stringify(file.path)} and follow its instructions.`
-        if (agent.provider === 'claude-chat') agent.readableDir = file.dir
+        if (agent.provider === 'claude-chat' || agent.provider === 'cursor-chat') agent.readableDir = file.dir
       }
       let result: TmuxCreateResponse
       try {

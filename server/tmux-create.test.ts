@@ -1215,7 +1215,23 @@ describe('Cursor chat creation', () => {
     expect(response.agentLaunch).toMatchObject({ provider: 'cursor-chat', paneId: '%12' })
     expect(run.mock.calls[0][0].at(-1)).toBe(agentLaunchPaneCommand([COMMANDO_AGENT_LAUNCHER, 'cursor', '--permission-mode', permissionMode, '--resume', 'agent-12345678-0000', '--prompt', 'Hello'], undefined, {}))
   })
-  it.each([{ configDir: '/Users/dev/.claude' }, { readableDir: '/tmp' }, { permissionMode: 'acceptEdits' }, { permissionMode: 'dontAsk' }])('rejects incompatible Cursor settings %j before running tmux', async (settings) => {
+  it('accepts a stashed plan folder and emits --readable-dir before --prompt', async () => {
+    const run = runner()
+    const dir = join(chatPlansDir(), 'a'.repeat(32))
+    await new TmuxCreator(run, [], undefined, async () => '/never', { PATH: '/bin' }).createPane({
+      targetId: '%3', direction: 'horizontal', cwd: '/tmp', agent: { provider: 'cursor-chat', permissionMode: 'auto', readableDir: dir, prompt: 'PLEASE IMPLEMENT THE PLAN' },
+    })
+    const command = run.mock.calls[0][0].at(-1) as string
+    expect(command.indexOf('--readable-dir')).toBeGreaterThan(-1)
+    expect(command.indexOf(dir)).toBeGreaterThan(command.indexOf('--readable-dir'))
+    expect(command.indexOf(dir)).toBeLessThan(command.indexOf('--prompt'))
+  })
+  it('rejects a readableDir outside stashed plan folders before running tmux', async () => {
+    const run = runner()
+    await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'cursor-chat', readableDir: '/tmp' } })).rejects.toThrow(/stashed plan folder/)
+    expect(run).not.toHaveBeenCalled()
+  })
+  it.each([{ configDir: '/Users/dev/.claude' }, { permissionMode: 'acceptEdits' }, { permissionMode: 'dontAsk' }])('rejects incompatible Cursor settings %j before running tmux', async (settings) => {
     const run = runner()
     await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'cursor-chat', ...settings } } as never)).rejects.toThrow(/Cursor/)
     expect(run).not.toHaveBeenCalled()

@@ -47,7 +47,7 @@ export type SessionAgentLaunch = {
   images?: ChatImageRef[]
   /** Chat providers only. */
   permissionMode?: ChatPermissionMode
-  /** claude-chat only: one stashed plan's folder, which this chat alone may read. */
+  /** claude-chat and cursor-chat: one stashed plan's folder, which this chat alone may read. */
   readableDir?: string
   /** Chat providers, Cursor and OpenCode: the conversation to carry on. */
   resume?: string
@@ -150,7 +150,7 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       ...(launch.model ? ['--model', launch.model] : []),
       ...(launch.fast ? ['--fast'] : []),
       '--permission-mode', launch.permissionMode ?? (launch.provider === 'cursor-chat' ? 'bypassPermissions' : 'default'),
-      ...(launch.provider === 'claude-chat' && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
+      ...((launch.provider === 'claude-chat' || launch.provider === 'cursor-chat') && launch.readableDir ? ['--readable-dir', launch.readableDir] : []),
       // Muse full access must be named: a bare bypassPermissions from before it existed stays sandboxed.
       ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' && launch.fullAccess === true ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),

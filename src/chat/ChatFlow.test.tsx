@@ -111,6 +111,14 @@ describe('plan follow-up', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't start a new chat pane: tmux refused")
   })
 
+  it('offers implementing in a new chat pane for Cursor plans', async () => {
+    const flow = flowServices()
+    renderPane(planItems, { provider: 'cursor', prePlanPermissionMode: 'auto' }, flow)
+    fireEvent.click(screen.getByRole('button', { name: 'More ways to implement' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Implement in a new chat pane' }))
+    expect(flow.implementInNewPane).toHaveBeenCalledWith(PLAN, 'auto')
+  })
+
   it('offers nothing once the plan has been answered or while Claude works', () => {
     const { rerender } = renderPane([...planItems, { ...base, id: 'u2', kind: 'user_message', text: 'go' }])
     expect(screen.queryByTestId('plan-ready')).not.toBeInTheDocument()
@@ -281,6 +289,16 @@ describe('subagents', () => {
     const message = within(screen.getByTestId('subagent-header')).getByRole('button', { name: 'Message' })
     expect(message).toBeDisabled()
     expect(message).toHaveAttribute('title', expect.stringContaining('Background this subagent'))
+  })
+
+  it('omits the subagent Message button for Cursor while keeping it for Claude', () => {
+    renderPane(live, { provider: 'cursor' })
+    fireEvent.click(screen.getByRole('button', { name: 'Open subagent job t2' }))
+    expect(within(screen.getByTestId('subagent-header')).queryByRole('button', { name: 'Message' })).not.toBeInTheDocument()
+    cleanup()
+    renderPane(live, { provider: 'claude' })
+    fireEvent.click(screen.getByRole('button', { name: 'Open subagent job t2' }))
+    expect(within(screen.getByTestId('subagent-header')).getByRole('button', { name: 'Message' })).toBeEnabled()
   })
 
   it('labels relayed and steered messages in the timeline', () => {

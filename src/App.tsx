@@ -2857,12 +2857,28 @@ function HostApp() {
       prompt = implementPlanFilePrompt(stashed.path)
       readableDir = stashed.dir
     }
+    const agent: SessionAgentLaunch = session?.provider === 'cursor'
+      ? {
+          provider: 'cursor-chat',
+          permissionMode: mode === 'bypassPermissions' || mode === 'auto' ? mode : 'default',
+          prompt,
+          ...(readableDir ? { readableDir } : {}),
+          ...(session.selectedModel ? { model: session.selectedModel } : {}),
+          ...(session.fast ? { fast: true as const } : {}),
+        }
+      : {
+          provider: 'claude-chat',
+          permissionMode: launchPermissionMode(mode),
+          prompt,
+          ...(session?.configDir ? { configDir: session.configDir } : {}),
+          ...(readableDir ? { readableDir } : {}),
+        }
     const created = await tmuxCreateApi.createPane({
       targetId: pane.id,
       direction: 'horizontal',
       placement: 'after',
       cwd: session?.cwd ?? pane.path,
-      agent: { provider: 'claude-chat', permissionMode: launchPermissionMode(mode), prompt, ...(session?.configDir ? { configDir: session.configDir } : {}), ...(readableDir ? { readableDir } : {}) },
+      agent,
     })
     setMaximizedPaneId(null)
     setPendingPaneFocus({ paneId: created.paneId })

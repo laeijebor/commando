@@ -471,7 +471,7 @@ function ChatColumn({
     setImplemented({ planId: plan.id, itemCount: chat.items.length })
     onSend(planImplementationPrompt(plan.text), undefined, { permissionMode: implementPermissionMode(chat.session) })
   }
-  const implementInNewPane = chat.session.provider === 'claude' && flow?.implementInNewPane && plan
+  const implementInNewPane = (chat.session.provider === 'claude' || chat.session.provider === 'cursor') && flow?.implementInNewPane && plan
     ? () => {
         setFlowError(null)
         flow.implementInNewPane!(plan.text, implementPermissionMode(chat.session)).catch((error: unknown) => {
@@ -622,7 +622,7 @@ function ChatColumn({
             disabled={!connected || !chat.hostConnected}
             onBack={() => select(undefined)}
             onTask={task}
-            onMessage={() => agent.agentId && setRelay({ agentId: agent.agentId, label: subagentLabel(agent) })}
+            {...(chat.session.provider === 'claude' ? { onMessage: () => agent.agentId && setRelay({ agentId: agent.agentId, label: subagentLabel(agent) }) } : {})}
           />
           <SubagentTimeline provider={chat.session.provider} agent={agent} items={chat.items} ownItems={ownItems} transcript={transcript} cwd={chat.session.cwd} onOpenSubagent={select} onResourceAction={onResourceAction} onRetry={() => agent.agentId && retryTranscript(agent.agentId)} />
         </>
