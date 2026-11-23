@@ -98,6 +98,29 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
   return groups
 }
 
+/** When each agent in Needs you joined it, as a rising sequence number keyed by target. */
+export type NeedsYouOrder = ReadonlyMap<string, number>
+
+/**
+ * Keeps Needs you in the order agents joined it. An agent that starts needing you goes below
+ * the ones already waiting and keeps its place until it leaves the group, however often its
+ * status updates. Agents that join together (such as on first load) go oldest first.
+ */
+export function keepNeedsYouOrder(groups: CommanderInbox, previous: NeedsYouOrder): { groups: CommanderInbox; order: NeedsYouOrder } {
+  let next = Math.max(0, ...previous.values())
+  const order = new Map<string, number>()
+  const joined: CommanderInboxRow[] = []
+  for (const row of groups.needs_you) {
+    const seq = previous.get(row.targetId)
+    if (seq === undefined) joined.push(row)
+    else order.set(row.targetId, seq)
+  }
+  joined.sort((a, b) => a.time - b.time || a.paneId.localeCompare(b.paneId))
+  for (const row of joined) order.set(row.targetId, ++next)
+  const needsYou = [...groups.needs_you].sort((a, b) => order.get(a.targetId)! - order.get(b.targetId)!)
+  return { groups: { ...groups, needs_you: needsYou }, order }
+}
+
 /** A queued relay always shows; a finished one shows for 15 minutes after it left the queue. */
 export function relayReceiptVisible(relay: CommanderRelay, now: number): boolean {
   return relay.status === 'queued' || (relay.settledAt ?? relay.deliveredAt ?? relay.createdAt) >= now - 15 * 60_000
