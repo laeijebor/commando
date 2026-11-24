@@ -183,9 +183,9 @@ export function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     if (!cursorCloud || typeof cursorCloud !== 'object' || Array.isArray(cursorCloud)) throw new Error('cursorCloud must be an object')
     const { repoUrl, ref } = cursorCloud as { repoUrl?: unknown; ref?: unknown }
     if (typeof repoUrl !== 'string' || normaliseGithubUrl(repoUrl) !== repoUrl || !repoUrl.startsWith('https://github.com/') || repoUrl.endsWith('.git')) throw new Error('Cursor cloud requires an https://github.com/<owner>/<repo> URL without credentials, query, fragment, port or .git')
-    if (typeof ref !== 'string' || ref !== ref.trim() || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref) || ref.startsWith('-') || ref.includes('..')) throw new Error('Invalid Cursor cloud ref')
+    if (!(ref === undefined && resume !== undefined) && (typeof ref !== 'string' || ref !== ref.trim() || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) throw new Error('Invalid Cursor cloud ref')
     if (permissionMode !== undefined && permissionMode !== 'bypassPermissions' && permissionMode !== 'plan') throw new Error('Cursor cloud supports only Full access and Plan')
-    cloud = { repoUrl, ref }
+    cloud = { repoUrl, ...(typeof ref === 'string' ? { ref } : {}) }
   }
   const chatName = provider === 'deepseek-chat' ? 'DeepSeek' : provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : provider === 'cursor-chat' ? 'Cursor' : 'Claude'
   if (chatName !== 'Claude' && (configDir !== undefined || readableDir !== undefined)) throw new Error(`${chatName} chat does not accept a Claude profile or readable folder`)
@@ -493,7 +493,7 @@ export class TmuxCreator {
     if (!agent?.cursorCloud) return
     if (worktree !== undefined) throw new Error('Cursor cloud cannot create a local worktree')
     if (!cwd) throw new Error('A working directory is required for Cursor cloud')
-    await new GitCursorCloud().assertPushed(cwd, agent.cursorCloud.repoUrl, agent.cursorCloud.ref)
+    if (!agent.resume) await new GitCursorCloud().assertPushed(cwd, agent.cursorCloud.repoUrl, agent.cursorCloud.ref!)
   }
 
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */

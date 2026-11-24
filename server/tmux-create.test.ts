@@ -1225,6 +1225,22 @@ describe('Cursor chat creation', () => {
 
 
 describe('Cursor cloud creation', () => {
+  it('allows no ref only for a resume and skips pushed-ref checks for existing agents', async () => {
+    const agent = { provider: 'cursor-chat' as const, resume: 'bc-12345678-abcd', cursorCloud: { repoUrl: 'https://github.com/acme/app' } }
+    expect(validatedAgent(agent)).toEqual(agent)
+    expect(() => validatedAgent({ ...agent, resume: undefined })).toThrow('ref')
+    expect(() => validatedAgent({ ...agent, cursorCloud: { ...agent.cursorCloud, ref: '-bad' } })).toThrow('ref')
+    const pushed = vi.spyOn(GitCursorCloud.prototype, 'assertPushed')
+    try {
+      const run = runner()
+      await new TmuxCreator(run, [], undefined, async () => '/host/commando-agent').createSession({ name: 'resume-cloud', cwd: '/repo', agent })
+      expect(pushed).not.toHaveBeenCalled()
+      expect(run.mock.calls[0]![0].at(-1)).toContain('--runtime')
+      expect(run.mock.calls[0]![0].at(-1)).toContain('bc-12345678-abcd')
+      expect(run.mock.calls[0]![0].at(-1)).not.toContain('--cloud-ref')
+    } finally { pushed.mockRestore() }
+  })
+
   const cursorCloud = { repoUrl: 'https://github.com/acme/app', ref: 'feature/cloud' }
   it.each(['bypassPermissions', 'plan', undefined] as const)('accepts cloud mode %s and whitelists its fields', (permissionMode) => {
     expect(validatedAgent({ provider: 'cursor-chat', permissionMode, cursorCloud: { ...cursorCloud, extra: 'ignored' } })).toMatchObject({ provider: 'cursor-chat', cursorCloud })

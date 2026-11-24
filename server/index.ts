@@ -90,6 +90,7 @@ import { defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
+import { CursorCloudAgentsApi } from './cursor-cloud-agents.js'
 import { createCloudConnections } from './cloud-connections.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
@@ -1825,6 +1826,12 @@ async function main(): Promise<void> {
     (creations) => broadcast({ type: 'session_creations', creations }),
   )
 
+  const cursorCloudAgentsApi = new CursorCloudAgentsApi({
+    chatSessions: () => agentHosts.states().map((state) => state.session),
+    snapshot: () => snapshot,
+    creations: sessionCreations,
+  })
+
   const sessionIdes = new SessionIdeService({
     dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides'),
     legacyDataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides', String(port)),
@@ -3254,6 +3261,7 @@ async function main(): Promise<void> {
           }
           if (await handleCloudTasksApi(request, response, url, cloudTasks)) return
         }
+        if (await cursorCloudAgentsApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return

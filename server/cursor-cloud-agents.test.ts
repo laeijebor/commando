@@ -1,0 +1,136 @@
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { describe, expect, it, vi } from 'vitest'
+import type { ChatSessionInfo } from '../shared/agent-chat.js'
+import type { TmuxPane } from '../shared/protocol.js'
+import type { SessionCreation } from '../shared/tmux-create.js'
+import { CursorCloudAgentsApi, type CursorCloudAgentsSdk } from './cursor-cloud-agents.js'
+import type { GitProcessExecutor } from './git-diff.js'
+
+const id = 'bc-12345678-abcd'
+function setup() {
+  let now = 0
+  const chats: ChatSessionInfo[] = []
+  const panes = [{ id: '%1', path: '/repo/sub', dead: false }] as TmuxPane[]
+  const agent = { agentId: id, name: 'Fix cloud', summary: 'A summary', repos: ['https://github.com/acme/app'], lastModified: 123, createdAt: 100, metadata: { commando: '' } }
+  const sdk = {
+    list: vi.fn<CursorCloudAgentsSdk['list']>().mockResolvedValue({ items: [agent], nextCursor: 'next' }),
+    get: vi.fn<CursorCloudAgentsSdk['get']>().mockResolvedValue(agent),
+    listRuns: vi.fn<CursorCloudAgentsSdk['listRuns']>().mockResolvedValue({ items: [{ status: 'running', git: { branches: [{ branch: 'fix/cloud', prUrl: 'https://github.com/acme/app/pull/1' }] } }] }),
+  }
+  const start = vi.fn(async () => ({ result: { created: { paneId: '%9' } } }) as SessionCreation)
+  const execute = vi.fn<GitProcessExecutor>().mockImplementation(async (_file, args) => ({ stdout:
+    args[0] === 'rev-parse' ? '/repo\n' : args.length === 1 ? 'origin\nupstream\n'
+      : args[2] === 'origin' ? 'https://github.com/other/repo.git\n' : 'git@github.com:Acme/App.git\n', stderr: '' }))
+  const loadSdk = vi.fn(async () => sdk)
+  const api = new CursorCloudAgentsApi({ sdk: loadSdk, now: () => now, chatSessions: () => chats, snapshot: () => ({ panes }), creations: { start }, execute })
+  const call = async (path = '', method = 'GET') => {
+    const result = { status: 0, body: {} as Record<string, unknown> }
+    const response = { writeHead: (status: number) => { result.status = status }, end: (body: string) => { result.body = JSON.parse(body) } } as ServerResponse
+    const handled = await api.handle({ method } as IncomingMessage, response, new URL(`http://x/api/cursor-cloud-agents${path}`))
+    expect(handled).toBe(true)
+    return result
+  }
+  return { api, sdk, agent, chats, panes, start, execute, loadSdk, call, time: (value: number) => { now = value } }
+}
+
+describe('Cursor cloud agent list', () => {
+  it('is lazy and maps metadata, run status, git and live panes', async () => {
+    const f = setup()
+    expect(f.loadSdk).not.toHaveBeenCalled()
+    f.chats.push({ sessionId: id, paneId: '%4' } as ChatSessionInfo)
+    expect(await f.call()).toEqual({ status: 200, body: { login: 'ok', more: true, agents: [{
+      agentId: id, name: 'Fix cloud', summary: 'A summary', repoUrl: 'https://github.com/acme/app', lastModified: 123, createdAt: 100,
+      startedInCommando: true, openPaneId: '%4', status: 'running', branch: 'fix/cloud', prUrl: 'https://github.com/acme/app/pull/1', webUrl: `https://cursor.com/agents/${id}`,
+    }] } })
+    expect(f.sdk.list).toHaveBeenCalledWith({ runtime: 'cloud', limit: 50 })
+    expect(f.sdk.listRuns).toHaveBeenCalledWith(id, { runtime: 'cloud', limit: 1 })
+  })
+  it('looks up only the 15 most recent runs, at most four concurrently', async () => {
+    const f = setup()
+    f.sdk.list.mockResolvedValue({ items: Array.from({ length: 20 }, (_, i) => ({ ...f.agent, agentId: `bc-${i}`, lastModified: i, metadata: undefined })) })
+    let active = 0; let peak = 0
+    f.sdk.listRuns.mockImplementation(async () => {
+      active++; peak = Math.max(peak, active)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      active--
+      return { items: [] }
+    })
+    const result = await f.api.list()
+    expect(f.sdk.listRuns).toHaveBeenCalledTimes(15)
+    expect(f.sdk.listRuns.mock.calls.map(([id]) => id)).toEqual(Array.from({ length: 15 }, (_, i) => `bc-${19 - i}`))
+    expect(peak).toBe(4)
+    expect(result.agents.every((agent) => !agent.startedInCommando && !agent.status)).toBe(true)
+  })
+  it('caches for 20 seconds, deduplicates requests and limits refresh to once per 5 seconds', async () => {
+    const f = setup()
+    await Promise.all([f.api.list(), f.api.list()])
+    f.time(4999); await f.api.list(true)
+    expect(f.sdk.list).toHaveBeenCalledTimes(1)
+    f.time(5000); await f.api.list(true)
+    expect(f.sdk.list).toHaveBeenCalledTimes(2)
+    f.time(24_999); await f.api.list()
+    expect(f.sdk.list).toHaveBeenCalledTimes(2)
+    f.time(25_000); await f.api.list()
+    expect(f.sdk.list).toHaveBeenCalledTimes(3)
+  })
+  it.each(['list', 'listRuns'] as const)('returns login required on %s auth errors', async (method) => {
+    const f = setup()
+    f.sdk[method].mockRejectedValue({ code: 'UNAUTHENTICATED', message: 'secret-key' })
+    expect(await f.api.list()).toEqual({ login: 'required', agents: [], more: false })
+  })
+  it('contains SDK/import failures without returning diagnostics or keys', async () => {
+    const f = setup()
+    f.loadSdk.mockRejectedValue(new Error('secret-key'))
+    const result = await f.api.list()
+    expect(result.error).toMatch(/Unable to load/)
+    expect(JSON.stringify(result)).not.toContain('secret-key')
+  })
+  it('keeps agents with unknown statuses if a run lookup fails', async () => {
+    const f = setup()
+    f.sdk.listRuns.mockRejectedValue(new Error('secret-key'))
+    const result = await f.api.list()
+    expect(result.agents).toHaveLength(1)
+    expect(result.agents[0].status).toBeUndefined()
+    expect(result.error).toMatch(/statuses/)
+  })
+})
+
+describe('open Cursor cloud agent', () => {
+  it('focuses an already open chat without loading SDK or creating a session', async () => {
+    const f = setup()
+    f.chats.push({ sessionId: id, paneId: '%4' } as ChatSessionInfo)
+    expect(await f.call(`/${id}/open`, 'POST')).toEqual({ status: 200, body: { paneId: '%4' } })
+    expect(f.loadSdk).not.toHaveBeenCalled()
+    expect(f.start).not.toHaveBeenCalled()
+  })
+  it('matches any normalized remote and uses the existing session creation path once', async () => {
+    const f = setup()
+    await f.api.list()
+    const results = await Promise.all([f.api.open(id), f.api.open(id)])
+    expect(results).toEqual([{ paneId: '%9' }, { paneId: '%9' }])
+    expect(f.sdk.get).toHaveBeenCalledWith(id)
+    expect(f.start).toHaveBeenCalledExactlyOnceWith({ name: 'Fix cloud', autoName: true, cwd: '/repo',
+      agent: { provider: 'cursor-chat', resume: id, permissionMode: 'bypassPermissions', cursorCloud: { repoUrl: 'https://github.com/acme/app' } } })
+    await f.api.open(id)
+    expect(f.start).toHaveBeenCalledTimes(1)
+    expect((await f.api.list(true)).agents[0].openPaneId).toBe('%9')
+    expect(f.sdk.list).toHaveBeenCalledTimes(1)
+  })
+  it('does not use dead panes and reports missing checkout with 409', async () => {
+    const f = setup()
+    f.panes[0].dead = true
+    expect(await f.call(`/${id}/open`, 'POST')).toEqual({ status: 409, body: { error: 'No local checkout of acme/app is open in Commando. Open a session in that repo, then try again.' } })
+    expect(f.start).not.toHaveBeenCalled()
+  })
+  it('uses the exact linked checkout root when supplied', async () => {
+    const f = setup()
+    f.panes[0].repo = { root: '/main', worktreeRoot: '/linked', name: 'app', isWorktree: true, branch: 'fix' }
+    await f.api.open(id)
+    expect(f.execute.mock.calls[0][2].cwd).toBe('/linked')
+  })
+  it.each(['not-cloud', 'bc-short', `bc-${'x'.repeat(81)}`, 'bc-12345678%20'])('rejects invalid id %s before SDK access', async (badId) => {
+    const f = setup()
+    expect((await f.call(`/${badId}/open`, 'POST')).status).toBe(400)
+    expect(f.loadSdk).not.toHaveBeenCalled()
+  })
+})
