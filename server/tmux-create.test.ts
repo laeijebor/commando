@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chatProfileConfigDir, defaultClaudeProfile, sessionAgentArgv, type GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
-import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, emptyPaneCommand, emptyPaneShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
+import { GitCursorCloud } from './git-cursor-cloud.js'
+import { validatedAgent, TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, emptyPaneCommand, emptyPaneShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
 import { chatPlansDir } from './chat-plans-dir.js'
 
 const separator = '\u001f'
@@ -1219,5 +1220,46 @@ describe('Cursor chat creation', () => {
     const run = runner()
     await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'cursor-chat', ...settings } } as never)).rejects.toThrow(/Cursor/)
     expect(run).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('Cursor cloud creation', () => {
+  const cursorCloud = { repoUrl: 'https://github.com/acme/app', ref: 'feature/cloud' }
+  it.each(['bypassPermissions', 'plan', undefined] as const)('accepts cloud mode %s and whitelists its fields', (permissionMode) => {
+    expect(validatedAgent({ provider: 'cursor-chat', permissionMode, cursorCloud: { ...cursorCloud, extra: 'ignored' } })).toMatchObject({ provider: 'cursor-chat', cursorCloud })
+    expect(validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, extra: true } })?.cursorCloud).not.toHaveProperty('extra')
+  })
+  it.each(['claude-chat', 'codex-chat', 'cursor'])('rejects cloud for %s', (provider) => {
+    expect(() => validatedAgent({ provider, cursorCloud })).toThrow('Only Cursor chat')
+  })
+  it.each(['default', 'auto', 'acceptEdits'])('rejects local-only mode %s', (permissionMode) => {
+    expect(() => validatedAgent({ provider: 'cursor-chat', cursorCloud, permissionMode })).toThrow('only Full access and Plan')
+  })
+  it.each(['https://github.com/acme/app.git', 'https://user@github.com/acme/app', 'https://github.com:443/acme/app', 'https://github.com/acme/app?x=1', 'https://github.com/acme/app#x', 'https://gitlab.com/acme/app', 'git@github.com:acme/app', 'https://github.com/acme/..'])('rejects cloud URL %s', (repoUrl) => {
+    expect(() => validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, repoUrl } })).toThrow('URL')
+  })
+  it.each(['', '-main', 'a..b', 'main space', 'x'.repeat(201), 'main\n'])('rejects cloud ref %j', (ref) => {
+    expect(() => validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, ref } })).toThrow('ref')
+  })
+  it('rejects combining cloud and worktree before any mutation', async () => {
+    const run = runner()
+    await expect(new TmuxCreator(run).createSession({ name: 'cloud', cwd: '/repo', worktree: { branch: 'fix' }, agent: { provider: 'cursor-chat', cursorCloud } })).rejects.toThrow('cannot create a local worktree')
+    expect(run).not.toHaveBeenCalled()
+  })
+  it('checks the remote before creating a pane in the chosen existing checkout', async () => {
+    const pushed = vi.spyOn(GitCursorCloud.prototype, 'assertPushed').mockResolvedValue(undefined)
+    try {
+      const run = runner()
+      const creator = new TmuxCreator(run, [], undefined, async () => '/host/commando-agent')
+      await creator.createSession({ name: 'cloud', cwd: '/repo', agent: { provider: 'cursor-chat', cursorCloud } })
+      expect(pushed).toHaveBeenCalledWith('/repo', cursorCloud.repoUrl, cursorCloud.ref)
+      expect(run.mock.calls[0]![0]).toContain('/repo')
+      expect(run.mock.calls[0]![0].at(-1)).toContain('--runtime')
+      run.mockClear()
+      pushed.mockRejectedValue(new Error('Push first'))
+      await expect(creator.createSession({ name: 'cloud', cwd: '/repo', agent: { provider: 'cursor-chat', cursorCloud } })).rejects.toThrow('Push first')
+      expect(run).not.toHaveBeenCalled()
+    } finally { pushed.mockRestore() }
   })
 })

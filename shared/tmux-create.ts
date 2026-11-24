@@ -37,6 +37,8 @@ export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPer
 export type SessionAgentLaunch = {
   provider: SessionAgentProvider
   prompt?: string
+  /** Cursor chat only: start from a pushed GitHub branch in Cursor's VM. */
+  cursorCloud?: { repoUrl: string; ref: string }
   /** claude-chat and claude: the Claude config dir (`~/.claudep`, `~/.claudew`) that picks the login. */
   configDir?: string
   /** Chat providers, claude and codex: the model to start on (a picker value such as `sonnet` or `gpt-6.1-sol`). */
@@ -82,6 +84,8 @@ export const CURSOR_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode;
   { value: 'auto', label: 'Auto-review' },
   { value: 'plan', label: 'Plan' },
 ]
+
+export const CURSOR_CLOUD_PERMISSION_MODES = CURSOR_CHAT_PERMISSION_MODES.filter((mode) => mode.value === 'bypassPermissions' || mode.value === 'plan')
 
 /** Muse has no plan mode; "Ask when needed" is its own default. */
 export const MUSE_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
@@ -155,6 +159,7 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' && launch.fullAccess === true ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),
       ...(launch.images ?? []).flatMap((image) => ['--image', chatImageArg(image)]),
+      ...(launch.provider === 'cursor-chat' && launch.cursorCloud ? ['--runtime', 'cloud', '--cloud-repo', launch.cursorCloud.repoUrl, '--cloud-ref', launch.cursorCloud.ref] : []),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]
@@ -395,6 +400,8 @@ export type GitRepoInfo = {
   name?: string
   branch?: string
   isWorktree?: boolean
+  /** GitHub remote and cached tracking state for the current branch (default branch when detached). */
+  github?: { repoUrl: string; remote: string; ref: string; pushed: boolean; ahead: number; behind: number }
   /** Default branch on the remote, e.g. `main`; undefined without a remote. */
   defaultBranch?: string
   remote?: string

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { access, readdir, realpath, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, SessionCreationProgress, TmuxCreatedWorktree } from '../shared/tmux-create.js'
+import { GitCursorCloud } from './git-cursor-cloud.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
 
 const COMMAND_TIMEOUT_MS = 5_000
@@ -228,8 +229,10 @@ export class GitWorktreeService {
     if (!identity) return { isRepo: false }
     const { root, mainRoot, branch } = identity
     const defaultBranch = await this.defaultBranch(mainRoot)
+    const github = await new GitCursorCloud(this.execute).probe(root, branch ?? '', defaultBranch).catch(() => undefined)
     return {
       isRepo: true,
+      ...(github ? { github } : {}),
       root,
       mainRoot,
       name: path.basename(mainRoot),
