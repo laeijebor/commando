@@ -49,6 +49,19 @@ describe('commanderInbox', () => {
     expect(result.working).toHaveLength(1)
     expect(result.needs_you).toHaveLength(0)
   })
+  it('puts an agent with open asks in Needs you with its question, until they close', () => {
+    const asks = [
+      { key: 'push', question: 'Push the nits as round 4?', options: [], askedAt: 90 },
+      { key: 'decline', question: 'Decline the tests request?', options: [], askedAt: 95 },
+    ]
+    const paneBrief = { paneId: '%1', targetId: 'target-%1', headline: 'Brief headline', asks } as unknown as SessionBrief
+    const result = commanderInbox(input({ paneBriefs: { '%1': paneBrief }, paneSeen: { '%1': 200 } }))
+    expect(result.needs_you[0]).toMatchObject({ brief: 'Push the nits as round 4? (+1 more)', briefTone: 'warn', time: 95 })
+    expect(commanderInbox(input({ paneBriefs: { '%1': { ...paneBrief, asks: asks.slice(0, 1) } } })).needs_you[0]!.brief).toBe('Push the nits as round 4?')
+    expect(commanderInbox(input({ paneBriefs: { '%1': { ...paneBrief, asks: undefined } } })).needs_you).toEqual([])
+    // Asks left by an earlier pane with the same id aren't this agent's.
+    expect(commanderInbox(input({ paneBriefs: { '%1': { ...paneBrief, targetId: 'old' } } })).needs_you).toEqual([])
+  })
   it('respects title precedence and target ownership, including legacy session briefs', () => {
     const paneBrief = { paneId: '%1', targetId: 'target-%1', title: 'Brief title', headline: 'Brief headline' } as SessionBrief
     const withBrief = input({ paneBriefs: { '%1': paneBrief }, chats: { '%1': chat() } })

@@ -74,7 +74,10 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
       candidate.targetId === pane.targetId && candidate.endedAt === latestEnd &&
       (chat ? (turn[0]?.createdAt ?? 0) <= candidate.endedAt : !endedAt || endedAt <= candidate.endedAt) ? candidate : undefined
     const attention = paneAttention(status, input.paneSeen[pane.id])
-    const needsYou = agentNeedsAttention(status) || currentBrief?.kind === 'needs_you'
+    // An open ask waits on the user however the turn ended, until it's answered or resolved.
+    const asks = brief?.asks ?? []
+    const askText = asks.length ? `${asks[0]!.question}${asks.length > 1 ? ` (+${asks.length - 1} more)` : ''}` : undefined
+    const needsYou = agentNeedsAttention(status) || currentBrief?.kind === 'needs_you' || asks.length > 0
     const stalled = currentBrief?.kind === 'stalled'
     const group: InboxGroup = needsYou ? 'needs_you'
       : stalled || attention === 'review' || attention === 'finished' ? 'finished'
@@ -84,10 +87,11 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
       title: brief?.title || chat?.session.title || pane.chatTitle || pane.title || status.agentSessionName || `Pane ${pane.index}`,
       sessionName: sessionNames.get(pane.sessionId) ?? '',
       status: status.status, attention,
-      brief: currentBrief?.text || status.details?.recap?.summary || brief?.headline || status.summary || undefined,
+      brief: askText || currentBrief?.text || status.details?.recap?.summary || brief?.headline || status.summary || undefined,
       briefTone: needsYou || stalled ? 'warn' : 'normal',
       unread: status.settledAt !== undefined && status.settledAt > (input.paneSeen[pane.id] ?? -Infinity),
       time: group === 'working' ? turn[0]?.createdAt ?? status.updatedAt
+        : asks.length && !agentNeedsAttention(status) ? asks.at(-1)!.askedAt
         : currentBrief?.endedAt ?? (group === 'needs_you' ? status.updatedAt : status.settledAt ?? status.updatedAt),
       ...(chat && turn.length ? { toolCount: new Set(turn.flatMap((item) => 'toolUseId' in item ? [item.toolUseId] : [])).size } : {}),
       latestRelay: relays.get(pane.targetId),

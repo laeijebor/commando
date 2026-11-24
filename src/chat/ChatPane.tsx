@@ -24,12 +24,15 @@ import {
   providerName,
   providerTuiLabel,
 } from '../../shared/agent-chat'
-import type { AgentStatus, TmuxPane } from '../../shared/protocol'
+import type { AgentStatus, SessionAsk, TmuxPane } from '../../shared/protocol'
 import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from '../chatLineage'
 import type { PrQuickLookTab } from '../PrQuickLook'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
-import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError } from './ChatComposer'
+import { AskTray } from './AskTray'
+import { askAnchors, askMarkerCounts } from './sessionAsks'
+import { askAnswerText } from '../../shared/session-asks'
+import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError, type ComposerInsert } from './ChatComposer'
 import { providerLabel } from './ComposerControls'
 import { ChatTimeline, Markdown } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
@@ -61,6 +64,7 @@ export interface ChatFlowServices {
 
 const EMPTY_EXTERNAL_RUNS: readonly ExternalAgentRun[] = []
 const EMPTY_TILE_EVENTS: readonly ChatCardEvent[] = []
+const NO_ASKS: readonly SessionAsk[] = []
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
 
@@ -121,6 +125,7 @@ function ChatColumn({
   actionError,
   onDismissActionError,
   flow,
+  asks = NO_ASKS,
 }: {
   chat: ChatState
   externalRuns?: readonly ExternalAgentRun[]
@@ -163,6 +168,8 @@ function ChatColumn({
   actionError?: string
   onDismissActionError?: () => void
   flow?: ChatFlowServices
+  /** Questions the agent is waiting on the user to answer. */
+  asks?: readonly SessionAsk[]
 }) {
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
@@ -267,6 +274,32 @@ function ChatColumn({
     return () => registerFocusable(paneId, null)
   }, [paneId, registerFocusable])
   const focusComposer = () => shell.current?.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
+  const anchors = useMemo(() => askAnchors(chat.items, asks), [chat.items, asks])
+  const askMarkers = useMemo(() => askMarkerCounts(anchors), [anchors])
+  const anchored = useMemo(() => new Set(anchors.keys()), [anchors])
+  const [askTraySignal, setAskTraySignal] = useState(0)
+  const [composerInsert, setComposerInsert] = useState<ComposerInsert>()
+  const showAsks = useCallback(() => setAskTraySignal((value) => value + 1), [])
+  // While the agent works, an answer waits in the queue like a typed message would.
+  const answerAsk = (ask: SessionAsk, option: string) => {
+    onSend(askAnswerText(ask, option), undefined, { ...(working && turnFlow ? { delivery: 'queue' as const } : {}), answersAsk: ask.key })
+  }
+  const replyToAsk = (ask: SessionAsk) => setComposerInsert((current) => ({ id: (current?.id ?? 0) + 1, text: askAnswerText(ask, ''), answersAsk: ask.key }))
+  const jumpToAsk = (ask: SessionAsk) => {
+    const itemId = anchors.get(ask.key)
+    if (!itemId) return
+    setViewing(undefined)
+    setRelay(undefined)
+    // After the main timeline is back on screen.
+    requestAnimationFrame(() => {
+      const node = shell.current?.querySelector<HTMLElement>(`[data-ask-anchor="${CSS.escape(itemId)}"]`)
+      if (!node) return
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      node.classList.remove('chat-ask-flash')
+      void node.offsetWidth
+      node.classList.add('chat-ask-flash')
+    })
+  }
   // A press in the transcript may start a text selection, so the composer only
   // takes the caret once the mouse is released without one.
   const pressing = useRef(false)
@@ -375,6 +408,7 @@ function ChatColumn({
           controlsDisabled={!connected || !flow?.stopExternal}
           {...(turnFlow ? { onOpenSubagent: select } : {})}
           {...(flow ? { onSavePlan: flow.savePlan } : {})}
+          {...(askMarkers.size ? { askMarkers, onShowAsks: showAsks } : {})}
         />
       )}
       {commander?.state.paneId && commander.state.paneId === paneId ? (
@@ -394,6 +428,7 @@ function ChatColumn({
         />
       ) : null}
       {chat.session.login ? <CursorLoginBanner login={chat.session.login} disabled={!connected || !chat.hostConnected} onSend={onSend} /> : null}
+      <AskTray asks={asks} disabled={!connected || !chat.hostConnected} anchored={anchored} openSignal={askTraySignal} onAnswer={answerAsk} onReply={replyToAsk} onJump={jumpToAsk} />
       {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} sendError={sendError} {...(onOpenPr ? { onOpenPr } : {})} {...(onDismissPrs ? { onDismissPrs } : {})} /> : null}
       <ChatComposer
         session={chat.session}
@@ -417,6 +452,7 @@ function ChatColumn({
         {...(flow?.takeCarried ? { onCarriedTaken: flow.takeCarried } : {})}
         {...(flow?.registerDraft ? { registerDraft: flow.registerDraft } : {})}
         {...(flow?.setUploading ? { onUploadingChange: flow.setUploading } : {})}
+        {...(composerInsert ? { insert: composerInsert } : {})}
       />
     </section>
   )
