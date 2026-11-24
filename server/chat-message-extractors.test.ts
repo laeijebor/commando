@@ -34,6 +34,9 @@ describe('chat-message-extractors', () => {
     expect(cleanUserMessageText('<command-name>/clear</command-name>')).toBeUndefined()
     expect(cleanUserMessageText('<command-name>/review</command-name><command-args>PR 42</command-args>')).toBe('/review PR 42')
     expect(cleanUserMessageText('# AGENTS.md\nInstructions')).toBeUndefined()
+    expect(cleanUserMessageText('[Commando] "Lobby" (pane %31) looks stalled')).toBeUndefined()
+    expect(cleanUserMessageText('[Commando device lock] iPhone 16 is yours')).toBeUndefined()
+    expect(cleanUserMessageText('[nudge from Commander] Please check CI')).toBeUndefined()
   })
 
   it('extracts user messages and timestamps from Claude transcripts while skipping tool results and sidechains', async () => {

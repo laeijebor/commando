@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline'
 import { DatabaseSync } from 'node:sqlite'
 import { stripAttachmentNotes } from '../shared/agent-chat.js'
 import { isChatConversationSessionId, type ChatConversationProvider } from '../shared/chat-conversations.js'
+import { isDaemonInjectedMessage } from '../shared/chat-messages.js'
 import { parseRelayPrompt } from './agent-host/claude-items.js'
 
 const CODEX_META_BYTES = 64 * 1024
@@ -64,7 +65,7 @@ export function cleanUserMessageText(raw: string): string | undefined {
     if (!args && BARE_NOISE_COMMANDS.test(command)) return undefined
     return capMessageText(args ? `${command} ${args}` : command)
   }
-  if (HARNESS_NOISE.test(stripped)) return undefined
+  if (HARNESS_NOISE.test(stripped) || isDaemonInjectedMessage(stripped)) return undefined
   if (stripped.startsWith('# AGENTS.md') || stripped.startsWith('Base directory for this skill')) return undefined
   if (stripped.startsWith('<') && !stripped.includes('\n') && stripped.endsWith('>')) return undefined
   return capMessageText(stripped)

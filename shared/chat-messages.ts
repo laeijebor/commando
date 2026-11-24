@@ -42,6 +42,13 @@ export interface SentMessageSearchResponse {
   indexing?: boolean
 }
 
+const DAEMON_INJECTED_MESSAGE = /^\s*(?:\[Commando(?:\s+device\s+lock)?\]|\[nudge from Commander\])/i
+
+/** True when a user-role message was injected by the Commando daemon rather than typed by the user. */
+export function isDaemonInjectedMessage(text: string): boolean {
+  return DAEMON_INJECTED_MESSAGE.test(text)
+}
+
 export function canSearchSentMessages(query: string): boolean {
   return query.trim().length >= MIN_CHAT_MESSAGE_SEARCH_LENGTH
 }
@@ -164,7 +171,7 @@ export function searchLiveChatMessages(
     for (const item of chat.items) {
       if (item.kind !== 'user_message') continue
       const cleaned = stripAttachmentNotes(item.text).trim()
-      if (!cleaned || !matchesSentMessageQuery(cleaned, query)) continue
+      if (!cleaned || isDaemonInjectedMessage(cleaned) || !matchesSentMessageQuery(cleaned, query)) continue
       matches.push({
         id: `live:${paneId}:${item.id}`,
         text: cleaned,

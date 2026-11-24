@@ -7,6 +7,7 @@ import {
   canSearchSentMessages,
   CHAT_MESSAGE_SEARCH_ROUTE,
   DEFAULT_CHAT_MESSAGE_SEARCH_LIMIT,
+  isDaemonInjectedMessage,
   matchesSentMessageQuery,
   MAX_CHAT_MESSAGE_SEARCH_LIMIT,
   normalizeMessageSearchText,
@@ -141,7 +142,7 @@ export class ChatMessagesApi {
       for (const item of chat.items) {
         if (item.kind !== 'user_message') continue
         const cleaned = stripAttachmentNotes(item.text).trim()
-        if (!cleaned || !matchesSentMessageQuery(cleaned, query)) continue
+        if (!cleaned || isDaemonInjectedMessage(cleaned) || !matchesSentMessageQuery(cleaned, query)) continue
         const match: SentMessageMatch = {
           id: `live:${chat.paneId}:${item.id}`,
           text: cleaned,
