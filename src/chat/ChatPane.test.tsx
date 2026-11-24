@@ -414,3 +414,13 @@ describe('Commander chat inbox slot', () => {
     expect(screen.queryByTestId('agents-inbox')).toBeNull()
   })
 })
+
+it('renders the cloud strip and names the provider Cursor cloud', () => {
+  const state = chat()
+  state.session = { ...state.session, provider: 'cursor', permissionMode: 'plan', cloud: { provider: 'cursor', repoUrl: 'https://github.com/acme/app' } }
+  state.items = []
+  renderPane(state)
+  expect(screen.getByRole('region', { name: 'Cursor cloud' })).toHaveTextContent('acme/app')
+  expect(screen.getByRole('textbox', { name: 'Message Cursor cloud' })).toBeInTheDocument()
+  expect(screen.getByText('Ask Cursor cloud anything about this repository.')).toBeInTheDocument()
+})

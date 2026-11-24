@@ -94,3 +94,12 @@ describe('Cursor composer permissions', () => {
     expect(permissionDescription(mode, cursor)).toBe(description)
   })
 })
+
+it('names Cursor cloud and restricts its permission options without changing local Cursor', () => {
+  const cursor = { ...session, provider: 'cursor' as const }
+  expect(providerLabel(cursor)).toBe('Cursor')
+  expect(permissionModeOptions(cursor)).toEqual(['bypassPermissions', 'default', 'auto', 'plan'])
+  const cloud = { ...cursor, cloud: { provider: 'cursor' as const, repoUrl: 'https://github.com/acme/app' } }
+  expect(providerLabel(cloud)).toBe('Cursor cloud')
+  expect(permissionModeOptions(cloud)).toEqual(['bypassPermissions', 'plan'])
+})

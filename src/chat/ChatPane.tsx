@@ -29,6 +29,7 @@ import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from
 import type { PrQuickLookTab } from '../PrQuickLook'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
+import { CursorCloudStrip } from './CursorCloudStrip'
 import { AskTray } from './AskTray'
 import { askAnchors, askMarkerCounts } from './sessionAsks'
 import { askAnswerText } from '../../shared/session-asks'
@@ -390,6 +391,7 @@ function ChatColumn({
       {chat.session.status === 'error' && chat.session.error ? (
         <div className="border-b border-border px-3 py-1.5 text-xs text-destructive" role="alert">{chat.session.error}</div>
       ) : null}
+      {chat.session.cloud ? <CursorCloudStrip cloud={chat.session.cloud} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
       {agent ? (
         <>
           <SubagentHeader
@@ -407,6 +409,7 @@ function ChatColumn({
       ) : (
         <ChatTimeline
           provider={chat.session.provider}
+          {...(chat.session.cloud ? { emptyText: `Ask ${providerLabel(chat.session)} anything about this repository.` } : {})}
           items={timelineItems}
           {...(onOpenTile ? { onOpenTile } : {})}
           {...(onOpenPr ? { onOpenPr } : {})}

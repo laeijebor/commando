@@ -448,3 +448,10 @@
 .tmux-create__submit kbd { border-radius: 4px; background: rgb(0 0 0 / 14%); padding: 1px 5px; font: inherit; font-size: .9em; font-weight: 600; }
 /* With images above it, the text box can start smaller. */
 .tmux-create .tmux-create__attachments + textarea { min-height: 3.2em; }
+
+.tmux-create__runtime { margin-block: 6px; font-size: 12px; color: var(--muted); }
+.tmux-create__runtime-options { display: flex; align-items: center; gap: 6px; }
+.tmux-create__runtime-options button { padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px; color: inherit; background: transparent; }
+.tmux-create__runtime-options button[aria-pressed="true"] { background: var(--surface-hover); color: var(--text); }
+.tmux-create__runtime-options button:disabled { opacity: .5; cursor: default; }
+.tmux-create__cloud-repo { margin-block: 4px; }

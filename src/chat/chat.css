@@ -258,3 +258,9 @@
   box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 32%, transparent);
   transition: box-shadow 0.35s ease;
 }
+
+.commando-chat .chat-cloud-strip { flex: none; padding: 4px 16px; font-size: 12px; color: var(--muted); }
+.commando-chat .chat-cloud-strip > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: var(--chat-content-max-width); margin-inline: auto; }
+.commando-chat .chat-cloud-strip a { color: inherit; overflow-wrap: anywhere; }
+.commando-chat .chat-cloud-strip a:hover { color: var(--text); }
+.commando-chat .chat-cloud-strip__actions { margin-left: auto; }

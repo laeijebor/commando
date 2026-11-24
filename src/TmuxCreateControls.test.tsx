@@ -1094,3 +1094,84 @@ it.each(['local', 'hub'])('creates a DeepSeek chat with permissions scoped to %s
   expect(JSON.parse(window.localStorage.getItem(storageKey)!)).toMatchObject({ 'deepseek:*': { permissionMode: 'default' } })
   if (host !== 'local') expect(window.localStorage.getItem(CHAT_LAUNCH_STORAGE_KEY)).toBeNull()
 })
+
+describe('Cursor cloud New session controls', () => {
+  const github = { repoUrl: 'https://github.com/acme/app', remote: 'origin', ref: 'feature/cloud', pushed: true, ahead: 0, behind: 0 }
+  function form(info: GitRepoInfo = { ...repo, github }) {
+    const onCreateSession = vi.fn(async (input: CreateTmuxSessionRequest): Promise<TmuxCreateResponse> => ({ created, agentLaunch: { version: 1, provider: input.agent!.provider, paneId: '%3', mode: 'interactive-pty', state: 'initiated' } }))
+    render(<TmuxCreateControls variant="dialog" sessionCreateRequest={{ id: 1, groupId: 'repo', groupName: 'App', suggestedDirectories: [MAIN] }} probeRepo={probeFor({ [MAIN]: info })} onCreateSession={onCreateSession} />)
+    return onCreateSession
+  }
+
+  it('offers cloud for GitHub, hides worktrees, restricts permissions and sends a cloud request', async () => {
+    const onCreateSession = form()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    chooseAgent('cursor-chat')
+    const cloud = await screen.findByRole('button', { name: 'Cursor cloud' })
+    await waitFor(() => expect(cloud).toBeEnabled())
+    openWorkspace()
+    expect(screen.getByRole('checkbox', { name: 'Create a worktree and branch for this session' })).toBeChecked()
+    fireEvent.click(cloud)
+    expect(cloud).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('checkbox', { name: /Create a worktree/ })).not.toBeInTheDocument()
+    expect(menuLabels(permissionPill())).toEqual(['*Full access', 'Plan'])
+    expect(screen.getByText('acme/app · from feature/cloud')).toBeInTheDocument()
+    expect(screen.queryByText(/local commits that aren't pushed/)).not.toBeInTheDocument()
+    choosePermission('Plan')
+    fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cloud-test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
+    await waitFor(() => expect(onCreateSession).toHaveBeenCalled())
+    expect(onCreateSession.mock.calls[0]![0]).toMatchObject({ cwd: MAIN, agent: { provider: 'cursor-chat', permissionMode: 'plan', cursorCloud: { repoUrl: github.repoUrl, ref: github.ref } } })
+    expect(onCreateSession.mock.calls[0]![0]).not.toHaveProperty('worktree')
+    expect(JSON.parse(window.localStorage.getItem(CHAT_LAUNCH_STORAGE_KEY)!)[`cursor:${MAIN}`]).toMatchObject({ cursorRuntime: 'cloud' })
+  })
+
+  it.each([{ pushed: false, ahead: 0, behind: 0 }, { pushed: true, ahead: 1, behind: 0 }, { pushed: true, ahead: 0, behind: 2 }])('warns about remote state %j', async (state) => {
+    form({ ...repo, github: { ...github, ...state } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    chooseAgent('cursor-chat')
+    fireEvent.click(await screen.findByRole('button', { name: 'Cursor cloud' }))
+    expect(screen.getByText("Cursor's cloud starts from origin/feature/cloud; local commits that aren't pushed won't be there.")).toBeInTheDocument()
+  })
+
+  it.each([repo, notRepo])('disables cloud without a usable GitHub remote: %j', async (info) => {
+    form(info)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    chooseAgent('cursor-chat')
+    const cloud = screen.getByRole('button', { name: 'Cursor cloud' })
+    expect(cloud).toBeDisabled()
+    expect(cloud.parentElement).toHaveAttribute('title', 'Cursor cloud needs a GitHub remote and a starting branch.')
+  })
+
+  it('restores cloud preference but other providers and switching back to This Mac stay local', async () => {
+    window.localStorage.setItem(CHAT_LAUNCH_STORAGE_KEY, JSON.stringify({ 'cursor:*': { permissionMode: 'auto', cursorRuntime: 'cloud' } }))
+    form()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create session' })).toBeEnabled())
+    chooseAgent('cursor-chat')
+    expect(screen.getByRole('button', { name: 'Cursor cloud' })).toHaveAttribute('aria-pressed', 'true')
+    expect(menuLabels(permissionPill())).toEqual(['*Full access', 'Plan'])
+    fireEvent.click(screen.getByRole('button', { name: 'This Mac' }))
+    expect(menuLabels(permissionPill())).toEqual(['Full access', 'Sandboxed', '*Auto-review', 'Plan'])
+    openWorkspace()
+    expect(screen.getByRole('checkbox', { name: /Create a worktree/ })).toBeChecked()
+    chooseAgent('codex-chat')
+    expect(screen.queryByRole('group', { name: 'Run on' })).not.toBeInTheDocument()
+  })
+})
+
+
+it('waits for GitHub metadata before launching a remembered cloud chat from a known repo', async () => {
+  window.localStorage.setItem(START_WITH_STORAGE_KEY, JSON.stringify({ '*': 'cursor-chat' }))
+  window.localStorage.setItem(CHAT_LAUNCH_STORAGE_KEY, JSON.stringify({ 'cursor:*': { permissionMode: 'plan', cursorRuntime: 'cloud' } }))
+  let resolveProbe!: (info: GitRepoInfo) => void
+  const onCreateSession = vi.fn()
+  render(<TmuxCreateControls variant="dialog" sessionCreateRequest={{ id: 1, groupId: 'repo', groupName: 'App', suggestedDirectories: [MAIN], repo: { root: MAIN, name: 'App', defaultBranch: 'main' } }} probeRepo={() => new Promise((resolve) => { resolveProbe = resolve })} onCreateSession={onCreateSession} />)
+  fireEvent.change(screen.getByLabelText('Session name'), { target: { value: 'cloud' } })
+  await waitFor(() => expect(resolveProbe).toBeDefined())
+  expect(screen.getByRole('button', { name: 'Start chat' })).toBeDisabled()
+  fireEvent.submit(screen.getByRole('button', { name: 'Start chat' }).closest('form')!)
+  expect(onCreateSession).not.toHaveBeenCalled()
+  await act(async () => resolveProbe({ ...repo, github: { repoUrl: 'https://github.com/acme/app', remote: 'origin', ref: 'main', pushed: true, ahead: 0, behind: 0 } }))
+  expect(screen.getByRole('button', { name: 'Start chat' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Cursor cloud' })).toHaveAttribute('aria-pressed', 'true')
+})

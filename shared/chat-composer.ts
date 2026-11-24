@@ -155,8 +155,8 @@ function providerPermissionModes(session?: Pick<ChatSessionInfo, 'provider'>): P
   return session?.provider === 'codex' ? CODEX_PERMISSION_MODES : session?.provider === 'muse' ? MUSE_PERMISSION_MODES : session?.provider === 'cursor' ? CURSOR_PERMISSION_MODES : undefined
 }
 
-export function providerLabel(session: Pick<ChatSessionInfo, 'provider'>): string {
-  return providerName(session.provider)
+export function providerLabel(session: Pick<ChatSessionInfo, 'provider'> & Partial<Pick<ChatSessionInfo, 'cloud'>>): string {
+  return session.cloud ? 'Cursor cloud' : providerName(session.provider)
 }
 
 type PermissionSession = Pick<ChatSessionInfo, 'provider'> & Partial<Pick<ChatSessionInfo, 'sandboxed'>>
@@ -210,7 +210,7 @@ export function modelLabel(session: ChatSessionInfo): string | undefined {
 
 /** The modes the permission menu offers: the current one, the launch modes, and those this chat and model allow. */
 export function permissionModeOptions(session: ChatSessionInfo): ChatSessionPermissionMode[] {
-  if (session.provider === 'cursor') return ['bypassPermissions', 'default', 'auto', 'plan']
+  if (session.provider === 'cursor') return session.cloud ? ['bypassPermissions', 'plan'] : ['bypassPermissions', 'default', 'auto', 'plan']
   const current = session.permissionMode
   // Muse's sandbox is set when its host starts: a full-access chat stays one, and others never become one.
   if (session.provider === 'muse') {

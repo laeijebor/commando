@@ -166,7 +166,7 @@ export function PermissionPicker({ session, disabled, onConfigure }: { session: 
               key={mode}
               checked={mode === current}
               label={permissionLabel(mode, session)}
-              description={permissionDescription(mode, session)}
+              description={session.cloud && mode === 'bypassPermissions' ? "Full access in Cursor's VM." : permissionDescription(mode, session)}
               onSelect={() => {
                 setOpen(false)
                 if (mode !== current) onConfigure({ permissionMode: mode })
