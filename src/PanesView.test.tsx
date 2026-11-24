@@ -33,7 +33,7 @@ function renderView(overrides: Partial<Parameters<typeof PanesView>[0]> = {}) {
 describe('PanesView', () => {
   it('lists every pane with its session and when it was last viewed', async () => {
     renderView()
-    expect(screen.getByText('3 / 64')).toBeInTheDocument()
+    expect(screen.getByText('3 panes')).toBeInTheDocument()
     const row = (await screen.findByText('2h ago')).closest('tr')!
     expect(within(row).getByText('dev server')).toBeInTheDocument()
     expect(within(row).getByText('alpha')).toBeInTheDocument()

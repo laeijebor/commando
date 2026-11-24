@@ -16,8 +16,6 @@ import {
 import { relativeTime } from './relativeTime'
 import './panes-view.css'
 
-/** The pane budget the list is measured against. */
-export const PANE_LIMIT = 64
 const VIEWS_POLL_MS = 5_000
 const PREVIEW_POLL_MS = 2_000
 
@@ -164,14 +162,11 @@ export function PanesView({ sessions, windows, panes, agentStatuses, activity, a
     rowElement?.focus()
   }
 
-  const over = panes.length - PANE_LIMIT
   return <section className="panes-view" aria-label="Panes">
     <div className="panes-list">
       <header className="panes-bar">
         <h2>Panes</h2>
-        <span className={`panes-pill${over > 0 ? ' over' : ''}`} title={`Measured against a budget of ${PANE_LIMIT} panes`}>
-          {panes.length} / {PANE_LIMIT}{over > 0 ? ` · ${over} over` : ''}
-        </span>
+        <span className="panes-pill">{panes.length} pane{panes.length === 1 ? '' : 's'}</span>
         <input type="search" className="panes-search" placeholder="Filter panes" aria-label="Filter panes" value={query} onChange={(event) => setQuery(event.target.value)} />
         <label className="panes-sort">
           <span>Sort</span>
