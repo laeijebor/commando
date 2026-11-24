@@ -264,3 +264,6 @@
 .commando-chat .chat-cloud-strip a { color: inherit; overflow-wrap: anywhere; }
 .commando-chat .chat-cloud-strip a:hover { color: var(--text); }
 .commando-chat .chat-cloud-strip__actions { margin-left: auto; }
+.commando-chat .chat-cloud-strip__actions button { border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--text); cursor: pointer; }
+.commando-chat .chat-cloud-strip__actions button:disabled { opacity: .5; cursor: default; }
+.commando-chat .chat-cloud-strip__message { flex-basis: 100%; }

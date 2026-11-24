@@ -182,6 +182,7 @@ import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
+import type { CursorCloudCheckout } from './chat/CursorCloudStrip'
 import { paneAsks } from './chat/sessionAsks'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
@@ -433,6 +434,7 @@ type TerminalPaneProps = {
   onChatConfigure?: (change: ChatSettingsChange) => void
   onChatRestart?: () => void
   onChatOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
+  cloudCheckout?: CursorCloudCheckout
   onChatDismissPrs?: (prs: PanePrSummary[]) => void
   chatServices?: ChatInputServices
   chatFlow?: ChatFlowServices
@@ -534,6 +536,7 @@ export function TerminalPaneCard({
   onChatConfigure,
   onChatRestart,
   onChatOpenPr,
+  cloudCheckout,
   onChatDismissPrs,
   chatServices,
   chatFlow,
@@ -846,6 +849,7 @@ export function TerminalPaneCard({
             onConfigure={(change) => onChatConfigure?.(change)}
             {...(onChatRestart ? { onRestart: onChatRestart } : {})}
             {...(onChatOpenPr ? { onOpenPr: onChatOpenPr } : {})}
+            {...(cloudCheckout ? { cloudCheckout } : {})}
             {...(onChatDismissPrs ? { onDismissPrs: onChatDismissPrs } : {})}
             {...(chatServices ? { services: chatServices } : {})}
             {...(chatFlow ? { flow: chatFlow } : {})}
@@ -4679,6 +4683,12 @@ function HostApp() {
                             onChatConfigure={(settings) => configureChat(pane.id, settings)}
                             onChatRestart={() => restartChat(pane.id)}
                             onChatOpenPr={(repo, number, tab) => { void revealPrTab(pane.id, repo, number, tab) }}
+                            cloudCheckout={{
+                              startSession: tmuxCreateApi.startSession,
+                              creations: sessionCreations,
+                              onCreated: (created) => { setArea('workspace'); setSelectedSessionId(created.sessionId); refresh() },
+                              dismissCreation: tmuxCreateApi.dismissSessionCreation,
+                            }}
                             onChatDismissPrs={(prs) => closePrTabs(pane.id, prs)}
                             {...(pendingChatMessageFocus?.paneId === pane.id ? {
                               chatFocusMessage: pendingChatMessageFocus,

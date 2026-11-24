@@ -1,10 +1,63 @@
+import { useEffect, useRef, useState } from 'react'
 import type { ChatSessionInfo } from '../../shared/agent-chat'
+import type { CreateTmuxSessionRequest, SessionCreation, TmuxCreatedTarget } from '../../shared/tmux-create'
 import type { PrQuickLookTab } from '../PrQuickLook'
 
-export function CursorCloudStrip({ cloud, onOpenPr }: {
+/** Supplied only by views that can create and open local sessions. */
+export type CursorCloudCheckout = {
+  startSession: (input: CreateTmuxSessionRequest) => Promise<SessionCreation>
+  creations: readonly SessionCreation[]
+  onCreated: (created: TmuxCreatedTarget) => void
+  dismissCreation: (id: string) => Promise<void>
+}
+
+export function CursorCloudStrip({ cloud, cwd, checkout, disabled, onOpenPr }: {
   cloud: NonNullable<ChatSessionInfo['cloud']>
+  cwd: string
+  checkout?: CursorCloudCheckout
+  disabled?: boolean
   onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
 }) {
+  const [pending, setPending] = useState(false)
+  const [creation, setCreation] = useState<SessionCreation | null>(null)
+  const [error, setError] = useState('')
+  const [warning, setWarning] = useState('')
+  const starting = useRef(false)
+  const handled = useRef<string | null>(null)
+  useEffect(() => {
+    if (!creation || !checkout || handled.current === creation.id) return
+    // A websocket update can arrive before startSession's response.
+    const current = checkout.creations.find((candidate) => candidate.id === creation.id) ?? creation
+    if (current.stage !== 'done' && current.stage !== 'failed') return
+    handled.current = current.id
+    setCreation(null)
+    setPending(false)
+    starting.current = false
+    if (current.stage === 'failed') setError(current.error ?? 'Unable to check out locally')
+    else if (current.result) {
+      setWarning(current.result.worktree?.warning ?? '')
+      checkout.onCreated(current.result.created)
+    }
+    void checkout.dismissCreation(current.id).catch(() => undefined)
+  }, [creation, checkout])
+
+  const checkOut = async () => {
+    if (!checkout || !cloud.branch || starting.current) return
+    starting.current = true
+    setPending(true)
+    setError('')
+    setWarning('')
+    try {
+      setCreation(await checkout.startSession({
+        name: cloud.branch.split('/').at(-1)!, cwd,
+        worktree: { branch: cloud.branch, fromRemote: true },
+      }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to check out locally')
+      setPending(false)
+      starting.current = false
+    }
+  }
   const repo = cloud.repoUrl.replace('https://github.com/', '')
   const pr = cloud.prUrl ? /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9]\d*)$/.exec(cloud.prUrl) : null
   return (
@@ -18,7 +71,13 @@ export function CursorCloudStrip({ cloud, onOpenPr }: {
           onOpenPr(pr[1]!, Number(pr[2]), 'Description')
         }}>{pr ? `PR #${pr[2]}` : 'Pull request'}</a> : null}
         {cloud.webUrl ? <a href={cloud.webUrl} target="_blank" rel="noreferrer">Open on cursor.com</a> : null}
-        <span className="chat-cloud-strip__actions" />
+        <span className="chat-cloud-strip__actions">
+          {cloud.branch && checkout ? <button type="button" disabled={disabled || pending} aria-busy={pending} onClick={() => { void checkOut() }}>
+            {pending ? 'Checking out…' : 'Check out locally'}
+          </button> : null}
+        </span>
+        {error ? <span className="chat-cloud-strip__message text-xs text-destructive" role="alert">{error}</span> : null}
+        {warning ? <span className="chat-cloud-strip__message" role="status">{warning}</span> : null}
       </div>
     </section>
   )
