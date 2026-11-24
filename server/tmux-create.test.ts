@@ -711,6 +711,34 @@ describe('TmuxCreator worktree-backed sessions', () => {
     expect(git.createWorktree.mock.calls[0][0].path).toBe(target)
   })
 
+  it('passes remote checkout and progress to the worktree service for a shell session', async () => {
+    const git = worktrees()
+    const run = tmuxRunner()
+    const onProgress = vi.fn()
+    await new TmuxCreator(run, [], git).createSession({
+      name: 'fix-flaky-test-1a2b', cwd: MAIN,
+      worktree: { branch: 'cursor/fix-flaky-test-1a2b', fromRemote: true },
+    }, undefined, onProgress)
+    expect(git.createWorktree).toHaveBeenCalledWith({
+      mainRoot: MAIN, branch: 'cursor/fix-flaky-test-1a2b',
+      path: `${MAIN}-worktrees/cursor/fix-flaky-test-1a2b`,
+      defaultBranch: 'main', remote: 'origin', fromRemote: true, onProgress,
+    })
+    const args = run.mock.calls.find(([args]) => args.includes('new-session'))?.[0]
+    expect(args?.slice(-2)).toEqual(['-c', `${MAIN}-worktrees/cursor/fix-flaky-test-1a2b`])
+  })
+
+  it('passes remote checkout for panes too and rejects invalid remote options before creating a worktree', async () => {
+    const git = worktrees()
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: MAIN, worktree: { branch: 'cursor/fix', fromRemote: true } })
+    expect(git.createWorktree).toHaveBeenCalledWith(expect.objectContaining({ branch: 'cursor/fix', fromRemote: true }))
+    git.createWorktree.mockClear()
+    await expect(creator.createSession({ name: 'fix', cwd: MAIN, worktree: { branch: 'cursor/fix', fromRemote: false } } as never)).rejects.toThrow('fromRemote must be true')
+    await expect(creator.createSession({ name: 'fix', autoName: true, cwd: MAIN, worktree: { branch: '', fromRemote: true } })).rejects.toThrow('A branch is required')
+    expect(git.createWorktree).not.toHaveBeenCalled()
+  })
+
   it('defaults the worktree path under the worktrees parent the probe reports', async () => {
     const git = worktrees({ probe: { ...repo, worktreesParent: '/Volumes/Dev/worktrees' } })
     const creator = new TmuxCreator(tmuxRunner(), [], git)

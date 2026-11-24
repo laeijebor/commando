@@ -191,6 +191,8 @@ export function parseChatImageArg(value: string): ChatImageRef {
 export type CreateTmuxSessionWorktree = {
   /** Branch to create (or reuse when it exists and is not checked out elsewhere). */
   branch: string
+  /** Check out the branch pushed to the remote instead of branching from the default branch. */
+  fromRemote?: true
   /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch, worktreesParent)` when omitted. */
   path?: string
   /** Multiline shell command to run in the new worktree before opening its interactive shell. */
@@ -257,7 +259,7 @@ export type TmuxCreatedWorktree = {
   /** Ref the branch was created from, e.g. `origin/main`; empty when an existing branch was reused. */
   base: string
   reusedBranch: boolean
-  /** Set when the pre-branch fetch failed and the local remote-tracking ref was used instead. */
+  /** Fetch fallback, or local commits kept instead of updating from the remote. */
   warning?: string
 }
 

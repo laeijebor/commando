@@ -535,6 +535,8 @@ export class TmuxCreator {
     if (!cwd) throw new Error('A working directory is required to create a worktree')
     // An auto-named session names its branch too, and must not borrow one that already exists.
     const branchFromName = autoName && !input.worktree.branch
+    if (input.worktree.fromRemote !== undefined && input.worktree.fromRemote !== true) throw new Error('fromRemote must be true')
+    if (input.worktree.fromRemote && branchFromName) throw new Error('A branch is required for remote checkout')
     const chosenBranch = branchFromName ? undefined : validatedName(input.worktree.branch, 'branch name')
     const worktreePath = validatedPath(input.worktree.path)
     const prepareCommand = optionalPrepareCommand(input.worktree.prepareCommand)
@@ -556,6 +558,7 @@ export class TmuxCreator {
           path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch, repo.worktreesParent),
           ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
           ...(branchFromName ? { newBranchOnly: true } : {}),
+          ...(input.worktree.fromRemote ? { fromRemote: true } : {}),
           ...(onProgress ? { onProgress } : {}),
         })
       } catch (error) {
@@ -819,6 +822,7 @@ export class TmuxCreator {
     const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     if (input.worktree !== undefined && (!input.worktree || typeof input.worktree !== 'object' || Array.isArray(input.worktree))) throw new Error('worktree must be an object')
     const branch = input.worktree ? validatedName(input.worktree.branch, 'branch name') : undefined
+    if (input.worktree?.fromRemote !== undefined && input.worktree.fromRemote !== true) throw new Error('fromRemote must be true')
     const path = input.worktree ? validatedPath(input.worktree.path) : undefined
     const prepareCommand = input.worktree ? optionalPrepareCommand(input.worktree.prepareCommand) : undefined
     if (input.worktree && (!this.worktrees || !cwd)) throw new Error('A working directory and worktree service are required')
@@ -830,6 +834,7 @@ export class TmuxCreator {
       const result = await this.worktrees!.createWorktree({
         mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!, repo.worktreesParent),
         ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
+        ...(input.worktree.fromRemote ? { fromRemote: true } : {}),
       })
       worktree = result.worktree
       rollback = result.rollback
