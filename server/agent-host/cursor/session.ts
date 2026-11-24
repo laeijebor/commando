@@ -253,6 +253,8 @@ export class CursorChatSession implements ChatProviderSession {
               const newestReadIndex = runIds.findIndex((id) => !cloudHistory.skippedRunning?.includes(id))
               const newer = newestReadIndex < 0 || runIds.indexOf(latest.id) < newestReadIndex
               if (newer) {
+                // Its branch and PR may only exist now that it has finished.
+                this.cloudGit(run.git?.branches[0])
                 try {
                   const turns = await run.conversation()
                   if (this.closing) return

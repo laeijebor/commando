@@ -987,9 +987,11 @@ describe('Cursor cloud chats', () => {
     sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
     const finished = new FakeRun()
     finished.turns = [cloudTurn('Recovered prompt', 'Recovered reply')]
+    finished.git = { branches: [{ repoUrl: 'github.com/acme/app', branch: 'cursor/recovered', prUrl: 'https://github.com/acme/app/pull/7' }] }
     finished.finish()
     sdk.getRun.mockResolvedValue(finished)
     await session.start()
+    expect(session.snapshot().session.cloud).toMatchObject({ branch: 'cursor/recovered', prUrl: 'https://github.com/acme/app/pull/7' })
     expect(sdk.getRun).toHaveBeenCalledWith(sdk.cloudRun.id, sdk.agent.agentId)
     expect(sdk.getRun).toHaveBeenCalledOnce()
     expect(finished.stream).not.toHaveBeenCalled()
