@@ -14,14 +14,14 @@ vi.mock('node:readline', () => ({ createInterface: () => ({ on: vi.fn() }) }))
 vi.mock('./build.js', () => ({ agentHostBuild: async () => 'test-build' }))
 vi.mock('../chat-images.js', () => ({ ChatImageStore: class {} }))
 vi.mock('./host.js', () => ({ AgentHost: class { add() {} start() {} } }))
-vi.mock('./factory.js', () => ({ createChatProviderSession: async () => ({
+vi.mock('./factory.js', () => ({ createChatProviderSession: vi.fn(async () => ({
   get busy() { return state.busy },
   on: (event: string, listener: (info: ChatSessionInfo) => void) => state.listeners.set(event, [...state.listeners.get(event) ?? [], listener]),
   snapshot: () => ({ session: state.info, items: [] }),
   setResumeCommand: vi.fn(),
   hostNotice: state.hostNotice,
   start: async () => {},
-}) }))
+})) }))
 
 const originalArgv = process.argv
 let originalSignals: Map<'SIGTERM' | 'SIGHUP', ((signal: NodeJS.Signals) => void)[]>
@@ -31,7 +31,7 @@ beforeEach(() => {
   state.execFile.mockReset()
   state.hostNotice.mockReset()
   state.busy = false
-  state.info = { ...state.info, status: 'idle', permissionMode: 'default' }
+  state.info = { ...state.info, status: 'idle', permissionMode: 'default', sessionId: 'agent-123' }
   originalSignals = new Map((['SIGTERM', 'SIGHUP'] as const).map((signal) => [signal, process.listeners(signal)]))
   vi.stubEnv('TMUX_PANE', '%77')
   vi.stubEnv('COMMANDO_AGENT_LAUNCHER', '/c/commando-agent')
@@ -49,6 +49,21 @@ afterEach(() => {
 const emit = (event: string) => state.listeners.get(event)?.forEach((listener) => listener(state.info))
 
 describe('provider restart requests', () => {
+  it('passes cloud flags to the session spec and preserves them in the respawn command', async () => {
+    process.argv = ['node', fileURLToPath(new URL('./main.ts', import.meta.url)), 'cursor', '--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app', '--cloud-ref', 'feature/cloud', '--resume', 'bc-cloud123']
+    state.info = { ...state.info, sessionId: 'bc-cloud123', permissionMode: 'bypassPermissions' }
+    await import('./main.js')
+    await vi.waitFor(() => expect(state.listeners.has('restart')).toBe(true))
+    const { createChatProviderSession } = await import('./factory.js')
+    expect(createChatProviderSession).toHaveBeenCalledWith('cursor', expect.objectContaining({ cursorCloud: { repoUrl: 'https://github.com/acme/app', startingRef: 'feature/cloud' }, resume: 'bc-cloud123' }))
+    state.info = { ...state.info, permissionMode: 'plan', prePlanPermissionMode: 'bypassPermissions' }
+    emit('session')
+    emit('restart')
+    const command = state.execFile.mock.calls[0][1].at(-1)
+    expect(command).toContain('--runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud')
+    expect(command).toContain('--permission-mode plan')
+    expect(command).toContain('--resume bc-cloud123')
+  })
   it('respawns an idle Cursor chat with its current permissions and resume id', async () => {
     await import('./main.js')
     await vi.waitFor(() => expect(state.listeners.has('restart')).toBe(true))

@@ -1674,3 +1674,50 @@ describe('DeepSeek through Claude Code', () => {
     session.close()
   })
 })
+
+describe('Cursor cloud host flags', () => {
+  const repo = 'https://github.com/acme/app'
+  it('defaults to local and preserves explicit local and cloud settings across restarts and resume commands', () => {
+    const local = parseHostArgs(['cursor'], {})
+    expect(local).not.toHaveProperty('cloudRepo')
+    expect(parseHostArgs(['cursor', '--runtime', 'local'], {})).toMatchObject({ runtime: 'local' })
+    const args = parseHostArgs(['cursor', '--runtime', 'cloud', '--cloud-repo', repo, '--cloud-ref', 'feature/cloud', '--resume', 'bc-cloud123'], {})
+    if (typeof args === 'string') throw new Error(args)
+    expect(args).toMatchObject({ runtime: 'cloud', cloudRepo: repo, cloudRef: 'feature/cloud', resume: 'bc-cloud123', permissionMode: 'bypassPermissions' })
+    const info: ChatSessionInfo = { paneId: '%1', provider: 'cursor', cwd: '/', status: 'idle', hostPid: 1, hostVersion: 1, permissionMode: 'plan', prePlanPermissionMode: 'bypassPermissions', selectedModel: 'auto' }
+    const settings = withSessionSettings(args, info)
+    expect(sessionFlags(settings)).toEqual(['--runtime', 'cloud', '--cloud-repo', repo, '--cloud-ref', 'feature/cloud', '--model', 'auto', '--permission-mode', 'plan', '--allow-dangerously-skip-permissions', '--pre-plan-permission-mode', 'bypassPermissions'])
+    expect(chatResumeCommand('/c/commando-agent', settings)).toContain(`cursor --runtime cloud --cloud-repo ${repo} --cloud-ref feature/cloud`)
+    expect(parseHostArgs(['cursor', ...sessionFlags(settings), '--resume', 'bc-cloud123'], {})).toMatchObject({ runtime: 'cloud', cloudRepo: repo, cloudRef: 'feature/cloud', resume: 'bc-cloud123', permissionMode: 'plan' })
+    expect(parseHostArgs(['cursor', '--cloud-repo', repo, '--runtime', 'cloud'], {})).toMatchObject({ runtime: 'cloud', cloudRepo: repo })
+  })
+  it.each([
+    { flags: [] }, { flags: ['--cloud-repo'] }, { flags: ['--cloud-ref'] },
+  ])('requires cloud repo and values: $flags', ({ flags }) => {
+    expect(parseHostArgs(['cursor', '--runtime', 'cloud', ...flags], {})).toMatch(/required|needs a value/)
+  })
+  it.each(['claude', 'codex', 'muse', 'deepseek'])('rejects cloud flags for %s', (provider) => {
+    for (const [flag, value] of [['--runtime', 'local'], ['--cloud-repo', repo], ['--cloud-ref', 'main']]) expect(parseHostArgs([provider, flag, value], {})).toMatch(/only for cursor/)
+  })
+  it('rejects cloud options in a local runtime and unknown runtime values', () => {
+    expect(parseHostArgs(['cursor', '--cloud-repo', repo], {})).toMatch(/require --runtime cloud/)
+    expect(parseHostArgs(['cursor', '--runtime', 'local', '--cloud-ref', 'main'], {})).toMatch(/require --runtime cloud/)
+    expect(parseHostArgs(['cursor', '--runtime', 'remote'], {})).toMatch(/Unknown runtime/)
+    expect(parseHostArgs(['cursor', '--runtime'], {})).toMatch(/needs a value/)
+  })
+  it.each([
+    'http://github.com/acme/app', 'https://gitlab.com/acme/app', 'https://github.com/acme/app.git',
+    'https://user:password@github.com/acme/app', 'https://github.com:443/acme/app', 'https://github.com:123/acme/app',
+    'https://github.com/acme/app?query=1', 'https://github.com/acme/app#frag', 'https://github.com/acme/app/',
+    'https://github.com/acme/app/extra', 'https://github.com/acme', 'https://github.com/acme/..', 'https://github.com/acme/.',
+    'https://github.com/acme/a%70p', 'https://github.com/acme/app\n', '',
+  ])('rejects invalid cloud repo %j', (url) => {
+    expect(parseHostArgs(['cursor', '--runtime', 'cloud', '--cloud-repo', url], {})).toMatch(/Invalid cloud repository/)
+  })
+  it.each(['', '-main', 'a..b', 'main space', 'x'.repeat(201), 'main@x', 'main\n'])('rejects invalid cloud ref %j', (ref) => {
+    expect(parseHostArgs(['cursor', '--runtime', 'cloud', '--cloud-repo', repo, '--cloud-ref', ref], {})).toMatch(/Invalid cloud ref/)
+  })
+  it.each(['main', 'feature/cloud-1.2_test', 'x'.repeat(200)])('accepts cloud ref %j', (ref) => {
+    expect(parseHostArgs(['cursor', '--runtime', 'cloud', '--cloud-repo', repo, '--cloud-ref', ref], {})).toMatchObject({ cloudRef: ref })
+  })
+})

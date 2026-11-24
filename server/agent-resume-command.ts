@@ -365,7 +365,7 @@ export function buildChatResumeCommand(
   // Commando puts --prompt last; everything after it is prompt text, never flags.
   const rest = launch.args.slice(entry + 2)
   const promptAt = rest.indexOf('--prompt')
-  const chatFlags = provider === 'cursor' ? { bare: ['--fast'], single: ['--model', '--effort', '--permission-mode', '--pre-plan-permission-mode'], dropped: ['--resume'] } : CHAT_FLAGS
+  const chatFlags = provider === 'cursor' ? { bare: ['--fast'], single: ['--model', '--effort', '--permission-mode', '--pre-plan-permission-mode', '--runtime', '--cloud-repo', '--cloud-ref'], dropped: ['--resume'] } : CHAT_FLAGS
   const launched = carriedFlags(chatFlags, promptAt < 0 ? rest : rest.slice(0, promptAt))
   const flags = settings ? withChatSettings(launched, provider === 'cursor' ? { ...settings, bypassAllowed: false } : settings) : launched
   if (provider === 'claude' && !flags.includes('--config-dir') && launch.env.CLAUDE_CONFIG_DIR) flags.unshift('--config-dir', launch.env.CLAUDE_CONFIG_DIR)
@@ -435,6 +435,6 @@ export function isChatResumeCommand(command: string): boolean {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[index] ?? '')) index += 1
   }
   return basename(words[index] ?? '') === 'commando-agent'
-    // Cursor chats are told apart by their `agent-…` session id, not their saved command.
-    && isChatProvider(words[index + 1]) && words[index + 1] !== 'cursor'
+    // Local Cursor chats are told apart by their agent id; cloud ids use the bc- prefix.
+    && isChatProvider(words[index + 1]) && (words[index + 1] !== 'cursor' || words.slice(index + 2).some((word, offset, flags) => word === '--runtime=cloud' || word === '--runtime' && flags[offset + 1] === 'cloud'))
 }
