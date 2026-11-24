@@ -573,6 +573,56 @@ describe('AgentHostHub switch to Claude Code', () => {
     await settle()
     expect(saved).toEqual([expect.objectContaining({ draft: { text: 'from last time\n\ntyped now', images: [image] } })])
   })
+
+  it('preserves prior timeline items and inserts a divider across cross-provider handoff', async () => {
+    const { hub, connect, broadcasts } = setup()
+    const claudeSocket = connect()
+    claudeSocket.host({
+      type: 'session_snapshot',
+      session: session('%1', { provider: 'claude', hostPid: 10 }),
+      items: [item('u1', 'First reply')],
+    })
+    await settle()
+
+    const divider = hub.prepareProviderHandoff('%1', 'claude', 'cursor')
+    expect(divider).toMatchObject({ kind: 'notice', level: 'info', text: 'Handed off from Claude to Cursor' })
+    hub.announceProviderHandoff('%1')
+    expect(hub.items('%1').at(-1)).toEqual(divider)
+    expect(broadcasts.at(-1)).toMatchObject({ type: 'chat_items', paneId: '%1', items: [divider] })
+
+    claudeSocket.close()
+    const cursorSocket = connect()
+    cursorSocket.host({
+      type: 'session_snapshot',
+      session: session('%1', { provider: 'cursor', hostPid: 20 }),
+      items: [item('u1', 'Cursor reply')],
+    })
+    await settle()
+
+    const timeline = hub.items('%1')
+    expect(timeline.map((entry) => entry.kind === 'notice' ? entry.text : entry.kind === 'assistant_message' ? entry.text : entry.kind)).toEqual([
+      'First reply',
+      'Handed off from Claude to Cursor',
+      'Cursor reply',
+    ])
+    // Carried items are namespaced so the new host's colliding id (`u1`) does not overwrite prior turns.
+    expect(timeline[0]?.id).not.toBe('u1')
+    expect(timeline[2]?.id).toBe('u1')
+  })
+
+  it('discards prepared provider handoff carry-over when cancelled', async () => {
+    const { hub, connect } = setup()
+    const socket = connect()
+    socket.host({ type: 'session_snapshot', session: session('%1', { provider: 'claude' }), items: [item('a1', 'Old')] })
+    await settle()
+    hub.prepareProviderHandoff('%1', 'claude', 'cursor')
+    hub.cancelProviderHandoff('%1')
+
+    const next = connect()
+    next.host({ type: 'session_snapshot', session: session('%1', { provider: 'cursor', hostPid: 21 }), items: [item('b1', 'Fresh')] })
+    await settle()
+    expect(hub.items('%1').map((entry) => entry.id)).toEqual(['b1'])
+  })
 })
 
 describe('aside hub routing', () => {

@@ -131,6 +131,7 @@ import { SessionCreations } from './session-creations.js'
 import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { ChatHandoffApi } from './chat-handoff-api.js'
 import { ChatMessageIndex } from './chat-message-index.js'
 import { ChatMessagesApi } from './chat-messages-api.js'
 import { SessionPreferenceStore } from './session-preferences.js'
@@ -2535,6 +2536,16 @@ async function main(): Promise<void> {
       await gitWorktrees.createWorktree({ mainRoot, branch, path, existingBranchOnly: true })
     },
   })
+  const chatHandoffApi = new ChatHandoffApi({
+    chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
+    chatItems: (paneId) => agentHosts.items(paneId),
+    creator: tmuxCreator,
+    plans: chatPlans,
+    prepareHandoff: (paneId, from, to) => agentHosts.prepareProviderHandoff(paneId, from, to),
+    announceHandoff: (paneId) => agentHosts.announceProviderHandoff(paneId),
+    cancelHandoff: (paneId) => agentHosts.cancelProviderHandoff(paneId),
+    refreshSnapshot: refreshSnapshotFresh,
+  })
   // The first scan reads every transcript's head; do it before anyone opens the picker.
   setTimeout(() => { void chatConversations.list().catch((error: unknown) => console.warn('[commando] Could not list chat conversations', error)) }, 5_000).unref()
   const chatMessageIndex = new ChatMessageIndex({
@@ -3424,6 +3435,7 @@ async function main(): Promise<void> {
         if (await handleChatVideoUpload(request, response, url, chatImages)) return
         if (await handleChatStashApi(request, response, url, chatStash, () => broadcast({ type: 'chat_stash', entries: chatStash.list() }))) return
         if (await handleChatPlans(request, response, url, chatPlans)) return
+        if (await chatHandoffApi.handle(request, response, url)) return
         if (await handleRepoPrepareCommands(request, response, url, repoPrepareCommands)) return
         if (await handleAgentProfilesApi(request, response, url, {
           preferences: agentProfilePreferences, prober: agentLoginProber, creator: tmuxCreator,
