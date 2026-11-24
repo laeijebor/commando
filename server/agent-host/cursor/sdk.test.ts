@@ -184,8 +184,45 @@ describe('cloud SDK wiring', () => {
       const sdk = await loadCursorSdk()
       expect(await sdk.cloudHistory('bc-agent')).toEqual({ turns: [turn('Cloud prompt')], skipped: 0 })
       expect(listRuns).toHaveBeenCalledWith('bc-agent', { runtime: 'cloud', limit: 100 })
+      expect(await sdk.latestCloudRun('bc-agent')).toBe(run)
+      expect(listRuns).toHaveBeenLastCalledWith('bc-agent', { runtime: 'cloud', limit: 1 })
       expect(await sdk.getRun('run-cloud', 'bc-agent')).toBe(run)
       expect(getRun).toHaveBeenCalledWith('run-cloud', { runtime: 'cloud', agentId: 'bc-agent' })
+    } finally { vi.doUnmock('@cursor/sdk') }
+  })
+})
+
+describe('independent newest cloud run lookup', () => {
+  it.each(['page', 'conversation'] as const)('finds the newest run even when an older %s fails', async (failure) => {
+    const conversation = vi.fn(async (): Promise<ConversationTurn[]> => { throw new Error('Must not read the active conversation') })
+    const latest = cloudRun('run-latest', 2, [], { status: 'running', conversation })
+    const olderConversation = vi.fn(async (): Promise<ConversationTurn[]> => { throw new Error('Older conversation unavailable') })
+    const listRuns = vi.fn(async (_id: string, options: { limit?: number; cursor?: string }) => {
+      if (options.limit === 1) return { items: [latest], nextCursor: 'older' }
+      if (options.cursor) throw new Error('Older page unavailable')
+      return failure === 'page' ? { items: [latest], nextCursor: 'older' }
+        : { items: [latest, cloudRun('run-older', 1, [], { conversation: olderConversation })] }
+    })
+    vi.doMock('@cursor/sdk', () => ({ Agent: { listRuns }, Cursor: {} }))
+    try {
+      const sdk = await loadCursorSdk()
+      if (failure === 'page') await expect(sdk.cloudHistory('bc-agent')).rejects.toThrow('Older page unavailable')
+      else expect(await sdk.cloudHistory('bc-agent')).toMatchObject({ turns: [], skipped: 1 })
+      listRuns.mockClear()
+      expect(await sdk.latestCloudRun('bc-agent')).toBe(latest)
+      expect(listRuns.mock.calls).toEqual([['bc-agent', { runtime: 'cloud', limit: 1 }]])
+      expect(conversation).not.toHaveBeenCalled()
+      expect(olderConversation).toHaveBeenCalledTimes(failure === 'conversation' ? 1 : 0)
+    } finally { vi.doUnmock('@cursor/sdk') }
+  })
+
+  it('returns no run for an empty cloud chat', async () => {
+    const listRuns = vi.fn(async () => ({ items: [] }))
+    vi.doMock('@cursor/sdk', () => ({ Agent: { listRuns }, Cursor: {} }))
+    try {
+      const sdk = await loadCursorSdk()
+      expect(await sdk.latestCloudRun('bc-agent')).toBeUndefined()
+      expect(listRuns).toHaveBeenCalledExactlyOnceWith('bc-agent', { runtime: 'cloud', limit: 1 })
     } finally { vi.doUnmock('@cursor/sdk') }
   })
 })

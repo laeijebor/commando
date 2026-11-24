@@ -48,6 +48,7 @@ export interface CursorSdk {
   resume(agentId: string, options: AgentOptions): Promise<CursorAgent>
   history(agentId: string, cwd: string): Promise<CursorHistory>
   cloudHistory(agentId: string): Promise<CursorCloudHistory>
+  latestCloudRun(agentId: string): Promise<CursorCloudRun | undefined>
   getRun(runId: string, agentId: string): Promise<CursorCloudRun>
 }
 
@@ -189,6 +190,8 @@ export async function loadCursorSdk(log?: (message: string) => void): Promise<Cu
     resume: (agentId, options) => Agent.resume(agentId, options),
     history: (agentId, cwd) => cursorHistory((id, options) => Agent.listRuns(id, options), agentId, cwd, log, (id, options) => Agent.messages.list(id, options)),
     cloudHistory: (agentId) => cursorCloudHistory((id, options) => Agent.listRuns(id, options), agentId, log),
+    // Cloud run lists are newest first. This lookup never reads conversations or older pages.
+    latestCloudRun: async (agentId) => (await Agent.listRuns(agentId, { runtime: 'cloud', limit: 1 })).items[0],
     getRun: (runId, agentId) => Agent.getRun(runId, { runtime: 'cloud', agentId }),
   }
 }

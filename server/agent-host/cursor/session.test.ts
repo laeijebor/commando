@@ -4,7 +4,7 @@ import { MAX_CHAT_IMAGES, MAX_CHAT_ITEMS, MAX_QUEUED_MESSAGES, parseChatSessionI
 import type { AgentSessionSpec } from '../session.js'
 import { CURSOR_SETTING_SOURCES, CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
 import type { CursorMcpCli, CursorMcpLoginProcess } from './mcp.js'
-import type { CursorAgent, CursorCloudHistory, CursorHistory, CursorRun, CursorSdk } from './sdk.js'
+import type { CursorAgent, CursorCloudHistory, CursorCloudRun, CursorHistory, CursorRun, CursorSdk } from './sdk.js'
 
 const models: ModelListItem[] = [
   { id: 'auto', displayName: 'Auto', description: 'Automatic' },
@@ -86,6 +86,7 @@ class FakeSdk implements CursorSdk {
   history = vi.fn(async (_id: string, _cwd: string): Promise<CursorHistory> => ({ turns: [], skipped: 0 }))
   readonly cloudRun = new FakeRun()
   cloudHistory = vi.fn(async (_id: string): Promise<CursorCloudHistory> => ({ turns: [], skipped: 0 }))
+  latestCloudRun = vi.fn(async (_agentId: string): Promise<CursorCloudRun | undefined> => undefined)
   getRun = vi.fn(async (_runId: string, _agentId: string) => this.cloudRun)
   delta(update: unknown, index = this.sends.length - 1) { this.sends[index].options.onDelta?.({ update: update as Parameters<NonNullable<SendOptions['onDelta']>>[0]['update'] }) }
 }
@@ -736,6 +737,7 @@ describe('Cursor cloud chats', () => {
   })
   it.each(['started here', 'reattached'] as const)('detaches on close without cancelling a cloud run %s', async (source) => {
     const { session, sdk } = harness({ ...cloudSpec, ...(source === 'reattached' ? { resume: 'bc-cloud123' } : {}) })
+    sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
     if (source === 'reattached') sdk.cloudHistory.mockResolvedValue({ turns: [], skipped: 0, running: { id: sdk.cloudRun.id } })
     await session.start()
     if (source === 'started here') { session.send('Keep working'); await tick() }
@@ -844,6 +846,57 @@ describe('Cursor cloud chats', () => {
     expect(cli.startLogin).not.toHaveBeenCalled()
     session.close()
   })
+  it.each([false, true])('renews a cloud wait deadline without settling or flushing queued messages (resumed=%s)', async (resumed) => {
+    const { session, sdk } = harness({ ...cloudSpec, ...(resumed ? { resume: 'bc-cloud123' } : {}) })
+    if (resumed) sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
+    if (resumed) sdk.cloudHistory.mockResolvedValue({ turns: [], skipped: 0, running: { id: sdk.cloudRun.id } })
+    await session.start()
+    if (!resumed) { session.send('Work'); await tick() }
+    session.send('Follow-up', [], { delivery: 'queue' }); await tick()
+    const original = resumed ? sdk.cloudRun : sdk.runs[0]
+    const renewed = new FakeRun()
+    sdk.getRun.mockResolvedValue(renewed)
+    original.finish('error', { message: 'Timed out waiting for the cloud run to finish.' }); await tick()
+    expect(sdk.getRun).toHaveBeenLastCalledWith(original.id, sdk.agent.agentId)
+    expect(renewed.stream).toHaveBeenCalledOnce()
+    expect(session.snapshot().session.status).toBe('running')
+    expect(session.queued.map((entry) => entry.text)).toEqual(['Follow-up'])
+    expect(sdk.sends).toHaveLength(resumed ? 0 : 1)
+    expect(session.snapshot().items.filter((item) => item.kind === 'notice' && item.text.includes('Reconnected'))).toHaveLength(resumed ? 1 : 0)
+    expect(session.snapshot().items.some((item) => item.kind === 'notice' && item.level === 'error')).toBe(false)
+    renewed.turns = [cloudTurn('Work', 'Done')]
+    renewed.finish(); await tick(); await tick()
+    expect(renewed.conversation).toHaveBeenCalledOnce()
+    expect(session.queued).toEqual([])
+    expect(sdk.sends.at(-1)?.message.text).toBe('Follow-up')
+    expect(original.cancel).not.toHaveBeenCalled()
+    expect(renewed.cancel).not.toHaveBeenCalled()
+    session.close()
+  })
+
+  it.each([
+    { cloud: false, error: { message: 'Timed out waiting for the cloud run to finish.' } },
+    { cloud: true, error: { message: 'Timed out waiting for the cloud run to finish.', code: 'other_error' } },
+    { cloud: true, error: { message: 'Timed out waiting for the cloud run' } },
+  ])('only renews the precise SDK cloud deadline: %j', async ({ cloud, error }) => {
+    const { session, sdk } = await running(cloud ? cloudSpec : {})
+    sdk.runs[0].finish('error', error); await tick()
+    expect(sdk.getRun).not.toHaveBeenCalled()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().items).toContainEqual(expect.objectContaining({ kind: 'notice', level: 'error', text: error.message }))
+    session.close()
+  })
+
+  it('uses the actual terminal status if a cloud deadline races completion', async () => {
+    const { session, sdk } = await running(cloudSpec)
+    sdk.cloudRun.finish()
+    sdk.runs[0].finish('error', { message: 'Timed out waiting for the cloud run to finish.' }); await tick()
+    expect(sdk.getRun).toHaveBeenCalledWith(sdk.runs[0].id, sdk.agent.agentId)
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().items.some((item) => item.kind === 'notice' && item.level === 'error')).toBe(false)
+    session.close()
+  })
+
   it('resumes with only model, loads cloud history and skipped notices, and preserves git info', async () => {
     const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
     sdk.agent = { ...sdk.agent, agentId: 'bc-cloud123' }
@@ -859,6 +912,75 @@ describe('Cursor cloud chats', () => {
     expect(sdk.sends[0].message.text).toBe('Continue')
     session.close()
   })
+  it.each(['older conversations unavailable', 'older run page unavailable'])('reattaches independently when history fails: %s', async (message) => {
+    const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    sdk.agent = { ...sdk.agent, agentId: 'bc-cloud123' }
+    sdk.cloudHistory.mockRejectedValue(new Error(message))
+    sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
+    await session.start()
+    expect(sdk.latestCloudRun).toHaveBeenCalledWith('bc-cloud123')
+    expect(sdk.getRun).toHaveBeenCalledWith(sdk.cloudRun.id, 'bc-cloud123')
+    expect(sdk.cloudRun.stream).toHaveBeenCalledOnce()
+    expect(sdk.cloudRun.conversation).not.toHaveBeenCalled()
+    expect(session.snapshot().session.status).toBe('running')
+    expect(session.busy).toBe(true)
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual([
+      `Couldn't load this chat's earlier messages: ${message}`,
+      'Reconnected to a Cursor cloud run that was already working.',
+    ])
+    session.send('Follow up', [], { delivery: 'queue' }); await tick()
+    expect(session.queued.map((entry) => entry.text)).toEqual(['Follow up'])
+    expect(sdk.sends).toHaveLength(0)
+    sdk.cloudRun.turns = [cloudTurn('Working prompt', 'Finished reply')]
+    sdk.cloudRun.finish(); await tick(); await tick()
+    expect(session.snapshot().items).toContainEqual(expect.objectContaining({ text: 'Finished reply', status: 'completed' }))
+    expect(sdk.sends[0].message.text).toBe('Follow up')
+    expect(sdk.cloudRun.cancel).not.toHaveBeenCalled()
+    session.close()
+  })
+
+  it.each(['finished', 'cancelled', 'error', undefined] as const)('does not reattach a newest run with status %s after history failure', async (status) => {
+    const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    sdk.cloudHistory.mockRejectedValue(new Error('History unavailable'))
+    if (status) {
+      sdk.cloudRun.status = status
+      sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
+    }
+    await session.start()
+    expect(sdk.latestCloudRun).toHaveBeenCalledWith(sdk.agent.agentId)
+    expect(sdk.getRun).not.toHaveBeenCalled()
+    expect(sdk.cloudRun.stream).not.toHaveBeenCalled()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().items).toHaveLength(1)
+    expect(session.snapshot().items[0]).toMatchObject({ text: "Couldn't load this chat's earlier messages: History unavailable" })
+    session.close()
+  })
+
+  it('reports a run lookup failure separately and preserves successfully loaded history', async () => {
+    const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    sdk.cloudHistory.mockResolvedValue({ turns: [cloudTurn('Earlier', 'Reply')], skipped: 0 })
+    sdk.latestCloudRun.mockRejectedValue(new Error('Run lookup unavailable'))
+    await session.start()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual([
+      'Earlier', 'Reply', "Couldn't reconnect to this Cursor cloud run: Run lookup unavailable",
+    ])
+    expect(session.snapshot().session.status).toBe('idle')
+    session.close()
+  })
+
+  it('does not reattach if the newest run finishes during lookup', async () => {
+    const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
+    const finished = new FakeRun()
+    finished.finish()
+    sdk.getRun.mockResolvedValue(finished)
+    await session.start()
+    expect(sdk.getRun).toHaveBeenCalledWith(sdk.cloudRun.id, sdk.agent.agentId)
+    expect(finished.stream).not.toHaveBeenCalled()
+    expect(session.snapshot().session.status).toBe('idle')
+    session.close()
+  })
+
   it('retains only the newest cloud history items', async () => {
     const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
     sdk.cloudHistory.mockResolvedValue({ turns: Array.from({ length: MAX_CHAT_ITEMS + 1 }, (_, index) => ({ type: 'agentConversationTurn', turn: { userMessage: { text: String(index) }, steps: [] } })), skipped: 0 })
@@ -872,6 +994,7 @@ describe('Cursor cloud chats', () => {
     const items = vi.fn()
     session.on('items', items)
     sdk.agent = { ...sdk.agent, agentId: 'bc-cloud123' }
+    sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
     sdk.cloudHistory.mockResolvedValue({ turns: [cloudTurn('Old prompt', 'Old answer')], skipped: 0, running: { id: sdk.cloudRun.id } })
     const envelope = { agent_id: 'bc-cloud123', run_id: sdk.cloudRun.id }
     await session.start()
@@ -929,6 +1052,7 @@ describe('Cursor cloud chats', () => {
   })
   it.each(['absent', 'reverted'] as const)('queues a reattached run when steer is %s and sends the queue after stream and wait end', async (steer) => {
     const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
     sdk.cloudHistory.mockResolvedValue({ turns: [], skipped: 0, running: { id: sdk.cloudRun.id } })
     if (steer === 'absent') Object.defineProperty(sdk.cloudRun, 'steer', { value: undefined })
     else sdk.cloudRun.steer.mockResolvedValue('revert_to_followup')
@@ -945,6 +1069,7 @@ describe('Cursor cloud chats', () => {
     const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123', log })
     const items = vi.fn()
     session.on('items', items)
+    sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
     sdk.cloudHistory.mockResolvedValue({ turns: [cloudTurn('Old prompt', 'Old answer')], skipped: 1, running: { id: sdk.cloudRun.id } })
     await session.start()
     sdk.cloudRun.push({ agent_id: 'bc-cloud123', run_id: sdk.cloudRun.id, type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Partial' }] } })
@@ -967,6 +1092,7 @@ describe('Cursor cloud chats', () => {
   })
   it('settles partial streamed items and reports an unreadable fallback without losing history', async () => {
     const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    sdk.latestCloudRun.mockResolvedValue(sdk.cloudRun)
     sdk.cloudHistory.mockResolvedValue({ turns: [cloudTurn('Old', 'Answer')], skipped: 0, running: { id: sdk.cloudRun.id } })
     await session.start()
     sdk.cloudRun.push({ agent_id: 'bc-cloud123', run_id: sdk.cloudRun.id, type: 'thinking', text: 'Partial thought' })

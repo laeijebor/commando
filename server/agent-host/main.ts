@@ -475,6 +475,10 @@ async function main(): Promise<void> {
     const now = Date.now()
     if (now - lastInterrupt < 1500) return quit()
     lastInterrupt = now
+    if (parsed.runtime === 'cloud') {
+      write(dim('Press Ctrl-C again to detach. Use Stop in the chat to cancel the cloud run.'))
+      return
+    }
     write(dim('Interrupting… (Ctrl-C again to quit)'))
     void session.interrupt()
   })

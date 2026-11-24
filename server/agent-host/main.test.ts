@@ -4,22 +4,29 @@ import type { ChatSessionInfo } from '../../shared/agent-chat.js'
 
 const state = vi.hoisted(() => ({
   busy: false,
+  promptListeners: new Map<string, () => void>(),
+  interrupt: vi.fn(),
+  close: vi.fn(),
+  remove: vi.fn(),
+  stop: vi.fn(),
   info: { paneId: '%77', provider: 'cursor', cwd: '/workspace', status: 'idle', hostPid: 1, hostVersion: 1, sessionId: 'agent-123', permissionMode: 'default' } as ChatSessionInfo,
   listeners: new Map<string, ((info: ChatSessionInfo) => void)[]>(),
   execFile: vi.fn(),
   hostNotice: vi.fn(),
 }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), execFile: state.execFile }))
-vi.mock('node:readline', () => ({ createInterface: () => ({ on: vi.fn() }) }))
+vi.mock('node:readline', () => ({ createInterface: () => ({ on: (event: string, listener: () => void) => state.promptListeners.set(event, listener) }) }))
 vi.mock('./build.js', () => ({ agentHostBuild: async () => 'test-build' }))
 vi.mock('../chat-images.js', () => ({ ChatImageStore: class {} }))
-vi.mock('./host.js', () => ({ AgentHost: class { add() {} start() {} } }))
+vi.mock('./host.js', () => ({ AgentHost: class { add() {} start() {} remove = state.remove; stop = state.stop } }))
 vi.mock('./factory.js', () => ({ createChatProviderSession: vi.fn(async () => ({
   get busy() { return state.busy },
   on: (event: string, listener: (info: ChatSessionInfo) => void) => state.listeners.set(event, [...state.listeners.get(event) ?? [], listener]),
   snapshot: () => ({ session: state.info, items: [] }),
   setResumeCommand: vi.fn(),
   hostNotice: state.hostNotice,
+  interrupt: state.interrupt,
+  close: state.close,
   start: async () => {},
 })) }))
 
@@ -28,6 +35,11 @@ let originalSignals: Map<'SIGTERM' | 'SIGHUP', ((signal: NodeJS.Signals) => void
 beforeEach(() => {
   vi.resetModules()
   state.listeners.clear()
+  state.promptListeners.clear()
+  state.interrupt.mockReset()
+  state.close.mockReset().mockImplementation(() => state.listeners.get('closed')?.forEach((listener) => listener(state.info)))
+  state.remove.mockReset()
+  state.stop.mockReset()
   state.execFile.mockReset()
   state.hostNotice.mockReset()
   state.busy = false
@@ -104,5 +116,29 @@ describe('provider restart requests', () => {
     expect(state.hostNotice).toHaveBeenCalledWith('error', expect.stringContaining('Restart failed: no such pane'))
     emit('restart')
     expect(state.execFile).toHaveBeenCalledTimes(2)
+  })
+})
+
+
+describe('terminal Ctrl-C', () => {
+  it.each([false, true])('interrupts local chats and detaches cloud chats (cloud=%s)', async (cloud) => {
+    if (cloud) process.argv.push('--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app')
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+    await import('./main.js')
+    await vi.waitFor(() => expect(state.promptListeners.has('SIGINT')).toBe(true))
+    const time = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+    state.promptListeners.get('SIGINT')!()
+    expect(state.close).not.toHaveBeenCalled()
+    expect(state.interrupt).toHaveBeenCalledTimes(cloud ? 0 : 1)
+    expect(process.stdout.write).toHaveBeenCalledWith(expect.stringContaining(cloud
+      ? 'Press Ctrl-C again to detach. Use Stop in the chat to cancel the cloud run.'
+      : 'Interrupting… (Ctrl-C again to quit)'))
+    time.mockReturnValue(10_500)
+    state.promptListeners.get('SIGINT')!()
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0))
+    expect(state.close).toHaveBeenCalledOnce()
+    expect(state.interrupt).toHaveBeenCalledTimes(cloud ? 0 : 1)
+    expect(state.remove).toHaveBeenCalledWith('%77')
+    expect(state.stop).toHaveBeenCalledOnce()
   })
 })

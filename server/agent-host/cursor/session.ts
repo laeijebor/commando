@@ -218,15 +218,25 @@ export class CursorChatSession implements ChatProviderSession {
         }
         if (history.skipped) this.emitItems(this.mapper.notice('info', `${history.skipped} earlier Cursor turns couldn't be loaded.`))
         this.cloudGit(history.git)
-        if (history.running) {
-          const run = await this.sdk!.getRun(history.running.id, this.agent!.agentId)
-          if (this.closing) return
-          this.reattach(run)
-        }
       } catch (error) {
         if (this.closing) return
         if (this.spec.cursorCloud) this.emitItems(this.mapper.replaceTurn('cloud-history-loading', []), true)
         this.emitItems(this.mapper.notice('info', `Couldn't load this chat's earlier messages: ${this.safeError(error)}`))
+      }
+      if (this.spec.cursorCloud) {
+        try {
+          // History can fail on an older page or conversation while the newest run is still working.
+          const latest = await this.sdk!.latestCloudRun(this.agent!.agentId)
+          if (this.closing) return
+          if (latest?.status === 'running') {
+            const run = await this.sdk!.getRun(latest.id, this.agent!.agentId)
+            if (this.closing) return
+            if (run.status === 'running') this.reattach(run)
+          }
+        } catch (error) {
+          if (this.closing) return
+          this.emitItems(this.mapper.notice('info', `Couldn't reconnect to this Cursor cloud run: ${this.safeError(error)}`))
+        }
       }
     }
     this.readyToSend = true
@@ -414,9 +424,22 @@ export class CursorChatSession implements ChatProviderSession {
   }
   private async wait(active: ActiveRun): Promise<void> {
     try {
-      if (active.reattached) await active.reattached.stream
-      const result = await active.run.wait()
-      if (this.closing) return
+      let result
+      for (;;) {
+        if (active.reattached) await active.reattached.stream
+        result = await active.run.wait()
+        if (this.closing) return
+        // SDK 1.0.37's two-hour client deadline has no code and does not cancel the cloud run.
+        if (!this.spec.cursorCloud || result.status !== 'error' || result.error?.message !== 'Timed out waiting for the cloud run to finish.' || result.error.code !== undefined) break
+        const id = string(record(active.run).id)
+        if (!id) break
+        const run = await this.sdk!.getRun(id, this.agent!.agentId)
+        if (this.closing) return
+        if (run.status !== 'running') { result = await run.wait(); break }
+        // Keep the same turn and queue while renewing the client stream, with no reconnect notice.
+        active.run = run
+        active.reattached = { run, stream: this.consumeCloudStream(active, run) }
+      }
       this.cloudGit(result.git?.branches[0])
       if (active.reattached) {
         try { this.emitItems(this.mapper.replaceTurn(active.turnId, await active.reattached.run.conversation()), true) }
