@@ -104,7 +104,7 @@ describe('cloud list/detail and integration exports', () => {
     })
     render(<CloudTasksSection api={api} cursorAgents={cursorAgents} onFocusPane={focus} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Go to chat' }))
-    expect(focus).toHaveBeenCalledWith('%4')
+    await waitFor(() => expect(focus).toHaveBeenCalledWith('%9'))
     const cursor = screen.getByRole('region', { name: 'Cursor cloud agents' })
     const tasks = screen.getByRole('region', { name: 'Saved cloud tasks' })
     expect(cursor.compareDocumentPosition(tasks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

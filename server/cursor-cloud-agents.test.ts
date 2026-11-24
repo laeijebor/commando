@@ -114,6 +114,19 @@ describe('open Cursor cloud agent', () => {
     expect(f.loadSdk).not.toHaveBeenCalled()
     expect(f.start).not.toHaveBeenCalled()
   })
+  it('reuses a just-opened pane until the snapshot shows it, and reopens once that pane has closed', async () => {
+    const f = setup()
+    expect(await f.api.open(id)).toEqual({ paneId: '%9' })
+    // %9 hasn't reached the snapshot yet: reuse it rather than starting a second chat.
+    expect(await f.api.open(id)).toEqual({ paneId: '%9' })
+    expect(f.start).toHaveBeenCalledTimes(1)
+    f.panes.push({ id: '%9', path: '/repo', dead: false } as TmuxPane)
+    expect(await f.api.open(id)).toEqual({ paneId: '%9' })
+    // The user closes %9 within the 15-second window: the next open starts a new chat.
+    f.panes.splice(f.panes.findIndex((pane) => pane.id === '%9'), 1)
+    expect(await f.api.open(id)).toEqual({ paneId: '%9' })
+    expect(f.start).toHaveBeenCalledTimes(2)
+  })
   it('matches any normalized remote and uses the existing session creation path once', async () => {
     const f = setup()
     await f.api.list()

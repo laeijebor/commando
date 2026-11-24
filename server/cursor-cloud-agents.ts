@@ -42,7 +42,7 @@ export class CursorCloudAgentsApi {
   private lastFetch = -Infinity
   private readonly opening = new Map<string, Promise<{ paneId: string }>>()
   // Bridge the short gap before a new chat host registers its session ID.
-  private readonly opened = new Map<string, { paneId: string; until: number }>()
+  private readonly opened = new Map<string, { paneId: string; until: number; seen?: boolean }>()
   private readonly now: () => number
   private readonly sdk: () => Promise<CursorCloudAgentsSdk>
   constructor(private readonly dependencies: Dependencies) {
@@ -120,9 +120,14 @@ export class CursorCloudAgentsApi {
 
   private openPane(id: string): string | undefined {
     const live = this.dependencies.chatSessions().find((session) => session.sessionId === id)?.paneId
+    if (live) return live
     const recent = this.opened.get(id)
-    if (recent && recent.until <= this.now()) this.opened.delete(id)
-    return live ?? (recent && recent.until > this.now() ? recent.paneId : undefined)
+    if (!recent) return undefined
+    // A new pane can take a moment to reach the snapshot; once it has been seen there, its absence means it closed.
+    const present = this.dependencies.snapshot().panes.some((pane) => pane.id === recent.paneId && !pane.dead)
+    if (present) recent.seen = true
+    if (recent.until <= this.now() || (recent.seen && !present)) { this.opened.delete(id); return undefined }
+    return recent.paneId
   }
 
   async open(id: string): Promise<{ paneId: string }> {

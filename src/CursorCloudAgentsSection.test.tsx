@@ -54,14 +54,16 @@ describe('CursorCloudAgentsSection', () => {
     await waitFor(() => expect(focus).toHaveBeenCalledWith('%9'))
     expect(api.open).toHaveBeenCalledWith(agent.agentId)
     fireEvent.click(screen.getByRole('button', { name: 'Go to chat' }))
-    expect(api.open).toHaveBeenCalledTimes(1)
-    expect(focus).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(focus).toHaveBeenCalledTimes(2))
+    expect(api.open).toHaveBeenCalledTimes(2)
   })
-  it('focuses an already open pane directly and supports manual refresh', async () => {
+  it('checks a cached pane with the daemon before focusing, and supports manual refresh', async () => {
     const { api, focus } = fixture({ agents: [{ ...agent, openPaneId: '%4', startedInCommando: true }] })
     fireEvent.click(await screen.findByRole('button', { name: 'Go to chat' }))
-    expect(focus).toHaveBeenCalledWith('%4')
-    expect(api.open).not.toHaveBeenCalled()
+    // The cached %4 has closed; the daemon reopens the chat in %9 and that pane is focused.
+    await waitFor(() => expect(focus).toHaveBeenCalledWith('%9'))
+    expect(api.open).toHaveBeenCalledWith(agent.agentId)
+    expect(focus).not.toHaveBeenCalledWith('%4')
     expect(screen.queryByText('Started elsewhere')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     await waitFor(() => expect(api.list).toHaveBeenLastCalledWith(true))

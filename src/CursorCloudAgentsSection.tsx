@@ -46,7 +46,7 @@ export function CursorCloudAgentsSection({ store, onFocusPane }: {
               {prUrl && <> · <a href={prUrl} target="_blank" rel="noopener noreferrer">PR ↗</a></>}</small>}
           </div>
           <div className="cloud-actions"><button disabled={opening !== null} onClick={() => {
-            if (agent.openPaneId) { onFocusPane(agent.openPaneId); return }
+            // Always ask the daemon: a cached pane may have closed since the list loaded, and it reopens the chat then.
             setOpening(agent.agentId); setError('')
             void store.open(agent.agentId).then(onFocusPane)
               .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to open chat.'))
