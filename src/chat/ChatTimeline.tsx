@@ -2,7 +2,8 @@ import { createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, 
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatTaskAction } from '../../shared/agent-chat'
+import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { Button } from './ui/button'
@@ -304,13 +305,19 @@ function UserText({ text }: { text: string }) {
   )
 }
 
-function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
+export interface ChatFocusMessageRequest {
+  itemId?: string
+  text?: string
+  seq: number
+}
+
+function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; highlighted?: boolean }) {
   const context = use(TimelineContext)
   switch (row.kind) {
     case 'user':
       if (row.item.tileEvents?.length) {
         return (
-          <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
+          <div className="flex flex-col items-end gap-1.5 pb-3 pt-1" data-chat-item-id={row.item.id}>
             {row.item.tileEvents.map((event) => event.kind === 'autofix'
               ? <AutofixCard key={event.id} event={event} {...(context.onOpenPr ? { onOpenPr: context.onOpenPr } : {})} />
               : <TileEventCard key={event.id} event={event} {...(context.onOpenTile ? { onOpenTile: context.onOpenTile } : {})} />)}
@@ -318,7 +325,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
         )
       }
       return (
-        <div className="flex flex-col items-end gap-1.5 pb-3 pt-1">
+        <div className="flex flex-col items-end gap-1.5 pb-3 pt-1" data-chat-item-id={row.item.id}>
           {row.item.steered || row.item.relayTo ? (
             <span className="flex max-w-[85%] items-center gap-1 text-2xs text-muted-foreground">
               {row.item.relayTo ? <MessageSquareShare className="size-3" aria-hidden="true" /> : <Rabbit className="size-3" aria-hidden="true" />}
@@ -327,7 +334,10 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
           ) : null}
           {row.item.images?.length ? <ImageStrip images={row.item.images} className="max-w-[85%] justify-end" /> : null}
           {row.item.text ? (
-            <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-border bg-message px-3.5 py-2 text-base text-foreground">
+            <div className={cn(
+              'max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-border bg-message px-3.5 py-2 text-base text-foreground',
+              highlighted && 'chat-message-highlight',
+            )}>
               <UserText text={row.item.text} />
             </div>
           ) : null}
@@ -363,7 +373,7 @@ function Row({ row, cwd }: { row: QuietTimelineRow; cwd: string }) {
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, askMarkers, onShowAsks }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -387,6 +397,9 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   askMarkers?: ReadonlyMap<string, number>
   /** Opens the Waiting on you tray. */
   onShowAsks?: () => void
+  /** Scrolls to and briefly highlights a specific user message. */
+  focusMessage?: ChatFocusMessageRequest
+  onFocusMessageHandled?: (seq: number) => void
 }) {
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
   const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
@@ -396,6 +409,31 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const pinned = useRef(true)
   const lastTop = useRef(0)
   const [scrolledUp, setScrolledUp] = useState(false)
+  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
+  const handledFocusSeq = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!focusMessage || handledFocusSeq.current === focusMessage.seq) return
+    const targetNeedle = focusMessage.text ? normalizeMessageSearchText(focusMessage.text) : undefined
+    const matched = rows.find((row) => row.kind === 'user' && (
+      (focusMessage.itemId && row.item.id === focusMessage.itemId)
+      || (targetNeedle && normalizeMessageSearchText(stripAttachmentNotes(row.item.text)) === targetNeedle)
+    ))
+    if (!matched || matched.kind !== 'user') return
+    const node = scroller.current?.querySelector<HTMLElement>(`[data-chat-item-id="${CSS.escape(matched.item.id)}"]`)
+    if (!node) return
+    handledFocusSeq.current = focusMessage.seq
+    pinned.current = false
+    if (typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+    setHighlightedItemId(matched.item.id)
+    onFocusMessageHandled?.(focusMessage.seq)
+    const timer = window.setTimeout(() => {
+      setHighlightedItemId((current) => current === matched.item.id ? null : current)
+    }, 2400)
+    return () => window.clearTimeout(timer)
+  }, [focusMessage, rows, onFocusMessageHandled])
 
   useLayoutEffect(() => {
     const element = scroller.current
@@ -449,8 +487,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
             {rows.length === 0 && !header ? (
               <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
             ) : rows.map((row) => row.kind === 'user' && row.item.id === userMessageCard?.itemId
-              ? <div key={row.id}>{userMessageCard.content}</div>
-              : <Row key={row.id} row={row} cwd={cwd} />)}
+              ? <div key={row.id} data-chat-item-id={row.item.id}>{userMessageCard.content}</div>
+              : <Row key={row.id} row={row} cwd={cwd} highlighted={row.kind === 'user' && row.item.id === highlightedItemId} />)}
           </TimelineContext>
           {working && !streaming && !liveWork ? (
             <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">

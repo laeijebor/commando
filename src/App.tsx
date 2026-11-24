@@ -136,6 +136,11 @@ import { createSessionIdesApi } from './sessionIdesApi'
 import { createTmuxHttpApi } from './tmuxCreateApi'
 import { createSessionNamingApi } from './sessionNamingApi'
 import { createChatConversationsApi } from './chatConversationsApi'
+import { createChatMessagesApi } from './chatMessagesApi'
+import { CommandPalette, type PaletteCommand } from './CommandPalette'
+import { useSentMessageSearch } from './useSentMessageSearch'
+import type { SentMessageMatch } from '../shared/chat-messages'
+import type { ChatFocusMessageRequest } from './chat/ChatTimeline'
 import { ConversationPicker } from './ConversationPicker'
 import { PanePaletteMenu, panePaletteEntries, type PanePaletteScreen } from './PanePalette'
 import { McpSettings } from './McpSettings'
@@ -430,6 +435,8 @@ type TerminalPaneProps = {
   /** Why the daemon refused a queue, subagent or interrupt action in this pane. */
   chatActionError?: string
   onDismissChatActionError?: () => void
+  chatFocusMessage?: ChatFocusMessageRequest
+  onChatFocusMessageHandled?: (seq: number) => void
   /** The pane runs Claude Code on a conversation that started as a chat. */
   claudeCodeFromChat?: boolean
   handoffProvider?: ChatProvider
@@ -527,6 +534,8 @@ export function TerminalPaneCard({
   onDismissChatSendError,
   chatActionError,
   onDismissChatActionError,
+  chatFocusMessage,
+  onChatFocusMessageHandled,
   claudeCodeFromChat = false,
   handoffProvider,
   chatUploading = false,
@@ -837,6 +846,8 @@ export function TerminalPaneCard({
             {...(onDismissChatSendError ? { onDismissSendError: onDismissChatSendError } : {})}
             {...(chatActionError ? { actionError: chatActionError } : {})}
             {...(onDismissChatActionError ? { onDismissActionError: onDismissChatActionError } : {})}
+            {...(chatFocusMessage ? { focusMessage: chatFocusMessage } : {})}
+            {...(onChatFocusMessageHandled ? { onFocusMessageHandled: onChatFocusMessageHandled } : {})}
           />
         ) : <TerminalPaneRenderer
           paneId={pane.id}
@@ -953,14 +964,6 @@ export function PaneActionErrorFeedback({
       </button>
     </div>
   )
-}
-
-type PaletteCommand = {
-  id: string
-  label: string
-  detail: string
-  kind: 'pane' | 'session' | 'action' | 'layout'
-  run: () => void
 }
 
 /**
@@ -1126,13 +1129,6 @@ export function AuthGate({
   )
 }
 
-function PaletteGlyph({ kind }: { kind: PaletteCommand['kind'] }) {
-  if (kind === 'pane') return <Terminal aria-hidden="true" />
-  if (kind === 'session') return <Server aria-hidden="true" />
-  if (kind === 'layout') return <LayoutGrid aria-hidden="true" />
-  return <RefreshCw aria-hidden="true" />
-}
-
 export function App() {
   return <HostProvider><HostWorkspace><HostApp /></HostWorkspace></HostProvider>
 }
@@ -1264,7 +1260,8 @@ function HostApp() {
   const palettePaneId = panePalette?.paneId ?? null
   const reopeningConversation = useRef(false)
   const [paletteQuery, setPaletteQuery] = useState('')
-  const [paletteIndex, setPaletteIndex] = useState(0)
+  const [pendingChatMessageFocus, setPendingChatMessageFocus] = useState<{ paneId: string; itemId?: string; text?: string; seq: number } | null>(null)
+  const chatMessageFocusSeq = useRef(0)
   const [themeName, setThemeName] = useState<ThemeName>(() => storedTheme())
   const [leftPanelOpen, setLeftPanelOpen] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
@@ -1474,7 +1471,6 @@ function HostApp() {
   const paneRefs = useRef(new Map<string, HTMLElement>())
   const paneStreamsRef = useRef<PaneStreamRegistry | null>(null)
   if (!paneStreamsRef.current) paneStreamsRef.current = new PaneStreamRegistry()
-  const paletteInputRef = useRef<HTMLInputElement>(null)
   const previousResizePaneId = useRef<string | null>(null)
   const paneLayoutCapacities = useRef(new Map<string, PaneLayoutCapacity & { key: string }>())
   const lastFocusedResize = useRef<{ paneId: string; cols: number; rows: number } | null>(null)
@@ -2204,10 +2200,17 @@ function HostApp() {
   useEffect(() => {
     if (paletteOpen) {
       setPaletteQuery('')
-      setPaletteIndex(0)
-      window.setTimeout(() => paletteInputRef.current?.focus(), 0)
     }
   }, [paletteOpen])
+
+  useEffect(() => {
+    if (!pendingChatMessageFocus) return
+    const seq = pendingChatMessageFocus.seq
+    const timer = window.setTimeout(() => {
+      setPendingChatMessageFocus((current) => current?.seq === seq ? null : current)
+    }, 15_000)
+    return () => window.clearTimeout(timer)
+  }, [pendingChatMessageFocus])
 
   const selectSession = (sessionId: string) => {
     setArea('workspace')
@@ -2763,6 +2766,7 @@ function HostApp() {
   const sessionNamingApi = useMemo(() => createSessionNamingApi(token, daemonFetch), [token])
   const sessionNamingSettings = useMemo(() => ({ api: sessionNamingApi, loadModels: createTmuxHttpApi(token, daemonFetch).models }), [sessionNamingApi, token])
   const chatConversationsApi = useMemo(() => createChatConversationsApi(token, daemonFetch), [token])
+  const chatMessagesApi = useMemo(() => createChatMessagesApi(token, daemonFetch), [token])
   const loadConversations = useCallback(async () => {
     const conversations = await chatConversationsApi.list()
     const names = [...new Set(conversations.flatMap((conversation) => conversation.session ? [conversation.session.name] : []).filter(isSessionName))].slice(0, 500)
@@ -3739,26 +3743,48 @@ function HostApp() {
       },
     })),
   ]
-  const normalizedQuery = paletteQuery.trim().toLowerCase()
-  const filteredCommands = commands.filter((command) =>
-    `${command.label} ${command.detail}`.toLowerCase().includes(normalizedQuery),
-  )
-  const safePaletteIndex = Math.min(paletteIndex, Math.max(filteredCommands.length - 1, 0))
+  const sentMessageSearch = useSentMessageSearch({
+    open: paletteOpen && (local || connected),
+    query: paletteQuery,
+    connected,
+    api: chatMessagesApi,
+    chats,
+    lookupPane: (paneId) => {
+      const pane = paneMap.get(paneId)
+      const session = pane ? sessionMap.get(pane.sessionId) : undefined
+      return {
+        ...(session ? { sessionName: session.name, commandoSessionId: session.id } : {}),
+        ...(pane?.repo?.branch ? { branch: pane.repo.branch } : {}),
+        ...(pane?.title ? { paneTitle: pane.title } : {}),
+      }
+    },
+  })
 
-  const handlePaletteKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      setPaletteIndex((current) => Math.min(current + 1, filteredCommands.length - 1))
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      setPaletteIndex((current) => Math.max(current - 1, 0))
-    } else if (event.key === 'Enter') {
-      event.preventDefault()
-      filteredCommands[safePaletteIndex]?.run()
-    } else if (event.key === 'Escape') {
-      event.preventDefault()
-      setPaletteOpen(false)
+  const handleSelectSentMessage = (message: SentMessageMatch) => {
+    setPaletteOpen(false)
+    const seq = ++chatMessageFocusSeq.current
+    if (message.openPaneId && paneMap.has(message.openPaneId)) {
+      setPendingChatMessageFocus({
+        paneId: message.openPaneId,
+        ...(message.itemId ? { itemId: message.itemId } : {}),
+        text: message.text,
+        seq,
+      })
+      jumpToPane(message.openPaneId, undefined, true)
+      return
     }
+    if (!message.sessionId) return
+    void chatConversationsApi
+      .resume({ provider: message.provider, sessionId: message.sessionId, placement: 'session' })
+      .then(
+        (paneId) => {
+          setPendingChatMessageFocus({ paneId, text: message.text, seq })
+          setPendingPaneFocus({ paneId, waitForCreation: true })
+        },
+        (error: unknown) => {
+          setPaneActionError(error instanceof Error ? error.message : 'Could not open that conversation')
+        },
+      )
   }
 
   const disconnect = async () => {
@@ -4588,6 +4614,10 @@ function HostApp() {
                             onChatRestart={() => restartChat(pane.id)}
                             onChatOpenPr={(repo, number, tab) => { void revealPrTab(pane.id, repo, number, tab) }}
                             onChatDismissPrs={(prs) => closePrTabs(pane.id, prs)}
+                            {...(pendingChatMessageFocus?.paneId === pane.id ? {
+                              chatFocusMessage: pendingChatMessageFocus,
+                              onChatFocusMessageHandled: (seq: number) => setPendingChatMessageFocus((current) => current?.seq === seq ? null : current),
+                            } : {})}
                             claudeCodeFromChat={runsChatInClaudeCode(pane.id)}
                             handoffProvider={paneChatHandoff(pane.id, agentStatuses[pane.id], chatHandoffEntries, chatHandoffs)?.provider}
                             chatUploading={chatUploads.has(pane.id)}
@@ -4971,66 +5001,17 @@ function HostApp() {
       ) : null}
 
       {paletteOpen && (local || connected) ? (
-        <div
-          className="palette-backdrop"
-          data-native-terminal-occluder=""
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setPaletteOpen(false)
-          }}
-        >
-          <section className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
-            <div className="palette-search">
-              <Search aria-hidden="true" />
-              <input
-                ref={paletteInputRef}
-                id="command-query"
-                name="command-query"
-                value={paletteQuery}
-                onChange={(event) => {
-                  setPaletteQuery(event.target.value)
-                  setPaletteIndex(0)
-                }}
-                onKeyDown={handlePaletteKeyDown}
-                placeholder="Jump to a pane, session, or action..."
-                aria-label="Search commands"
-                aria-controls="command-results"
-                aria-activedescendant={filteredCommands[safePaletteIndex]?.id}
-              />
-              <kbd>Esc</kbd>
-            </div>
-            <div className="palette-caption">
-              <span>{normalizedQuery ? 'Matching commands' : 'Local cockpit commands'}</span>
-              <span>{filteredCommands.length} results</span>
-            </div>
-            <div className="command-results" id="command-results" role="listbox">
-              {filteredCommands.map((command, index) => (
-                <button
-                  type="button"
-                  id={command.id}
-                  className={index === safePaletteIndex ? 'active' : ''}
-                  onMouseEnter={() => setPaletteIndex(index)}
-                  onClick={command.run}
-                  role="option"
-                  aria-selected={index === safePaletteIndex}
-                  key={command.id}
-                >
-                  <span className="command-icon"><PaletteGlyph kind={command.kind} /></span>
-                  <span><strong>{command.label}</strong><small>{command.detail}</small></span>
-                  <span className="command-kind">{command.kind}</span>
-                </button>
-              ))}
-              {filteredCommands.length === 0 ? (
-                <div className="palette-empty">No local command matches "{paletteQuery}".</div>
-              ) : null}
-            </div>
-            <footer className="palette-footer">
-              <span><kbd>Up/Down</kbd> Navigate</span>
-              <span><kbd>Enter</kbd> Run</span>
-              <span><kbd>Esc</kbd> Close</span>
-            </footer>
-          </section>
-        </div>
+        <CommandPalette
+          query={paletteQuery}
+          onQueryChange={setPaletteQuery}
+          commands={commands}
+          messages={sentMessageSearch.messages}
+          messagesActive={sentMessageSearch.active}
+          messagesLoading={sentMessageSearch.loading}
+          messagesIndexing={sentMessageSearch.indexing}
+          onSelectMessage={handleSelectSentMessage}
+          onClose={() => setPaletteOpen(false)}
+        />
       ) : null}
     </div>
     </PlanUsageContext.Provider>

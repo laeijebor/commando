@@ -34,7 +34,7 @@ import { askAnchors, askMarkerCounts } from './sessionAsks'
 import { askAnswerText } from '../../shared/session-asks'
 import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError, type ComposerInsert } from './ChatComposer'
 import { providerLabel } from './ComposerControls'
-import { ChatTimeline, Markdown } from './ChatTimeline'
+import { ChatTimeline, Markdown, type ChatFocusMessageRequest } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 import { Button } from './ui/button'
@@ -126,6 +126,8 @@ function ChatColumn({
   onDismissActionError,
   flow,
   asks = NO_ASKS,
+  focusMessage,
+  onFocusMessageHandled,
 }: {
   chat: ChatState
   externalRuns?: readonly ExternalAgentRun[]
@@ -170,6 +172,8 @@ function ChatColumn({
   flow?: ChatFlowServices
   /** Questions the agent is waiting on the user to answer. */
   asks?: readonly SessionAsk[]
+  focusMessage?: ChatFocusMessageRequest
+  onFocusMessageHandled?: (seq: number) => void
 }) {
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
@@ -417,6 +421,8 @@ function ChatColumn({
           {...(turnFlow ? { onOpenSubagent: select } : {})}
           {...(flow ? { onSavePlan: flow.savePlan } : {})}
           {...(askMarkers.size ? { askMarkers, onShowAsks: showAsks } : {})}
+          {...(focusMessage ? { focusMessage } : {})}
+          {...(onFocusMessageHandled ? { onFocusMessageHandled } : {})}
         />
       )}
       {commander?.state.paneId && commander.state.paneId === paneId ? (
