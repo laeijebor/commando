@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentOptions, ModelListItem, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
+import type { AgentOptions, AgentUsage, ModelListItem, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_IMAGES, MAX_CHAT_ITEMS, MAX_QUEUED_MESSAGES, parseChatSessionInfo } from '../../../shared/agent-chat.js'
 import type { AgentSessionSpec } from '../session.js'
 import { CURSOR_SETTING_SOURCES, CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
@@ -80,7 +80,9 @@ class FakeRun implements CursorRun {
   wait = vi.fn(() => this.done.promise)
   cancel = vi.fn(async () => { this.finish('cancelled') })
   steer = vi.fn(async (_text: string): Promise<SteerAckOutcome> => 'complete_delivered')
-  finish(status: RunResult['status'] = 'finished', error?: RunResult['error']) { this.done.resolve({ id: 'run', status, error }) }
+  finish(status: RunResult['status'] = 'finished', error?: RunResult['error'], usage?: RunResult['usage']) {
+    this.done.resolve({ id: 'run', status, error, ...(usage ? { usage } : {}) })
+  }
 }
 class FakeSdk implements CursorSdk {
   readonly runs: FakeRun[] = []
@@ -871,6 +873,191 @@ describe('CursorChatSession', () => {
 
     const fromUnsafe = await session.subagentTranscript('sub-unsafe')
     expect(fromUnsafe).toEqual({ items: [], error: 'No saved transcript is available for this Cursor subagent.' })
+    session.close()
+  })
+
+  it('accumulates turn-ended and RunResult usage across turns without double-counting', async () => {
+    const { session, sdk } = await running()
+
+    // Turn 1 emits turn-ended delta during streaming, then resolves with RunResult.usage.
+    sdk.delta({
+      type: 'turn-ended',
+      usage: { inputTokens: 1_000, outputTokens: 250, cacheReadTokens: 300, cacheWriteTokens: 50, reasoningTokens: 100 },
+    })
+    expect(session.snapshot().session.sessionUsage).toMatchObject({
+      inputTokens: 1_000,
+      outputTokens: 250,
+      cacheReadTokens: 300,
+      cacheWriteTokens: 50,
+      reasoningTokens: 100,
+      totalTokens: 1_600,
+    })
+
+    // Finalizing the same run with RunResult.usage replaces the in-flight delta instead of double-counting.
+    sdk.runs[0].finish('finished', undefined, {
+      inputTokens: 1_000,
+      outputTokens: 250,
+      cacheReadTokens: 300,
+      cacheWriteTokens: 50,
+      reasoningTokens: 100,
+      totalTokens: 1_600,
+    })
+    await tick()
+    expect(session.snapshot().session.sessionUsage).toMatchObject({
+      inputTokens: 1_000,
+      outputTokens: 250,
+      cacheReadTokens: 300,
+      cacheWriteTokens: 50,
+      reasoningTokens: 100,
+      totalTokens: 1_600,
+    })
+
+    // Turn 2 reports usage only via RunResult.usage and adds cumulatively to Turn 1.
+    session.send('Second turn'); await tick()
+    sdk.runs[1].finish('finished', undefined, {
+      inputTokens: 500,
+      outputTokens: 150,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 650,
+    })
+    await tick()
+    expect(session.snapshot().session.sessionUsage).toMatchObject({
+      inputTokens: 1_500,
+      outputTokens: 400,
+      cacheReadTokens: 300,
+      cacheWriteTokens: 50,
+      reasoningTokens: 100,
+      totalTokens: 2_250,
+    })
+    expect(session.snapshot().session.contextUsage).toBeUndefined()
+    expect(parseChatSessionInfo(session.snapshot().session)?.sessionUsage).toEqual(session.snapshot().session.sessionUsage)
+    session.close()
+  })
+
+  it('refreshes authoritative server totals and billed cost via agent.getUsage() after a completed turn', async () => {
+    const { session, sdk } = await running()
+    const getUsage = vi.fn(async (): Promise<AgentUsage> => ({
+      usage: {
+        inputTokens: 10_000,
+        outputTokens: 2_500,
+        cacheReadTokens: 1_200,
+        cacheWriteTokens: 500,
+        reasoningTokens: 800,
+        totalTokens: 14_200,
+      },
+      cost: { chargedCents: 4.2, rawCostCents: 5.5 },
+      runs: [],
+    }))
+    sdk.agent.getUsage = getUsage
+
+    sdk.runs[0].finish('finished', undefined, {
+      inputTokens: 9_800,
+      outputTokens: 2_400,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 12_200,
+    })
+    await vi.waitFor(() => expect(getUsage).toHaveBeenCalledTimes(1))
+    await tick()
+
+    expect(session.snapshot().session.sessionUsage).toMatchObject({
+      inputTokens: 10_000,
+      outputTokens: 2_500,
+      cacheReadTokens: 1_200,
+      cacheWriteTokens: 500,
+      reasoningTokens: 800,
+      totalTokens: 14_200,
+      chargedCents: 4.2,
+      rawCostCents: 5.5,
+    })
+    expect(parseChatSessionInfo(session.snapshot().session)?.sessionUsage).toEqual(session.snapshot().session.sessionUsage)
+    session.close()
+  })
+
+  it('ignores agent.getUsage() failures and eventual-consistency zero totals without breaking the turn', async () => {
+    const { session, sdk } = await running()
+    const getUsage = vi.fn()
+      .mockRejectedValueOnce(new Error('usage backend unavailable'))
+      .mockResolvedValueOnce({
+        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+        cost: { chargedCents: 0, rawCostCents: 9.5 },
+        runs: [],
+      })
+    sdk.agent.getUsage = getUsage
+
+    sdk.runs[0].finish('finished', undefined, {
+      inputTokens: 800,
+      outputTokens: 200,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 1_000,
+    })
+    await vi.waitFor(() => expect(getUsage).toHaveBeenCalledTimes(1))
+    await tick()
+
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().session.sessionUsage).toMatchObject({ inputTokens: 800, outputTokens: 200, totalTokens: 1_000 })
+    expect(session.snapshot().items.some((item) => item.kind === 'notice' && item.level === 'error')).toBe(false)
+
+    // Turn 2: server returns 0 tokens (lagging billing events) with plan-included cost -> keep local tokens, attach cost.
+    session.send('Second'); await tick()
+    sdk.runs[1].finish('finished', undefined, {
+      inputTokens: 400,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 500,
+    })
+    await vi.waitFor(() => expect(getUsage).toHaveBeenCalledTimes(2))
+    await tick()
+
+    expect(session.snapshot().session.sessionUsage).toMatchObject({
+      inputTokens: 1_200,
+      outputTokens: 300,
+      totalTokens: 1_500,
+      chargedCents: 0,
+      rawCostCents: 9.5,
+    })
+    session.close()
+  })
+
+  it('resets sessionUsage on /clear and discards any in-flight getUsage() from before the clear', async () => {
+    const { session, sdk } = await running()
+    const pendingUsage = deferred<AgentUsage>()
+    sdk.agent.getUsage = vi.fn(() => pendingUsage.promise)
+
+    sdk.delta({ type: 'turn-ended', usage: { inputTokens: 2_000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0 } })
+    sdk.runs[0].finish()
+    await tick()
+    expect(session.snapshot().session.sessionUsage).toMatchObject({ totalTokens: 2_500 })
+
+    // Clear while getUsage() is still pending.
+    session.send('/clear')
+    expect(session.snapshot().session.sessionUsage).toBeUndefined()
+
+    // Resolving the stale getUsage() must NOT resurrect pre-clear usage.
+    pendingUsage.resolve({
+      usage: { inputTokens: 2_000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 2_500 },
+      cost: { chargedCents: 3, rawCostCents: 3 },
+      runs: [],
+    })
+    await tick()
+    expect(session.snapshot().session.sessionUsage).toBeUndefined()
+
+    // Next turn accumulates cleanly from zero.
+    sdk.agent.getUsage = undefined
+    session.send('Fresh turn'); await tick()
+    sdk.runs[1].finish('finished', undefined, {
+      inputTokens: 300,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 400,
+    })
+    await tick()
+    expect(session.snapshot().session.sessionUsage).toMatchObject({ inputTokens: 300, outputTokens: 100, totalTokens: 400 })
+    expect(session.snapshot().session.sessionUsage?.chargedCents).toBeUndefined()
     session.close()
   })
 })
