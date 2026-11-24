@@ -93,6 +93,7 @@ import { handlePrsApi } from './prs-api.js'
 import { PanePrRecords, defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
+import { CloudDiscoveryService } from './cloud-discovery.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
 import { createCloudConnections } from './cloud-connections.js'
 import { handleNotesApi } from './notes-api.js'
@@ -1197,6 +1198,13 @@ async function main(): Promise<void> {
   })
   noteChatBusy = (paneId) => externalAgents.noteBusy(paneId)
   chatResumeSettings = (paneId) => agentHosts.resumeSettings(paneId)
+  const cloudDiscovery = new CloudDiscoveryService({
+    listTrackedTasks: () => cloudTasks?.listTasks(true) ?? [],
+    listOpenChats: () => agentHosts.states().map((state) => ({
+      provider: state.session.provider,
+      sessionId: state.session.sessionId,
+    })),
+  })
   let publishedHandoffs = ''
   const chatHandoffsMessage = (): ServerMessage => ({ type: 'chat_handoffs', sessionIds: chatHandoffs.inClaudeCode(), handoffs: chatHandoffs.active() })
   function publishChatHandoffs(): void {
@@ -3396,12 +3404,12 @@ async function main(): Promise<void> {
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
         if (await deviceWallApi.handle(request, response, url)) return
-        if (/^\/api\/(?:cloud-tasks|cloud-providers|cloud-operations)(?:\/|$)/.test(url.pathname)) {
+        if (/^\/api\/(?:cloud-tasks|cloud-providers|cloud-operations|cloud)(?:\/|$)/.test(url.pathname)) {
           if (!cloudTasks) {
             writeJson(response, 503, { code: 'cloud_storage_unavailable', error: 'Cloud task storage is unavailable. Saved history has not been reset.' })
             return
           }
-          if (await handleCloudTasksApi(request, response, url, cloudTasks)) return
+          if (await handleCloudTasksApi(request, response, url, cloudTasks, cloudDiscovery)) return
         }
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
