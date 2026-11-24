@@ -105,7 +105,7 @@ export function PanesView({ sessions, windows, panes, agentStatuses, activity, a
   const [error, setError] = useState('')
   const [now, setNow] = useState(() => Date.now())
 
-  const views = usePoll<PaneViews>(connected ? api.paneViews : null, VIEWS_POLL_MS, api)
+  const views = usePoll<PaneViews>(connected ? api.paneViews : null, VIEWS_POLL_MS, 'views')
   useEffect(() => { setNow(Date.now()) }, [views.value])
 
   const rows = useMemo(() => paneRows({
@@ -152,10 +152,15 @@ export function PanesView({ sessions, windows, panes, agentStatuses, activity, a
     if (!next.delete(paneId)) next.add(paneId)
     return next
   })
+  const tableBody = useRef<HTMLTableSectionElement>(null)
+  // Focus follows the highlight, so Enter opens the pane being previewed.
   const move = (direction: 1 | -1) => {
     const index = shown.findIndex((row) => row.pane.id === selectedId)
     const next = shown[Math.min(shown.length - 1, Math.max(0, index + direction))]
-    if (next) setSelectedId(next.pane.id)
+    if (!next) return
+    setSelectedId(next.pane.id)
+    const rowElement = [...tableBody.current?.rows ?? []].find((element) => element.dataset.paneId === next.pane.id)
+    rowElement?.focus()
   }
 
   const over = panes.length - PANE_LIMIT
@@ -193,13 +198,13 @@ export function PanesView({ sessions, windows, panes, agentStatuses, activity, a
               <th aria-label="Actions" />
             </tr>
           </thead>
-          <tbody onKeyDown={(event) => {
+          <tbody ref={tableBody} onKeyDown={(event) => {
             if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
             event.preventDefault()
             move(event.key === 'ArrowDown' ? 1 : -1)
           }}>
-            {shown.map((row) => <tr key={row.pane.id} className={row.pane.id === selectedId ? 'selected' : undefined} aria-selected={row.pane.id === selectedId}
-              tabIndex={0} onClick={() => setSelectedId(row.pane.id)} onKeyDown={(event) => { if (event.key === 'Enter') onOpen(row.pane.id) }}>
+            {shown.map((row) => <tr key={row.pane.id} data-pane-id={row.pane.id} className={row.pane.id === selectedId ? 'selected' : undefined} aria-selected={row.pane.id === selectedId}
+              tabIndex={0} onClick={() => setSelectedId(row.pane.id)} onKeyDown={(event) => { if (event.key === 'Enter' && event.target === event.currentTarget) onOpen(row.pane.id) }}>
               <td className="panes-check" onClick={(event) => event.stopPropagation()}>
                 <input type="checkbox" checked={checked.has(row.pane.id)} onChange={() => toggle(row.pane.id)} aria-label={`Select ${row.label}`} />
               </td>

@@ -66,4 +66,32 @@ describe('PanesView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close pane: dev server' }))
     expect(onClose).not.toHaveBeenCalled()
   })
+
+  it('keeps "last viewed" when the parent re-renders with a new api object', async () => {
+    const api = {
+      capturePane: vi.fn(async () => ''),
+      paneViews: vi.fn(async () => ({ viewedAt: { '%2': Date.now() - 2 * 3_600_000 }, viewing: [] })),
+    }
+    const props = { sessions, windows, panes, agentStatuses: {}, activity: {}, auxiliarySessionIds: new Set<string>(), connected: true, onOpen: vi.fn(), onClose: vi.fn(async () => {}) }
+    const { rerender } = render(<PanesView {...props} api={api} />)
+    await screen.findByText('2h ago')
+    rerender(<PanesView {...props} api={{ ...api }} />)
+    expect(screen.getByText('2h ago')).toBeInTheDocument()
+    expect(api.paneViews).toHaveBeenCalledOnce()
+  })
+
+  it('opens the highlighted pane on Enter after arrowing to it, but not from a row button', () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { onOpen } = renderView()
+    const firstRow = screen.getByText('Fix login').closest('tr')!
+    fireEvent.click(firstRow)
+    fireEvent.keyDown(firstRow, { key: 'ArrowDown' })
+    const focused = document.activeElement as HTMLElement
+    expect(focused.tagName).toBe('TR')
+    fireEvent.keyDown(focused, { key: 'Enter' })
+    expect(onOpen).toHaveBeenCalledWith(focused.dataset.paneId)
+    onOpen.mockClear()
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Close pane: dev server' }), { key: 'Enter' })
+    expect(onOpen).not.toHaveBeenCalled()
+  })
 })

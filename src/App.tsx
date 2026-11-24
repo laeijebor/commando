@@ -2775,7 +2775,7 @@ function HostApp() {
     }
     return conversations
   }, [chatConversationsApi, token])
-  const paneManagementApi = createPaneManagementApi(token, daemonFetch)
+  const paneManagementApi = useMemo(() => createPaneManagementApi(token, daemonFetch), [token])
   const paneScreenshotsApi = createPaneScreenshotsApi(token, daemonFetch)
   const sessionManagementApi = createSessionManagementApi(token, daemonFetch)
   const gitDiffApi = useMemo(() => createGitDiffApi(token, daemonFetch), [token])
