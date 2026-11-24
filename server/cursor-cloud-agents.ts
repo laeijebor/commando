@@ -9,7 +9,7 @@ import type { SessionCreations } from './session-creations.js'
 
 type AgentInfo = {
   agentId: string; name: string; summary?: string; lastModified: number; createdAt?: number
-  repos?: string[]; metadata?: Record<string, string>
+  repos?: string[]; metadata?: Record<string, string>; archived?: boolean
 }
 /** Small injectable surface: neither daemon startup nor tests load the SDK. */
 export type CursorCloudAgentsSdk = {
@@ -88,7 +88,7 @@ export class CursorCloudAgentsApi {
     try {
       const sdk = await this.sdk()
       const page = await sdk.list({ runtime: 'cloud', limit: 50 })
-      const agents: CursorCloudAgentsResponse['agents'] = [...page.items].sort((a, b) => b.lastModified - a.lastModified).map((agent) => ({
+      const agents: CursorCloudAgentsResponse['agents'] = page.items.filter((agent) => agent.archived !== true).sort((a, b) => b.lastModified - a.lastModified).map((agent) => ({
         agentId: agent.agentId, name: agent.name, summary: agent.summary, repoUrl: agent.repos?.[0],
         createdAt: agent.createdAt, lastModified: agent.lastModified,
         webUrl: `https://cursor.com/agents/${agent.agentId}`,

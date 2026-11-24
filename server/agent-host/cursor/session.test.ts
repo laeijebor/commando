@@ -709,6 +709,31 @@ describe('CursorChatSession', () => {
 const cloudSpec = { cursorCloud: { repoUrl: 'https://github.com/acme/app', startingRef: 'feature/cloud' } }
 const cloudTurn = (prompt: string, reply: string): ConversationTurn => ({ type: 'agentConversationTurn', turn: { userMessage: { text: prompt }, steps: [{ type: 'assistantMessage', message: { text: reply } }] } })
 describe('Cursor cloud chats', () => {
+  it.each(['loaded', 'empty', 'failed'] as const)('shows a temporary notice before history starts and replaces it when %s', async (outcome) => {
+    const { session, sdk } = harness({ ...cloudSpec, resume: 'bc-cloud123' })
+    const history = deferred<CursorCloudHistory>()
+    const items = vi.fn()
+    session.on('items', items)
+    sdk.cloudHistory.mockImplementation(() => {
+      expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'notice', level: 'info', text: 'Loading this Cursor cloud chat…' })
+      return history.promise
+    })
+    const starting = session.start()
+    await tick()
+    expect(sdk.cloudHistory).toHaveBeenCalledOnce()
+    expect(session.snapshot().session.status).toBe('starting')
+    expect(session.snapshot().items.at(-1)).toMatchObject({ text: 'Loading this Cursor cloud chat…' })
+    if (outcome === 'failed') history.reject(new Error('Unavailable'))
+    else history.resolve({ turns: outcome === 'loaded' ? [cloudTurn('Prompt', 'Answer')] : [], skipped: 0 })
+    await starting
+    expect(session.snapshot().items.some((item) => 'text' in item && item.text === 'Loading this Cursor cloud chat…')).toBe(false)
+    expect(items.mock.calls.some((call) => call[1] === true)).toBe(true)
+    if (outcome === 'loaded') expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Prompt', 'Answer'])
+    else if (outcome === 'empty') expect(session.snapshot().items).toEqual([])
+    else expect(session.snapshot().items.at(-1)).toMatchObject({ text: "Couldn't load this chat's earlier messages: Unavailable" })
+    expect(session.snapshot().session.status).toBe('idle')
+    session.close()
+  })
   it.each(['started here', 'reattached'] as const)('detaches on close without cancelling a cloud run %s', async (source) => {
     const { session, sdk } = harness({ ...cloudSpec, ...(source === 'reattached' ? { resume: 'bc-cloud123' } : {}) })
     if (source === 'reattached') sdk.cloudHistory.mockResolvedValue({ turns: [], skipped: 0, running: { id: sdk.cloudRun.id } })
@@ -884,16 +909,21 @@ describe('Cursor cloud chats', () => {
     expect(sdk.cloudRun.wait).toHaveBeenCalledTimes(1)
     expect(session.snapshot().session.status).toBe('running')
     sdk.cloudRun.git = { branches: [{ repoUrl: cloudSpec.cursorCloud.repoUrl, branch: 'cursor/done', prUrl: 'https://github.com/acme/app/pull/3' }] }
+    sdk.cloudRun.turns = [cloudTurn('Original prompt', 'Done'), cloudTurn('Steer', 'Steered answer')]
     if (end === 'cancel') await session.interrupt(session.queued.map((entry) => entry.id))
     else { session.updateQueue({ action: 'remove', id: session.queued[0].id }); sdk.cloudRun.finish() }
     await tick()
     expect(sdk.cloudRun.cancel).toHaveBeenCalledTimes(end === 'cancel' ? 1 : 0)
     expect(sdk.cloudRun.wait).toHaveBeenCalledTimes(1)
-    expect(sdk.cloudRun.conversation).not.toHaveBeenCalled()
-    expect(items.mock.calls.some((call) => call[1] === true)).toBe(false)
+    expect(sdk.cloudRun.conversation).toHaveBeenCalledOnce()
+    expect(items).toHaveBeenLastCalledWith(session.snapshot().items, true)
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual([
+      'Old prompt', 'Old answer', 'Reconnected to a Cursor cloud run that was already working.',
+      'Original prompt', 'Done', 'Steer', 'Steered answer',
+    ])
     expect(session.snapshot().session).toMatchObject({ status: 'idle', cloud: { branch: 'cursor/done', prUrl: 'https://github.com/acme/app/pull/3' } })
     expect(session.busy).toBe(false)
-    expect(session.snapshot().items.find((item) => item.kind === 'assistant_message' && item.text === 'Done')).toMatchObject({ status: end === 'cancel' ? 'interrupted' : 'completed' })
+    expect(session.snapshot().items.find((item) => item.kind === 'assistant_message' && item.text === 'Done')).toMatchObject({ status: 'completed' })
     expect(sdk.sends).toHaveLength(0)
     session.close()
   })
@@ -929,7 +959,7 @@ describe('Cursor cloud chats', () => {
     sdk.cloudRun.finish(); await tick()
     expect(sdk.cloudRun.conversation).toHaveBeenCalledTimes(1)
     expect(items).toHaveBeenLastCalledWith(session.snapshot().items, true)
-    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Old prompt', 'Old answer', "1 earlier Cursor turns couldn't be loaded.", 'Recovered prompt', 'Complete answer'])
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Old prompt', 'Old answer', "1 earlier Cursor turns couldn't be loaded.", 'Reconnected to a Cursor cloud run that was already working.', 'Recovered prompt', 'Complete answer'])
     expect(session.snapshot().session).toMatchObject({ status: 'idle', cloud: { branch: 'cursor/recovered', prUrl: 'https://github.com/acme/app/pull/5' } })
     expect(session.snapshot().items.every((item) => item.status === 'completed')).toBe(true)
     expect(log).toHaveBeenCalledWith("Couldn't stream Cursor cloud run: Connection dropped")

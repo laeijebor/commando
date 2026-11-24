@@ -34,6 +34,17 @@ function setup() {
 }
 
 describe('Cursor cloud agent list', () => {
+  it('drops archived agents before looking up runs, retaining false and missing archive flags', async () => {
+    const f = setup()
+    f.sdk.list.mockResolvedValue({ items: [
+      { ...f.agent, agentId: 'bc-archived', archived: true, lastModified: 999 },
+      { ...f.agent, agentId: 'bc-active', archived: false, lastModified: 200 },
+      f.agent,
+    ] })
+    const result = await f.api.list()
+    expect(result.agents.map((agent) => agent.agentId)).toEqual(['bc-active', id])
+    expect(f.sdk.listRuns.mock.calls.map(([id]) => id)).toEqual(['bc-active', id])
+  })
   it('is lazy and maps metadata, run status, git and live panes', async () => {
     const f = setup()
     expect(f.loadSdk).not.toHaveBeenCalled()

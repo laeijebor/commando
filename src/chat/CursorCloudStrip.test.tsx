@@ -11,7 +11,9 @@ const cloud = { provider: 'cursor' as const, repoUrl: 'https://github.com/acme/a
 
 it('shows cloud identity before the working branch and URLs arrive', () => {
   render(<CursorCloudStrip cwd="/local/app" cloud={cloud} />)
-  expect(screen.getByRole('region', { name: 'Cursor cloud' })).toHaveTextContent('☁️ Cursor cloud · acme/app')
+  expect(screen.getByRole('region', { name: 'Cursor cloud' })).toHaveTextContent('Cursor cloudacme/app')
+  expect(screen.getByText('Cursor cloud')).toBeInTheDocument()
+  expect(screen.getByText('acme/app')).toBeInTheDocument()
   expect(screen.queryByRole('link')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /Check out locally/ })).not.toBeInTheDocument()
 })

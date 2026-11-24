@@ -788,7 +788,6 @@ export function TmuxCreateControls({
       {agentProvider === 'cursor-chat' ? (
         <div className="tmux-create__runtime">
           <div role="group" aria-label="Run on" className="tmux-create__runtime-options">
-            <span>Run on:</span>
             <button type="button" aria-pressed={!cursorCloud} disabled={unavailable} onClick={() => setChatLaunch((current) => ({ ...current, cursorRuntime: 'local' }))}>This Mac</button>
             <span title={!repo?.github ? 'Cursor cloud needs a GitHub remote and a starting branch.' : undefined}>
               <button type="button" aria-pressed={cursorCloud} disabled={unavailable || !repo?.github} onClick={() => setChatLaunch((current) => ({ ...current, cursorRuntime: 'cloud' }))}>Cursor cloud</button>
@@ -1072,7 +1071,7 @@ export function TmuxCreateControls({
   const panel = (
     <div className="tmux-create__panel">
       <form ref={formRef} onSubmit={submit} onPaste={onPaste} onKeyDown={onKeyDown} aria-busy={pending}>
-        <p className="tmux-create__message">Runs on {hostName}</p>
+        <p className="tmux-create__message">{cursorCloud ? 'Runs in Cursor cloud' : `Runs on ${hostName}`}</p>
         {destination}
         <label>
           Session name <span>{promptGiven ? 'optional' : promptAccepted ? 'required without a prompt' : ''}</span>

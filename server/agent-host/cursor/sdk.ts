@@ -71,21 +71,24 @@ export async function cursorCloudHistory(
   const turns: ConversationTurn[] = []
   const counter = new CursorItemMapper()
   let skipped = 0
-  for (const run of ordered) {
-    // A running cloud conversation waits for its stream to finish; reattach through stream() instead.
-    if (run.status === 'running') continue
-    let conversation: ConversationTurn[]
-    try { conversation = await run.conversation() }
-    catch (error) {
-      skipped++
-      log?.(`Couldn't load a Cursor run: ${string(record(error).message) ?? String(error)}`)
-      continue
+  // Running conversations block until completion; reattach through stream() instead.
+  const finished = ordered.filter((run) => run.status !== 'running')
+  history: for (let offset = 0; offset < finished.length; offset += 4) {
+    const batch = await Promise.allSettled(finished.slice(offset, offset + 4).map((run) => run.conversation()))
+    // Consume in newest-first order regardless of completion order. Only prefetch one batch.
+    for (const result of batch) {
+      if (result.status === 'rejected') {
+        skipped++
+        log?.(`Couldn't load a Cursor run: ${string(record(result.reason).message) ?? String(result.reason)}`)
+        continue
+      }
+      const conversation = result.value
+      for (let position = conversation.length - 1; position >= 0 && counter.list().length < MAX_CHAT_ITEMS; position--) {
+        turns.push(conversation[position])
+        counter.replay(conversation[position])
+      }
+      if (counter.list().length >= MAX_CHAT_ITEMS) break history
     }
-    for (let position = conversation.length - 1; position >= 0 && counter.list().length < MAX_CHAT_ITEMS; position--) {
-      turns.push(conversation[position])
-      counter.replay(conversation[position])
-    }
-    if (counter.list().length >= MAX_CHAT_ITEMS) break
   }
   return { turns: turns.reverse(), skipped, ...(running ? { running } : {}), ...(git ? { git } : {}) }
 }

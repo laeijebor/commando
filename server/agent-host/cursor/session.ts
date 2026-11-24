@@ -63,7 +63,7 @@ function cloudPermissions(mode: ChatSessionPermissionMode, prePlan?: ChatSession
 }
 interface ActiveRun {
   run: CursorRun; turnId: string; text: string; images: ChatImageRef[]
-  reattached?: { run: CursorCloudRun; stream: Promise<void>; failed: boolean }
+  reattached?: { run: CursorCloudRun; stream: Promise<void> }
 }
 export class CursorChatSession implements ChatProviderSession {
   readonly commands: ChatCommand[] = [{ name: 'login', description: 'Log in to Cursor', argumentHint: '[cancel]', kind: 'command' }]
@@ -204,11 +204,18 @@ export class CursorChatSession implements ChatProviderSession {
     this.stale = false
     if (this.spec.resume && !this.historyLoaded) {
       this.historyLoaded = true
+      if (this.spec.cursorCloud) {
+        this.mapper.begin('cloud-history-loading')
+        this.emitItems(this.mapper.notice('info', 'Loading this Cursor cloud chat…'))
+      }
       try {
         const history: CursorCloudHistory = await (this.spec.cursorCloud ? this.sdk!.cloudHistory(this.agent!.agentId) : this.sdk!.history(this.agent!.agentId, this.spec.cwd))
         if (this.closing) return
-        history.turns.forEach((turn) => this.mapper.replay(turn))
-        this.emitItems(this.mapper.list())
+        if (this.spec.cursorCloud) this.emitItems(this.mapper.replaceTurn('cloud-history-loading', history.turns), true)
+        else {
+          history.turns.forEach((turn) => this.mapper.replay(turn))
+          this.emitItems(this.mapper.list())
+        }
         if (history.skipped) this.emitItems(this.mapper.notice('info', `${history.skipped} earlier Cursor turns couldn't be loaded.`))
         this.cloudGit(history.git)
         if (history.running) {
@@ -218,6 +225,7 @@ export class CursorChatSession implements ChatProviderSession {
         }
       } catch (error) {
         if (this.closing) return
+        if (this.spec.cursorCloud) this.emitItems(this.mapper.replaceTurn('cloud-history-loading', []), true)
         this.emitItems(this.mapper.notice('info', `Couldn't load this chat's earlier messages: ${this.safeError(error)}`))
       }
     }
@@ -378,10 +386,10 @@ export class CursorChatSession implements ChatProviderSession {
   }
   private reattach(run: CursorCloudRun): void {
     const active: ActiveRun = { run, turnId: `cloud-${run.id}`, text: '', images: [] }
-    active.reattached = { run, stream: Promise.resolve(), failed: false }
+    active.reattached = { run, stream: Promise.resolve() }
     this.active = active
-    this.mapper.begin(active.turnId)
     this.emitItems(this.mapper.notice('info', 'Reconnected to a Cursor cloud run that was already working.'))
+    this.mapper.begin(active.turnId)
     this.update({ status: 'running' })
     active.reattached.stream = this.consumeCloudStream(active, run)
     void this.wait(active)
@@ -401,7 +409,6 @@ export class CursorChatSession implements ChatProviderSession {
         }
       }
     } catch (error) {
-      active.reattached!.failed = true
       if (!this.closing) this.spec.log?.(`Couldn't stream Cursor cloud run: ${this.safeError(error)}`)
     }
   }
@@ -411,7 +418,7 @@ export class CursorChatSession implements ChatProviderSession {
       const result = await active.run.wait()
       if (this.closing) return
       this.cloudGit(result.git?.branches[0])
-      if (active.reattached?.failed) {
+      if (active.reattached) {
         try { this.emitItems(this.mapper.replaceTurn(active.turnId, await active.reattached.run.conversation()), true) }
         catch (error) { this.emitItems(this.mapper.notice('info', `Couldn't reload this Cursor cloud run: ${this.safeError(error)}`)) }
         if (this.closing) return

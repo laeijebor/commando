@@ -16,7 +16,10 @@
 .cursor-cloud-agents > p { margin: 10px; }
 .cursor-cloud-agents h2 { flex: 1; margin: 0; font-size: 12px; }
 .cursor-cloud-agent-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 8px; padding: 8px; }
-.cursor-cloud-agent { min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); }
+.cursor-cloud-agent { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); }
+.cursor-cloud-agent .cloud-task-copy { gap: 4px; }
+.cursor-cloud-agent .cloud-task-copy strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.cursor-cloud-agent .cloud-actions { margin: 6px 0 0; }
 .cursor-cloud-agent-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font: 9px var(--mono); }
 .cursor-cloud-agent .cursor-cloud-status { padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; }
 .cursor-cloud-agent .cursor-cloud-status[data-status="running"] { color: var(--accent); }

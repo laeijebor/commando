@@ -259,11 +259,11 @@
   transition: box-shadow 0.35s ease;
 }
 
-.commando-chat .chat-cloud-strip { flex: none; padding: 4px 16px; font-size: 12px; color: var(--muted); }
-.commando-chat .chat-cloud-strip > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: var(--chat-content-max-width); margin-inline: auto; }
-.commando-chat .chat-cloud-strip a { color: inherit; overflow-wrap: anywhere; }
-.commando-chat .chat-cloud-strip a:hover { color: var(--text); }
-.commando-chat .chat-cloud-strip__actions { margin-left: auto; }
-.commando-chat .chat-cloud-strip__actions button { border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; color: var(--text); cursor: pointer; }
-.commando-chat .chat-cloud-strip__actions button:disabled { opacity: .5; cursor: default; }
+.commando-chat .chat-cloud-strip { flex: none; min-width: 0; padding: 4px 16px; font-size: 11px; color: var(--muted); }
+.commando-chat .chat-cloud-strip > div { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; max-width: var(--chat-content-max-width); margin-inline: auto; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
+.commando-chat .chat-cloud-strip__label { display: inline-flex; align-items: center; gap: 4px; flex: none; white-space: nowrap; }
+.commando-chat .chat-cloud-strip__repo { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commando-chat .chat-cloud-strip :is(a, button) { min-width: 0; max-width: 100%; padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--text-soft); font: inherit; line-height: 1.4; text-decoration: none; overflow-wrap: anywhere; cursor: pointer; }
+.commando-chat .chat-cloud-strip :is(a, button):hover:not(:disabled) { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }
+.commando-chat .chat-cloud-strip button:disabled { opacity: .5; cursor: default; }
 .commando-chat .chat-cloud-strip__message { flex-basis: 100%; }

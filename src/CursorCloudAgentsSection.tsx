@@ -19,14 +19,18 @@ export function CursorCloudAgentsSection({ store, onFocusPane }: {
   const state = useCursorCloudAgents(store)
   const [opening, setOpening] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [showAll, setShowAll] = useState(false)
+  const agents = [...state.agents].sort((a, b) => b.lastModified - a.lastModified)
+  const shown = showAll ? agents : agents.slice(0, 9)
   return <section className="cursor-cloud-agents" aria-label="Cursor cloud agents">
     <header className="cloud-toolbar"><h2>Cursor cloud agents</h2>
+      {agents.length > 9 && <button aria-expanded={showAll} onClick={() => setShowAll(!showAll)}>{showAll ? 'Show less' : `Show all (${agents.length})`}</button>}
       <button disabled={state.loading} onClick={() => void store.refresh(true)}>Refresh</button>
     </header>
     {state.login === 'required' ? <p className="cloud-hint">Log in to Cursor from a Cursor chat to see your cloud agents.</p> : <>
       {!state.loaded && <p className="cloud-hint">Loading Cursor cloud agents…</p>}
       {state.loaded && !state.agents.length && !state.error && <p className="cloud-hint">No Cursor cloud agents yet.</p>}
-      <div className="cursor-cloud-agent-list">{state.agents.map((agent) => {
+      <div className="cursor-cloud-agent-list">{shown.map((agent) => {
         const repo = agent.repoUrl?.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '')
         const repoUrl = safeUrl(agent.repoUrl)
         const prUrl = safeUrl(agent.prUrl)

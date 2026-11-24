@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Cloud } from 'lucide-react'
 import type { ChatSessionInfo } from '../../shared/agent-chat'
 import type { CreateTmuxSessionRequest, SessionCreation, TmuxCreatedTarget } from '../../shared/tmux-create'
 import type { PrQuickLookTab } from '../PrQuickLook'
@@ -63,7 +64,8 @@ export function CursorCloudStrip({ cloud, cwd, checkout, disabled, onOpenPr }: {
   return (
     <section className="chat-cloud-strip" aria-label="Cursor cloud">
       <div>
-        <span>☁️ Cursor cloud · {repo}</span>
+        <span className="chat-cloud-strip__label"><Cloud size={13} aria-hidden="true" />Cursor cloud</span>
+        <span className="chat-cloud-strip__repo" title={repo}>{repo}</span>
         {cloud.branch ? <a href={`${cloud.repoUrl}/tree/${cloud.branch}`} target="_blank" rel="noreferrer">{cloud.branch}</a> : null}
         {cloud.prUrl ? <a href={cloud.prUrl} target="_blank" rel="noreferrer" onClick={(event) => {
           if (!pr || !onOpenPr || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return
@@ -71,11 +73,9 @@ export function CursorCloudStrip({ cloud, cwd, checkout, disabled, onOpenPr }: {
           onOpenPr(pr[1]!, Number(pr[2]), 'Description')
         }}>{pr ? `PR #${pr[2]}` : 'Pull request'}</a> : null}
         {cloud.webUrl ? <a href={cloud.webUrl} target="_blank" rel="noreferrer">Open on cursor.com</a> : null}
-        <span className="chat-cloud-strip__actions">
-          {cloud.branch && checkout ? <button type="button" disabled={disabled || pending} aria-busy={pending} onClick={() => { void checkOut() }}>
-            {pending ? 'Checking out…' : 'Check out locally'}
-          </button> : null}
-        </span>
+        {cloud.branch && checkout ? <button type="button" disabled={disabled || pending} aria-busy={pending} onClick={() => { void checkOut() }}>
+          {pending ? 'Checking out…' : 'Check out locally'}
+        </button> : null}
         {error ? <span className="chat-cloud-strip__message text-xs text-destructive" role="alert">{error}</span> : null}
         {warning ? <span className="chat-cloud-strip__message" role="status">{warning}</span> : null}
       </div>

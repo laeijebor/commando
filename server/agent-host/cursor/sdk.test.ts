@@ -117,6 +117,22 @@ const cloudRun = (id: string, createdAt: number, turns: ConversationTurn[], extr
   wait: async () => ({ id, status: 'finished' }), cancel: async () => {}, ...extra,
 })
 describe('cursorCloudHistory', () => {
+  it('reads four conversations concurrently while preserving chronology despite out-of-order completion', async () => {
+    let active = 0; let peak = 0
+    const completed: number[] = []
+    const runs = Array.from({ length: 8 }, (_, index) => cloudRun(String(index), index, [], {
+      conversation: async () => {
+        active++; peak = Math.max(peak, active)
+        await new Promise((resolve) => setTimeout(resolve, (index % 4) * 5))
+        active--; completed.push(index)
+        return [turn(String(index))]
+      },
+    }))
+    expect(await cursorCloudHistory(async () => ({ items: runs }), 'bc-agent')).toEqual({ turns: runs.map((_, index) => turn(String(index))), skipped: 0 })
+    expect(peak).toBe(4)
+    expect(completed[0]).not.toBe(7)
+    expect(completed).toHaveLength(8)
+  })
   it('pages cloud runs, orders by createdAt, keeps prompts, skips unreadable runs and selects the newest git info', async () => {
     const git = { repoUrl: 'https://github.com/acme/app', branch: 'cursor/new', prUrl: 'https://github.com/acme/app/pull/4' }
     const read = vi.fn(async (_id: string, options: { cursor?: string }) => options.cursor ? { items: [
@@ -128,11 +144,18 @@ describe('cursorCloudHistory', () => {
     expect(read.mock.calls).toEqual([['bc-agent', { runtime: 'cloud', limit: 100 }], ['bc-agent', { runtime: 'cloud', limit: 100, cursor: 'page2' }]])
     expect(log).toHaveBeenCalledWith("Couldn't load a Cursor run: unreadable")
   })
-  it('keeps the newest mapped items and stops reading older conversations once the window is full', async () => {
+  it('keeps the newest mapped items and stops prefetching batches once the window is full', async () => {
     const old = vi.fn(async () => [turn('Old')])
     const newest = Array.from({ length: MAX_CHAT_ITEMS + 4 }, (_, i) => turn(String(i)))
-    expect(await cursorCloudHistory(async () => ({ items: [cloudRun('old', 1, [], { conversation: old }), cloudRun('new', 2, newest)] }), 'bc-agent')).toEqual({ turns: newest.slice(-MAX_CHAT_ITEMS), skipped: 0 })
+    const log = vi.fn()
+    expect(await cursorCloudHistory(async () => ({ items: [
+      cloudRun('old', 1, [], { conversation: old }),
+      cloudRun('prefetched', 2, [turn('Prefetched')]),
+      cloudRun('unreadable', 3, [], { conversation: async () => { throw new Error('Outside the item window') } }),
+      cloudRun('recent', 4, [turn('Recent')]), cloudRun('new', 5, newest),
+    ] }), 'bc-agent', log)).toEqual({ turns: newest.slice(-MAX_CHAT_ITEMS), skipped: 0 })
     expect(old).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
     const full: ConversationTurn = { type: 'agentConversationTurn', turn: { steps: Array.from({ length: MAX_CHAT_ITEMS }, () => ({ type: 'assistantMessage', message: { text: 'Reply' } })) } }
     expect(await cursorCloudHistory(async () => ({ items: [cloudRun('new', 2, [turn('Older'), full])] }), 'bc-agent')).toEqual({ turns: [full], skipped: 0 })
   })

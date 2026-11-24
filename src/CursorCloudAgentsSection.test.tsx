@@ -19,6 +19,23 @@ function fixture(patch: Partial<CursorCloudAgentsResponse> = {}) {
   return { api, store, focus }
 }
 describe('CursorCloudAgentsSection', () => {
+  it('shows the nine most recent agents by default and toggles all fifty without refetching', async () => {
+    const agents = Array.from({ length: 50 }, (_, index) => ({ ...agent, agentId: `bc-${index}`, name: `Agent ${index}`, lastModified: index }))
+    const { api } = fixture({ agents })
+    const toggle = await screen.findByRole('button', { name: 'Show all (50)' })
+    const region = screen.getByRole('region', { name: 'Cursor cloud agents' })
+    expect(within(region).getAllByRole('article')).toHaveLength(9)
+    expect(within(region).getAllByRole('article')[0]).toHaveTextContent('Agent 49')
+    expect(screen.getByText('Agent 41')).toBeInTheDocument()
+    expect(screen.queryByText('Agent 40')).not.toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(within(region).getAllByRole('article')).toHaveLength(50)
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(within(region).getAllByRole('article')).toHaveLength(9)
+    expect(api.list).toHaveBeenCalledOnce()
+  })
   it('renders rows, status, timestamps, provenance, branch and provider links', async () => {
     fixture({ more: true })
     expect(await screen.findByText('Fix layout')).toBeInTheDocument()
@@ -72,5 +89,6 @@ describe('CursorCloudAgentsSection', () => {
     for (const label of ['Unknown', 'Done', 'Failed', 'Stopped']) expect(await screen.findByText(label)).toBeInTheDocument()
     const region = screen.getByRole('region', { name: 'Cursor cloud agents' })
     expect(within(region).getAllByRole('article')).toHaveLength(4)
+    expect(screen.queryByRole('button', { name: /Show all|Show less/ })).not.toBeInTheDocument()
   })
 })
