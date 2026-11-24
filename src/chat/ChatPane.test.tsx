@@ -414,3 +414,34 @@ describe('Commander chat inbox slot', () => {
     expect(screen.queryByTestId('agents-inbox')).toBeNull()
   })
 })
+
+describe('ChatPane cross-provider handoff', () => {
+  it('displays a refused handoff error in the composer alert banner', async () => {
+    const onHandoff = vi.fn(async () => { throw new Error('Wait for the current turn to finish before handing off') })
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
+    const state = chat({
+      session: {
+        ...chat().session,
+        hostVersion: 8,
+        models: [{ value: 'opus', displayName: 'Opus 5.5' }],
+        selectedModel: 'opus',
+      },
+    })
+    render(
+      <ChatPane
+        chat={state}
+        paneId="%5"
+        connected
+        focused={false}
+        providerModels={{ cursor: [{ value: 'claude-4-sonnet', displayName: 'Claude 4 Sonnet' }] }}
+        onHandoff={onHandoff}
+        {...handlers}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Claude 4 Sonnet' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Hand off' }))
+    expect(onHandoff).toHaveBeenCalledWith({ provider: 'cursor', model: 'claude-4-sonnet' })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Wait for the current turn to finish before handing off')
+  })
+})

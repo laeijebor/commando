@@ -22,6 +22,8 @@ import {
   type ChatFileSearchResult,
   type ChatImageRef,
   type ChatItem,
+  type ChatModelOption,
+  type ChatProvider,
   type ChatQueueAction,
   type ChatSendOptions,
   type ChatSessionInfo,
@@ -34,7 +36,7 @@ import { ImageViewer, Thumbnail, type ViewableImage } from './ChatImages'
 import { cn } from './cn'
 import { handleLineKey } from './composerKeys'
 import { ComposerMenu, type ComposerMenuGroup, type ComposerMenuItem } from './ComposerMenu'
-import { ContextMeter, ModelPicker, PermissionPicker, PlanUsageMeter } from './ComposerControls'
+import { ContextMeter, ModelPicker, PermissionPicker, PlanUsageMeter, type ChatHandoffTarget } from './ComposerControls'
 import { usePlanUsage } from './planUsage'
 import { implementPermissionMode } from './turnFlow'
 import { ImplementButton, PlanReadyBanner, QueuedMessages, RelayChip } from './ComposerFlow'
@@ -349,6 +351,8 @@ export function ChatComposer({
   onInterrupt,
   onAnswer,
   onConfigure,
+  providerModels,
+  onHandoff,
   plan,
   onImplement,
   onImplementInNewPane,
@@ -399,6 +403,10 @@ export function ChatComposer({
   onInterrupt: (dropQueued?: string[]) => void
   onAnswer: (requestId: string, answer: ChatAnswer) => void
   onConfigure: (change: ChatSettingsChange) => void
+  /** Cached models per provider for the model picker's cross-provider handoff menu. */
+  providerModels?: Partial<Record<ChatProvider, ChatModelOption[]>>
+  /** Hands this chat pane over to another provider in the same worktree. */
+  onHandoff?: (target: ChatHandoffTarget) => Promise<void>
   /** Claude's latest plan, while it waits to be implemented or refined. */
   plan?: { item: PlanItem; implementMode: ChatSessionPermissionMode }
   onImplement?: () => void
@@ -1087,7 +1095,15 @@ export function ChatComposer({
               </>
             ) : null}
             {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
-            <ModelPicker session={session} disabled={newAside || disabled || session.status === 'starting'} onConfigure={onConfigure} open={modelMenuOpen} onOpenChange={setModelMenuOpen} />
+            <ModelPicker
+              session={session}
+              disabled={newAside || disabled || session.status === 'starting'}
+              onConfigure={onConfigure}
+              {...(providerModels && !newAside && !session.aside ? { providerModels } : {})}
+              {...(onHandoff && !newAside && !session.aside ? { onHandoff } : {})}
+              open={modelMenuOpen}
+              onOpenChange={setModelMenuOpen}
+            />
             {newAside || session.aside?.mode === 'read-only' ? (
               <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground">
                 {session.aside?.mode === 'read-only' && session.aside.readOnlyEnforced === false ? 'Read-only (advisory)' : 'Read-only'}
