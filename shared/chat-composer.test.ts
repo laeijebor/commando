@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { ChatSessionInfo } from './agent-chat.js'
-import { permissionDescription, permissionLabel, permissionModeOptions, providerLabel } from './chat-composer.js'
+import type { ChatSessionInfo, ChatSessionUsage } from './agent-chat.js'
+import { formatSessionUsageSummary, formatUsdCents, permissionDescription, permissionLabel, permissionModeOptions, providerLabel } from './chat-composer.js'
 
 const session: ChatSessionInfo = {
   paneId: '%1', provider: 'claude', cwd: '/work', status: 'idle', hostPid: 1, hostVersion: 3,
@@ -92,5 +92,33 @@ describe('Cursor composer permissions', () => {
   ] as const)('labels and describes %s', (mode, label, description) => {
     expect(permissionLabel(mode, cursor)).toBe(label)
     expect(permissionDescription(mode, cursor)).toBe(description)
+  })
+})
+
+describe('session usage formatting', () => {
+  it.each([
+    [0, '$0.00'],
+    [-5, '$0.00'],
+    [Number.NaN, '$0.00'],
+    [0.01, '<$0.01'],
+    [0.4, '<$0.01'],
+    [0.99, '<$0.01'],
+    [1, '$0.01'],
+    [4.2, '$0.04'],
+    [125, '$1.25'],
+    [1234.6, '$12.35'],
+  ])('formats %s cents as %s', (cents, expected) => {
+    expect(formatUsdCents(cents)).toBe(expected)
+  })
+
+  it('summarizes tokens alone unless billed cost is positive', () => {
+    const baseUsage: ChatSessionUsage = { inputTokens: 10_000, outputTokens: 4_200, totalTokens: 14_200, updatedAt: 1_000 }
+    expect(formatSessionUsageSummary(baseUsage)).toBe('14k tok')
+    expect(formatSessionUsageSummary({ ...baseUsage, totalTokens: 850 })).toBe('850 tok')
+    expect(formatSessionUsageSummary({ ...baseUsage, totalTokens: 1_500_000 })).toBe('1.5M tok')
+    expect(formatSessionUsageSummary({ ...baseUsage, chargedCents: 4.2 })).toBe('14k tok · $0.04')
+    expect(formatSessionUsageSummary({ ...baseUsage, chargedCents: 0.3 })).toBe('14k tok · <$0.01')
+    // Plan-included (chargedCents === 0 with rawCostCents > 0) stays concise in the footer badge.
+    expect(formatSessionUsageSummary({ ...baseUsage, chargedCents: 0, rawCostCents: 18 })).toBe('14k tok')
   })
 })

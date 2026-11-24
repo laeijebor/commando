@@ -554,6 +554,21 @@ export interface ChatContextUsage {
   categories: { name: string; tokens: number }[]
 }
 
+/** Cumulative token counts and optional billed cost (when context window size isn't reported). */
+export interface ChatSessionUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  totalTokens: number
+  /** Billed cost in USD cents, when reported by the provider. */
+  chargedCents?: number
+  /** Undiscounted model token cost in USD cents, when reported. */
+  rawCostCents?: number
+  updatedAt: number
+}
+
 export type ChatPlanSeverity = 'normal' | 'warning' | 'critical'
 
 /** One of the plan's rate-limit windows, as Claude's `/usage` reports it. */
@@ -619,6 +634,8 @@ export interface ChatSessionInfo {
   sandboxed?: boolean
   models?: ChatModelOption[]
   contextUsage?: ChatContextUsage
+  /** Cumulative token counts and optional billed cost when context window size isn't reported. */
+  sessionUsage?: ChatSessionUsage
   /** Plan rate limits; absent before the first reading and for API-key logins. */
   planUsage?: ChatPlanUsage
   /** Claude config directory (`~/.claudep`, `~/.claudew`); decides the login used. */
@@ -886,6 +903,32 @@ function parseContextUsage(value: unknown): ChatContextUsage | undefined {
   return withOptional({ usedTokens: value.usedTokens, maxTokens: value.maxTokens, autoCompact: value.autoCompact === true, categories } as ChatContextUsage, {
     autoCompactThreshold: finiteCount(value.autoCompactThreshold) ? value.autoCompactThreshold : undefined,
   })
+}
+
+function parseSessionUsage(value: unknown): ChatSessionUsage | undefined {
+  if (!isRecord(value)) return undefined
+  if (!finiteCount(value.inputTokens) || !finiteCount(value.outputTokens) || !finiteCount(value.totalTokens) || !finiteCount(value.updatedAt)) {
+    return undefined
+  }
+  const optionalFields = ['cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'chargedCents', 'rawCostCents'] as const
+  for (const field of optionalFields) {
+    if (value[field] !== undefined && !finiteCount(value[field])) return undefined
+  }
+  return withOptional(
+    {
+      inputTokens: value.inputTokens,
+      outputTokens: value.outputTokens,
+      totalTokens: value.totalTokens,
+      updatedAt: value.updatedAt,
+    } as ChatSessionUsage,
+    {
+      cacheReadTokens: value.cacheReadTokens,
+      cacheWriteTokens: value.cacheWriteTokens,
+      reasoningTokens: value.reasoningTokens,
+      chargedCents: value.chargedCents,
+      rawCostCents: value.rawCostCents,
+    },
+  )
 }
 const PLAN_SEVERITIES = new Set<ChatPlanSeverity>(['normal', 'warning', 'critical'])
 
@@ -1238,6 +1281,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   const login = parseChatLogin(value.login)
   const models = parseChatModelOptions(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
+  const sessionUsage = parseSessionUsage(value.sessionUsage)
   const planUsage = parsePlanUsage(value.planUsage)
   const queue = parseQueue(value.queue)
   return {
@@ -1264,6 +1308,7 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
     ...(login ? { login } : {}),
     ...(models ? { models } : {}),
     ...(contextUsage ? { contextUsage } : {}),
+    ...(sessionUsage ? { sessionUsage } : {}),
     ...(planUsage ? { planUsage } : {}),
     ...(queue?.length ? { queue } : {}),
     ...(isChatPermissionMode(value.prePlanPermissionMode) ? { prePlanPermissionMode: value.prePlanPermissionMode } : {}),

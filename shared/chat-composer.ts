@@ -14,6 +14,7 @@ import {
   type ChatFileEntry,
   type ChatSessionInfo,
   type ChatSessionPermissionMode,
+  type ChatSessionUsage,
 } from './agent-chat.js'
 
 // Composer triggers, after t3code's composer-logic.ts (detectComposerTrigger,
@@ -231,6 +232,22 @@ export function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`
   if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`
   return String(tokens)
+}
+
+/** Formats USD cents as a compact dollar string (`0` → `$0.00`, `0 < c < 1` → `<$0.01`, `125` → `$1.25`). */
+export function formatUsdCents(cents: number): string {
+  if (!Number.isFinite(cents) || cents <= 0) return '$0.00'
+  if (cents < 1) return '<$0.01'
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+/** Concise footer label for cumulative session usage, appending billed cost only when positive. */
+export function formatSessionUsageSummary(usage: ChatSessionUsage): string {
+  const tokens = `${formatTokens(usage.totalTokens)} tok`
+  if (usage.chargedCents !== undefined && usage.chargedCents > 0) {
+    return `${tokens} · ${formatUsdCents(usage.chargedCents)}`
+  }
+  return tokens
 }
 
 // ---- attachments ----
