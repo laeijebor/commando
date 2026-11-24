@@ -164,6 +164,7 @@ import {
 import { PaneMarkStore } from './pane-marks.js'
 import { PaneSeen } from './pane-seen.js'
 import { PaneViews } from './pane-views.js'
+import { TileViews, tilesOnScreen } from './tile-views.js'
 import { PaneActivity } from './pane-activity.js'
 import { tmuxSocketStateSuffix } from './tmux-socket-scope.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
@@ -683,6 +684,12 @@ async function main(): Promise<void> {
    * broadcasts the new list.
    */
   let publishedClosedTabOwners = ''
+  const tileViews = new TileViews(join(homedir(), '.commando', `tile-views${tmuxSocketStateSuffix()}.json`))
+  /** Called whenever streamed panes or tiles change, since either moves a tile on or off screen. */
+  const refreshTileViews = (): void => {
+    const streaming = new Set([...clients].flatMap((client) => [...client.subscribedPaneIds]))
+    tileViews.update(tilesOnScreen(webPanes.list(), streaming))
+  }
   const publishWebPanes = (): void => {
     const streamable = new Set(
       webPanes
@@ -693,6 +700,8 @@ async function main(): Promise<void> {
     chromiumEngine.syncTiles(streamable)
     webTileRelay.dropStale(streamable)
     const liveIds = new Set(webPanes.list().map((pane) => pane.id))
+    tileViews.retain(liveIds)
+    refreshTileViews()
     webPaneFeedback.retain(liveIds)
     webPanePending.retain(liveIds)
     canvasThreads.retain(new Set([...liveIds, ...webPanes.retainedIds()]))
@@ -1958,7 +1967,7 @@ async function main(): Promise<void> {
       const viewedAt: Record<string, number> = { ...paneSeen.snapshot() }
       for (const [paneId, at] of Object.entries(paneViews.snapshot())) viewedAt[paneId] = Math.max(viewedAt[paneId] ?? 0, at)
       const viewing = new Set([...clients].flatMap((client) => [...client.subscribedPaneIds]))
-      return { viewedAt, viewing: [...viewing].filter(paneExists) }
+      return { viewedAt, viewing: [...viewing].filter(paneExists), tiles: tileViews.snapshot() }
     },
   })
   const portManagement = new PortManagementApi({
@@ -2508,6 +2517,7 @@ async function main(): Promise<void> {
         paneViews.record([...new Set([...previous, ...message.paneIds])].filter(paneExists))
         const previouslyObserved = new Set([...previous, ...client.statusPaneIds])
         client.subscribedPaneIds = new Set(message.paneIds)
+        refreshTileViews()
         client.statusPaneIds = new Set(
           statusPaneIds.filter((paneId) => !client.subscribedPaneIds.has(paneId)),
         )
@@ -3091,6 +3101,7 @@ async function main(): Promise<void> {
     const removeClient = (): void => {
       if (!clients.delete(client)) return
       paneViews.record([...client.subscribedPaneIds].filter(paneExists))
+      refreshTileViews()
       client.releaseInteractions?.()
       client.releaseInteractions = null
       client.releaseUsage?.()
@@ -3430,6 +3441,7 @@ async function main(): Promise<void> {
     paneActivity.flush()
     paneSeen.flush()
     paneViews.flush()
+    tileViews.flush()
     stopRunningGit()
     hostsHealth.stop()
     hostsProxy.close()

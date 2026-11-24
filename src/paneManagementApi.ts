@@ -16,8 +16,9 @@ export interface PaneManagementApiClient {
   paneViews(): Promise<PaneViews>
 }
 
-/** When each pane was last viewed (ms), and the panes on a screen now. */
-export type PaneViews = { viewedAt: Record<string, number>; viewing: string[] }
+export type ViewTimes = { viewedAt: Record<string, number>; viewing: string[] }
+/** When each pane, and each tile in `tiles`, was last viewed (ms), and which are on a screen now. */
+export type PaneViews = ViewTimes & { tiles: ViewTimes }
 
 type ApiErrorBody = { error?: unknown }
 
@@ -94,10 +95,11 @@ export function createPaneManagementApi(
     },
     paneViews: async () => {
       const body = await request('/views', { method: 'GET' }) as Partial<PaneViews> | null
-      return {
-        viewedAt: body?.viewedAt && typeof body.viewedAt === 'object' ? body.viewedAt : {},
-        viewing: Array.isArray(body?.viewing) ? body.viewing : [],
-      }
+      const times = (value: Partial<ViewTimes> | null | undefined): ViewTimes => ({
+        viewedAt: value?.viewedAt && typeof value.viewedAt === 'object' ? value.viewedAt : {},
+        viewing: Array.isArray(value?.viewing) ? value.viewing : [],
+      })
+      return { ...times(body), tiles: times(body?.tiles) }
     },
   }
 }

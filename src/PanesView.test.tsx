@@ -21,7 +21,7 @@ const panes = [pane('%1', '$1', { chatTitle: 'Fix login' }), pane('%2', '$1', { 
 function renderView(overrides: Partial<Parameters<typeof PanesView>[0]> = {}) {
   const api = {
     capturePane: vi.fn(async (paneId: string) => `screen of ${paneId}`),
-    paneViews: vi.fn(async () => ({ viewedAt: { '%2': Date.now() - 2 * 3_600_000 }, viewing: ['%1'] })),
+    paneViews: vi.fn(async () => ({ viewedAt: { '%2': Date.now() - 2 * 3_600_000 }, viewing: ['%1'], tiles: { viewedAt: {}, viewing: [] } })),
   }
   const onOpen = vi.fn()
   const onClose = vi.fn(async () => {})
@@ -70,7 +70,7 @@ describe('PanesView', () => {
   it('keeps "last viewed" when the parent re-renders with a new api object', async () => {
     const api = {
       capturePane: vi.fn(async () => ''),
-      paneViews: vi.fn(async () => ({ viewedAt: { '%2': Date.now() - 2 * 3_600_000 }, viewing: [] })),
+      paneViews: vi.fn(async () => ({ viewedAt: { '%2': Date.now() - 2 * 3_600_000 }, viewing: [], tiles: { viewedAt: {}, viewing: [] } })),
     }
     const props = { sessions, windows, panes, agentStatuses: {}, activity: {}, auxiliarySessionIds: new Set<string>(), connected: true, onOpen: vi.fn(), onClose: vi.fn(async () => {}) }
     const { rerender } = render(<PanesView {...props} api={api} />)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ExternalLink, LoaderCircle, Pause, Trash2, X } from 'lucide-react'
 import type { AgentStatus, TmuxPane, TmuxSession, TmuxWindow } from '../shared/protocol'
 import { AnsiText } from './AnsiText'
@@ -14,6 +14,7 @@ import {
   type PaneSort,
 } from './panesList'
 import { relativeTime } from './relativeTime'
+import { usePoll } from './usePoll'
 import './panes-view.css'
 
 const VIEWS_POLL_MS = 5_000
@@ -31,43 +32,6 @@ const SORT_LABELS: Record<PaneSort, string> = {
   session: 'Session',
 }
 
-function usePageVisible(): boolean {
-  const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden')
-  useEffect(() => {
-    const change = () => setVisible(document.visibilityState !== 'hidden')
-    document.addEventListener('visibilitychange', change)
-    return () => document.removeEventListener('visibilitychange', change)
-  }, [])
-  return visible
-}
-
-/** Repeats `load` every `intervalMs` while the page is visible; `key` restarts it. */
-function usePoll<T>(load: (() => Promise<T>) | null, intervalMs: number, key: unknown): { value?: T; error?: string } {
-  const visible = usePageVisible()
-  const [state, setState] = useState<{ key: unknown; value?: T; error?: string }>({ key })
-  const loadRef = useRef(load)
-  loadRef.current = load
-  useEffect(() => {
-    if (!visible || !loadRef.current) return
-    let cancelled = false
-    let busy = false
-    const tick = () => {
-      const run = loadRef.current
-      if (busy || !run) return
-      busy = true
-      run()
-        .then((value) => { if (!cancelled) setState({ key, value }) })
-        // A failed refresh keeps this key's last value; another key's value is never shown under it.
-        .catch((cause: unknown) => { if (!cancelled) setState((current) => ({ ...current.key === key ? current : {}, key, error: cause instanceof Error ? cause.message : 'Request failed' })) })
-        .finally(() => { busy = false })
-    }
-    tick()
-    const timer = window.setInterval(tick, intervalMs)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [visible, intervalMs, key, Boolean(load)])
-  return state.key === key ? state : {}
-}
-
 function closeSummary(plan: PaneClosePlan): string {
   const parts = [
     plan.panes.length ? `close ${plan.panes.length} pane${plan.panes.length === 1 ? '' : 's'}` : '',
@@ -82,7 +46,7 @@ function viewedText(row: PaneRow, now: number): string {
   return row.viewedAt ? relativeTime(row.viewedAt, now) : 'Not recorded'
 }
 
-export function PanesView({ sessions, windows, panes, agentStatuses, activity, auxiliarySessionIds, commanderSessionId, api, connected, onOpen, onClose }: {
+export function PanesView({ sessions, windows, panes, agentStatuses, activity, auxiliarySessionIds, commanderSessionId, api, connected, onOpen, onClose, switcher }: {
   sessions: readonly TmuxSession[]
   windows: readonly TmuxWindow[]
   panes: readonly TmuxPane[]
@@ -95,6 +59,8 @@ export function PanesView({ sessions, windows, panes, agentStatuses, activity, a
   onOpen: (paneId: string) => void
   /** Carries out a confirmed plan; errors from individual steps go to `onError`. */
   onClose: (plan: PaneClosePlan, onError: (message: string) => void) => Promise<void>
+  /** The Panes / Tiles switch, shown in the header. */
+  switcher?: ReactNode
 }) {
   const [sort, setSort] = useState<PaneSort>('viewed')
   const [query, setQuery] = useState('')
@@ -165,7 +131,7 @@ export function PanesView({ sessions, windows, panes, agentStatuses, activity, a
   return <section className="panes-view" aria-label="Panes">
     <div className="panes-list">
       <header className="panes-bar">
-        <h2>Panes</h2>
+        {switcher ?? <h2>Panes</h2>}
         <span className="panes-pill">{panes.length} pane{panes.length === 1 ? '' : 's'}</span>
         <input type="search" className="panes-search" placeholder="Filter panes" aria-label="Filter panes" value={query} onChange={(event) => setQuery(event.target.value)} />
         <label className="panes-sort">

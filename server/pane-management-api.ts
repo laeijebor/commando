@@ -32,7 +32,9 @@ type PaneManagementDependencies = {
   paneViews?: () => PaneViewsSnapshot
 }
 
-export type PaneViewsSnapshot = { viewedAt: Record<string, number>; viewing: string[] }
+type ViewTimes = { viewedAt: Record<string, number>; viewing: string[] }
+/** When each tmux pane and each tile was last on a screen, and which are on one now. */
+export type PaneViewsSnapshot = ViewTimes & { tiles?: ViewTimes }
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {

@@ -64,3 +64,13 @@
   .panes-preview { border-top: 1px solid var(--border); border-left: 0; }
   .panes-preview.placeholder { display: none; }
 }
+.panes-switch { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.panes-switch button { height: 22px; padding: 0 10px; border: 0; border-radius: 5px; color: var(--muted); background: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.panes-switch button[aria-pressed="true"] { color: var(--text); background: var(--surface-hover); }
+.panes-switch button small { margin-left: 5px; color: var(--muted-dim); font-family: var(--mono); font-size: 10px; font-weight: 400; }
+.panes-sub { display: block; margin-top: 2px; color: var(--muted-dim); font-family: var(--mono); font-size: 10px; }
+.tile-kind-redline { color: var(--accent); }
+.tile-kind-simulator { color: var(--cyan); }
+.tile-kind-canvas, .tile-kind-slides, .tile-kind-guide { color: var(--amber); }
+.tiles-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.tiles-frame-note { margin: 0; padding: 6px 12px; border-top: 1px solid var(--border); color: var(--muted-dim); font-size: 10.5px; }
