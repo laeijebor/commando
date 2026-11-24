@@ -179,6 +179,7 @@ function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPa
     `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Pin the command that resumes this conversation with --session \"COMMAND\" using the resume command given below (it replaces the previous one). Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
     'After the first substantive exchange, set a 3–6 word title naming the conversation topic with --title, and change it only if the topic genuinely changes.',
     'When everything the user asked for in this conversation is finished (work committed, and PRs opened or merged where requested) so the conversation may be ready to close, make the last line of your final message start with 🟢 followed by a short summary. Commando shows the session as finished. Do not use 🟢 while anything is left to do or verify.',
+    `When you end a turn needing the user's decision or input, also raise each question with node ${JSON.stringify(sessionBriefCliPath)} --ask "question?" --key short-id --context "what it refers to, readable on its own" [--option "choice"]... [--recommend N (0-based option index)] [--why "reasoning"] [--link URL], not only in prose. Commando pins it as "Waiting on you" until the user answers (you then get "Re: <question> → <answer>" and the ask closes). Raise the same --key again to update it, and run --resolve-ask KEY once you no longer need the answer.`,
     `Lease iOS simulators through node ${JSON.stringify(simCliPath)} lease --task "your task" --metro <port> --backend <port> so they are slim and labelled with the session and task, with declared ports. If the user asks to use an already-running simulator, use node ${JSON.stringify(simCliPath)} adopt <udid> instead; it does not reboot or slim the device, and release leaves it running. Otherwise always lease. Run node ${JSON.stringify(simCliPath)} update when purpose, ports, or branch change. Release them with node ${JSON.stringify(simCliPath)} release when done. Commando shows a leased simulator in this pane's tabs, so keep it headless: never open Simulator.app, and pass headless: true if you call Argent boot-device. expo run:ios always opens Simulator.app; install builds with xcrun simctl install instead.`,
     `Before using a physical phone, the Android emulator, or running a heavy Mac build or export that a device lock covers, take its lock with node ${JSON.stringify(deviceCliPath)} lock <device|any-android|any-ios> --task "what you are doing" [--as YOUR-NAME] [--estimate 15m] (list shows the locks). If you are queued, do other work or end your turn: Commando messages this pane when it is your turn, and you then run claim within 5 minutes. Never touch a device you do not hold. Follow its release steps, then run release when done. In scripts use lock --wait --pid $$ and release on exit.`,
     `When the user asks you to open or start another chat or agent (for example to fix something you found), run node ${JSON.stringify(chatCliPath)} open --title "<short title>" --prompt-file <brief.md> [--location pane] — default location is a new session on its own worktree; use --location pane only when the user asks for it beside you. Write a self-contained brief (goal, context, files, repo rules). Never open chats the user did not ask for. Use list to check chats you opened.`,
@@ -812,7 +813,7 @@ const tokenPath = ${JSON.stringify(tokenPath)}
 const args = process.argv.slice(2)
 
 function usage() {
-  console.error('Usage: commando-session-update [--title text] [--headline text] [--update kind text] [--state complete] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--session COMMAND|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--stdin]')
+  console.error('Usage: commando-session-update [--title text] [--headline text] [--update kind text] [--state complete] [--screenshots dir] [--feature-flag NAME|--url URL|--issue URL|--deployment URL|--build ID|--release ID|--session COMMAND|--remove-<kind> VALUE] [--url-label LABEL|--link URL] [--ask QUESTION --key KEY [--context text] [--why text] [--option text]... [--recommend N] [--link URL]] [--resolve-ask KEY] [--stdin]')
 }
 
 async function stdinJson() {
@@ -858,8 +859,10 @@ async function bodyFromArgs() {
     } else if (flag === '--url-label') {
       if (!['url', 'issue', 'deployment'].includes(body.reference?.kind) || body.reference.action !== 'upsert') throw new Error('--url-label requires --url, --issue or --deployment first')
       body.reference.label = valueAfter(index++, flag)
+    } else if (flag === '--link' && body.ask && !['build', 'release'].includes(body.reference?.kind)) {
+      body.ask.link = valueAfter(index++, flag)
     } else if (flag === '--link') {
-      if (!['build', 'release'].includes(body.reference?.kind) || body.reference.action !== 'upsert') throw new Error('--link requires --build or --release first')
+      if (!['build', 'release'].includes(body.reference?.kind) || body.reference.action !== 'upsert') throw new Error('--link requires --build, --release or --ask first')
       body.reference.url = valueAfter(index++, flag)
     } else if (flag === '--update') {
       const kind = valueAfter(index, flag)
@@ -870,6 +873,16 @@ async function bodyFromArgs() {
     } else if (flag === '--detail') {
       if (!body.update) throw new Error('--detail requires --update')
       body.update.detail = valueAfter(index++, flag)
+    } else if (flag === '--ask') {
+      body.ask = { ...body.ask, question: valueAfter(index++, flag), options: body.ask?.options ?? [] }
+    } else if (['--key', '--context', '--why', '--option', '--recommend'].includes(flag)) {
+      if (!body.ask) throw new Error(flag + ' requires --ask first')
+      const value = valueAfter(index++, flag)
+      if (flag === '--option') body.ask.options.push(value)
+      else if (flag === '--recommend') body.ask.recommend = Number(value)
+      else body.ask[flag.slice(2)] = value
+    } else if (flag === '--resolve-ask') {
+      body.resolveAsk = valueAfter(index++, flag)
     } else {
       throw new Error('Unknown argument: ' + flag)
     }

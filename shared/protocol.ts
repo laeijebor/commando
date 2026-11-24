@@ -203,6 +203,24 @@ export type SimulatorClaim = {
   idle: boolean
 }
 
+/**
+ * A question the agent is waiting on the user to answer. It stays open until the user answers
+ * it or the agent resolves it; the agent raises it again with the same key to update it.
+ */
+export type SessionAsk = {
+  key: string
+  question: string
+  /** What the question refers to, so it reads on its own away from the conversation. */
+  context?: string
+  /** The longer reasoning, shown on request. */
+  why?: string
+  options: string[]
+  /** Index into `options` of the one the agent recommends. */
+  recommend?: number
+  link?: string
+  askedAt: number
+}
+
 /** The agent conversation a worklog belongs to. */
 export type AgentSessionRef = { provider: AgentProvider; id: string }
 
@@ -218,6 +236,7 @@ export type EarlierAgentSession = {
   tasks?: AgentTask[]
   screenshots?: PaneScreenshotFolder[]
   references?: SessionReference[]
+  asks?: SessionAsk[]
   updates: SessionBriefUpdate[]
   next?: string
   endedAt: number
@@ -240,6 +259,8 @@ export type SessionBrief = {
   tasks?: AgentTask[]
   screenshots?: PaneScreenshotFolder[]
   references?: SessionReference[]
+  /** Open questions for the user, oldest first. */
+  asks?: SessionAsk[]
   /** Derived from the current lease; never persisted as a reference. */
   simulator?: SimulatorClaim
   /** Derived from the device lock queue; never persisted. */

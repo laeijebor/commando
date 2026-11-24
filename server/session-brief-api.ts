@@ -7,6 +7,7 @@ import type { AgentStatusKind, SessionBrief, SessionBriefUpdateKind } from '../s
 import type { SessionBriefPatch, SessionBriefStore } from './session-briefs.js'
 import { SessionReferenceLimitError, cleanConversationTitle, referenceFieldsValid, referenceKindIsValid, referenceValueIsUrl, referenceValueLimit } from './session-briefs.js'
 import { PaneScreenshotError, type PaneScreenshotRegistry } from './pane-screenshots.js'
+import { ASK_KEY, parseSessionAsk } from '../shared/session-asks.js'
 
 const API_PATH = '/api/session-brief'
 const MAX_REQUEST_BYTES = 16 * 1024
@@ -154,6 +155,18 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
     reference = { action, kind, value: referenceValueIsUrl(kind) ? new URL(value).href : value,
       ...(label ? { label } : {}), ...(url ? { url: new URL(url).href } : {}) }
   }
+  let ask: SessionBriefPatch['ask']
+  if (body.ask !== undefined) {
+    // The store stamps when it was asked.
+    const parsed = parseSessionAsk(body.ask, 0)
+    if (!parsed) throw new HttpError(400, 'ask is invalid')
+    const { askedAt: _askedAt, ...raised } = parsed
+    ask = raised
+  }
+  const resolveAsk = body.resolveAsk
+  if (resolveAsk !== undefined && (typeof resolveAsk !== 'string' || !ASK_KEY.test(resolveAsk))) {
+    throw new HttpError(400, 'resolveAsk is invalid')
+  }
   if (body.screenshots !== undefined) {
     if (!isRecord(body.screenshots)) throw new HttpError(400, 'screenshots must be a JSON object')
     const dir = body.screenshots.dir
@@ -169,7 +182,7 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
       throw new HttpError(400, 'screenshots.dir must exist and be a directory')
     }
   }
-  if (title === undefined && headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !complete && !update && !screenshots && !reference) {
+  if (title === undefined && headline === undefined && recapMarkdown === undefined && next === undefined && state === undefined && !complete && !update && !screenshots && !reference && !ask && resolveAsk === undefined) {
     throw new HttpError(400, 'At least one session brief field is required')
   }
   return {
@@ -181,6 +194,8 @@ export function parseSessionBriefPatch(body: Record<string, unknown>): ParsedSes
     ...(update ? { update } : {}),
     ...(screenshots ? { screenshots } : {}),
     ...(reference ? { reference } : {}),
+    ...(ask ? { ask } : {}),
+    ...(resolveAsk !== undefined ? { resolveAsk } : {}),
     ...(complete ? { complete } : {}),
   }
 }

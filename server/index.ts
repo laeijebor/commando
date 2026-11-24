@@ -1136,7 +1136,7 @@ async function main(): Promise<void> {
         return
       }
     }
-    const { type: _type, paneId: _paneId, text: _text, images: _images, requestId: _requestId, ...options } = message
+    const { type: _type, paneId: _paneId, text: _text, images: _images, requestId: _requestId, answersAsk, ...options } = message
     // An older host would send a queued, relayed or Implement message straight away (in plan mode), so it isn't offered one.
     if ((options.delivery || options.relayTo || options.permissionMode) && !agentHosts.takesTurnFlow(message.paneId)) {
       sendError(client, 'chat_unavailable', 'This chat started before queueing and steering; restart it to use them', message.requestId)
@@ -1144,6 +1144,11 @@ async function main(): Promise<void> {
     }
     if (!agentHosts.send(message.paneId, message.text, message.requestId, images, options)) {
       sendError(client, 'chat_unavailable', 'No agent host is connected for this pane', message.requestId)
+      return
+    }
+    if (answersAsk) {
+      const brief = await sessionBriefs.answerAsk(message.paneId, answersAsk)
+      if (brief) void publishSessionBrief(brief)
     }
   }
   const chatPlans = new ChatPlanStore(notes)
