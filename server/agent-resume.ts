@@ -65,6 +65,11 @@ const CAPTURE_RETRY_MS = 30_000
 const CRASH_WINDOW_MS = 10_000
 /** How many agents going down together count as a crash rather than the user exiting them. */
 const CRASH_MIN_EXITS = 3
+/**
+ * An agent that goes down this soon after Commando typed its resume is not brought back as part of
+ * a crash, so a crash on start, or memory pressure the resumes themselves cause, cannot loop.
+ */
+const CRASH_RESUME_GRACE_MS = 10 * 60 * 1_000
 
 /** Keeps a verification daemon's state for another tmux server apart from the user's. */
 export function tmuxServerStateSuffix(): string {
@@ -191,8 +196,10 @@ export class AgentResumeService {
    * They are saved too, so a daemon restart keeps the Retry instead of forgetting the conversation.
    */
   private readonly failedRecords = new Map<string, FailedResume>()
-  /** First exits on the current server within the crash window, kept until it passes. */
+  /** Exits within the crash window, kept until it passes. */
   private readonly recentExits = new Map<string, RecentExit>()
+  /** When this daemon last typed each pane's resume. */
+  private readonly resumedAt = new Map<string, number>()
   private queue: Job[] = []
   private draining = false
   private lastSentAt = 0
@@ -337,10 +344,11 @@ export class AgentResumeService {
       if (!record || !isShellCommand(pane.command) || this.inFlight(pane.targetId)) continue
       if (record.serverId === serverId || record.attemptedServerId === serverId) {
         // Exited while its tmux server lived, or resumed here and gone again: both deliberate,
-        // unless it turns out to be one of several that went down together. A resumed agent
-        // that exits again never counts, so a crash on start cannot loop.
+        // unless it turns out to be one of several that went down together. Exits found on the
+        // first discovery after a daemon restart count too, since a kill that takes down the
+        // agents often takes the daemon with it.
         this.records.delete(pane.targetId)
-        if (record.attemptedServerId !== serverId) {
+        if (!this.resumedRecently(pane.targetId)) {
           this.recentExits.set(pane.targetId, { record, at: this.now(), active: pane.active, resumed: false })
         }
         changed = true
@@ -370,9 +378,18 @@ export class AgentResumeService {
       // A conversation captured in the pane since is the pane's now.
       if (this.records.has(targetId)) continue
       this.records.set(targetId, exit.record)
-      jobs.push({ targetId, serverId, queuedAt: this.now(), notBefore: this.now() + SHELL_READY_MS, active: exit.active })
+      // Queued from the exit: the pane has been a live shell since, and anything typed there is the user's.
+      jobs.push({ targetId, serverId, queuedAt: exit.at, notBefore: this.now() + SHELL_READY_MS, active: exit.active })
     }
     return jobs
+  }
+
+  private resumedRecently(targetId: string): boolean {
+    const at = this.resumedAt.get(targetId)
+    if (at === undefined) return false
+    if (this.now() - at < CRASH_RESUME_GRACE_MS) return true
+    this.resumedAt.delete(targetId)
+    return false
   }
 
   /** The agents an archive should keep for these targets. */
@@ -551,6 +568,7 @@ export class AgentResumeService {
     this.lastSentAt = this.now()
     try {
       await this.deps.sendCommand(pane, record.command)
+      this.resumedAt.set(job.targetId, this.now())
     } catch (error) {
       return this.fail(resume, `Could not type into the pane: ${error instanceof Error ? error.message : String(error)}`)
     }

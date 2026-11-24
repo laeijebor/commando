@@ -320,17 +320,59 @@ describe('AgentResumeService', () => {
       expect(targets.map((target) => resume.get(target.targetId))).toEqual([undefined, undefined, undefined])
     })
 
-    it('does not resume them again when they go down again after their resume', async () => {
+    it('leaves two agents exiting together to the user', async () => {
+      const resume = await recordAll()
+      exit(resume, targets[0], targets[1])
+      await advance(30_000)
+      expect(sent).toEqual([])
+    })
+
+    it('resumes them when the daemon went down with them and finds them on its first discovery', async () => {
+      await (await recordAll()).flush()
+      const restarted = service()
+      await restarted.load()
+      exit(restarted, ...targets)
+      await advance(30_000)
+      expect(sent).toHaveLength(3)
+    })
+
+    it('does not resume them again when they go down soon after their resume, but does after a later crash', async () => {
       const resume = await recordAll()
       exit(resume, ...targets)
       await advance(30_000)
       expect(sent).toHaveLength(3)
-      for (const target of targets) panes.set(target.targetId, target)
-      resume.reconcile([...panes.values()], OLD_SERVER)
-      await advance(30_000)
+      const running = () => {
+        for (const target of targets) panes.set(target.targetId, target)
+        resume.reconcile([...panes.values()], OLD_SERVER)
+      }
+      running()
+      await advance(60_000)
       exit(resume, ...targets)
       await advance(30_000)
       expect(sent).toHaveLength(3)
+
+      // Started again by hand, then taken down together long after Commando's resume.
+      for (const target of targets) await recordOn(OLD_SERVER, resume, target)
+      await advance(10 * 60_000)
+      exit(resume, ...targets)
+      await advance(30_000)
+      expect(sent).toHaveLength(6)
+    })
+
+    it('does not type over input the user started after the exit', async () => {
+      const typed = new Map<string, number>()
+      const resume = await recordAll()
+      const watching = service({ lastInputAt: (paneId) => typed.get(paneId), readProcessTable: deps.readProcessTable })
+      await resume.flush()
+      await watching.load()
+      exit(watching, targets[0])
+      await advance(1_000)
+      typed.set('%1', now)
+      await advance(1_000)
+      exit(watching, targets[1], targets[2])
+      await advance(30_000)
+      expect(sent.map((entry) => entry.paneId).sort()).toEqual(['%2', '%3'])
+      expect(resumes.get(TARGET)?.state).toBe('failed')
     })
 
     it('leaves a pane that runs something new by the time its turn comes', async () => {
