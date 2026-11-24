@@ -163,6 +163,7 @@ import {
 } from './pane-screenshots.js'
 import { PaneMarkStore } from './pane-marks.js'
 import { PaneSeen } from './pane-seen.js'
+import { PaneViews } from './pane-views.js'
 import { PaneActivity } from './pane-activity.js'
 import { tmuxSocketStateSuffix } from './tmux-socket-scope.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
@@ -753,6 +754,7 @@ async function main(): Promise<void> {
     return brief.agentSession
   }
   const paneSeen = new PaneSeen(join(homedir(), '.commando', `pane-seen${tmuxSocketStateSuffix()}.json`))
+  const paneViews = new PaneViews(join(homedir(), '.commando', `pane-views${tmuxSocketStateSuffix()}.json`))
   const lastPaneInputAt = new Map<string, number>()
   // The hub is created further down; resumes read a chat's current settings from it.
   let chatResumeSettings = (_paneId: string): ChatResumeSettings | undefined => undefined
@@ -1611,6 +1613,7 @@ async function main(): Promise<void> {
         // Saved pane times only apply to the tmux server that numbered those panes.
         if (nextServerId) {
           if (paneSeen.bindServer(nextServerId)) broadcast({ type: 'pane_seen', seen: paneSeen.snapshot(), snapshot: true })
+          paneViews.bindServer(nextServerId)
           if (paneActivity.bindServer(nextServerId)) broadcast({ type: 'pane_activity', activity: paneActivity.snapshot(), snapshot: true })
         }
         const repos = await paneRepos.resolve(nextSnapshot.panes.map((pane) => pane.path))
@@ -1949,6 +1952,13 @@ async function main(): Promise<void> {
     },
     onPanesChanged: async () => {
       await refreshSnapshot()
+    },
+    paneViews: () => {
+      // Seeing a finished turn counts as a view, so panes read before views were recorded have one.
+      const viewedAt: Record<string, number> = { ...paneSeen.snapshot() }
+      for (const [paneId, at] of Object.entries(paneViews.snapshot())) viewedAt[paneId] = Math.max(viewedAt[paneId] ?? 0, at)
+      const viewing = new Set([...clients].flatMap((client) => [...client.subscribedPaneIds]))
+      return { viewedAt, viewing: [...viewing].filter(paneExists) }
     },
   })
   const portManagement = new PortManagementApi({
@@ -2494,6 +2504,8 @@ async function main(): Promise<void> {
           return
         }
         const previous = client.subscribedPaneIds
+        // A pane leaving the screen was last viewed now; one arriving is viewed from now.
+        paneViews.record([...new Set([...previous, ...message.paneIds])].filter(paneExists))
         const previouslyObserved = new Set([...previous, ...client.statusPaneIds])
         client.subscribedPaneIds = new Set(message.paneIds)
         client.statusPaneIds = new Set(
@@ -3078,6 +3090,7 @@ async function main(): Promise<void> {
     })
     const removeClient = (): void => {
       if (!clients.delete(client)) return
+      paneViews.record([...client.subscribedPaneIds].filter(paneExists))
       client.releaseInteractions?.()
       client.releaseInteractions = null
       client.releaseUsage?.()
@@ -3416,6 +3429,7 @@ async function main(): Promise<void> {
     shuttingDown = true
     paneActivity.flush()
     paneSeen.flush()
+    paneViews.flush()
     stopRunningGit()
     hostsHealth.stop()
     hostsProxy.close()

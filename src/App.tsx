@@ -163,6 +163,8 @@ import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
 import { createCloudTasksApi } from './cloudTasksApi'
 import { CloudTasksSection, CloudTasksHud } from './CloudTasksSection'
+import { PanesView } from './PanesView'
+import type { PaneClosePlan } from './panesList'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -989,7 +991,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'devices' | 'settings' | 'cloud'
+type CommandoArea = 'workspace' | 'panes' | 'ide' | 'linear' | 'notes' | 'sims' | 'devices' | 'settings' | 'cloud'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -3417,6 +3419,27 @@ function HostApp() {
     }
   }
 
+  const paneListAuxiliaryIds = useMemo(
+    () => auxiliarySessionIds(snapshot?.sessions ?? [], snapshot?.panes ?? [], commanderState.sessionId),
+    [snapshot?.sessions, snapshot?.panes, commanderState.sessionId],
+  )
+  /** The Panes list's close: panes are killed, whole sessions paused or deleted through the session tree. */
+  const closePaneList = async (plan: PaneClosePlan, onError: (message: string) => void) => {
+    for (const paneId of plan.panes) {
+      try {
+        await paneManagementApi.deletePane(paneId)
+        if (maximizedPaneId === paneId) setMaximizedPaneId(null)
+      } catch (cause) {
+        onError(cause instanceof Error ? cause.message : 'Unable to close pane')
+      }
+    }
+    const actions = sessionActionsRef.current
+    if ((plan.pauseSessions.length || plan.deleteSessions.length) && !actions) onError('The session tree is not ready, so sessions were not closed.')
+    if (!actions) return
+    for (const sessionId of plan.pauseSessions) await actions.pauseSession(sessionId, null, onError)
+    for (const sessionId of plan.deleteSessions) await actions.deleteSession(sessionId, false, null, onError)
+  }
+
   // The workspace picker also resumes beside running terminals and into empty panes.
   useEffect(() => {
     // Only in the workspace: elsewhere the last focused chat is hidden.
@@ -4175,6 +4198,11 @@ function HostApp() {
               <span>Workspace</span>
               <span className="nav-count">{snapshot?.sessions.length ?? 0}</span>
             </button>
+            <button type="button" className={area === 'panes' ? 'active' : ''} aria-current={area === 'panes' ? 'page' : undefined} onClick={() => { setArea('panes'); setLeftPanelOpen(false) }}>
+              <Rows3 aria-hidden="true" />
+              <span>Panes</span>
+              <span className="nav-count">{snapshot?.panes.length ?? 0}</span>
+            </button>
             <button type="button" className={area === 'cloud' ? 'active' : ''} aria-current={area === 'cloud' ? 'page' : undefined} onClick={() => { setArea('cloud'); setLeftPanelOpen(false) }}>
               <Cloud aria-hidden="true" />
               <span>Cloud tasks</span>
@@ -4214,7 +4242,7 @@ function HostApp() {
                 Resume all ({failedResumeCount})
               </button>
             ) : null}
-            <span>{snapshot?.panes.length ?? 0} panes</span>
+            <button type="button" className="tree-heading-panes" onClick={() => { setArea('panes'); setLeftPanelOpen(false) }} title="List every pane">{snapshot?.panes.length ?? 0} panes</button>
           </div>
           <div className="session-tree" hidden={!local && connection.phase !== 'live'}>
             <SessionTree
@@ -4746,6 +4774,21 @@ function HostApp() {
               <SettingsView api={agentProfilesApi} naming={sessionNamingSettings} onOpenPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }}
                 commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
+          ) : null}
+          {area === 'panes' ? (
+            <PanesView
+              sessions={snapshot?.sessions ?? []}
+              windows={snapshot?.windows ?? []}
+              panes={snapshot?.panes ?? []}
+              agentStatuses={agentStatuses}
+              activity={paneActivity}
+              auxiliarySessionIds={paneListAuxiliaryIds}
+              commanderSessionId={commanderState.sessionId}
+              api={paneManagementApi}
+              connected={connected}
+              onOpen={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: false }) }}
+              onClose={closePaneList}
+            />
           ) : null}
           {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
           {notesMounted ? (

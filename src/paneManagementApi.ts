@@ -11,7 +11,13 @@ export interface PaneManagementApiClient {
   setPaneMark(paneId: string, targetId: string, label: string, tone: PaneMarkTone): Promise<void>
   acknowledgePaneMark(paneId: string, targetId: string): Promise<void>
   clearPaneMark(paneId: string, targetId: string): Promise<void>
+  /** The pane's visible screen, with colour escapes. */
+  capturePane(paneId: string): Promise<string>
+  paneViews(): Promise<PaneViews>
 }
+
+/** When each pane was last viewed (ms), and the panes on a screen now. */
+export type PaneViews = { viewedAt: Record<string, number>; viewing: string[] }
 
 type ApiErrorBody = { error?: unknown }
 
@@ -81,5 +87,17 @@ export function createPaneManagementApi(
       method: 'DELETE',
       body: JSON.stringify({ targetId }),
     }),
+    capturePane: async (paneId) => {
+      const body = await request(`/panes/${encodeURIComponent(paneId)}/capture`, { method: 'GET' }) as { text?: unknown } | null
+      if (typeof body?.text !== 'string') throw new Error('The daemon did not return the pane screen')
+      return body.text
+    },
+    paneViews: async () => {
+      const body = await request('/views', { method: 'GET' }) as Partial<PaneViews> | null
+      return {
+        viewedAt: body?.viewedAt && typeof body.viewedAt === 'object' ? body.viewedAt : {},
+        viewing: Array.isArray(body?.viewing) ? body.viewing : [],
+      }
+    },
   }
 }

@@ -5263,3 +5263,15 @@ body.is-resizing-hud-pinned-note {
 .pair-phone-devices li { padding: 12px 0; border-top: 1px solid var(--border); }
 .pair-phone-devices li > div { min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .pair-phone-devices span { color: var(--muted); font-size: 11px; }
+
+.tree-heading-panes {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.tree-heading-panes:hover { color: var(--text); text-decoration: underline; }
