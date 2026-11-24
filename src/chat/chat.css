@@ -226,3 +226,8 @@
 .commando-chat .chat-login-banner {
   @apply mx-auto flex w-full max-w-[var(--chat-content-max-width)] flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-secondary-label;
 }
+
+.commando-chat .chat-message-highlight {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 32%, transparent);
+  transition: box-shadow 0.35s ease;
+}
