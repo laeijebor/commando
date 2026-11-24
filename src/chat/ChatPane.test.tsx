@@ -70,7 +70,7 @@ describe('ChatPane', () => {
     const cloudCheckout = { startSession: vi.fn(async () => ({ id: 'checkout', name: 'fix', cwd: '/work', stage: 'fetching' as const, startedAt: 1 })), creations: [], onCreated: vi.fn(), dismissCreation: vi.fn(async () => {}) }
     rerender(<ChatPane chat={state} connected focused={false} cloudCheckout={cloudCheckout} {...handlers} />)
     fireEvent.click(screen.getByRole('button', { name: 'Check out locally' }))
-    await waitFor(() => expect(cloudCheckout.startSession).toHaveBeenCalledWith({ name: 'fix', cwd: '/work', worktree: { branch: 'cursor/fix', fromRemote: true } }))
+    await waitFor(() => expect(cloudCheckout.startSession).toHaveBeenCalledWith({ name: 'fix', autoName: true, cwd: '/work', worktree: { branch: 'cursor/fix', fromRemote: true, repoUrl: 'https://github.com/acme/app' } }))
     expect(screen.getByRole('button', { name: 'Checking out…' })).toBeDisabled()
   })
 
