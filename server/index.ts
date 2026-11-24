@@ -3,6 +3,11 @@ import { HostRegistry } from './hosts.js'
 import { HostsApi } from './hosts-api.js'
 import { HostsHealthMonitor } from './hosts-health.js'
 import { HostsProxy } from './hosts-proxy.js'
+import type { ReportBackTaskSnapshot } from '../shared/report-back.js'
+import { ReportBackApi } from './report-back-api.js'
+import { funnelStatus } from './report-back-funnel.js'
+import { configuredReportBackPort, ReportBackMcpServer } from './report-back-mcp.js'
+import { defaultReportBackStatePath, ReportBackStore } from './report-back-store.js'
 import { ConversationTitles } from './conversation-titles.js'
 import { AgentChatRequests } from './agent-chat-requests.js'
 import { RepoPrepareCommands, defaultRepoPrepareCommandsPath, handleRepoPrepareCommands } from './repo-prepare-commands.js'
@@ -910,6 +915,29 @@ async function main(): Promise<void> {
     boardChanges.enqueue(targetId, rev)
     boardThumbWorker.enqueue(targetId)
   }
+
+  const reportBackPort = configuredReportBackPort(process.env, port, DEFAULT_PORT)
+  const reportBackStatePath = port === DEFAULT_PORT
+    ? defaultReportBackStatePath()
+    : (process.env.COMMANDO_REPORT_BACK_STATE_PATH ?? join(homedir(), '.commando', `report-back-state-${port}.json`))
+  const reportBackStore = new ReportBackStore({ statePath: reportBackStatePath })
+  const broadcastReportBack = (task: ReportBackTaskSnapshot): void => {
+    broadcast({ type: 'report_back_updated', task })
+  }
+  const reportBackMcp = reportBackPort !== null
+    ? new ReportBackMcpServer({
+        store: reportBackStore,
+        port: reportBackPort,
+        onTaskUpdated: broadcastReportBack,
+      })
+    : null
+  const reportBackApi = new ReportBackApi({
+    store: reportBackStore,
+    ownerAuthorized: requestIsOwnerAuthorized,
+    listenerStatus: () => reportBackMcp?.listenerStatus() ?? { enabled: false },
+    funnelStatus: () => funnelStatus(),
+    onTaskUpdated: broadcastReportBack,
+  })
 
   const simLeaseStatePath = defaultSimLeaseStatePath(port)
   const simLeaseRegistry = new SimLeaseRegistry({ statePath: simLeaseStatePath, pool: new SimPoolRegistry({ statePath: defaultSimPoolStatePath() }) })
@@ -3358,11 +3386,12 @@ async function main(): Promise<void> {
         if (!(await requestIsAuthorized(request, url))) {
           response.setHeader('WWW-Authenticate', 'Bearer realm="commando"')
           writeJson(response, 401, { error: 'Unauthorized',
-            ...((url.pathname === '/api/hosts' || url.pathname.startsWith('/api/hosts/')) ? { code: 'unauthorized' } : {}),
+            ...((url.pathname === '/api/hosts' || url.pathname.startsWith('/api/hosts/') || url.pathname === '/api/report-back' || url.pathname.startsWith('/api/report-back/')) ? { code: 'unauthorized' } : {}),
           })
           return
         }
         if (await hostsApi.handle(request, response, url)) return
+        if (await reportBackApi.handle(request, response, url)) return
         if (await diffFilters.handle(request, response, url)) return
         if (url.pathname === '/api/sims/live-status' && request.method === 'GET') { writeJson(response, 200, simLive.status()); return }
         if (await simWallApi.handle(request, response, url)) return
@@ -3549,6 +3578,16 @@ async function main(): Promise<void> {
   })))
   listening = true
 
+  let reportBackUrl: string | null = null
+  if (reportBackMcp) {
+    try {
+      const bound = await reportBackMcp.start()
+      reportBackUrl = bound.url
+    } catch (error) {
+      console.warn(`[commando] report-back MCP failed to bind 127.0.0.1:${reportBackPort}`, error)
+    }
+  }
+
   hostsHealth.start()
   externalAgents.start()
   prAutofix.start()
@@ -3580,6 +3619,9 @@ async function main(): Promise<void> {
   if (auth) {
     console.log(`[commando] owner auth:  ${ownerEmail}`)
     console.log(`[commando] token URL:   http://127.0.0.1:${port}/#token=${encodedToken}`)
+  }
+  if (reportBackUrl) {
+    console.log(`[commando] report-back: ${reportBackUrl}`)
   }
 
   let shuttingDown = false
@@ -3637,9 +3679,12 @@ async function main(): Promise<void> {
       webSocketServer.close()
       companionWebSocketServer.close()
       agentHostWebSocketServer.close()
-      void Promise.all(httpServers.map(({ server }) => new Promise<void>((resolveClose) => {
-        server.close(() => resolveClose())
-      }))).finally(() => auth?.close())
+      void Promise.all([
+        ...httpServers.map(({ server }) => new Promise<void>((resolveClose) => {
+          server.close(() => resolveClose())
+        })),
+        reportBackMcp ? reportBackMcp.close() : Promise.resolve(),
+      ]).finally(() => auth?.close())
     })
   }
   process.once('SIGINT', shutdown)
