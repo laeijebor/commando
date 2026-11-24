@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type { ChatItem, ChatSessionInfo } from '../shared/agent-chat.js'
+import type { ChatPlanStore } from './chat-plans.js'
 import { ChatHandoffApi } from './chat-handoff-api.js'
+import type { TmuxCreator } from './tmux-create.js'
 
 const servers: ReturnType<typeof createServer>[] = []
 
@@ -39,8 +41,8 @@ function item(id: string, kind: 'user_message' | 'assistant_message', text: stri
 async function setup(options: {
   sessions?: Record<string, ChatSessionInfo>
   items?: Record<string, ChatItem[]>
-  respawnChatPane?: ReturnType<typeof vi.fn>
-  stash?: ReturnType<typeof vi.fn>
+  respawnChatPane?: Mock<TmuxCreator['respawnChatPane']>
+  stash?: Mock<ChatPlanStore['stash']>
   maxPanePromptBytes?: number
 } = {}) {
   const sessions = options.sessions ?? { '%5': session() }
@@ -51,10 +53,10 @@ async function setup(options: {
     ],
   }
   const creator = {
-    respawnChatPane: options.respawnChatPane ?? vi.fn(async () => {}),
+    respawnChatPane: options.respawnChatPane ?? vi.fn<TmuxCreator['respawnChatPane']>(async () => {}),
   }
   const plans = {
-    stash: options.stash ?? vi.fn(async () => ({ path: '/tmp/plans/abc123/plan.md', dir: '/tmp/plans/abc123' })),
+    stash: options.stash ?? vi.fn<ChatPlanStore['stash']>(async () => ({ path: '/tmp/plans/abc123/plan.md', dir: '/tmp/plans/abc123' })),
   }
   const prepareHandoff = vi.fn()
   const announceHandoff = vi.fn()
@@ -204,7 +206,7 @@ describe('ChatHandoffApi', () => {
   })
 
   it('cancels prepared timeline carry-over if respawning the pane fails', async () => {
-    const respawnChatPane = vi.fn(async () => { throw new Error('tmux respawn failed') })
+    const respawnChatPane = vi.fn<TmuxCreator['respawnChatPane']>(async () => { throw new Error('tmux respawn failed') })
     const ctx = await setup({ respawnChatPane })
     const res = await ctx.post('%5', { targetProvider: 'cursor' })
     expect(res.status).toBe(502)

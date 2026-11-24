@@ -15,29 +15,29 @@ import {
 } from './chat-handoff.js'
 import type { ModelCatalogs } from './tmux-create.js'
 
-const base = (id: string, overrides: Partial<ChatItem> = {}) => ({
+const base = (id: string, parentToolUseId?: string) => ({
   id,
   turnId: `turn-${id}`,
   status: 'completed' as const,
   createdAt: 1,
   updatedAt: 1,
-  ...overrides,
+  ...(parentToolUseId ? { parentToolUseId } : {}),
 })
 
 const userMsg = (id: string, text: string, parentToolUseId?: string): ChatItem => ({
-  ...base(id, parentToolUseId ? { parentToolUseId } : {}),
+  ...base(id, parentToolUseId),
   kind: 'user_message',
   text,
 })
 
 const assistantMsg = (id: string, text: string, parentToolUseId?: string): ChatItem => ({
-  ...base(id, parentToolUseId ? { parentToolUseId } : {}),
+  ...base(id, parentToolUseId),
   kind: 'assistant_message',
   text,
 })
 
 const planItem = (id: string, text: string, parentToolUseId?: string): ChatItem => ({
-  ...base(id, parentToolUseId ? { parentToolUseId } : {}),
+  ...base(id, parentToolUseId),
   kind: 'plan',
   toolUseId: `tool-${id}`,
   text,
@@ -55,7 +55,7 @@ const fileChange = (id: string, path: string, isError = false): ChatItem => ({
 })
 
 const todoList = (id: string, todos: { content: string; status: 'pending' | 'in_progress' | 'completed' }[], parentToolUseId?: string): ChatItem => ({
-  ...base(id, parentToolUseId ? { parentToolUseId } : {}),
+  ...base(id, parentToolUseId),
   kind: 'todo_list',
   todos,
 })
