@@ -1,6 +1,6 @@
 import { HostProvider, HostWorkspace, useHost } from './HostContext'
 import { HostSwitcher, HostsSettings } from './HostSwitcher'
-import { commanderInbox, commanderRepoOptions } from './commanderInbox'
+import { commanderInbox, commanderRepoOptions, keepNeedsYouOrder, type NeedsYouOrder } from './commanderInbox'
 import { GROUP_ORDER } from './chat/AgentsInbox'
 import { CommanderTranscriptView, type CommanderPeek } from './chat/CommanderReadingPane'
 import { createCommanderApi } from './commanderApi'
@@ -2959,10 +2959,16 @@ function HostApp() {
     }
   }
 
-  const commanderGroups = useMemo(() => commanderInbox({
-    snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays,
-    commanderPaneId: commanderState.paneId, repoFilter: commanderState.repoFilter,
-  }), [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId, commanderState.repoFilter])
+  // Remembers when each agent joined Needs you, so status updates don't reshuffle the group.
+  const needsYouOrder = useRef<NeedsYouOrder>(new Map())
+  const commanderGroups = useMemo(() => {
+    const kept = keepNeedsYouOrder(commanderInbox({
+      snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays,
+      commanderPaneId: commanderState.paneId, repoFilter: commanderState.repoFilter,
+    }), needsYouOrder.current)
+    needsYouOrder.current = kept.order
+    return kept.groups
+  }, [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId, commanderState.repoFilter])
   const commanderRepos = useMemo(() => commanderRepoOptions(snapshot, commanderState.repoFilter, commanderState.sessionId),
     [snapshot, commanderState.repoFilter, commanderState.sessionId])
   const commanderRows = useMemo(() => GROUP_ORDER.flatMap((group) => commanderGroups[group].map((row) => ({ row, group }))), [commanderGroups])

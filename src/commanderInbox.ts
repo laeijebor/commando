@@ -98,6 +98,40 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
   return groups
 }
 
+/** How long an agent that left Needs you keeps its place, so one that comes straight back (say, after an approved permission) doesn't drop to the end. */
+export const NEEDS_YOU_GRACE_MS = 60_000
+
+/** Each agent's place in Needs you, keyed by target: a rising sequence number, and when it left if it has. */
+export type NeedsYouOrder = ReadonlyMap<string, { seq: number; leftAt?: number }>
+
+/**
+ * Keeps Needs you in the order agents joined it. An agent that starts needing you goes below
+ * the ones already waiting and keeps its place until it leaves the group, however often its
+ * status updates. One that comes back within NEEDS_YOU_GRACE_MS returns to its old place.
+ * Agents that join together (such as on first load) go oldest first.
+ */
+export function keepNeedsYouOrder(groups: CommanderInbox, previous: NeedsYouOrder, now = Date.now()): { groups: CommanderInbox; order: NeedsYouOrder } {
+  const kept = (place?: { leftAt?: number }) => place !== undefined && (place.leftAt === undefined || now - place.leftAt <= NEEDS_YOU_GRACE_MS)
+  let next = Math.max(0, ...[...previous.values()].map((place) => place.seq))
+  const order = new Map<string, { seq: number; leftAt?: number }>()
+  const joined: CommanderInboxRow[] = []
+  const present = new Set(groups.needs_you.map((row) => row.targetId))
+  for (const row of groups.needs_you) {
+    const place = previous.get(row.targetId)
+    if (kept(place)) order.set(row.targetId, { seq: place!.seq })
+    else joined.push(row)
+  }
+  for (const [targetId, place] of previous) {
+    if (present.has(targetId)) continue
+    const left = { seq: place.seq, leftAt: place.leftAt ?? now }
+    if (kept(left)) order.set(targetId, left)
+  }
+  joined.sort((a, b) => a.time - b.time || a.paneId.localeCompare(b.paneId))
+  for (const row of joined) order.set(row.targetId, { seq: ++next })
+  const needsYou = [...groups.needs_you].sort((a, b) => order.get(a.targetId)!.seq - order.get(b.targetId)!.seq)
+  return { groups: { ...groups, needs_you: needsYou }, order }
+}
+
 /** A queued relay always shows; a finished one shows for 15 minutes after it left the queue. */
 export function relayReceiptVisible(relay: CommanderRelay, now: number): boolean {
   return relay.status === 'queued' || (relay.settledAt ?? relay.deliveredAt ?? relay.createdAt) >= now - 15 * 60_000
