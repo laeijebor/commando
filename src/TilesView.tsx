@@ -68,7 +68,7 @@ export function TilesView({ tiles, sessions, panes, label, api, connected, onOpe
     const simulators = closingRows.filter((row) => row.kind === 'Simulator').length
     const reopenable = closingRows.length - simulators
     const notes = [
-      reopenable ? `${reopenable === closingRows.length ? 'They' : `${plural(reopenable, 'tile')}`} can be reopened from the Worklog's closed tabs for 14 days.` : '',
+      reopenable ? `${reopenable === closingRows.length ? closingRows.length === 1 ? 'It' : 'They' : plural(reopenable, 'tile')} can be reopened from the Worklog's closed tabs for 14 days.` : '',
       simulators ? `${plural(simulators, 'simulator tile')} cannot be reopened from there.` : '',
     ].filter(Boolean).join(' ')
     const what = closingRows.length === 1 ? `“${closingRows[0].label}”` : plural(closingRows.length, 'tile')

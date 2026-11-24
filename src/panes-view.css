@@ -33,8 +33,9 @@
 .panes-table tbody tr.selected { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .panes-table tbody tr:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .panes-check { width: 22px; }
-.panes-name { max-width: 240px; }
-.panes-session { max-width: 160px; }
+/* max-width: 0 lets these columns shrink to their share and ellipsize, so the actions never clip. */
+.panes-name { width: 38%; max-width: 0; }
+.panes-session { width: 22%; max-width: 0; }
 .panes-name strong, .panes-name small, .panes-session span, .panes-session small { display: block; overflow: hidden; text-overflow: ellipsis; }
 .panes-name strong { color: var(--text); font-weight: 600; }
 .panes-name small, .panes-session small { margin-top: 2px; color: var(--muted-dim); font-family: var(--mono); font-size: 10px; }
