@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatItem, ChatSessionInfo, ChatState } from '../../shared/agent-chat'
+import { CHAT_FLOW_HOST_VERSION, type ChatItem, type ChatSessionInfo, type ChatState } from '../../shared/agent-chat'
 import type { SessionAsk } from '../../shared/protocol'
 import { AskTray } from './AskTray'
 import { ChatPane } from './ChatPane'
@@ -85,8 +85,8 @@ describe('asks in a chat', () => {
     { ...base, id: 'a1', kind: 'assistant_message', text: 'Two comments are left.', turnId: 't1', createdAt: 50, updatedAt: 50 },
   ]
   const state: ChatState = { paneId: '%5', session, items, hostConnected: true }
-  const renderChat = (onSend = vi.fn()) => {
-    render(<ChatPane chat={state} asks={[push, decline]} connected focused={false} onFocus={vi.fn()} onSend={onSend} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
+  const renderChat = (onSend = vi.fn(), chat: ChatState = state) => {
+    render(<ChatPane chat={chat} asks={[push, decline]} connected focused={false} onFocus={vi.fn()} onSend={onSend} onInterrupt={vi.fn()} onAnswer={vi.fn()} onConfigure={vi.fn()} />)
     return onSend
   }
 
@@ -101,6 +101,19 @@ describe('asks in a chat', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Waiting on you/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Push as round 4 (recommended)' }))
     expect(onSend).toHaveBeenCalledWith(`Re: ${push.question} → Push as round 4`, undefined, { answersAsk: push.key })
+  })
+
+  it('queues an answer while the turn waits on a request, like a typed message', () => {
+    const onSend = renderChat(vi.fn(), { ...state, session: { ...session, status: 'waiting', hostVersion: CHAT_FLOW_HOST_VERSION } })
+    fireEvent.click(screen.getByRole('button', { name: /^Waiting on you/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Leave them' }))
+    expect(onSend).toHaveBeenCalledWith(`Re: ${push.question} → Leave them`, undefined, { delivery: 'queue', answersAsk: push.key })
+  })
+
+  it("doesn't offer answers a closed chat would drop", () => {
+    renderChat(vi.fn(), { ...state, session: { ...session, status: 'closed' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Waiting on you/ }))
+    expect(screen.getByRole('button', { name: 'Leave them' })).toBeDisabled()
   })
 
   it('starts a reply in the composer that answers the ask when sent', () => {

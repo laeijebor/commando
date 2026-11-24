@@ -280,9 +280,13 @@ function ChatColumn({
   const [askTraySignal, setAskTraySignal] = useState(0)
   const [composerInsert, setComposerInsert] = useState<ComposerInsert>()
   const showAsks = useCallback(() => setAskTraySignal((value) => value + 1), [])
-  // While the agent works, an answer waits in the queue like a typed message would.
+  // Answers follow the composer's rules: none while the host would drop them, and while the
+  // turn runs (or waits on a request) they queue like a typed message would.
+  const askBusy = chat.session.status === 'running' || chat.session.status === 'waiting'
+  const asksDisabled = !connected || !chat.hostConnected || chat.session.status === 'closed' || chat.session.status === 'error'
+    || (chat.session.provider !== 'cursor' && Boolean(chat.session.claudeCodeSwitch))
   const answerAsk = (ask: SessionAsk, option: string) => {
-    onSend(askAnswerText(ask, option), undefined, { ...(working && turnFlow ? { delivery: 'queue' as const } : {}), answersAsk: ask.key })
+    onSend(askAnswerText(ask, option), undefined, { ...(askBusy && hostTakesTurnFlow(chat.session) ? { delivery: 'queue' as const } : {}), answersAsk: ask.key })
   }
   const replyToAsk = (ask: SessionAsk) => setComposerInsert((current) => ({ id: (current?.id ?? 0) + 1, text: askAnswerText(ask, ''), answersAsk: ask.key }))
   const jumpToAsk = (ask: SessionAsk) => {
@@ -428,7 +432,7 @@ function ChatColumn({
         />
       ) : null}
       {chat.session.login ? <CursorLoginBanner login={chat.session.login} disabled={!connected || !chat.hostConnected} onSend={onSend} /> : null}
-      <AskTray asks={asks} disabled={!connected || !chat.hostConnected} anchored={anchored} openSignal={askTraySignal} onAnswer={answerAsk} onReply={replyToAsk} onJump={jumpToAsk} />
+      <AskTray asks={asks} disabled={asksDisabled} anchored={anchored} openSignal={askTraySignal} onAnswer={answerAsk} onReply={replyToAsk} onJump={jumpToAsk} />
       {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} sendError={sendError} {...(onOpenPr ? { onOpenPr } : {})} {...(onDismissPrs ? { onDismissPrs } : {})} /> : null}
       <ChatComposer
         session={chat.session}
