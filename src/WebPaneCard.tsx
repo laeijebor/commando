@@ -154,7 +154,8 @@ export function WebPaneCard({
   /** Daemon reload counter: each change after mount reloads the tile. */
   reloadRevision?: number
 }) {
-  useReportTileVisible(webPane.id, visible)
+  // A popped-out tile shows in its own window, which reports it; this card is its placeholder.
+  useReportTileVisible(webPane.id, visible && !detached)
   const [reloadKey, setReloadKey] = useState(0)
   const lastReloadRevision = useRef(reloadRevision)
   const [review, setReview] = useState(false)

@@ -9,6 +9,7 @@ import { getInitialToken, storeToken } from './sessionTokenStorage'
 import { useDaemon } from './useDaemon'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
+import { usePageVisible } from './usePoll'
 
 export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
   const [token, setToken] = useState(getInitialToken)
@@ -68,7 +69,14 @@ export function DetachedWebPaneApp({ webPaneId }: { webPaneId: string }) {
     setNavigateRequest(message.navigateRequests?.[webPaneId])
     setReloadRevision(message.reloads?.[webPaneId])
   }
-  const { connection } = useDaemon(token, sessionAuthenticated, handleServerMessage)
+  const { connection, send } = useDaemon(token, sessionAuthenticated, handleServerMessage)
+  const pageVisible = usePageVisible()
+  const live = connection.phase === 'live'
+  const shown = Boolean(webPane) && pageVisible
+  // This window shows its tile, so it reports it on screen; the main window shows a placeholder.
+  useEffect(() => {
+    if (live) send({ type: 'tiles_on_screen', tileIds: shown ? [webPaneId] : [] })
+  }, [live, shown, webPaneId, send])
   const api = createWebPanesApi(token)
 
   useEffect(() => {
