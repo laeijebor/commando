@@ -311,4 +311,31 @@ describe('pane management API', () => {
     expect((await fetch(`${baseUrl}/api/pane-management/panes/%2512/shell`)).status).toBe(405)
     expect(ensureShell).toHaveBeenCalledOnce()
   })
+
+  it('captures an existing pane screen with its colour escapes', async () => {
+    const execute = vi.fn<TmuxProcessExecutor>().mockResolvedValue({ stdout: '\u001b[32mok\u001b[0m\n', stderr: '' } as never)
+    const actions = new TmuxPaneActions(execute, {})
+    const baseUrl = await startApi(new PaneManagementApi({ actions, currentPaneIds: () => ['%12'], panePath: () => undefined }))
+
+    const response = await fetch(`${baseUrl}/api/pane-management/panes/%2512/capture`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ paneId: '%12', text: '\u001b[32mok\u001b[0m\n' })
+    expect(execute).toHaveBeenCalledWith('tmux', ['capture-pane', '-p', '-e', '-t', '%12'], expect.objectContaining({ maxBuffer: 1024 * 1024 }))
+
+    expect((await fetch(`${baseUrl}/api/pane-management/panes/%2599/capture`)).status).toBe(404)
+    const post = await fetch(`${baseUrl}/api/pane-management/panes/%2512/capture`, { method: 'POST' })
+    expect(post.status).toBe(405)
+    expect(post.headers.get('allow')).toBe('GET')
+    expect(execute).toHaveBeenCalledOnce()
+  })
+
+  it('reports when panes were last viewed and which are on screen', async () => {
+    const views = { viewedAt: { '%12': 100 }, viewing: ['%13'] }
+    const baseUrl = await startApi(new PaneManagementApi({ currentPaneIds: () => ['%12'], panePath: () => undefined, paneViews: () => views }))
+
+    const response = await fetch(`${baseUrl}/api/pane-management/views`)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual(views)
+    expect((await fetch(`${baseUrl}/api/pane-management/views`, { method: 'POST' })).status).toBe(405)
+  })
 })
