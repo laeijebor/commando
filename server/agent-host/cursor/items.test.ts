@@ -138,3 +138,19 @@ describe('CursorItemMapper', () => {
     expect(mapper.replay({})).toEqual([])
   })
 })
+
+describe('CursorItemMapper.replaceTurn', () => {
+  it('replaces only the partial turn, keeping earlier history and notices', () => {
+    const mapper = new CursorItemMapper()
+    mapper.replay({ type: 'agentConversationTurn', turn: { userMessage: { text: 'Old' }, steps: [] } })
+    mapper.notice('info', 'Earlier notice')
+    const earlier = mapper.list()
+    mapper.begin('live')
+    mapper.notice('info', 'Unknown prompt')
+    mapper.delta({ type: 'text-delta', text: 'Partial' })
+    const items = mapper.replaceTurn('live', [{ type: 'agentConversationTurn', turn: { userMessage: { text: 'Real prompt' }, steps: [{ type: 'assistantMessage', message: { text: 'Final answer' } }] } }])
+    expect(items.slice(0, earlier.length)).toEqual(earlier)
+    expect(items.slice(earlier.length)).toMatchObject([{ kind: 'user_message', text: 'Real prompt' }, { kind: 'assistant_message', text: 'Final answer', status: 'completed' }])
+    expect(items).toEqual(mapper.list())
+  })
+})

@@ -144,6 +144,11 @@ export class CursorItemMapper {
     }
     return items
   }
+  replaceTurn(turnId: string, turns: readonly unknown[]): ChatItem[] {
+    for (const [id, item] of this.items) if (item.turnId === turnId) this.items.delete(id)
+    turns.forEach((turn) => this.replay(turn))
+    return this.list()
+  }
   private tool(callId: string, raw: unknown, complete: boolean): ChatItem[] {
     const call = record(raw)
     const type = string(call.type)

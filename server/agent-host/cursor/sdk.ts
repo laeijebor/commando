@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentOptions, ConversationTurn, GetAgentMessagesOptions, ListResult, ListRunsOptions, ModelListItem, Run, RunResult, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
+import type { AgentMessage, AgentOptions, ConversationTurn, GetAgentMessagesOptions, ListResult, ListRunsOptions, ModelListItem, Run, RunResult, SDKMessage, SDKUserMessage, SendOptions, SteerAckOutcome } from '@cursor/sdk'
 import { MAX_CHAT_ITEMS } from '../../../shared/agent-chat.js'
 import { CursorItemMapper, list, record, string } from './items.js'
 
@@ -17,6 +17,27 @@ export interface CursorHistory {
   turns: ConversationTurn[]
   skipped: number
 }
+export type CursorCloudRun = CursorRun & Pick<Run, 'id' | 'status' | 'stream' | 'conversation' | 'createdAt' | 'git'>
+export type CursorGitBranch = NonNullable<RunResult['git']>['branches'][number]
+export interface CursorCloudHistory extends CursorHistory {
+  running?: { id: string }
+  git?: CursorGitBranch
+}
+
+type CloudStreamUpdate = { type: 'text-delta' | 'thinking-delta'; text: string }
+  | { type: 'tool-call-started' | 'tool-call-completed'; callId: string; toolCall: { type: string; args?: unknown; result?: unknown } }
+export function cloudStreamUpdates(message: SDKMessage): CloudStreamUpdate[] {
+  if (message.type === 'thinking') return [{ type: 'thinking-delta', text: message.text }]
+  if (message.type === 'assistant') return message.message.content.map((block): CloudStreamUpdate => block.type === 'text'
+    ? { type: 'text-delta', text: block.text }
+    : { type: 'tool-call-started', callId: block.id, toolCall: { type: block.name, args: block.input } })
+  if (message.type !== 'tool_call') return []
+  const result = record(message.result)
+  const toolResult = message.status === 'error' ? { status: 'error', error: result.error ?? message.result }
+    : result.status === 'success' || result.status === 'error' ? message.result : { status: 'success', value: message.result }
+  return [{ type: message.status === 'running' ? 'tool-call-started' : 'tool-call-completed', callId: message.call_id,
+    toolCall: { type: message.name, ...(message.args !== undefined ? { args: message.args } : {}), ...(message.status !== 'running' ? { result: toolResult } : {}) } }]
+}
 type HistoryRun = Pick<Run, 'createdAt' | 'conversation'> & Partial<Pick<Run, 'status'>>
 /** Only the SDK operations the chat uses; tests never load the real SDK. */
 export interface CursorSdk {
@@ -26,6 +47,47 @@ export interface CursorSdk {
   create(options: AgentOptions): Promise<CursorAgent>
   resume(agentId: string, options: AgentOptions): Promise<CursorAgent>
   history(agentId: string, cwd: string): Promise<CursorHistory>
+  cloudHistory(agentId: string): Promise<CursorCloudHistory>
+  getRun(runId: string, agentId: string): Promise<CursorCloudRun>
+}
+
+export async function cursorCloudHistory(
+  listRuns: (agentId: string, options: ListRunsOptions) => Promise<ListResult<CursorCloudRun>>,
+  agentId: string, log?: (message: string) => void,
+): Promise<CursorCloudHistory> {
+  const runs: CursorCloudRun[] = []
+  let cursor: string | undefined
+  const seen = new Set<string>()
+  do {
+    const page = await listRuns(agentId, { runtime: 'cloud', limit: 100, ...(cursor ? { cursor } : {}) })
+    runs.push(...page.items)
+    cursor = page.nextCursor
+    if (cursor && seen.has(cursor)) throw new Error('Cursor repeated a history cursor')
+    if (cursor) seen.add(cursor)
+  } while (cursor)
+  const ordered = runs.map((run, index) => ({ run, index })).sort((a, b) => (b.run.createdAt ?? 0) - (a.run.createdAt ?? 0) || b.index - a.index).map(({ run }) => run)
+  const git = ordered.find((run) => run.git?.branches.length)?.git?.branches[0]
+  const running = ordered[0]?.status === 'running' ? { id: ordered[0].id } : undefined
+  const turns: ConversationTurn[] = []
+  const counter = new CursorItemMapper()
+  let skipped = 0
+  for (const run of ordered) {
+    // A running cloud conversation waits for its stream to finish; reattach through stream() instead.
+    if (run.status === 'running') continue
+    let conversation: ConversationTurn[]
+    try { conversation = await run.conversation() }
+    catch (error) {
+      skipped++
+      log?.(`Couldn't load a Cursor run: ${string(record(error).message) ?? String(error)}`)
+      continue
+    }
+    for (let position = conversation.length - 1; position >= 0 && counter.list().length < MAX_CHAT_ITEMS; position--) {
+      turns.push(conversation[position])
+      counter.replay(conversation[position])
+    }
+    if (counter.list().length >= MAX_CHAT_ITEMS) break
+  }
+  return { turns: turns.reverse(), skipped, ...(running ? { running } : {}), ...(git ? { git } : {}) }
 }
 
 /** A message's turn is a protobuf oneof (`{ turn: { case, value } }`); its JSON form is `{ agentConversationTurn }`. */
@@ -123,5 +185,7 @@ export async function loadCursorSdk(log?: (message: string) => void): Promise<Cu
     create: (options) => Agent.create(options),
     resume: (agentId, options) => Agent.resume(agentId, options),
     history: (agentId, cwd) => cursorHistory((id, options) => Agent.listRuns(id, options), agentId, cwd, log, (id, options) => Agent.messages.list(id, options)),
+    cloudHistory: (agentId) => cursorCloudHistory((id, options) => Agent.listRuns(id, options), agentId, log),
+    getRun: (runId, agentId) => Agent.getRun(runId, { runtime: 'cloud', agentId }),
   }
 }
