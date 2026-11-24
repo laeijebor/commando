@@ -1815,7 +1815,8 @@ describe('web pane tiles', () => {
     await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({
       type: 'apply_window_layout', windowId: pane.windowId,
     })))
-    for (const [message] of appMocks.send.mock.calls) {
+    // Panel tiles stay out of layout messages; only the on-screen report names them.
+    for (const [message] of appMocks.send.mock.calls.filter(([message]) => (message as { type?: string }).type !== 'tiles_on_screen')) {
       expect(JSON.stringify(message)).not.toContain(browser.id)
       expect(JSON.stringify(message)).not.toContain(devtools.id)
       expect(JSON.stringify(message)).not.toContain(hidden.id)

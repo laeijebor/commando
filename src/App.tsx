@@ -152,7 +152,8 @@ import { createPaneManagementApi, type PaneManagementApiClient } from './paneMan
 import { PANE_MARK_PRESETS } from './paneMarks'
 import { createWebPanesApi } from './webPanesApi'
 import { WebPaneCard } from './WebPaneCard'
-import { SidePanel, type PanePanelData } from './SidePanel'
+import { SidePanel, tabLabel, type PanePanelData } from './SidePanel'
+import { MAX_WEB_PANES } from '../shared/protocol'
 import { CommanderPeekTabs } from './CommanderPeekTabs'
 import { activePanelTab, builtinPanelTab, openedPanelTabs, effectiveFocusedPane, NARROW_PANEL_QUERY, isNarrowPanel, isBuiltinTab, panelTabKey, panelTabs, prTabSignature, resolveActivePanelTab, type BuiltinPanelTab, type PanelTab } from './sidePanelState'
 import { parsePrPanelKey, prPanelKey, type BuiltinPanelKey, neighbouringTab } from '../shared/web-pane-placement'
@@ -168,6 +169,11 @@ import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
 import { createCloudTasksApi } from './cloudTasksApi'
 import { CloudTasksSection, CloudTasksHud } from './CloudTasksSection'
+import { PanesView } from './PanesView'
+import { TilesView } from './TilesView'
+import { TileVisibilityContext, createTileVisibility } from './tileVisibility'
+import { usePageVisible } from './usePoll'
+import type { PaneClosePlan } from './panesList'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
@@ -994,7 +1000,7 @@ export function runCommandFromQuery(query: string): string | null {
   return command || null
 }
 
-type CommandoArea = 'workspace' | 'ide' | 'linear' | 'notes' | 'sims' | 'devices' | 'settings' | 'cloud'
+type CommandoArea = 'workspace' | 'panes' | 'ide' | 'linear' | 'notes' | 'sims' | 'devices' | 'settings' | 'cloud'
 
 function defaultOwnerName(email: string | null): string {
   const localPart = email?.split('@')[0] ?? 'Owner'
@@ -1136,6 +1142,10 @@ export function App() {
 function HostApp() {
   const { activeHost, local, hostName, hosts, daemonFetch, path, switchHost } = useHost()
   const desktopWindowActive = useDesktopWindowActivity()
+  // Tiles rendered visibly here, reported so the Tiles list knows when each was last on screen.
+  const [shownTiles, setShownTiles] = useState('')
+  const tileVisibility = useMemo(() => createTileVisibility((tileIds) => setShownTiles([...tileIds].sort().join('\u0000'))), [])
+  const pageVisible = usePageVisible()
   const [narrowPanel, setNarrowPanel] = useState(() => isNarrowPanel(window.matchMedia(NARROW_PANEL_QUERY)))
   const [openDrawers, setOpenDrawers] = useState<Record<string, boolean>>({})
   useEffect(() => {
@@ -1466,6 +1476,7 @@ function HostApp() {
   }, [])
 
   const [area, setArea] = useState<CommandoArea>('workspace')
+  const [panesMode, setPanesMode] = useState<'tiles' | 'panes'>('tiles')
   const [selectedCloudTaskId, setSelectedCloudTaskId] = useState<string | null>(null)
   const [notesMounted, setNotesMounted] = useState(false)
   const paneRefs = useRef(new Map<string, HTMLElement>())
@@ -2038,6 +2049,13 @@ function HostApp() {
     if (!connected || !unseenViewedPaneKey) return
     send({ type: 'mark_panes_seen', paneIds: unseenViewedPaneKey.split('\u0000').slice(0, 64) })
   }, [connected, unseenViewedPaneKey, send])
+
+  // A hidden page shows nothing; sent again on reconnect, since the daemon forgets a closed socket's tiles.
+  useEffect(() => {
+    if (!connected) return
+    const tileIds = pageVisible && shownTiles ? shownTiles.split('\u0000').slice(0, MAX_WEB_PANES) : []
+    send({ type: 'tiles_on_screen', tileIds })
+  }, [connected, pageVisible, shownTiles, send])
 
   useEffect(() => {
     if (!connected || !selectedSessionId) return
@@ -2779,7 +2797,7 @@ function HostApp() {
     }
     return conversations
   }, [chatConversationsApi, token])
-  const paneManagementApi = createPaneManagementApi(token, daemonFetch)
+  const paneManagementApi = useMemo(() => createPaneManagementApi(token, daemonFetch), [token])
   const paneScreenshotsApi = createPaneScreenshotsApi(token, daemonFetch)
   const sessionManagementApi = createSessionManagementApi(token, daemonFetch)
   const gitDiffApi = useMemo(() => createGitDiffApi(token, daemonFetch), [token])
@@ -3177,14 +3195,18 @@ function HostApp() {
     for (const { tab, signature } of closing) void dismissPanePrTab(tab, signature, tab.key === activeKey ? next : undefined)
   }
 
-  const closeWebPane = async (webPaneId: string) => {
+  /**
+   * `selectNext` picks the next tab from the side panel's tab set, which only a shown workspace
+   * keeps current; the Tiles list turns it off and the daemon selects the neighbour itself.
+   */
+  const closeWebPane = async (webPaneId: string, onError: (message: string) => void = setPaneActionError, selectNext = true) => {
     setPaneActionError('')
     if (activeSimulatorTileId === webPaneId) setActiveSimulatorTileId(null)
     const closing = webPanes.find((pane) => pane.id === webPaneId)
     const combined = closing ? panelTabSets.current.get(closing.anchorPaneId) ?? [] : []
     const selected = closing ? panelActiveTabs[closing.anchorPaneId] ?? activePanelTab(panelTabs(webPanes, closing.anchorPaneId))?.id : undefined
     let selection: Promise<void> | undefined
-    if (selected === webPaneId) {
+    if (selectNext && selected === webPaneId) {
       const next = resolveActivePanelTab(combined.filter((tab) => tab.id !== webPaneId), selected, combined)
       if (next) selection = selectPanelTab(next)
     }
@@ -3202,7 +3224,7 @@ function HostApp() {
       await selection
       await webPanesApi.close(webPaneId, webPaneTitles[webPaneId])
     } catch (cause) {
-      setPaneActionError(cause instanceof Error ? cause.message : 'Unable to close web pane')
+      onError(cause instanceof Error ? cause.message : 'Unable to close web pane')
     } finally {
       closingPanelTabs.current.delete(webPaneId)
     }
@@ -3421,6 +3443,42 @@ function HostApp() {
     } finally {
       setPaneActionPending(false)
     }
+  }
+
+  const tileListLabel = useCallback(
+    (tile: WebPane) => tabLabel(tile, webPaneTitles[tile.id], tile.content?.kind === 'simulator' ? simulatorNames[tile.content.udid] : undefined),
+    [webPaneTitles, simulatorNames],
+  )
+  /** Shows a tile from the Tiles list where it lives: split beside its pane, or selected in its side panel. */
+  const openTileFromList = (tileId: string) => {
+    const tile = webPanes.find((pane) => pane.id === tileId)
+    if (!tile) return
+    jumpToPane(tile.anchorPaneId)
+    if (tile.dock !== 'split') revealWebPaneTab(tileId)
+  }
+  const panesSwitcher = <div className="panes-switch" role="group" aria-label="List">
+    <button type="button" aria-pressed={panesMode === 'tiles'} onClick={() => setPanesMode('tiles')}>Tiles<small>{webPanes.length}</small></button>
+    <button type="button" aria-pressed={panesMode === 'panes'} onClick={() => setPanesMode('panes')}>Panes<small>{snapshot?.panes.length ?? 0}</small></button>
+  </div>
+  const paneListAuxiliaryIds = useMemo(
+    () => auxiliarySessionIds(snapshot?.sessions ?? [], snapshot?.panes ?? [], commanderState.sessionId),
+    [snapshot?.sessions, snapshot?.panes, commanderState.sessionId],
+  )
+  /** The Panes list's close: panes are killed, whole sessions paused or deleted through the session tree. */
+  const closePaneList = async (plan: PaneClosePlan, onError: (message: string) => void) => {
+    for (const paneId of plan.panes) {
+      try {
+        await paneManagementApi.deletePane(paneId)
+        if (maximizedPaneId === paneId) setMaximizedPaneId(null)
+      } catch (cause) {
+        onError(cause instanceof Error ? cause.message : 'Unable to close pane')
+      }
+    }
+    const actions = sessionActionsRef.current
+    if ((plan.pauseSessions.length || plan.deleteSessions.length) && !actions) onError('The session tree is not ready, so sessions were not closed.')
+    if (!actions) return
+    for (const sessionId of plan.pauseSessions) await actions.pauseSession(sessionId, null, onError)
+    for (const sessionId of plan.deleteSessions) await actions.deleteSession(sessionId, false, null, onError)
   }
 
   // The workspace picker also resumes beside running terminals and into empty panes.
@@ -4041,6 +4099,7 @@ function HostApp() {
   }
 
   return (
+    <TileVisibilityContext.Provider value={tileVisibility}>
     <ChatStashContext.Provider value={chatStash}>
     <PlanUsageContext.Provider value={planUsageByProfile}>
     <div
@@ -4203,6 +4262,11 @@ function HostApp() {
               <span>Workspace</span>
               <span className="nav-count">{snapshot?.sessions.length ?? 0}</span>
             </button>
+            <button type="button" className={area === 'panes' ? 'active' : ''} aria-current={area === 'panes' ? 'page' : undefined} onClick={() => { setArea('panes'); setLeftPanelOpen(false) }}>
+              <Rows3 aria-hidden="true" />
+              <span>Panes &amp; tiles</span>
+              <span className="nav-count" title={`${webPanes.length} of ${MAX_WEB_PANES} tiles open`}>{webPanes.length}/{MAX_WEB_PANES}</span>
+            </button>
             <button type="button" className={area === 'cloud' ? 'active' : ''} aria-current={area === 'cloud' ? 'page' : undefined} onClick={() => { setArea('cloud'); setLeftPanelOpen(false) }}>
               <Cloud aria-hidden="true" />
               <span>Cloud tasks</span>
@@ -4242,7 +4306,7 @@ function HostApp() {
                 Resume all ({failedResumeCount})
               </button>
             ) : null}
-            <span>{snapshot?.panes.length ?? 0} panes</span>
+            <button type="button" className="tree-heading-panes" onClick={() => { setPanesMode('panes'); setArea('panes'); setLeftPanelOpen(false) }} title="List every pane">{snapshot?.panes.length ?? 0} panes</button>
           </div>
           <div className="session-tree" hidden={!local && connection.phase !== 'live'}>
             <SessionTree
@@ -4779,6 +4843,35 @@ function HostApp() {
                 commander={{ ...(commanderState.configDir ? { configDir: commanderState.configDir } : {}), open: Boolean(commanderState.sessionId), onSwitch: switchCommanderProfile }} />
             </Suspense>
           ) : null}
+          {area === 'panes' && panesMode === 'tiles' ? (
+            <TilesView
+              tiles={webPanes}
+              sessions={snapshot?.sessions ?? []}
+              panes={snapshot?.panes ?? []}
+              label={tileListLabel}
+              api={paneManagementApi}
+              connected={connected}
+              onOpen={openTileFromList}
+              onClose={async (tileIds, onError) => { for (const tileId of tileIds) await closeWebPane(tileId, onError, false) }}
+              switcher={panesSwitcher}
+            />
+          ) : null}
+          {area === 'panes' && panesMode === 'panes' ? (
+            <PanesView
+              sessions={snapshot?.sessions ?? []}
+              windows={snapshot?.windows ?? []}
+              panes={snapshot?.panes ?? []}
+              agentStatuses={agentStatuses}
+              activity={paneActivity}
+              auxiliarySessionIds={paneListAuxiliaryIds}
+              commanderSessionId={commanderState.sessionId}
+              api={paneManagementApi}
+              connected={connected}
+              onOpen={(paneId) => jumpToPane(paneId)}
+              onClose={closePaneList}
+              switcher={panesSwitcher}
+            />
+          ) : null}
           {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
@@ -5016,5 +5109,6 @@ function HostApp() {
     </div>
     </PlanUsageContext.Provider>
     </ChatStashContext.Provider>
+    </TileVisibilityContext.Provider>
   )
 }

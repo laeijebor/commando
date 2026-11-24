@@ -11,6 +11,7 @@ import { GuidePane } from './GuidePane'
 import { SimLiveView } from './SimLiveView'
 import type { PendingQueueApi } from './pendingQueueApi'
 import { isDeckPath } from '../shared/deck'
+import { useReportTileVisible } from './tileVisibility'
 
 const ATTRIBUTION_VISIBLE_MS = 8_000
 const LOAD_WATCHDOG_MS = 8_000
@@ -153,6 +154,8 @@ export function WebPaneCard({
   /** Daemon reload counter: each change after mount reloads the tile. */
   reloadRevision?: number
 }) {
+  // A popped-out tile shows in its own window, which reports it; this card is its placeholder.
+  useReportTileVisible(webPane.id, visible && !detached)
   const [reloadKey, setReloadKey] = useState(0)
   const lastReloadRevision = useRef(reloadRevision)
   const [review, setReview] = useState(false)

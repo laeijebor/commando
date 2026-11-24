@@ -10,6 +10,7 @@ import { resetNativeWindowBridge } from './nativeWindowBridge'
 
 const daemon = vi.hoisted(() => ({
   onMessage: null as ((message: ServerMessage) => void) | null,
+  send: vi.fn(),
 }))
 const chromiumProps = vi.hoisted(() => [] as Array<Record<string, unknown>>)
 
@@ -27,7 +28,7 @@ vi.mock('./useDaemon', () => ({
     daemon.onMessage = onMessage
     return {
       connection: { phase: 'live', detail: 'Authenticated local stream', attempt: 0 },
-      send: vi.fn(),
+      send: daemon.send,
     }
   },
 }))
@@ -67,6 +68,7 @@ function installHandler(messages: Array<Record<string, unknown>>) {
 
 beforeEach(() => {
   daemon.onMessage = null
+  daemon.send.mockClear()
   chromiumProps.length = 0
   resetNativeWindowBridge()
   window.sessionStorage.clear()
@@ -102,5 +104,17 @@ describe('DetachedWebPaneApp', () => {
       type: 'web-pane.reattach',
       payload: { webPaneId: webPane.id },
     })))
+  })
+
+  it('reports its tile on screen while the pane is shown, and none once it closes', async () => {
+    installHandler([])
+    render(<DetachedWebPaneApp webPaneId={webPane.id} />)
+    expect(daemon.send).toHaveBeenLastCalledWith({ type: 'tiles_on_screen', tileIds: [] })
+
+    act(() => daemon.onMessage?.({ type: 'web_panes', webPanes: [webPane] }))
+    await waitFor(() => expect(daemon.send).toHaveBeenLastCalledWith({ type: 'tiles_on_screen', tileIds: [webPane.id] }))
+
+    act(() => daemon.onMessage?.({ type: 'web_panes', webPanes: [] }))
+    await waitFor(() => expect(daemon.send).toHaveBeenLastCalledWith({ type: 'tiles_on_screen', tileIds: [] }))
   })
 })

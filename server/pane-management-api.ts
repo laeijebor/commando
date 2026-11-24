@@ -28,7 +28,13 @@ type PaneManagementDependencies = {
   runCommand?: (command: string, cwd: string) => Promise<void>
   beforePaneDeleted?: (paneId: string) => void | Promise<void>
   onPanesChanged?: () => void | Promise<void>
+  /** When each pane was last viewed, and which are on a screen now. */
+  paneViews?: () => PaneViewsSnapshot
 }
+
+type ViewTimes = { viewedAt: Record<string, number>; viewing: string[] }
+/** When each tmux pane and each tile was last on a screen, and which are on one now. */
+export type PaneViewsSnapshot = ViewTimes & { tiles?: ViewTimes }
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -74,10 +80,10 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
-type PaneAction = 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'shell' | 'mark' | 'acknowledge-mark'
+type PaneAction = 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'shell' | 'mark' | 'acknowledge-mark' | 'capture'
 
 function paneRoute(pathname: string): { paneId: string; action: PaneAction } | null {
-  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|reveal|run|shell|mark)(?:\/(acknowledge))?$/.exec(pathname)
+  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|reveal|run|shell|mark|capture)(?:\/(acknowledge))?$/.exec(pathname)
   if (!match) return null
   try {
     return {
@@ -108,6 +114,11 @@ export class PaneManagementApi {
     if (url.pathname !== API_ROOT && !url.pathname.startsWith(`${API_ROOT}/`)) return false
 
     try {
+      if (url.pathname === `${API_ROOT}/views`) {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        writeJson(response, 200, this.dependencies.paneViews?.() ?? { viewedAt: {}, viewing: [] })
+        return true
+      }
       const route = paneRoute(url.pathname)
       if (!route) throw new HttpError(404, 'Not found')
       if (!this.dependencies.currentPaneIds().includes(route.paneId)) {
@@ -126,6 +137,13 @@ export class PaneManagementApi {
         await this.actions.rename(route.paneId, title)
         await this.dependencies.onPanesChanged?.()
         writeJson(response, 200, { ok: true, paneId: route.paneId, title })
+        return true
+      }
+
+      if (route.action === 'capture') {
+        if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
+        const text = await this.actions.capture(route.paneId)
+        writeJson(response, 200, { paneId: route.paneId, text })
         return true
       }
 
@@ -237,7 +255,7 @@ export class PaneManagementApi {
     } catch (error) {
       if (error instanceof HttpError) {
         if (error.status === 405) {
-          response.setHeader('Allow', url.pathname.endsWith('/delete') ? 'DELETE' : url.pathname.endsWith('/mark') ? 'POST, DELETE' : 'POST')
+          response.setHeader('Allow', url.pathname.endsWith('/delete') ? 'DELETE' : url.pathname.endsWith('/mark') ? 'POST, DELETE' : /\/(capture|views)$/.test(url.pathname) ? 'GET' : 'POST')
         }
         writeJson(response, error.status, { error: error.message })
         return true

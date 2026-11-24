@@ -10,6 +10,8 @@ import { EMPTY_PANE_OPTION, PANE_SHELL_OPTION, paneShellSessionName } from '../s
 const PANE_ID = /^%\d+$/
 const ACTION_TIMEOUT_MS = 3_000
 const ACTION_BUFFER_BYTES = 64 * 1024
+/** A wide screen full of colour escapes runs well past the action buffer. */
+const CAPTURE_BUFFER_BYTES = 1024 * 1024
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u
 
 export class TmuxPaneActionError extends Error {
@@ -125,6 +127,11 @@ export class TmuxPaneActions {
     return created
   }
 
+  /** The pane's visible screen as text, with its colour escapes. */
+  async capture(paneId: string): Promise<string> {
+    return this.run(['capture-pane', '-p', '-e', '-t', validateTmuxPaneId(paneId)], CAPTURE_BUFFER_BYTES)
+  }
+
   /** Ends the pane's Terminal-tab shell, if it has one. */
   async closeShell(paneId: string): Promise<void> {
     const session = await this.shellSession(validateTmuxPaneId(paneId))
@@ -136,10 +143,10 @@ export class TmuxPaneActions {
     return sessions.split('\n').map((line) => line.trim().split(' ')).find(([, anchor]) => anchor === anchorPaneId)?.[0]
   }
 
-  private async run(args: readonly string[]): Promise<string> {
+  private async run(args: readonly string[], maxBuffer = ACTION_BUFFER_BYTES): Promise<string> {
     const { stdout } = await this.execute('tmux', [...this.socketArgs, ...args], {
       encoding: 'utf8',
-      maxBuffer: ACTION_BUFFER_BYTES,
+      maxBuffer,
       shell: false,
       timeout: ACTION_TIMEOUT_MS,
       windowsHide: true,
