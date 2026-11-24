@@ -215,6 +215,9 @@ const savedAttachments = (refs: ChatImageRef[]): Attachment[] => refs.map((ref, 
 /** The draft a switch to Claude Code carries across: text and uploaded images. */
 export type ChatDraft = { text: string; images: ChatImageRef[] }
 
+/** Text for the composer from outside it; `answersAsk` names the ask it starts a reply to. */
+export type ComposerInsert = { id: number; text: string; answersAsk?: string }
+
 /**
  * Carried drafts this page already put in a composer, with how many of their
  * images, so a remount before the daemon clears one doesn't add it twice.
@@ -350,6 +353,7 @@ export function ChatComposer({
   onCarriedTaken,
   registerDraft,
   onUploadingChange,
+  insert,
 }: {
   session: ChatSessionInfo
   hostConnected: boolean
@@ -385,6 +389,8 @@ export function ChatComposer({
   registerDraft?: (read: (() => ChatDraft) | null) => void
   /** An image is still uploading: a switch now would leave it behind. */
   onUploadingChange?: (uploading: boolean) => void
+  /** Text put at the start of the draft from outside, such as an ask's Reply…; a new `id` puts it there again. */
+  insert?: ComposerInsert
 }) {
   const { activeHost } = useHost()
   const hostDraftId = session.sessionId && (activeHost === 'local' ? session.sessionId : `${activeHost}:${session.sessionId}`)
@@ -498,6 +504,17 @@ export function ChatComposer({
   const active = items.find((item) => item.key === activeKey) ?? items[0]
 
   useEffect(() => { setActiveKey(null) }, [trigger?.kind, trigger?.rangeStart, trigger?.query])
+
+  // A reply started from an ask answers it, as long as the draft still starts with its prefix.
+  const replyingTo = useRef<{ key: string; prefix: string } | null>(null)
+  const lastInsert = useRef(insert?.id)
+  useEffect(() => {
+    if (!insert || insert.id === lastInsert.current) return
+    lastInsert.current = insert.id
+    replyingTo.current = insert.answersAsk ? { key: insert.answersAsk, prefix: insert.text.trim() } : null
+    pendingCaret.current = insert.text.length
+    setDraft((current) => [insert.text, current.trim()].filter(Boolean).join('\n\n'))
+  }, [insert])
 
   const applyText = (next: { text: string; cursor: number }) => {
     pendingCaret.current = next.cursor
@@ -743,10 +760,13 @@ export function ChatComposer({
   const submit = (steer = false) => {
     if (!canSend) return
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
+    const text = draft.trim()
+    const reply = replyingTo.current
+    replyingTo.current = null
+    const answersAsk = reply && !relayTarget && text.startsWith(reply.prefix) ? { answersAsk: reply.key } : {}
     const options: ChatSendOptions = relayTarget
       ? { relayTo: relayTarget }
-      : running && turnFlow ? { delivery: steer ? 'steer' : 'queue' } : {}
-    const text = draft.trim()
+      : { ...(running && turnFlow ? { delivery: steer ? 'steer' as const : 'queue' as const } : {}), ...answersAsk }
     const requestId = Object.keys(options).length ? onSend(text, images, options) : images.length ? onSend(text, images) : onSend(text)
     if (requestId) {
       sentDrafts.current.set(requestId, { text, images })

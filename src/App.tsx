@@ -175,6 +175,7 @@ import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
+import { paneAsks } from './chat/sessionAsks'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
 import { MAX_PANE_PROMPT_BYTES, implementPlanFilePrompt, launchPermissionMode } from './chat/turnFlow'
@@ -827,6 +828,7 @@ export function TerminalPaneCard({
             externalRuns={externalRuns}
             {...(tileEvents ? { tileEvents } : {})}
             {...(onOpenTile ? { onOpenTile } : {})}
+            asks={paneAsks(brief, pane)}
             connected={connected}
             focused={focused}
             onFocus={onFocus}
@@ -3034,7 +3036,7 @@ function HostApp() {
     const view = chat
       // Not given registerFocusable: the agent's own pane keeps that.
       ? <ChatPane key={row.targetId} paneId={row.paneId} {...(pane ? { pane } : {})} snapshot={snapshot ?? undefined} statuses={agentStatuses}
-          onSelectPane={jumpToPane} prsApi={prsApi} chat={chat} externalRuns={externalRuns[row.paneId] ?? []} tileEvents={tileEvents[row.paneId] ?? []} onOpenTile={revealWebPaneTab} connected={connected}
+          onSelectPane={jumpToPane} prsApi={prsApi} chat={chat} externalRuns={externalRuns[row.paneId] ?? []} tileEvents={tileEvents[row.paneId] ?? []} onOpenTile={revealWebPaneTab} asks={paneAsks(paneBriefs[row.paneId], pane)} connected={connected}
           focused={false} onFocus={() => {}}
           onSend={(text, images, options) => sendChat(row.paneId, text, images, options)}
           onInterrupt={(dropQueued) => interruptChat(row.paneId, dropQueued)}

@@ -44,7 +44,7 @@ const markdownComponents: Components = {
 }
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void }>({ items: [], now: 0, provider: 'Claude' })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void }>({ items: [], now: 0, provider: 'Claude' })
 
 /** Image addresses reach `ReplyImage` as written: it decides what loads, and a local path is never a link. */
 const keepImageSources: UrlTransform = (url, key, node) => key === 'src' && node.tagName === 'img' ? url : defaultUrlTransform(url)
@@ -347,8 +347,20 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
       return <PlanCard item={row.item} markdown={Markdown} {...(context.onSavePlan ? { onSave: context.onSavePlan } : {})} />
     case 'subagents':
       return <SubagentGroup row={row} items={context.items} now={context.now} onTask={context.onTask} controlsDisabled={context.controlsDisabled} {...(context.onOpenSubagent ? { onOpen: context.onOpenSubagent } : {})} />
-    case 'assistant':
-      return <div className="chat-reply pb-3"><Markdown text={row.item.text} images={row.item.images} running={row.item.status === 'running'} /></div>
+    case 'assistant': {
+      const asks = context.askMarkers?.get(row.item.id)
+      return (
+        <div className="chat-reply pb-3" {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
+          <Markdown text={row.item.text} images={row.item.images} running={row.item.status === 'running'} />
+          {asks ? (
+            <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
+              <span className="chat-ask-marker-diamond" aria-hidden="true">◆</span>
+              Asked you {asks === 1 ? '1 thing' : `${asks} things`}: see Waiting on you
+            </button>
+          ) : null}
+        </div>
+      )
+    }
     case 'activity':
       return <ActivityGroup row={row} cwd={cwd} />
     case 'notice':
@@ -361,7 +373,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, focusMessage, onFocusMessageHandled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -381,6 +393,10 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onOpenTile?: (webPaneId: string) => boolean
   /** Opens an auto-fix card's PR in the side panel. */
   onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
+  /** Replies where the agent raised asks that are still open, by item id, with how many. */
+  askMarkers?: ReadonlyMap<string, number>
+  /** Opens the Waiting on you tray. */
+  onShowAsks?: () => void
   /** Scrolls to and briefly highlights a specific user message. */
   focusMessage?: ChatFocusMessageRequest
   onFocusMessageHandled?: (seq: number) => void
@@ -388,7 +404,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
   const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr])
+  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const lastTop = useRef(0)

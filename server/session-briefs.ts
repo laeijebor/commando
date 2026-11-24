@@ -16,9 +16,11 @@ import type {
   SessionBriefUpdate,
   SessionBriefUpdateKind,
   PaneScreenshotFolder,
+  SessionAsk,
   SessionReference,
 } from '../shared/protocol.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
+import { MAX_ASKS, parseSessionAsk } from '../shared/session-asks.js'
 
 type StateFile = {
   version: 4
@@ -58,6 +60,10 @@ export type SessionBriefPatch = {
   }
   publishedScreenshots?: PaneScreenshotFolder
   reference?: { action: 'upsert' | 'remove'; kind: SessionReference['kind']; value: string; label?: string; url?: string }
+  /** Raises an ask, or updates the open one with its key. */
+  ask?: Omit<SessionAsk, 'askedAt'>
+  /** The agent no longer needs an answer to the ask with this key. */
+  resolveAsk?: string
 }
 
 const SESSION_ID = /^\$\d+$/
@@ -82,6 +88,16 @@ const TASK_STATUSES = new Set<AgentTaskStatus>(['pending', 'in_progress', 'compl
 const TASK_PRIORITIES = new Set<AgentTaskPriority>(['high', 'medium', 'low'])
 
 export class SessionReferenceLimitError extends Error {}
+/** Reported like a reference limit: the agent's request, not Commando, is at fault. */
+export class SessionAskLimitError extends SessionReferenceLimitError {}
+
+function parseAsk(value: unknown): SessionAsk | null {
+  return parseSessionAsk(value)
+}
+
+function uniqueAsks(asks: SessionAsk[]): boolean {
+  return new Set(asks.map((ask) => ask.key)).size === asks.length
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -284,9 +300,10 @@ function parseEarlierSession(value: unknown): EarlierAgentSession | null {
   const tasks = parseList(value.tasks, 100, parseTask)
   const screenshots = parseList(value.screenshots, 5, parseScreenshotFolder)
   const references = parseList(value.references, MAX_REFERENCES, parseReference)
+  const asks = parseList(value.asks, MAX_ASKS, parseAsk)
   const updates = parseList(value.updates, MAX_EARLIER_UPDATES, parseUpdate)
   if (!agentSession || headline === null || recapMarkdown === null || next === null || !tasks || !screenshots
-    || !references || !updates || !safeInteger(value.endedAt)) return null
+    || !references || !asks || !uniqueAsks(asks) || !updates || !safeInteger(value.endedAt)) return null
   return {
     agentSession,
     ...titleFields(value),
@@ -297,6 +314,7 @@ function parseEarlierSession(value: unknown): EarlierAgentSession | null {
     ...(tasks.length ? { tasks } : {}),
     ...(screenshots.length ? { screenshots } : {}),
     ...(references.length ? { references } : {}),
+    ...(asks.length ? { asks } : {}),
     updates,
     ...(next ? { next } : {}),
     endedAt: value.endedAt,
@@ -317,6 +335,10 @@ function parseSessionHistory(value: Record<string, unknown>): Pick<SessionBrief,
   }
 }
 
+function cloneAsk(ask: SessionAsk): SessionAsk {
+  return { ...ask, options: [...ask.options] }
+}
+
 function sameAgentSession(left: AgentSessionRef, right: AgentSessionRef): boolean {
   return left.provider === right.provider && left.id === right.id
 }
@@ -328,13 +350,14 @@ function cloneEarlierSession(session: EarlierAgentSession): EarlierAgentSession 
     ...(session.tasks ? { tasks: session.tasks.map((task) => ({ ...task })) } : {}),
     ...(session.screenshots ? { screenshots: session.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) } : {}),
     ...(session.references ? { references: session.references.map((reference) => ({ ...reference })) } : {}),
+    ...(session.asks ? { asks: session.asks.map(cloneAsk) } : {}),
     updates: session.updates.map((update) => ({ ...update })),
   }
 }
 
 /** Lifecycle-only history (a delegated `codex exec`, an empty start) is not worth a slot. */
 function conversationProducedWork(brief: SessionBrief): boolean {
-  return Boolean(brief.title || brief.recapMarkdown || brief.tasks?.length || brief.references?.length || brief.screenshots?.length)
+  return Boolean(brief.title || brief.recapMarkdown || brief.tasks?.length || brief.references?.length || brief.screenshots?.length || brief.asks?.length)
     || brief.updates.some((update) => update.source === 'agent' || update.author === 'user')
 }
 
@@ -357,6 +380,7 @@ function startAgentSession(current: SessionBrief, next: AgentSessionRef | null, 
       ...(current.tasks?.length ? { tasks: current.tasks } : {}),
       ...(current.screenshots?.length ? { screenshots: current.screenshots } : {}),
       ...(current.references?.length ? { references: current.references } : {}),
+      ...(current.asks?.length ? { asks: current.asks } : {}),
       updates: current.updates.slice(0, MAX_EARLIER_UPDATES),
       ...(current.next ? { next: current.next } : {}),
       endedAt: now,
@@ -364,7 +388,7 @@ function startAgentSession(current: SessionBrief, next: AgentSessionRef | null, 
   }
   const {
     title: _title, titleSource: _titleSource, recapMarkdown: _recap, recapSource: _recapSource, tasks: _tasks, screenshots: _screenshots,
-    references: _references, next: _next, earlierSessions: _earlier, agentSession: _session,
+    references: _references, asks: _asks, next: _next, earlierSessions: _earlier, agentSession: _session,
     agentSessionEnded: _ended, ...pane
   } = current
   return {
@@ -377,6 +401,7 @@ function startAgentSession(current: SessionBrief, next: AgentSessionRef | null, 
     ...(returning?.tasks ? { tasks: returning.tasks } : {}),
     ...(returning?.screenshots ? { screenshots: returning.screenshots } : {}),
     ...(returning?.references ? { references: returning.references } : {}),
+    ...(returning?.asks ? { asks: returning.asks } : {}),
     updates: returning?.updates ?? [],
     ...(returning?.next ? { next: returning.next } : {}),
     ...(earlier.length ? { earlierSessions: earlier.slice(0, MAX_EARLIER_SESSIONS) } : {}),
@@ -394,7 +419,9 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
   const taskValues = value.tasks === undefined ? [] : value.tasks
   const screenshotValues = value.screenshots === undefined ? [] : value.screenshots
   const referenceValues = value.references === undefined ? [] : value.references
+  const asks = parseList(value.asks, MAX_ASKS, parseAsk)
   if (
+    !asks || !uniqueAsks(asks) ||
     typeof value.sessionId !== 'string' || !SESSION_ID.test(value.sessionId) ||
     sessionName === null || headline === null || recapMarkdown === null || next === null ||
     (value.headlineSource !== 'hook' && value.headlineSource !== 'agent') ||
@@ -434,6 +461,7 @@ function parseSessionBriefContent(value: unknown): LegacySessionBrief | null {
     ...(validTasks.length ? { tasks: validTasks } : {}),
     ...(validScreenshots.length ? { screenshots: validScreenshots } : {}),
     ...(validReferences.length ? { references: validReferences } : {}),
+    ...(asks.length ? { asks } : {}),
     updates: validUpdates,
     ...(next ? { next } : {}),
     ...parseSessionHistory(value),
@@ -513,6 +541,7 @@ function cloneBrief(brief: SessionBrief): SessionBrief {
     ...(brief.tasks ? { tasks: brief.tasks.map((task) => ({ ...task })) } : {}),
     ...(brief.screenshots ? { screenshots: brief.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) } : {}),
     ...(brief.references ? { references: brief.references.map((reference) => ({ ...reference })) } : {}),
+    ...(brief.asks ? { asks: brief.asks.map(cloneAsk) } : {}),
     updates: brief.updates.map((update) => ({ ...update })),
     ...(brief.agentSession ? { agentSession: { ...brief.agentSession } } : {}),
     ...(brief.earlierSessions ? { earlierSessions: brief.earlierSessions.map(cloneEarlierSession) } : {}),
@@ -872,6 +901,7 @@ export class SessionBriefStore {
             : {}),
         ...(current?.screenshots?.length ? { screenshots: current.screenshots.map((folder) => ({ ...folder, preview: folder.preview.map((file) => ({ ...file })) })) } : {}),
         ...(current?.references?.length ? { references: current.references.map((reference) => ({ ...reference })) } : {}),
+        ...(current?.asks?.length ? { asks: current.asks.map(cloneAsk) } : {}),
         updates,
         ...(current?.next ? { next: current.next } : {}),
         ...(current?.agentSession && agentSession && !sameAgentSession(current.agentSession, agentSession)
@@ -961,6 +991,15 @@ export class SessionBriefStore {
         ...(patch.reference.url ? { url: patch.reference.url } : {}) })
     }
     if (references.length > MAX_REFERENCES) throw new SessionReferenceLimitError('Too many session references (maximum 20)')
+    // Raising a key again updates that ask in place; it keeps its place and its asked time.
+    const asks = (current?.asks ?? []).filter((ask) => ask.key !== patch.resolveAsk).map(cloneAsk)
+    if (patch.ask) {
+      const raised = { ...patch.ask, options: [...patch.ask.options] }
+      const index = asks.findIndex((ask) => ask.key === raised.key)
+      if (index >= 0) asks[index] = { ...raised, askedAt: asks[index]!.askedAt }
+      else asks.push({ ...raised, askedAt: now })
+    }
+    if (asks.length > MAX_ASKS) throw new SessionAskLimitError(`Too many open asks (maximum ${MAX_ASKS}); resolve one first`)
     const headline = patch.headline
       ?? current?.headline
       ?? patch.update?.text
@@ -989,6 +1028,7 @@ export class SessionBriefStore {
             : {}),
       ...(current?.tasks?.length ? { tasks: current.tasks.map((task) => ({ ...task })) } : {}),
       ...(references.length ? { references } : {}),
+      ...(asks.length ? { asks } : {}),
       ...(published
         ? { screenshots: [published, ...(current?.screenshots ?? []).filter((folder) => folder.id !== published.id)].slice(0, 5) }
         : current?.screenshots?.length
@@ -1013,6 +1053,18 @@ export class SessionBriefStore {
     this.prune()
     await this.persist()
     return cloneBrief(validated)
+  }
+
+  /** The user answered an open ask; it closes. Null when the pane has no open ask with this key. */
+  async answerAsk(paneId: string, key: string): Promise<SessionBrief | null> {
+    const brief = this.briefs.get(paneId)
+    if (!brief?.asks?.some((ask) => ask.key === key)) return null
+    const asks = brief.asks.filter((ask) => ask.key !== key)
+    const { asks: _asks, ...rest } = brief
+    const next: SessionBrief = { ...rest, ...(asks.length ? { asks } : {}) }
+    this.briefs.set(paneId, next)
+    await this.persist()
+    return cloneBrief(next)
   }
 
   /** The pane's agent process exited while tmux lived; its conversation is over unless resumed. */

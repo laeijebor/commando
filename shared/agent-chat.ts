@@ -7,6 +7,7 @@
 
 import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type ChatMcpResult } from './chat-mcp.js'
 import type { ChatCardEvent } from './chat-tile-events.js'
+import { ASK_KEY } from './session-asks.js'
 
 export const AGENT_HOST_PROTOCOL_VERSION = 8
 /**
@@ -640,6 +641,8 @@ export interface ChatSendOptions {
   /** Switch to this permission mode first (Implement leaves plan mode). */
   permissionMode?: ChatSessionPermissionMode
   relayTo?: { agentId: string; label: string }
+  /** The message answers the pane's open ask with this key; the daemon closes it once sent. */
+  answersAsk?: string
 }
 
 export type ChatQueueAction =
@@ -940,7 +943,8 @@ export function parseChatSendOptions(value: Record<string, unknown>): ChatSendOp
   if (value.permissionMode !== undefined && !isChatPermissionMode(value.permissionMode)) return null
   const relayTo = parseRelayTarget(value.relayTo)
   if (relayTo === null) return null
-  return withOptional({} as ChatSendOptions, { delivery: value.delivery, permissionMode: value.permissionMode, relayTo })
+  if (value.answersAsk !== undefined && (typeof value.answersAsk !== 'string' || !ASK_KEY.test(value.answersAsk))) return null
+  return withOptional({} as ChatSendOptions, { delivery: value.delivery, permissionMode: value.permissionMode, relayTo, answersAsk: value.answersAsk })
 }
 
 /** The most messages the host holds in a chat's queue. */

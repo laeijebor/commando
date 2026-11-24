@@ -197,6 +197,33 @@
 /* Thinking summaries read as an aside, not as Claude's reply. */
 .chat-thought .chat-markdown { color: inherit; font-size: 13px; line-height: 20px; }
 
+/* Questions the agent is waiting on sit above the PR strip, in the composer's column. */
+.commando-chat .chat-ask-tray { flex: none; padding: 4px 16px 0; font-size: 12px; }
+.commando-chat .chat-ask-tray > * { width: 100%; max-width: var(--chat-content-max-width); margin-inline: auto; }
+.commando-chat .chat-ask-panel { border: 1px solid color-mix(in srgb, #a78bfa 35%, var(--border)); border-radius: 6px; background: color-mix(in srgb, #a78bfa 7%, var(--surface-soft)); color: var(--text-soft); }
+.commando-chat .chat-ask-head { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 5px 8px; border-radius: 6px; text-align: left; cursor: pointer; }
+.commando-chat .chat-ask-head:hover { background: color-mix(in srgb, #a78bfa 10%, transparent); }
+.commando-chat .chat-ask-chevron { color: var(--muted); transition: transform .15s; }
+.commando-chat .chat-ask-panel.open .chat-ask-chevron { transform: rotate(90deg); }
+.commando-chat .chat-ask-diamond, .commando-chat .chat-ask-marker-diamond { color: #b59bea; }
+.commando-chat .chat-ask-count { flex: none; min-width: 18px; padding: 0 5px; border-radius: 9px; background: color-mix(in srgb, #a78bfa 30%, transparent); color: var(--text-soft); font-size: 11px; text-align: center; }
+.commando-chat .chat-ask-list { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; padding: 0 8px 8px; margin: 0; list-style: none; }
+.commando-chat .chat-ask-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-deep); }
+.commando-chat .chat-ask-item.sent { opacity: .6; }
+.commando-chat .chat-ask-item h4 { margin: 0 0 3px; font-size: 13px; font-weight: 600; color: var(--text); }
+.commando-chat .chat-ask-context { margin: 0 0 7px; }
+.commando-chat .chat-ask-why { margin: 0 0 8px; padding: 2px 0 2px 8px; border-left: 2px solid color-mix(in srgb, #a78bfa 40%, var(--border)); color: var(--muted); }
+.commando-chat .chat-ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.commando-chat .chat-ask-sent { display: flex; align-items: center; gap: 4px; margin: 0; }
+.commando-chat .chat-ask-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 7px; }
+.commando-chat .chat-ask-links > * { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); cursor: pointer; text-decoration: none; }
+.commando-chat .chat-ask-links > *:hover { color: var(--text-soft); text-decoration: underline; }
+/* The inline marker left on the reply where the agent asked. */
+.commando-chat .chat-ask-marker { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.commando-chat .chat-ask-marker:hover { color: var(--text-soft); }
+.commando-chat .chat-ask-flash { animation: chat-ask-flash 1.2s; border-radius: 6px; }
+@keyframes chat-ask-flash { from { background: color-mix(in srgb, #a78bfa 30%, transparent); } to { background: transparent; } }
+
 /* Compact PR context stays directly above the composer. */
 .commando-chat .chat-pr-strip { flex: none; padding: 4px 16px 0; font-size: 12px; }
 /* Rows share the composer's column width instead of spanning a wide pane. */
