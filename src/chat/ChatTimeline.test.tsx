@@ -111,3 +111,18 @@ it('does not re-parse completed replies when other items or the activity clock u
   rerender(<ChatTimeline items={initial} cwd="/other" working onResourceAction={onResourceAction} />)
   expect(count()).toBeGreaterThan(before)
 })
+
+describe('ChatTimeline handoff divider', () => {
+  it('renders handoff notices as a centered horizontal separator with arrow notation', () => {
+    const withHandoff: ChatItem[] = [
+      ...items,
+      { id: 'h1', turnId: 'h1', status: 'completed', createdAt: 2, updatedAt: 2, kind: 'notice', level: 'info', text: 'Handed off from Claude to Cursor' },
+      { id: 'n1', turnId: 't2', status: 'completed', createdAt: 3, updatedAt: 3, kind: 'notice', level: 'info', text: 'Interrupted' },
+    ]
+    render(<ChatTimeline items={withHandoff} cwd="/work" working={false} />)
+    const divider = screen.getByRole('separator', { name: 'Handed off from Claude → Cursor' })
+    expect(divider).toBeInTheDocument()
+    expect(divider).toHaveTextContent('Handed off from Claude → Cursor')
+    expect(screen.getByText('Interrupted')).toBeInTheDocument()
+  })
+})
