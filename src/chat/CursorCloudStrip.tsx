@@ -50,8 +50,8 @@ export function CursorCloudStrip({ cloud, cwd, checkout, disabled, onOpenPr }: {
     setWarning('')
     try {
       setCreation(await checkout.startSession({
-        name: cloud.branch.split('/').at(-1)!, cwd,
-        worktree: { branch: cloud.branch, fromRemote: true },
+        name: cloud.branch.split('/').at(-1)!, autoName: true, cwd,
+        worktree: { branch: cloud.branch, fromRemote: true, repoUrl: cloud.repoUrl },
       }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to check out locally')

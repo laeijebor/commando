@@ -62,7 +62,7 @@ it('sends a plain shell session request to the creation API and opens the return
   fireEvent.click(screen.getByRole('button', { name: 'Check out locally' }))
   await waitFor(() => expect(actions.onCreated).toHaveBeenCalledWith(created))
   expect(fetcher).toHaveBeenCalledWith('/api/tmux/session-creations', expect.objectContaining({
-    method: 'POST', body: JSON.stringify({ name: 'fix-flaky-test-1a2b', cwd: '/local/app', worktree: { branch: working.branch, fromRemote: true } }),
+    method: 'POST', body: JSON.stringify({ name: 'fix-flaky-test-1a2b', autoName: true, cwd: '/local/app', worktree: { branch: working.branch, fromRemote: true, repoUrl: cloud.repoUrl } }),
   }))
   expect(actions.dismissCreation).toHaveBeenCalledWith(response.id)
 })
@@ -89,6 +89,17 @@ it('handles completion reported over the websocket before the start response arr
   const warning = `Local ${working.branch} has commits that aren't on GitHub; it wasn't updated.`
   const complete = { ...fetching, stage: 'done' as const, result: { created, worktree: { path: created.panePath, branch: working.branch, base: '', reusedBranch: true, warning } } }
   const actions = { ...checkout(), creations: [complete] }
+  render(<CursorCloudStrip cwd="/local/app" cloud={working} checkout={actions} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Check out locally' }))
+  await waitFor(() => expect(actions.onCreated).toHaveBeenCalledWith(created))
+  expect(screen.getByRole('status')).toHaveTextContent(warning)
+})
+
+it('shows the pull warning when checkout returns an existing worktree behind GitHub', async () => {
+  const warning = `Already checked out at ${created.panePath}; it's 2 commits behind GitHub — pull to update.`
+  const actions = { ...checkout(), startSession: vi.fn(async () => ({ ...fetching, stage: 'done' as const,
+    result: { created, worktree: { path: created.panePath, branch: working.branch, base: '', reusedBranch: true, warning } },
+  })) }
   render(<CursorCloudStrip cwd="/local/app" cloud={working} checkout={actions} />)
   fireEvent.click(screen.getByRole('button', { name: 'Check out locally' }))
   await waitFor(() => expect(actions.onCreated).toHaveBeenCalledWith(created))

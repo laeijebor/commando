@@ -193,6 +193,8 @@ export type CreateTmuxSessionWorktree = {
   branch: string
   /** Check out the branch pushed to the remote instead of branching from the default branch. */
   fromRemote?: true
+  /** Fetch from the remote matching this Cursor cloud GitHub repository. */
+  repoUrl?: string
   /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch, worktreesParent)` when omitted. */
   path?: string
   /** Multiline shell command to run in the new worktree before opening its interactive shell. */

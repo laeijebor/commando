@@ -8,7 +8,7 @@ import { GitWorktreeService } from './git-worktree.js'
 
 const repoUrl = 'https://github.com/acme/app'
 const folders: string[] = []
-afterEach(async () => { await Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true }))) })
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(folders.splice(0).map((folder) => rm(folder, { recursive: true, force: true }))) })
 
 describe('GitHub remote normalisation', () => {
   it.each(['git@github.com:acme/app.git', 'ssh://git@github.com/acme/app.git', 'https://github.com/acme/app.git', repoUrl])('normalises %s', (url) => {
@@ -49,7 +49,7 @@ it('checks the pushed ref in a bare remote, even when local HEAD has moved', asy
 
 it('extends the existing repo probe with GitHub tracking state and the default ref when detached', async () => {
   const { cwd, git, execute, service } = await fixture()
-  expect(await new GitWorktreeService(execute).probe(cwd)).toMatchObject({ github: { repoUrl, remote: 'origin', ref: 'main', pushed: true, ahead: 0, behind: 0 } })
+  expect(await new GitWorktreeService(execute).probe(cwd, { github: true })).toMatchObject({ github: { repoUrl, remote: 'origin', ref: 'main', pushed: true, ahead: 0, behind: 0 } })
   await git(['commit', '--allow-empty', '-m', 'ahead'])
   expect(await service.probe(cwd, 'main')).toMatchObject({ pushed: true, ahead: 1, behind: 0 })
   await git(['update-ref', 'refs/remotes/origin/main', 'HEAD'])
@@ -76,4 +76,25 @@ it('finds the matching GitHub remote when origin points at another repository', 
   await git(['remote', 'add', 'origin', 'https://github.com/other/app'])
   await expect(service.assertPushed(cwd, repoUrl, 'main')).resolves.toBeUndefined()
   expect(execute).toHaveBeenCalledWith('git', ['ls-remote', 'upstream', 'refs/heads/main'], expect.anything())
+})
+
+
+it('skips GitHub metadata for pane resolution and worktree creation probes', async () => {
+  const { cwd, execute } = await fixture()
+  const info = await new GitWorktreeService(execute).probe(cwd)
+  expect(info.isRepo).toBe(true)
+  expect(info.github).toBeUndefined()
+  expect(execute.mock.calls.some(([, args]) => args[0] === 'remote' || args[0] === 'rev-list')).toBe(false)
+  execute.mockClear()
+  expect((await new GitWorktreeService(execute).probe(cwd, { github: true })).github).toMatchObject({ repoUrl })
+  expect(execute.mock.calls.some(([, args]) => args[0] === 'remote')).toBe(true)
+})
+
+it.each([undefined, 'ssh -i /keys/custom -o IdentitiesOnly=yes'])('preserves the SSH command %j and appends batch mode', async (command) => {
+  vi.stubEnv('GIT_SSH_COMMAND', command)
+  const { cwd, execute, service } = await fixture()
+  await service.assertPushed(cwd, repoUrl, 'main')
+  expect(execute).toHaveBeenCalledWith('git', ['ls-remote', 'origin', 'refs/heads/main'], expect.objectContaining({
+    env: expect.objectContaining({ GIT_SSH_COMMAND: `${command ?? 'ssh'} -o BatchMode=yes` }),
+  }))
 })

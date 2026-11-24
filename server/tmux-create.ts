@@ -153,6 +153,10 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
   throw new Error(`Cannot start ${command}: executable not found on the daemon PATH. Install the CLI on the daemon host.`)
 }
 
+function validateCloudRepoUrl(repoUrl: unknown): asserts repoUrl is string {
+  if (typeof repoUrl !== 'string' || normaliseGithubUrl(repoUrl) !== repoUrl || !repoUrl.startsWith('https://github.com/') || repoUrl.endsWith('.git')) throw new Error('Cursor cloud requires an https://github.com/<owner>/<repo> URL without credentials, query, fragment, port or .git')
+}
+
 export function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
@@ -182,7 +186,7 @@ export function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
     if (provider !== 'cursor-chat') throw new Error('Only Cursor chat accepts Cursor cloud')
     if (!cursorCloud || typeof cursorCloud !== 'object' || Array.isArray(cursorCloud)) throw new Error('cursorCloud must be an object')
     const { repoUrl, ref } = cursorCloud as { repoUrl?: unknown; ref?: unknown }
-    if (typeof repoUrl !== 'string' || normaliseGithubUrl(repoUrl) !== repoUrl || !repoUrl.startsWith('https://github.com/') || repoUrl.endsWith('.git')) throw new Error('Cursor cloud requires an https://github.com/<owner>/<repo> URL without credentials, query, fragment, port or .git')
+    validateCloudRepoUrl(repoUrl)
     if (!(ref === undefined && resume !== undefined) && (typeof ref !== 'string' || ref !== ref.trim() || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) throw new Error('Invalid Cursor cloud ref')
     if (permissionMode !== undefined && permissionMode !== 'bypassPermissions' && permissionMode !== 'plan') throw new Error('Cursor cloud supports only Full access and Plan')
     cloud = { repoUrl, ...(typeof ref === 'string' ? { ref } : {}) }
@@ -536,6 +540,7 @@ export class TmuxCreator {
     // An auto-named session names its branch too, and must not borrow one that already exists.
     const branchFromName = autoName && !input.worktree.branch
     if (input.worktree.fromRemote !== undefined && input.worktree.fromRemote !== true) throw new Error('fromRemote must be true')
+    if (input.worktree.repoUrl !== undefined) validateCloudRepoUrl(input.worktree.repoUrl)
     if (input.worktree.fromRemote && branchFromName) throw new Error('A branch is required for remote checkout')
     const chosenBranch = branchFromName ? undefined : validatedName(input.worktree.branch, 'branch name')
     const worktreePath = validatedPath(input.worktree.path)
@@ -558,7 +563,7 @@ export class TmuxCreator {
           path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch, repo.worktreesParent),
           ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
           ...(branchFromName ? { newBranchOnly: true } : {}),
-          ...(input.worktree.fromRemote ? { fromRemote: true } : {}),
+          ...(input.worktree.fromRemote ? { fromRemote: true, ...(input.worktree.repoUrl ? { repoUrl: input.worktree.repoUrl } : {}) } : {}),
           ...(onProgress ? { onProgress } : {}),
         })
       } catch (error) {
@@ -822,6 +827,7 @@ export class TmuxCreator {
     const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     if (input.worktree !== undefined && (!input.worktree || typeof input.worktree !== 'object' || Array.isArray(input.worktree))) throw new Error('worktree must be an object')
     const branch = input.worktree ? validatedName(input.worktree.branch, 'branch name') : undefined
+    if (input.worktree?.repoUrl !== undefined) validateCloudRepoUrl(input.worktree.repoUrl)
     if (input.worktree?.fromRemote !== undefined && input.worktree.fromRemote !== true) throw new Error('fromRemote must be true')
     const path = input.worktree ? validatedPath(input.worktree.path) : undefined
     const prepareCommand = input.worktree ? optionalPrepareCommand(input.worktree.prepareCommand) : undefined
@@ -834,7 +840,7 @@ export class TmuxCreator {
       const result = await this.worktrees!.createWorktree({
         mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!, repo.worktreesParent),
         ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
-        ...(input.worktree.fromRemote ? { fromRemote: true } : {}),
+        ...(input.worktree.fromRemote ? { fromRemote: true, ...(input.worktree.repoUrl ? { repoUrl: input.worktree.repoUrl } : {}) } : {}),
       })
       worktree = result.worktree
       rollback = result.rollback

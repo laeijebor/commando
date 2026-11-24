@@ -14,7 +14,7 @@ export class GitCursorCloud {
 
   private async git(cwd: string, args: string[]): Promise<string> {
     return (await this.execute('git', args, {
-      cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: 'ssh -oBatchMode=yes' },
+      cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: `${process.env.GIT_SSH_COMMAND ?? 'ssh'} -o BatchMode=yes` },
       maxBuffer: 1024 * 1024, shell: false, timeout: 5_000, windowsHide: true,
     })).stdout.trim()
   }
@@ -49,11 +49,18 @@ export class GitCursorCloud {
     return { ...remote, ref, pushed: true, ahead: ahead ?? 0, behind: behind ?? 0 }
   }
 
+  /** Match clone URL spellings and repository case, including fork setups. */
+  async matchingRemote(cwd: string, repoUrl: string): Promise<string> {
+    const normalized = normaliseGithubUrl(repoUrl)
+    const remote = normalized && (await this.remotes(cwd)).find((entry) => entry.repoUrl.toLowerCase() === normalized.toLowerCase())
+    if (!remote) throw new Error('No GitHub remote matches the Cursor cloud repository')
+    return remote.remote
+  }
+
   /** Verify the pushed tip at launch time, independently of stale tracking refs. */
   async assertPushed(cwd: string, repoUrl: string, ref: string): Promise<void> {
-    const remote = (await this.remotes(cwd)).find((entry) => entry.repoUrl.toLowerCase() === repoUrl.toLowerCase())
-    if (!remote) throw new Error('No GitHub remote matches the Cursor cloud repository')
-    const output = await this.git(cwd, ['ls-remote', remote.remote, `refs/heads/${ref}`])
+    const remote = await this.matchingRemote(cwd, repoUrl)
+    const output = await this.git(cwd, ['ls-remote', remote, `refs/heads/${ref}`])
     if (!output.split('\n').some((line) => line.split(/\s+/)[1] === `refs/heads/${ref}`)) {
       throw new Error(`Push ${ref} to GitHub first; Cursor's cloud starts from the pushed branch.`)
     }

@@ -717,12 +717,12 @@ describe('TmuxCreator worktree-backed sessions', () => {
     const onProgress = vi.fn()
     await new TmuxCreator(run, [], git).createSession({
       name: 'fix-flaky-test-1a2b', cwd: MAIN,
-      worktree: { branch: 'cursor/fix-flaky-test-1a2b', fromRemote: true },
+      worktree: { branch: 'cursor/fix-flaky-test-1a2b', fromRemote: true, repoUrl: 'https://github.com/acme/app' },
     }, undefined, onProgress)
     expect(git.createWorktree).toHaveBeenCalledWith({
       mainRoot: MAIN, branch: 'cursor/fix-flaky-test-1a2b',
       path: `${MAIN}-worktrees/cursor/fix-flaky-test-1a2b`,
-      defaultBranch: 'main', remote: 'origin', fromRemote: true, onProgress,
+      defaultBranch: 'main', remote: 'origin', fromRemote: true, repoUrl: 'https://github.com/acme/app', onProgress,
     })
     const args = run.mock.calls.find(([args]) => args.includes('new-session'))?.[0]
     expect(args?.slice(-2)).toEqual(['-c', `${MAIN}-worktrees/cursor/fix-flaky-test-1a2b`])
@@ -731,11 +731,20 @@ describe('TmuxCreator worktree-backed sessions', () => {
   it('passes remote checkout for panes too and rejects invalid remote options before creating a worktree', async () => {
     const git = worktrees()
     const creator = new TmuxCreator(tmuxRunner(), [], git)
-    await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: MAIN, worktree: { branch: 'cursor/fix', fromRemote: true } })
-    expect(git.createWorktree).toHaveBeenCalledWith(expect.objectContaining({ branch: 'cursor/fix', fromRemote: true }))
+    await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: MAIN, worktree: { branch: 'cursor/fix', fromRemote: true, repoUrl: 'https://github.com/acme/app' } })
+    expect(git.createWorktree).toHaveBeenCalledWith(expect.objectContaining({ branch: 'cursor/fix', fromRemote: true, repoUrl: 'https://github.com/acme/app' }))
     git.createWorktree.mockClear()
     await expect(creator.createSession({ name: 'fix', cwd: MAIN, worktree: { branch: 'cursor/fix', fromRemote: false } } as never)).rejects.toThrow('fromRemote must be true')
     await expect(creator.createSession({ name: 'fix', autoName: true, cwd: MAIN, worktree: { branch: '', fromRemote: true } })).rejects.toThrow('A branch is required')
+    expect(git.createWorktree).not.toHaveBeenCalled()
+  })
+
+  it.each(['https://github.com/acme/app.git', 'git@github.com:acme/app', 'https://user@github.com/acme/app', 'https://github.com:443/acme/app', 'https://github.com/acme/app?x=1', 'https://github.com/acme/app#x', 'https://gitlab.com/acme/app', 42])('validates remote checkout URL %j before creating a session or pane', async (repoUrl) => {
+    const git = worktrees()
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    const worktree = { branch: 'cursor/fix', fromRemote: true, repoUrl } as never
+    await expect(creator.createSession({ name: 'fix', cwd: MAIN, worktree })).rejects.toThrow('Cursor cloud requires an https://github.com/')
+    await expect(creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: MAIN, worktree })).rejects.toThrow('Cursor cloud requires an https://github.com/')
     expect(git.createWorktree).not.toHaveBeenCalled()
   })
 
@@ -951,6 +960,15 @@ describe('auto-named sessions', () => {
     const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
     await expect(new TmuxCreator(tmuxWith([]), [], git, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/repo', worktree: { branch: '', path: '/mine' }, agent: { provider: 'claude-chat', prompt: 'Go' } })).rejects.toThrow(/already exists/)
     expect(createWorktree).toHaveBeenCalledOnce()
+  })
+
+  it('uses a free session name for cloud checkout without changing the remote branch', async () => {
+    const run = tmuxWith(['fix-cloud'])
+    const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => ({ worktree: { path: input.path, branch: input.branch, base: '', reusedBranch: true }, rollback: async () => {} }))
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
+    await new TmuxCreator(run, [], git, async () => '/never', {}).createSession({ name: 'fix-cloud', autoName: true, cwd: '/repo', worktree: { branch: 'cursor/fix-cloud', fromRemote: true, repoUrl: 'https://github.com/acme/app' } })
+    expect(sessionName(run)).toBe('fix-cloud-2')
+    expect(createWorktree).toHaveBeenCalledWith(expect.objectContaining({ branch: 'cursor/fix-cloud', fromRemote: true, repoUrl: 'https://github.com/acme/app' }))
   })
 
   it('keeps a branch the user typed, and refuses a taken name when not auto-named', async () => {

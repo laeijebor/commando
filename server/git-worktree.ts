@@ -45,6 +45,8 @@ export type CreateWorktreeInput = {
   existingBranchOnly?: boolean
   /** Fetch and check out the existing remote branch, preserving any local commits. */
   fromRemote?: true
+  /** GitHub repository whose matching remote should be fetched. */
+  repoUrl?: string
   /** Told when the fetch and the checkout start, then how much of the checkout is done. */
   onProgress?: SessionCreationProgress
 }
@@ -226,12 +228,12 @@ export class GitWorktreeService {
   }
 
   /** Describe the repository containing `directory`, or `{ isRepo: false }`. */
-  async probe(directory: string): Promise<GitRepoInfo> {
+  async probe(directory: string, options: { github?: boolean } = {}): Promise<GitRepoInfo> {
     const identity = await this.repositoryIdentity(directory)
     if (!identity) return { isRepo: false }
     const { root, mainRoot, branch } = identity
     const defaultBranch = await this.defaultBranch(mainRoot)
-    const github = await new GitCursorCloud(this.execute).probe(root, branch ?? '', defaultBranch).catch(() => undefined)
+    const github = options.github ? await new GitCursorCloud(this.execute).probe(root, branch ?? '', defaultBranch).catch(() => undefined) : undefined
     return {
       isRepo: true,
       ...(github ? { github } : {}),
@@ -263,12 +265,14 @@ export class GitWorktreeService {
     const target = path.normalize(input.path)
     const cwd = input.mainRoot
 
-    const remote = input.remote ?? REMOTE
+    const remote = input.fromRemote && input.repoUrl
+      ? await new GitCursorCloud(this.execute).matchingRemote(cwd, input.repoUrl)
+      : input.remote ?? REMOTE
     const remoteRef = input.fromRemote ? `${remote}/${branch}` : undefined
     if (remoteRef) {
       input.onProgress?.('fetching')
       try {
-        await this.git(cwd, ['fetch', remote, `refs/heads/${branch}:refs/remotes/${remoteRef}`], this.fetchTimeoutMs, BUFFER_BYTES, undefined, true)
+        await this.git(cwd, ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remoteRef}`], this.fetchTimeoutMs, BUFFER_BYTES, undefined, true)
       } catch (error) {
         const detail = failureDetail(error)
         if (detail.includes(`couldn't find remote ref refs/heads/${branch}`)) {
@@ -296,6 +300,7 @@ export class GitWorktreeService {
     }
     // A checkout already in use belongs to its caller: never update or roll it back.
     if (input.fromRemote && attached && await this.pathExists(attached.path)) {
+      if (!warning && behind > 0) warning = `Already checked out at ${attached.path}; it's ${behind} commits behind GitHub — pull to update.`
       return { worktree: { path: attached.path, branch, base: '', reusedBranch: true, ...(warning ? { warning } : {}) }, rollback: async () => undefined }
     }
     if (attached && path.normalize(attached.path) === target) {

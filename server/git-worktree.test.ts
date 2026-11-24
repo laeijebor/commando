@@ -473,6 +473,42 @@ describe('GitWorktreeService remote branches', () => {
     expect(onProgress.mock.calls.map(([stage]) => stage)).toEqual(expect.arrayContaining(['fetching', 'checking-out']))
   })
 
+  it('fetches again after a remote force push while preserving the previous local tip', async () => {
+    const { main, publisher, target, run, push, input, service } = await repository()
+    const original = push()
+    const first = await service.createWorktree(input)
+    // Remove just the checkout so the existing branch is exercised on the next checkout.
+    run(main, 'worktree', 'remove', target)
+    run(publisher, 'commit', '--amend', '-m', 'rewritten cloud change')
+    run(publisher, 'push', '--force', 'origin', branch)
+    const rewritten = run(publisher, 'rev-parse', 'HEAD')
+    expect(rewritten).not.toBe(original)
+    const second = await service.createWorktree(input)
+    expect(run(main, 'rev-parse', `refs/remotes/origin/${branch}`)).toBe(rewritten)
+    expect(run(target, 'rev-parse', 'HEAD')).toBe(original)
+    expect(second.worktree.warning).toBe(`Local ${branch} has commits that aren't on GitHub; it wasn't updated.`)
+    expect(first.worktree.reusedBranch).toBe(false)
+  })
+
+  it('fetches from the matching cloud repository in a fork setup, or errors before fetching', async () => {
+    const { main, target, run, push, input } = await repository()
+    const remoteHead = push()
+    run(main, 'remote', 'rename', 'origin', 'upstream')
+    run(main, 'remote', 'set-url', 'upstream', 'git@github.com:Acme/App.git')
+    run(main, 'remote', 'add', 'origin', 'https://github.com/fork/app')
+    const bare = path.join(path.dirname(main), 'remote.git')
+    const execute = vi.fn(async (_file: string, args: readonly string[], options: GitExecutorOptions) => {
+      return { stdout: run(options.cwd, ...(args[0] === 'fetch' && args[1] === 'upstream' ? ['fetch', bare, ...args.slice(2)] : args)), stderr: '' }
+    })
+    const service = new GitWorktreeService(execute)
+    await expect(service.createWorktree({ ...input, repoUrl: 'https://github.com/missing/app' })).rejects.toThrow('No GitHub remote matches the Cursor cloud repository')
+    expect(execute.mock.calls.some(([, args]) => args[0] === 'fetch')).toBe(false)
+    const result = await service.createWorktree({ ...input, repoUrl: 'https://github.com/acme/app' })
+    expect(result.worktree.base).toBe(`upstream/${branch}`)
+    expect(run(target, 'rev-parse', 'HEAD')).toBe(remoteHead)
+    expect(execute).toHaveBeenCalledWith('git', ['fetch', 'upstream', `+refs/heads/${branch}:refs/remotes/upstream/${branch}`], expect.anything())
+  })
+
   it('fast-forwards a strictly behind local branch and rollback keeps that branch', async () => {
     const { main, target, run, push, input, service } = await repository()
     run(main, 'branch', branch)
@@ -517,7 +553,9 @@ describe('GitWorktreeService remote branches', () => {
     writeFileSync(path.join(existing, 'file'), 'uncommitted')
     push()
     const result = await service.createWorktree(input)
-    expect(result.worktree).toMatchObject({ path: existing, branch, reusedBranch: true })
+    expect(result.worktree).toMatchObject({ path: existing, branch, reusedBranch: true,
+      warning: `Already checked out at ${existing}; it's 1 commits behind GitHub — pull to update.`,
+    })
     await result.rollback()
     expect(run(existing, 'rev-parse', 'HEAD')).toBe(localHead)
     expect(readFileSync(path.join(existing, 'file'), 'utf8')).toBe('uncommitted')
@@ -556,7 +594,7 @@ describe('GitWorktreeService remote branches', () => {
     await expect(new GitWorktreeService(git.execute, { fetchTimeoutMs: 1234 }).createWorktree({
       mainRoot: MAIN, branch, path: '/tmp/cloud', fromRemote: true, remote: 'github',
     })).rejects.toThrow('Could not fetch')
-    expect(git.execute.mock.calls[1]).toEqual(['git', ['fetch', 'github', `refs/heads/${branch}:refs/remotes/github/${branch}`], expect.objectContaining({
+    expect(git.execute.mock.calls[1]).toEqual(['git', ['fetch', 'github', `+refs/heads/${branch}:refs/remotes/github/${branch}`], expect.objectContaining({
       timeout: 1234,
       env: expect.objectContaining({ GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: expect.stringContaining('-o BatchMode=yes') }),
     })])
