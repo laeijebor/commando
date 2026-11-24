@@ -1,5 +1,6 @@
 import {
   MAX_INPUT_BYTES,
+  MAX_WEB_PANES,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
   MAX_PASTE_BYTES,
@@ -28,6 +29,7 @@ export const MAX_SUBSCRIBED_PANES = 64
 const PANE_RESET_BURST = 2
 const PANE_RESET_REFILL_PER_SECOND = 0.5
 const PANE_ID = /^%\d+$/
+const TILE_ID = /^[A-Za-z0-9_-]{1,128}$/
 const WINDOW_ID = /^@\d+$/
 const SESSION_ID = /^\$\d+$/
 const SPECIAL_KEYS = new Set<SpecialKey>([
@@ -236,6 +238,16 @@ export function parseClientMessage(value: unknown): ParseResult {
           statusPaneIds: [...new Set(statusPaneIds)],
         },
       }
+    }
+    case 'tiles_on_screen': {
+      if (
+        !Array.isArray(value.tileIds) ||
+        value.tileIds.length > MAX_WEB_PANES ||
+        !value.tileIds.every((id) => typeof id === 'string' && TILE_ID.test(id))
+      ) {
+        return { ok: false, error: 'Invalid tiles on screen' }
+      }
+      return { ok: true, message: { type: 'tiles_on_screen', tileIds: [...new Set(value.tileIds as string[])] } }
     }
     case 'mark_panes_seen': {
       if (

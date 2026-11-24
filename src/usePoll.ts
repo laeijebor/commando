@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-function usePageVisible(): boolean {
+export function usePageVisible(): boolean {
   const [visible, setVisible] = useState(() => document.visibilityState !== 'hidden')
   useEffect(() => {
     const change = () => setVisible(document.visibilityState !== 'hidden')

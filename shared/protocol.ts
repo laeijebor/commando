@@ -904,6 +904,8 @@ export type ClientMessage =
   | { type: 'subscribe'; paneIds: string[]; statusPaneIds?: string[] }
   /** The user is looking at these panes now. */
   | { type: 'mark_panes_seen'; paneIds: string[] }
+  /** The tiles this client is showing now, for the Tiles list's last-viewed times. */
+  | { type: 'tiles_on_screen'; tileIds: string[] }
   | { type: 'input'; paneId: string; data: string; requestId: string }
   | {
       type: 'input_bytes'

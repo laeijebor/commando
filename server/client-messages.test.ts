@@ -702,3 +702,20 @@ describe('chat pane messages', () => {
     expect(parseClientMessage({ type: 'chat_interrupt', paneId: '%4', dropQueued: 'queued-1', requestId: 'r5' }).ok).toBe(false)
   })
 })
+
+describe('tiles_on_screen messages', () => {
+  it('accepts up to the tile limit of tile ids, deduplicated', () => {
+    expect(parseClientMessage({ type: 'tiles_on_screen', tileIds: ['w-1', 'w-1', 'w-2'] })).toEqual({
+      ok: true,
+      message: { type: 'tiles_on_screen', tileIds: ['w-1', 'w-2'] },
+    })
+    expect(parseClientMessage({ type: 'tiles_on_screen', tileIds: [] })).toMatchObject({ ok: true })
+  })
+
+  it('rejects malformed or too many ids', () => {
+    expect(parseClientMessage({ type: 'tiles_on_screen', tileIds: ['../x'] })).toMatchObject({ ok: false })
+    expect(parseClientMessage({ type: 'tiles_on_screen', tileIds: [1] })).toMatchObject({ ok: false })
+    expect(parseClientMessage({ type: 'tiles_on_screen', tileIds: Array.from({ length: 65 }, (_, i) => `w-${i}`) })).toMatchObject({ ok: false })
+    expect(parseClientMessage({ type: 'tiles_on_screen' })).toMatchObject({ ok: false })
+  })
+})

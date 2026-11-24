@@ -166,6 +166,8 @@ import { createCloudTasksApi } from './cloudTasksApi'
 import { CloudTasksSection, CloudTasksHud } from './CloudTasksSection'
 import { PanesView } from './PanesView'
 import { TilesView } from './TilesView'
+import { TileVisibilityContext, createTileVisibility } from './tileVisibility'
+import { usePageVisible } from './usePoll'
 import type { PaneClosePlan } from './panesList'
 import { PaneGitStats } from './PaneGitStats'
 import { PanePathMenu } from './PanePathMenu'
@@ -1142,6 +1144,10 @@ export function App() {
 function HostApp() {
   const { activeHost, local, hostName, hosts, daemonFetch, path, switchHost } = useHost()
   const desktopWindowActive = useDesktopWindowActivity()
+  // Tiles rendered visibly here, reported so the Tiles list knows when each was last on screen.
+  const [shownTiles, setShownTiles] = useState('')
+  const tileVisibility = useMemo(() => createTileVisibility((tileIds) => setShownTiles([...tileIds].sort().join('\u0000'))), [])
+  const pageVisible = usePageVisible()
   const [narrowPanel, setNarrowPanel] = useState(() => isNarrowPanel(window.matchMedia(NARROW_PANEL_QUERY)))
   const [openDrawers, setOpenDrawers] = useState<Record<string, boolean>>({})
   useEffect(() => {
@@ -2045,6 +2051,13 @@ function HostApp() {
     if (!connected || !unseenViewedPaneKey) return
     send({ type: 'mark_panes_seen', paneIds: unseenViewedPaneKey.split('\u0000').slice(0, 64) })
   }, [connected, unseenViewedPaneKey, send])
+
+  // A hidden page shows nothing; sent again on reconnect, since the daemon forgets a closed socket's tiles.
+  useEffect(() => {
+    if (!connected) return
+    const tileIds = pageVisible && shownTiles ? shownTiles.split('\u0000').slice(0, MAX_WEB_PANES) : []
+    send({ type: 'tiles_on_screen', tileIds })
+  }, [connected, pageVisible, shownTiles, send])
 
   useEffect(() => {
     if (!connected || !selectedSessionId) return
@@ -3176,14 +3189,18 @@ function HostApp() {
     for (const { tab, signature } of closing) void dismissPanePrTab(tab, signature, tab.key === activeKey ? next : undefined)
   }
 
-  const closeWebPane = async (webPaneId: string, onError: (message: string) => void = setPaneActionError) => {
+  /**
+   * `selectNext` picks the next tab from the side panel's tab set, which only a shown workspace
+   * keeps current; the Tiles list turns it off and the daemon selects the neighbour itself.
+   */
+  const closeWebPane = async (webPaneId: string, onError: (message: string) => void = setPaneActionError, selectNext = true) => {
     setPaneActionError('')
     if (activeSimulatorTileId === webPaneId) setActiveSimulatorTileId(null)
     const closing = webPanes.find((pane) => pane.id === webPaneId)
     const combined = closing ? panelTabSets.current.get(closing.anchorPaneId) ?? [] : []
     const selected = closing ? panelActiveTabs[closing.anchorPaneId] ?? activePanelTab(panelTabs(webPanes, closing.anchorPaneId))?.id : undefined
     let selection: Promise<void> | undefined
-    if (selected === webPaneId) {
+    if (selectNext && selected === webPaneId) {
       const next = resolveActivePanelTab(combined.filter((tab) => tab.id !== webPaneId), selected, combined)
       if (next) selection = selectPanelTab(next)
     }
@@ -4054,6 +4071,7 @@ function HostApp() {
   }
 
   return (
+    <TileVisibilityContext.Provider value={tileVisibility}>
     <ChatStashContext.Provider value={chatStash}>
     <PlanUsageContext.Provider value={planUsageByProfile}>
     <div
@@ -4802,7 +4820,7 @@ function HostApp() {
               api={paneManagementApi}
               connected={connected}
               onOpen={openTileFromList}
-              onClose={async (tileIds, onError) => { for (const tileId of tileIds) await closeWebPane(tileId, onError) }}
+              onClose={async (tileIds, onError) => { for (const tileId of tileIds) await closeWebPane(tileId, onError, false) }}
               switcher={panesSwitcher}
             />
           ) : null}
@@ -5108,5 +5126,6 @@ function HostApp() {
     </div>
     </PlanUsageContext.Provider>
     </ChatStashContext.Provider>
+    </TileVisibilityContext.Provider>
   )
 }

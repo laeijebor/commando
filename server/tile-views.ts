@@ -1,24 +1,13 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { WebPane } from '../shared/protocol.js'
 
 const WRITE_DELAY_MS = 2_000
 const TILE_ID = /^[A-Za-z0-9_-]{1,128}$/
 
 /**
- * A tile counts as on screen while its anchor pane is streaming to a client and the tile is
- * split beside it or is the selected tab of its side panel. Whether that client has its side
- * panel open is not known here, so a selected tab in a closed panel still counts.
- */
-export function tilesOnScreen(tiles: readonly WebPane[], streamingPaneIds: ReadonlySet<string>): Set<string> {
-  return new Set(tiles
-    .filter((tile) => tile.status === 'open' && streamingPaneIds.has(tile.anchorPaneId) && (tile.dock === 'split' || tile.activeTab))
-    .map((tile) => tile.id))
-}
-
-/**
- * When each tile was last on a screen, recorded as it comes on or goes off. Tile ids outlive
- * tmux servers and daemon restarts, so the times are saved to `path` and pruned to live tiles.
+ * When each tile was last on a screen, recorded as it comes on or goes off. Clients report the
+ * tiles they render visibly. Tile ids outlive tmux servers and daemon restarts, so the times are
+ * saved to `path` and pruned to tiles that are open or parked.
  */
 export class TileViews {
   private readonly views = new Map<string, number>()
