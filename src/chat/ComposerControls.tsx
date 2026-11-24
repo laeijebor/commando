@@ -10,9 +10,10 @@ import {
   type ChatPlanUsage,
   type ChatProvider,
   type ChatSessionInfo,
+  type ChatSessionUsage,
   type ChatSettingsChange,
 } from '../../shared/agent-chat'
-import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatTokens, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
+import { EFFORT_LABELS, fastModeAvailable, fastModeOn, formatSessionUsageSummary, formatTokens, formatUsdCents, modelLabel, modelMenuAvailable, permissionDescription, permissionLabel, permissionModeOptions } from '../../shared/chat-composer'
 import { HANDOFF_PROVIDERS } from '../../shared/chat-handoff'
 import { cn } from './cn'
 import { formatDuration, formatReadingAge, formatResetTime, headlineLimits, isLimitReached, isPlanUsageStale, reachedLimit, shortLimitLabel } from './planUsage'
@@ -414,6 +415,79 @@ export function ContextMeter({ usage, canCompact, onCompact }: { usage: ChatCont
             Compact now
           </Button>
         </div>
+      </PopoverPopup>
+    </Popover>
+  )
+}
+
+function sessionUsageTokenRows(usage: ChatSessionUsage): { label: string; tokens: number }[] {
+  const rows = [
+    { label: 'Total tokens', tokens: usage.totalTokens },
+    { label: 'Input', tokens: usage.inputTokens },
+    { label: 'Output', tokens: usage.outputTokens },
+  ]
+  if (usage.cacheReadTokens && usage.cacheReadTokens > 0) rows.push({ label: 'Cache read', tokens: usage.cacheReadTokens })
+  if (usage.cacheWriteTokens && usage.cacheWriteTokens > 0) rows.push({ label: 'Cache write', tokens: usage.cacheWriteTokens })
+  if (usage.reasoningTokens && usage.reasoningTokens > 0) rows.push({ label: 'Reasoning', tokens: usage.reasoningTokens })
+  return rows
+}
+
+function sessionUsageCostRows(usage: ChatSessionUsage): { label: string; value: string }[] {
+  const rows: { label: string; value: string }[] = []
+  const planIncluded = usage.chargedCents === 0 && (usage.rawCostCents ?? 0) > 0
+  if (usage.chargedCents !== undefined) {
+    rows.push({ label: 'Billed', value: planIncluded ? 'Plan-included ($0.00)' : formatUsdCents(usage.chargedCents) })
+  }
+  if (usage.rawCostCents !== undefined && (usage.rawCostCents > 0 || usage.chargedCents === undefined)) {
+    rows.push({ label: 'Undiscounted', value: formatUsdCents(usage.rawCostCents) })
+  }
+  return rows
+}
+
+/** Cumulative session tokens and optional billed cost when context window size isn't reported. */
+export function SessionUsageBadge({ usage }: { usage: ChatSessionUsage }) {
+  const [open, setOpen] = useState(false)
+  const summary = formatSessionUsageSummary(usage)
+  const tokenRows = sessionUsageTokenRows(usage)
+  const costRows = sessionUsageCostRows(usage)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        className={cn(
+          'flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-2xs tabular-nums text-muted-foreground hover:bg-accent hover:text-secondary-label',
+          open && 'bg-accent text-secondary-label',
+        )}
+        aria-label={`Session usage: ${summary}`}
+        title={`Session usage: ${summary}`}
+        data-testid="session-usage-badge"
+      >
+        {summary}
+      </PopoverTrigger>
+      <PopoverPopup className="grid w-[260px] gap-2 px-3 py-2.5" side="top" align="end" aria-label="Session usage">
+        <div className="flex items-baseline justify-between gap-3 text-sm">
+          <b className="font-semibold text-foreground">Session usage</b>
+          <span className="font-mono text-xs tabular-nums text-muted-foreground">{summary}</span>
+        </div>
+        <div className="grid grid-cols-[1fr_auto] items-baseline gap-x-3 gap-y-0.5 text-xs">
+          {tokenRows.map((row) => (
+            <span key={row.label} className="contents">
+              <span className="truncate text-muted-foreground">{row.label}</span>
+              <span className="font-mono text-2xs tabular-nums text-foreground" title={row.tokens.toLocaleString()}>
+                {formatTokens(row.tokens)}
+              </span>
+            </span>
+          ))}
+        </div>
+        {costRows.length ? (
+          <div className="grid grid-cols-[1fr_auto] items-baseline gap-x-3 gap-y-0.5 border-t border-border pt-2 text-xs">
+            {costRows.map((row) => (
+              <span key={row.label} className="contents">
+                <span className="truncate text-muted-foreground">{row.label}</span>
+                <span className="font-mono text-2xs tabular-nums text-foreground">{row.value}</span>
+              </span>
+            ))}
+          </div>
+        ) : null}
       </PopoverPopup>
     </Popover>
   )

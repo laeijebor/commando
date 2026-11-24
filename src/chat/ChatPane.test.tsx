@@ -248,6 +248,75 @@ describe('context meter', () => {
   })
 })
 
+describe('session usage badge', () => {
+  it('shows cumulative tokens and billed cost in the footer and opens a breakdown popover', () => {
+    renderPane(pickerChat({
+      provider: 'cursor',
+      sessionUsage: {
+        inputTokens: 10_000,
+        outputTokens: 2_500,
+        cacheReadTokens: 1_200,
+        cacheWriteTokens: 500,
+        reasoningTokens: 800,
+        totalTokens: 14_200,
+        chargedCents: 4.2,
+        rawCostCents: 5.5,
+        updatedAt: 1_000,
+      },
+    }))
+    const badge = screen.getByTestId('session-usage-badge')
+    expect(badge).toHaveTextContent('14k tok · $0.04')
+    fireEvent.click(badge)
+    const popup = screen.getByRole('dialog', { name: 'Session usage' })
+    expect(popup).toHaveTextContent('Total tokens14k')
+    expect(popup).toHaveTextContent('Input10k')
+    expect(popup).toHaveTextContent('Output3k')
+    expect(popup).toHaveTextContent('Cache read1k')
+    expect(popup).toHaveTextContent('Cache write500')
+    expect(popup).toHaveTextContent('Reasoning800')
+    expect(popup).toHaveTextContent('Billed$0.04')
+    expect(popup).toHaveTextContent('Undiscounted$0.06')
+  })
+
+  it('notes plan-included usage in the breakdown and omits absent breakdown rows', () => {
+    renderPane(pickerChat({
+      provider: 'cursor',
+      sessionUsage: {
+        inputTokens: 10_000,
+        outputTokens: 4_000,
+        totalTokens: 14_000,
+        chargedCents: 0,
+        rawCostCents: 12.5,
+        updatedAt: 1_000,
+      },
+    }))
+    const badge = screen.getByTestId('session-usage-badge')
+    expect(badge).toHaveTextContent('14k tok')
+    fireEvent.click(badge)
+    const popup = screen.getByRole('dialog', { name: 'Session usage' })
+    expect(popup).toHaveTextContent('Plan-included ($0.00)')
+    expect(popup).toHaveTextContent('Undiscounted$0.13')
+    expect(popup).not.toHaveTextContent('Cache read')
+    expect(popup).not.toHaveTextContent('Cache write')
+    expect(popup).not.toHaveTextContent('Reasoning')
+  })
+
+  it('stays hidden when contextUsage is reported or totalTokens is zero', () => {
+    renderPane(pickerChat({
+      contextUsage: { usedTokens: 50_000, maxTokens: 200_000, autoCompact: true, categories: [] },
+      sessionUsage: { inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, updatedAt: 1_000 },
+    }))
+    expect(screen.queryByTestId('session-usage-badge')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Context window 25% used' })).toBeInTheDocument()
+    cleanup()
+    renderPane(pickerChat({
+      provider: 'cursor',
+      sessionUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, updatedAt: 1_000 },
+    }))
+    expect(screen.queryByTestId('session-usage-badge')).toBeNull()
+  })
+})
+
 describe('plan usage meter', () => {
   const now = Date.now()
   const planUsage = {
