@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PLAN_IMPLEMENTATION_PREFIX, type ChatItem, type ChatSessionInfo, type ChatState } from '../../shared/agent-chat'
 import { ChatPane, type ChatFlowServices } from './ChatPane'
 import { readDraft } from './draftStore'
+import type { SessionAsk } from '../../shared/protocol'
 
 afterEach(() => {
   cleanup()
@@ -31,10 +32,10 @@ function flowServices(overrides: Partial<ChatFlowServices> = {}): ChatFlowServic
   }
 }
 
-function renderPane(items: ChatItem[], sessionOverrides: Partial<ChatSessionInfo> = {}, flow: ChatFlowServices | null = flowServices()) {
+function renderPane(items: ChatItem[], sessionOverrides: Partial<ChatSessionInfo> = {}, flow: ChatFlowServices | null = flowServices(), asks?: SessionAsk[]) {
   const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
   const state: ChatState = { paneId: '%5', session: session(sessionOverrides), items, hostConnected: true }
-  const view = render(<ChatPane chat={state} connected focused={false} {...handlers} {...(flow ? { flow } : {})} />)
+  const view = render(<ChatPane chat={state} connected focused={false} {...handlers} {...(flow ? { flow } : {})} {...(asks ? { asks } : {})} />)
   const rerender = (nextItems: ChatItem[], nextSession: Partial<ChatSessionInfo> = sessionOverrides) => {
     view.rerender(<ChatPane chat={{ ...state, items: nextItems, session: session(nextSession) }} connected focused={false} {...handlers} {...(flow ? { flow } : {})} />)
   }
@@ -257,6 +258,21 @@ describe('subagents', () => {
     fireEvent.change(textbox(), { target: { value: 'The fruit is MANGO.' } })
     fireEvent.keyDown(textbox(), { key: 'Enter' })
     expect(onSend).toHaveBeenLastCalledWith('The fruit is MANGO.', [], { relayTo: { agentId: 'at1', label: 'job t1' } })
+  })
+
+  it('answers an ask through main Claude even while a subagent relay is set', () => {
+    const items = live.map((item) => (item.id === 't1' ? { ...item, background: true } as ChatItem : item))
+    const ask: SessionAsk = { key: 'push', question: 'Push the nits?', options: ['Push'], askedAt: 1 }
+    const { onSend } = renderPane(items, { status: 'running' }, flowServices(), [ask])
+    fireEvent.click(screen.getByRole('button', { name: 'Open subagent job t1' }))
+    fireEvent.click(within(screen.getByTestId('subagent-header')).getByRole('button', { name: 'Message' }))
+    expect(screen.getByTestId('relay-chip')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Waiting on you/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reply…' }))
+    expect(screen.queryByTestId('relay-chip')).not.toBeInTheDocument()
+    fireEvent.change(textbox(), { target: { value: 'Re: Push the nits? → not yet' } })
+    fireEvent.keyDown(textbox(), { key: 'Enter' })
+    expect(onSend).toHaveBeenLastCalledWith('Re: Push the nits? → not yet', [], { delivery: 'queue', answersAsk: 'push' })
   })
 
   it("won't relay to a foreground subagent that holds main Claude", () => {

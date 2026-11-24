@@ -288,7 +288,11 @@ function ChatColumn({
   const answerAsk = (ask: SessionAsk, option: string) => {
     onSend(askAnswerText(ask, option), undefined, { ...(askBusy && hostTakesTurnFlow(chat.session) ? { delivery: 'queue' as const } : {}), answersAsk: ask.key })
   }
-  const replyToAsk = (ask: SessionAsk) => setComposerInsert((current) => ({ id: (current?.id ?? 0) + 1, text: askAnswerText(ask, ''), answersAsk: ask.key }))
+  // An answer goes to the main agent, never to a subagent picked for a relay.
+  const replyToAsk = (ask: SessionAsk) => {
+    setRelay(undefined)
+    setComposerInsert((current) => ({ id: (current?.id ?? 0) + 1, text: askAnswerText(ask, ''), answersAsk: ask.key }))
+  }
   const jumpToAsk = (ask: SessionAsk) => {
     const itemId = anchors.get(ask.key)
     if (!itemId) return
