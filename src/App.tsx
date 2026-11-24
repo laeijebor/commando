@@ -169,6 +169,7 @@ import type { PrQuickLookTab } from './PrQuickLook'
 import { cachedPanePrs, refreshPanePrs } from './prStore'
 import { createCloudTasksApi } from './cloudTasksApi'
 import { CloudTasksSection, CloudTasksHud } from './CloudTasksSection'
+import { createCursorCloudAgentsApi, CursorCloudAgentsStore } from './cursorCloudAgents'
 import { PanesView } from './PanesView'
 import { TilesView } from './TilesView'
 import { TileVisibilityContext, createTileVisibility } from './tileVisibility'
@@ -2946,6 +2947,7 @@ function HostApp() {
     return () => { cancelled = true }
   }, [simulatorTabKey, connected, token])
   const cloudTasksApi = useMemo(() => createCloudTasksApi(token, daemonFetch), [token])
+  const cursorCloudAgents = useMemo(() => new CursorCloudAgentsStore(createCursorCloudAgentsApi(token, daemonFetch)), [token])
   const webPanesApi = createWebPanesApi(token, daemonFetch)
 
   const renameSelectedSession = async () => {
@@ -4872,7 +4874,7 @@ function HostApp() {
               switcher={panesSwitcher}
             />
           ) : null}
-          {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
+          {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} cursorAgents={cursorCloudAgents} onFocusPane={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: true }) }} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
               <NotesSection

@@ -6,6 +6,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CLOUD_PROMPT_LIMIT, cloudConnectionKey, type CloudOperation, type CloudProviderInfo, type CloudTask, type CloudTaskDetail } from '../shared/cloud-tasks'
 import { CloudTasksHttpError, type CloudTasksApi } from './cloudTasksApi'
+import { CursorCloudAgentsStore } from './cursorCloudAgents'
 import { CloudTasksHud, CloudTasksSection } from './CloudTasksSection'
 import { CloudTaskCreateDialog } from './CloudTaskCreateDialog'
 import { boundCloudDiff, CloudTaskDiff } from './CloudTaskDiff'
@@ -94,6 +95,23 @@ function fillCreate(dialog: ReturnType<typeof within>) {
 }
 
 describe('cloud list/detail and integration exports', () => {
+  it('shows Cursor agents above saved tasks and forwards chat pane focus', async () => {
+    const api = fixtureApi()
+    const focus = vi.fn()
+    const cursorAgents = new CursorCloudAgentsStore({
+      list: async () => ({ login: 'ok', more: false, agents: [{ agentId: 'bc-12345678', name: 'Cursor work', lastModified: Date.now(), startedInCommando: false, webUrl: 'https://cursor.com/agents/bc-12345678', openPaneId: '%4' }] }),
+      open: vi.fn(async () => '%9'),
+    })
+    render(<CloudTasksSection api={api} cursorAgents={cursorAgents} onFocusPane={focus} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Go to chat' }))
+    expect(focus).toHaveBeenCalledWith('%4')
+    const cursor = screen.getByRole('region', { name: 'Cursor cloud agents' })
+    const tasks = screen.getByRole('region', { name: 'Saved cloud tasks' })
+    expect(cursor.compareDocumentPosition(tasks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('button', { name: '+ New task' })).toBeEnabled())
+    expect(api.create).not.toHaveBeenCalled()
+  })
+
   it('works without tmux, shares list reads with HUD, and demand-displays the prompt on selection', async () => {
     const api = fixtureApi()
     const select = vi.fn()

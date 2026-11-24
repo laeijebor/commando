@@ -8,6 +8,8 @@ import { useCloudTask, useCloudTasks } from './cloudTaskStore'
 import { CloudTaskCard, cloudTaskConnectionLabel } from './CloudTaskCard'
 import { CloudTaskCreateDialog, useCloudAccountConfirmation } from './CloudTaskCreateDialog'
 import { CloudTaskDiff } from './CloudTaskDiff'
+import { CursorCloudAgentsSection } from './CursorCloudAgentsSection'
+import type { CursorCloudAgentsStore } from './cursorCloudAgents'
 import './cloud-tasks.css'
 
 export function cloudOperationLabel(operation: CloudOperation): string {
@@ -17,8 +19,10 @@ export function cloudOperationLabel(operation: CloudOperation): string {
 }
 const date = (value: string | number | null) => value ? new Date(value).toLocaleString() : 'Not observed'
 
-export function CloudTasksSection({ api, selectedTaskId, onSelectTask }: {
+export function CloudTasksSection({ api, selectedTaskId, onSelectTask, cursorAgents, onFocusPane }: {
   api: CloudTasksApi
+  cursorAgents?: CursorCloudAgentsStore
+  onFocusPane?: (paneId: string) => void
   selectedTaskId?: string | null
   onSelectTask?: (id: string) => void
 }) {
@@ -57,6 +61,7 @@ export function CloudTasksSection({ api, selectedTaskId, onSelectTask }: {
     setLocalId(taskId); setDetailOpen(true); onSelectTask?.(taskId)
   }
   return <section className="cloud-tasks cloud-section" aria-label="Cloud tasks">
+    {cursorAgents && onFocusPane && <CursorCloudAgentsSection store={cursorAgents} onFocusPane={onFocusPane} />}
     <header className="cloud-toolbar"><h1>Cloud tasks</h1>
       <button type="button" disabled={!state.connected} onClick={() => setDialog('link')}>Link existing</button>
       <button type="button" className="cloud-primary" disabled={!state.connected} onClick={() => setDialog('create')}>+ New task</button>
