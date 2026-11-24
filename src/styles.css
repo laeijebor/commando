@@ -4157,6 +4157,95 @@ body.is-resizing-hud-pinned-note {
   text-transform: uppercase;
 }
 
+.palette-messages-section {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.palette-messages-section:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.palette-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 4px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.palette-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.palette-section-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--muted-dim);
+}
+
+.palette-section-status svg {
+  width: 10px;
+  height: 10px;
+}
+
+.palette-message-option .palette-message-body {
+  min-width: 0;
+}
+
+.palette-message-option strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.palette-match-highlight {
+  padding: 0 2px;
+  border-radius: 3px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+.palette-message-session {
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.palette-message-time {
+  align-self: start;
+  margin-top: 2px;
+  white-space: nowrap;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.palette-section-empty {
+  padding: 10px 12px 12px;
+  color: var(--muted-dim);
+  font-size: 9px;
+  text-align: center;
+}
+
 .palette-empty {
   padding: 36px 16px;
   color: var(--muted-dim);

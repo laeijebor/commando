@@ -31,7 +31,7 @@ import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
 import { ChatComposer, type ChatDraft, type ChatInputServices, type ChatSendError } from './ChatComposer'
 import { providerLabel } from './ComposerControls'
-import { ChatTimeline, Markdown } from './ChatTimeline'
+import { ChatTimeline, Markdown, type ChatFocusMessageRequest } from './ChatTimeline'
 import type { SavePlan } from './PlanCard'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 import { Button } from './ui/button'
@@ -121,6 +121,8 @@ function ChatColumn({
   actionError,
   onDismissActionError,
   flow,
+  focusMessage,
+  onFocusMessageHandled,
 }: {
   chat: ChatState
   externalRuns?: readonly ExternalAgentRun[]
@@ -163,6 +165,8 @@ function ChatColumn({
   actionError?: string
   onDismissActionError?: () => void
   flow?: ChatFlowServices
+  focusMessage?: ChatFocusMessageRequest
+  onFocusMessageHandled?: (seq: number) => void
 }) {
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
@@ -375,6 +379,8 @@ function ChatColumn({
           controlsDisabled={!connected || !flow?.stopExternal}
           {...(turnFlow ? { onOpenSubagent: select } : {})}
           {...(flow ? { onSavePlan: flow.savePlan } : {})}
+          {...(focusMessage ? { focusMessage } : {})}
+          {...(onFocusMessageHandled ? { onFocusMessageHandled } : {})}
         />
       )}
       {commander?.state.paneId && commander.state.paneId === paneId ? (

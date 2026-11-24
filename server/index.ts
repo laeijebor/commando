@@ -124,6 +124,8 @@ import { SessionCreations } from './session-creations.js'
 import { defaultClaudeProfile } from '../shared/tmux-create.js'
 import { ChatConversationIndex } from './chat-conversations.js'
 import { ChatConversationsApi } from './chat-conversations-api.js'
+import { ChatMessageIndex } from './chat-message-index.js'
+import { ChatMessagesApi } from './chat-messages-api.js'
 import { SessionPreferenceStore } from './session-preferences.js'
 import { TmuxResizeLeaseBusyError } from './tmux-resize-lease.js'
 import {
@@ -2376,6 +2378,18 @@ async function main(): Promise<void> {
   })
   // The first scan reads every transcript's head; do it before anyone opens the picker.
   setTimeout(() => { void chatConversations.list().catch((error: unknown) => console.warn('[commando] Could not list chat conversations', error)) }, 5_000).unref()
+  const chatMessageIndex = new ChatMessageIndex({
+    dbPath: resolve(process.env.COMMANDO_CHAT_MESSAGES_INDEX_PATH ?? `${sessionBriefs.statePath}.messages-index.sqlite`),
+    claudeConfigDirs: async () => (await claudeProfileCache.list()).map((profile) => profile.configDir),
+  })
+  const chatMessagesApi = new ChatMessagesApi({
+    index: chatMessageIndex,
+    snapshot: () => snapshot,
+    briefs: sessionBriefs,
+    chats: () => agentHosts.states(),
+    agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
+  })
+  setTimeout(() => { void chatMessageIndex.triggerSync() }, 6_000).unref()
   const webPanesApi = new WebPanesApi({
     service: webPanes,
     guides,
@@ -3233,6 +3247,7 @@ async function main(): Promise<void> {
         if (await trackedProcessesApi.handle(request, response, url)) return
         if (await gitDiffApi.handle(request, response, url)) return
         if (await chatConversationsApi.handle(request, response, url)) return
+        if (await chatMessagesApi.handle(request, response, url)) return
         if (await handleTmuxCreateApi(
           request,
           response,
@@ -3430,7 +3445,10 @@ async function main(): Promise<void> {
       console.error('[commando] Cloud dispatcher stopped with uncertain delivery; saved tasks require reconciliation')
     })
     // Keep SQLite available to late CLI receipts while shutdown drains children.
-    process.once('beforeExit', () => cloudTaskStore?.close())
+    process.once('beforeExit', () => {
+      cloudTaskStore?.close()
+      chatMessageIndex.close()
+    })
     if (structuralRefreshTimer) clearTimeout(structuralRefreshTimer)
     for (const client of clients) client.socket.terminate()
     // Agent hosts keep their turns running and reconnect to the next daemon.
