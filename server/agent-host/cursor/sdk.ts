@@ -20,6 +20,10 @@ export interface CursorHistory {
 export type CursorCloudRun = CursorRun & Pick<Run, 'id' | 'status' | 'stream' | 'conversation' | 'createdAt' | 'git'>
 export type CursorGitBranch = NonNullable<RunResult['git']>['branches'][number]
 export interface CursorCloudHistory extends CursorHistory {
+  /** All run ids in the history snapshot, newest first, including unreadable or truncated runs. */
+  runIds?: string[]
+  /** Runs excluded to avoid blocking on conversation(), oldest first. */
+  skippedRunning?: string[]
   running?: { id: string }
   git?: CursorGitBranch
 }
@@ -69,6 +73,7 @@ export async function cursorCloudHistory(
   const ordered = runs.map((run, index) => ({ run, index })).sort((a, b) => (b.run.createdAt ?? 0) - (a.run.createdAt ?? 0) || b.index - a.index).map(({ run }) => run)
   const git = ordered.find((run) => run.git?.branches.length)?.git?.branches[0]
   const running = ordered[0]?.status === 'running' ? { id: ordered[0].id } : undefined
+  const skippedRunning = ordered.filter((run) => run.status === 'running').map((run) => run.id).reverse()
   const turns: ConversationTurn[] = []
   const counter = new CursorItemMapper()
   let skipped = 0
@@ -91,7 +96,7 @@ export async function cursorCloudHistory(
       if (counter.list().length >= MAX_CHAT_ITEMS) break history
     }
   }
-  return { turns: turns.reverse(), skipped, ...(running ? { running } : {}), ...(git ? { git } : {}) }
+  return { turns: turns.reverse(), skipped, runIds: ordered.map((run) => run.id), skippedRunning, ...(running ? { running } : {}), ...(git ? { git } : {}) }
 }
 
 /** A message's turn is a protobuf oneof (`{ turn: { case, value } }`); its JSON form is `{ agentConversationTurn }`. */

@@ -128,7 +128,7 @@ describe('cursorCloudHistory', () => {
         return [turn(String(index))]
       },
     }))
-    expect(await cursorCloudHistory(async () => ({ items: runs }), 'bc-agent')).toEqual({ turns: runs.map((_, index) => turn(String(index))), skipped: 0 })
+    expect(await cursorCloudHistory(async () => ({ items: runs }), 'bc-agent')).toEqual({ turns: runs.map((_, index) => turn(String(index))), skipped: 0, runIds: runs.map((run) => run.id).reverse(), skippedRunning: [] })
     expect(peak).toBe(4)
     expect(completed[0]).not.toBe(7)
     expect(completed).toHaveLength(8)
@@ -140,7 +140,7 @@ describe('cursorCloudHistory', () => {
       cloudRun('broken', 3, [], { conversation: async () => { throw new Error('unreadable') } }),
     ] } : { items: [cloudRun('new', 4, [turn('New prompt'), turn('Steer')]), cloudRun('middle', 2, [turn('Middle prompt')], { git: { branches: [git] } })], nextCursor: 'page2' })
     const log = vi.fn()
-    expect(await cursorCloudHistory(read, 'bc-agent', log)).toEqual({ turns: [turn('Old prompt'), turn('Middle prompt'), turn('New prompt'), turn('Steer')], skipped: 1, git })
+    expect(await cursorCloudHistory(read, 'bc-agent', log)).toEqual({ turns: [turn('Old prompt'), turn('Middle prompt'), turn('New prompt'), turn('Steer')], skipped: 1, runIds: ['new', 'broken', 'middle', 'old'], skippedRunning: [], git })
     expect(read.mock.calls).toEqual([['bc-agent', { runtime: 'cloud', limit: 100 }], ['bc-agent', { runtime: 'cloud', limit: 100, cursor: 'page2' }]])
     expect(log).toHaveBeenCalledWith("Couldn't load a Cursor run: unreadable")
   })
@@ -153,24 +153,35 @@ describe('cursorCloudHistory', () => {
       cloudRun('prefetched', 2, [turn('Prefetched')]),
       cloudRun('unreadable', 3, [], { conversation: async () => { throw new Error('Outside the item window') } }),
       cloudRun('recent', 4, [turn('Recent')]), cloudRun('new', 5, newest),
-    ] }), 'bc-agent', log)).toEqual({ turns: newest.slice(-MAX_CHAT_ITEMS), skipped: 0 })
+    ] }), 'bc-agent', log)).toEqual({ turns: newest.slice(-MAX_CHAT_ITEMS), skipped: 0, runIds: ['new', 'recent', 'unreadable', 'prefetched', 'old'], skippedRunning: [] })
     expect(old).not.toHaveBeenCalled()
     expect(log).not.toHaveBeenCalled()
     const full: ConversationTurn = { type: 'agentConversationTurn', turn: { steps: Array.from({ length: MAX_CHAT_ITEMS }, () => ({ type: 'assistantMessage', message: { text: 'Reply' } })) } }
-    expect(await cursorCloudHistory(async () => ({ items: [cloudRun('new', 2, [turn('Older'), full])] }), 'bc-agent')).toEqual({ turns: [full], skipped: 0 })
+    expect(await cursorCloudHistory(async () => ({ items: [cloudRun('new', 2, [turn('Older'), full])] }), 'bc-agent')).toEqual({ turns: [full], skipped: 0, runIds: ['new'], skippedRunning: [] })
   })
   it('reattaches the newest running run without reading its blocking conversation', async () => {
     const conversation = vi.fn(() => new Promise<ConversationTurn[]>(() => {}))
     const run = cloudRun('live', 2, [], { status: 'running', conversation })
     const read = async () => ({ items: [cloudRun('old', 1, [turn('Old')]), run] })
-    expect(await cursorCloudHistory(read, 'bc-agent')).toEqual({ turns: [turn('Old')], skipped: 0, running: { id: 'live' } })
+    expect(await cursorCloudHistory(read, 'bc-agent')).toEqual({ turns: [turn('Old')], skipped: 0, runIds: ['live', 'old'], skippedRunning: ['live'], running: { id: 'live' } })
     expect(conversation).not.toHaveBeenCalled()
   })
   it('does not read or reattach an older running run and rejects repeated cursors', async () => {
     const conversation = vi.fn(() => new Promise<ConversationTurn[]>(() => {}))
-    expect(await cursorCloudHistory(async () => ({ items: [cloudRun('old', 1, [], { status: 'running', conversation }), cloudRun('new', 2, [turn('New')])] }), 'bc-agent')).toEqual({ turns: [turn('New')], skipped: 0 })
+    expect(await cursorCloudHistory(async () => ({ items: [cloudRun('old', 1, [], { status: 'running', conversation }), cloudRun('new', 2, [turn('New')])] }), 'bc-agent')).toEqual({ turns: [turn('New')], skipped: 0, runIds: ['new', 'old'], skippedRunning: ['old'] })
     expect(conversation).not.toHaveBeenCalled()
     await expect(cursorCloudHistory(async () => ({ items: [], nextCursor: 'same' }), 'bc-agent')).rejects.toThrow('repeated')
+  })
+  it('reports every skipped running run oldest first across pages', async () => {
+    const conversation = vi.fn(() => new Promise<ConversationTurn[]>(() => {}))
+    const read = vi.fn(async (_id: string, options: { cursor?: string }) => options.cursor
+      ? { items: [cloudRun('old-live', 1, [], { status: 'running', conversation })] }
+      : { items: [cloudRun('new-live', 3, [], { status: 'running', conversation }), cloudRun('middle', 2, [turn('Middle')])], nextCursor: 'older' })
+    expect(await cursorCloudHistory(read, 'bc-agent')).toEqual({
+      turns: [turn('Middle')], skipped: 0, runIds: ['new-live', 'middle', 'old-live'],
+      skippedRunning: ['old-live', 'new-live'], running: { id: 'new-live' },
+    })
+    expect(conversation).not.toHaveBeenCalled()
   })
 })
 
@@ -182,7 +193,7 @@ describe('cloud SDK wiring', () => {
     vi.doMock('@cursor/sdk', () => ({ Agent: { listRuns, getRun }, Cursor: {} }))
     try {
       const sdk = await loadCursorSdk()
-      expect(await sdk.cloudHistory('bc-agent')).toEqual({ turns: [turn('Cloud prompt')], skipped: 0 })
+      expect(await sdk.cloudHistory('bc-agent')).toEqual({ turns: [turn('Cloud prompt')], skipped: 0, runIds: ['run-cloud'], skippedRunning: [] })
       expect(listRuns).toHaveBeenCalledWith('bc-agent', { runtime: 'cloud', limit: 100 })
       expect(await sdk.latestCloudRun('bc-agent')).toBe(run)
       expect(listRuns).toHaveBeenLastCalledWith('bc-agent', { runtime: 'cloud', limit: 1 })

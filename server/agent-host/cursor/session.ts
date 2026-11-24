@@ -204,6 +204,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.stale = false
     if (this.spec.resume && !this.historyLoaded) {
       this.historyLoaded = true
+      let cloudHistory: CursorCloudHistory | undefined
       if (this.spec.cursorCloud) {
         this.mapper.begin('cloud-history-loading')
         this.emitItems(this.mapper.notice('info', 'Loading this Cursor cloud chat…'))
@@ -211,12 +212,17 @@ export class CursorChatSession implements ChatProviderSession {
       try {
         const history: CursorCloudHistory = await (this.spec.cursorCloud ? this.sdk!.cloudHistory(this.agent!.agentId) : this.sdk!.history(this.agent!.agentId, this.spec.cwd))
         if (this.closing) return
+        if (this.spec.cursorCloud) cloudHistory = history
         if (this.spec.cursorCloud) this.emitItems(this.mapper.replaceTurn('cloud-history-loading', history.turns), true)
         else {
           history.turns.forEach((turn) => this.mapper.replay(turn))
           this.emitItems(this.mapper.list())
         }
-        if (history.skipped) this.emitItems(this.mapper.notice('info', `${history.skipped} earlier Cursor turns couldn't be loaded.`))
+        if (history.skipped) {
+          if (this.spec.cursorCloud) this.mapper.begin('cloud-history-skipped')
+          this.emitItems(this.mapper.notice('info', `${history.skipped} earlier Cursor turns couldn't be loaded.`))
+          if (this.spec.cursorCloud) this.mapper.begin('cloud-history-ready')
+        }
         this.cloudGit(history.git)
       } catch (error) {
         if (this.closing) return
@@ -224,18 +230,62 @@ export class CursorChatSession implements ChatProviderSession {
         this.emitItems(this.mapper.notice('info', `Couldn't load this chat's earlier messages: ${this.safeError(error)}`))
       }
       if (this.spec.cursorCloud) {
+        const pending = new Set(cloudHistory?.skippedRunning)
+        let skipped = 0
         try {
           // History can fail on an older page or conversation while the newest run is still working.
           const latest = await this.sdk!.latestCloudRun(this.agent!.agentId)
           if (this.closing) return
-          if (latest?.status === 'running') {
-            const run = await this.sdk!.getRun(latest.id, this.agent!.agentId)
+          const refresh = latest && (latest.status === 'running' || (cloudHistory && (pending.has(latest.id) || !cloudHistory.runIds?.includes(latest.id))))
+          if (latest) pending.delete(latest.id)
+          if (latest && refresh) {
+            let run: CursorCloudRun | undefined
+            try { run = await this.sdk!.getRun(latest.id, this.agent!.agentId) }
+            catch (error) {
+              if (latest.status === 'running') throw error
+              skipped++
+            }
             if (this.closing) return
-            if (run.status === 'running') this.reattach(run)
+            if (run?.status === 'running') {
+              this.reattach(run)
+            } else if (run && cloudHistory) {
+              const runIds = cloudHistory.runIds ?? []
+              const newestReadIndex = runIds.findIndex((id) => !cloudHistory.skippedRunning?.includes(id))
+              const newer = newestReadIndex < 0 || runIds.indexOf(latest.id) < newestReadIndex
+              if (newer) {
+                try {
+                  const turns = await run.conversation()
+                  if (this.closing) return
+                  turns.forEach((turn) => this.mapper.replay(turn))
+                  this.emitItems(this.mapper.list(), true)
+                } catch {
+                  if (this.closing) return
+                  skipped++
+                }
+              } else skipped++
+            }
           }
         } catch (error) {
           if (this.closing) return
           this.emitItems(this.mapper.notice('info', `Couldn't reconnect to this Cursor cloud run: ${this.safeError(error)}`))
+        }
+        // Flat history turns have no per-run boundaries for inserting an older recovered run.
+        // Keep those runs in the skipped notice rather than appending them out of order.
+        for (const id of pending) {
+          try {
+            const run = await this.sdk!.getRun(id, this.agent!.agentId)
+            if (this.closing) return
+            if (run.status !== 'running') skipped++
+          } catch {
+            if (this.closing) return
+            skipped++
+          }
+        }
+        if (this.closing) return
+        if (skipped) {
+          this.mapper.replaceTurn('cloud-history-skipped', [])
+          this.mapper.notice('info', `${(cloudHistory?.skipped ?? 0) + skipped} earlier Cursor turns couldn't be loaded.`)
+          this.emitItems(this.mapper.list(), true)
         }
       }
     }
