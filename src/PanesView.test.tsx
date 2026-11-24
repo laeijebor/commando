@@ -94,4 +94,17 @@ describe('PanesView', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Close pane: dev server' }), { key: 'Enter' })
     expect(onOpen).not.toHaveBeenCalled()
   })
+
+  it("shows a failed capture's error instead of the previous pane's screen", async () => {
+    const { api } = renderView()
+    api.capturePane.mockImplementation(async (paneId: string) => {
+      if (paneId === '%3') throw new Error('pane gone')
+      return `screen of ${paneId}`
+    })
+    fireEvent.click(screen.getByText('dev server'))
+    expect(await screen.findByText('screen of %2')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('notes'))
+    expect(await screen.findByText('Could not read the pane: pane gone')).toBeInTheDocument()
+    expect(screen.queryByText('screen of %2')).not.toBeInTheDocument()
+  })
 })

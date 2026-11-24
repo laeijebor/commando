@@ -4786,7 +4786,7 @@ function HostApp() {
               commanderSessionId={commanderState.sessionId}
               api={paneManagementApi}
               connected={connected}
-              onOpen={(paneId) => { setArea('workspace'); setPendingPaneFocus({ paneId, waitForCreation: false }) }}
+              onOpen={(paneId) => jumpToPane(paneId)}
               onClose={closePaneList}
             />
           ) : null}

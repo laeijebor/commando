@@ -59,7 +59,8 @@ function usePoll<T>(load: (() => Promise<T>) | null, intervalMs: number, key: un
       busy = true
       run()
         .then((value) => { if (!cancelled) setState({ key, value }) })
-        .catch((cause: unknown) => { if (!cancelled) setState((current) => ({ ...current, key, error: cause instanceof Error ? cause.message : 'Request failed' })) })
+        // A failed refresh keeps this key's last value; another key's value is never shown under it.
+        .catch((cause: unknown) => { if (!cancelled) setState((current) => ({ ...current.key === key ? current : {}, key, error: cause instanceof Error ? cause.message : 'Request failed' })) })
         .finally(() => { busy = false })
     }
     tick()
