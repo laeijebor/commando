@@ -148,7 +148,8 @@ import { PanePaletteMenu, panePaletteEntries, type PanePaletteScreen } from './P
 import { McpSettings } from './McpSettings'
 import type { ChatMcpRequest, ChatMcpResult } from '../shared/chat-mcp'
 import { providerLabel } from '../shared/chat-composer'
-import { chatConversationKey } from '../shared/chat-conversations'
+import { chatConversationKey, isChatConversationSessionId } from '../shared/chat-conversations'
+import { isSafeExternalUrl, type DiscoveredExternalAgent } from '../shared/cloud-tasks'
 import { PaneContextMenu, type PaneSplitDirection } from './PaneContextMenu'
 import { createPaneManagementApi, type PaneManagementApiClient } from './paneManagementApi'
 import { PANE_MARK_PRESETS } from './paneMarks'
@@ -4947,7 +4948,41 @@ function HostApp() {
               switcher={panesSwitcher}
             />
           ) : null}
-          {area === 'cloud' ? <CloudTasksSection api={cloudTasksApi} selectedTaskId={selectedCloudTaskId} onSelectTask={setSelectedCloudTaskId} /> : null}
+          {area === 'cloud' ? (
+            <CloudTasksSection
+              api={cloudTasksApi}
+              selectedTaskId={selectedCloudTaskId}
+              onSelectTask={setSelectedCloudTaskId}
+              onOpenDiscoveredChat={async (agent: DiscoveredExternalAgent) => {
+                if (agent.provider === 'cursor') {
+                  const imported = await cloudTasksApi.importDiscovered({
+                    provider: agent.provider,
+                    id: agent.id,
+                    title: agent.title,
+                    ...(agent.cwd ? { cwd: agent.cwd } : {}),
+                    ...(agent.url ? { url: agent.url } : {}),
+                  })
+                  if (imported.kind === 'chat' && isChatConversationSessionId(imported.launch.resume)) {
+                    const cwd = imported.launch.cwd ?? paneMap.get(effectivePaneId ?? '')?.path ?? snapshot?.panes[0]?.path
+                    const slug = imported.launch.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
+                    const name = slug || `cursor-${imported.launch.resume.slice(0, 8)}`
+                    const created = await tmuxCreateApi.createSession({
+                      name,
+                      autoName: true,
+                      ...(cwd ? { cwd } : {}),
+                      agent: { provider: 'cursor-chat', permissionMode: 'bypassPermissions', resume: imported.launch.resume },
+                    })
+                    setArea('workspace')
+                    setPendingPaneFocus({ paneId: created.created.paneId })
+                    return
+                  }
+                }
+                if (isSafeExternalUrl(agent.url)) {
+                  window.open(agent.url, '_blank', 'noopener,noreferrer')
+                }
+              }}
+            />
+          ) : null}
           {notesMounted ? (
             <Suspense fallback={<section className="workspace-empty"><LoaderCircle className="spin" /><p>Opening Markdown vault...</p></section>}>
               <NotesSection
