@@ -1,4 +1,4 @@
-import type { ChatAnswer, ChatItem, ChatSessionInfo } from '../shared/agent-chat.js'
+import { chatMessageSummary, type ChatAnswer, type ChatItem, type ChatSessionInfo } from '../shared/agent-chat.js'
 import type { AgentInteractionAnswer } from '../shared/protocol.js'
 import type { ChatInteractions } from './agent-host-hub.js'
 import type { AgentInteractionBroker } from './agent-interaction-broker.js'
@@ -75,7 +75,7 @@ function optionLabel(options: readonly { label: string }[], value: string): stri
  * The host's session status for the HUD. Idle means done once the chat has had
  * a turn; before that it just waits. A closed session reports nothing.
  */
-export function chatHostReport(session: ChatSessionInfo, hadTurn: boolean): ChatHostReport | null {
+export function chatHostReport(session: ChatSessionInfo, hadTurn: boolean, items: readonly ChatItem[] = []): ChatHostReport | null {
   const status = session.status === 'running'
     ? 'working'
     : session.status === 'waiting'
@@ -86,11 +86,14 @@ export function chatHostReport(session: ChatSessionInfo, hadTurn: boolean): Chat
           ? 'done'
           : session.status === 'closed' ? null : 'unknown'
   if (!status) return null
+  const latestUser = [...items].reverse().find((item) => item.kind === 'user_message' && !item.parentToolUseId)
+  const intent = latestUser?.kind === 'user_message' ? chatMessageSummary(latestUser.text) : undefined
   return {
     provider: session.provider,
+    ...(intent ? { intent } : {}),
     status,
     ...(session.sessionId ? { sessionId: session.sessionId } : {}),
-    ...(session.title ? { title: session.title } : {}),
+    ...(session.title ? { title: chatMessageSummary(session.title) } : {}),
   }
 }
 

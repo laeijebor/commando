@@ -2,7 +2,7 @@ import { Children, cloneElement, isValidElement, createContext, memo, use, useEf
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, parseAsideReport, type AsideReport, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, parseAsideReports, type AsideReport, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
 import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
@@ -382,15 +382,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   const context = use(TimelineContext)
   switch (row.kind) {
     case 'user': {
-      const report = parseAsideReport(row.item.text)
-      if (report) return <div className="flex justify-end pb-3 pt-1" data-chat-item-id={row.item.id}>
-        <div className={cn('chat-aside-report-bubble', highlighted && 'chat-message-highlight')}>
-          <div className="chat-aside-report-source"><span>From aside</span><strong>{report.title}</strong>
-            {context.onOpenReport ? <button type="button" onClick={() => context.onOpenReport?.(report)}>Open aside ↗</button> : null}</div>
-          <Markdown text={report.body} />
-          {row.item.images?.length ? <ImageStrip images={row.item.images} /> : null}
-        </div>
-      </div>
+      const segments = parseAsideReports(row.item.text)
       if (row.item.tileEvents?.length) {
         return (
           <div className="flex flex-col items-end gap-1.5 pb-3 pt-1" data-chat-item-id={row.item.id}>
@@ -409,14 +401,20 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
             </span>
           ) : null}
           {row.item.images?.length ? <ImageStrip images={row.item.images} className="max-w-[85%] justify-end" /> : null}
-          {row.item.text ? (
-            <div className={cn(
+          {segments.map((segment, index) => segment.kind === 'report' ? (
+            <div key={index} className={cn('chat-aside-report-bubble', highlighted && 'chat-message-highlight')}>
+              <div className="chat-aside-report-source"><span>From aside</span><strong>{segment.title}</strong>
+                {context.onOpenReport ? <button type="button" onClick={() => context.onOpenReport?.(segment)}>Open aside ↗</button> : null}</div>
+              <Markdown text={segment.body} />
+            </div>
+          ) : (
+            <div key={index} className={cn(
               'max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm border border-border bg-message px-3.5 py-2 text-base text-foreground',
               highlighted && 'chat-message-highlight',
             )}>
-              <UserText text={row.item.text} />
+              <UserText text={segment.text} />
             </div>
-          ) : null}
+          ))}
         </div>
       )
     }

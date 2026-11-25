@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { ASIDE_REPORT_PROMPT, asideReportText } from '../shared/agent-chat'
+
 import { readFileSync } from 'node:fs'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
@@ -3444,7 +3446,7 @@ describe('chat asides', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Report to Main' }))
     const drafting = appMocks.send.mock.calls.map(([message]) => message).find((message) => message.type === 'chat_send' && message.paneId === asidePaneId)
-    expect(drafting.text).toMatch(/^Report to Main: summarise/)
+    expect(drafting.text).toBe(ASIDE_REPORT_PROMPT)
     const base = { turnId: 'report-turn', createdAt: 1, updatedAt: 1, status: 'completed' as const }
     act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [main, { ...asideChat(), items: [
       { ...base, id: 'report-prompt', kind: 'user_message', text: drafting.text },
@@ -3453,8 +3455,21 @@ describe('chat asides', () => {
     expect(screen.getByRole('textbox', { name: 'Report text' })).toHaveValue('Fix polling in src/file.ts')
     fireEvent.click(screen.getByRole('button', { name: 'Send to Main' }))
     expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: pane.id,
-      delivery: 'queue', text: '**From aside “Investigate flaky test”**\n<!-- commando-aside:abcdefgh -->\n\nFix polling in src/file.ts' }))
+      delivery: 'queue', text: '**From aside “Investigate flaky test”**\n<!-- commando-aside:abcdefgh -->\n\nFix polling in src/file.ts\n<!-- /commando-aside -->' }))
     expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_aside', paneId: pane.id, action: { action: 'close', asideId: record.id } }))
+  })
+
+  it('cleans report envelopes in the pane header’s latest-task line', async () => {
+    await renderAppWithSnapshot()
+    const headline = `${asideReportText({ asideId: record.id, title: 'Why flaky?', body: 'Found a race\n- More detail' })}\n\nUse the finding`
+    act(() => daemonMessage?.({ type: 'session_brief', brief: {
+      paneId: pane.id, sessionId: pane.sessionId, sessionName: 'Test', targetId: pane.targetId,
+      state: 'working', headline, headlineSource: 'hook', updates: [], updatedAt: 1,
+    } }))
+    const header = document.querySelector(`[data-pane-id="${pane.id}"] .pane-heading small`)
+    expect(header).toHaveTextContent('From aside “Why flaky?”: Found a race Use the finding')
+    expect(header).toHaveAttribute('title', 'From aside “Why flaky?”: Found a race\n\nUse the finding')
+    expect(header).not.toHaveTextContent('commando-aside')
   })
 
   it('routes Restart to update from an aside to its parent pane', async () => {

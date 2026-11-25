@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ImageIcon, ListChecks, MessageSquareShare, Pencil, SplitSquareHorizontal, X, Rabbit } from 'lucide-react'
-import { parseAsideReport, type ChatQueueAction, type ChatQueuedMessage, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat'
+import { chatMessageSummary, type ChatQueueAction, type ChatQueuedMessage, type ChatSessionInfo, type ChatSessionPermissionMode } from '../../shared/agent-chat'
 import { permissionLabel } from '../../shared/chat-composer'
 import { cn } from './cn'
 import { Button } from './ui/button'
@@ -47,7 +47,7 @@ export function QueuedMessages({ provider = 'Claude', queue, disabled, canSteerA
         ) : null}
       </div>
       {queue.map((queued) => {
-        const report = parseAsideReport(queued.text)
+        const summary = chatMessageSummary(queued.text)
         return (
         <div key={queued.id} className="flex min-w-0 items-start gap-1.5 rounded-md bg-secondary px-2 py-1 text-sm text-secondary-label">
           {editing?.id === queued.id ? (
@@ -83,9 +83,9 @@ export function QueuedMessages({ provider = 'Claude', queue, disabled, canSteerA
             </form>
           ) : (
             <>
-              <span className="min-w-0 flex-1 truncate py-0.5" title={report?.body ?? queued.text}>
+              <span className="min-w-0 flex-1 truncate py-0.5" title={summary}>
                 {queued.images?.length ? <ImageIcon className="mr-1 inline size-3 text-icon-muted" aria-label={`${queued.images.length} images`} /> : null}
-                {report ? `From aside ${report.title}` : queued.text || '(images only)'}
+                {summary || '(images only)'}
               </span>
               <Button size="icon-xs" variant="ghost-muted" disabled={disabled || !queued.text} aria-label="Edit queued message" title="Edit" onClick={() => setEditing({ id: queued.id, text: queued.text })}>
                 <Pencil aria-hidden="true" />

@@ -92,20 +92,53 @@ export function asideKey(paneId: string, asideId: string): string {
   return `${paneId}~${asideId}`
 }
 
-export interface AsideReport { asideId: string; title: string; body: string }
+export const ASIDE_REPORT_PROMPT = 'Report to Main: write a short report of this aside for the main conversation — what was asked and what you found or concluded, as a one-line headline and up to 5 short bullets. Include file paths or next steps only if relevant. Reply with only the report: no preamble and no status or 🟢 line.'
 
-/** Keep the envelope on two lines even when a title contains newlines or quotes. */
+export interface AsideReport { asideId: string; title: string; body: string }
+export type AsideMessageSegment = ({ kind: 'report' } & AsideReport) | { kind: 'text'; text: string }
+const ASIDE_REPORT_END = '<!-- /commando-aside -->'
+
+/** Keep the envelope heading on one line even when a title contains newlines. */
 export function asideReportText({ asideId, title, body }: AsideReport): string {
   const heading = title.replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n')
-  return `**From aside “${heading}”**\n<!-- commando-aside:${encodeURIComponent(asideId)} -->\n\n${body}`
+  return `**From aside “${heading}”**\n<!-- commando-aside:${encodeURIComponent(asideId)} -->\n\n${body}\n${ASIDE_REPORT_END}`
 }
 
+/** Parse complete, line-delimited envelopes without consuming the following message. */
+export function parseAsideReports(text: string): AsideMessageSegment[] {
+  const segments: AsideMessageSegment[] = []
+  const envelope = /^\*\*From aside “([^\n]*)”\*\*\n<!-- commando-aside:([^\s]+) -->\n\n([\s\S]*?)\n<!-- \/commando-aside -->(?=\n|$)/gm
+  let end = 0
+  for (const match of text.matchAll(envelope)) {
+    let asideId: string
+    try { asideId = decodeURIComponent(match[2]!) } catch { continue }
+    const preceding = text.slice(end, match.index).trim()
+    if (preceding) segments.push({ kind: 'text', text: preceding })
+    segments.push({ kind: 'report', asideId, title: match[1]!.replace(/\\(\\|n|r)/g, (_, char: string) => char === 'n' ? '\n' : char === 'r' ? '\r' : '\\'), body: match[3]! })
+    end = match.index + match[0].length
+  }
+  const remaining = text.slice(end).trim()
+  if (remaining) segments.push({ kind: 'text', text: remaining })
+  return segments
+}
+
+/** Convenience for callers that expect exactly one report and no typed text. */
 export function parseAsideReport(text: string): AsideReport | null {
-  const match = /^\*\*From aside “([^\n]*)”\*\*\n<!-- commando-aside:([^\s]+) -->\n\n([\s\S]*)$/.exec(text)
-  if (!match) return null
-  try {
-    return { asideId: decodeURIComponent(match[2]!), title: match[1]!.replace(/\\(\\|n|r)/g, (_, char: string) => char === 'n' ? '\n' : char === 'r' ? '\r' : '\\'), body: match[3]! }
-  } catch { return null }
+  const segments = parseAsideReports(text)
+  const segment = segments[0]
+  if (segments.length !== 1 || segment?.kind !== 'report') return null
+  const { kind: _kind, ...report } = segment
+  return report
+}
+
+/** Human-readable task/queue text; summarise before any surface applies a length limit. */
+export function chatMessageSummary(text: string): string {
+  return parseAsideReports(stripAttachmentNotes(text)).map((segment) => segment.kind === 'report'
+    ? `From aside “${segment.title.replace(/\s+/g, ' ').trim()}”: ${segment.body.trim().split(/\r?\n/)[0] ?? ''}`
+    // Older reports and saved hook summaries have no closing marker. Their body
+    // boundary is unknowable, but their heading and first line can still be displayed cleanly.
+    : segment.text.replace(/\*\*From aside “([^\n]*)”\*\*\s+<!-- commando-aside:[^>]*?(?:-->|$)(?:\s*([\s\S]*))?/g,
+      (_, title: string, body: string | undefined) => `From aside “${title}”${body ? `: ${body.split(/\r?\n/)[0]}` : ''}`)).join('\n\n')
 }
 export function parseAsideKey(key: string): { paneId: string; asideId: string } | null {
   const match = /^(%\d+)~([a-z0-9]{8})$/.exec(key)

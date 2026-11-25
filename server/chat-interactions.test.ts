@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { createServer } from 'node:http'
 import type { WebSocket } from 'ws'
 import { describe, expect, it } from 'vitest'
-import type { ChatItem, ChatSessionInfo } from '../shared/agent-chat.js'
+import { asideReportText, type ChatItem, type ChatSessionInfo } from '../shared/agent-chat.js'
 import type { CommandoSnapshot } from '../shared/protocol.js'
 import { AgentHostHub } from './agent-host-hub.js'
 import { AgentInteractionBroker } from './agent-interaction-broker.js'
@@ -264,6 +264,26 @@ describe('chat requests in the approvals broker', () => {
 })
 
 describe('chat status for the HUD', () => {
+  it('publishes clean report summaries for the latest task even when the running status does not change', async () => {
+    const { registry, socket } = setup()
+    socket.host({ type: 'session_snapshot', session: session({ status: 'running' }), items: [userMessage] })
+    await settle()
+    const report = asideReportText({ asideId: 'abcdefgh', title: 'Why flaky?', body: 'Found the race\n- Detail that stays out of the task line' })
+    socket.host({ type: 'items', paneId: '%1', items: [{ ...userMessage, id: 'u2', turnId: 't2', createdAt: 2, text: `${report}\n\nUse this finding` }] })
+    await settle()
+    expect(registry.get('%1')?.details?.intent).toBe('From aside “Why flaky?”: Found the race Use this finding')
+    expect(JSON.stringify(registry.get('%1'))).not.toContain('commando-aside')
+    // A provider subagent's message must not become Main's task.
+    socket.host({ type: 'items', paneId: '%1', items: [{ ...userMessage, id: 'nested', parentToolUseId: 'tool', createdAt: 3, text: 'Nested task' }] })
+    await settle()
+    expect(registry.get('%1')?.details?.intent).toContain('Use this finding')
+  })
+  it('summarises report titles and selects only the latest top-level user message', () => {
+    const report = asideReportText({ asideId: 'abcdefgh', title: 'Why flaky?', body: 'Found the race\n- More detail' })
+    expect(chatHostReport(session({ title: report }), true, [userMessage, { ...userMessage, id: 'report', text: `${report}\n\nUse it` }, { ...userMessage, id: 'nested', parentToolUseId: 'tool', text: 'Nested' }])).toMatchObject({
+      title: 'From aside “Why flaky?”: Found the race', intent: 'From aside “Why flaky?”: Found the race\n\nUse it',
+    })
+  })
   it.each([
     ['codex', 'Codex'],
     ['claude', 'Claude'],
@@ -276,7 +296,7 @@ describe('chat status for the HUD', () => {
     socket.host({ type: 'items', paneId: '%1', items: [userMessage] })
     socket.host({ type: 'session_update', session: session({ provider, status: 'running' }) })
     await settle()
-    expect(registry.get('%1')).toMatchObject({ provider, status: 'working', summary: `${name} is working` })
+    expect(registry.get('%1')).toMatchObject({ provider, status: 'working', summary: 'hi', details: { intent: 'hi' } })
 
     socket.host({ type: 'session_update', session: session({ provider, status: 'idle' }) })
     await settle()

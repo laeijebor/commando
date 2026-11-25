@@ -5,6 +5,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentStatus } from '../shared/protocol'
+import { asideReportText } from '../shared/agent-chat'
 import { AgentHudCard } from './AgentHudCard'
 
 const NOW = new Date('2026-07-16T12:00:00Z').getTime()
@@ -26,6 +27,13 @@ function status(overrides: Partial<AgentStatus> = {}): AgentStatus {
 afterEach(cleanup)
 
 describe('AgentHudCard', () => {
+  it('shows report headlines and typed text as the task without leaking envelope markup', () => {
+    const intent = `${asideReportText({ asideId: 'abcdefgh', title: 'Why flaky?', body: 'Found a race\n- Internal detail' })}\n\nUse the finding`
+    const { container } = render(<AgentHudCard status={status({ details: { intent, checks: [], recentActivities: [] } })} onSelect={vi.fn()} onDismiss={vi.fn()} />)
+    expect(container.querySelector('.agent-intent')).toHaveTextContent('From aside “Why flaky?”: Found a race Use the finding')
+    expect(container.textContent).not.toContain('commando-aside')
+    expect(container.textContent).not.toContain('Internal detail')
+  })
   it('shows Cursor identity and a cancelled recap without a Done label', () => {
     const { container } = render(<AgentHudCard
       status={status({ provider: 'cursor', status: 'failed', details: { recentActivities: [], checks: [], recap: { outcome: 'cancelled', summary: 'Stopped by user', completedAt: NOW } } })}
