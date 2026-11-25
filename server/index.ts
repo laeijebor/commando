@@ -118,6 +118,7 @@ import { sessionRepo } from '../shared/session-repositories.js'
 import { PaneRepoResolver } from './pane-repos.js'
 import { GitDiffApi } from './git-api.js'
 import { CodeNavService } from './code-nav.js'
+import { TypeScriptNavProvider } from './code-nav-tsserver.js'
 import { GitDiffInspector, defaultGitProcessExecutor } from './git-diff.js'
 import { handleTmuxCreateApi } from './tmux-create-api.js'
 import { SessionCreations } from './session-creations.js'
@@ -1999,7 +2000,9 @@ async function main(): Promise<void> {
     ? (file, args, options) => file === 'gh' ? Promise.reject(new Error(githubOffReason)) : defaultGitProcessExecutor(file, args, options)
     : defaultGitProcessExecutor, process.env, Date.now, undefined, prs.githubGate)
   // Language-server providers (tsserver, ...) are appended here; without one, navigation uses git grep.
-  const codeNav = new CodeNavService(gitDiffInspector, [])
+  // Precise answers for TypeScript/JavaScript: a tsserver per worktree, started on the first
+  // lookup, stopped after 10 idle minutes, at most two alive (~0.8 GB each on this repo).
+  const codeNav = new CodeNavService(gitDiffInspector, [new TypeScriptNavProvider()])
   const gitDiffApi = new GitDiffApi({
     inspector: gitDiffInspector,
     codeNav,
