@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PaneManagementApi } from './pane-management-api.js'
 import { TmuxPaneActions } from './tmux-pane-actions.js'
@@ -673,6 +673,19 @@ describe('resource actions', () => {
       await writeFile(join(talk, '.env.local'), 'SECRET=1')
       await request({ path: talk, action: 'slides' })
       expect(register.mock.lastCall![0]).not.toBe(await realpath(talk))
+      // ...or any dot-named entry at any depth, or node_modules.
+      for (const [name, extra] of [['npmrc', '.npmrc'], ['nested-env', join('sub', '.env')], ['modules', join('node_modules', 'x.js')]]) {
+        const deck = join(repo, 'docs', name)
+        await mkdir(dirname(join(deck, extra)), { recursive: true })
+        await writeFile(join(deck, 'deck.html'), page)
+        await writeFile(join(deck, extra), 'secret')
+        await request({ path: deck, action: 'slides' })
+        const served = register.mock.lastCall![0] as string
+        expect(served.startsWith(await realpath(root))).toBe(true)
+        expect(await readdir(served)).not.toContain(extra.split('/')[0].startsWith('.') ? extra : 'node_modules')
+      }
+      const nested = register.mock.calls.at(-2)![0] as string
+      expect(await readdir(join(nested, 'sub'))).toEqual([])
       await writeFile(join(cwd, 'deck.html'), page)
       await request({ path: cwd, action: 'slides' })
       expect(register.mock.lastCall![0]).not.toBe(await realpath(cwd))
@@ -683,6 +696,10 @@ describe('resource actions', () => {
       await writeFile(join(home, '.ssh', 'id_ed25519'), 'PRIVATE KEY')
       const calls = register.mock.calls.length
       expect((await request({ path: join(home, '.ssh', 'deck.html'), action: 'slides' })).status).toBe(403)
+      expect(register).toHaveBeenCalledTimes(calls)
+      await mkdir(join(home, '.aws'))
+      await writeFile(join(home, '.aws', 'deck.html'), page)
+      expect((await request({ path: join(home, '.aws'), action: 'slides' })).status).toBe(403)
       expect(register).toHaveBeenCalledTimes(calls)
       // A deck in an artifact folder is fine.
       await mkdir(join(cwd, '.slides', 'q4'), { recursive: true })

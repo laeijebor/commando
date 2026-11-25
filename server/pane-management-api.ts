@@ -101,6 +101,23 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
+/**
+ * A deck folder safe to serve as it is: no dot-named entry at any depth (`.git`, `.env`, `.npmrc`, `.netrc`…) and no
+ * `node_modules`. A walk past `MAX_PLAIN_WALK` entries counts as not plain.
+ */
+const MAX_PLAIN_WALK = 2000
+async function plainDeckFolder(folder: string): Promise<boolean> {
+  let seen = 0
+  const walk = async (directory: string): Promise<boolean> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (++seen > MAX_PLAIN_WALK || entry.name.startsWith('.') || entry.name === 'node_modules') return false
+      if (entry.isDirectory() && !(await walk(join(directory, entry.name)))) return false
+    }
+    return true
+  }
+  return walk(folder)
+}
+
 function containsPath(root: string, path: string): boolean {
   const fromRoot = relative(root, path)
   return fromRoot === '' || (!isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`))
@@ -285,8 +302,7 @@ export class PaneManagementApi {
     if (!this.dependencies.artifacts || !this.dependencies.openResourceTile) throw new HttpError(503, 'Slides tiles are unavailable')
     const paneCwd = this.dependencies.panePath(paneId)
     const cwd = paneCwd ? await realpath(paneCwd).catch(() => undefined) : undefined
-    const entries = await readdir(folder)
-    const direct = !entries.includes('.git') && !entries.some((name) => name.startsWith('.env')) && !(cwd && containsPath(folder, cwd))
+    const direct = !(cwd && containsPath(folder, cwd)) && await plainDeckFolder(folder)
     let served = folder
     if (!direct) {
       const root = this.dependencies.resourceTileRoot ?? join(this.dependencies.resourceHome ?? homedir(), '.commando', 'resource-tiles')
