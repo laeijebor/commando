@@ -837,6 +837,7 @@
 .pierre-blame-card {
   position: absolute;
   z-index: 3;
+  max-width: calc(100% - 16px);
   display: grid;
   gap: 4px;
   padding: 8px 10px;

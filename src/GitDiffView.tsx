@@ -434,8 +434,9 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     () => findTextMatches(plainDiff, contentQuery),
     [plainDiff, contentQuery],
   )
-  // The rich view finds matches in its rendered rows and reports the count back.
-  const matchCount = showingPierre ? richMatchCount : diffMatches.length
+  // The rich view finds matches in its rendered rows and reports the count back; until it shows,
+  // there is nothing to match (the ANSI text may be left over from another engine).
+  const matchCount = engine === 'rich' && !richFallback ? (showingPierre ? richMatchCount : 0) : diffMatches.length
   const currentDiffMatch = Math.min(activeDiffMatch, Math.max(0, matchCount - 1))
   const allSearchCurrent = allSearchResult?.query.toLowerCase() === contentQuery.toLowerCase()
   const allFileMatchCounts = useMemo(() => {
