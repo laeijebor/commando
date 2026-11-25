@@ -9,7 +9,7 @@ import { parseChatMcpRequest, parseChatMcpResult, type ChatMcpRequest, type Chat
 import type { ChatCardEvent } from './chat-tile-events.js'
 import { ASK_KEY } from './session-asks.js'
 
-export const AGENT_HOST_PROTOCOL_VERSION = 8
+export const AGENT_HOST_PROTOCOL_VERSION = 9
 /**
  * Hosts from this version accept `configure` and report their picker state.
  * Older hosts keep running after a merge until restarted, so check before
@@ -38,8 +38,8 @@ export function hostTakesTurnFlow(session: { hostVersion: number }): boolean {
 /** Hosts from this version can hand their conversation to Claude Code in the same pane. */
 export const CHAT_SWITCH_HOST_VERSION = 5
 
-export function hostTakesSwitch(session: { hostVersion: number; provider?: ChatProvider }): boolean {
-  return session.provider !== 'deepseek' && session.hostVersion >= CHAT_SWITCH_HOST_VERSION
+export function hostTakesSwitch(session: { hostVersion: number; provider?: ChatProvider; aside?: ChatAsideInfo }): boolean {
+  return !session.aside && session.provider !== 'deepseek' && session.hostVersion >= CHAT_SWITCH_HOST_VERSION
 }
 /** Hosts from this version list and manage their agent's MCP servers. */
 export const CHAT_MCP_HOST_VERSION = 6
@@ -60,6 +60,44 @@ export const CHAT_STEER_ALL_HOST_VERSION = 8
 export function hostTakesSteerAll(session: { hostVersion: number }): boolean {
   return session.hostVersion >= CHAT_STEER_ALL_HOST_VERSION
 }
+export const CHAT_ASIDES_HOST_VERSION = 9
+
+export function hostTakesAsides(session: { hostVersion: number }): boolean {
+  return session.hostVersion >= CHAT_ASIDES_HOST_VERSION
+}
+
+export type ChatAsideMode = 'read-only' | 'inherit'
+export interface ChatForkPoint { sessionId: string; at?: string }
+export interface ChatAsideRecord {
+  id: string
+  title: string
+  mode: ChatAsideMode
+  method: 'fork' | 'brief'
+  readOnlyEnforced: boolean
+  sessionId?: string
+  forkedFrom: ChatForkPoint
+  status: 'open' | 'closed'
+  createdAt: number
+  closedAt?: number
+}
+export type ChatAsideInfo = { parentPaneId: string } & Pick<ChatAsideRecord, 'id' | 'title' | 'mode' | 'method' | 'readOnlyEnforced' | 'forkedFrom' | 'createdAt'>
+export type ChatAsideAction =
+  | { action: 'open'; text: string; images?: ChatImageRef[]; mode?: ChatAsideMode }
+  | { action: 'close' | 'reopen' | 'refork'; asideId: string }
+  | { action: 'mode'; asideId: string; mode: ChatAsideMode }
+export interface ChatAsideResult { ok: boolean; asideId?: string; error?: string }
+
+export function asideKey(paneId: string, asideId: string): string {
+  return `${paneId}~${asideId}`
+}
+export function parseAsideKey(key: string): { paneId: string; asideId: string } | null {
+  const match = /^(%\d+)~([a-z0-9]{8})$/.exec(key)
+  return match ? { paneId: match[1]!, asideId: match[2]! } : null
+}
+export function isChatKey(value: unknown): value is string {
+  return isPaneId(value) || (typeof value === 'string' && parseAsideKey(value) !== null)
+}
+
 /** WebSocket close code the daemon uses when a host does not run in the pane it claims. */
 export const HOST_REFUSED_CLOSE_CODE = 4003
 export const AGENT_HOST_WS_PATH = '/agent-host/ws'
@@ -495,6 +533,7 @@ export interface ChatLogin {
 }
 
 export interface ChatSessionInfo {
+  aside?: ChatAsideInfo
   login?: ChatLogin
   /** tmux pane id (`%N`) the session belongs to. */
   paneId: string
@@ -590,6 +629,7 @@ export function selectedModelOption(session: Pick<ChatSessionInfo, 'models' | 's
 
 /** A chat as the daemon relays it to clients: session plus its items in order. */
 export interface ChatState {
+  asides?: ChatAsideRecord[]
   paneId: string
   targetId?: string
   session: ChatSessionInfo
@@ -609,6 +649,8 @@ export interface ChatState {
 // ---- host ⇄ daemon ----
 
 export type HostToDaemonMessage =
+  | ({ type: 'aside_result'; paneId: string; requestId: string } & ChatAsideResult)
+  | { type: 'asides'; paneId: string; asides: ChatAsideRecord[] }
   | { type: 'hello'; hostId: string; version: number; mode: 'pane' | 'shared'; pid: number }
   /** Full state for one session: sent on (re)connect and when a session starts. */
   | { type: 'session_snapshot'; session: ChatSessionInfo; items: ChatItem[] }
@@ -675,6 +717,7 @@ export type ChatAnswer =
   | { kind: 'question'; answers: Record<string, string> }
 
 export type DaemonToHostMessage =
+  | { type: 'aside'; paneId: string; requestId: string; action: ChatAsideAction }
   | { type: 'welcome'; version: number }
   | ({ type: 'send'; paneId: string; text: string; images?: ChatImageRef[]; requestId: string } & ChatSendOptions)
   | ({ type: 'queue'; paneId: string; requestId: string } & ChatQueueAction)
@@ -1095,7 +1138,7 @@ function parseChatLogin(value: unknown): ChatLogin | undefined {
 
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isRecord(value)) return null
-  if (!isPaneId(value.paneId) || !isChatProvider(value.provider) || typeof value.cwd !== 'string') return null
+  if (!isChatKey(value.paneId) || !isChatProvider(value.provider) || typeof value.cwd !== 'string') return null
   if (!SESSION_STATUSES.has(value.status as ChatSessionStatus)) return null
   if (typeof value.hostPid !== 'number' || typeof value.hostVersion !== 'number') return null
   for (const key of ['sessionId', 'model', 'permissionMode', 'configDir', 'error', 'hostBuild', 'title', 'resumeCommand'] as const) {
@@ -1103,12 +1146,16 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   }
   if (value.selectedModel !== undefined && !isModelValue(value.selectedModel)) return null
   if (value.effort !== undefined && !isChatEffort(value.effort)) return null
+  const aside = value.aside === undefined ? undefined : parseChatAsideInfo(value.aside)
+  if (value.aside !== undefined && (!aside || value.paneId !== asideKey(aside.parentPaneId, aside.id))) return null
+  if (parseAsideKey(value.paneId) && !aside) return null
   const login = parseChatLogin(value.login)
   const models = parseChatModelOptions(value.models)
   const contextUsage = parseContextUsage(value.contextUsage)
   const planUsage = parsePlanUsage(value.planUsage)
   const queue = parseQueue(value.queue)
   return {
+    ...(aside ? { aside } : {}),
     paneId: value.paneId,
     provider: value.provider,
     cwd: value.cwd,
@@ -1147,6 +1194,15 @@ function parseItems(value: unknown): ChatItem[] | null {
 export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
   if (!isRecord(value)) return null
   switch (value.type) {
+    case 'aside_result': {
+      const result = parseChatAsideResult(value)
+      return isPaneId(value.paneId) && shortString(value.requestId) && result
+        ? { type: 'aside_result', paneId: value.paneId, requestId: value.requestId, ...result } : null
+    }
+    case 'asides': {
+      const asides = parseChatAsideRecords(value.asides)
+      return isPaneId(value.paneId) && asides ? { type: 'asides', paneId: value.paneId, asides } : null
+    }
     case 'hello':
       if (!shortString(value.hostId) || typeof value.version !== 'number' || typeof value.pid !== 'number') return null
       if (value.mode !== 'pane' && value.mode !== 'shared') return null
@@ -1162,31 +1218,31 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
     }
     case 'items': {
       const items = parseItems(value.items)
-      return isPaneId(value.paneId) && items ? { type: 'items', paneId: value.paneId, items, ...(value.replace === true ? { replace: true } : {}) } : null
+      return isChatKey(value.paneId) && items ? { type: 'items', paneId: value.paneId, items, ...(value.replace === true ? { replace: true } : {}) } : null
     }
     case 'session_closed':
-      return isPaneId(value.paneId) ? { type: 'session_closed', paneId: value.paneId } : null
+      return isChatKey(value.paneId) ? { type: 'session_closed', paneId: value.paneId } : null
     case 'commands': {
       const commands = parseChatCommands(value.commands)
-      return isPaneId(value.paneId) && commands ? { type: 'commands', paneId: value.paneId, commands } : null
+      return isChatKey(value.paneId) && commands ? { type: 'commands', paneId: value.paneId, commands } : null
     }
     case 'file_search_result': {
       const entries = parseFileEntries(value.entries)
-      if (!isPaneId(value.paneId) || !shortString(value.requestId) || !entries) return null
+      if (!isChatKey(value.paneId) || !shortString(value.requestId) || !entries) return null
       return withOptional({ type: 'file_search_result' as const, paneId: value.paneId, requestId: value.requestId, entries, truncated: value.truncated === true }, {
         error: optionalText(value.error, 1000),
       })
     }
     case 'subagent_transcript_result': {
       const items = parseItems(value.items)
-      if (!isPaneId(value.paneId) || !shortString(value.requestId) || !items) return null
+      if (!isChatKey(value.paneId) || !shortString(value.requestId) || !items) return null
       return withOptional({ type: 'subagent_transcript_result' as const, paneId: value.paneId, requestId: value.requestId, items }, {
         error: optionalText(value.error, 1000),
       })
     }
     case 'mcp_result': {
       const result = parseChatMcpResult(value)
-      if (!isPaneId(value.paneId) || !shortString(value.requestId) || !result) return null
+      if (!isChatKey(value.paneId) || !shortString(value.requestId) || !result) return null
       return { type: 'mcp_result', paneId: value.paneId, requestId: value.requestId, ...result }
     }
     case 'handoff': {
@@ -1194,7 +1250,7 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
       const flags = Array.isArray(value.returnFlags) && value.returnFlags.length <= 64 && value.returnFlags.every((flag) => typeof flag === 'string' && flag.length <= 4096 && !flag.includes('\0'))
         ? value.returnFlags as string[]
         : null
-      if (!isPaneId(value.paneId) || !shortString(value.sessionId) || !shortString(value.cwd, 4096) || !queue || !flags) return null
+      if (!isChatKey(value.paneId) || !shortString(value.sessionId) || !shortString(value.cwd, 4096) || !queue || !flags) return null
       if (value.provider !== undefined && !isChatProvider(value.provider)) return null
       return withOptional({ type: 'handoff' as const, paneId: value.paneId, sessionId: value.sessionId, cwd: value.cwd, queue, returnFlags: flags }, {
         provider: value.provider as ChatProvider | undefined,
@@ -1208,10 +1264,15 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
 export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
   if (!isRecord(value)) return null
   switch (value.type) {
+    case 'aside': {
+      const action = parseChatAsideAction(value.action)
+      return isPaneId(value.paneId) && shortString(value.requestId) && action
+        ? { type: 'aside', paneId: value.paneId, requestId: value.requestId, action } : null
+    }
     case 'welcome':
       return typeof value.version === 'number' ? { type: 'welcome', version: value.version } : null
     case 'send': {
-      if (!isPaneId(value.paneId) || typeof value.text !== 'string' || value.text.length > MAX_TEXT || !shortString(value.requestId)) return null
+      if (!isChatKey(value.paneId) || typeof value.text !== 'string' || value.text.length > MAX_TEXT || !shortString(value.requestId)) return null
       const images = value.images === undefined ? [] : parseChatImageRefs(value.images)
       const options = parseChatSendOptions(value)
       if (!images || !options) return null
@@ -1219,53 +1280,53 @@ export function parseDaemonMessage(value: unknown): DaemonToHostMessage | null {
     }
     case 'queue': {
       const action = parseChatQueueAction(value)
-      return isPaneId(value.paneId) && action && shortString(value.requestId) ? { type: 'queue', paneId: value.paneId, requestId: value.requestId, ...action } : null
+      return isChatKey(value.paneId) && action && shortString(value.requestId) ? { type: 'queue', paneId: value.paneId, requestId: value.requestId, ...action } : null
     }
     case 'task':
-      return isPaneId(value.paneId) && (value.action === 'stop' || value.action === 'background') && isAgentId(value.agentId) && shortString(value.toolUseId) && shortString(value.requestId)
+      return isChatKey(value.paneId) && (value.action === 'stop' || value.action === 'background') && isAgentId(value.agentId) && shortString(value.toolUseId) && shortString(value.requestId)
         ? { type: 'task', paneId: value.paneId, action: value.action, agentId: value.agentId, toolUseId: value.toolUseId, requestId: value.requestId }
         : null
     case 'subagent_transcript':
-      return isPaneId(value.paneId) && isAgentId(value.agentId) && shortString(value.requestId)
+      return isChatKey(value.paneId) && isAgentId(value.agentId) && shortString(value.requestId)
         ? { type: 'subagent_transcript', paneId: value.paneId, agentId: value.agentId, requestId: value.requestId }
         : null
     case 'mcp': {
       const request = parseChatMcpRequest(value.request)
-      return isPaneId(value.paneId) && request && shortString(value.requestId)
+      return isChatKey(value.paneId) && request && shortString(value.requestId)
         ? { type: 'mcp', paneId: value.paneId, request, requestId: value.requestId }
         : null
     }
     case 'file_search':
-      return isPaneId(value.paneId) && typeof value.query === 'string' && value.query.length <= MAX_FILE_QUERY && shortString(value.requestId)
+      return isChatKey(value.paneId) && typeof value.query === 'string' && value.query.length <= MAX_FILE_QUERY && shortString(value.requestId)
         ? { type: 'file_search', paneId: value.paneId, query: value.query, requestId: value.requestId }
         : null
     case 'interrupt': {
       const dropQueued = parseQueueIds(value.dropQueued)
-      return isPaneId(value.paneId) && shortString(value.requestId) && dropQueued !== null
+      return isChatKey(value.paneId) && shortString(value.requestId) && dropQueued !== null
         ? withOptional({ type: 'interrupt' as const, paneId: value.paneId, requestId: value.requestId }, { dropQueued })
         : null
     }
     case 'restart':
-      return isPaneId(value.paneId) && shortString(value.requestId)
+      return isChatKey(value.paneId) && shortString(value.requestId)
         ? { type: 'restart', paneId: value.paneId, requestId: value.requestId }
         : null
     case 'configure': {
       const settings = parseChatSettingsChange(value.settings)
-      return isPaneId(value.paneId) && settings && shortString(value.requestId)
+      return isChatKey(value.paneId) && settings && shortString(value.requestId)
         ? { type: 'configure', paneId: value.paneId, settings, requestId: value.requestId }
         : null
     }
     case 'switch':
-      return isPaneId(value.paneId) && isChatSwitchAction(value.action) && shortString(value.requestId)
+      return isChatKey(value.paneId) && isChatSwitchAction(value.action) && shortString(value.requestId)
         ? { type: 'switch', paneId: value.paneId, action: value.action, requestId: value.requestId }
         : null
     case 'handoff_saved':
-      return isPaneId(value.paneId) && typeof value.ok === 'boolean'
+      return isChatKey(value.paneId) && typeof value.ok === 'boolean'
         ? withOptional({ type: 'handoff_saved' as const, paneId: value.paneId, ok: value.ok }, { error: optionalText(value.error, 1000) })
         : null
     case 'answer': {
       const answer = parseChatAnswer(value.answer)
-      return isPaneId(value.paneId) && shortString(value.chatRequestId) && answer && shortString(value.requestId)
+      return isChatKey(value.paneId) && shortString(value.chatRequestId) && answer && shortString(value.requestId)
         ? { type: 'answer', paneId: value.paneId, chatRequestId: value.chatRequestId, answer, requestId: value.requestId }
         : null
     }
@@ -1298,4 +1359,62 @@ export function mergeChatItems(current: readonly ChatItem[], updates: readonly C
     }
   }
   return next.length > limit ? next.slice(next.length - limit) : next
+}
+
+
+export function isChatAsideMode(value: unknown): value is ChatAsideMode {
+  return value === 'read-only' || value === 'inherit'
+}
+function isAsideId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9]{8}$/.test(value)
+}
+function parseForkPoint(value: unknown): ChatForkPoint | null {
+  if (!isRecord(value) || !shortString(value.sessionId) || !optionalString(value.at, MAX_ID) || value.at === '') return null
+  return { sessionId: value.sessionId, ...(typeof value.at === 'string' ? { at: value.at } : {}) }
+}
+export function parseChatAsideInfo(value: unknown): ChatAsideInfo | null {
+  if (!isRecord(value) || !isPaneId(value.parentPaneId) || !isAsideId(value.id)
+    || !shortString(value.title, 60) || !isChatAsideMode(value.mode)
+    || (value.method !== 'fork' && value.method !== 'brief') || typeof value.readOnlyEnforced !== 'boolean'
+    || typeof value.createdAt !== 'number' || !Number.isFinite(value.createdAt) || value.createdAt < 0) return null
+  const forkedFrom = parseForkPoint(value.forkedFrom)
+  return forkedFrom ? { parentPaneId: value.parentPaneId, id: value.id, title: value.title, mode: value.mode,
+    method: value.method, readOnlyEnforced: value.readOnlyEnforced, forkedFrom, createdAt: value.createdAt } : null
+}
+export function parseChatAsideRecord(value: unknown): ChatAsideRecord | null {
+  if (!isRecord(value)) return null
+  const info = parseChatAsideInfo({ ...value, parentPaneId: '%0' })
+  if (!info || (value.status !== 'open' && value.status !== 'closed')
+    || !optionalString(value.sessionId, MAX_ID) || value.sessionId === ''
+    || (value.closedAt !== undefined && (typeof value.closedAt !== 'number' || !Number.isFinite(value.closedAt) || value.closedAt < info.createdAt))) return null
+  const { parentPaneId: _parent, ...fields } = info
+  return { ...fields, status: value.status, ...(typeof value.sessionId === 'string' ? { sessionId: value.sessionId } : {}),
+    ...(typeof value.closedAt === 'number' ? { closedAt: value.closedAt } : {}) }
+}
+export function parseChatAsideRecords(value: unknown): ChatAsideRecord[] | null {
+  if (!Array.isArray(value)) return null
+  const records = value.map(parseChatAsideRecord)
+  if (records.some((record) => record === null)) return null
+  const result = records as ChatAsideRecord[]
+  if (new Set(result.map((record) => record.id)).size !== result.length || result.filter((record) => record.status === 'open').length > 5) return null
+  return result
+}
+export function parseChatAsideResult(value: unknown): ChatAsideResult | null {
+  if (!isRecord(value) || typeof value.ok !== 'boolean' || (value.asideId !== undefined && !isAsideId(value.asideId))
+    || !optionalString(value.error, 4096)) return null
+  return { ok: value.ok, ...(typeof value.asideId === 'string' ? { asideId: value.asideId } : {}),
+    ...(typeof value.error === 'string' ? { error: value.error } : {}) }
+}
+export function parseChatAsideAction(value: unknown): ChatAsideAction | null {
+  if (!isRecord(value)) return null
+  if (value.action === 'open') {
+    const images = value.images === undefined ? undefined : parseChatImageRefs(value.images)
+    if (typeof value.text !== 'string' || value.text.length > MAX_TEXT || value.text.includes('\0') || images === null
+      || (!value.text.trim() && !images?.length) || (value.mode !== undefined && !isChatAsideMode(value.mode))) return null
+    return { action: 'open', text: value.text, ...(images ? { images } : {}), ...(isChatAsideMode(value.mode) ? { mode: value.mode } : {}) }
+  }
+  if (!isAsideId(value.asideId)) return null
+  if (value.action === 'mode') return isChatAsideMode(value.mode) ? { action: 'mode', asideId: value.asideId, mode: value.mode } : null
+  return value.action === 'close' || value.action === 'reopen' || value.action === 'refork'
+    ? { action: value.action, asideId: value.asideId } : null
 }
