@@ -10,10 +10,12 @@ export function useBoard(targetId: string, host: string, visible: boolean, api: 
   const [pending, setPending] = useState(false)
   const state = useRef({ board, visible, stale: true, wantedRev: 0, mutation: false, active: false, request: null as AbortController | null })
   state.current.visible = visible
-  const fetchBoard = useCallback(async () => {
+  const fetchBoard = useCallback(async (trailing = false): Promise<void> => {
     const s = state.current
     if (!s.active || !s.visible || s.request || s.mutation || !s.stale) return
     const controller = new AbortController()
+    const wantedAtStart = s.wantedRev
+    let followUp = false
     s.request = controller
     s.stale = false
     try {
@@ -21,6 +23,9 @@ export function useBoard(targetId: string, host: string, visible: boolean, api: 
       if (controller.signal.aborted || !s.active) return
       if (!s.board || next.rev >= s.board.rev) { s.board = next; setBoard(next) }
       s.stale = s.wantedRev > next.rev
+      // Coalesce notifications received during this read into one trailing read.
+      // If the server still lags after that read, wait for another notification or retry.
+      followUp = s.stale && (!trailing || s.wantedRev > wantedAtStart)
       setError('')
     } catch (cause) {
       if (!controller.signal.aborted && s.active) {
@@ -28,7 +33,10 @@ export function useBoard(targetId: string, host: string, visible: boolean, api: 
         setError(cause instanceof Error ? cause.message : 'Unable to load Board')
       }
     } finally {
-      if (s.request === controller) s.request = null
+      if (s.request === controller) {
+        s.request = null
+        if (followUp) void fetchBoard(true)
+      }
     }
   }, [api, targetId])
 
@@ -40,9 +48,7 @@ export function useBoard(targetId: string, host: string, visible: boolean, api: 
       if (change.host !== host || change.targetId !== targetId || change.rev <= Math.max(s.board?.rev ?? -1, s.wantedRev)) return
       s.wantedRev = change.rev
       s.stale = true
-      // A read may predate this change; abort it so it cannot replace the newer revision.
-      if (s.request) s.request.abort()
-      s.request = null
+      // Keep the current read; its completion checks the newest wanted revision.
       void fetchBoard()
     })
     const refresh = subscribeBoardRefresh((changedHost) => {

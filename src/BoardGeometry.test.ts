@@ -44,10 +44,16 @@ it('fits content without enlarging it beyond 100%', () => {
   expect(fitBoard({ x: 100, y: 200, w: 100, h: 100 }, { w: 800, h: 600 })).toEqual({ x: 250, y: 50, scale: 1 })
   expect(fitBoard({ x: 1000, y: 500, w: 1600, h: 800 }, { w: 800, h: 600 })).toEqual({ x: -446, y: -123, scale: .47 })
 })
-it('restricts Only closed to tile kinds and leaves available non-tile items visible', () => {
+it('restricts Closed tiles to closed or snapshot tile kinds', () => {
   const item = { key: 'url:a', kind: 'canvas' as const, title: 'Canvas', ref: {}, state: 'open' as const, source: 'user' as const, addedAt: 1, updatedAt: 1 }
-  expect(boardMatchesClosed(item, true)).toBe(false)
-  expect(boardMatchesClosed({ ...item, state: 'closed' }, true)).toBe(true)
-  expect(boardMatchesClosed({ ...item, state: 'snapshot' }, true)).toBe(false)
-  for (const kind of ['link', 'clip', 'pr', 'file', 'video', 'screenshot'] as const) expect(boardMatchesClosed({ ...item, kind }, true)).toBe(true)
+  for (const state of ['open', 'closed', 'snapshot', 'missing'] as const) {
+    for (const kind of ['canvas', 'slides', 'guide', 'redline', 'page'] as const) {
+      expect(boardMatchesClosed({ ...item, kind, state }, true)).toBe(state === 'closed' || state === 'snapshot')
+      expect(boardMatchesClosed({ ...item, kind, state }, false)).toBe(true)
+    }
+    for (const kind of ['link', 'clip', 'pr', 'file', 'video', 'screenshot', 'diagram'] as const) {
+      expect(boardMatchesClosed({ ...item, kind, state }, true)).toBe(false)
+      expect(boardMatchesClosed({ ...item, kind, state }, false)).toBe(true)
+    }
+  }
 })

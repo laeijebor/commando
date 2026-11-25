@@ -4,7 +4,7 @@ import { fitCanvas, type CanvasBounds, type CanvasCamera } from './canvasCamera'
 export type BoardEntry = BoardView['items'][number]
 export const isBoardTile = (item: BoardEntry): boolean => ['canvas', 'slides', 'guide', 'redline', 'page'].includes(item.kind)
 export const isBoardFile = (item: BoardEntry): boolean => ['screenshot', 'video', 'file'].includes(item.kind)
-export const boardMatchesClosed = (item: BoardEntry, closedOnly: boolean): boolean => !closedOnly || !isBoardTile(item) || item.state === 'closed'
+export const boardMatchesClosed = (item: BoardEntry, closedOnly: boolean): boolean => !closedOnly || (isBoardTile(item) && (item.state === 'closed' || item.state === 'snapshot'))
 
 export function fitBoard(bounds: CanvasBounds, viewport: { w: number; h: number }): CanvasCamera {
   const camera = fitCanvas(bounds, viewport)

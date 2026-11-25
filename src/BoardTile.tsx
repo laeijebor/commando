@@ -110,7 +110,7 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
         : <div className="board-by-type"><div className="board-filter-chips" role="group" aria-label="Filter by type">
           <button type="button" aria-pressed={filter === null} onClick={() => setFilter(null)}>All <b>{Object.values(counts).reduce((sum, count) => sum + count, 0)}</b></button>
           {BOARD_TYPES.map((type) => <button key={type.id} type="button" aria-pressed={filter === type.id} onClick={() => setFilter((current) => current === type.id ? null : type.id)}>{type.label} <b>{counts[type.id]}</b></button>)}
-          <button type="button" aria-pressed={closedOnly} onClick={() => setClosedOnly((current) => !current)}>Only closed</button>
+          <button type="button" aria-pressed={closedOnly} onClick={() => setClosedOnly((current) => !current)}>Closed tiles</button>
         </div><div className="board-type-scroll">{BOARD_TYPES.filter((type) => filter === null || type.id === filter).map((type) => {
           const entries = items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).sort((a, b) => b.addedAt - a.addedAt)
           return entries.length > 0 && <section className="board-type-row" key={type.id} aria-label={type.label}><h3>{type.label} <small>{entries.length}</small></h3><div className="board-type-cards">{entries.map((item) => card(item))}</div></section>

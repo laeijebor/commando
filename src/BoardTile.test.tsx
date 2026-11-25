@@ -94,9 +94,27 @@ describe('BoardTile', () => {
     expect(screen.getByText('Closed (revive)')).toBeInTheDocument()
     fireEvent.click(within(filters).getByRole('button', { name: 'Links 1' }))
     expect(screen.queryByRole('button', { name: 'Quick look: Design canvas' })).toBeNull()
-    fireEvent.click(within(filters).getByRole('button', { name: 'Only closed' }))
-    expect(screen.getByRole('button', { name: 'Quick look: Reference docs' })).toBeInTheDocument()
-    expect(within(filters).getByRole('button', { name: 'All 3' })).toBeInTheDocument()
+    fireEvent.click(within(filters).getByRole('button', { name: 'Closed tiles' }))
+    expect(screen.queryByRole('button', { name: 'Quick look: Reference docs' })).toBeNull()
+    expect(screen.getByText('No matching items.')).toBeInTheDocument()
+    fireEvent.click(within(filters).getByRole('button', { name: 'All 1' }))
+    expect(screen.getByRole('button', { name: 'Quick look: Design canvas' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Quick look: Proof screenshot' })).toBeNull()
+  })
+  it('includes snapshots in Closed tiles and updates the type counts', async () => {
+    const { props } = setup({ ...fixture, items: [...fixture.items,
+      { ...fixture.items[0], key: 'page:snapshot', kind: 'page', title: 'Saved page', state: 'snapshot' },
+      { ...fixture.items[0], key: 'canvas:open', title: 'Open canvas', state: 'open' },
+      { ...fixture.items[0], key: 'canvas:missing', title: 'Gone canvas', state: 'missing' },
+    ] })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); showByType()
+    fireEvent.click(screen.getByRole('button', { name: 'Closed tiles' }))
+    const filters = screen.getByRole('group', { name: 'Filter by type' })
+    expect(within(filters).getByRole('button', { name: 'All 2' })).toBeInTheDocument()
+    expect(within(filters).getByRole('button', { name: 'Links 1' })).toBeInTheDocument()
+    expect(within(filters).getByRole('button', { name: 'Screenshots & video 0' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Quick look:/ }).map((node) => node.getAttribute('aria-label'))).toEqual(['Quick look: Design canvas', 'Quick look: Saved page'])
   })
   it('opens the unchanged worklog, edits the original note store and preserves hidden attention', async () => {
     const { props } = setup(), attention = vi.fn()

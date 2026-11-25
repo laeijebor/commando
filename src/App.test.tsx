@@ -149,6 +149,8 @@ beforeEach(() => {
     const url = String(input)
     const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url === '/api/hosts') return json({ hosts: [] })
+    const board = url.match(/^\/api\/boards\/([^/?]+)$/)
+    if (board) return json({ targetId: decodeURIComponent(board[1]), rev: 0, items: [], groups: [], placements: {}, links: [] })
     if (url.includes('/api/prs/prefs')) {
       return json({ prefs: { version: 1, pinnedRepos: [], recentRepos: ['acme/widgets'], lastRepo: 'acme/widgets', lastFilter: 'open', lastScope: 'mine' } })
     }
