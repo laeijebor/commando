@@ -1,4 +1,4 @@
-import { realpath } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import {
   CODE_NAV_KINDS,
@@ -318,8 +318,12 @@ export class CodeNavService {
     relative: string,
     request: CodeNavRequest,
   ): Promise<CodeNavResult> {
-    // The provider reads the disk, so the clicked path must not leave the repository through a symlink.
+    // The provider reads the disk and follows links, so it never gets a symlinked file (the rest of
+    // the daemon shows a link as its target text), and every answer must really be inside the repo.
     await this.worktreeSource(root, relative)
+    if ((await lstat(path.join(root, relative))).isSymbolicLink()) {
+      throw new PreciseNavUnavailable(`${relative} is a symlink, which language servers would follow`)
+    }
     const found = await provider.query({
       root,
       kind: request.kind,
@@ -327,15 +331,24 @@ export class CodeNavService {
       line: request.line,
       character: request.character,
     })
-    const roots = [root]
     const realRoot = await realpath(root).catch(() => root)
-    if (realRoot !== root) roots.push(realRoot)
+    const realPaths = new Map<string, Promise<string | undefined>>()
+    const real = (absolute: string) => {
+      let cached = realPaths.get(absolute)
+      if (!cached) {
+        cached = path.isAbsolute(absolute) ? realpath(absolute).catch(() => undefined) : Promise.resolve(undefined)
+        realPaths.set(absolute, cached)
+      }
+      return cached
+    }
 
     const seen = new Set<string>()
     const mapped: { location: PreciseLocation; file: string }[] = []
     let outside = 0
     for (const location of found) {
-      const file = this.relativeTo(roots, location.path)
+      // By real path, so a symlink in the repo can't surface (or preview) a file outside it.
+      const resolved = await real(location.path)
+      const file = resolved === undefined ? undefined : this.relativeTo([realRoot], resolved)
       if (file === undefined) {
         outside += 1
         continue

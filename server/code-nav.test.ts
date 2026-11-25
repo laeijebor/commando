@@ -266,6 +266,33 @@ describe('CodeNavService (real repository)', () => {
   })
 
   describe('precise provider', () => {
+    it('never hands a symlinked file to the provider, and drops answers that resolve outside the repo', async () => {
+      const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-code-nav-outside-')))
+      await writeFile(path.join(outside, 'secret.ts'), 'export const token = "SECRET"\n')
+      await symlink('src/app.ts', path.join(root, 'alias.ts'))
+      await symlink(outside, path.join(root, 'vendor'))
+      try {
+        const clicked = fakeProvider()
+        const viaLink = await nav({ file: 'alias.ts' }, [clicked.provider])
+        expect(clicked.query).not.toHaveBeenCalled()
+        expect(viaLink.source).toBe('text')
+        expect(viaLink.note).toMatch(/alias\.ts is a symlink/u)
+
+        const { provider } = fakeProvider(async () => [
+          { path: path.join(root, 'vendor/secret.ts'), line: 1, character: 13, preview: 'export const token = "SECRET"' },
+          { path: path.join(root, 'src/util.ts'), line: 5, character: 9 },
+        ])
+        const result = await nav({}, [provider])
+        expect(result.locations.map((location) => location.file)).toEqual(['src/util.ts'])
+        expect(JSON.stringify(result)).not.toContain('SECRET')
+        expect(result.note).toMatch(/1 result outside the repository/u)
+      } finally {
+        await rm(path.join(root, 'alias.ts'), { force: true })
+        await rm(path.join(root, 'vendor'), { force: true })
+        await rm(outside, { recursive: true, force: true })
+      }
+    })
+
     it('is used for the worktree, mapping paths, dropping outside ones and filling previews', async () => {
       const { provider, query: providerQuery } = fakeProvider(async () => [
         { path: path.join(root, 'src/util.ts'), line: 5, character: 9 },
