@@ -22,9 +22,9 @@ import { usePushStore } from './store'
  */
 export function configureNotificationHandler(): void {
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowBanner: true,
-      shouldShowList: true,
+    handleNotification: async (notification) => ({
+      shouldShowBanner: Boolean(parseNotificationData(notification.request.content.data)),
+      shouldShowList: Boolean(parseNotificationData(notification.request.content.data)),
       shouldPlaySound: false,
       shouldSetBadge: false,
     }),
@@ -86,7 +86,8 @@ export function useNotificationRouting(): void {
   }, [router])
 
   useEffect(() => {
-    const received = Notifications.addNotificationReceivedListener(() => {
+    const received = Notifications.addNotificationReceivedListener((notification) => {
+      if (!parseNotificationData(notification.request.content.data)) return
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
     })
     const responded = Notifications.addNotificationResponseReceivedListener((response) => {

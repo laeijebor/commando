@@ -1,5 +1,5 @@
 import type { ChatState } from '@commando/agent-chat'
-import type { HostChats } from '../chat/store'
+import { isAsideChat, type HostChats } from '../chat/store'
 
 export type ChatRowMetadata = {
   session: Pick<ChatState['session'], 'provider' | 'status' | 'title'>
@@ -26,14 +26,16 @@ export function createChatRowSelector(hostId: string | undefined) {
     if (!chats) return EMPTY
     if (chats === raw) return previous
     const next: Record<string, ChatRowMetadata> = {}
-    let changed = Object.keys(chats).length !== Object.keys(previous).length
+    let changed = false
     for (const [id, chat] of Object.entries(chats)) {
+      if (isAsideChat(id, chat)) continue
       const old = previous[id]
       if (raw[id] === chat && old) { next[id] = old; continue }
       const value: ChatRowMetadata = { session: { provider: chat.session.provider, status: chat.session.status, title: chat.session.title }, pending: rowPending(chat), updatedAt: rowUpdatedAt(chat) }
       if (old && old.session.provider === value.session.provider && old.session.status === value.session.status && old.session.title === value.session.title && old.pending === value.pending && old.updatedAt === value.updatedAt) next[id] = old
       else { next[id] = value; changed = true }
     }
+    if (Object.keys(next).length !== Object.keys(previous).length) changed = true
     raw = chats
     if (changed) previous = next
     return previous

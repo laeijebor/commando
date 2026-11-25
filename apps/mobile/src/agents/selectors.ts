@@ -1,3 +1,4 @@
+import { parseAsideKey } from '@commando/agent-chat'
 import { providerPresentation } from '../ui/providerPresentation'
 
 import type {
@@ -147,7 +148,7 @@ export function buildAgentRows({ statuses, snapshot, briefs = {} }: AgentRowInpu
   const sessions = new Map((snapshot?.sessions ?? []).map((session) => [session.id, session]))
   const windows = new Map((snapshot?.windows ?? []).map((window) => [window.id, window]))
 
-  return Object.values(statuses).map((status) => {
+  return Object.values(statuses).filter((status) => !parseAsideKey(status.paneId)).map((status) => {
     const pane = panes.get(status.paneId)
     const session = pane ? sessions.get(pane.sessionId) : undefined
     const window = pane ? windows.get(pane.windowId) : undefined
