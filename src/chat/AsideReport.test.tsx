@@ -3,9 +3,8 @@ import { useState } from 'react'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { asideKey, asideReportText, type ChatAsideRecord, type ChatItem, type ChatState } from '../../shared/agent-chat'
+import { ASIDE_REPORT_PROMPT, asideKey, asideReportText, type ChatAsideRecord, type ChatItem, type ChatState } from '../../shared/agent-chat'
 import { ChatPane, type ChatAsideServices, type ChatThreadBindings } from './ChatPane'
-import { ASIDE_REPORT_PROMPT } from './AsideReport'
 import { saveDraft, loadDraft } from './draftStore'
 
 const record: ChatAsideRecord = { id: 'abcdefgh', title: 'Why flaky?', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1, status: 'open' }
@@ -42,7 +41,7 @@ function setup(initialMain = main, initialThread: ChatState | undefined = aside,
     updateMain: (chat: ChatState) => act(() => changeMain(chat)),
     updateThread: (chat: ChatState | undefined) => act(() => changeThread(chat)),
     refuse: () => { sendError = { message: 'Message refused', refused: [{ requestId: 'draft-send' }] }; act(() => changeThread({ ...aside })) },
-    refuseMain: () => act(() => changeMainError({ message: 'Main refused the report', refused: [{ requestId: 'main-send' }] })),
+    refuseMain: (requestIds = ['main-send']) => act(() => changeMainError({ message: 'Main refused the report', refused: requestIds.map((requestId) => ({ requestId })) })),
   }
 }
 const clickReport = () => fireEvent.click(screen.getByRole('button', { name: 'Report to Main' }))
@@ -146,12 +145,34 @@ describe('Report to Main', () => {
     expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue(envelope)
     expect(screen.getByText('Main refused the report')).toBeInTheDocument()
   })
-  it('leaves manual reporting available when the aside host disconnects', () => {
+  it.each(['disconnected', 'missing'] as const)('keeps drafting through a %s chat and re-scans its completed reply on reconnect', (state) => {
     const view = setup(); clickReport()
-    view.updateThread({ ...aside, hostConnected: false })
-    expect(within(screen.getByRole('region', { name: 'Report to Main' })).getByRole('alert')).toHaveTextContent(/disconnected/)
-    fireEvent.change(screen.getByRole('textbox', { name: 'Report text' }), { target: { value: body } })
-    expect(screen.getByRole('button', { name: 'Send to Main' })).toBeEnabled()
+    view.updateThread({ ...aside, session: { ...aside.session, status: 'running' }, items: [...aside.items, prompt] })
+    view.updateThread(state === 'missing' ? undefined : { ...aside, hostConnected: false })
+    expect(screen.getByText('Waiting for the aside to reconnect…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send to Main' })).toBeDisabled()
+    expect(screen.queryByRole('textbox', { name: 'Report text' })).toBeNull()
+    // Session status can reconnect before its timeline arrives.
+    view.updateThread({ ...aside })
+    expect(screen.getByText('Drafting…')).toBeInTheDocument()
+    view.updateThread({ ...aside, items: [...aside.items, prompt, reply] })
+    expect(screen.getByRole('textbox', { name: 'Report text' })).toHaveValue(body)
+  })
+  it.each(['closed', 'error', 'new-session', 'record-closed', 'record-gone'] as const)('stops drafting when the aside is %s', (state) => {
+    const view = setup(); clickReport()
+    if (state === 'record-closed' || state === 'record-gone') view.updateMain({ ...main, asides: state === 'record-gone' ? [] : [{ ...record, status: 'closed' }] })
+    else view.updateThread({ ...aside, session: { ...aside.session, ...(state === 'new-session' ? { sessionId: 'replacement' } : { status: state }) } })
+    // Closing/removing a record switches to Main; reopening the tab is not required to end the draft.
+    if (state !== 'record-closed' && state !== 'record-gone') {
+      expect(screen.queryByText('Drafting…')).toBeNull()
+      expect(screen.getByRole('textbox', { name: 'Report text' })).toHaveValue('')
+      expect(within(screen.getByRole('region', { name: 'Report to Main' })).getByRole('alert')).toBeInTheDocument()
+    }
+    view.updateThread({ ...aside, items: [...aside.items, prompt, reply] })
+    if (state === 'record-closed' || state === 'record-gone') {
+      view.updateMain(main); selectAside()
+      expect(screen.getByRole('textbox', { name: 'Report text' })).toHaveValue('')
+    }
   })
   it('appends to an unmounted Main draft, preserving its images, and focuses Main', async () => {
     saveDraft('main', 'Existing draft', [{ id: `${'a'.repeat(64)}.png`, name: 'photo.png' }])
@@ -171,12 +192,14 @@ describe('Report to Main', () => {
     fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
     await act(async () => {})
     expect(view.onSend).not.toHaveBeenCalled()
+    expect(view.request).not.toHaveBeenCalled()
     selectAside(); selectMain()
     expect(screen.getByLabelText('Aside references')).toHaveTextContent(`From aside ${record.title}`)
     const input = screen.getByRole('textbox', { name: 'Message Claude' })
     fireEvent.change(input, { target: { value: 'Use this finding' } }); fireEvent.keyDown(input, { key: 'Enter' })
     expect(view.onSend).toHaveBeenCalledExactlyOnceWith(`${envelope}\n\nUse this finding`, [], { delivery: 'queue' })
     expect(screen.queryByLabelText('Aside references')).toBeNull()
+    expect(view.request).toHaveBeenCalledExactlyOnceWith({ action: 'close', asideId: record.id })
     fireEvent.change(input, { target: { value: 'Follow-up' } }); fireEvent.keyDown(input, { key: 'Enter' })
     expect(view.onSend).toHaveBeenLastCalledWith('Follow-up', [], { delivery: 'queue' })
   })
@@ -188,6 +211,7 @@ describe('Report to Main', () => {
     const input = screen.getByRole('textbox', { name: 'Message Claude' })
     fireEvent.change(input, { target: { value: 'No reference' } }); fireEvent.keyDown(input, { key: 'Enter' })
     expect(view.onSend).toHaveBeenCalledExactlyOnceWith('No reference', [], { delivery: 'queue' })
+    expect(view.request).not.toHaveBeenCalled()
   })
   it('cancels without delivering or closing, and ignores a late assistant response', () => {
     const view = setup(); clickReport()
@@ -215,7 +239,141 @@ describe('Report to Main', () => {
     setup({ ...main, session: { ...main.session, queue: [{ id: 'q1', text: envelope }] } })
     selectMain()
     const queue = screen.getByLabelText('Queued messages')
-    expect(queue).toHaveTextContent('From aside Why flaky?')
+    expect(queue).toHaveTextContent('From aside “Why flaky?”: Found the race')
     expect(queue).not.toHaveTextContent('commando-aside:')
   })
+})
+
+
+it('restores references with Main’s text and images after the whole pane remounts', async () => {
+  const image = { id: `${'a'.repeat(64)}.png`, name: 'photo.png' }
+  saveDraft('main', 'Typed earlier', [image])
+  const view = setup(); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  expect(view.request).not.toHaveBeenCalled()
+  view.unmount()
+  expect(loadDraft('main')).toMatchObject({ text: 'Typed earlier', images: [image], references: [{ asideId: record.id, body, close: true }] })
+  const remounted = setup(); selectMain()
+  expect(screen.getByLabelText('Aside references')).toHaveTextContent(record.title)
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  expect(input).toHaveValue('Typed earlier')
+  fireEvent.keyDown(input, { key: 'Enter' })
+  expect(remounted.onSend).toHaveBeenCalledExactlyOnceWith(`${envelope}\n\nTyped earlier`, [image], { delivery: 'queue' })
+  expect(remounted.request).toHaveBeenCalledExactlyOnceWith({ action: 'close', asideId: record.id })
+  expect(loadDraft('main').references).toBeUndefined()
+})
+
+it('does not close a restored reference whose auto-close was unchecked', async () => {
+  const view = setup(); manualReport()
+  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  view.unmount()
+  const remounted = setup(); selectMain()
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  fireEvent.change(input, { target: { value: 'Use it' } }); fireEvent.keyDown(input, { key: 'Enter' })
+  expect(remounted.request).not.toHaveBeenCalled()
+})
+
+it('recovers a queued refusal after remount, persists it while Main is unmounted and preserves attachments', async () => {
+  const image = { id: `${'a'.repeat(64)}.png`, name: 'photo.png' }
+  saveDraft('main', 'Existing words', [image])
+  const view = setup(); manualReport(); sendReport()
+  await act(async () => {})
+  view.unmount()
+  const remounted = setup(); remounted.refuseMain()
+  expect(loadDraft('main')).toMatchObject({ text: `Existing words\n\n${envelope}`, images: [image] })
+  remounted.unmount()
+  setup(); selectMain()
+  expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue(`Existing words\n\n${envelope}`)
+})
+
+it.each(['steered', 'relay'] as const)('renders each report and typed text separately, keeping the %s label', (label) => {
+  const second = asideReportText({ asideId: 'ijklmnop', title: 'Second aside', body: 'Second finding' })
+  const view = setup({ ...main, items: [{ ...base, id: 'reports', kind: 'user_message', text: `${envelope}\n\n${second}\n\nUse both findings`, ...(label === 'steered' ? { steered: true } : { relayTo: { agentId: 'a1', label: 'helper' } }) }] })
+  selectMain()
+  const bubbles = view.container.querySelectorAll('.chat-aside-report-bubble')
+  expect(bubbles).toHaveLength(2)
+  expect(bubbles[0]).toHaveTextContent('Found the race')
+  expect(bubbles[0]).not.toHaveTextContent('Second finding')
+  expect(bubbles[1]).toHaveTextContent('Second finding')
+  for (const bubble of bubbles) expect(bubble).not.toHaveTextContent('Use both findings')
+  expect(screen.getByText('Use both findings')).toHaveClass('bg-message')
+  expect(screen.getByText(label === 'steered' ? 'Steered: sent while Claude worked' : 'To @helper, relayed through main Claude')).toBeInTheDocument()
+  expect(view.container.textContent).not.toContain('commando-aside')
+})
+
+it('shows every queued report and the typed message in the queue preview', () => {
+  const second = asideReportText({ asideId: 'ijklmnop', title: 'Second aside', body: 'Second finding' })
+  setup({ ...main, session: { ...main.session, queue: [{ id: 'q', text: `${envelope}\n\n${second}\n\nUse both findings` }] } }); selectMain()
+  const queue = screen.getByLabelText('Queued messages')
+  expect(queue).toHaveTextContent('From aside “Why flaky?”: Found the race')
+  expect(queue).toHaveTextContent('From aside “Second aside”: Second finding')
+  expect(queue).toHaveTextContent('Use both findings')
+  expect(queue).not.toHaveTextContent('commando-aside')
+})
+
+
+it('recovers a refused reference and its typed message after the whole pane remounts', async () => {
+  const view = setup(); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  fireEvent.change(input, { target: { value: 'Use this finding' } }); fireEvent.keyDown(input, { key: 'Enter' })
+  view.unmount()
+  const remounted = setup(); remounted.refuseMain()
+  selectMain()
+  expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue(`${envelope}\n\nUse this finding`)
+  expect(loadDraft('main').text).toBe(`${envelope}\n\nUse this finding`)
+})
+
+it('does not duplicate a refused reference while Main is mounted', async () => {
+  const view = setup(); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  fireEvent.change(input, { target: { value: 'Use this finding' } }); fireEvent.keyDown(input, { key: 'Enter' })
+  fireEvent.change(input, { target: { value: 'New unsaved words' } })
+  view.refuseMain()
+  expect(input).toHaveValue(`New unsaved words\n\n${envelope}\n\nUse this finding`)
+  expect(loadDraft('main').text).toBe(`New unsaved words\n\n${envelope}\n\nUse this finding`)
+})
+
+it('keeps manual draft delivery usable when storage is unavailable', async () => {
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('Blocked') })
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Blocked') })
+  setup(); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Put in Main's composer/ })); sendReport()
+  await act(async () => {})
+  expect(screen.getByRole('textbox', { name: 'Message Claude' })).toHaveValue(envelope)
+})
+
+it('keeps pending references isolated when Main changes session', async () => {
+  const view = setup(); manualReport()
+  fireEvent.click(screen.getByRole('radio', { name: /Attach as reference/ })); sendReport()
+  await act(async () => {})
+  view.updateMain({ ...main, session: { ...main.session, sessionId: 'other-main' } })
+  expect(screen.queryByLabelText('Aside references')).toBeNull()
+  expect(loadDraft('main').references).toHaveLength(1)
+  view.updateMain(main)
+  expect(screen.getByLabelText('Aside references')).toHaveTextContent(record.title)
+})
+
+
+it('recovers multiple refused reports together without overwriting the unsaved Main draft', () => {
+  const view = setup()
+  view.onSend.mockReturnValueOnce('send-first').mockReturnValueOnce('send-second')
+  for (const finding of ['First finding', 'Second finding']) {
+    manualReport()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Report text' }), { target: { value: finding } })
+    fireEvent.click(screen.getByRole('checkbox')); sendReport()
+  }
+  selectMain()
+  const input = screen.getByRole('textbox', { name: 'Message Claude' })
+  fireEvent.change(input, { target: { value: 'Unsaved original' } })
+  view.refuseMain(['send-first', 'send-second'])
+  const reports = ['First finding', 'Second finding'].map((body) => asideReportText({ asideId: record.id, title: record.title, body })).join('\n\n')
+  expect(input).toHaveValue(`Unsaved original\n\n${reports}`)
+  expect(loadDraft('main').text).toBe(`Unsaved original\n\n${reports}`)
 })

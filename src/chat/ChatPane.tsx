@@ -118,17 +118,15 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   const [anchor, setAnchor] = useState<ChatItem>()
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickId, setQuickId] = useState<string>()
-  const [quickDraft, setQuickDraft] = useState<AsideReportDraft>()
-  const quickDraftSequence = useRef(0)
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [pendingAction, setPendingAction] = useState<ChatAsideAction>()
   const beforeOpen = useRef(new Set<string>())
   const [reforks, setReforks] = useState<Record<string, number>>({})
-  const reporting = useAsideReports(asides, props.chat.paneId, props.sendError)
+  const reporting = useAsideReports(asides, props.chat.paneId, props.chat.session.sessionId, props.chat.asides, props.sendError)
   const [reportSource, setReportSource] = useState<AsideReport>()
   const [focusMain, setFocusMain] = useState(false)
-  useEffect(() => { setAnchor(undefined); setQuickOpen(false); setQuickId(undefined); setQuickDraft(undefined) }, [props.chat.session.sessionId])
+  useEffect(() => { setAnchor(undefined); setQuickOpen(false); setQuickId(undefined) }, [props.chat.session.sessionId])
   const available = asides && hostTakesAsides(props.chat.session)
   const selected = available ? asides.selected : undefined
   const latestSelected = useRef(selected)
@@ -193,13 +191,13 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   }
   const quickPopover = available && !selected && (quickOpen || quickRecord) ? <QuickAside record={quickRecord} chat={quickChat || undefined} disabled={busy || !props.connected || !props.chat.hostConnected}
     onAsk={askQuick} onKeep={() => { if (activeQuickId) void request({ action: 'keep', asideId: activeQuickId }).then((ok) => { if (ok) { setQuickOpen(false); setQuickId(undefined) } }) }}
-    onCopy={(text) => { setQuickDraft({ id: --quickDraftSequence.current, text }); setFocusMain(true) }} onDismiss={() => { void dismissQuick() }} /> : undefined
+    onCopy={(text) => { reporting.appendDraft(text); setFocusMain(true) }} onDismiss={() => { void dismissQuick() }} /> : undefined
   const columnProps = selectedChat && asides ? {
     ...props, ...asides.bindings(selectedChat.paneId), chat: selectedChat,
     externalRuns: EMPTY_EXTERNAL_RUNS, tileEvents: EMPTY_TILE_EVENTS, asks: NO_ASKS,
     commander: undefined, prsApi: undefined, focusMessage: undefined, onAsideFromHere: undefined, asideMarkers: undefined, onQuickAside: undefined, quickAside: undefined,
   } : { ...props,
-    reportDraft: quickDraft ?? reporting.draft, onReportDraftTaken: quickDraft ? () => setQuickDraft(undefined) : reporting.consumeDraft,
+    reportDraft: reporting.draft, onReportDraftTaken: reporting.consumeDraft,
     ...(available ? {
       onQuickAside: askQuick, quickAside: quickPopover,
       onAsideFromHere: (item: ChatItem) => { setAnchor(item); asides.select('new') },
@@ -209,7 +207,14 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
         onSelect: () => { if (entry.status === 'open') asides.select(entry.id); else void request({ action: entry.status === 'promoted' ? 'promote' : 'reopen', asideId: entry.id }) },
       })),
     } : {}),
-    reportReferences: reporting.references, onRemoveReportReference: reporting.removeReference, onReportsSent: reporting.clearReferences,
+    reportReferences: reporting.references, onRemoveReportReference: reporting.removeReference, onReportsSent: (requestId: string | void, text: string) => {
+      reporting.rememberSend(requestId, text)
+      const closing = new Set(reporting.references.filter((report) => report.close).map((report) => report.asideId))
+      reporting.clearReferences()
+      for (const asideId of closing) void asides?.request({ action: 'close', asideId }).then((result) => {
+        if (!result.ok) setError(result.error || 'Could not close the aside')
+      }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+    },
     onOpenReport: (report: AsideReport) => {
       const source = props.chat.asides?.find((aside) => aside.id === report.asideId)
       if (source?.status === 'open') asides?.select(source.id)
@@ -222,7 +227,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       try {
         reporting.deliver(report, props.onSend)
         if (report.delivery !== 'queue') { props.onFocus(); setFocusMain(true) }
-        if (report.close) void request({ action: 'close', asideId: report.asideId })
+        if (report.close && report.delivery !== 'reference') void request({ action: 'close', asideId: report.asideId })
       } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     }} /> : undefined
   const column = <ChatErrorBoundary>
@@ -261,7 +266,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
           requests={[]} services={props.services} onOpenAside={open} newAside
           onSend={() => {}} onInterrupt={() => {}} onAnswer={() => {}} onConfigure={() => {}}
         />
-      </> : selected && !selectedChat ? record && !pending(record.id) ? <><div role="alert" className="p-4 text-sm text-destructive">
+      </> : selected && !selectedChat ? report?.drafting ? <>{reportSheet}</> : record && !pending(record.id) ? <><div role="alert" className="p-4 text-sm text-destructive">
         This aside stopped: {record.lastError ?? 'The aside session closed unexpectedly'}
         <Button size="xs" variant="outline" disabled={!props.connected || !props.chat.hostConnected} onClick={() => { void request({ action: 'reopen', asideId: record.id }) }}>Reopen</Button>
       </div>{reportSheet}</> : <div role="status" className="p-4 text-sm text-muted-foreground">Loading aside…</div>
@@ -326,7 +331,7 @@ function ChatColumn({
   onReportDraftTaken?: () => void
   reportReferences?: AsideReport[]
   onRemoveReportReference?: (index: number) => void
-  onReportsSent?: () => void
+  onReportsSent?: (requestId: string | void, text: string) => void
   onOpenReport?: (report: AsideReport) => void
   onOpenAside?: (text: string, images?: ChatImageRef[]) => Promise<boolean>
   chat: ChatState
