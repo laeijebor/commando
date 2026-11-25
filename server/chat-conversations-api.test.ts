@@ -13,14 +13,18 @@ import type { ConversationBriefRecord } from './session-briefs.js'
 import { AgentStatusRegistry } from './agent-status-registry.js'
 import { inferAgentProcessStatus } from './agent-status.js'
 import { ChatConversationsApi, deletedWorktreeLocation } from './chat-conversations-api.js'
-import { asideSessionIds } from './chat-main-key.js'
+import { AsideStore } from './agent-host/asides.js'
+import { asideSessionIds, PersistedAsideSessions } from './chat-main-key.js'
 import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
 const ID = '11111111-2222-3333-4444-555555555555'
 let folder: string
-beforeEach(async () => { folder = await mkdtemp(join(tmpdir(), 'commando-resume-')) })
-afterEach(async () => { await rm(folder, { recursive: true, force: true }) })
+beforeEach(async () => {
+  folder = await mkdtemp(join(tmpdir(), 'commando-resume-'))
+  vi.stubEnv('COMMANDO_ASIDES_DIR', join(folder, 'asides'))
+})
+afterEach(async () => { vi.unstubAllEnvs(); await rm(folder, { recursive: true, force: true }) })
 
 function request(method: string, path: string, value?: unknown): IncomingMessage {
   const stream = new PassThrough() as unknown as IncomingMessage & PassThrough
@@ -56,6 +60,7 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     createSession: vi.fn(async () => ({ created: { paneId: '%11' } }) as never),
     createPane: vi.fn(async () => ({ paneId: '%9' }) as never),
   }
+  const persistedAsides = new PersistedAsideSessions()
   const api = new ChatConversationsApi({
     index: { list: vi.fn(async () => [conversation, ...(options.listed ?? []).map((entry, index) => ({ ...conversation, sessionId: `listed-${index}`, ...entry }))]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
     resumes: { findConversation: (provider, sessionId) => options.resumeRecord ? { targetId: 'target', provider, sessionId, path: folder, command: 'env codex resume ' + ID, serverId: 'test', updatedAt: 1, ...options.resumeRecord } : undefined },
@@ -65,7 +70,7 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     snapshot: () => ({ sessions: options.sessions?.map((session) => ({ windowIds: ['@1'], ...session })) ?? [], panes: options.panes ?? [{ id: '%1', empty: options.empty }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
-    asideSessionIds: () => asideSessionIds(options.chatStates ?? chats.map((session) => ({ paneId: session.paneId, session }))),
+    asideSessionIds: async () => asideSessionIds(options.chatStates ?? chats.map((session) => ({ paneId: session.paneId, session })), await persistedAsides.sessionIds()),
     agentSessions: () => typeof options.agentSessions === 'function' ? options.agentSessions() : options.agentSessions ?? [],
     creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
@@ -86,6 +91,21 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
 }
 
 describe('ChatConversationsApi', () => {
+  it.each(['no live host', 'cleared Main'])('hides persisted open and closed asides with %s', async (scenario) => {
+    await new AsideStore().save(ID, [
+      { id: 'abcd1234', title: 'Open', mode: 'read-only', method: 'fork', readOnlyEnforced: true,
+        sessionId: 'saved-open', status: 'open', forkedFrom: { sessionId: ID }, createdAt: 1 },
+      { id: 'abcd5678', title: 'Closed', mode: 'read-only', method: 'fork', readOnlyEnforced: true,
+        sessionId: 'saved-closed', status: 'closed', forkedFrom: { sessionId: ID }, createdAt: 1, closedAt: 2 },
+    ])
+    const { list, resume, conversation } = setup({
+      chats: scenario === 'no live host' ? [] : [chat({ sessionId: undefined })],
+      listed: [{ sessionId: 'saved-open' }, { sessionId: 'saved-closed' }],
+    })
+    expect(await list()).toMatchObject({ status: 200, body: { conversations: [conversation] } })
+    expect(await resume({})).toMatchObject({ status: 200 })
+  })
+
   it.each(['claude', 'codex', 'cursor', 'muse', 'deepseek'] as const)('hides a live %s aside without a saved record and refuses to resume it in any placement', async (provider) => {
     const { list, resume, creator } = setup({
       conversation: { provider },

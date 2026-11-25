@@ -39,7 +39,7 @@ type Dependencies = {
   /** All chats, including asides, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
   /** Saved and live aside session ids, hidden only from the picker. */
-  asideSessionIds: () => ReadonlySet<string>
+  asideSessionIds: () => ReadonlySet<string> | Promise<ReadonlySet<string>>
   /** Open hook conversations matching their pane's current process; excludes retained completions. */
   agentSessions: () => AgentStatus[]
   creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>
@@ -153,16 +153,16 @@ export class ChatConversationsApi {
 
   private async list(): Promise<ChatConversation[]> {
     const snapshot = this.dependencies.snapshot()
-    const [conversations, preferences] = await Promise.all([
+    const [conversations, preferences, asideIds] = await Promise.all([
       this.dependencies.index.list(),
       this.dependencies.sessionPreferences.loadReadOnly(snapshot.sessions, this.dependencies.serverId?.()),
+      this.dependencies.asideSessionIds(),
     ])
     const records = new Map(this.dependencies.briefs.conversationRecords().map((record) => [`${record.provider}:${record.id}`, record]))
     const sessions = new Map(snapshot.sessions.map((session) => [session.id, session]))
     const groups = preferences.groupingMode === 'manual'
       ? preferences.groups : repositoryContainers(preferences, snapshot.sessions, snapshot.panes)
     const open = this.openConversationPanes(snapshot)
-    const asideIds = this.dependencies.asideSessionIds()
     return conversations.filter((conversation) => !asideIds.has(conversation.sessionId)).map((conversation) => {
       const openPaneId = open.get(chatConversationKey(conversation.provider, conversation.sessionId))
       const brief = records.get(chatConversationKey(conversation.provider, conversation.sessionId))

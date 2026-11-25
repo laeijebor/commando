@@ -24,8 +24,12 @@ async function deadline<T>(operation: Promise<T>, name: string): Promise<T> {
   } finally { clearTimeout(timer) }
 }
 
+export function asideStoreDirectory(): string {
+  return process.env.COMMANDO_ASIDES_DIR ?? join(homedir(), '.commando', 'asides')
+}
+
 export class AsideStore {
-  constructor(private readonly directory = process.env.COMMANDO_ASIDES_DIR ?? join(homedir(), '.commando', 'asides')) {}
+  constructor(private readonly directory = asideStoreDirectory()) {}
   private path(sessionId: string): string { return join(this.directory, `${encodeURIComponent(sessionId)}.json`) }
   async load(sessionId: string): Promise<ChatAsideRecord[]> {
     let raw: string
