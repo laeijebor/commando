@@ -1237,7 +1237,7 @@ describe('HUD tabs', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Back to PR summary' })).not.toBeInTheDocument()
       expect(within(panel).queryByRole('button', { name: 'Jump to pane' })).not.toBeInTheDocument()
-      expect(within(panel).getByText('Structural diff')).toBeVisible()
+      expect(within(panel).getByText('Diff', { selector: '.git-diff-heading > span' })).toBeVisible()
       await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/git/summary?paneId=%2513&target=${pr.baseRefOid}&head=${pr.headRefOid}&baseFallbackRepo=acme%2Fwidgets&baseFallbackBranch=main`, expect.any(Object)))
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3Aacme%3Awidgets%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id }) }))
       // Return to the HUD and quick look explicitly selects Description on the mounted view.
@@ -1259,7 +1259,7 @@ describe('HUD tabs', () => {
       const panel = document.querySelector('[id="panel-tab-panel:%21:pr:acme:widgets:12"]') as HTMLElement
       await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
       if (subTab === 'Diff') {
-        expect(within(panel).getByText('Structural diff')).toBeVisible()
+        expect(within(panel).getByText('Diff', { selector: '.git-diff-heading > span' })).toBeVisible()
         await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => {
           const url = new URL(String(input), 'http://localhost')
           return url.pathname === '/api/git/summary' && url.searchParams.get('paneId') === remotePane.id
@@ -2310,6 +2310,8 @@ const paneProps = {
   gitApi: {
     summary: vi.fn().mockResolvedValue({ isRepo: false }),
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
+    fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
+    blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
     search: vi.fn().mockResolvedValue({ query: '', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
     repo: vi.fn().mockResolvedValue({ isRepo: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: false }),

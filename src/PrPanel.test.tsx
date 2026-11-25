@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { PrPanel } from './PrPanel'
 import { useRepoPrs } from './prStore'
@@ -23,6 +23,8 @@ function fixture() {
     gitApi: {
       summary: vi.fn().mockResolvedValue({ isRepo: true, root: '/repo', branch: 'feature', target: 'a', files: [] }),
       fileDiff: vi.fn().mockResolvedValue({ file: 'src/app.ts', diff: 'LOCAL PR DIFF' }),
+      fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
+      blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
       search: vi.fn().mockResolvedValue({ query: 'DIFF', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
       branches: vi.fn().mockResolvedValue({ isRepo: true, branches: [] }),
       repo: vi.fn().mockResolvedValue({ isRepo: true }),
@@ -36,7 +38,9 @@ function fixture() {
     merge: vi.fn().mockResolvedValue({ merged: true }),
   }
 }
-afterEach(() => { cleanup(); vi.useRealTimers() })
+// These tests drive the daemon-rendered diff; the rich engine is covered in GitDiffView.test.tsx.
+beforeEach(() => { window.localStorage.setItem('commando-diff-engine', 'difftastic') })
+afterEach(() => { cleanup(); vi.useRealTimers(); window.localStorage.removeItem('commando-diff-engine') })
 
 it('keeps the panel container and independent Conflicts file and patch layouts', async () => {
   const api = fixture()

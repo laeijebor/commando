@@ -34,6 +34,49 @@ export type GitFileDiff = {
   diff: string
 }
 
+/** One side of a file comparison, read in full so the client can diff and expand context itself. */
+export type GitFileSide = {
+  path: string
+  contents: string
+  /** Full commit SHA the contents were read from, or 'worktree' for the files on disk. */
+  rev: string
+}
+
+export type GitFileContents = {
+  file: string
+  /** null when the file is new (added or untracked). */
+  old: GitFileSide | null
+  /** null when the file was deleted. */
+  new: GitFileSide | null
+  /** Set when a side is binary or over the size limit; both sides are then null. */
+  unavailable?: 'binary' | 'too-large'
+}
+
+export type GitBlameCommit = {
+  sha: string
+  author: string
+  /** Unix seconds. */
+  authorTime: number
+  summary: string
+  /** True for lines not committed yet (worktree edits and untracked files). */
+  uncommitted: boolean
+}
+
+export type GitBlame = {
+  file: string
+  rev: string
+  commits: Record<string, GitBlameCommit>
+  /** lines[i] is the commit SHA of 1-based line i + 1. */
+  lines: string[]
+}
+
+export type GitComparisonOptions = {
+  target?: string
+  head?: string
+  baseFallbackRepo?: string
+  baseFallbackBranch?: string
+}
+
 export type GitDiffSearchMatch = {
   file: string
   line: number
@@ -80,6 +123,10 @@ export interface GitDiffApiClient {
   repo(directory: string): Promise<GitRepoInfo>
   summary(paneId: string, target?: string, head?: string, baseFallbackRepo?: string, baseFallbackBranch?: string): Promise<GitDiffSummary>
   fileDiff(paneId: string, file: string, options?: GitFileDiffOptions): Promise<GitFileDiff>
+  /** Both sides of a changed file in full, for client-side (Pierre) rendering. */
+  fileContents(paneId: string, file: string, options?: GitComparisonOptions): Promise<GitFileContents>
+  /** Line-by-line blame of a file at a rev returned by fileContents (a commit SHA or 'worktree'). */
+  blame(paneId: string, file: string, rev: string): Promise<GitBlame>
   search(paneId: string, query: string, target?: string, head?: string, baseFallbackRepo?: string, baseFallbackBranch?: string): Promise<GitDiffSearchResult>
   branches(paneId: string): Promise<GitBranches>
 }
@@ -126,6 +173,16 @@ export function createGitDiffApi(token: string, fetcher: typeof fetch = fetch): 
         engine: options.engine,
         display: options.display,
       }),
+    fileContents: (paneId, file, options = {}) =>
+      request<GitFileContents>('file-contents', {
+        paneId,
+        file,
+        target: options.target,
+        head: options.head,
+        baseFallbackRepo: options.baseFallbackRepo,
+        baseFallbackBranch: options.baseFallbackBranch,
+      }),
+    blame: (paneId, file, rev) => request<GitBlame>('blame', { paneId, file, rev }),
     search: (paneId, query, target, head, baseFallbackRepo, baseFallbackBranch) => request<GitDiffSearchResult>('search', { paneId, query, target, head, baseFallbackRepo, baseFallbackBranch }),
     branches: (paneId) => request<GitBranches>('branches', { paneId }),
     repo: (directory) => request<GitRepoInfo>('repo', { path: directory }),
