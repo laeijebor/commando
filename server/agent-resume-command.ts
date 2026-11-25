@@ -438,3 +438,15 @@ export function isChatResumeCommand(command: string): boolean {
     // Cursor chats are told apart by their `agent-…` session id, not their saved command.
     && isChatProvider(words[index + 1]) && words[index + 1] !== 'cursor'
 }
+
+/** Retarget a server-owned host command while preserving its launcher/profile/environment. */
+export function retargetChatResumeCommand(command: string, provider: ChatProvider, sessionId: string, settings: ChatResumeSettings): string | null {
+  if (!isValidAgentSessionId(sessionId)) return null
+  const words = shellQuotedWords(command)
+  if (!words) return null
+  const host = words.findIndex((word) => basename(word) === 'commando-agent')
+  if (host < 0 || words[host + 1] !== provider) return null
+  const rest = words.slice(host + 2)
+  const flags = carriedFlags(CHAT_FLAGS, rest)
+  return [...words.slice(0, host + 2), ...withChatSettings(flags, settings), '--resume', sessionId].map(shellQuote).join(' ')
+}

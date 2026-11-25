@@ -2970,6 +2970,7 @@ function HostApp() {
       const finish = (result: ChatAsideResult) => {
         window.clearTimeout(timer)
         chatAsideReplies.current.delete(id)
+        if (result.ok && result.promotedPaneId) setPendingPaneFocus({ paneId: result.promotedPaneId, waitForCreation: true })
         resolve(result)
       }
       const timer = window.setTimeout(() => finish({ ok: false, error: 'The aside operation timed out and may still be in progress' }), 125_000)
