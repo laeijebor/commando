@@ -112,3 +112,39 @@ export function revealMatch(match: DiffSearchMatch | undefined): void {
   const target = container && match.row.contains(container) ? container : match.row
   if (typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center', inline: 'nearest' })
 }
+
+/** A row's line number on one side of the diff, or undefined when the row belongs to the other side. */
+function sideLineNumber(row: HTMLElement, side: 'deletions' | 'additions'): number | undefined {
+  const code = row.closest('code')
+  const own = Number(row.dataset.line)
+  const alt = row.dataset.altLine === undefined ? NaN : Number(row.dataset.altLine)
+  let number: number
+  // Split view gives each side its own column, numbered by that side's file.
+  if (code?.hasAttribute('data-deletions')) number = side === 'deletions' ? own : NaN
+  else if (code?.hasAttribute('data-additions')) number = side === 'additions' ? own : NaN
+  // Unified view: deletions carry old numbers, additions new ones, context rows new with the old as alt.
+  else if (row.dataset.lineType === 'change-deletion') number = side === 'deletions' ? own : NaN
+  else if (row.dataset.lineType === 'change-addition') number = side === 'additions' ? own : NaN
+  else number = side === 'additions' ? own : alt
+  return Number.isFinite(number) ? number : undefined
+}
+
+/**
+ * The rendered row showing a line of one side, or else the nearest rendered line on that side
+ * (unchanged context is collapsed, so not every line has a row). Null while nothing is rendered.
+ */
+export function findSideRow(root: ParentNode, side: 'deletions' | 'additions', line: number): HTMLElement | null {
+  let best: HTMLElement | null = null
+  let bestDistance = Infinity
+  for (const row of root.querySelectorAll<HTMLElement>(ROW_SELECTOR)) {
+    const number = sideLineNumber(row, side)
+    if (number === undefined) continue
+    const distance = Math.abs(number - line)
+    if (distance < bestDistance) {
+      best = row
+      bestDistance = distance
+      if (!distance) break
+    }
+  }
+  return best
+}

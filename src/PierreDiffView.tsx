@@ -4,6 +4,7 @@ import { blameCommitAt, contentSignature, relativeTime, type FileBlame } from '.
 import type { DiffDisplay, GitBlameCommit, GitFileContents, GitFileSide } from './gitApi'
 import {
   findRowMatches,
+  findSideRow,
   paintMatches,
   revealMatch,
   searchHighlightCSS,
@@ -12,7 +13,7 @@ import {
 } from './pierreSearch'
 import { PIERRE_THEME, pierreHighlighterOptions, pierrePoolOptions } from './pierreWorker'
 
-/** A token the user clicked, for go-to-definition and similar lookups. */
+/** A token the user Cmd/Ctrl-clicked, for go-to-definition and similar lookups. */
 export type PierreTokenClick = {
   side: 'deletions' | 'additions'
   lineNumber: number
@@ -20,6 +21,28 @@ export type PierreTokenClick = {
   start: number
   end: number
 }
+
+/** A line to scroll into view and flash; a new `id` asks again for the same line. */
+export type PierreRevealRequest = {
+  id: number
+  side: 'deletions' | 'additions'
+  line: number
+}
+
+/** Tokens worth looking up: whitespace and punctuation alone name nothing. */
+export function isNavigableToken(text: string): boolean {
+  return /[\p{L}\p{N}_$]/u.test(text)
+}
+
+const hasNavigationModifier = (event: MouseEvent | KeyboardEvent | undefined) => Boolean(event?.metaKey || event?.ctrlKey)
+
+/** Marks the token under the pointer while Cmd/Ctrl is held, styled as a link by NAVIGATION_CSS. */
+const NAV_TOKEN_ATTRIBUTE = 'data-commando-nav-token'
+/** Marks the row "Show in diff" scrolled to, briefly. */
+const NAV_TARGET_ATTRIBUTE = 'data-commando-nav-target'
+const NAV_TARGET_FLASH_MS = 1600
+const NAVIGATION_CSS = `[${NAV_TOKEN_ATTRIBUTE}] { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+[${NAV_TARGET_ATTRIBUTE}] { background-color: rgb(94 158 255 / 0.22); box-shadow: inset 2px 0 #5e9eff; }`
 
 type Props = {
   contents: GitFileContents
@@ -30,7 +53,11 @@ type Props = {
   onMatchCountChange(count: number): void
   /** null while blame is turned off. */
   blame: FileBlame | null
-  onTokenClick?(token: PierreTokenClick): void
+  /** Cmd/Ctrl-click on a token; a plain click is left to text selection. */
+  onNavigate?(token: PierreTokenClick): void
+  /** Scrolls a line into view once it is rendered, then calls onRevealed. */
+  reveal?: PierreRevealRequest | null
+  onRevealed?(id: number): void
   /** Called after each Pierre render, e.g. to restore scroll once the rows exist. */
   onRendered?(): void
   /** Treat the current search match as already revealed when mounting (restoring a hidden view). */
@@ -57,7 +84,7 @@ const CARD_DELAY_MS = 450
 const CARD_WIDTH = 360
 
 // The app's dark terminal surface and type, applied inside Pierre's shadow root.
-const BASE_CSS = `:host {
+export const PIERRE_BASE_CSS = `:host {
   --diffs-dark-bg: #0a0a0a;
   --diffs-font-family: "JetBrains Mono", "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --diffs-header-font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -95,7 +122,7 @@ function shortDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export function PierreDiffView({ contents, display, query, activeMatch, onMatchCountChange, blame, onTokenClick, onRendered, skipInitialReveal = false }: Props) {
+export function PierreDiffView({ contents, display, query, activeMatch, onMatchCountChange, blame, onNavigate, reveal = null, onRevealed, onRendered, skipInitialReveal = false }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [renderVersion, setRenderVersion] = useState(0)
   const [hover, setHover] = useState<BlameHover | null>(null)
@@ -103,8 +130,8 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
   const cardTimer = useRef<number | undefined>(undefined)
   const blameRef = useRef(blame)
   blameRef.current = blame
-  const onTokenClickRef = useRef(onTokenClick)
-  onTokenClickRef.current = onTokenClick
+  const onNavigateRef = useRef(onNavigate)
+  onNavigateRef.current = onNavigate
   const onRenderedRef = useRef(onRendered)
   onRenderedRef.current = onRendered
   const id = useId()
@@ -158,8 +185,19 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     setRenderVersion((version) => version + 1)
     onRenderedRef.current?.()
   }, [])
-  const tokenClick = useCallback((props: DiffTokenEventBaseProps) => {
-    onTokenClickRef.current?.({
+  // Pierre reports token clicks and hovers with the DOM event, so the modifier is read from it;
+  // key presses while hovering are tracked too, so the link style follows Cmd/Ctrl as it changes.
+  const hoveredToken = useRef<HTMLElement | null>(null)
+  const markHoveredToken = useCallback((modifier: boolean) => {
+    const token = hoveredToken.current
+    if (!token) return
+    if (modifier) token.setAttribute(NAV_TOKEN_ATTRIBUTE, '')
+    else token.removeAttribute(NAV_TOKEN_ATTRIBUTE)
+  }, [])
+  const tokenClick = useCallback((props: DiffTokenEventBaseProps, event?: MouseEvent) => {
+    if (!hasNavigationModifier(event) || !isNavigableToken(props.tokenText)) return
+    event?.preventDefault()
+    onNavigateRef.current?.({
       side: props.side,
       lineNumber: props.lineNumber,
       text: props.tokenText,
@@ -167,7 +205,30 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
       end: props.lineCharEnd,
     })
   }, [])
-  const hasTokenClick = onTokenClick !== undefined
+  const tokenEnter = useCallback((props: DiffTokenEventBaseProps, event?: PointerEvent) => {
+    markHoveredToken(false)
+    hoveredToken.current = isNavigableToken(props.tokenText) ? props.tokenElement : null
+    markHoveredToken(hasNavigationModifier(event))
+  }, [markHoveredToken])
+  const tokenLeave = useCallback(() => {
+    markHoveredToken(false)
+    hoveredToken.current = null
+  }, [markHoveredToken])
+  const hasNavigate = onNavigate !== undefined
+  useEffect(() => {
+    if (!hasNavigate) return
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Meta' || event.key === 'Control') markHoveredToken(hasNavigationModifier(event)) }
+    const onBlur = () => markHoveredToken(false)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKey)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKey)
+      window.removeEventListener('blur', onBlur)
+      tokenLeave()
+    }
+  }, [hasNavigate, markHoveredToken, tokenLeave])
 
   // Options must stay referentially stable: Pierre re-renders the whole diff when they change.
   const options = useMemo<FileDiffOptions<undefined, undefined>>(() => ({
@@ -179,12 +240,12 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     hunkSeparators: 'line-info',
     // The side panel is narrow; wrapping keeps whole lines (and search matches) in view.
     overflow: 'wrap',
-    unsafeCSS: `${BASE_CSS}\n${searchHighlightCSS(highlightNames)}`,
+    unsafeCSS: `${PIERRE_BASE_CSS}\n${searchHighlightCSS(highlightNames)}\n${NAVIGATION_CSS}`,
     onPostRender,
     onLineEnter,
     onLineLeave: clearHover,
-    ...(hasTokenClick ? { onTokenClick: tokenClick } : {}),
-  }), [clearHover, display, hasTokenClick, highlightNames, onLineEnter, onPostRender, tokenClick])
+    ...(hasNavigate ? { onTokenClick: tokenClick, onTokenEnter: tokenEnter, onTokenLeave: tokenLeave } : {}),
+  }), [clearHover, display, hasNavigate, highlightNames, onLineEnter, onPostRender, tokenClick, tokenEnter, tokenLeave])
 
   useEffect(() => () => window.clearTimeout(cardTimer.current), [])
   const blameOn = blame !== null
@@ -219,6 +280,33 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     revealed.current = { query, activeMatch, found: true }
     return paintMatches(matches, current, highlightNames)
   }, [activeMatch, highlightNames, query, renderVersion, oldFile, newFile])
+
+  // "Show in diff": wait until Pierre has rendered rows for the side, then scroll and flash the line.
+  // The flash outlives the request, which the parent clears as soon as the line is revealed.
+  const onRevealedRef = useRef(onRevealed)
+  onRevealedRef.current = onRevealed
+  const flash = useRef<{ row: HTMLElement; timer: number } | null>(null)
+  const clearFlash = useCallback(() => {
+    if (!flash.current) return
+    window.clearTimeout(flash.current.timer)
+    flash.current.row.removeAttribute(NAV_TARGET_ATTRIBUTE)
+    flash.current = null
+  }, [])
+  useEffect(() => clearFlash, [clearFlash])
+  const revealedId = useRef<number | null>(null)
+  useEffect(() => {
+    const wrapper = wrapperRef.current
+    if (!reveal || !wrapper || revealedId.current === reveal.id) return
+    const host = wrapper.querySelector('diffs-container')
+    const row = findSideRow(host?.shadowRoot ?? wrapper, reveal.side, reveal.line)
+    if (!row) return
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center', inline: 'nearest' })
+    clearFlash()
+    row.setAttribute(NAV_TARGET_ATTRIBUTE, '')
+    flash.current = { row, timer: window.setTimeout(clearFlash, NAV_TARGET_FLASH_MS) }
+    revealedId.current = reveal.id
+    onRevealedRef.current?.(reveal.id)
+  }, [clearFlash, reveal, renderVersion])
 
   const commit = hover && blame ? hoverCommit(blame, hover.newLine, hover.oldLine) : undefined
   const hintText = commit
