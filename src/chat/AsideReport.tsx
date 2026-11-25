@@ -5,6 +5,7 @@ import { Button } from './ui/button'
 import { CHAT_SEND_REFUSAL_MS, type ChatSendError } from './ChatComposer'
 import { useHost } from '../HostContext'
 import { appendDraftText, loadDraft, updateDraftReports, type PendingAsideReference } from './draftStore'
+import { asideTitle } from './asideTitle'
 
 type Delivery = 'queue' | 'draft' | 'reference'
 type Report = AsideReport & {
@@ -20,7 +21,7 @@ type Report = AsideReport & {
 export type AsideReportDraft = { id: number; text: string; savedText: string }
 
 /** Owned by the Main pane, not the mounted thread: drafting continues across tab switches. */
-export function useAsideReports(asides: ChatAsideServices | undefined, paneId: string, sessionId: string | undefined, records: ChatAsideRecord[] | undefined, sendError?: ChatSendError) {
+export function useAsideReports(asides: ChatAsideServices | undefined, paneId: string, sessionId: string | undefined, mainTitle: string | undefined, records: ChatAsideRecord[] | undefined, sendError?: ChatSendError) {
   const [reports, setReports] = useState<Record<string, Report>>({})
   const [draft, setDraft] = useState<AsideReportDraft>()
   const { activeHost } = useHost()
@@ -99,7 +100,7 @@ export function useAsideReports(asides: ChatAsideServices | undefined, paneId: s
     try { requestId = asides.bindings(key).onSend(ASIDE_REPORT_PROMPT) }
     catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
     setReports((current) => ({ ...current, [aside.id]: {
-      asideId: aside.id, title: chat.session.title || aside.title, body: '', delivery: 'queue', close: true,
+      asideId: aside.id, title: asideTitle(aside, chat, mainTitle), body: '', delivery: 'queue', close: true,
       drafting: !error, error, before: new Set(chat.items.map((item) => item.id)), sessionId: chat.session.sessionId,
       ...(requestId ? { requestId } : {}),
     } }))

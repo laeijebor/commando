@@ -3,6 +3,7 @@ import { asideKey, type ChatAsideAction, type ChatAsideRecord, type ChatState } 
 import { pendingRequests } from '../../shared/chat-timeline'
 import { useNow } from './Subagents'
 import { Button } from './ui/button'
+import { asideTitle } from './asideTitle'
 
 export function asideStatus(chat?: ChatState): string {
   return !chat || chat.session.status === 'error' || chat.session.status === 'closed' ? 'error'
@@ -44,7 +45,7 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled,
       <button type="button" role="tab" aria-selected={!selected} onClick={() => onSelect(undefined)}><ThreadStatus chat={main} />Main</button>
       {records.filter((aside) => aside.status === 'open').map((aside) => {
         const chat = chats[asideKey(main.paneId, aside.id)]
-        const title = chat?.session.title || aside.title
+        const title = asideTitle(aside, chat, main.session.title)
         return <div role="presentation" className={`chat-aside-tab${selected === aside.id ? ' is-selected' : ''}`} key={aside.id}>
           <button type="button" role="tab" aria-selected={selected === aside.id} title={title} onClick={() => onSelect(aside.id)}><ThreadStatus chat={chat} stopped={!chat && !pending?.(aside.id)} /><span className="truncate">{title}</span></button>
           <button type="button" className="chat-aside-close" disabled={disabled} aria-label={`Close aside ${title}`} onClick={() => onAction({ action: 'close', asideId: aside.id })}>✕</button>
@@ -55,7 +56,7 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled,
     </div>
     {closed.length ? <details className="chat-aside-closed"><summary aria-controls={id}>Closed ({closed.length})</summary><div id={id} className="chat-aside-closed-list">
       {closed.map((aside) => {
-        const title = chats[asideKey(main.paneId, aside.id)]?.session.title || aside.title
+        const title = asideTitle(aside, chats[asideKey(main.paneId, aside.id)], main.session.title)
         return <div key={aside.id}><span className="min-w-0 flex-1"><span className="truncate" title={title}>{title}</span>{aside.lastError ? <small className="block text-destructive">{aside.lastError}</small> : null}</span>{aside.status === 'promoted' ? <small>Opened as chat</small> : <Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => onAction({ action: 'reopen', asideId: aside.id })} aria-label={`Reopen ${title}`}>Reopen</Button>}
           <Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => onAction({ action: 'promote', asideId: aside.id })} aria-label={`Open as chat ${title}`}>Open as chat</Button></div>
       })}

@@ -50,6 +50,7 @@ import { findSubagent, implementPermissionMode, planAwaitingFollowUp, subagentLa
 import { AsideTabs, AsideBanner, asideStatus } from './AsideTabs'
 import { AsideReportSheet, useAsideReports, type AsideReportDraft } from './AsideReport'
 import { QuickAside } from './QuickAside'
+import { asideTitle } from './asideTitle'
 import './chat.css'
 
 /** What a chat pane asks of the app for queueing, subagents and plans. */
@@ -118,12 +119,13 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   const [anchor, setAnchor] = useState<ChatItem>()
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickId, setQuickId] = useState<string>()
+  const quickBeforeOpen = useRef(props.chat.asides)
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [pendingAction, setPendingAction] = useState<ChatAsideAction>()
   const beforeOpen = useRef(new Set<string>())
   const [reforks, setReforks] = useState<Record<string, number>>({})
-  const reporting = useAsideReports(asides, props.chat.paneId, props.chat.session.sessionId, props.chat.asides, props.sendError)
+  const reporting = useAsideReports(asides, props.chat.paneId, props.chat.session.sessionId, props.chat.session.title, props.chat.asides, props.sendError)
   const [reportSource, setReportSource] = useState<AsideReport>()
   const [focusMain, setFocusMain] = useState(false)
   useEffect(() => { setAnchor(undefined); setQuickOpen(false); setQuickId(undefined) }, [props.chat.session.sessionId])
@@ -155,6 +157,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
     if (!asides || busy) return false
     setBusy(true)
     beforeOpen.current = new Set(props.chat.asides?.map((aside) => aside.id))
+    if (action.action === 'open' && action.ephemeral) quickBeforeOpen.current = props.chat.asides
     setPendingAction(action)
     setError(undefined)
     try {
@@ -177,7 +180,13 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   const open = available ? (text: string, images?: ChatImageRef[]) => request({ action: 'open', text, ...(images?.length ? { images } : {}), mode: 'read-only', ...(selected === 'new' && anchor ? { at: anchor.id } : {}) }) : undefined
   const showStrip = available && (Boolean(props.chat.asides?.some((entry) => !entry.ephemeral && entry.status !== 'discarded')) || Boolean(props.chat.asidesError) || Boolean(selected) || busy)
   const quickRecord = props.chat.asides?.find((entry) => entry.ephemeral && entry.status === 'open')
-  const activeQuickId = quickRecord?.id ?? quickId
+  // Only bridge a result that beats its record broadcast. A newer list is authoritative,
+  // including a discarded/missing record after a host restart.
+  const awaitingQuick = quickId && props.chat.asides === quickBeforeOpen.current && !props.chat.asides?.some((entry) => entry.id === quickId)
+  const activeQuickId = quickRecord?.id ?? (awaitingQuick ? quickId : undefined)
+  useEffect(() => {
+    if (quickId && !activeQuickId) { setQuickId(undefined); setQuickOpen(false) }
+  }, [quickId, activeQuickId])
   const quickChat = activeQuickId && asides?.chats[asideKey(props.chat.paneId, activeQuickId)]
   const askQuick = async (text?: string, images?: ChatImageRef[]) => {
     if (activeQuickId) { setQuickOpen(true); return !text }
@@ -190,6 +199,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
     setFocusMain(true)
   }
   const quickPopover = available && !selected && (quickOpen || quickRecord) ? <QuickAside record={quickRecord} chat={quickChat || undefined} disabled={busy || !props.connected || !props.chat.hostConnected}
+    title={quickRecord ? asideTitle(quickRecord, quickChat || undefined, props.chat.session.title) : undefined}
     onAsk={askQuick} onKeep={() => { if (activeQuickId) void request({ action: 'keep', asideId: activeQuickId }).then((ok) => { if (ok) { setQuickOpen(false); setQuickId(undefined) } }) }}
     onCopy={(text) => { reporting.appendDraft(text); setFocusMain(true) }} onDismiss={() => { void dismissQuick() }} /> : undefined
   const columnProps = selectedChat && asides ? {
@@ -202,7 +212,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       onQuickAside: askQuick, quickAside: quickPopover,
       onAsideFromHere: (item: ChatItem) => { setAnchor(item); asides.select('new') },
       asideMarkers: (props.chat.asides ?? []).filter((entry) => !entry.ephemeral && entry.status !== 'discarded' && entry.forkedFrom.itemId).map((entry) => ({
-        itemId: entry.forkedFrom.itemId!, id: entry.id, title: asides.chats[asideKey(props.chat.paneId, entry.id)]?.session.title || entry.title,
+        itemId: entry.forkedFrom.itemId!, id: entry.id, title: asideTitle(entry, asides.chats[asideKey(props.chat.paneId, entry.id)], props.chat.session.title),
         status: entry.status === 'closed' ? 'closed' : entry.status === 'promoted' ? 'Opened as chat' : asideStatus(asides.chats[asideKey(props.chat.paneId, entry.id)]),
         onSelect: () => { if (entry.status === 'open') asides.select(entry.id); else void request({ action: entry.status === 'promoted' ? 'promote' : 'reopen', asideId: entry.id }) },
       })),
@@ -235,14 +245,10 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       if (available && !selected && event.key === '/' && !event.shiftKey && !event.altKey && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey)) {
         event.preventDefault(); event.stopPropagation(); void askQuick(); return
       }
-      if (event.key === 'Escape' && !selected && (quickOpen || quickRecord)) {
-        event.preventDefault(); event.stopPropagation()
-        if (!busy) void dismissQuick()
-      }
     }} tabIndex={-1} className="terminal-chat-shell commando-chat chat-aside-column" onFocus={(event) => {
       if (event.target === event.currentTarget) shell.current?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Report text"], textarea[data-chat-composer]')?.focus()
     }} onMouseDown={() => { if (selected === 'new' || (selected && !selectedChat)) props.onFocus() }} onKeyDown={(event) => {
-      if (event.key === 'Escape' && (quickOpen || quickRecord) && !selected && !event.defaultPrevented) { event.preventDefault(); if (!busy) void dismissQuick(); return }
+      if (event.key === 'Escape' && (quickOpen || quickRecord) && !selected && !event.defaultPrevented && !(event.target instanceof Element && event.target.closest('[data-chat-composer]'))) { event.preventDefault(); if (!busy) void dismissQuick(); return }
       if (event.key !== 'Escape' || !selected || event.defaultPrevented) return
       if (event.target instanceof HTMLTextAreaElement && (event.target.value || selectedChat?.session.status === 'running')) return
       event.preventDefault()

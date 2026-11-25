@@ -9,9 +9,10 @@ export function quickAsideAnswer(chat?: ChatState): string {
 }
 
 /** Rendered above Main's composer; its transcript never enters Main's timeline. */
-export function QuickAside({ record, chat, disabled, onAsk, onKeep, onCopy, onDismiss }: {
+export function QuickAside({ record, chat, title, disabled, onAsk, onKeep, onCopy, onDismiss }: {
   record?: ChatAsideRecord
   chat?: ChatState
+  title?: string
   disabled: boolean
   onAsk: (text: string) => Promise<boolean>
   onKeep: () => void
@@ -25,7 +26,7 @@ export function QuickAside({ record, chat, disabled, onAsk, onKeep, onCopy, onDi
   }}>
     <header><strong>Quick aside</strong><span>From this chat · not saved to Main</span><Button size="xs" variant="ghost-muted" disabled={disabled} onClick={onDismiss}>Dismiss</Button></header>
     {record ? <>
-      <p className="chat-quick-question">{record.title}</p>
+      <p className="chat-quick-question">{title ?? record.title}</p>
       <div className="chat-quick-answer" aria-live="polite"><Markdown text={answer} running={chat?.session.status === 'running'} />
         {!answer ? <span role="status">{record.lastError ?? chat?.session.error ?? (chat?.session.status === 'idle' ? 'No answer yet' : 'Answering…')}</span> : null}
       </div>

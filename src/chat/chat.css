@@ -334,7 +334,7 @@
 .commando-chat .chat-aside-reference button { cursor: pointer; }
 
 .commando-chat .chat-message-row { position: relative; }
-.commando-chat .chat-message-aside-action { position: absolute; right: 0; bottom: 0; opacity: 0; pointer-events: none; padding: 2px 6px; border-radius: 5px; color: var(--cyan); background: var(--surface-soft); font-size: 11px; cursor: pointer; }
+.commando-chat .chat-message-aside-action { display: block; position: relative; z-index: 1; width: fit-content; opacity: 0; pointer-events: none; padding: 2px 6px; border-radius: 5px; color: var(--cyan); background: var(--surface-soft); font-size: 11px; cursor: pointer; }
 .commando-chat .chat-message-row:hover .chat-message-aside-action, .commando-chat .chat-message-row:focus-within .chat-message-aside-action, .commando-chat .chat-message-aside-action:focus-visible { opacity: 1; pointer-events: auto; }
 .commando-chat .chat-aside-marker { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0 10px 12px; padding: 3px 8px; border-left: 2px solid var(--cyan); border-radius: 0 6px 6px 0; background: color-mix(in srgb, var(--cyan) 6%, transparent); color: var(--cyan); font-size: 12px; cursor: pointer; overflow-anchor: none; }
 .commando-chat .chat-aside-marker.is-closed { opacity: .5; }
