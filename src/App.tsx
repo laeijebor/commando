@@ -516,6 +516,7 @@ export function TerminalPaneCard({
   useXtermFallback,
   gitApi,
   prsApi,
+  paneManagementApi,
   onOpenPath,
   onFocus,
   onOpenChanges,
@@ -823,6 +824,7 @@ export function TerminalPaneCard({
         {showChat && chat ? (
           <ChatPane
             paneId={pane.id}
+            paneManagementApi={paneManagementApi}
             registerFocusable={registerFocusable}
             pane={pane}
             snapshot={lineageSnapshot}
@@ -3053,7 +3055,7 @@ function HostApp() {
     const chat = chats[row.paneId], pane = paneMap.get(row.paneId), status = agentStatuses[row.paneId]
     const view = chat
       // Not given registerFocusable: the agent's own pane keeps that.
-      ? <ChatPane key={row.targetId} paneId={row.paneId} {...(pane ? { pane } : {})} snapshot={snapshot ?? undefined} statuses={agentStatuses}
+      ? <ChatPane key={row.targetId} paneManagementApi={paneManagementApi} paneId={row.paneId} {...(pane ? { pane } : {})} snapshot={snapshot ?? undefined} statuses={agentStatuses}
           onSelectPane={jumpToPane} prsApi={prsApi} chat={chat} externalRuns={externalRuns[row.paneId] ?? []} tileEvents={tileEvents[row.paneId] ?? []} onOpenTile={revealWebPaneTab} asks={paneAsks(paneBriefs[row.paneId], pane)} connected={connected}
           focused={false} onFocus={() => {}}
           onSend={(text, images, options) => sendChat(row.paneId, text, images, options)}

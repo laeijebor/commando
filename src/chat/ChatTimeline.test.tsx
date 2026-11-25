@@ -5,11 +5,18 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatItem } from '../../shared/agent-chat'
+import ReactMarkdown from 'react-markdown'
 import { ChatTimeline } from './ChatTimeline'
+
+vi.mock('react-markdown', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-markdown')>()
+  return { ...actual, default: vi.fn(actual.default) }
+})
 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 const items: ChatItem[] = [
@@ -67,4 +74,21 @@ describe('ChatTimeline jump to latest', () => {
     expect(timeline.scrollTop).toBe(300)
     expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument()
   })
+})
+
+it('does not re-parse completed replies when other items or the activity clock update', () => {
+  vi.useFakeTimers()
+  const command: ChatItem = { id: 'cmd', turnId: 't2', status: 'running', createdAt: 1, updatedAt: 1, kind: 'command', command: 'sleep 5', toolUseId: 'tool' }
+  const onResourceAction = vi.fn()
+  const initial = [...items, command]
+  const { rerender } = render(<ChatTimeline items={initial} cwd="/work" working onResourceAction={onResourceAction} />)
+  const count = () => vi.mocked(ReactMarkdown).mock.calls.filter(([props]) => props.children === 'Hi there').length
+  const before = count()
+  expect(before).toBeGreaterThan(0)
+  rerender(<ChatTimeline items={[...items, { ...command, output: 'progress' }]} cwd="/work" working onResourceAction={onResourceAction} />)
+  expect(count()).toBe(before)
+  act(() => vi.advanceTimersByTime(1000))
+  expect(count()).toBe(before)
+  rerender(<ChatTimeline items={initial} cwd="/other" working onResourceAction={onResourceAction} />)
+  expect(count()).toBeGreaterThan(before)
 })

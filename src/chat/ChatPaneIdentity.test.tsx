@@ -34,3 +34,20 @@ describe('chat item identity', () => {
     expect(renderedItems()).toBe(combined)
   })
 })
+
+it('keeps the resource handler stable across new tile callbacks and calls the latest callback', async () => {
+  const resourceAction = vi.fn().mockResolvedValue({ ok: true, performed: 'tile', webPaneId: 'w-12345678' })
+  const api = { resourceAction }
+  const first = vi.fn(() => true)
+  const view = render(<ChatPane chat={chat} {...handlers} paneManagementApi={api} onOpenTile={first} />)
+  const action = vi.mocked(ChatTimeline).mock.calls.at(-1)![0].onResourceAction!
+  const latest = vi.fn(() => true)
+  for (const onOpenTile of [vi.fn(() => true), latest]) {
+    view.rerender(<ChatPane chat={{ ...chat, items: [...chat.items] }} {...handlers} paneManagementApi={api} onOpenTile={onOpenTile} />)
+    expect(vi.mocked(ChatTimeline).mock.calls.at(-1)![0].onResourceAction).toBe(action)
+  }
+  await action('/work/.redline/page.html', 'tile')
+  expect(resourceAction).toHaveBeenCalledWith('%5', '/work/.redline/page.html', 'tile', undefined)
+  expect(latest).toHaveBeenCalledWith('w-12345678')
+  expect(first).not.toHaveBeenCalled()
+})
