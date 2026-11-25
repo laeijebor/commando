@@ -33,6 +33,8 @@ export type AgentResumeRecord = {
   serverId: string
   /** tmux server a resume was last attempted on, so each restore is tried once. */
   attemptedServerId?: string
+  /** When Commando last typed this conversation's resume; saved so the crash grace outlives a daemon restart. */
+  resumedAt?: number
   updatedAt: number
 }
 
@@ -61,6 +63,15 @@ const VERIFY_MS = 20_000
 const RESUMED_RETENTION_MS = 5 * 60 * 1_000
 /** How long to wait before reading the process table again for a pane whose agent was not found. */
 const CAPTURE_RETRY_MS = 30_000
+/** Agents that drop back to their shell within this window of each other went down together. */
+const CRASH_WINDOW_MS = 10_000
+/** How many agents going down together count as a crash rather than the user exiting them. */
+const CRASH_MIN_EXITS = 3
+/**
+ * An agent that goes down this soon after Commando typed its resume is not brought back as part of
+ * a crash, so a crash on start, or memory pressure the resumes themselves cause, cannot loop.
+ */
+const CRASH_RESUME_GRACE_MS = 10 * 60 * 1_000
 
 /** Keeps a verification daemon's state for another tmux server apart from the user's. */
 export function tmuxServerStateSuffix(): string {
@@ -108,6 +119,7 @@ function validRecord(value: unknown): value is AgentResumeRecord {
     && !/[\u0000-\u001f\u007f]/u.test(record.command)
     && typeof record.serverId === 'string' && record.serverId.length > 0
     && (record.attemptedServerId === undefined || typeof record.attemptedServerId === 'string')
+    && (record.resumedAt === undefined || Number.isFinite(record.resumedAt))
     && Number.isFinite(record.updatedAt)
 }
 
@@ -165,10 +177,14 @@ type Job = {
   settled?: boolean
 }
 
+/** An agent that dropped back to its shell while its tmux server lived. */
+type RecentExit = { record: AgentResumeRecord; at: number; active: boolean; resumed: boolean }
+
 /**
  * Remembers which conversation each pane target runs and resumes it when tmux restores the
  * pane on a new server. An agent that exits while its tmux server lives was ended on purpose,
- * so its record is cleared; a server restart never gets that chance.
+ * so its record is cleared; a server restart never gets that chance. The exception is several
+ * agents exiting together (a stray kill or the OOM killer): that is a crash, resumed like a restart.
  */
 export class AgentResumeService {
   readonly statePath: string
@@ -183,6 +199,8 @@ export class AgentResumeService {
    * They are saved too, so a daemon restart keeps the Retry instead of forgetting the conversation.
    */
   private readonly failedRecords = new Map<string, FailedResume>()
+  /** Exits within the crash window, kept until it passes. */
+  private readonly recentExits = new Map<string, RecentExit>()
   private queue: Job[] = []
   private draining = false
   private lastSentAt = 0
@@ -279,6 +297,8 @@ export class AgentResumeService {
         path: pane.path,
         command,
         serverId,
+        // The same conversation keeps its resume time, so the crash grace still covers it.
+        ...(existing?.sessionId === status.agentSessionId && existing.resumedAt !== undefined ? { resumedAt: existing.resumedAt } : {}),
         updatedAt: this.now(),
       } : null
       if (!record || !validRecord(record)) return
@@ -326,15 +346,49 @@ export class AgentResumeService {
       const record = this.records.get(pane.targetId)
       if (!record || !isShellCommand(pane.command) || this.inFlight(pane.targetId)) continue
       if (record.serverId === serverId || record.attemptedServerId === serverId) {
-        // Exited while its tmux server lived, or resumed here and gone again: both deliberate.
+        // Exited while its tmux server lived, or resumed here and gone again: both deliberate,
+        // unless it turns out to be one of several that went down together. Exits found on the
+        // first discovery after a daemon restart count too, since a kill that takes down the
+        // agents often takes the daemon with it.
         this.records.delete(pane.targetId)
+        if (!this.resumedRecently(record)) {
+          this.recentExits.set(pane.targetId, { record, at: this.now(), active: pane.active, resumed: false })
+        }
         changed = true
       } else {
         queued.push({ targetId: pane.targetId, serverId, queuedAt: this.now(), notBefore: this.now() + SHELL_READY_MS, active: pane.active })
       }
     }
-    if (changed) this.persist()
-    this.enqueue(queued)
+    const crashed = this.crashedTogether(serverId)
+    if (changed || crashed.length > 0) this.persist()
+    this.enqueue([...queued, ...crashed])
+  }
+
+  /**
+   * Brings back agents that exited together, as a restart would. Each exit counts for the crash
+   * window, so agents that a crash takes down over several discoveries all come back.
+   */
+  private crashedTogether(serverId: string): Job[] {
+    const cutoff = this.now() - CRASH_WINDOW_MS
+    for (const [targetId, exit] of this.recentExits) {
+      if (exit.at < cutoff) this.recentExits.delete(targetId)
+    }
+    if (this.recentExits.size < CRASH_MIN_EXITS) return []
+    const jobs: Job[] = []
+    for (const [targetId, exit] of this.recentExits) {
+      if (exit.resumed) continue
+      exit.resumed = true
+      // A conversation captured in the pane since is the pane's now.
+      if (this.records.has(targetId)) continue
+      this.records.set(targetId, exit.record)
+      // Queued from the exit: the pane has been a live shell since, and anything typed there is the user's.
+      jobs.push({ targetId, serverId, queuedAt: exit.at, notBefore: this.now() + SHELL_READY_MS, active: exit.active })
+    }
+    return jobs
+  }
+
+  private resumedRecently(record: AgentResumeRecord): boolean {
+    return record.resumedAt !== undefined && this.now() - record.resumedAt < CRASH_RESUME_GRACE_MS
   }
 
   /** The agents an archive should keep for these targets. */
@@ -509,6 +563,7 @@ export class AgentResumeService {
       return this.fail(resume, 'The pane has unsent input, so nothing was typed. Clear it, then retry.')
     }
     record.attemptedServerId = job.serverId
+    record.resumedAt = this.now()
     this.persist()
     this.lastSentAt = this.now()
     try {
