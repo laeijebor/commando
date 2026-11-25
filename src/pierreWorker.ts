@@ -9,8 +9,12 @@ export const pierreHighlighterOptions: WorkerInitializationRenderOptions = {
   lineDiffType: 'word-alt',
 }
 
-// Shiki highlighting runs off the main thread; two workers are plenty for one file at a time.
+// Shiki highlighting runs off the main thread. One warm worker measured faster than two (each
+// worker loads its own grammars) and holds about half the memory.
 export const pierrePoolOptions: WorkerPoolOptions = {
   workerFactory: () => new Worker(DiffsWorkerUrl, { type: 'module' }),
-  poolSize: 2,
+  poolSize: 1,
+  // Each entry is a whole highlighted file or diff, kept on the main thread; the default of 100
+  // grows the heap for files that won't be looked at again.
+  totalASTLRUCacheSize: 20,
 }

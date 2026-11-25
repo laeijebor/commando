@@ -19,8 +19,10 @@ import {
   X,
 } from 'lucide-react'
 import {
+  useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -240,6 +242,8 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   const previousSummaryProp = useRef({ paneId, summary: initialSummary })
   const summaryRevision = useRef(0)
   const wasVisible = useRef(visible)
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
   const [refresh, setRefresh] = useState(0)
   useEffect(() => {
     const revealed = visible && !wasVisible.current
@@ -458,6 +462,34 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     if (selectedFile && files.some((file) => file.path === selectedFile)) return
     setSelectedFile(files[0]?.path ?? null)
   }, [files, selectedFile])
+
+  // The rich view unmounts while hidden so its worker threads and highlight caches are freed
+  // (the last PierreWorkerPool terminates the pool). Its contents stay in state, and the reading
+  // position is put back once Pierre has rendered the rows again.
+  const richScrollTop = useRef(0)
+  const pendingRichScroll = useRef<number | null>(null)
+  const rememberRichScroll = useCallback(() => {
+    if (visibleRef.current && outputRef.current) richScrollTop.current = outputRef.current.scrollTop
+  }, [])
+  /** Before Pierre renders the rows may not exist yet; once it has, clamp and stop waiting. */
+  const restoreRichScroll = useCallback((rendered: boolean) => {
+    const target = pendingRichScroll.current
+    const output = outputRef.current
+    if (target === null || !output) return
+    const max = Math.max(0, output.scrollHeight - output.clientHeight)
+    if (!rendered && max < target) return
+    output.scrollTop = Math.min(target, max)
+    pendingRichScroll.current = null
+  }, [])
+  const restoreRichScrollAfterRender = useCallback(() => restoreRichScroll(true), [restoreRichScroll])
+  useLayoutEffect(() => {
+    if (visible) restoreRichScroll(false)
+    else if (engine === 'rich') pendingRichScroll.current = richScrollTop.current
+  }, [visible, engine, restoreRichScroll])
+  useEffect(() => {
+    pendingRichScroll.current = null
+    richScrollTop.current = 0
+  }, [selectedFile, engine, display])
 
   const selectedFileStats = JSON.stringify(files.find((file) => file.path === selectedFile) ?? null)
   useEffect(() => {
@@ -1230,8 +1262,8 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                 </button>
               ) : null}
             </div>
-            <div className="git-diff-output" ref={outputRef}>
-              {engine === 'rich' ? (
+            <div className="git-diff-output" ref={outputRef} onScroll={rememberRichScroll}>
+              {engine === 'rich' ? (visible ? (
                 <PierreWorkerPool>
                   {richLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading file contents</div> : null}
                   {!richLoading && richError ? <div className="git-diff-error" role="alert">{richError}{errorHint}</div> : null}
@@ -1250,10 +1282,13 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                       activeMatch={currentDiffMatch}
                       onMatchCountChange={setRichMatchCount}
                       blame={blameOn ? blame : null}
+                      onRendered={restoreRichScrollAfterRender}
+                      // Coming back into view returns to where the reader was, not the current match.
+                      skipInitialReveal={pendingRichScroll.current !== null}
                     />
                   ) : null}
                 </PierreWorkerPool>
-              ) : ansiOutput}
+              ) : null) : ansiOutput}
             </div>
           </div>
         </div>

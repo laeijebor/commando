@@ -31,6 +31,10 @@ type Props = {
   /** null while blame is turned off. */
   blame: FileBlame | null
   onTokenClick?(token: PierreTokenClick): void
+  /** Called after each Pierre render, e.g. to restore scroll once the rows exist. */
+  onRendered?(): void
+  /** Treat the current search match as already revealed when mounting (restoring a hidden view). */
+  skipInitialReveal?: boolean
 }
 
 type BlameHover = {
@@ -91,7 +95,7 @@ function shortDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export function PierreDiffView({ contents, display, query, activeMatch, onMatchCountChange, blame, onTokenClick }: Props) {
+export function PierreDiffView({ contents, display, query, activeMatch, onMatchCountChange, blame, onTokenClick, onRendered, skipInitialReveal = false }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [renderVersion, setRenderVersion] = useState(0)
   const [hover, setHover] = useState<BlameHover | null>(null)
@@ -101,6 +105,8 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
   blameRef.current = blame
   const onTokenClickRef = useRef(onTokenClick)
   onTokenClickRef.current = onTokenClick
+  const onRenderedRef = useRef(onRendered)
+  onRenderedRef.current = onRendered
   const id = useId()
   const highlightNames = useMemo(() => searchHighlightNames(`pierre${id}`), [id])
   const oldFile = useFileContents(contents.old)
@@ -148,7 +154,10 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     cardTimer.current = window.setTimeout(() => setCardVisible(true), CARD_DELAY_MS)
   }, [])
 
-  const onPostRender = useCallback(() => setRenderVersion((version) => version + 1), [])
+  const onPostRender = useCallback(() => {
+    setRenderVersion((version) => version + 1)
+    onRenderedRef.current?.()
+  }, [])
   const tokenClick = useCallback((props: DiffTokenEventBaseProps) => {
     onTokenClickRef.current?.({
       side: props.side,
@@ -184,7 +193,9 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
   // Search runs over the rendered rows, so it re-runs whenever Pierre renders (expanded context,
   // highlighting arriving from the worker) as well as when the query or current match changes.
   const matchesRef = useRef<DiffSearchMatch[]>([])
-  const revealed = useRef<{ query: string; activeMatch: number; found: boolean } | null>(null)
+  const revealed = useRef<{ query: string; activeMatch: number; found: boolean } | null>(
+    skipInitialReveal ? { query, activeMatch, found: true } : null,
+  )
   const onMatchCountChangeRef = useRef(onMatchCountChange)
   onMatchCountChangeRef.current = onMatchCountChange
   useEffect(() => {

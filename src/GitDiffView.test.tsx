@@ -2,7 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, onTestFinished, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { GitDiffView } from './GitDiffView'
 import type { GitDiffApiClient, GitDiffSummary, GitFileContents } from './gitApi'
@@ -872,6 +872,74 @@ describe('GitDiffView rich engine', () => {
     expect(pierreRenders.at(-1)?.newFile).toBe(pierreRenders[renders - 1].newFile)
     expect(screen.getByTestId('pierre-diff')).toBe(rendered)
     expect(output.scrollTop).toBe(90)
+  })
+
+  it('unmounts the rich view while hidden, so its workers are freed, and restores the reading position', async () => {
+    const api = richApi()
+    const view = (visible: boolean) => <GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={summary} visible={visible} />
+    const { rerender } = render(view(true))
+    await screen.findByTestId('pierre-diff')
+    const output = document.querySelector('.git-diff-output') as HTMLElement
+    Object.defineProperty(output, 'scrollHeight', { configurable: true, value: 5000 })
+    Object.defineProperty(output, 'clientHeight', { configurable: true, value: 500 })
+    output.scrollTop = 1200
+    fireEvent.scroll(output)
+
+    rerender(view(false))
+    expect(screen.queryByTestId('pierre-diff')).not.toBeInTheDocument()
+    // The browser clamps the scroll once the rows are gone; that must not be remembered.
+    output.scrollTop = 0
+    fireEvent.scroll(output)
+
+    rerender(view(true))
+    expect(await screen.findByTestId('pierre-diff')).toBeInTheDocument()
+    expect(output.scrollTop).toBe(1200)
+    expect(api.fileContents).toHaveBeenCalledTimes(1)
+  })
+
+  it('clamps a restore the shorter content can no longer reach, and never applies it later', async () => {
+    const api = richApi()
+    const view = (visible: boolean) => <GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={summary} visible={visible} />
+    const { rerender } = render(view(true))
+    await screen.findByTestId('pierre-diff')
+    const output = document.querySelector('.git-diff-output') as HTMLElement
+    Object.defineProperty(output, 'clientHeight', { configurable: true, value: 500 })
+    Object.defineProperty(output, 'scrollHeight', { configurable: true, value: 5000 })
+    output.scrollTop = 4000
+    fireEvent.scroll(output)
+    rerender(view(false))
+    Object.defineProperty(output, 'scrollHeight', { configurable: true, value: 1000 })
+    rerender(view(true))
+    await screen.findByTestId('pierre-diff')
+    expect(output.scrollTop).toBe(500)
+
+    // A later render (highlighting, a refresh) must not pull the reader back.
+    output.scrollTop = 100
+    fireEvent.scroll(output)
+    Object.defineProperty(output, 'scrollHeight', { configurable: true, value: 9000 })
+    act(() => { pierreRenders.at(-1)!.options!.onPostRender!(document.createElement('div'), undefined as never, 'update' as never) })
+    expect(output.scrollTop).toBe(100)
+  })
+
+  it('returns to the reading position, not the current search match, when shown again', async () => {
+    const scrollIntoView = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView
+    onTestFinished(() => { Element.prototype.scrollIntoView = original })
+    const api = richApi()
+    const view = (visible: boolean) => <GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={summary} visible={visible} />
+    const { rerender } = render(view(true))
+    await screen.findByTestId('pierre-diff')
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'needle' } })
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    rerender(view(false))
+    scrollIntoView.mockClear()
+    rerender(view(true))
+    await screen.findByTestId('pierre-diff')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('1 / 3'))
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Next diff match' }))
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 
   it('counts, highlights and steps through matches in the rendered rows', async () => {
