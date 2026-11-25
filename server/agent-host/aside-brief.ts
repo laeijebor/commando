@@ -1,7 +1,7 @@
 import type { ChatAsideMode, ChatItem } from '../../shared/agent-chat.js'
 
-export function asideInstructions(mode: ChatAsideMode): string {
-  return `You are an aside, a side thread of the user's main conversation. Answer the side question; do not continue the main task. ${mode === 'read-only' ? 'Do not modify files. ' : "The read-only restriction is off; use the main conversation's permissions. "}Commando pane commands (commando-session-update, commando-pr-marker, commando-sim, commando-device, commando-chat) are not for you. Do not set pane titles or headlines.`
+export function asideInstructions(mode: ChatAsideMode, ephemeral = false): string {
+  return `${ephemeral ? 'Answer directly from the conversation so far. Do not use tools unless strictly necessary. This is a quick answer; keep it concise. ' : ''}You are an aside, a side thread of the user's main conversation. Answer the side question; do not continue the main task. ${mode === 'read-only' ? 'Do not modify files. ' : "The read-only restriction is off; use the main conversation's permissions. "}Commando pane commands (commando-session-update, commando-pr-marker, commando-sim, commando-device, commando-chat) are not for you. Do not set pane titles or headlines.`
 }
 
 /** A bounded text handoff for providers without native forks. */

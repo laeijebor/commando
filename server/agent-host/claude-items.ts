@@ -54,7 +54,7 @@ function imageData(part: unknown): string | undefined {
 }
 
 /** The saved-copy paths that a transcript's own attachment notes name. */
-export function notedAttachmentPaths(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]): string[] {
+export function notedAttachmentPaths(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null; uuid?: string }[]): string[] {
   return messages.flatMap((entry) => {
     const content = record(entry.message).content
     if (entry.type !== 'user' || entry.parent_tool_use_id) return []
@@ -295,6 +295,7 @@ type ItemBase = { id: string; turnId: string; parentToolUseId?: string; status: 
  */
 export class ClaudeItemMapper {
   private readonly items = new Map<string, ChatItem>()
+  readonly forkPoints = new Map<string, string>()
   private turnId = 'turn-0'
   private turnCounter = 0
   private noticeCounter = 0
@@ -319,6 +320,7 @@ export class ClaudeItemMapper {
   /** Forgets the timeline when the conversation starts over. */
   clear(): void {
     this.items.clear()
+    this.forkPoints.clear()
   }
 
   get currentTurnId(): string {
@@ -347,9 +349,9 @@ export class ClaudeItemMapper {
     return item
   }
 
-  startTurn(text: string, images: ChatImageRef[] = [], extra: { steered?: true; relayTo?: { agentId: string; label: string } } = {}): ChatItem[] {
+  startTurn(text: string, images: ChatImageRef[] = [], extra: { steered?: true; relayTo?: { agentId: string; label: string } } = {}, uuid?: string): ChatItem[] {
     this.turnCounter += 1
-    this.turnId = `turn-${this.now()}-${this.turnCounter}`
+    this.turnId = uuid ? `turn-${uuid}` : `turn-${this.now()}-${this.turnCounter}`
     return [this.put({ ...this.base(`user-${this.turnId}`, 'completed'), kind: 'user_message', text, ...(images.length ? { images } : {}), ...extra })]
   }
 
@@ -416,11 +418,12 @@ export class ClaudeItemMapper {
    * Rebuilds items from a saved transcript (getSessionMessages) so a resumed
    * conversation shows its earlier turns. Everything replayed is finished.
    */
-  replay(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null }[]): ChatItem[] {
+  replay(messages: readonly { type: string; message: unknown; parent_tool_use_id: string | null; uuid?: string }[]): ChatItem[] {
     for (const entry of messages) {
       const message = record(entry.message)
       if (entry.type === 'assistant' && typeof message.id === 'string' && Array.isArray(message.content)) {
         this.handleAssistant(message as unknown as { id: string; content: Block[] }, entry.parent_tool_use_id)
+        if (!entry.parent_tool_use_id && entry.uuid && message.stop_reason === 'end_turn') this.forkPoints.set(this.currentTurnId, entry.uuid)
       } else if (entry.type === 'user' && !entry.parent_tool_use_id) {
         const text = typeof message.content === 'string'
           ? message.content
@@ -441,7 +444,7 @@ export class ClaudeItemMapper {
           const relayed = parseRelayPrompt(text)
           const typed = stripAttachmentNotes(relayed?.text ?? text)
           // An image that can't be shown still marks the turn, so it isn't lost from the timeline.
-          if (typed || blocks.length || images.length) this.startTurn(typed || (images.length ? '' : '[image]'), images, relayed ? { relayTo: relayed.relayTo } : {})
+          if (typed || blocks.length || images.length) this.startTurn(typed || (images.length ? '' : '[image]'), images, relayed ? { relayTo: relayed.relayTo } : {}, entry.uuid)
         }
       } else if (entry.type === 'user') {
         this.handleToolResults(message as { content: unknown })

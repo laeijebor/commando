@@ -301,7 +301,7 @@ export class MuseChatSession implements ChatProviderSession {
         await this.applySettings({ permissionMode: options.permissionMode })
       }
       const input = await this.input(trimmed, images, sessionId)
-      if (this.spec.aside) input.unshift({ type: 'text', text: asideInstructions(this.spec.aside.mode) })
+      if (this.spec.aside) input.unshift({ type: 'text', text: asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral) })
       const steer = Boolean(this.activeTurn)
       const commandId = uuidv7()
       this.mapper.expectUser(trimmed, images)

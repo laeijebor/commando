@@ -356,7 +356,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.mapper.begin(turnId)
     this.emitItems(this.mapper.expectUser(text, images))
     if (!sandboxed) this.ranUnsandboxed = true
-    const run = await this.agent.send({ text: [...(this.spec.aside ? [asideInstructions(this.spec.aside.mode)] : []), text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
+    const run = await this.agent.send({ text: [...(this.spec.aside ? [asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral)] : []), text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
       model, mode: this.info.permissionMode === 'plan' ? 'plan' : 'agent',
       onDelta: ({ update }) => { if (!this.closing) this.emitItems(this.mapper.delta(update)) },
     })
