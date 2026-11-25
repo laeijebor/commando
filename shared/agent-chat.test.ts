@@ -313,3 +313,19 @@ describe('steering the whole queue', () => {
     expect(takeQueueBatch([])).toEqual({ batch: [], rest: [] })
   })
 })
+
+it('validates reply resources, drops malformed entries, and preserves only known metadata', () => {
+  const file = { ref: 'README.md:7', path: '/work/README.md', kind: 'file', size: 123, mtimeMs: 1000, line: 7 }
+  const folder = { ref: './src', path: '/work/src', kind: 'folder', entries: 9999 }
+  const missing = { ref: './missing', path: '/work/missing', missing: true }
+  const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'files', resources: [
+    { ...file, secret: 'drop' }, folder, missing,
+    { ...file, path: 'relative' }, { ...file, size: -1 }, { ...file, mtimeMs: Infinity },
+    { ...folder, entries: 10000 }, { ...file, line: 0 }, { ...file, line: 1.2 },
+    { ...file, kind: 'device' }, { ...file, ref: '' }, { ...file, path: '/bad\u0000path' },
+  ] })
+  expect(parsed).toEqual({ ...base, kind: 'assistant_message', text: 'files', resources: [file, folder, missing] })
+  const capped = parseChatItem({ ...base, kind: 'assistant_message', text: 'files', resources: Array(60).fill(file) })
+  expect(capped?.kind === 'assistant_message' && capped.resources?.length).toBe(50)
+  expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'files', resources: [{ path: '/bad' }] })).not.toHaveProperty('resources')
+})
