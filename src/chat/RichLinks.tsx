@@ -14,12 +14,13 @@ export type RichLinkServices = {
   hasQuickLook?: (repo: string, number: number) => boolean
 }
 
+export const RichLinksContext = createContext<RichLinkServices>({})
+
 /** Opens this PR's Quick Look, when it has one here. */
 function useQuickLook(link: RichLink): (() => void) | undefined {
   const { openPr, hasQuickLook } = use(RichLinksContext)
   return link.kind === 'pr' && openPr && hasQuickLook?.(link.repo, link.number) ? () => openPr(link.repo, link.number, link.tab) : undefined
 }
-export const RichLinksContext = createContext<RichLinkServices>({})
 
 type Loaded = { at: number; value?: unknown; failed?: boolean; pending?: Promise<void> }
 const LOADED_MS = 2 * 60_000
