@@ -182,6 +182,11 @@ export class BoardLinkPreviews {
     try { url = normalizeBoardUrl(item.ref.url) } catch { return }
     await this.load()
     let entry = this.entries.get(url)
+    if (entry && entry.expires > this.now()) {
+      const hashes = new Set([entry.preview?.image, entry.preview?.favicon].filter((hash): hash is string => !!hash))
+      // Metadata outlives the LRU thumbnail cache; refetch when either asset was evicted.
+      if ((await Promise.all([...hashes].map((hash) => this.options.thumbs.has(hash)))).some((exists) => !exists)) entry = undefined
+    }
     if (!entry || entry.expires <= this.now()) {
       try {
         const page = await this.download(url, HTML_LIMIT, false), parsed = parseLinkPreview(page.bytes.toString('utf8'), page.url)

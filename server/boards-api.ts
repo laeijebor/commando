@@ -1,7 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { BOARD_GROUP_TONES, BoardError, BoardStore, boardInput } from './boards.js'
+import { BOARD_GROUP_TONES, BoardError, BoardStore, boardInput, isBoardFileItem } from './boards.js'
 import { BOARD_ID, BOARD_ITEM_KEY, BOARD_ITEM_KINDS, type BoardGroup, type BoardItem, type BoardPlacement } from '../shared/board.js'
 import { BOARD_THUMB_HASH, type BoardThumbCache } from './board-thumbs.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
@@ -140,7 +140,7 @@ export class BoardsApi {
         if (key && parts.length === 3 && parts[2] === 'reveal' && method === 'POST') {
           if (!owner) throw new BoardError(403, 'Only the owner can reveal board items')
           const item = store.item(targetId, key)
-          const file = ['file', 'screenshot', 'video'].includes(item.kind)
+          const file = isBoardFileItem(item)
           const artifact = ['canvas', 'slides', 'guide', 'redline'].includes(item.kind)
           const path = file ? item.ref.path : artifact
             ? store.state(item, targetId) === 'snapshot' ? store.snapshotDir(item)

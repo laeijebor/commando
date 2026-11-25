@@ -32,7 +32,7 @@ const safeText = (s: unknown, max = 8192): s is string => typeof s === 'string' 
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const sourceValid = (v: unknown): v is BoardItemSource => typeof v === 'string' && sources.includes(v)
 const overlaps = (a: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>, b: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
-const fileItem = (item: BoardItem) => ['screenshot', 'video', 'file'].includes(item.kind) || (item.kind === 'diagram' && !!item.ref.path)
+export const isBoardFileItem = (item: BoardItem) => ['screenshot', 'video', 'file'].includes(item.kind) || (item.kind === 'diagram' && !!item.ref.path)
 
 /** Absolute board coordinates; append into a free cell, including cells occupied by fixed items. */
 export function packBoardItem(board: Board, key: string, groupId: string): { placement: BoardPlacement; group: BoardGroup } {
@@ -384,7 +384,7 @@ export class BoardStore {
   }
   state(item: BoardItem, targetId?: string, paths = new Map<string, boolean>()): BoardItemState {
     if (['link', 'clip', 'pr'].includes(item.kind)) return 'open'
-    if (fileItem(item)) {
+    if (isBoardFileItem(item)) {
       const path = item.ref.path
       if (!path) return 'missing'
       let available = paths.get(path)
@@ -477,7 +477,7 @@ export class BoardStore {
   revive(targetId: string, key: string, anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>, by: 'agent' | 'user'): { webPaneId?: string; path?: string } {
     const item = this.item(targetId, key), state = this.state(item, targetId), webPanes = this.options.webPanes
     if (state === 'missing') throw new BoardError(409, 'Artifact source and snapshot are missing; this item cannot be revived')
-    if (fileItem(item)) { this.changed(targetId); return { path: item.ref.path } }
+    if (isBoardFileItem(item)) { this.changed(targetId); return { path: item.ref.path } }
     if (!webPanes) throw new BoardError(503, 'Web panes are unavailable')
     const live = this.livePane(item, targetId)
     if (live) { if (live.dock === 'panel') webPanes.setActiveTab(live.id); this.changed(targetId); return { webPaneId: live.id } }

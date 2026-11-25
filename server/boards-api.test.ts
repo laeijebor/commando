@@ -143,7 +143,7 @@ describe('BoardsApi', () => {
   })
   describe('reveal', () => {
     const endpoint = (key: string) => `/items/${encodeURIComponent(key)}/reveal`
-    it.each(['file', 'screenshot', 'video'] as const)('reveals a %s without a body or board mutation', async (kind) => {
+    it.each(['file', 'screenshot', 'video', 'diagram'] as const)('reveals a %s without a body or board mutation', async (kind) => {
       const path = join(root, 'local file.png'); writeFileSync(path, 'file')
       const item = store.upsert(target, { key: `file:${path}`, kind, title: 'File', ref: { path }, source: 'user' })
       const board = store.get(target)
@@ -204,7 +204,7 @@ describe('BoardsApi', () => {
       expect(revealed).not.toHaveBeenCalled()
     })
     it.each(['pr', 'link', 'clip', 'page', 'diagram'] satisfies BoardItemKind[])('returns 404 for a %s without a revealable path', async (kind) => {
-      const item = store.upsert(target, { key: 'clip:no-path', kind, title: 'No path', source: 'user', ref: { path: root } })
+      const item = store.upsert(target, { key: 'clip:no-path', kind, title: 'No path', source: 'user', ref: kind === 'diagram' ? {} : { path: root } })
       expect((await request(endpoint(item.key), 'POST')).status).toBe(404)
       expect(revealed).not.toHaveBeenCalled()
     })

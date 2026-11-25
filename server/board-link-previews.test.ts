@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,6 +13,7 @@ const response = (body: string | Uint8Array, type = 'text/html', status = 200) =
 function setup(options: Partial<ConstructorParameters<typeof BoardLinkPreviews>[0]> = {}) {
   const store = new BoardStore(), thumbs = new BoardThumbCache({ root: join(root, 'thumbs'), origin: 'http://127.0.0.1:4491', platform: 'linux' })
   const image = vi.spyOn(thumbs, 'image').mockResolvedValue('a'.repeat(64)), page = vi.spyOn(thumbs, 'page').mockResolvedValue(undefined)
+  vi.spyOn(thumbs, 'has').mockResolvedValue(true)
   const fetch = vi.fn<NonNullable<ConstructorParameters<typeof BoardLinkPreviews>[0]['fetch']>>(async () => response('<title>Article</title>'))
   const resolve = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }])
   const config = { store, thumbs, statePath: join(root, 'previews.json'), fetch, resolve, ...options }
@@ -57,6 +58,36 @@ describe('Board link previews', () => {
     now += 7 * 86400_000 - 1; await s.previews.refresh(target, item); expect(s.fetch).toHaveBeenCalledTimes(3)
     now += 2; s.fetch.mockImplementation(async (url) => response(url.endsWith('favicon.ico') ? '' : '<title>Updated</title>'))
     await s.previews.refresh(target, item); expect(s.fetch).toHaveBeenCalledTimes(5)
+  })
+  it.each([
+    ['memory', 'image'], ['memory', 'favicon'], ['persisted', 'image'], ['persisted', 'favicon'],
+  ] as const)('regenerates an evicted asset on an unexpired %s cache hit (%s)', async (cache, asset) => {
+    const run = vi.fn(async (_command: string, args: string[]) => { await writeFile(args.at(-1)!, 'rendered preview') })
+    const cacheRoot = join(root, 'real-thumbs')
+    const thumbs = new BoardThumbCache({ root: cacheRoot, origin: 'http://127.0.0.1:4491', platform: 'darwin', run, maxBytes: 2 * Buffer.byteLength('rendered preview') })
+    const s = setup({ thumbs, now: () => 1000 })
+    s.fetch.mockImplementation(async (url) => url.endsWith('hero.jpg') || url.endsWith('favicon.ico')
+      ? response(Buffer.from(url), 'image/png')
+      : response('<title>Remote</title><meta property="og:image" content="/hero.jpg">'))
+    const item = add(s.store)
+    await s.previews.refresh(target, item)
+    const preview = s.store.item(target, item.key).preview!
+    expect(preview.image).toMatch(/^[a-f0-9]{64}$/); expect(preview.favicon).toMatch(/^[a-f0-9]{64}$/)
+    expect(await thumbs.has(preview.image!)).toBe(true); expect(await thumbs.has(preview.favicon!)).toBe(true)
+
+    for (const width of [320, 960]) await utimes(join(cacheRoot, `${preview[asset]}-${width}.png`), new Date(0), new Date(0))
+    await thumbs.evict()
+    expect(await thumbs.has(preview[asset]!)).toBe(false)
+    expect(await thumbs.has(preview[asset === 'image' ? 'favicon' : 'image']!)).toBe(true)
+    s.fetch.mockClear(); run.mockClear()
+    const previews = cache === 'persisted' ? new BoardLinkPreviews(s) : s.previews
+    await previews.refresh(target, s.store.item(target, item.key))
+    const refreshed = s.store.item(target, item.key).preview!
+    expect(refreshed).toEqual(preview) // Unchanged bytes regain the same content-addressed hashes.
+    expect(await thumbs.has(refreshed.image!)).toBe(true); expect(await thumbs.has(refreshed.favicon!)).toBe(true)
+    expect(s.fetch).toHaveBeenCalledTimes(3); expect(run).toHaveBeenCalledTimes(2)
+    await previews.refresh(other, add(s.store, item.ref.url!, other))
+    expect(s.fetch).toHaveBeenCalledTimes(3); expect(run).toHaveBeenCalledTimes(2)
   })
   it('never fetches direct private URLs, checks every DNS answer, and pins only checked public addresses', async () => {
     const s = setup()
