@@ -136,7 +136,7 @@ import {
   disabledAuthBootstrap,
 } from './auth.js'
 import { createNetworkAccess, isLocalClient, isLoopbackAddress } from './network-access.js'
-import { openUrlInBrowser } from './open-folder.js'
+import { openUrlInBrowser, revealInFinder } from './open-folder.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry, defaultDeviceLockStatePath, deviceLockClaimsByPane } from './device-locks.js'
 import { DeviceDiscovery, DeviceWallApi, deviceLockAlerts } from './device-wall.js'
@@ -2135,6 +2135,7 @@ async function main(): Promise<void> {
     paneForId, paneForTarget: (targetId) => snapshot.panes.find((p) => p.targetId === targetId && !p.dead),
     agentSession: (paneId) => sessionBriefs.get(paneId)?.agentSession,
     artifacts: redlineArtifacts, onRevive: publishWebPanes,
+    revealInFinder: process.platform === 'darwin' ? revealInFinder : undefined,
   })
   const sessionBriefApi = new SessionBriefApi({
     token: agentHookToken,

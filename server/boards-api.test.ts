@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,22 +8,29 @@ import { BoardsApi } from './boards-api.js'
 import { BoardStore } from './boards.js'
 import { RedlineArtifactRegistry } from './redline-artifacts.js'
 import { WebPaneService } from './web-panes.js'
+import type { BoardItemKind } from '../shared/board.js'
 const target = '00000000-0000-4000-8000-000000000001'
 const other = '00000000-0000-4000-8000-000000000002'
 const agentToken = 'a'.repeat(64)
 const anchor = { id: '%1', targetId: target, sessionId: '$1', windowId: '@1' }
 let api: BoardsApi, root: string, store: BoardStore, panes: WebPaneService
+let artifacts: RedlineArtifactRegistry
+let revealed: ReturnType<typeof vi.fn<(path: string) => Promise<void>>>
 const base = 'http://localhost'
 let changed: ReturnType<typeof vi.fn<(targetId: string, rev: number) => void>>, revived: ReturnType<typeof vi.fn<() => void>>
 beforeEach(async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'board-api-test-')))
   changed = vi.fn(); revived = vi.fn()
-  const artifacts = new RedlineArtifactRegistry()
+  artifacts = new RedlineArtifactRegistry()
+  revealed = vi.fn(async () => {})
   panes = new WebPaneService(join(root, 'web.json'))
-  store = new BoardStore({ root: join(root, 'boards'), artifacts, webPanes: panes, onChange: changed })
-  api = new BoardsApi({ store, artifacts, agentToken, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', paneForId: (id) => id === '%1' ? anchor : undefined, paneForTarget: (t) => t === target ? anchor : undefined, agentSession: () => ({ provider: 'codex', id: 'session-one' }), onRevive: revived })
+  store = new BoardStore({ root: join(root, 'boards'), snapshotRoot: join(root, 'snapshots'), artifacts, webPanes: panes, onChange: changed })
+  api = makeApi(revealed)
 
 })
+function makeApi(revealInFinder?: (path: string) => Promise<void>) {
+  return new BoardsApi({ store, artifacts, agentToken, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', paneForId: (id) => id === '%1' ? anchor : undefined, paneForTarget: (t) => t === target ? anchor : undefined, agentSession: () => ({ provider: 'codex', id: 'session-one' }), onRevive: revived, revealInFinder })
+}
 afterEach(async () => { store.flush(); await panes.flush(); rmSync(root, { recursive: true, force: true }) })
 async function http(url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
   const request = Readable.from(init.body === undefined ? [] : [Buffer.from(init.body)]) as IncomingMessage
@@ -87,6 +94,90 @@ describe('BoardsApi', () => {
     rmSync(path)
     const missing = await request(endpoint, 'POST', { anchorPaneId: '%1' })
     expect(missing.status).toBe(409); expect(missing.data.error).toContain('missing')
+  })
+  describe('reveal', () => {
+    const endpoint = (key: string) => `/items/${encodeURIComponent(key)}/reveal`
+    it.each(['file', 'screenshot', 'video'] as const)('reveals a %s without a body or board mutation', async (kind) => {
+      const path = join(root, 'local file.png'); writeFileSync(path, 'file')
+      const item = store.upsert(target, { key: `file:${path}`, kind, title: 'File', ref: { path }, source: 'user' })
+      const board = store.get(target)
+      const result = await request(endpoint(item.key), 'POST')
+      expect(result).toEqual({ status: 204, data: null })
+      expect(revealed).toHaveBeenCalledExactlyOnceWith(path)
+      expect(store.get(target)).toEqual(board)
+    })
+    it.each(['canvas', 'slides', 'guide', 'redline'] as const)('reveals the registered artifact directory for %s', async (kind) => {
+      const dir = join(root, 'artifact'); mkdirSync(dir)
+      const artifactId = artifacts.register(dir).id
+      const item = store.upsert(target, { key: `canvas:${kind}`, kind, title: 'Artifact', source: 'user', ref: { artifactId, path: join(root, 'stale-path') } })
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(204)
+      expect(revealed).toHaveBeenCalledExactlyOnceWith(dir)
+    })
+    it.each(['canvas', 'slides', 'guide', 'redline'] as const)('reveals the snapshot folder for a %s snapshot', async (kind) => {
+      const source = join(root, 'removed-artifact'); mkdirSync(source)
+      const artifactId = artifacts.register(source).id
+      const snapshotId = '00000000-0000-4000-8000-000000000003', snapshot = join(root, 'snapshots', snapshotId)
+      mkdirSync(snapshot, { recursive: true }); writeFileSync(join(snapshot, 'index.html'), 'snapshot')
+      rmSync(source, { recursive: true })
+      const item = store.upsert(target, { key: `canvas:${kind}`, kind, title: 'Snapshot', source: 'user', ref: { path: source, artifactId, file: 'index.html', snapshotId } })
+      expect(store.state(item, target)).toBe('snapshot')
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(204)
+      expect(revealed).toHaveBeenCalledExactlyOnceWith(snapshot)
+      rmSync(snapshot, { recursive: true })
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(404)
+      expect(revealed).toHaveBeenCalledTimes(1)
+    })
+    it('supports the by-pane alias and rejects agents and unauthenticated callers', async () => {
+      const path = join(root, 'file'); writeFileSync(path, 'file')
+      const item = store.upsert(target, { key: `file:${path}`, kind: 'file', title: 'File', ref: { path }, source: 'user' })
+      expect((await request(endpoint(item.key), 'POST', undefined, '', true)).status).toBe(401)
+      expect((await request(endpoint(item.key), 'POST', undefined, agentToken, true)).status).toBe(403)
+      const directAgent = await http(`${base}/api/boards/${target}${endpoint(item.key)}`, { method: 'POST', headers: { Authorization: `Bearer ${agentToken}`, 'X-Commando-Pane': '%1' } })
+      expect(directAgent.status).toBe(403); expect(revealed).not.toHaveBeenCalled()
+      expect((await request(endpoint(item.key), 'POST', undefined, 'owner', true)).status).toBe(204)
+      expect(revealed).toHaveBeenCalledExactlyOnceWith(path)
+    })
+    it('returns 404 for absent items and files that disappeared', async () => {
+      expect((await request(endpoint('file:/absent'), 'POST')).status).toBe(404)
+      const path = join(root, 'removed.png'); writeFileSync(path, 'file')
+      const item = store.upsert(target, { key: `file:${path}`, kind: 'screenshot', title: 'Missing', ref: { path }, source: 'user' })
+      rmSync(path)
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(404)
+      expect(revealed).not.toHaveBeenCalled()
+    })
+    it('returns 404 for missing and unregistered artifact directories', async () => {
+      const dir = join(root, 'artifact'); mkdirSync(dir)
+      const artifactId = artifacts.register(dir).id
+      const item = store.upsert(target, { key: 'canvas:missing', kind: 'canvas', title: 'Missing', source: 'user', ref: { artifactId, path: dir } })
+      artifacts.unregister(artifactId)
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(404)
+      const otherId = artifacts.register(dir).id
+      store.upsert(target, { ...item, ref: { artifactId: otherId, path: dir } })
+      rmSync(dir, { recursive: true })
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(404)
+      expect(revealed).not.toHaveBeenCalled()
+    })
+    it.each(['pr', 'link', 'clip', 'page', 'diagram'] satisfies BoardItemKind[])('returns 404 for a %s without a revealable path', async (kind) => {
+      const item = store.upsert(target, { key: 'clip:no-path', kind, title: 'No path', source: 'user', ref: { path: root } })
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(404)
+      expect(revealed).not.toHaveBeenCalled()
+    })
+    it('returns 501 when the host does not provide Finder reveal', async () => {
+      const path = join(root, 'file'); writeFileSync(path, 'file')
+      const item = store.upsert(target, { key: `file:${path}`, kind: 'file', title: 'File', ref: { path }, source: 'user' })
+      api = makeApi()
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(501)
+      expect(revealed).not.toHaveBeenCalled()
+    })
+    it('rejects non-POST methods and reports Finder failures without a board mutation', async () => {
+      const path = join(root, 'file'); writeFileSync(path, 'file')
+      const item = store.upsert(target, { key: `file:${path}`, kind: 'file', title: 'File', ref: { path }, source: 'user' }), board = store.get(target)
+      expect((await request(endpoint(item.key))).status).toBe(405)
+      expect(revealed).not.toHaveBeenCalled()
+      revealed.mockRejectedValue(new Error('Finder failed'))
+      expect((await request(endpoint(item.key), 'POST')).status).toBe(500)
+      expect(store.get(target)).toEqual(board)
+    })
   })
   it.each([
     ['/items', { url: 'javascript:alert(1)' }],

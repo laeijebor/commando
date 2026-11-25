@@ -325,7 +325,8 @@ export class BoardStore {
       return resolved.startsWith(path + sep) && statSync(resolved).isFile()
     } catch { return false }
   }
-  private snapshotDir(item: BoardItem): string | undefined {
+  /** Validated snapshot folder, shared by revival and Finder reveal. */
+  snapshotDir(item: BoardItem): string | undefined {
     const { snapshotId, manifest, file } = item.ref
     if (!snapshotId || !BOARD_SNAPSHOT_ID.test(snapshotId) || !this.options.snapshotRoot) return undefined
     const path = join(this.options.snapshotRoot, snapshotId)

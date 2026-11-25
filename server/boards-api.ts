@@ -1,4 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { BOARD_GROUP_TONES, BoardError, BoardStore, boardInput } from './boards.js'
 import { BOARD_ID, BOARD_ITEM_KEY, BOARD_ITEM_KINDS, type BoardGroup, type BoardItem, type BoardPlacement } from '../shared/board.js'
@@ -21,6 +22,8 @@ type Dependencies = {
   paneForTarget: (targetId: string) => Anchor | undefined
   agentSession: (paneId: string) => AgentSessionRef | undefined
   artifacts?: RedlineArtifactRegistry
+  /** Omitted when capabilities.revealInFinder is false. */
+  revealInFinder?: (path: string) => Promise<void>
   onRevive?: () => void
 }
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -133,6 +136,22 @@ export class BoardsApi {
           json(response, 200, store.patch(targetId, key, patch, source)); return true
         }
         if (key && parts.length === 2 && method === 'DELETE') { store.remove(targetId, key); json(response, 200, { ok: true }); return true }
+        if (key && parts.length === 3 && parts[2] === 'reveal' && method === 'POST') {
+          if (!owner) throw new BoardError(403, 'Only the owner can reveal board items')
+          const item = store.item(targetId, key)
+          const file = ['file', 'screenshot', 'video'].includes(item.kind)
+          const artifact = ['canvas', 'slides', 'guide', 'redline'].includes(item.kind)
+          const path = file ? item.ref.path : artifact
+            ? store.state(item, targetId) === 'snapshot' ? store.snapshotDir(item)
+              : item.ref.artifactId ? this.deps.artifacts?.directory(item.ref.artifactId) : undefined
+            : undefined
+          if (!path) throw new BoardError(404, 'Board item has no revealable path')
+          const info = await stat(path).catch(() => undefined)
+          if (!info || (file ? !info.isFile() : !info.isDirectory())) throw new BoardError(404, 'Board item path does not exist')
+          if (!this.deps.revealInFinder) throw new BoardError(501, 'Revealing files in Finder is unavailable on this host')
+          await this.deps.revealInFinder(path)
+          response.writeHead(204, { 'Cache-Control': 'no-store' }); response.end(); return true
+        }
         if (key && parts.length === 3 && parts[2] === 'revive' && method === 'POST') {
           const b = await body(request); fields(b, ['anchorPaneId'])
           const id = text(b, 'anchorPaneId', 128, true)!
