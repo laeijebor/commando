@@ -297,7 +297,9 @@ export class PaneManagementApi {
       ...(this.dependencies.resourceTempRoots ?? [])].map((entry) => entry ? realpath(entry).catch(() => undefined) : undefined))
     const statePath = join(this.dependencies.resourceHome ?? homedir(), '.commando')
     const state = await realpath(statePath).catch(() => home ? join(home, '.commando') : statePath)
-    const hidden = folder.split(sep).some((segment) => segment.startsWith('.') && !SERVABLE_DOT_FOLDERS.has(segment))
+    // Agent worktrees (`<repo>/.claude/worktrees/…`, `~/.codex/worktrees/…`) are ordinary checkouts, judged like any other.
+    const segments = folder.split(sep)
+    const hidden = segments.some((segment, index) => segment.startsWith('.') && !SERVABLE_DOT_FOLDERS.has(segment) && segments[index + 1] !== 'worktrees')
     if (broad.includes(folder) || containsPath(state, folder) || containsPath(folder, state) || hidden) throw new HttpError(403, 'This folder cannot be presented')
     if (!this.dependencies.artifacts || !this.dependencies.openResourceTile) throw new HttpError(503, 'Slides tiles are unavailable')
     const paneCwd = this.dependencies.panePath(paneId)
