@@ -151,7 +151,7 @@ import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
-import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
+import { parseAsideKey, AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -1162,7 +1162,7 @@ async function main(): Promise<void> {
       sendError(client, 'chat_unavailable', 'No agent host is connected for this pane', message.requestId)
       return
     }
-    if (answersAsk) {
+    if (answersAsk && !parseAsideKey(message.paneId)) {
       const brief = await sessionBriefs.answerAsk(message.paneId, answersAsk)
       if (brief) void publishSessionBrief(brief)
     }
@@ -2071,6 +2071,7 @@ async function main(): Promise<void> {
       if (targetId) void prs.recordPaneImpacts(targetId, reports).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
     },
     interactions,
+    chatAsideSession: (paneId, sessionId) => agentHosts.isAsideSession(paneId, sessionId),
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,
     cursorForeground: cursorForegroundIsCurrent,
@@ -2389,7 +2390,7 @@ async function main(): Promise<void> {
     snapshot: () => snapshot,
     serverId: () => snapshotServerId,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
-    chatSessions: () => agentHosts.states().map((state) => state.session),
+    chatSessions: () => agentHosts.states().filter((state) => !parseAsideKey(state.paneId)).map((state) => state.session),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {
@@ -2413,7 +2414,7 @@ async function main(): Promise<void> {
     index: chatMessageIndex,
     snapshot: () => snapshot,
     briefs: sessionBriefs,
-    chats: () => agentHosts.states(),
+    chats: () => agentHosts.states().filter((state) => !parseAsideKey(state.paneId)),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
   })
   setTimeout(() => { void chatMessageIndex.triggerSync() }, 6_000).unref()
@@ -2870,6 +2871,17 @@ async function main(): Promise<void> {
         void agentHosts.searchFiles(message.paneId, message.query).then((result) => {
           send(client, { type: 'chat_file_search_result', paneId: message.paneId, requestId: message.requestId, ...result })
         })
+        return
+      }
+      case 'chat_aside': {
+        void (async () => {
+          if (message.action.action === 'open' && message.action.images?.length) {
+            const stored = await Promise.all(message.action.images.map((image) => chatImages.exists(image.id)))
+            if (stored.includes(false)) return send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ok: false, error: 'An attached image is no longer stored; attach it again' })
+          }
+          const result = await agentHosts.aside(message.paneId, message.action)
+          send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        })().catch((error: unknown) => send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ok: false, error: error instanceof Error ? error.message : String(error) }))
         return
       }
       case 'chat_mcp': {

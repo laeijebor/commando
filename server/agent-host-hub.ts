@@ -4,6 +4,10 @@ import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
   hostTakesInput,
+  hostTakesAsides,
+  parseAsideKey,
+  type ChatAsideAction,
+  type ChatAsideResult,
   hostTakesSteerAll,
   hostTakesVideos,
   hostTakesMcp,
@@ -34,6 +38,8 @@ import type { ChatResumeSettings } from './agent-resume-command.js'
 import type { ChatHandoffStore } from './chat-handoffs.js'
 import type { ChatHostReport } from './agent-status-registry.js'
 import { chatAnswerFor, chatHostReport, chatRequestOpen, type ChatRequestItem } from './chat-interactions.js'
+
+const parentPaneId = (key: string): string => parseAsideKey(key)?.paneId ?? key
 
 const MAX_HOST_MESSAGE_BYTES = 4 * 1024 * 1024
 /** How long a session may wait for its pane to appear in the tmux snapshot. */
@@ -129,6 +135,7 @@ export class AgentHostHub {
   private readonly chats = new Map<string, ChatEntry>()
   private readonly fileSearches = new Map<string, PendingHostRequest<ChatFileSearchResult>>()
   private readonly transcripts = new Map<string, PendingHostRequest<ChatSubagentTranscript>>()
+  private readonly asideRequests = new Map<string, PendingHostRequest<ChatAsideResult>>()
   private readonly mcpRequests = new Map<string, PendingHostRequest<ChatMcpResult>>()
   /** Drafts of chats waiting to switch to Claude Code, by pane, until the host hands over. */
   private readonly switchDrafts = new Map<string, ChatSwitchDraft>()
@@ -168,12 +175,15 @@ export class AgentHostHub {
       for (const [requestId, request] of this.mcpRequests) {
         if (request.socket === socket) this.finish(this.mcpRequests, requestId, { servers: [], error: 'The agent host disconnected' })
       }
+      for (const [requestId, request] of this.asideRequests) {
+        if (request.socket === socket) this.finish(this.asideRequests, requestId, { ok: false, error: 'The agent host disconnected' })
+      }
       for (const [paneId, entry] of this.chats) {
         if (entry.socket !== socket) continue
         entry.socket = null
         this.closeRequests(paneId, entry)
         // Hooks take the pane back meanwhile (it may run Claude Code itself now).
-        if (entry.visible) this.dependencies.interactions?.status(paneId, null)
+        if (entry.visible && !parseAsideKey(paneId)) this.dependencies.interactions?.status(paneId, null)
         // A host that handed its conversation to Claude Code isn't coming back as this chat.
         if (entry.handedOff) {
           this.remove(paneId)
@@ -211,7 +221,12 @@ export class AgentHostHub {
         return
       case 'session_snapshot': {
         const { paneId } = message.session
-        const known = this.dependencies.paneExists(paneId)
+        const aside = parseAsideKey(paneId)
+        if (aside) {
+          const parent = this.owned(socket, aside.paneId)
+          if (!parent || parent.state.session.hostPid !== message.session.hostPid) return
+        }
+        const known = this.dependencies.paneExists(parentPaneId(paneId))
         if (known && !(await this.verified(paneId, message.session.hostPid))) {
           socket.close(HOST_REFUSED_CLOSE_CODE, `host is not running in pane ${paneId}`)
           return
@@ -226,15 +241,16 @@ export class AgentHostHub {
         const updateAvailable = await this.updateAvailable(message.session.hostBuild)
         // The socket may have closed while we waited; never register a dead host.
         if (socket.readyState !== socket.OPEN) return
-        const targetId = this.dependencies.targetIdFor(paneId)
+        const targetId = this.dependencies.targetIdFor(parentPaneId(paneId))
         // A chat back from Claude Code offers its draft and queue to the composer again.
-        const carried = message.session.sessionId ? this.dependencies.handoffs?.returned(message.session.sessionId) : undefined
-        if (message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
+        const carried = !aside && message.session.sessionId ? this.dependencies.handoffs?.returned(message.session.sessionId) : undefined
+        if (!aside && message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
         const items = await this.withReplyImages(message.items, message.session.cwd)
         if (socket.readyState !== socket.OPEN) return
         const state: ChatState = {
           paneId,
           ...(targetId ? { targetId } : {}),
+          ...(previous?.state.asides ? { asides: previous.state.asides } : {}),
           session: message.session,
           items: mergeChatItems([], items),
           hostConnected: true,
@@ -255,7 +271,7 @@ export class AgentHostHub {
           hadTurn: state.items.some((item) => item.kind === 'user_message'),
         }
         this.chats.set(paneId, entry)
-        this.dependencies.onSessionInfo?.(message.session)
+        if (!parseAsideKey(message.session.paneId)) this.dependencies.onSessionInfo?.(message.session)
         if (known) {
           this.dependencies.broadcast({ type: 'chat_state', chat: state })
           this.syncInteractions(paneId, entry, state.items, true)
@@ -273,7 +289,7 @@ export class AgentHostHub {
           if (this.dependencies.handoffs?.discard(message.session.sessionId)) this.dependencies.onHandoffsChange?.()
         }
         entry.state = { ...entry.state, session: message.session }
-        this.dependencies.onSessionInfo?.(message.session)
+        if (!parseAsideKey(message.session.paneId)) this.dependencies.onSessionInfo?.(message.session)
         if (entry.visible) {
           this.dependencies.broadcast({ type: 'chat_session', paneId: message.session.paneId, session: message.session, hostConnected: true })
           this.reportStatus(message.session.paneId, entry)
@@ -323,6 +339,20 @@ export class AgentHostHub {
         this.finish(this.transcripts, message.requestId, message.error ? { items, error: message.error } : { items })
         return
       }
+      case 'asides': {
+        const entry = this.owned(socket, message.paneId)
+        if (!entry) return
+        entry.state = { ...entry.state, asides: message.asides }
+        if (entry.visible) this.dependencies.broadcast({ type: 'chat_asides', paneId: message.paneId, asides: message.asides })
+        return
+      }
+      case 'aside_result': {
+        const request = this.asideRequests.get(message.requestId)
+        if (!request || request.socket !== socket || request.paneId !== message.paneId) return
+        const { type: _type, paneId: _paneId, requestId, ...result } = message
+        this.finish(this.asideRequests, requestId, result)
+        return
+      }
       case 'mcp_result': {
         const request = this.mcpRequests.get(message.requestId)
         if (!request || request.socket !== socket || request.paneId !== message.paneId) return
@@ -331,6 +361,7 @@ export class AgentHostHub {
         return
       }
       case 'handoff': {
+        if (parseAsideKey(message.paneId)) return
         const entry = this.owned(socket, message.paneId)
         const handoffs = this.dependencies.handoffs
         const refuse = (error: string) => {
@@ -417,6 +448,27 @@ export class AgentHostHub {
         this.finish(this.transcripts, requestId, { items: [], error: 'No agent host is connected for this pane' })
       }
     })
+  }
+
+  aside(paneId: string, action: ChatAsideAction): Promise<ChatAsideResult> {
+    const entry = this.chats.get(paneId)
+    if (parseAsideKey(paneId) || !entry?.socket) return Promise.resolve({ ok: false, error: 'No main chat host is connected for this pane' })
+    if (!hostTakesAsides(entry.state.session)) return Promise.resolve({ ok: false, error: 'Restart this chat to use asides' })
+    const socket = entry.socket
+    const requestId = randomUUID()
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.finish(this.asideRequests, requestId, { ok: false, error: 'The aside operation timed out' }), 120_000)
+      this.asideRequests.set(requestId, { paneId, socket, timer, resolve })
+      if (!this.sendTo(socket, { type: 'aside', paneId, requestId, action })) {
+        this.finish(this.asideRequests, requestId, { ok: false, error: 'No agent host is connected for this pane' })
+      }
+    })
+  }
+
+  isAsideSession(paneId: string, sessionId: string): boolean {
+    const main = this.chats.get(paneId)
+    return Boolean(main?.state.asides?.some((record) => record.sessionId === sessionId)
+      || [...this.chats.values()].some((entry) => entry.state.session.aside?.parentPaneId === paneId && entry.state.session.sessionId === sessionId))
   }
 
   /** Lists the pane agent's MCP servers, after acting on one when asked. */
@@ -507,6 +559,7 @@ export class AgentHostHub {
    * Returns why it can't, or null.
    */
   switchToClaudeCode(paneId: string, action: ChatSwitchAction, draft: ChatSwitchDraft | undefined, requestId: string): string | null {
+    if (parseAsideKey(paneId)) return 'Asides cannot switch to a terminal agent'
     const entry = this.chats.get(paneId)
     if (!entry?.socket) return 'No agent host is connected for this pane'
     if (!hostTakesSwitch(entry.state.session)) return 'This chat started before switching to Claude Code; restart it to switch'
@@ -579,7 +632,7 @@ export class AgentHostHub {
   async reconcile(): Promise<void> {
     const now = this.now()
     for (const [paneId, entry] of [...this.chats]) {
-      if (!this.dependencies.paneExists(paneId)) {
+      if (!this.dependencies.paneExists(parentPaneId(paneId))) {
         if (!entry.visible && now - entry.receivedAt < PENDING_PANE_MS) continue
         if (entry.socket) this.dependencies.log?.(`[agent-host] closing the host for ${paneId}: the pane is gone`)
         entry.socket?.close()
@@ -609,10 +662,10 @@ export class AgentHostHub {
         entry.visible = true
         this.syncInteractions(paneId, entry, entry.state.items, true)
       } else {
-        const targetId = this.dependencies.targetIdFor(paneId)
+        const targetId = this.dependencies.targetIdFor(parentPaneId(paneId))
         if (!targetId || targetId === entry.state.targetId) continue
       }
-      const targetId = this.dependencies.targetIdFor(paneId)
+      const targetId = this.dependencies.targetIdFor(parentPaneId(paneId))
       entry.state = { ...entry.state, ...(targetId ? { targetId } : {}) }
       this.dependencies.broadcast({ type: 'chat_state', chat: entry.state })
     }
@@ -627,7 +680,7 @@ export class AgentHostHub {
   private async verified(paneId: string, hostPid: number): Promise<boolean> {
     if (!this.dependencies.verifyHost) return true
     try {
-      if (await this.dependencies.verifyHost(paneId, hostPid)) return true
+      if (await this.dependencies.verifyHost(parentPaneId(paneId), hostPid)) return true
     } catch {
       // fall through: an unverifiable host is refused
     }
@@ -646,6 +699,10 @@ export class AgentHostHub {
   }
 
   private remove(paneId: string): void {
+    if (!parseAsideKey(paneId)) {
+      for (const key of this.chats.keys()) if (parseAsideKey(key)?.paneId === paneId) this.remove(key)
+      for (const [id, request] of this.asideRequests) if (request.paneId === paneId) this.finish(this.asideRequests, id, { ok: false, error: 'The main chat was removed' })
+    }
     const entry = this.chats.get(paneId)
     if (!entry) return
     this.chats.delete(paneId)
@@ -653,7 +710,7 @@ export class AgentHostHub {
     this.closeRequests(paneId, entry)
     if (entry.visible) {
       this.dependencies.broadcast({ type: 'chat_removed', paneId })
-      this.dependencies.interactions?.status(paneId, null)
+      if (!parseAsideKey(paneId)) this.dependencies.interactions?.status(paneId, null)
     }
   }
 
@@ -665,7 +722,8 @@ export class AgentHostHub {
    */
   private syncInteractions(paneId: string, entry: ChatEntry, items: readonly ChatItem[], all = false): void {
     const interactions = this.dependencies.interactions
-    if (!interactions || !entry.socket) return
+    // Aside approvals and questions are answered only inside their chat tab in phase 1.
+    if (parseAsideKey(paneId) || !interactions || !entry.socket) return
     if (all) {
       this.reportStatus(paneId, entry, true)
       const open = new Set(items.flatMap((item) => item.kind === 'request' && chatRequestOpen(item) ? [item.requestId] : []))
@@ -689,11 +747,13 @@ export class AgentHostHub {
   }
 
   private closeRequests(paneId: string, entry: ChatEntry): void {
+    if (parseAsideKey(paneId)) return
     for (const requestId of entry.openRequests) this.dependencies.interactions?.close(paneId, requestId)
     entry.openRequests.clear()
   }
 
   private reportStatus(paneId: string, entry: ChatEntry, restored = false): void {
+    if (parseAsideKey(paneId)) return
     this.dependencies.interactions?.status(paneId, chatHostReport(entry.state.session, entry.hadTurn), restored)
   }
 

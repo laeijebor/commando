@@ -17,6 +17,9 @@ export const SANDBOXED_AGENT_PROFILE_ENV = [
   'COMMANDO_CHAT_IMAGES_DIR',
   // Set inside a Commando chat; it would replace every resume command a bridge reports.
   'COMMANDO_CHAT_RESUME',
+  'COMMANDO_CHAT_RESUME_B64',
+  'COMMANDO_ASIDE',
+  'COMMANDO_ASIDES_DIR',
 ] as const
 
 for (const name of SANDBOXED_AGENT_PROFILE_ENV) delete process.env[name]
