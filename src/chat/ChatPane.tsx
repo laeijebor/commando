@@ -414,7 +414,8 @@ function ChatColumn({
   // Stable, so streaming flushes don't re-render every block: the changing inputs are read from a ref.
   const uiSend = useRef({ onSend, queue: false })
   uiSend.current = { onSend, queue: askBusy && hostTakesTurnFlow(chat.session) }
-  const answerUi = useCallback((text: string) => { uiSend.current.onSend(text, undefined, uiSend.current.queue ? { delivery: 'queue' as const } : undefined) }, [])
+  const answerUi = useCallback((text: string) => uiSend.current.onSend(text, undefined, uiSend.current.queue ? { delivery: 'queue' as const } : undefined), [])
+  const refusedAnswers = useMemo(() => sendError?.refused.map((entry) => entry.requestId), [sendError])
   const queuedTexts = chat.session.queue
   const queuedAnswers = useMemo(() => (queuedTexts ?? []).map((message) => message.text.trim()), [queuedTexts])
   // An answer goes to the main agent, never to a subagent picked for a relay.
@@ -535,6 +536,7 @@ function ChatColumn({
           onResourceAction={onResourceAction}
           {...(asksDisabled ? {} : { onUiAnswer: answerUi })}
           queuedAnswers={queuedAnswers}
+          {...(refusedAnswers ? { refusedAnswers } : {})}
           items={timelineItems}
           {...(onOpenTile ? { onOpenTile } : {})}
           {...(onOpenPr ? { onOpenPr } : {})}

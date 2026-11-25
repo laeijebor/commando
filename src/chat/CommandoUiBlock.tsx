@@ -1,4 +1,4 @@
-import { createContext, use, useMemo, useState } from 'react'
+import { createContext, use, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, CircleCheck, Circle } from 'lucide-react'
 import type { ChatItem } from '../../shared/agent-chat'
 import {
@@ -13,8 +13,18 @@ export type AnswerPositions = { replyOrder: ReadonlyMap<string, number>; userMes
 const NO_POSITIONS: AnswerPositions = { replyOrder: new Map(), userMessages: [] }
 
 /** What a block needs to answer: the pane's send path, the transcript to find its answer in, and answers queued but not yet sent. */
-export type CommandoUiActions = { onAnswer?: (text: string) => void; positions: AnswerPositions; queued: readonly string[] }
-export const CommandoUiActionsContext = createContext<CommandoUiActions>({ positions: NO_POSITIONS, queued: [] })
+export type CommandoUiActions = {
+  /** Sends the answer; returns the request id the host's refusal would name. */
+  onAnswer?: (text: string) => string | void
+  positions: AnswerPositions
+  queued: readonly string[]
+  /** Request ids of sends the host refused. */
+  refused: readonly string[]
+}
+export const CommandoUiActionsContext = createContext<CommandoUiActions>({ positions: NO_POSITIONS, queued: [], refused: [] })
+
+/** How long a queued answer may be out of the queue before it shows up as a message; past that it was taken back. */
+const QUEUE_GRACE_MS = 1500
 
 /** The reply a block sits in. Only an assistant reply's blocks are live; `running` means its JSON may be half-written. */
 export const CommandoUiReplyContext = createContext<{ itemId?: string; answerable: boolean; running?: boolean }>({ answerable: false })
@@ -59,18 +69,31 @@ function UiBlock({ block }: { block: Block }) {
   }
 }
 
-/** The answer already given (found in the transcript) or just sent from this block, and whether answering is possible. */
+/** The answer already given (found in the transcript or queue) or just sent from this block, and whether answering is possible. */
 function useAnswer(block: Block) {
-  const { onAnswer, positions, queued } = use(CommandoUiActionsContext)
+  const { onAnswer, positions, queued, refused } = use(CommandoUiActionsContext)
   const { itemId, answerable } = use(CommandoUiReplyContext)
-  const [sent, setSent] = useState<string>()
+  const [sent, setSent] = useState<{ label: string; text: string; id?: string }>()
+  const wasQueued = useRef(false)
   const settled = useMemo(() => {
     const order = itemId === undefined ? undefined : positions.replyOrder.get(itemId)
     if (order === undefined) return settledAnswer(block, queued)
     return settledAnswer(block, [...positions.userMessages.filter((message) => message.order > order).map((message) => message.text), ...queued])
   }, [block, itemId, positions, queued])
-  const answer = settled ?? sent
-  return { answer, disabled: answer !== undefined || !onAnswer || !answerable, send: (text: string, label: string) => { setSent(label); onAnswer?.(text) } }
+  // The optimistic "Sent" holds while the send is in flight, queued or settled; a refusal or a queued answer taken back clears it.
+  useEffect(() => {
+    if (!sent) { wasQueued.current = false; return }
+    if (sent.id !== undefined && refused.includes(sent.id)) { setSent(undefined); return }
+    if (queued.includes(sent.text)) { wasQueued.current = true; return }
+    if (!wasQueued.current || settled !== undefined) return
+    const timer = setTimeout(() => setSent(undefined), QUEUE_GRACE_MS)
+    return () => clearTimeout(timer)
+  }, [sent, queued, refused, settled])
+  const answer = settled ?? sent?.label
+  return { answer, disabled: answer !== undefined || !onAnswer || !answerable, send: (text: string, label: string) => {
+    const id = onAnswer?.(text)
+    setSent({ label, text: text.trim(), ...(typeof id === 'string' ? { id } : {}) })
+  } }
 }
 
 function Settled({ answer }: { answer: string }) {

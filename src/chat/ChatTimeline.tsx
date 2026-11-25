@@ -448,7 +448,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, queuedAnswers, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, queuedAnswers, refusedAnswers, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -468,7 +468,9 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onOpenTile?: (webPaneId: string) => boolean
   onResourceAction?: ResourceActionHandler
   /** Sends a commando-ui answer as a chat message; absent while the pane can't send, which disables the blocks. */
-  onUiAnswer?: (text: string) => void
+  onUiAnswer?: (text: string) => string | void
+  /** Request ids of answers the host refused. */
+  refusedAnswers?: readonly string[]
   /** Texts queued to send when the turn ends; a queued answer already counts as given. */
   queuedAnswers?: readonly string[]
   /** Opens an auto-fix card's PR in the side panel. */
@@ -488,7 +490,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const resourceActions = useMemo(() => ({ cwd, onResourceAction }), [cwd, onResourceAction])
   const positionsRef = useRef<ReturnType<typeof stableAnswerPositions>>({ replyOrder: new Map(), userMessages: [], keys: [] })
   const positions = (positionsRef.current = stableAnswerPositions(positionsRef.current, items))
-  const uiActions = useMemo(() => ({ ...(onUiAnswer ? { onAnswer: onUiAnswer } : {}), positions, queued: queuedAnswers ?? NO_QUEUED }), [onUiAnswer, positions, queuedAnswers])
+  const uiActions = useMemo(() => ({ ...(onUiAnswer ? { onAnswer: onUiAnswer } : {}), positions, queued: queuedAnswers ?? NO_QUEUED, refused: refusedAnswers ?? NO_QUEUED }), [onUiAnswer, positions, queuedAnswers, refusedAnswers])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const lastTop = useRef(0)

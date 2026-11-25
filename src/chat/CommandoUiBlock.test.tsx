@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatItem } from '../../shared/agent-chat'
@@ -13,8 +13,8 @@ const user = (id: string, text: string, createdAt: number): ChatItem => ({ id, t
 const choice = { component: 'choice', prompt: 'Archive storage', options: ['SQLite', 'JSONL', 'Both'] }
 const approve = { component: 'approve', prompt: 'Ship the migration' }
 
-function timeline(items: ChatItem[], onUiAnswer?: (text: string) => void, queuedAnswers?: string[]) {
-  return <ChatTimeline items={items} cwd="/work" working={false} {...(onUiAnswer ? { onUiAnswer } : {})} {...(queuedAnswers ? { queuedAnswers } : {})} />
+function timeline(items: ChatItem[], onUiAnswer?: (text: string) => string | void, queuedAnswers?: string[], refusedAnswers?: string[]) {
+  return <ChatTimeline items={items} cwd="/work" working={false} {...(onUiAnswer ? { onUiAnswer } : {})} {...(queuedAnswers ? { queuedAnswers } : {})} {...(refusedAnswers ? { refusedAnswers } : {})} />
 }
 
 describe('commando-ui rendering', () => {
@@ -145,6 +145,42 @@ describe('commando-ui answers', () => {
     render(timeline([user('u', 'Archive storage: Both', 5), reply(fence(choice), 10)], vi.fn()))
     expect(screen.queryByTestId('commando-ui-settled')).toBeNull()
     expect(screen.getByRole('button', { name: 'SQLite' })).toBeEnabled()
+  })
+})
+
+describe('optimistic Sent state', () => {
+  const items = [reply(fence(choice))]
+  it('clears when the host refuses the send, so the answer can be given again', () => {
+    const onUiAnswer = vi.fn(() => 'req-1')
+    const view = render(timeline(items, onUiAnswer))
+    fireEvent.click(screen.getByRole('button', { name: 'JSONL' }))
+    expect(screen.getByTestId('commando-ui-settled')).toBeInTheDocument()
+    view.rerender(timeline(items, onUiAnswer, undefined, ['other-request']))
+    expect(screen.getByTestId('commando-ui-settled')).toBeInTheDocument()
+    view.rerender(timeline(items, onUiAnswer, undefined, ['req-1']))
+    expect(screen.queryByTestId('commando-ui-settled')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Both' })).toBeEnabled()
+  })
+
+  it('holds while queued and clears when the queued answer is removed without being sent', async () => {
+    const onUiAnswer = vi.fn(() => 'req-2')
+    const view = render(timeline(items, onUiAnswer))
+    fireEvent.click(screen.getByRole('button', { name: 'JSONL' }))
+    view.rerender(timeline(items, onUiAnswer, ['Archive storage: JSONL']))
+    expect(screen.getByTestId('commando-ui-settled')).toHaveTextContent('Sent · JSONL')
+    view.rerender(timeline(items, onUiAnswer, []))
+    await waitFor(() => expect(screen.queryByTestId('commando-ui-settled')).toBeNull(), { timeout: 4000 })
+    expect(screen.getByRole('button', { name: 'Both' })).toBeEnabled()
+  })
+
+  it('stays settled when the queued answer leaves the queue as a sent message', async () => {
+    const onUiAnswer = vi.fn(() => 'req-3')
+    const view = render(timeline(items, onUiAnswer))
+    fireEvent.click(screen.getByRole('button', { name: 'JSONL' }))
+    view.rerender(timeline(items, onUiAnswer, ['Archive storage: JSONL']))
+    view.rerender(timeline([...items, user('u', 'Archive storage: JSONL', 5)], onUiAnswer, []))
+    await new Promise((resolve) => setTimeout(resolve, 1800))
+    expect(screen.getByTestId('commando-ui-settled')).toHaveTextContent('Sent · JSONL')
   })
 })
 
