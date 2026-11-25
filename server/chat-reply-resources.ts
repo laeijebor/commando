@@ -1,10 +1,12 @@
 import type { Dir, Stats } from 'node:fs'
-import { opendir, stat } from 'node:fs/promises'
+import { opendir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import remarkGfm from 'remark-gfm'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
-import type { ChatItem, ChatReplyResource } from '../shared/agent-chat.js'
+import type { ChatItem, ChatReplyDeck, ChatReplyResource } from '../shared/agent-chat.js'
+import { parseDeck } from '../shared/deck.js'
 import { localImagePath } from './chat-reply-images.js'
 
 const parser = unified().use(remarkParse).use(remarkGfm)
@@ -46,13 +48,16 @@ export function markdownResourceReferences(text: string): Reference[] {
 type Metadata = Pick<Extract<ChatReplyResource, { kind: string }>, 'kind' | 'size' | 'mtimeMs' | 'entries'>
 
 type Resolved = { path: string; metadata: Metadata } | { path: string; missing: true } | null
-type ResourceFileSystem = { stat: (path: string) => Promise<Stats>; opendir: (path: string) => Promise<Dir> }
+type ResourceFileSystem = { stat: (path: string) => Promise<Stats>; opendir: (path: string) => Promise<Dir>; readFile?: (path: string, encoding: 'utf8') => Promise<string> }
+/** Larger HTML isn't read to look for a deck. */
+const MAX_DECK_BYTES = 2 * 1024 * 1024
 const absent = (error: unknown) => ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
 
 export class ChatReplyResources {
   private readonly remembered = new Map<string, { mtimeMs: number; size: number; metadata: Metadata }>()
   private readonly parsed = new Map<string, { text: string; references: Reference[] }>()
   private readonly resolving = new Map<string, Promise<Resolved>>()
+  private readonly decks = new Map<string, { mtimeMs: number; size: number; deck: Omit<ChatReplyDeck, 'folder' | 'manifest'> | null }>()
   private readonly loggedPaths = new Set<string>()
   private loggedFailure = false
 
@@ -107,7 +112,8 @@ export class ChatReplyResources {
           if (explicit) resources.push({ ref, ...resolved })
         } else {
           const line = Number(fragmentLine ?? suffix?.[1])
-          resources.push({ ref, path: resolved.path, ...resolved.metadata, ...(line > 0 && Number.isSafeInteger(line) ? { line } : {}) })
+          const deck = await this.deck(resolved.path, resolved.metadata.kind)
+          resources.push({ ref, path: resolved.path, ...resolved.metadata, ...(line > 0 && Number.isSafeInteger(line) ? { line } : {}), ...(deck ? { deck } : {}) })
         }
         if (resources.length >= 50) break
       }
@@ -135,6 +141,32 @@ export class ChatReplyResources {
     const task = this.readPath(path)
     this.resolving.set(path, task)
     try { return await task } finally { this.resolving.delete(path) }
+  }
+
+  /** A slides deck: a folder with deck.html, or deck.html / another HTML page in such a folder. Parsed once per mtime. */
+  private async deck(path: string, kind: 'file' | 'folder'): Promise<ChatReplyDeck | undefined> {
+    const folder = kind === 'folder' ? path : dirname(path)
+    const manifest = kind === 'folder' ? 'deck.html' : basename(path)
+    if (kind === 'file' && !/\.html?$/i.test(manifest)) return undefined
+    const html = join(folder, manifest)
+    try {
+      if (manifest !== 'deck.html' && !(await this.files.stat(join(folder, 'deck.html'))).isFile()) return undefined
+      const stats = await this.files.stat(html)
+      if (!stats.isFile() || stats.size > MAX_DECK_BYTES) return undefined
+      let known = this.decks.get(html)
+      if (known?.mtimeMs !== stats.mtimeMs || known.size !== stats.size) {
+        const parsed = parseDeck(await (this.files.readFile ?? readFile)(html, 'utf8'), manifest).deck
+        const slides = parsed.slides.length
+        known = { mtimeMs: stats.mtimeMs, size: stats.size, deck: slides ? { title: parsed.title.slice(0, 200), slides, ...(parsed.slides[0].title ? { first: parsed.slides[0].title.slice(0, 200) } : {}) } : null }
+        this.decks.delete(html)
+        this.decks.set(html, known)
+        if (this.decks.size > 200) this.decks.delete(this.decks.keys().next().value!)
+      }
+      return known.deck ? { ...known.deck, folder, manifest } : undefined
+    } catch (error) {
+      if (!absent(error)) this.report(html, error)
+      return undefined
+    }
   }
 
   private async readPath(written: string): Promise<Resolved> {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, opendir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, opendir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -171,5 +171,35 @@ describe('reply resources', () => {
     await resolver.attach(Array.from({ length: 60 }, (_, i) => ({ ...reply('`text`'), id: String(i) })), dir)
     await tick
     expect(parsedAtYield).toBe(25)
+  })
+  it('recognises a slides deck folder, its deck.html and a one-pager beside it, parsed once per mtime', async () => {
+    const deck = join(dir, 'talk')
+    await mkdir(deck)
+    const page = (title: string, slides: string[]) => `<html><head><meta name="deck:title" content="${title}"></head><body><main class="deck">${slides.map((slide, i) => `<section class="slide" id="s${i}"><h1>${slide}</h1></section>`).join('')}</main></body></html>`
+    await writeFile(join(deck, 'deck.html'), page('Launch plan', ['Why now', 'Numbers', 'Ask']))
+    await writeFile(join(deck, 'onepager.html'), page('One pager', ['Summary']))
+    await writeFile(join(deck, 'notes.html'), '<p>Not a deck</p>')
+    await writeFile(join(dir, 'loose.html'), page('Loose', ['A']))
+    const read = vi.fn(async (path: string, encoding: 'utf8') => (await import('node:fs/promises')).readFile(path, encoding))
+    const resolver = new ChatReplyResources(dir, undefined, markdownResourceReferences, { stat, opendir, readFile: read })
+    const attach = async (text: string) => {
+      const [item] = await resolver.attach([reply(text)], dir)
+      return item.kind === 'assistant_message' ? item.resources : undefined
+    }
+    const expected = { folder: deck, manifest: 'deck.html', title: 'Launch plan', slides: 3, first: 'Why now' }
+    expect(await attach('`./talk` `talk/deck.html` `talk/onepager.html` `talk/notes.html` `loose.html` `README.md`')).toEqual([
+      expect.objectContaining({ ref: './talk', kind: 'folder', deck: expected }),
+      expect.objectContaining({ ref: 'talk/deck.html', kind: 'file', deck: expected }),
+      expect.objectContaining({ ref: 'talk/onepager.html', deck: { folder: deck, manifest: 'onepager.html', title: 'One pager', slides: 1, first: 'Summary' } }),
+      expect.not.objectContaining({ deck: expect.anything() }),
+      expect.not.objectContaining({ deck: expect.anything() }),
+      expect.not.objectContaining({ deck: expect.anything() }),
+    ])
+    expect(read).toHaveBeenCalledTimes(3)
+    await attach('`./talk`')
+    expect(read).toHaveBeenCalledTimes(3)
+    await writeFile(join(deck, 'deck.html'), page('Launch plan v2', ['Why now', 'Numbers']))
+    await utimes(join(deck, 'deck.html'), new Date(), new Date(Date.now() + 5000))
+    expect((await attach('`./talk`'))?.[0]).toMatchObject({ deck: { title: 'Launch plan v2', slides: 2 } })
   })
 })
