@@ -7,6 +7,7 @@ import {
   validateDiffWidth,
 } from './git-diff.js'
 import { validateTmuxPaneId } from './tmux-pane-actions.js'
+import { CodeNavService } from './code-nav.js'
 import type { GitRepoInfo } from '../shared/tmux-create.js'
 
 const API_ROOT = '/api/git'
@@ -21,6 +22,8 @@ const ERROR_STATUS: Record<GitDiffError['kind'], number> = {
 
 type GitApiDependencies = {
   inspector?: GitDiffInspector
+  /** Definition/references/callers; defaults to a text-only service over the inspector. */
+  codeNav?: CodeNavService
   panePath: (paneId: string) => string | undefined
   panePullRequestEvidence?: (paneId: string) => Promise<string | undefined>
   /** Describes the repository containing an absolute directory (worktree-aware). */
@@ -49,9 +52,11 @@ function writeJson(response: ServerResponse, status: number, value: unknown): vo
 
 export class GitDiffApi {
   private readonly inspector: GitDiffInspector
+  private readonly codeNav: CodeNavService
 
   constructor(private readonly dependencies: GitApiDependencies) {
     this.inspector = dependencies.inspector ?? new GitDiffInspector()
+    this.codeNav = dependencies.codeNav ?? new CodeNavService(this.inspector)
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
@@ -60,7 +65,7 @@ export class GitDiffApi {
     try {
       const routes = [
         `${API_ROOT}/summary`, `${API_ROOT}/file-diff`, `${API_ROOT}/file-contents`, `${API_ROOT}/blame`,
-        `${API_ROOT}/search`, `${API_ROOT}/branches`, `${API_ROOT}/repo`,
+        `${API_ROOT}/search`, `${API_ROOT}/branches`, `${API_ROOT}/repo`, `${API_ROOT}/nav`, `${API_ROOT}/file-at`,
       ]
       if (!routes.includes(url.pathname)) {
         throw new HttpError(404, 'Not found')
@@ -116,6 +121,24 @@ export class GitDiffApi {
 
       const file = url.searchParams.get('file')
       if (!file) throw new HttpError(400, 'file query parameter is required')
+
+      if (url.pathname === `${API_ROOT}/nav`) {
+        const parameter = (name: string) => url.searchParams.get(name)
+        writeJson(response, 200, await this.codeNav.navigate(panePath, {
+          kind: parameter('kind'),
+          file,
+          rev: parameter('rev'),
+          line: parameter('line'),
+          character: parameter('character'),
+          symbol: parameter('symbol'),
+        }))
+        return true
+      }
+
+      if (url.pathname === `${API_ROOT}/file-at`) {
+        writeJson(response, 200, await this.codeNav.fileAt(panePath, file, url.searchParams.get('rev')))
+        return true
+      }
 
       if (url.pathname === `${API_ROOT}/file-contents`) {
         writeJson(response, 200, await this.inspector.fileContents(panePath, file, target, head, baseFallbackRepo, baseFallbackBranch))
