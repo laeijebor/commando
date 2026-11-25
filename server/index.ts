@@ -156,6 +156,9 @@ import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
 import { BoardStore, defaultBoardsPath, defaultBoardSnapshotsPath } from './boards.js'
+import { BoardThumbCache, BoardThumbWorker, BoardPreviewQueue, defaultBoardThumbsPath } from './board-thumbs.js'
+import { BoardLinkPreviews, defaultBoardLinkPreviewsPath } from './board-link-previews.js'
+import { BoardLinkHarvest } from './board-link-harvest.js'
 import { BoardsApi } from './boards-api.js'
 import { PaneTargetApi } from './pane-target-api.js'
 import { SessionBriefStore } from './session-briefs.js'
@@ -684,8 +687,16 @@ async function main(): Promise<void> {
     artifacts: undefined as RedlineArtifactRegistry | undefined,
     onChange: undefined as ((targetId: string, rev: number) => void) | undefined,
     onError: (error: unknown) => console.warn('[commando] Board capture/persistence failed', error),
+    onRead: undefined as ((targetId: string) => void) | undefined,
   }
   const boards = new BoardStore(boardOptions)
+  const boardThumbCache = new BoardThumbCache({ root: defaultBoardThumbsPath(port), origin: `http://127.0.0.1:${port}`, capture: (url, w, h) => chromiumEngine.screenshot(url, w, h) })
+  const boardPreviewQueue = new BoardPreviewQueue(boardOptions.onError)
+  const boardLinkPreviews = new BoardLinkPreviews({ store: boards, thumbs: boardThumbCache, statePath: defaultBoardLinkPreviewsPath(port) })
+  const boardThumbWorker = new BoardThumbWorker(boards, boardThumbCache, boardPreviewQueue, boardLinkPreviews)
+  const boardLinkHarvest = new BoardLinkHarvest(boards, port)
+  boardOptions.onRead = (targetId) => boardThumbWorker.enqueue(targetId)
+
   const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port), retainedIds: boards.artifactIds() })
   boardOptions.artifacts = redlineArtifacts
   /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
@@ -891,6 +902,7 @@ async function main(): Promise<void> {
   boardOptions.onChange = (targetId, rev) => {
     try { retainTabArtifacts() } catch (error) { boardOptions.onError(error) }
     broadcast({ type: 'board:changed', targetId, rev })
+    boardThumbWorker.enqueue(targetId)
   }
 
   const simLeaseStatePath = defaultSimLeaseStatePath(port)
@@ -2119,7 +2131,7 @@ async function main(): Promise<void> {
     cursorForeground: cursorForegroundIsCurrent,
   })
   const boardsApi = new BoardsApi({
-    store: boards, agentToken: agentHookToken, ownerAuthorized: requestIsOwnerAuthorized,
+    store: boards, thumbs: boardThumbCache, agentToken: agentHookToken, ownerAuthorized: requestIsOwnerAuthorized,
     paneForId, paneForTarget: (targetId) => snapshot.panes.find((p) => p.targetId === targetId && !p.dead),
     agentSession: (paneId) => sessionBriefs.get(paneId)?.agentSession,
     artifacts: redlineArtifacts, onRevive: publishWebPanes,
@@ -2375,7 +2387,15 @@ async function main(): Promise<void> {
     pane: paneForId, owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id),
     finalMessage: (id) => agentStatuses.finalMessage(id), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
     chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
-    briefs: turnBriefs, stalls: commanderStalls, relays: commanderRelays, error: commanderError,
+    briefs: {
+      observe: (turn) => {
+        turnBriefs.observe(turn)
+        const prompt = [...agentHosts.items(turn.status.paneId)].reverse().find((item) => item.kind === 'user_message')
+        try { boardLinkHarvest.observe(turn, prompt?.kind === 'user_message' ? prompt.text : undefined, sessionBriefs.get(turn.status.paneId)?.agentSession) }
+        catch (error) { boardOptions.onError(error) }
+      },
+      remove: (paneId) => { turnBriefs.remove(paneId); boardLinkHarvest.remove(paneId) },
+    }, stalls: commanderStalls, relays: commanderRelays, error: commanderError,
   })
   reconcileCommander = () => {
     commander.reconcile()
@@ -2569,7 +2589,10 @@ async function main(): Promise<void> {
   })
   const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
   canvasSnapshots.prune()
-  const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
+  const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => {
+    broadcast({ type: 'canvas_changed', ...change })
+    boardThumbWorker.changed(change.artifactId)
+  })
   canvasWatch.sync(webPanes.list())
   canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.retainedIds()]))
   const redlineApi = new RedlineApi({
@@ -3558,6 +3581,7 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    boardThumbWorker.stop()
     turnBriefs.stop()
     commanderRelays.stop()
     commanderStalls.stop()

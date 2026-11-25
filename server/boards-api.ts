@@ -2,6 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { BOARD_GROUP_TONES, BoardError, BoardStore, boardInput } from './boards.js'
 import { BOARD_ID, BOARD_ITEM_KEY, BOARD_ITEM_KINDS, type BoardGroup, type BoardItem, type BoardPlacement } from '../shared/board.js'
+import { BOARD_THUMB_HASH, type BoardThumbCache } from './board-thumbs.js'
 import { isCommandoTargetId } from '../shared/pane-target.js'
 import type { AgentSessionRef } from '../shared/protocol.js'
 import type { RedlineArtifactRegistry } from './redline-artifacts.js'
@@ -13,6 +14,7 @@ const PANE_ID = /^%\d+$/
 type Anchor = { id: string; targetId: string; sessionId: string; windowId: string }
 type Dependencies = {
   store: BoardStore
+  thumbs?: Pick<BoardThumbCache, 'read'>
   agentToken: string
   ownerAuthorized: (request: IncomingMessage, url: URL) => Promise<boolean>
   paneForId: (paneId: string) => Anchor | undefined
@@ -81,6 +83,14 @@ export class BoardsApi {
       if (!agent && !owner) { response.setHeader('WWW-Authenticate', 'Bearer realm="commando"'); throw new BoardError(401, 'Unauthorized') }
       let parts: string[]
       try { parts = url.pathname.slice('/api/boards/'.length).split('/').map(decodeURIComponent) } catch { throw new BoardError(400, 'Invalid path encoding') }
+      if (parts[0] === 'thumbs') {
+        if (request.method !== 'GET') throw new BoardError(405, 'Method not allowed')
+        if (parts.length !== 3 || !BOARD_THUMB_HASH.test(parts[1]) || !['320', '960'].includes(parts[2])) throw new BoardError(400, 'Invalid thumbnail hash or width')
+        const bytes = await this.deps.thumbs?.read(parts[1], Number(parts[2]))
+        if (!bytes) throw new BoardError(404, 'Thumbnail not found')
+        response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': bytes.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' })
+        response.end(bytes); return true
+      }
       let targetId: string, pane: Anchor | undefined
       if (parts[0] === 'by-pane') {
         const paneId = parts[1]

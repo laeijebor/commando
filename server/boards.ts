@@ -67,6 +67,8 @@ function validItem(value: unknown): value is BoardItem {
   if (ref.manifest !== undefined && !canvasRelativePath(ref.manifest)) return false
   if (ref.file !== undefined && !canvasRelativePath(ref.file)) return false
   if (ref.pr !== undefined && !isPanePrRef(ref.pr)) return false
+  if (value.thumb !== undefined && (!record(value.thumb) || typeof value.thumb.hash !== 'string' || !/^[0-9a-f]{64}$/.test(value.thumb.hash) || ![value.thumb.w, value.thumb.h].every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= 16384))) return false
+  if (value.preview !== undefined && (!record(value.preview) || Object.entries(value.preview).some(([k, v]) => !['title', 'description', 'siteName', 'image', 'favicon'].includes(k) || !safeText(v, 2000) || (['image', 'favicon'].includes(k) && !/^[0-9a-f]{64}$/.test(v as string))))) return false
   if (value.caption !== undefined && !safeText(value.caption, 16000)) return false
   if (value.pinned !== undefined && typeof value.pinned !== 'boolean') return false
   if (value.tone !== undefined && !['decision', 'gotcha', 'note'].includes(value.tone as string)) return false
@@ -105,6 +107,7 @@ type Options = {
   now?: () => number
   onChange?: (targetId: string, rev: number) => void
   onError?: (error: unknown) => void
+  onRead?: (targetId: string) => void
 }
 
 /** Per-target durable boards. Derived state is never written to disk. */
@@ -144,7 +147,19 @@ export class BoardStore {
   get(targetId: string): Board { this.prune(targetId); return clone(this.board(targetId)) }
   view(targetId: string): BoardView {
     const b = this.get(targetId)
+    this.options.onRead?.(targetId)
     return { ...b, items: b.items.map((i) => ({ ...i, state: this.state(i, targetId) })) }
+  }
+  targets(): string[] { return [...this.boards.keys()] }
+  /** Derived previews do not change source, user edits, placements, or auto-retention timestamps. */
+  setPreview(targetId: string, key: string, patch: Pick<Partial<BoardItem>, 'thumb' | 'preview'>): void {
+    const b = this.get(targetId), item = b.items.find((i) => i.key === key)
+    if (!item) return
+    const next = { ...item, ...patch }
+    if (JSON.stringify(next) === JSON.stringify(item)) return
+    if (!validItem(next)) throw new BoardError(400, 'Invalid board preview')
+    b.items[b.items.indexOf(item)] = next
+    this.save(b)
   }
   item(targetId: string, key: string): BoardItem {
     const item = this.get(targetId).items.find((i) => i.key === key)

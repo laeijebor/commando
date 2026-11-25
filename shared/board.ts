@@ -14,6 +14,7 @@ export type BoardItem = {
   tone?: 'decision' | 'gotcha' | 'note'
   pinned?: boolean
   thumb?: { hash: string; w: number; h: number }
+  /** image/favicon are local SHA-256 thumbnail hashes, served at /api/boards/thumbs/:hash/:width (320 or 960). */
   preview?: { title?: string; description?: string; siteName?: string; image?: string; favicon?: string }
   addedAt: number
   updatedAt: number
