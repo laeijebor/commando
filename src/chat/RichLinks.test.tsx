@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatReplyResource } from '../../shared/agent-chat'
@@ -156,5 +156,58 @@ describe('slides decks in replies', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy path' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('/work/talk'))
     expect(onAction).not.toHaveBeenCalled()
+  })
+})
+
+describe('when rich links load', () => {
+  const pr = (number: number) => `https://github.com/acme/load/pull/${number}`
+
+  it('loads at most four lookups at a time', async () => {
+    const pending: Array<() => void> = []
+    const prSummary = vi.fn((_repo: string, number: number) => new Promise<{ title: string; state: 'open' }>((resolve) => pending.push(() => resolve({ title: `PR ${number}`, state: 'open' }))))
+    renderReply(Array.from({ length: 10 }, (_, index) => `See ${pr(index + 1)}.`).join('\n\n'), { prSummary })
+    await waitFor(() => expect(prSummary).toHaveBeenCalledTimes(4))
+    await act(async () => { pending.shift()!() })
+    await waitFor(() => expect(prSummary).toHaveBeenCalledTimes(5))
+    await act(async () => { while (pending.length) { pending.shift()!(); await Promise.resolve() } })
+    await waitFor(() => expect(prSummary).toHaveBeenCalledTimes(10))
+    await act(async () => { while (pending.length) pending.shift()!() })
+    expect(await screen.findByRole('link', { name: /PR 10/ })).toBeInTheDocument()
+  })
+
+  it('waits until a chip comes near view, watching inside the chat timeline', async () => {
+    const observed: Element[] = []
+    let notify: ((entries: Array<{ target: Element; isIntersecting: boolean }>) => void) | undefined
+    let options: IntersectionObserverInit | undefined
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: typeof notify, init: IntersectionObserverInit) { notify = callback; options = init }
+      observe(element: Element) { observed.push(element) }
+      unobserve() {}
+      disconnect() {}
+    })
+    const prSummary = vi.fn().mockResolvedValue({ title: 'Far down', state: 'open' })
+    render(<RichLinksContext value={{ prSummary }}><div data-testid="chat-timeline"><Markdown text={`See ${pr(40)}.`} /></div></RichLinksContext>)
+    await waitFor(() => expect(observed).toHaveLength(1))
+    expect(options?.root).toBe(screen.getByTestId('chat-timeline'))
+    expect(options?.rootMargin).toBe('400px')
+    expect(prSummary).not.toHaveBeenCalled()
+    act(() => notify!([{ target: observed[0], isIntersecting: true }]))
+    await waitFor(() => expect(prSummary).toHaveBeenCalledWith('acme/load', 40))
+    expect(await screen.findByRole('link', { name: /Far down/ })).toBeInTheDocument()
+  })
+
+  it('does not look up a link while its reply is still being written', async () => {
+    const prSummary = vi.fn(async (_repo: string, number: number) => ({ title: `PR ${number}`, state: 'open' as const }))
+    const view = (text: string, running: boolean) => <RichLinksContext value={{ prSummary }}><Markdown text={text} running={running} /></RichLinksContext>
+    const { rerender } = render(view(`See ${pr(1)}`, true))
+    rerender(view(`See ${pr(12)}`, true))
+    rerender(view(`See ${pr(123)} and more`, true))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+    expect(prSummary).not.toHaveBeenCalled()
+    expect(screen.getByRole('link', { name: 'acme/load#123' })).toBeInTheDocument()
+    rerender(view(`See ${pr(123)} and more`, false))
+    expect(await screen.findByRole('link', { name: /PR 123/ })).toBeInTheDocument()
+    expect(prSummary).toHaveBeenCalledTimes(1)
+    expect(prSummary).toHaveBeenCalledWith('acme/load', 123)
   })
 })

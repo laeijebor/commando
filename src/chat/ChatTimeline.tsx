@@ -75,8 +75,9 @@ function MarkdownLink({ href, children, node, ...props }: ComponentProps<'a'> & 
   const { resources, onAction } = use(ReplyResourcesContext)
   const resource = resourceForHref(resources, href)
   if (resource) return <ResourceChip resource={resource} onAction={onAction}><InlineResourceContext value={false}>{children}</InlineResourceContext></ResourceChip>
+  const { running } = use(ReplyImagesContext)
   const rich = parseRichLink(href)
-  if (rich) return <RichLinkChip link={rich} label={node ? hastText(node) : undefined} />
+  if (rich) return <RichLinkChip link={rich} label={node ? hastText(node) : undefined} running={running} />
   return <a {...props} href={href} target="_blank" rel="noreferrer"><InlineResourceContext value={false}>{children}</InlineResourceContext></a>
 }
 function MarkdownCode({ children, node, ...props }: ComponentProps<'code'> & ExtraProps) {
@@ -102,6 +103,7 @@ function resourceDescription(children: ReactNode): ReactNode {
 }
 function MarkdownResourceList({ ordered, node, children, ...props }: ExtraProps & { ordered?: boolean; children?: ReactNode; className?: string; start?: number }) {
   const { resources, cwd, onAction, text: replyText } = use(ReplyResourcesContext)
+  const { running } = use(ReplyImagesContext)
   const listItems = node?.children.filter((child) => child.type === 'element' && child.tagName === 'li') ?? []
   const firsts = listItems.map((item) => {
     if (item.type !== 'element') return undefined
@@ -127,7 +129,7 @@ function MarkdownResourceList({ ordered, node, children, ...props }: ExtraProps 
   }
   const links = firsts.map((first) => first?.tagName === 'a' ? parseRichLink(String(first.properties.href ?? '')) : null)
   if (links.length >= 2 && links.every((link) => link !== null) && rendered.length === links.length) {
-    return <RichLinkCardList rows={links.map((link, index) => ({ link: link!, label: hastText(firsts[index]!), description: description(index) }))} />
+    return <RichLinkCardList running={running} rows={links.map((link, index) => ({ link: link!, label: hastText(firsts[index]!), description: description(index) }))} />
   }
   return ordered ? <ol {...props}>{children}</ol> : <ul {...props}>{children}</ul>
 }

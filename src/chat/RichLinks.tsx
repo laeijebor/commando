@@ -40,17 +40,40 @@ function current<T>(entry: Loaded | undefined): T | null | undefined {
   return entry.pending ? undefined : null
 }
 
-/** The loader's answer for `key`, cached briefly across chips and remounts. */
-export function useLoaded<T>(loader: object | undefined, key: string, load: () => Promise<T | null>): T | null | undefined {
+/** At most this many lookups per loader run at once, so a long chat doesn't start dozens of `gh` reads together. */
+const MAX_CONCURRENT_LOADS = 4
+const queues = new WeakMap<object, { active: number; waiting: (() => void)[] }>()
+export function queued<T>(loader: object, run: () => Promise<T>): Promise<T> {
+  let queue = queues.get(loader)
+  if (!queue) { queue = { active: 0, waiting: [] }; queues.set(loader, queue) }
+  const slots = queue
+  return new Promise<T>((resolve, reject) => {
+    const start = () => {
+      slots.active++
+      run().then(resolve, reject).finally(() => {
+        slots.active--
+        slots.waiting.shift()?.()
+      })
+    }
+    if (slots.active < MAX_CONCURRENT_LOADS) start()
+    else slots.waiting.push(start)
+  })
+}
+
+/**
+ * The loader's answer for `key`, cached briefly across chips and remounts. Nothing loads until `enabled`:
+ * chips wait until they are near view and their reply has finished, so a half-written address isn't looked up.
+ */
+export function useLoaded<T>(loader: object | undefined, key: string, load: () => Promise<T | null>, enabled = true): T | null | undefined {
   const [value, setValue] = useState(() => loader ? current<T>(entriesFor(loader).get(key)) : null)
   useEffect(() => {
     if (!loader) { setValue(null); return }
     let active = true
     const entries = entriesFor(loader)
     let entry = entries.get(key)
-    if (!entry || (!entry.pending && Date.now() - entry.at >= (entry.failed ? FAILED_MS : LOADED_MS))) {
+    if (enabled && (!entry || (!entry.pending && Date.now() - entry.at >= (entry.failed ? FAILED_MS : LOADED_MS)))) {
       const next: Loaded = { at: Date.now(), value: entry?.value }
-      next.pending = load().then((loaded) => { next.value = loaded }, () => { next.failed = true }).finally(() => {
+      next.pending = queued(loader, load).then((loaded) => { next.value = loaded }, () => { next.failed = true }).finally(() => {
         next.at = Date.now()
         next.pending = undefined
       })
@@ -61,21 +84,62 @@ export function useLoaded<T>(loader: object | undefined, key: string, load: () =
     }
     const settled = entry
     setValue(current<T>(settled))
-    if (settled.pending) void settled.pending.then(() => { if (active) setValue(current<T>(settled)) })
+    if (settled?.pending) void settled.pending.then(() => { if (active) setValue(current<T>(settled)) })
     return () => { active = false }
     // `load` reads the same key; the loader's identity is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loader, key])
+  }, [loader, key, enabled])
   return value
 }
 
-export function usePrSummary(link: GithubPrLink): PrChipSummary | null | undefined {
-  const { prSummary } = use(RichLinksContext)
-  return useLoaded(prSummary, `${link.repo.toLowerCase()}#${link.number}`, () => prSummary!(link.repo, link.number))
+/** One observer per scroll root; chips are watched until they first come within 400px of view. */
+const observers = new Map<Element | null, { observer: IntersectionObserver; callbacks: Map<Element, () => void> }>()
+function watchNearView(element: Element, onNear: () => void): () => void {
+  if (typeof IntersectionObserver === 'undefined') { onNear(); return () => {} }
+  // The timeline scrolls inside its own element, which clips what the viewport would see.
+  const root = element.closest('[data-testid="chat-timeline"]')
+  let watcher = observers.get(root)
+  if (!watcher) {
+    const callbacks = new Map<Element, () => void>()
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+        const callback = callbacks.get(entry.target)
+        callbacks.delete(entry.target)
+        observer.unobserve(entry.target)
+        callback?.()
+      }
+    }, { root, rootMargin: '400px' })
+    watcher = { observer, callbacks }
+    observers.set(root, watcher)
+  }
+  const { observer, callbacks } = watcher
+  callbacks.set(element, onNear)
+  observer.observe(element)
+  return () => {
+    callbacks.delete(element)
+    observer.unobserve(element)
+    if (!callbacks.size) { observer.disconnect(); observers.delete(root) }
+  }
 }
-export function useLinearIssue(link: LinearIssueLink): LinearChipIssue | null | undefined {
+/** A callback ref, and whether its element has come near view. */
+export function useNearView(): [(node: Element | null) => void, boolean] {
+  const [node, setNode] = useState<Element | null>(null)
+  const [near, setNear] = useState(false)
+  useEffect(() => {
+    if (!node || near) return
+    return watchNearView(node, () => setNear(true))
+  }, [node, near])
+  return [setNode, near]
+}
+
+export function usePrSummary(link: GithubPrLink, enabled = true): PrChipSummary | null | undefined {
+  const { prSummary } = use(RichLinksContext)
+  return useLoaded(prSummary, `${link.repo.toLowerCase()}#${link.number}`, () => prSummary!(link.repo, link.number), enabled)
+}
+export function useLinearIssue(link: LinearIssueLink, enabled = true): LinearChipIssue | null | undefined {
   const { linearIssue } = use(RichLinksContext)
-  return useLoaded(linearIssue, `${link.workspace}/${link.identifier}`, () => linearIssue!(link.url))
+  return useLoaded(linearIssue, `${link.workspace}/${link.identifier}`, () => linearIssue!(link.url), enabled)
 }
 
 /** Opens a web page in a new browser tab, without handing it this window. */
@@ -129,13 +193,13 @@ function ownLabel(link: RichLink, label: string | undefined): string | undefined
   return text
 }
 
-function Chip({ link, icon, name, title, badge, label }: { link: RichLink; icon: ReactNode; name: string; title?: string; badge?: ReactNode; label?: string }) {
+function Chip({ link, icon, name, title, badge, label, viewRef }: { link: RichLink; icon: ReactNode; name: string; title?: string; badge?: ReactNode; label?: string; viewRef: (node: Element | null) => void }) {
   const onOpen = useQuickLook(link)
   const [menu, setMenu] = useState(false)
   const { notice, copy } = useCopied()
   const text = title ?? ownLabel(link, label)
   const content = <>{icon}<span className="chat-rich-name">{name}</span>{text ? <span className="chat-rich-title text-foreground">{text}</span> : null}{badge}</>
-  return <span className="chat-resource-inline">
+  return <span className="chat-resource-inline" ref={viewRef}>
     <span className="chat-resource-chip chat-rich-chip border-border bg-card text-primary" title={text ? `${name} · ${text}` : link.url} onContextMenu={(event) => { event.preventDefault(); setMenu(true) }}>
       {onOpen ? <button type="button" className="chat-resource-label" onClick={onOpen}>{content}</button>
         : <a className="chat-resource-label" href={link.url} target="_blank" rel="noreferrer">{content}</a>}
@@ -148,35 +212,37 @@ function Chip({ link, icon, name, title, badge, label }: { link: RichLink; icon:
   </span>
 }
 
-function PrChip({ link, label }: { link: Extract<RichLink, { kind: 'pr' }>; label?: string }) {
-  const summary = usePrSummary(link)
-  return <Chip link={link} name={`${link.repo}#${link.number}`} label={label} icon={<PrIcon state={summary?.state} />}
+function PrChip({ link, label, running }: { link: Extract<RichLink, { kind: 'pr' }>; label?: string; running?: boolean }) {
+  const [viewRef, near] = useNearView()
+  const summary = usePrSummary(link, near && !running)
+  return <Chip viewRef={viewRef} link={link} name={`${link.repo}#${link.number}`} label={label} icon={<PrIcon state={summary?.state} />}
     {...(summary ? { title: summary.title, badge: <PrState state={summary.state} /> } : {})} />
 }
 
-function LinearChip({ link, label }: { link: Extract<RichLink, { kind: 'linear' }>; label?: string }) {
-  const issue = useLinearIssue(link)
-  return <Chip link={link} name={link.identifier} label={label} icon={<LinearIcon issue={issue} />}
+function LinearChip({ link, label, running }: { link: Extract<RichLink, { kind: 'linear' }>; label?: string; running?: boolean }) {
+  const [viewRef, near] = useNearView()
+  const issue = useLinearIssue(link, near && !running)
+  return <Chip viewRef={viewRef} link={link} name={link.identifier} label={label} icon={<LinearIcon issue={issue} />}
     {...(issue ? { title: issue.title, ...(issue.state ? { badge: <LinearState state={issue.state} /> } : {}) } : {})} />
 }
 
-/** An inline GitHub PR or Linear issue link, shown as a chip. */
-export function RichLinkChip({ link, label }: { link: RichLink; label?: string }) {
-  return link.kind === 'pr' ? <PrChip link={link} label={label} /> : <LinearChip link={link} label={label} />
+/** An inline GitHub PR or Linear issue link, shown as a chip. While its reply streams the address may be half-written, so nothing loads. */
+export function RichLinkChip({ link, label, running }: { link: RichLink; label?: string; running?: boolean }) {
+  return link.kind === 'pr' ? <PrChip link={link} label={label} running={running} /> : <LinearChip link={link} label={label} running={running} />
 }
 
 export type RichLinkCardRow = { link: RichLink; label?: string; description?: ReactNode }
 /** A list where every item starts with a PR or Linear link. */
-export function RichLinkCardList({ rows }: { rows: RichLinkCardRow[] }) {
+export function RichLinkCardList({ rows, running }: { rows: RichLinkCardRow[]; running?: boolean }) {
   return <div className="chat-resource-cards rounded-lg border border-border bg-card overflow-hidden" role="list">
     {rows.map((row, index) => row.link.kind === 'pr'
-      ? <PrCard key={`${row.link.url}:${index}`} {...row} link={row.link} />
-      : <LinearCard key={`${row.link.url}:${index}`} {...row} link={row.link} />)}
+      ? <PrCard key={`${row.link.url}:${index}`} {...row} link={row.link} running={running} />
+      : <LinearCard key={`${row.link.url}:${index}`} {...row} link={row.link} running={running} />)}
   </div>
 }
 
-function Card({ link, icon, title, detail, meta, description }: {
-  link: RichLink; icon: ReactNode; title: string; detail: ReactNode; meta?: ReactNode; description?: ReactNode
+function Card({ link, icon, title, detail, meta, description, viewRef }: {
+  link: RichLink; icon: ReactNode; title: string; detail: ReactNode; meta?: ReactNode; description?: ReactNode; viewRef: (node: Element | null) => void
 }) {
   const onOpen = useQuickLook(link)
   const OpenIcon = onOpen ? PanelRight : ExternalLink
@@ -184,7 +250,7 @@ function Card({ link, icon, title, detail, meta, description }: {
   const [menu, setMenu] = useState(false)
   const { notice, copy } = useCopied()
   const rest = cardDescription(description)
-  return <div role="listitem" className="chat-resource-card px-2.5 py-2 hover:bg-secondary" onContextMenu={(event) => { event.preventDefault(); setMenu(true) }}>
+  return <div ref={viewRef} role="listitem" className="chat-resource-card px-2.5 py-2 hover:bg-secondary" onContextMenu={(event) => { event.preventDefault(); setMenu(true) }}>
     <span className="chat-resource-icon-tile rounded-md border border-border bg-secondary text-primary">{icon}</span>
     <div className="chat-resource-card-content min-w-0 flex-1">
       <div className="chat-resource-title truncate" title={title}>
@@ -207,18 +273,20 @@ function Card({ link, icon, title, detail, meta, description }: {
   </div>
 }
 
-function PrCard({ link, label, description }: RichLinkCardRow & { link: Extract<RichLink, { kind: 'pr' }> }) {
-  const summary = usePrSummary(link)
+function PrCard({ link, label, description, running }: RichLinkCardRow & { link: Extract<RichLink, { kind: 'pr' }>; running?: boolean }) {
+  const [viewRef, near] = useNearView()
+  const summary = usePrSummary(link, near && !running)
   const name = `${link.repo}#${link.number}`
   const by = [summary?.author, summary?.branch].filter(Boolean).join(' · ')
-  return <Card link={link} icon={<PrIcon state={summary?.state} />} title={summary?.title ?? ownLabel(link, label) ?? name}
+  return <Card viewRef={viewRef} link={link} icon={<PrIcon state={summary?.state} />} title={summary?.title ?? ownLabel(link, label) ?? name}
     detail={<>{name}{by ? <> · {by}</> : null}</>} description={description}
     {...(summary ? { meta: <PrState state={summary.state} /> } : {})} />
 }
 
-function LinearCard({ link, label, description }: RichLinkCardRow & { link: Extract<RichLink, { kind: 'linear' }> }) {
-  const issue = useLinearIssue(link)
-  return <Card link={link} icon={<LinearIcon issue={issue} className="chat-linear-icon-large" />} title={issue?.title ?? ownLabel(link, label) ?? link.identifier}
+function LinearCard({ link, label, description, running }: RichLinkCardRow & { link: Extract<RichLink, { kind: 'linear' }>; running?: boolean }) {
+  const [viewRef, near] = useNearView()
+  const issue = useLinearIssue(link, near && !running)
+  return <Card viewRef={viewRef} link={link} icon={<LinearIcon issue={issue} className="chat-linear-icon-large" />} title={issue?.title ?? ownLabel(link, label) ?? link.identifier}
     detail={<>{link.identifier}{issue?.assignee ? <> · {issue.assignee}</> : null}</>} description={description}
     {...(issue?.state ? { meta: <LinearState state={issue.state} /> } : {})} />
 }
