@@ -25,8 +25,8 @@ function blameKey(paneId: string, side: GitFileSide): string {
 }
 
 /**
- * Blame for both sides of a file comparison, fetched while `enabled` and cached per file and
- * revision for the life of the view, so switching files or toggling blame doesn't refetch.
+ * Blame for both sides of a file comparison, fetched while `enabled`. Blame at a commit SHA is
+ * cached for the life of the view; worktree blame only while its file is shown.
  */
 export function useGitBlame(
   api: GitDiffApiClient,
@@ -48,6 +48,23 @@ export function useGitBlame(
     })
   }, [contents, enabled, paneId])
 
+  // Worktree blame changes when the shown edits are committed, even with the contents unchanged,
+  // so it is only kept while its file is on screen; coming back or re-enabling blame refetches.
+  const liveKeys = useRef<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    const live = new Set(requests.map((request) => request.key))
+    liveKeys.current = live
+    setCache((current) => {
+      let next: Map<string, GitBlame> | undefined
+      for (const [key, blame] of current) {
+        if (blame.rev !== 'worktree' || live.has(key)) continue
+        next ??= new Map(current)
+        next.delete(key)
+      }
+      return next ?? current
+    })
+  }, [requests])
+
   // Turning blame back on retries sides that failed before.
   useEffect(() => {
     if (!enabled) setErrors((current) => (current.size ? new Map() : current))
@@ -60,6 +77,8 @@ export function useGitBlame(
       apiRef.current
         .blame(paneId, request.path, request.rev)
         .then((blame) => {
+          // A worktree answer for a file that has since left the screen would never be pruned.
+          if (blame.rev === 'worktree' && !liveKeys.current.has(request.key)) return
           setCache((current) => {
             const next = new Map(current)
             next.set(request.key, blame)

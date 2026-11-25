@@ -34,7 +34,9 @@ type Props = {
 }
 
 type BlameHover = {
-  commit: GitBlameCommit | undefined
+  /** Line numbers on each side; the commit is looked up on render so late-arriving blame shows. */
+  newLine: number | undefined
+  oldLine: number | undefined
   /** Position relative to the view, which scrolls with the diff. */
   rowTop: number
   rowBottom: number
@@ -80,6 +82,11 @@ function useFileContents(side: GitFileSide | null): FileContents | null {
   )
 }
 
+function hoverCommit(blame: FileBlame, newLine: number | undefined, oldLine: number | undefined): GitBlameCommit | undefined {
+  return (newLine !== undefined ? blameCommitAt(blame.new, newLine) : undefined)
+    ?? (oldLine !== undefined ? blameCommitAt(blame.old, oldLine) : undefined)
+}
+
 function shortDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
@@ -115,9 +122,7 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     const altLine = props.lineElement.dataset.altLine === undefined ? undefined : Number(props.lineElement.dataset.altLine)
     const newLine = props.annotationSide === 'additions' ? props.lineNumber : context ? altLine : undefined
     const oldLine = props.annotationSide === 'deletions' ? props.lineNumber : context ? altLine : undefined
-    const commit = (newLine !== undefined ? blameCommitAt(current.new, newLine) : undefined)
-      ?? (oldLine !== undefined ? blameCommitAt(current.old, oldLine) : undefined)
-    if (!commit && !current.loading) return
+    if (!hoverCommit(current, newLine, oldLine) && !current.loading) return
     const base = wrapper.getBoundingClientRect()
     const row = props.lineElement.getBoundingClientRect()
     // Syntax tokens are spans, so the last one ends where the line's text does.
@@ -127,7 +132,8 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     const hintLeft = textRight + 28 - base.left
     const pointerX = props.event?.clientX ?? row.left
     setHover({
-      commit,
+      newLine,
+      oldLine,
       rowTop: row.top - base.top,
       rowBottom: row.bottom - base.top,
       hintTop: (lastLine?.top ?? row.top) - base.top,
@@ -203,7 +209,7 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     return paintMatches(matches, current, highlightNames)
   }, [activeMatch, highlightNames, query, renderVersion, oldFile, newFile])
 
-  const commit = hover?.commit
+  const commit = hover && blame ? hoverCommit(blame, hover.newLine, hover.oldLine) : undefined
   const hintText = commit
     ? commit.uncommitted ? 'Uncommitted changes' : `${commit.author}, ${relativeTime(commit.authorTime)} · ${commit.summary}`
     : 'Loading blame…'

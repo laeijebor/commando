@@ -913,10 +913,13 @@ describe('GitDiffView rich engine', () => {
     expect(api.blame).toHaveBeenCalledWith('%1', 'a.ts', 'worktree')
     expect(window.localStorage.getItem('commando-diff-blame')).toBe('on')
 
-    // Cached per file and revision: toggling off and on again doesn't refetch.
+    // Blame at a commit is cached; worktree blame is refetched, since committing the shown
+    // edits changes it without changing the contents.
     fireEvent.click(toggle)
     fireEvent.click(toggle)
-    expect(api.blame).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(api.blame).toHaveBeenCalledTimes(3))
+    expect(vi.mocked(api.blame).mock.calls.filter(([, , rev]) => rev === 'base-sha')).toHaveLength(1)
+    expect(vi.mocked(api.blame).mock.calls.filter(([, , rev]) => rev === 'worktree')).toHaveLength(2)
     fireEvent.click(screen.getByRole('button', { name: 'difftastic' }))
     expect(screen.queryByRole('button', { name: 'blame' })).not.toBeInTheDocument()
   })

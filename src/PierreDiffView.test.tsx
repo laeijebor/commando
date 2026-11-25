@@ -148,6 +148,17 @@ describe('PierreDiffView', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 
+  it('shows the hovered line\'s commit once its blame finishes loading', () => {
+    const { rerender } = render(view({ blame: { old: oldBlame, loading: true, error: '' } }))
+    hoverLine('additions', 1, 'context', 1)
+    // Old-side blame already covers this context row; the new side is still loading.
+    expect(document.querySelector('.pierre-blame-hint')).toHaveTextContent('Ada')
+    hoverLine('additions', 2, 'change-addition', null)
+    expect(document.querySelector('.pierre-blame-hint')).toHaveTextContent('Loading blame')
+    rerender(view({ blame }))
+    expect(document.querySelector('.pierre-blame-hint')).toHaveTextContent('Uncommitted changes')
+  })
+
   it('shows nothing on hover while blame is off', () => {
     render(view())
     hoverLine('additions', 1, 'context')
