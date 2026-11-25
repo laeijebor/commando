@@ -1801,3 +1801,33 @@ describe('pane PR impacts', () => {
     expect(list.impacted).toMatchObject([{ repo: 'acme/widgets', number: 4, relation: 'pushed', impactedAt: 5_000 }])
   })
 })
+
+describe('chat PR chip summaries', () => {
+  const pr = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    title: 'feat: add thing', state: 'open', draft: false, merged: false, merged_at: null,
+    user: { login: 'leo' }, head: { sha: 'a'.repeat(40), ref: 'add-thing' }, base: { sha: 'b'.repeat(40), ref: 'main' }, ...overrides,
+  })
+
+  it('maps GitHub state to the chip state and shares the cached metadata read', async () => {
+    const runner = vi.fn(async () => pr())
+    const service = new PrService({ runner })
+    expect(await service.pullRequestSummary('acme/widgets', 12)).toEqual({ title: 'feat: add thing', state: 'open', author: 'leo', branch: 'add-thing' })
+    await service.pullRequestSummary('acme/widgets', '12')
+    expect(runner).toHaveBeenCalledTimes(1)
+    expect(runner).toHaveBeenCalledWith(['api', 'repos/acme/widgets/pulls/12'])
+  })
+
+  it.each([
+    [{ draft: true }, 'draft'],
+    [{ state: 'closed', merged: true, merged_at: '2026-11-01T00:00:00Z' }, 'merged'],
+    [{ state: 'closed' }, 'closed'],
+  ])('reports %o as %s', async (overrides, state) => {
+    const service = new PrService({ runner: vi.fn(async () => pr(overrides)) })
+    expect((await service.pullRequestSummary('acme/widgets', 12)).state).toBe(state)
+  })
+
+  it('rejects invalid input and reports GitHub being off', async () => {
+    await expect(new PrService({ runner: vi.fn() }).pullRequestSummary('not a repo', 12)).rejects.toMatchObject({ status: 400 })
+    await expect(new PrService({ githubDisabledReason: 'off' }).pullRequestSummary('acme/widgets', 12)).rejects.toMatchObject({ code: 'github_disabled' })
+  })
+})

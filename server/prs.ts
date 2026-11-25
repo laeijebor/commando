@@ -12,6 +12,7 @@ import { PanePrRecords, isPanePrRef, recordRecency, recordRelation, type PanePrR
 import { resolvePrImpact, type PrImpactReport } from './pane-pr-impacts.js'
 import type { PrDetails, PrReviewThread } from '../shared/pr-quick-look.js'
 import { PrEntities } from '../shared/pr-entities.js'
+import { parsePrChipSummary, type PrChipSummary } from '../shared/rich-links.js'
 import { stripHtmlComments } from '../shared/chat-tile-events.js'
 import type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
 export type { PrStateFilter, PrScope, PrCheckState, PrCheckRun, PrChecks, PrReview, PrSummary, PrList, PrStatus, PanePrSummary, PanePrList } from '../shared/pr-types.js'
@@ -1603,6 +1604,24 @@ export class PrService {
       if (!/^[a-f0-9]{40}$/i.test(head)) throw invalidUpstream()
       return pr
     }, refresh)
+  }
+
+  /** Title and state for a chat PR chip; shares PR Quick Look's cached metadata read. */
+  async pullRequestSummary(repoInput: unknown, numberInput: unknown): Promise<PrChipSummary> {
+    const repo = validateRepo(repoInput)
+    const number = validatePrNumber(numberInput)
+    const pr = (await this.metadata(repo, number)).value
+    const user = optionalObject(pr, 'user')
+    const head = optionalObject(pr, 'head')
+    const state = pr.merged === true || typeof pr.merged_at === 'string' ? 'merged'
+      : pr.state === 'closed' ? 'closed' : pr.draft === true ? 'draft' : 'open'
+    const summary = parsePrChipSummary({
+      title: pr.title, state,
+      author: typeof user?.login === 'string' ? user.login : undefined,
+      branch: typeof head?.ref === 'string' ? head.ref : undefined,
+    })
+    if (!summary) throw invalidUpstream()
+    return summary
   }
 
   async pullRequestDetails(repoInput: unknown, numberInput: unknown, options: { refresh?: boolean } = {}): Promise<PrDetails> {
