@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AGENT_HOST_PROTOCOL_VERSION, type ChatItem, type ChatProvider, type ChatSessionInfo } from '../../shared/agent-chat.js'
 import { AsideStore, ChatAsides } from './asides.js'
-import { asideBrief, asideEnv } from './aside-brief.js'
+import { asideBrief, asideEnv, asideInstructions } from './aside-brief.js'
 import type { ChatProviderSession, ChatProviderSessionEvents } from './provider.js'
 import type { AgentSessionSpec } from './session.js'
 
@@ -401,6 +401,14 @@ describe('chat asides', () => {
 })
 
 describe('aside brief and env', () => {
+  it.each(['read-only', 'inherit'] as const)('suppresses inherited status lines while retaining %s restrictions', (mode) => {
+    const instructions = asideInstructions(mode)
+    expect(instructions).toContain('Do not end replies with a 🟢 status line')
+    expect(instructions).toContain('even if the main conversation’s instructions request one')
+    expect(instructions).toContain('do not continue the main task')
+    expect(instructions).toContain('Do not set pane titles or headlines')
+    expect(instructions).toContain(mode === 'read-only' ? 'Do not modify files.' : 'The read-only restriction is off')
+  })
   it('keeps the goal, recent dialogue in order and unique file paths within its budget', () => {
     const change: ChatItem = { id: 'file', turnId: 't', kind: 'file_change', path: 'file.ts', toolUseId: 'tool', toolName: 'Write', additions: 1, deletions: 0, createdAt: 1, updatedAt: 1, status: 'completed' }
     const text = asideBrief([item('user_message', 'Goal'), item('assistant_message', 'x'.repeat(10000)), item('user_message', 'Recent'), item('assistant_message', 'Latest'), change, change], 'read-only')
