@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PreciseNavUnavailable, type PreciseQuery } from './code-nav-provider.js'
 import {
+  HUNG_MESSAGE,
   LOADING_MESSAGE,
   resolveTsServer,
   STOPPED_MESSAGE,
@@ -394,6 +395,23 @@ describe('TypeScriptNavProvider', () => {
     await provider.dispose()
   })
 
+  it('replaces a server whose request never answers once another lookup waits behind it', async () => {
+    const { provider, spawned } = setup({ coldTimeoutMs: 40, warmTimeoutMs: 40, hungAfterMs: 60 }, () => (request) =>
+      request.command === 'updateOpen' ? true : HOLD,
+    )
+    await expect(provider.query(query())).rejects.toThrow(LOADING_MESSAGE)
+    expect(spawned[0].server.signals).toEqual([])
+    // Waiting behind the stuck request past hungAfterMs: the server is stopped, not waited on forever.
+    await expect(provider.query(query())).rejects.toThrow(HUNG_MESSAGE)
+    expect(spawned[0].server.signals).toEqual(['SIGTERM'])
+    expect(provider.stats()).toEqual([])
+    // The next lookup starts a fresh server.
+    void provider.query(query()).catch(() => undefined)
+    await settle()
+    expect(spawned).toHaveLength(2)
+    await provider.dispose()
+  })
+
   it('uses the cold timeout until the server has answered once', async () => {
     let delay = 60
     const { provider, spawned } = setup({ coldTimeoutMs: 200, warmTimeoutMs: 30 }, () => (request) => {
@@ -430,21 +448,23 @@ describe('TypeScriptNavProvider', () => {
 })
 
 describe('resolveTsServer', () => {
-  it("prefers the project's own TypeScript, walking up from the root", () => {
+  it("runs the daemon's TypeScript, never a project's own copy", async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'code-nav-resolve-')))
     try {
       const lib = join(dir, 'node_modules', 'typescript', 'lib')
       mkdirSync(lib, { recursive: true })
-      writeFileSync(join(lib, 'tsserver.js'), '')
-      mkdirSync(join(dir, 'packages', 'app'), { recursive: true })
-      expect(resolveTsServer(join(dir, 'packages', 'app'))).toBe(join(lib, 'tsserver.js'))
+      writeFileSync(join(lib, 'tsserver.js'), 'process.exit(42) // a repository must not get to run this')
+      const launched: string[][] = []
+      const provider = new TypeScriptNavProvider({
+        spawn: (_command, args) => { launched.push([...args]); throw new Error('stop here') },
+      })
+      await expect(provider.query(query({ root: dir, path: join(dir, 'a.ts') }))).rejects.toBeInstanceOf(PreciseNavUnavailable)
+      expect(launched[0][0]).toBe(resolveTsServer())
+      expect(launched[0][0]).not.toContain(dir)
+      expect(resolveTsServer()).toMatch(/node_modules\/typescript\/lib\/tsserver\.js$/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
-
-  it("falls back to the daemon's TypeScript", () => {
-    expect(resolveTsServer('/')).toMatch(/node_modules\/typescript\/lib\/tsserver\.js$/)
   })
 })
 

@@ -7,10 +7,8 @@
  * and restarted by the next query. tsserver exits when its stdin closes, so servers die with the daemon.
  */
 import { spawn as spawnChild } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
 import {
   PreciseNavUnavailable,
   type PreciseLocation,
@@ -29,6 +27,7 @@ const SERVER_FLAGS = [
 
 export const STOPPED_MESSAGE = 'TypeScript server stopped'
 export const LOADING_MESSAGE = 'TypeScript server is still loading this project'
+export const HUNG_MESSAGE = 'TypeScript server stopped responding; it will restart on the next lookup'
 
 /** The parts of a child process the provider uses; `spawn` returns a real one. */
 export type TsServerProcess = {
@@ -55,10 +54,15 @@ export type TypeScriptNavOptions = {
   coldTimeoutMs?: number
   /** Timeout for queries after that. Default 8 s. */
   warmTimeoutMs?: number
+  /**
+   * A request running this long is taken as hung, and the server is replaced when another lookup
+   * waits behind it. Well past any project load, so a slow first load still finishes. Default 90 s.
+   */
+  hungAfterMs?: number
   /** SIGKILL a server this long after SIGTERM if it hasn't exited. Default 2 s. */
   killGraceMs?: number
   spawn?: TsServerSpawner
-  /** Path of tsserver.js for a root. Default: the project's own TypeScript, else the daemon's. */
+  /** Path of tsserver.js for a root. Default: the daemon's bundled TypeScript (see resolveTsServer). */
   resolveServer?: (root: string) => string
   readFile?: (path: string) => Promise<string>
 }
@@ -68,16 +72,12 @@ export type TsServerStats = { root: string; pid: number | undefined; startedAt: 
 const defaultSpawn: TsServerSpawner = (command, args, { cwd }) =>
   spawnChild(command, args, { cwd, stdio: ['pipe', 'pipe', 'ignore'] })
 
-/** The project's `node_modules/typescript`, looked up from the root upwards, else the daemon's own. */
-export function resolveTsServer(root: string): string {
-  let dir = resolve(root)
-  for (;;) {
-    const candidate = join(dir, 'node_modules', 'typescript', 'lib', 'tsserver.js')
-    if (existsSync(candidate)) return candidate
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
+/**
+ * The daemon's own TypeScript. Never the project's: running a repository's `tsserver.js` (or the
+ * tsconfig plugins it would load from the project) would execute that repository's code on a
+ * click, which VS Code only does for trusted workspaces. Navigation works across TS versions.
+ */
+export function resolveTsServer(): string {
   return createRequire(import.meta.url).resolve('typescript/lib/tsserver.js')
 }
 
@@ -244,6 +244,8 @@ type Server = {
   openFile: string | undefined
   /** Queries run one at a time: each opens its file and closes the previous one. */
   queue: Promise<void>
+  /** When the running query started; a server stuck on one past the cold timeout is replaced. */
+  runningSince: number | undefined
   idleTimer: ReturnType<typeof setTimeout> | undefined
 }
 
@@ -271,6 +273,7 @@ export class TypeScriptNavProvider implements PreciseNavProvider {
   private readonly idleMs: number
   private readonly coldTimeoutMs: number
   private readonly warmTimeoutMs: number
+  private readonly hungAfterMs: number
   private readonly killGraceMs: number
   private readonly spawn: TsServerSpawner
   private readonly resolveServer: (root: string) => string
@@ -281,6 +284,7 @@ export class TypeScriptNavProvider implements PreciseNavProvider {
     this.idleMs = options.idleMs ?? 10 * 60_000
     this.coldTimeoutMs = options.coldTimeoutMs ?? 20_000
     this.warmTimeoutMs = options.warmTimeoutMs ?? 8_000
+    this.hungAfterMs = options.hungAfterMs ?? 90_000
     this.killGraceMs = options.killGraceMs ?? 2_000
     this.spawn = options.spawn ?? defaultSpawn
     this.resolveServer = options.resolveServer ?? resolveTsServer
@@ -303,7 +307,15 @@ export class TypeScriptNavProvider implements PreciseNavProvider {
     this.touch(server)
     const timeoutMs = server.warm ? this.warmTimeoutMs : this.coldTimeoutMs
     const state = { timedOut: false }
-    const run = server.queue.then(() => this.run(server, query, state))
+    const issuedAt = Date.now()
+    const run = server.queue.then(async () => {
+      server.runningSince = Date.now()
+      try {
+        return await this.run(server, query, state)
+      } finally {
+        server.runningSince = undefined
+      }
+    })
     server.queue = run.then(
       () => {},
       () => {},
@@ -312,6 +324,15 @@ export class TypeScriptNavProvider implements PreciseNavProvider {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         state.timedOut = true
+        // A request that never answers would block this server's queue for good. When this lookup
+        // waited behind one that was already running before it was asked, and for far longer than
+        // any project load, replace the server so the next lookup starts fresh.
+        const running = server.runningSince
+        if (running !== undefined && running < issuedAt && Date.now() - running >= this.hungAfterMs) {
+          void this.stop(server)
+          reject(new PreciseNavUnavailable(HUNG_MESSAGE))
+          return
+        }
         reject(new PreciseNavUnavailable(LOADING_MESSAGE))
       }, timeoutMs)
     })
@@ -361,6 +382,7 @@ export class TypeScriptNavProvider implements PreciseNavProvider {
       warm: false,
       openFile: undefined,
       queue: Promise.resolve(),
+      runningSince: undefined,
       idleTimer: undefined,
     }
     this.servers.set(root, server)
