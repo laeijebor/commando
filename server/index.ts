@@ -151,7 +151,7 @@ import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
-import { isMainChatKey } from './chat-main-key.js'
+import { asideSessionIds, isMainChatKey } from './chat-main-key.js'
 import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -2391,7 +2391,8 @@ async function main(): Promise<void> {
     snapshot: () => snapshot,
     serverId: () => snapshotServerId,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
-    chatSessions: () => agentHosts.states().filter((state) => isMainChatKey(state.paneId)).map((state) => state.session),
+    chatSessions: () => agentHosts.states().map((state) => state.session),
+    asideSessionIds: () => asideSessionIds(agentHosts.states()),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {

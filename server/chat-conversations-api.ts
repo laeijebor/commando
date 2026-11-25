@@ -2,7 +2,7 @@ import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { isChatProvider, type ChatSessionInfo } from '../shared/agent-chat.js'
+import { isChatProvider, parseAsideKey, type ChatSessionInfo } from '../shared/agent-chat.js'
 import {
   CHAT_CONVERSATION_ROUTES,
   chatConversationKey,
@@ -36,8 +36,10 @@ type Dependencies = {
   serverId?: () => string | null
   /** The chat a pane runs, if it is a chat pane. */
   chatSession: (paneId: string) => ChatSessionInfo | undefined
-  /** Chats on any pane, to keep two hosts off one conversation. */
+  /** All chats, including asides, to keep two hosts off one conversation. */
   chatSessions: () => ChatSessionInfo[]
+  /** Saved and live aside session ids, hidden only from the picker. */
+  asideSessionIds: () => ReadonlySet<string>
   /** Open hook conversations matching their pane's current process; excludes retained completions. */
   agentSessions: () => AgentStatus[]
   creator: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>
@@ -139,7 +141,7 @@ export class ChatConversationsApi {
     for (const session of this.dependencies.chatSessions()) {
       if (!session.sessionId) continue
       const key = chatConversationKey(session.provider, session.sessionId)
-      if (!open.has(key)) open.set(key, session.paneId)
+      if (!open.has(key)) open.set(key, parseAsideKey(session.paneId)?.paneId ?? session.paneId)
     }
     for (const status of this.dependencies.agentSessions()) {
       if (status.source !== 'hook' || status.provider === 'unknown' || !status.agentSessionId || !snapshot.panes.some((pane) => pane.id === status.paneId && !pane.dead)) continue
@@ -160,7 +162,8 @@ export class ChatConversationsApi {
     const groups = preferences.groupingMode === 'manual'
       ? preferences.groups : repositoryContainers(preferences, snapshot.sessions, snapshot.panes)
     const open = this.openConversationPanes(snapshot)
-    return conversations.map((conversation) => {
+    const asideIds = this.dependencies.asideSessionIds()
+    return conversations.filter((conversation) => !asideIds.has(conversation.sessionId)).map((conversation) => {
       const openPaneId = open.get(chatConversationKey(conversation.provider, conversation.sessionId))
       const brief = records.get(chatConversationKey(conversation.provider, conversation.sessionId))
       const session = brief ? sessions.get(brief.sessionId) : undefined
