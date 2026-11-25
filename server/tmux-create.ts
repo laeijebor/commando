@@ -30,6 +30,7 @@ import { isChatConversationSessionId } from '../shared/chat-conversations.js'
 import { isModelValue, parseChatImageRefs } from '../shared/agent-chat.js'
 import { SESSION_ADJECTIVES, SESSION_ANIMALS } from '../shared/session-identity.js'
 import { isChatPlanDir } from './chat-plans-dir.js'
+import { GitCursorCloud, normaliseGithubUrl } from './git-cursor-cloud.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
 
 const COMMAND_TIMEOUT_MS = 3_000
@@ -152,10 +153,14 @@ export async function resolveAgentExecutable(command: string, env: LaunchEnviron
   throw new Error(`Cannot start ${command}: executable not found on the daemon PATH. Install the CLI on the daemon host.`)
 }
 
-function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
+function validateCloudRepoUrl(repoUrl: unknown): asserts repoUrl is string {
+  if (typeof repoUrl !== 'string' || normaliseGithubUrl(repoUrl) !== repoUrl || !repoUrl.startsWith('https://github.com/') || repoUrl.endsWith('.git')) throw new Error('Cursor cloud requires an https://github.com/<owner>/<repo> URL without credentials, query, fragment, port or .git')
+}
+
+export function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (value === undefined) return undefined
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('agent must be an object')
-  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess, model, fast, images } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown; model?: unknown; fast?: unknown; images?: unknown }
+  const { provider, prompt, configDir, permissionMode, readableDir, resume, fullAccess, model, fast, images, cursorCloud } = value as { provider?: unknown; prompt?: unknown; configDir?: unknown; permissionMode?: unknown; readableDir?: unknown; resume?: unknown; fullAccess?: unknown; model?: unknown; fast?: unknown; images?: unknown; cursorCloud?: unknown }
   if (typeof provider !== 'string' || !Object.hasOwn(SESSION_AGENT_EXECUTABLES, provider)) {
     throw new Error('Unsupported session agent provider')
   }
@@ -176,6 +181,16 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   if (resume !== undefined && !isChatLaunchProvider(provider) && provider !== 'cursor' && provider !== 'opencode') throw new Error('This provider cannot resume a conversation')
   if (resume !== undefined && !isChatConversationSessionId(resume)) throw new Error('Invalid conversation id to resume')
   if (fullAccess !== undefined && (fullAccess !== true || provider !== 'muse-chat' || permissionMode !== 'bypassPermissions')) throw new Error('Only a Muse chat in bypassPermissions can ask for full access')
+  let cloud: SessionAgentLaunch['cursorCloud']
+  if (cursorCloud !== undefined) {
+    if (provider !== 'cursor-chat') throw new Error('Only Cursor chat accepts Cursor cloud')
+    if (!cursorCloud || typeof cursorCloud !== 'object' || Array.isArray(cursorCloud)) throw new Error('cursorCloud must be an object')
+    const { repoUrl, ref } = cursorCloud as { repoUrl?: unknown; ref?: unknown }
+    validateCloudRepoUrl(repoUrl)
+    if (!(ref === undefined && resume !== undefined) && (typeof ref !== 'string' || ref !== ref.trim() || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref) || ref.startsWith('-') || ref.includes('..'))) throw new Error('Invalid Cursor cloud ref')
+    if (permissionMode !== undefined && permissionMode !== 'bypassPermissions' && permissionMode !== 'plan') throw new Error('Cursor cloud supports only Full access and Plan')
+    cloud = { repoUrl, ...(typeof ref === 'string' ? { ref } : {}) }
+  }
   const chatName = provider === 'deepseek-chat' ? 'DeepSeek' : provider === 'codex-chat' ? 'Codex' : provider === 'muse-chat' ? 'Muse' : provider === 'cursor-chat' ? 'Cursor' : 'Claude'
   if (chatName !== 'Claude' && (configDir !== undefined || readableDir !== undefined)) throw new Error(`${chatName} chat does not accept a Claude profile or readable folder`)
   if (isChatLaunchProvider(provider) && permissionMode !== undefined && !chatPermissionModes(provider).some((mode) => mode.value === permissionMode)) throw new Error(`Unsupported ${chatName} permission mode`)
@@ -191,6 +206,7 @@ function validatedAgent(value: unknown): SessionAgentLaunch | undefined {
   }
   return {
     provider: provider as SessionAgentLaunch['provider'],
+    ...(cloud ? { cursorCloud: cloud } : {}),
     ...(typeof prompt === 'string' ? { prompt } : {}),
     ...(typeof configDir === 'string' ? { configDir } : {}),
     ...(typeof model === 'string' ? { model } : {}),
@@ -477,6 +493,13 @@ export class TmuxCreator {
     private readonly defaultClaudeConfigDir: () => Promise<string | undefined> = async () => undefined,
   ) {}
 
+  private async checkCursorCloud(agent: SessionAgentLaunch | undefined, cwd: string | undefined, worktree?: unknown): Promise<void> {
+    if (!agent?.cursorCloud) return
+    if (worktree !== undefined) throw new Error('Cursor cloud cannot create a local worktree')
+    if (!cwd) throw new Error('A working directory is required for Cursor cloud')
+    if (!agent.resume) await new GitCursorCloud().assertPushed(cwd, agent.cursorCloud.repoUrl, agent.cursorCloud.ref!)
+  }
+
   /** resumeCommand is server-owned; HTTP creation handlers never forward it. */
   async createSession(input: CreateTmuxSessionRequest, resumeCommand?: string, onProgress?: SessionCreationProgress): Promise<TmuxCreateResponse> {
     if (input.autoName !== undefined && typeof input.autoName !== 'boolean') throw new Error('autoName must be a boolean')
@@ -484,6 +507,7 @@ export class TmuxCreator {
     const windowName = optionalName(input.windowName, 'window name')
     const cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
+    await this.checkCursorCloud(agent, cwd, input.worktree)
     const names = autoName ? autoNameCandidates(input.name, agent) : [validatedName(input.name, 'session name', true)]
     if (input.empty !== undefined && typeof input.empty !== 'boolean') throw new Error('empty must be a boolean')
     const empty = input.empty === true
@@ -515,6 +539,9 @@ export class TmuxCreator {
     if (!cwd) throw new Error('A working directory is required to create a worktree')
     // An auto-named session names its branch too, and must not borrow one that already exists.
     const branchFromName = autoName && !input.worktree.branch
+    if (input.worktree.fromRemote !== undefined && input.worktree.fromRemote !== true) throw new Error('fromRemote must be true')
+    if (input.worktree.repoUrl !== undefined) validateCloudRepoUrl(input.worktree.repoUrl)
+    if (input.worktree.fromRemote && branchFromName) throw new Error('A branch is required for remote checkout')
     const chosenBranch = branchFromName ? undefined : validatedName(input.worktree.branch, 'branch name')
     const worktreePath = validatedPath(input.worktree.path)
     const prepareCommand = optionalPrepareCommand(input.worktree.prepareCommand)
@@ -536,6 +563,7 @@ export class TmuxCreator {
           path: worktreePath ?? defaultWorktreePath(repo.mainRoot, branch, repo.worktreesParent),
           ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
           ...(branchFromName ? { newBranchOnly: true } : {}),
+          ...(input.worktree.fromRemote ? { fromRemote: true, ...(input.worktree.repoUrl ? { repoUrl: input.worktree.repoUrl } : {}) } : {}),
           ...(onProgress ? { onProgress } : {}),
         })
       } catch (error) {
@@ -697,6 +725,7 @@ export class TmuxCreator {
   async launchInEmptyPane(input: LaunchTmuxPaneRequest): Promise<void> {
     if (typeof input.paneId !== 'string' || !PANE_ID.test(input.paneId)) throw new Error('Invalid tmux pane id')
     const agent = validatedAgent(input.agent)
+    if (agent?.cursorCloud) throw new Error('Start Cursor cloud from New session')
     const agentArgv = agent ? await this.agentArgv(agent) : undefined
     // The daemon is the only launcher, so this keeps a second request from killing the first.
     if (this.launching.has(input.paneId)) throw new Error('This pane is already starting something')
@@ -730,6 +759,7 @@ export class TmuxCreator {
   async respawnChatPane(paneId: string, cwd: string, launch?: SessionAgentLaunch, resumeCommand?: string): Promise<void> {
     if (!PANE_ID.test(paneId)) throw new Error('Invalid tmux pane id')
     const agent = validatedAgent(launch)
+    if (agent?.cursorCloud) throw new Error('Start Cursor cloud from New session')
     const resumeArgv = this.resumeArgv(resumeCommand, agent)
     if (!resumeArgv && (!agent || (!isChatLaunchProvider(agent.provider) && !((agent.provider === 'cursor' || agent.provider === 'opencode') && agent.resume)))) throw new Error('Only a chat or resumed TUI can take over a chat pane')
     const directory = validatedPath(cwd)
@@ -753,6 +783,7 @@ export class TmuxCreator {
     const name = optionalName(input.name, 'window name')
     const cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
+    await this.checkCursorCloud(agent, cwd)
     const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     const args = [
       ...this.socketArgs,
@@ -789,12 +820,15 @@ export class TmuxCreator {
     }
     let cwd = validatedPath(input.cwd)
     const agent = validatedAgent(input.agent)
+    await this.checkCursorCloud(agent, cwd, input.worktree)
     if (input.empty !== undefined && typeof input.empty !== 'boolean') throw new Error('empty must be a boolean')
     const empty = input.empty === true
     if (empty && (agent || resumeCommand !== undefined)) throw new Error('An empty pane cannot also start an agent')
     const agentArgv = this.resumeArgv(resumeCommand, agent) ?? (agent ? await this.agentArgv(agent) : undefined)
     if (input.worktree !== undefined && (!input.worktree || typeof input.worktree !== 'object' || Array.isArray(input.worktree))) throw new Error('worktree must be an object')
     const branch = input.worktree ? validatedName(input.worktree.branch, 'branch name') : undefined
+    if (input.worktree?.repoUrl !== undefined) validateCloudRepoUrl(input.worktree.repoUrl)
+    if (input.worktree?.fromRemote !== undefined && input.worktree.fromRemote !== true) throw new Error('fromRemote must be true')
     const path = input.worktree ? validatedPath(input.worktree.path) : undefined
     const prepareCommand = input.worktree ? optionalPrepareCommand(input.worktree.prepareCommand) : undefined
     if (input.worktree && (!this.worktrees || !cwd)) throw new Error('A working directory and worktree service are required')
@@ -806,6 +840,7 @@ export class TmuxCreator {
       const result = await this.worktrees!.createWorktree({
         mainRoot: repo.mainRoot, branch: branch!, path: path ?? defaultWorktreePath(repo.mainRoot, branch!, repo.worktreesParent),
         ...(repo.defaultBranch ? { defaultBranch: repo.defaultBranch, remote: repo.remote } : {}),
+        ...(input.worktree.fromRemote ? { fromRemote: true, ...(input.worktree.repoUrl ? { repoUrl: input.worktree.repoUrl } : {}) } : {}),
       })
       worktree = result.worktree
       rollback = result.rollback

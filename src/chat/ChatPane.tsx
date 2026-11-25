@@ -29,6 +29,7 @@ import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from
 import type { PrQuickLookTab } from '../PrQuickLook'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
+import { CursorCloudStrip, type CursorCloudCheckout } from './CursorCloudStrip'
 import { AskTray } from './AskTray'
 import { askAnchors, askMarkerCounts } from './sessionAsks'
 import { askAnswerText } from '../../shared/session-asks'
@@ -118,6 +119,7 @@ function ChatColumn({
   onConfigure,
   onRestart,
   onOpenPr,
+  cloudCheckout,
   onDismissPrs,
   services,
   sendError,
@@ -159,6 +161,8 @@ function ChatColumn({
   onRestart?: () => void
   /** Opens a linked PR in this pane's side panel. */
   onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
+  /** Creates a shell session on a cloud agent's pushed branch. Absent in reading-only views. */
+  cloudCheckout?: CursorCloudCheckout
   /** Closes the side-panel tabs of PRs dismissed from the PR strip. */
   onDismissPrs?: (prs: PanePrSummary[]) => void
   /** File search, pull requests and image uploads for the composer's menus. */
@@ -390,6 +394,7 @@ function ChatColumn({
       {chat.session.status === 'error' && chat.session.error ? (
         <div className="border-b border-border px-3 py-1.5 text-xs text-destructive" role="alert">{chat.session.error}</div>
       ) : null}
+      {chat.session.cloud ? <CursorCloudStrip key={chat.session.cloud.branch} cloud={chat.session.cloud} cwd={chat.session.cwd} checkout={cloudCheckout} disabled={!connected} {...(onOpenPr ? { onOpenPr } : {})} /> : null}
       {agent ? (
         <>
           <SubagentHeader
@@ -407,6 +412,7 @@ function ChatColumn({
       ) : (
         <ChatTimeline
           provider={chat.session.provider}
+          {...(chat.session.cloud ? { emptyText: `Ask ${providerLabel(chat.session)} anything about this repository.` } : {})}
           items={timelineItems}
           {...(onOpenTile ? { onOpenTile } : {})}
           {...(onOpenPr ? { onOpenPr } : {})}

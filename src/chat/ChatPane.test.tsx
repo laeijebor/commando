@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -62,6 +62,18 @@ describe('timeline rows', () => {
 })
 
 describe('ChatPane', () => {
+  it('offers local checkout only with creation services and uses the chat session directory', async () => {
+    const state = chat({ session: { ...chat().session, provider: 'cursor', cloud: { provider: 'cursor', repoUrl: 'https://github.com/acme/app', branch: 'cursor/fix' } } })
+    const handlers = { onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onFocus: vi.fn(), onConfigure: vi.fn() }
+    const { rerender } = render(<ChatPane chat={state} connected focused={false} {...handlers} />)
+    expect(screen.queryByRole('button', { name: 'Check out locally' })).not.toBeInTheDocument()
+    const cloudCheckout = { startSession: vi.fn(async () => ({ id: 'checkout', name: 'fix', cwd: '/work', stage: 'fetching' as const, startedAt: 1 })), creations: [], onCreated: vi.fn(), dismissCreation: vi.fn(async () => {}) }
+    rerender(<ChatPane chat={state} connected focused={false} cloudCheckout={cloudCheckout} {...handlers} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Check out locally' }))
+    await waitFor(() => expect(cloudCheckout.startSession).toHaveBeenCalledWith({ name: 'fix', autoName: true, cwd: '/work', worktree: { branch: 'cursor/fix', fromRemote: true, repoUrl: 'https://github.com/acme/app' } }))
+    expect(screen.getByRole('button', { name: 'Checking out…' })).toBeDisabled()
+  })
+
   it('reads the provider for composer labels and the empty timeline', () => {
     renderPane(chat({ session: { ...chat().session, provider: 'codex' }, items: [] }))
     expect(screen.getByRole('textbox', { name: 'Message Codex' })).toHaveAttribute('placeholder', 'Ask Codex… / for commands, @ for files')
@@ -413,4 +425,14 @@ describe('Commander chat inbox slot', () => {
     rerender(<ChatPane chat={chat()} paneId="%6" commander={commander} connected focused={false} {...handlers} />)
     expect(screen.queryByTestId('agents-inbox')).toBeNull()
   })
+})
+
+it('renders the cloud strip and names the provider Cursor cloud', () => {
+  const state = chat()
+  state.session = { ...state.session, provider: 'cursor', permissionMode: 'plan', cloud: { provider: 'cursor', repoUrl: 'https://github.com/acme/app' } }
+  state.items = []
+  renderPane(state)
+  expect(screen.getByRole('region', { name: 'Cursor cloud' })).toHaveTextContent('acme/app')
+  expect(screen.getByRole('textbox', { name: 'Message Cursor cloud' })).toBeInTheDocument()
+  expect(screen.getByText('Ask Cursor cloud anything about this repository.')).toBeInTheDocument()
 })

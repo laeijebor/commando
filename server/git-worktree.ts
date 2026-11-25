@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { access, readdir, realpath, rename } from 'node:fs/promises'
 import path from 'node:path'
 import type { GitRepoInfo, SessionCreationProgress, TmuxCreatedWorktree } from '../shared/tmux-create.js'
+import { GitCursorCloud } from './git-cursor-cloud.js'
 import { GitCommandFailure, type GitExecutorOptions, type GitProcessExecutor } from './git-diff.js'
 
 const COMMAND_TIMEOUT_MS = 5_000
@@ -42,6 +43,10 @@ export type CreateWorktreeInput = {
   newBranchOnly?: boolean
   /** Refuse to create the branch: the caller is checking an existing one out again. */
   existingBranchOnly?: boolean
+  /** Fetch and check out the existing remote branch, preserving any local commits. */
+  fromRemote?: true
+  /** GitHub repository whose matching remote should be fetched. */
+  repoUrl?: string
   /** Told when the fetch and the checkout start, then how much of the checkout is done. */
   onProgress?: SessionCreationProgress
 }
@@ -223,13 +228,15 @@ export class GitWorktreeService {
   }
 
   /** Describe the repository containing `directory`, or `{ isRepo: false }`. */
-  async probe(directory: string): Promise<GitRepoInfo> {
+  async probe(directory: string, options: { github?: boolean } = {}): Promise<GitRepoInfo> {
     const identity = await this.repositoryIdentity(directory)
     if (!identity) return { isRepo: false }
     const { root, mainRoot, branch } = identity
     const defaultBranch = await this.defaultBranch(mainRoot)
+    const github = options.github ? await new GitCursorCloud(this.execute).probe(root, branch ?? '', defaultBranch).catch(() => undefined) : undefined
     return {
       isRepo: true,
+      ...(github ? { github } : {}),
       root,
       mainRoot,
       name: path.basename(mainRoot),
@@ -253,10 +260,27 @@ export class GitWorktreeService {
 
   async createWorktree(input: CreateWorktreeInput): Promise<CreateWorktreeResult> {
     // An existing branch may use any name git accepts (`feature/c++`); only names we pick follow the conservative rule.
-    const branch = input.existingBranchOnly ? await this.validateExistingBranchName(input.mainRoot, input.branch) : validateBranchName(input.branch)
+    const branch = input.existingBranchOnly || input.fromRemote ? await this.validateExistingBranchName(input.mainRoot, input.branch) : validateBranchName(input.branch)
     if (!path.isAbsolute(input.path)) throw new GitWorktreeError('bad-path', 'Worktree path must be absolute')
     const target = path.normalize(input.path)
     const cwd = input.mainRoot
+
+    const remote = input.fromRemote && input.repoUrl
+      ? await new GitCursorCloud(this.execute).matchingRemote(cwd, input.repoUrl)
+      : input.remote ?? REMOTE
+    const remoteRef = input.fromRemote ? `${remote}/${branch}` : undefined
+    if (remoteRef) {
+      input.onProgress?.('fetching')
+      try {
+        await this.git(cwd, ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remoteRef}`], this.fetchTimeoutMs, BUFFER_BYTES, undefined, true)
+      } catch (error) {
+        const detail = failureDetail(error)
+        if (detail.includes(`couldn't find remote ref refs/heads/${branch}`)) {
+          throw new GitWorktreeError('bad-branch', `${branch} isn't on GitHub yet.`)
+        }
+        throw new GitWorktreeError('exec', `Could not fetch ${branch} from ${remote}: ${detail}`)
+      }
+    }
 
     const branchExists = await this.refExists(cwd, `refs/heads/${branch}`)
     if (branchExists && input.newBranchOnly) throw new GitWorktreeError('branch-exists', `Branch ${branch} already exists`)
@@ -267,6 +291,18 @@ export class GitWorktreeService {
     // A branch can be registered twice (a stale entry plus a forced checkout); any other path counts as checked out.
     const attached = worktrees.find((entry) => entry.branch === branch && path.normalize(entry.path) !== target)
       ?? worktrees.find((entry) => entry.branch === branch)
+    let warning: string | undefined
+    let behind = 0
+    if (branchExists && remoteRef) {
+      const counts = (await this.git(cwd, ['rev-list', '--left-right', '--count', `refs/heads/${branch}...refs/remotes/${remoteRef}`])).stdout.trim().split(/\s+/u).map(Number)
+      if (counts[0] > 0) warning = `Local ${branch} has commits that aren't on GitHub; it wasn't updated.`
+      else behind = counts[1]
+    }
+    // A checkout already in use belongs to its caller: never update or roll it back.
+    if (input.fromRemote && attached && await this.pathExists(attached.path)) {
+      if (!warning && behind > 0) warning = `Already checked out at ${attached.path}; it's ${behind} commits behind GitHub — pull to update.`
+      return { worktree: { path: attached.path, branch, base: '', reusedBranch: true, ...(warning ? { warning } : {}) }, rollback: async () => undefined }
+    }
     if (attached && path.normalize(attached.path) === target) {
       if (await this.pathExists(target)) return { worktree: { path: target, branch, base: '', reusedBranch: true }, rollback: async () => undefined }
       if (!input.existingBranchOnly) {
@@ -284,16 +320,20 @@ export class GitWorktreeService {
     }
 
     if (branchExists) {
+      if (remoteRef && behind > 0) {
+        // A local fetch is fast-forward only and refuses a branch checked out by another caller
+        // since the list above. Unlike a forced ref update it cannot discard local commits.
+        await this.git(cwd, ['fetch', '.', `refs/remotes/${remoteRef}:refs/heads/${branch}`], this.fetchTimeoutMs)
+      }
       await this.worktreeAdd(cwd, [target, branch], input.onProgress)
       return {
-        worktree: { path: target, branch, base: '', reusedBranch: true },
+        worktree: { path: target, branch, base: '', reusedBranch: true, ...(warning ? { warning } : {}) },
         rollback: () => this.remove(cwd, target),
       }
     }
 
-    let warning: string | undefined
-    let base = 'HEAD'
-    if (input.defaultBranch) {
+    let base = remoteRef ?? 'HEAD'
+    if (!remoteRef && input.defaultBranch) {
       const remote = input.remote ?? REMOTE
       const remoteRef = `${remote}/${input.defaultBranch}`
       input.onProgress?.('fetching')
@@ -316,7 +356,7 @@ export class GitWorktreeService {
     // the cleanup below only ever deletes a branch this call made. (`worktree add -b` would keep the
     // branch when its checkout fails, and fail the same way when the name was taken.)
     try {
-      await this.git(cwd, ['branch', '--', branch, base])
+      await this.git(cwd, ['branch', ...(remoteRef ? ['--track'] : []), '--', branch, base])
     } catch (error) {
       if (await this.refExists(cwd, `refs/heads/${branch}`)) throw new GitWorktreeError('branch-exists', `Branch ${branch} already exists`)
       throw new GitWorktreeError('exec', `Cannot create branch ${branch} from ${base}: ${failureDetail(error)}`)
@@ -561,11 +601,11 @@ export class GitWorktreeService {
     }
   }
 
-  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES, onStderr?: (text: string) => void): Promise<{ stdout: string; stderr: string }> {
+  private git(cwd: string, args: string[], timeout = COMMAND_TIMEOUT_MS, maxBuffer = BUFFER_BYTES, onStderr?: (text: string) => void, batchSsh = false): Promise<{ stdout: string; stderr: string }> {
     const options: GitExecutorOptions = {
       cwd,
       encoding: 'utf8',
-      env: { ...this.environment, GIT_TERMINAL_PROMPT: '0' },
+      env: { ...this.environment, GIT_TERMINAL_PROMPT: '0', ...(batchSsh ? { GIT_SSH_COMMAND: `${this.environment.GIT_SSH_COMMAND ?? 'ssh'} -o BatchMode=yes` } : {}) },
       maxBuffer,
       shell: false,
       timeout,

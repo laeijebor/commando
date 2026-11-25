@@ -21,12 +21,15 @@ const USAGE = `Usage: commando-agent <claude|codex|muse|cursor|deepseek> [option
 
 Runs a provider session in this tmux pane and shows it as a chat in Commando.
 Codex uses the local codex app-server and Muse uses muse serve, each with its existing login.
-Cursor uses the local Cursor SDK; use /login to sign in.
+Cursor uses the Cursor SDK locally or in the cloud; use /login to sign in.
 DeepSeek uses Claude Code with its own API key and profile in ~/.commando/deepseek.
 
 Options:
   --config-dir DIR                 Claude config dir (default: $CLAUDE_CONFIG_DIR)
   --resume ID                      Resume an existing provider session
+  --runtime local|cloud            Cursor runtime (default: local)
+  --cloud-repo URL                 Cloud repository: https://github.com/owner/repo
+  --cloud-ref REF                  Cloud starting branch or ref (optional)
   --model MODEL                    Model to use
   --effort LEVEL                   low | medium | high | xhigh | max
   --fast                           Fast mode, on a model that offers it
@@ -52,6 +55,10 @@ function expandHome(path: string): string {
 
 export interface HostArgs {
   provider: ChatProvider
+  /** Cursor only; absent keeps the existing local launch and resume flags. */
+  runtime?: 'local' | 'cloud'
+  cloudRepo?: string
+  cloudRef?: string
   configDir?: string
   resume?: string
   model?: string
@@ -90,6 +97,26 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
     }
     try {
       switch (flag) {
+        case '--runtime': {
+          if (provider !== 'cursor') return `--runtime is only for cursor\n\n${USAGE}`
+          const runtime = needValue()
+          if (runtime !== 'local' && runtime !== 'cloud') return `Unknown runtime: ${runtime}\n\n${USAGE}`
+          args.runtime = runtime
+          break
+        }
+        case '--cloud-repo':
+        case '--cloud-ref': {
+          if (provider !== 'cursor') return `${flag} is only for cursor\n\n${USAGE}`
+          const input = needValue()
+          if (flag === '--cloud-repo') {
+            if (!/^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/.test(input) || input !== input.trim() || input.endsWith('.git') || /\/(?:\.|\.\.)$/.test(input)) return `Invalid cloud repository: ${input}\n\n${USAGE}`
+            args.cloudRepo = input
+          } else {
+            if (!/^[A-Za-z0-9._/-]{1,200}$/.test(input) || input !== input.trim() || input.startsWith('-') || input.includes('..')) return `Invalid cloud ref: ${input}\n\n${USAGE}`
+            args.cloudRef = input
+          }
+          break
+        }
         case '--config-dir': args.configDir = expandHome(needValue()); break
         case '--resume': args.resume = needValue(); break
         case '--model': {
@@ -152,6 +179,8 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
     }
   }
   if (args.resume && !/^[A-Za-z0-9-]{8,80}$/.test(args.resume)) return `Invalid session id: ${args.resume}`
+  if (args.runtime === 'cloud' && !args.cloudRepo) return '--cloud-repo is required with --runtime cloud'
+  if (args.runtime !== 'cloud' && (args.cloudRepo !== undefined || args.cloudRef !== undefined)) return '--cloud-repo and --cloud-ref require --runtime cloud'
   return args
 }
 
@@ -173,6 +202,9 @@ export function restartEnv(provider: ChatProvider, env: Record<string, string | 
 /** The flags that recreate this chat pane's session settings (no prompt, no resume target). */
 export function sessionFlags(args: HostArgs): string[] {
   return [
+    ...(args.runtime ? ['--runtime', args.runtime] : []),
+    ...(args.cloudRepo ? ['--cloud-repo', args.cloudRepo] : []),
+    ...(args.cloudRef ? ['--cloud-ref', args.cloudRef] : []),
     ...(args.configDir ? ['--config-dir', args.configDir] : []),
     ...(args.model ? ['--model', args.model] : []),
     ...(args.effort ? ['--effort', args.effort] : []),
@@ -291,6 +323,7 @@ async function main(): Promise<void> {
       paneId,
       cwd: process.cwd(),
       permissionMode: parsed.permissionMode,
+      ...(parsed.runtime === 'cloud' ? { cursorCloud: { repoUrl: parsed.cloudRepo!, ...(parsed.cloudRef ? { startingRef: parsed.cloudRef } : {}) } } : {}),
       ...(parsed.prePlanPermissionMode ? { prePlanPermissionMode: parsed.prePlanPermissionMode } : {}),
       env: process.env,
       ...(parsed.configDir ? { configDir: parsed.configDir } : {}),
@@ -442,6 +475,10 @@ async function main(): Promise<void> {
     const now = Date.now()
     if (now - lastInterrupt < 1500) return quit()
     lastInterrupt = now
+    if (parsed.runtime === 'cloud') {
+      write(dim('Press Ctrl-C again to detach. Use Stop in the chat to cancel the cloud run.'))
+      return
+    }
     write(dim('Interrupting… (Ctrl-C again to quit)'))
     void session.interrupt()
   })

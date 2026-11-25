@@ -3,6 +3,7 @@ import { type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent
 import { ChevronRight, GitBranch, Paperclip } from 'lucide-react'
 import {
   chatPermissionModes,
+  CURSOR_CLOUD_PERMISSION_MODES,
   isChatLaunchProvider,
   chatProfileConfigDir,
   defaultWorktreePath,
@@ -327,7 +328,7 @@ export function TmuxCreateControls({
   const repo = repoProbe && repoProbe.directory === workingDirectory && repoProbe.info.isRepo && repoProbe.info.mainRoot
     ? repoProbe.info
     : null
-  const unavailable = disabled || pending || namingWith !== null || (probing && !repo)
+  const unavailable = disabled || pending || namingWith !== null || (probing && (!repo || (agentProvider === 'cursor-chat' && chatLaunch.cursorRuntime === 'cloud')))
   const notRepo = Boolean(probeRepo && workingDirectory && repoProbe && repoProbe.directory === workingDirectory && !repoProbe.info.isRepo)
   const promptAccepted = takesPrompt(agentProvider)
   const imagesAccepted = takesImages(agentProvider)
@@ -336,7 +337,10 @@ export function TmuxCreateControls({
   const autoName = !sessionName.trim() && promptGiven
   const effectiveBranch = branchEdited ? branch : sanitizeBranchName(sessionName)
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>', repo.worktreesParent) : '')
-  const worktreeRequested = Boolean(repo && worktreeEnabled)
+  const cursorCloud = agentProvider === 'cursor-chat' && chatLaunch.cursorRuntime === 'cloud' && Boolean(repo?.github)
+  const cloudPermissionMode = chatLaunch.permissionMode === 'plan' ? 'plan' : 'bypassPermissions'
+  const permissionMode = cursorCloud ? cloudPermissionMode : chatLaunch.permissionMode
+  const worktreeRequested = Boolean(repo && worktreeEnabled && !cursorCloud)
   const prepareRequested = prepareEnabled && Boolean(prepareCommand.trim())
   const workspaceOpen = workspaceChoice ?? (notRepo || probeTimedOut)
 
@@ -444,7 +448,7 @@ export function TmuxCreateControls({
   const modelChoicesShown = !listKnown && wantedModel && !models.some((model) => model.value === wantedModel)
     ? [...models, { value: wantedModel, displayName: wantedModel }]
     : models
-  const permissionModes = isChatLaunchProvider(agentProvider) ? chatPermissionModes(agentProvider) : []
+  const permissionModes = cursorCloud ? CURSOR_CLOUD_PERMISSION_MODES : isChatLaunchProvider(agentProvider) ? chatPermissionModes(agentProvider) : []
   // Who will name the session: the naming model while it works here, else the chat's own (Claude or Codex).
   const chatModelLabel = chatProvider === 'claude' || chatProvider === 'codex'
     ? (selectedModel === 'default' ? (chatProvider === 'claude' ? 'Claude' : 'Codex') : models.find((model) => model.value === selectedModel)?.displayName ?? selectedModel)
@@ -640,15 +644,16 @@ export function TmuxCreateControls({
         const model = chatProvider && selectedModel !== 'default' ? selectedModel : undefined
         request.agent = {
           provider: agentProvider,
+          ...(cursorCloud && repo?.github ? { cursorCloud: { repoUrl: repo.github.repoUrl, ref: repo.github.ref } } : {}),
           ...(promptAccepted && openingPrompt.trim() ? { prompt: openingPrompt } : {}),
           ...(imagesAccepted && attachments.refs.length ? { images: attachments.refs } : {}),
           ...(model ? { model } : {}),
           ...(fast ? { fast: true as const } : {}),
-          ...(isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat' ? chatLaunchPermission(agentProvider, chatLaunch.permissionMode) : {}),
+          ...(isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat' ? chatLaunchPermission(agentProvider, permissionMode) : {}),
           ...(agentProvider === 'claude-chat' ? { permissionMode: chatLaunch.permissionMode } : {}),
           ...(usesClaudeProfile(agentProvider) && claudeConfigDir ? { configDir: claudeConfigDir } : {}),
         }
-        if (isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat') saveChatLaunch(repoKey, { permissionMode: chatLaunch.permissionMode }, agentProvider, host)
+        if (isChatLaunchProvider(agentProvider) && agentProvider !== 'claude-chat') saveChatLaunch(repoKey, { permissionMode, ...(agentProvider === 'cursor-chat' ? { cursorRuntime: cursorCloud ? 'cloud' as const : 'local' as const } : {}) }, agentProvider, host)
         if (usesClaudeProfile(agentProvider)) {
           // Keep a remembered profile even when the list could not be loaded this time.
           const remembered = agentProvider === 'claude-chat' ? chatLaunch : loadChatLaunch(repoKey, 'claude-chat', host)
@@ -780,6 +785,22 @@ export function TmuxCreateControls({
           {attachments.error} <button type="button" className="tmux-create__link" onClick={attachments.dismissError}>Dismiss</button>
         </p>
       ) : null}
+      {agentProvider === 'cursor-chat' ? (
+        <div className="tmux-create__runtime">
+          <div role="group" aria-label="Run on" className="tmux-create__runtime-options">
+            <button type="button" aria-pressed={!cursorCloud} disabled={unavailable} onClick={() => setChatLaunch((current) => ({ ...current, cursorRuntime: 'local' }))}>This Mac</button>
+            <span title={!repo?.github ? 'Cursor cloud needs a GitHub remote and a starting branch.' : undefined}>
+              <button type="button" aria-pressed={cursorCloud} disabled={unavailable || !repo?.github} onClick={() => setChatLaunch((current) => ({ ...current, cursorRuntime: 'cloud' }))}>Cursor cloud</button>
+            </span>
+          </div>
+          {cursorCloud && repo?.github ? (
+            <>
+              <p className="tmux-create__cloud-repo">{repo.github.repoUrl.replace('https://github.com/', '')} · from {repo.github.ref}</p>
+              {!repo.github.pushed || repo.github.ahead > 0 || repo.github.behind > 0 ? <p className="tmux-create__message is-warning">Cursor's cloud starts from {repo.github.remote}/{repo.github.ref}; local commits that aren't pushed won't be there.</p> : null}
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <div className="tmux-create__prompt-bar">
         {imagesAccepted ? (
           <>
@@ -816,7 +837,7 @@ export function TmuxCreateControls({
         {permissionModes.length ? (
           <NewSessionPermissionPicker
             modes={permissionModes}
-            selected={chatLaunch.permissionMode}
+            selected={permissionMode}
             disabled={unavailable}
             onPick={(permissionMode) => setChatLaunch((current) => ({ ...current, permissionMode }))}
           />
@@ -825,7 +846,7 @@ export function TmuxCreateControls({
     </div>
   )
 
-  const worktreeBlock = repo ? (
+  const worktreeBlock = repo && !cursorCloud ? (
     <div className="tmux-create__worktree">
       <label className="tmux-create__toggle">
         <input
@@ -1050,7 +1071,7 @@ export function TmuxCreateControls({
   const panel = (
     <div className="tmux-create__panel">
       <form ref={formRef} onSubmit={submit} onPaste={onPaste} onKeyDown={onKeyDown} aria-busy={pending}>
-        <p className="tmux-create__message">Runs on {hostName}</p>
+        <p className="tmux-create__message">{cursorCloud ? 'Runs in Cursor cloud' : `Runs on ${hostName}`}</p>
         {destination}
         <label>
           Session name <span>{promptGiven ? 'optional' : promptAccepted ? 'required without a prompt' : ''}</span>

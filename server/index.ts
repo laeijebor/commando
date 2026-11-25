@@ -90,6 +90,7 @@ import { defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
+import { CursorCloudAgentsApi } from './cursor-cloud-agents.js'
 import { createCloudConnections } from './cloud-connections.js'
 import { handleNotesApi } from './notes-api.js'
 import { ChatPlanStore, handleChatPlans } from './chat-plans.js'
@@ -1825,6 +1826,12 @@ async function main(): Promise<void> {
     (creations) => broadcast({ type: 'session_creations', creations }),
   )
 
+  const cursorCloudAgentsApi = new CursorCloudAgentsApi({
+    chatSessions: () => agentHosts.states().map((state) => state.session),
+    snapshot: () => snapshot,
+    creations: sessionCreations,
+  })
+
   const sessionIdes = new SessionIdeService({
     dataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides'),
     legacyDataDirectory: process.env.COMMANDO_IDE_DATA_DIR ?? join(homedir(), '.commando', 'ides', String(port)),
@@ -1942,7 +1949,7 @@ async function main(): Promise<void> {
       ? (file, args, options) => file === 'gh' ? Promise.reject(new Error(githubOffReason)) : defaultGitProcessExecutor(file, args, options)
       : defaultGitProcessExecutor, process.env, Date.now, undefined, prs.githubGate),
     panePath: (paneId) => paneForId(paneId)?.path,
-    repoInfo: (directory) => gitWorktrees.probe(directory),
+    repoInfo: (directory) => gitWorktrees.probe(directory, { github: true }),
     panePullRequestEvidence: async (paneId) => {
       const status = agentStatuses.get(paneId)
       if (!status || status.provider === 'unknown') return undefined
@@ -3254,6 +3261,7 @@ async function main(): Promise<void> {
           }
           if (await handleCloudTasksApi(request, response, url, cloudTasks)) return
         }
+        if (await cursorCloudAgentsApi.handle(request, response, url)) return
         if (await handleNoteVaultsApi(request, response, url, notes)) return
         if (await handleNotesApi(request, response, url, notes)) return
         if (await handleLinearApi(request, response, url, linear)) return

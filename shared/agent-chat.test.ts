@@ -313,3 +313,65 @@ describe('steering the whole queue', () => {
     expect(takeQueueBatch([])).toEqual({ batch: [], rest: [] })
   })
 })
+
+describe('Cursor cloud session info', () => {
+  const cloud = { provider: 'cursor', repoUrl: 'https://github.com/acme/app', startingRef: 'main', branch: 'cursor/feature', prUrl: 'https://github.com/acme/app/pull/1', webUrl: 'https://cursor.com/agents/bc-cloud123' }
+  it('keeps cloud fields through host session snapshot and update parsing', () => {
+    const info = { ...session, provider: 'cursor', sessionId: 'bc-cloud123', cloud: { ...cloud, unknown: 'dropped' } }
+    expect(parseChatSessionInfo(info)?.cloud).toEqual(cloud)
+    for (const type of ['session_snapshot', 'session_update']) {
+      const message = parseHostMessage({ type, session: info, items: [] })
+      expect(message && 'session' in message && message.session.cloud).toEqual(cloud)
+    }
+  })
+  it('drops malformed optional cloud fields without losing the session', () => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, startingRef: 1, branch: {}, prUrl: null, webUrl: false } })?.cloud).toEqual({ provider: 'cursor', repoUrl: cloud.repoUrl })
+    for (const bad of [null, {}, { provider: 'other', repoUrl: cloud.repoUrl }, { provider: 'cursor', repoUrl: 1 }]) expect(parseChatSessionInfo({ ...session, cloud: bad })).toEqual(session)
+  })
+  it.each(['https://github.com/acme/app', 'https://github.com/org-name/repo.name_1-2'])('accepts repository URL %j', (repoUrl) => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, repoUrl } })?.cloud).toEqual({ ...cloud, repoUrl })
+  })
+  it.each([
+    'http://github.com/acme/app', 'javascript:alert(1)', 'https://gitlab.com/acme/app', 'https://github.com.evil/acme/app',
+    'https://user:password@github.com/acme/app', 'https://github.com:443/acme/app', 'https://github.com:8443/acme/app',
+    'https://github.com/acme/app.git', 'https://github.com/acme/app?query=1', 'https://github.com/acme/app#frag',
+    'https://github.com/acme/app/', 'https://github.com/acme/app/extra', 'https://github.com/acme',
+    'https://github.com/acme/.', 'https://github.com/acme/..', 'https://github.com/acme/a%70p',
+    'https://github.com/acme/app\n', ' https://github.com/acme/app', 'https://github.com/acme\\app', '',
+  ])('drops the whole cloud object for invalid repository URL %j', (repoUrl) => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, repoUrl } })).toEqual(session)
+  })
+  it.each(['main', 'feature/cloud-1.2_test', 'x'.repeat(200)])('accepts branch and starting ref %j', (ref) => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, branch: ref, startingRef: ref } })?.cloud).toEqual({ ...cloud, branch: ref, startingRef: ref })
+  })
+  it.each(['', '-main', '--main', '..', 'a..b', 'feature/../main', 'main space', 'main@x', 'main\n', 'main\t', 'feature\\main', 'x'.repeat(201)])('drops invalid branch and starting ref %j', (ref) => {
+    const { branch: _branch, startingRef: _startingRef, ...expected } = cloud
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, branch: ref, startingRef: ref } })?.cloud).toEqual(expected)
+  })
+  it.each(['https://github.com/acme/app/pull/1', 'https://github.com/acme/app/pull/1?diff=split#review', 'https://github.com/acme/app/pull/1/files'])('accepts GitHub HTTPS PR URL %j', (prUrl) => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, prUrl } })?.cloud).toEqual({ ...cloud, prUrl })
+  })
+  it.each([
+    'http://github.com/acme/app/pull/1', 'javascript:alert(1)', 'data:text/html,test', 'https://evil.com/acme/app/pull/1',
+    'https://github.com.evil/acme/app/pull/1', 'https://sub.github.com/acme/app/pull/1', 'https://github.com@evil.com/pull/1',
+    'https://evil.com@github.com/acme/app/pull/1', 'https://github.com:8443/acme/app/pull/1', '//github.com/acme/app/pull/1',
+    'https:github.com/acme/app/pull/1', 'https://github.com/acme/app/pull/1\n', 'https://github.com\\acme/app/pull/1',
+    `https://github.com/${'x'.repeat(4096)}`, '',
+  ])('drops invalid PR URL %j without dropping other cloud fields', (prUrl) => {
+    const { prUrl: _prUrl, ...expected } = cloud
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, prUrl } })?.cloud).toEqual(expected)
+  })
+  it.each(['https://cursor.com/agents/bc-cloud123', 'https://cursor.com/agents/bc-11111111-2222-3333-4444-555555555555'])('accepts Cursor cloud agent URL %j', (webUrl) => {
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, webUrl } })?.cloud).toEqual({ ...cloud, webUrl })
+  })
+  it.each([
+    'http://cursor.com/agents/bc-cloud123', 'javascript:alert(1)', 'https://cursor.com.evil/agents/bc-cloud123',
+    'https://evil.com@cursor.com/agents/bc-cloud123', 'https://cursor.com:443/agents/bc-cloud123', 'https://www.cursor.com/agents/bc-cloud123',
+    'https://cursor.com/agents/bc-cloud123?query=1', 'https://cursor.com/agents/bc-cloud123#frag', 'https://cursor.com/agents/bc-cloud123/',
+    'https://cursor.com/agents/bc-cloud123/more', 'https://cursor.com/agents/agent-local123', 'https://cursor.com/agents/bc-',
+    'https://cursor.com/agents/bc-cloud_123', 'https://cursor.com/agents/%62c-cloud123', 'https://cursor.com/agents/bc-cloud123\n', '',
+  ])('drops invalid cloud agent URL %j without dropping other cloud fields', (webUrl) => {
+    const { webUrl: _webUrl, ...expected } = cloud
+    expect(parseChatSessionInfo({ ...session, cloud: { ...cloud, webUrl } })?.cloud).toEqual(expected)
+  })
+})

@@ -74,6 +74,7 @@
 }
 
 .tmux-create form {
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -448,3 +449,11 @@
 .tmux-create__submit kbd { border-radius: 4px; background: rgb(0 0 0 / 14%); padding: 1px 5px; font: inherit; font-size: .9em; font-weight: 600; }
 /* With images above it, the text box can start smaller. */
 .tmux-create .tmux-create__attachments + textarea { min-height: 3.2em; }
+
+.tmux-create__runtime { min-width: 0; margin: 4px 5px; color: var(--muted); }
+.tmux-create__runtime-options { display: inline-flex; align-items: center; max-width: 100%; padding: 2px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 9.5px; }
+.tmux-create__runtime-options > span { display: flex; min-width: 0; }
+.tmux-create__runtime-options button { height: 22px; padding: 0 7px; border: 0; border-radius: 999px; font: inherit; white-space: nowrap; color: var(--text-soft); background: transparent; cursor: pointer; }
+.tmux-create__runtime-options button:hover:not(:disabled), .tmux-create__runtime-options button[aria-pressed="true"] { background: var(--surface-hover); color: var(--text); }
+.tmux-create__runtime-options button:disabled { opacity: .5; cursor: default; }
+.tmux-create__cloud-repo { min-width: 0; margin: 4px 2px 0; color: var(--muted-dim); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }

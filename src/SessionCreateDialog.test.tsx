@@ -59,7 +59,7 @@ describe('Cursor chat creation dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start chat' }))
     await waitFor(() => expect(onCreateSession).toHaveBeenCalledOnce())
     expect(onCreateSession.mock.calls[0]![0].agent).toEqual({ provider: 'cursor-chat', permissionMode: 'auto', prompt: 'Hello Cursor' })
-    expect(loadChatLaunch('/tmp', 'cursor-chat')).toEqual({ permissionMode: 'auto' })
+    expect(loadChatLaunch('/tmp', 'cursor-chat')).toEqual({ permissionMode: 'auto', cursorRuntime: 'local' })
   })
   it('keeps Cursor preferences isolated and discards modes or profiles belonging to Claude', () => {
     expect(loadChatLaunch('/work', 'cursor-chat')).toEqual({ permissionMode: 'bypassPermissions' })

@@ -311,3 +311,14 @@ describe('Cursor chat restore', () => {
     expect(chatReturnCommand(id, '/c/launcher', [], {}, 'cursor')).toBeNull()
   })
 })
+
+describe('Cursor cloud chat restore', () => {
+  it('preserves cloud flags and the bc id with current picker settings, and recognizes the host command', () => {
+    const args = 'node /c/server/agent-host/main.ts cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud --model old --resume bc-old123 --prompt hello --runtime local'
+    const command = buildChatResumeCommand('bc-cloud123', '/c/scripts/commando-agent', launchFromProcess('cursor', args, args), {}, { model: 'auto', permissionMode: 'plan', prePlanPermissionMode: 'bypassPermissions' })
+    expect(command).toBe('/c/scripts/commando-agent cursor --runtime cloud --cloud-repo https://github.com/acme/app --cloud-ref feature/cloud --model auto --permission-mode plan --pre-plan-permission-mode bypassPermissions --resume bc-cloud123')
+    expect(isChatResumeCommand(command!)).toBe(true)
+    expect(isChatResumeCommand(command!.replace('--runtime cloud', '--runtime=cloud'))).toBe(true)
+    expect(isChatResumeCommand(command!.replace('--runtime cloud', '--runtime local'))).toBe(false)
+  })
+})

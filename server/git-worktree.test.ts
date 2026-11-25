@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -416,6 +416,188 @@ describe('GitWorktreeService.createWorktree', () => {
     await expect(new GitWorktreeService(reused.execute, { pathExists: async () => false })
       .createWorktree({ mainRoot: MAIN, branch: 'bot-rematch-flow', path: target })).rejects.toMatchObject({ kind: 'exec' })
     expect(reused.calls.some((call) => call.args[0] === 'branch')).toBe(false)
+  })
+})
+
+describe('GitWorktreeService remote branches', () => {
+  const branch = 'cursor/fix+c++'
+  const roots: string[] = []
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+  async function repository() {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-remote-worktree-')))
+    roots.push(root)
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    const publisher = path.join(root, 'publisher')
+    const main = path.join(root, 'local')
+    const remote = path.join(root, 'remote.git')
+    const target = path.join(root, 'worktrees', branch)
+    run(root, 'init', '--bare', '--initial-branch=main', remote)
+    run(root, 'init', '--initial-branch=main', publisher)
+    const configure = (cwd: string) => {
+      run(cwd, 'config', 'user.name', 'Test')
+      run(cwd, 'config', 'user.email', 'test@example.com')
+      run(cwd, 'config', 'commit.gpgsign', 'false')
+      run(cwd, 'config', 'core.hooksPath', '/dev/null')
+    }
+    configure(publisher)
+    writeFileSync(path.join(publisher, 'file'), 'initial')
+    run(publisher, 'add', 'file')
+    run(publisher, 'commit', '-qm', 'initial')
+    run(publisher, 'remote', 'add', 'origin', remote)
+    run(publisher, 'push', 'origin', 'main')
+    run(root, 'clone', remote, main)
+    configure(main)
+    run(publisher, 'switch', '-c', branch)
+    const push = () => {
+      writeFileSync(path.join(publisher, 'file'), 'remote change')
+      run(publisher, 'add', 'file')
+      run(publisher, 'commit', '-qm', 'remote change')
+      run(publisher, 'push', 'origin', branch)
+      return run(publisher, 'rev-parse', 'HEAD')
+    }
+    const input = { mainRoot: main, branch, path: target, fromRemote: true as const }
+    const service = new GitWorktreeService(undefined, { removeTree: async (directory) => { rmSync(directory, { recursive: true, force: true }) } })
+    return { root, main, publisher, target, run, push, input, service }
+  }
+
+  it('fetches a remote-only branch and creates a tracking worktree using git branch validation', async () => {
+    const { main, target, run, push, input, service } = await repository()
+    const remoteHead = push()
+    const onProgress = vi.fn()
+    const result = await service.createWorktree({ ...input, onProgress, defaultBranch: 'main' })
+    expect(result.worktree).toEqual({ path: target, branch, base: `origin/${branch}`, reusedBranch: false })
+    expect(run(target, 'rev-parse', 'HEAD')).toBe(remoteHead)
+    expect(run(target, 'rev-parse', '--abbrev-ref', '@{upstream}')).toBe(`origin/${branch}`)
+    expect(run(main, 'branch', '--show-current')).toBe('main')
+    expect(onProgress.mock.calls.map(([stage]) => stage)).toEqual(expect.arrayContaining(['fetching', 'checking-out']))
+  })
+
+  it('fetches again after a remote force push while preserving the previous local tip', async () => {
+    const { main, publisher, target, run, push, input, service } = await repository()
+    const original = push()
+    const first = await service.createWorktree(input)
+    // Remove just the checkout so the existing branch is exercised on the next checkout.
+    run(main, 'worktree', 'remove', target)
+    run(publisher, 'commit', '--amend', '-m', 'rewritten cloud change')
+    run(publisher, 'push', '--force', 'origin', branch)
+    const rewritten = run(publisher, 'rev-parse', 'HEAD')
+    expect(rewritten).not.toBe(original)
+    const second = await service.createWorktree(input)
+    expect(run(main, 'rev-parse', `refs/remotes/origin/${branch}`)).toBe(rewritten)
+    expect(run(target, 'rev-parse', 'HEAD')).toBe(original)
+    expect(second.worktree.warning).toBe(`Local ${branch} has commits that aren't on GitHub; it wasn't updated.`)
+    expect(first.worktree.reusedBranch).toBe(false)
+  })
+
+  it('fetches from the matching cloud repository in a fork setup, or errors before fetching', async () => {
+    const { main, target, run, push, input } = await repository()
+    const remoteHead = push()
+    run(main, 'remote', 'rename', 'origin', 'upstream')
+    run(main, 'remote', 'set-url', 'upstream', 'git@github.com:Acme/App.git')
+    run(main, 'remote', 'add', 'origin', 'https://github.com/fork/app')
+    const bare = path.join(path.dirname(main), 'remote.git')
+    const execute = vi.fn(async (_file: string, args: readonly string[], options: GitExecutorOptions) => {
+      return { stdout: run(options.cwd, ...(args[0] === 'fetch' && args[1] === 'upstream' ? ['fetch', bare, ...args.slice(2)] : args)), stderr: '' }
+    })
+    const service = new GitWorktreeService(execute)
+    await expect(service.createWorktree({ ...input, repoUrl: 'https://github.com/missing/app' })).rejects.toThrow('No GitHub remote matches the Cursor cloud repository')
+    expect(execute.mock.calls.some(([, args]) => args[0] === 'fetch')).toBe(false)
+    const result = await service.createWorktree({ ...input, repoUrl: 'https://github.com/acme/app' })
+    expect(result.worktree.base).toBe(`upstream/${branch}`)
+    expect(run(target, 'rev-parse', 'HEAD')).toBe(remoteHead)
+    expect(execute).toHaveBeenCalledWith('git', ['fetch', 'upstream', `+refs/heads/${branch}:refs/remotes/upstream/${branch}`], expect.anything())
+  })
+
+  it('fast-forwards a strictly behind local branch and rollback keeps that branch', async () => {
+    const { main, target, run, push, input, service } = await repository()
+    run(main, 'branch', branch)
+    const remoteHead = push()
+    const result = await service.createWorktree(input)
+    expect(result.worktree).toMatchObject({ reusedBranch: true })
+    expect(result.worktree.warning).toBeUndefined()
+    expect(run(target, 'rev-parse', 'HEAD')).toBe(remoteHead)
+    await result.rollback()
+    expect(existsSync(target)).toBe(false)
+    expect(run(main, 'rev-parse', branch)).toBe(remoteHead)
+    expect(run(main, 'branch', '--show-current')).toBe('main')
+  })
+
+  it.each(['diverged', 'ahead'])('keeps a local branch that is %s and warns about unpushed commits', async (state) => {
+    const { main, target, run, push, input, service } = await repository()
+    run(main, 'branch', branch)
+    if (state === 'diverged') push()
+    else run(main, 'push', 'origin', branch)
+    const localHead = run(main, 'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'local only')
+    run(main, 'update-ref', `refs/heads/${branch}`, localHead)
+    const result = await service.createWorktree(input)
+    expect(run(target, 'rev-parse', 'HEAD')).toBe(localHead)
+    expect(result.worktree.warning).toBe(`Local ${branch} has commits that aren't on GitHub; it wasn't updated.`)
+  })
+
+  it('errors when the branch is not on the remote, even with a stale remote-tracking ref', async () => {
+    const { main, publisher, target, run, push, input, service } = await repository()
+    push()
+    run(main, 'fetch', 'origin', branch)
+    run(publisher, 'push', 'origin', '--delete', branch)
+    await expect(service.createWorktree(input)).rejects.toMatchObject({ message: `${branch} isn't on GitHub yet.` })
+    expect(existsSync(target)).toBe(false)
+    expect(run(main, 'branch', '--list', branch)).toBe('')
+  })
+
+  it('returns an existing worktree without updating its branch or touching its uncommitted files', async () => {
+    const { root, main, target, run, push, input, service } = await repository()
+    const existing = path.join(root, 'existing')
+    run(main, 'worktree', 'add', '-b', branch, existing)
+    const localHead = run(existing, 'rev-parse', 'HEAD')
+    writeFileSync(path.join(existing, 'file'), 'uncommitted')
+    push()
+    const result = await service.createWorktree(input)
+    expect(result.worktree).toMatchObject({ path: existing, branch, reusedBranch: true,
+      warning: `Already checked out at ${existing}; it's 1 commits behind GitHub — pull to update.`,
+    })
+    await result.rollback()
+    expect(run(existing, 'rev-parse', 'HEAD')).toBe(localHead)
+    expect(readFileSync(path.join(existing, 'file'), 'utf8')).toBe('uncommitted')
+    expect(existsSync(target)).toBe(false)
+  })
+
+  it('rolls back only the new worktree and tracking branch', async () => {
+    const { main, target, run, push, input, service } = await repository()
+    push()
+    const original = run(main, 'rev-parse', 'HEAD')
+    const result = await service.createWorktree(input)
+    await result.rollback()
+    expect(existsSync(target)).toBe(false)
+    expect(run(main, 'branch', '--list', branch)).toBe('')
+    expect(run(main, 'rev-parse', 'HEAD')).toBe(original)
+  })
+
+  it('removes its new branch after checkout fails, preserving other branches', async () => {
+    const { main, target, run, push, input } = await repository()
+    push()
+    const execute = vi.fn(async (_file: string, args: readonly string[], options: GitExecutorOptions) => {
+      if (args.includes('add') && args.includes('worktree')) throw new GitCommandFailure('checkout failed', 'disk full', false)
+      return { stdout: run(options.cwd, ...args), stderr: '' }
+    })
+    await expect(new GitWorktreeService(execute).createWorktree(input)).rejects.toThrow('disk full')
+    expect(run(main, 'branch', '--list', branch)).toBe('')
+    expect(run(main, 'branch', '--show-current')).toBe('main')
+    expect(existsSync(target)).toBe(false)
+  })
+
+  it('fetches the exact branch noninteractively with batch SSH and the configured timeout', async () => {
+    const git = fakeGit([
+      [['check-ref-format'], branch],
+      [['fetch'], exit(128, 'Permission denied (publickey)')],
+    ])
+    await expect(new GitWorktreeService(git.execute, { fetchTimeoutMs: 1234 }).createWorktree({
+      mainRoot: MAIN, branch, path: '/tmp/cloud', fromRemote: true, remote: 'github',
+    })).rejects.toThrow('Could not fetch')
+    expect(git.execute.mock.calls[1]).toEqual(['git', ['fetch', 'github', `+refs/heads/${branch}:refs/remotes/github/${branch}`], expect.objectContaining({
+      timeout: 1234,
+      env: expect.objectContaining({ GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: expect.stringContaining('-o BatchMode=yes') }),
+    })])
   })
 })
 

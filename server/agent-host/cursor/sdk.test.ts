@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ConversationTurn } from '@cursor/sdk'
+import type { ConversationTurn, SDKMessage } from '@cursor/sdk'
 import { MAX_CHAT_ITEMS } from '../../../shared/agent-chat.js'
-import { cursorHistory } from './sdk.js'
+import { cloudStreamUpdates, cursorCloudHistory, cursorHistory, loadCursorSdk, type CursorCloudRun } from './sdk.js'
 import { CursorItemMapper } from './items.js'
 
 const turn = (text: string): ConversationTurn => ({ type: 'agentConversationTurn', turn: { userMessage: { text }, steps: [] } })
@@ -109,5 +109,182 @@ describe('cursorHistory', () => {
     const log = vi.fn()
     expect(await cursorHistory(runs([reply('Reply')]), 'agent', '/w', log, async () => { throw new Error('messages unavailable') })).toEqual({ turns: [reply('Reply')], skipped: 0 })
     expect(log).toHaveBeenCalledWith("Couldn't load Cursor user messages: messages unavailable")
+  })
+})
+
+const cloudRun = (id: string, createdAt: number, turns: ConversationTurn[], extra: Partial<CursorCloudRun> = {}): CursorCloudRun => ({
+  id, createdAt, status: 'finished', conversation: async () => turns, stream: async function* () {},
+  wait: async () => ({ id, status: 'finished' }), cancel: async () => {}, ...extra,
+})
+describe('cursorCloudHistory', () => {
+  it('reads four conversations concurrently while preserving chronology despite out-of-order completion', async () => {
+    let active = 0; let peak = 0
+    const completed: number[] = []
+    const runs = Array.from({ length: 8 }, (_, index) => cloudRun(String(index), index, [], {
+      conversation: async () => {
+        active++; peak = Math.max(peak, active)
+        await new Promise((resolve) => setTimeout(resolve, (index % 4) * 5))
+        active--; completed.push(index)
+        return [turn(String(index))]
+      },
+    }))
+    expect(await cursorCloudHistory(async () => ({ items: runs }), 'bc-agent')).toEqual({ turns: runs.map((_, index) => turn(String(index))), skipped: 0, runIds: runs.map((run) => run.id).reverse(), skippedRunning: [] })
+    expect(peak).toBe(4)
+    expect(completed[0]).not.toBe(7)
+    expect(completed).toHaveLength(8)
+  })
+  it('pages cloud runs, orders by createdAt, keeps prompts, skips unreadable runs and selects the newest git info', async () => {
+    const git = { repoUrl: 'https://github.com/acme/app', branch: 'cursor/new', prUrl: 'https://github.com/acme/app/pull/4' }
+    const read = vi.fn(async (_id: string, options: { cursor?: string }) => options.cursor ? { items: [
+      cloudRun('old', 1, [turn('Old prompt')], { git: { branches: [{ ...git, branch: 'cursor/old' }] } }),
+      cloudRun('broken', 3, [], { conversation: async () => { throw new Error('unreadable') } }),
+    ] } : { items: [cloudRun('new', 4, [turn('New prompt'), turn('Steer')]), cloudRun('middle', 2, [turn('Middle prompt')], { git: { branches: [git] } })], nextCursor: 'page2' })
+    const log = vi.fn()
+    expect(await cursorCloudHistory(read, 'bc-agent', log)).toEqual({ turns: [turn('Old prompt'), turn('Middle prompt'), turn('New prompt'), turn('Steer')], skipped: 1, runIds: ['new', 'broken', 'middle', 'old'], skippedRunning: [], git })
+    expect(read.mock.calls).toEqual([['bc-agent', { runtime: 'cloud', limit: 100 }], ['bc-agent', { runtime: 'cloud', limit: 100, cursor: 'page2' }]])
+    expect(log).toHaveBeenCalledWith("Couldn't load a Cursor run: unreadable")
+  })
+  it('keeps the newest mapped items and stops prefetching batches once the window is full', async () => {
+    const old = vi.fn(async () => [turn('Old')])
+    const newest = Array.from({ length: MAX_CHAT_ITEMS + 4 }, (_, i) => turn(String(i)))
+    const log = vi.fn()
+    expect(await cursorCloudHistory(async () => ({ items: [
+      cloudRun('old', 1, [], { conversation: old }),
+      cloudRun('prefetched', 2, [turn('Prefetched')]),
+      cloudRun('unreadable', 3, [], { conversation: async () => { throw new Error('Outside the item window') } }),
+      cloudRun('recent', 4, [turn('Recent')]), cloudRun('new', 5, newest),
+    ] }), 'bc-agent', log)).toEqual({ turns: newest.slice(-MAX_CHAT_ITEMS), skipped: 0, runIds: ['new', 'recent', 'unreadable', 'prefetched', 'old'], skippedRunning: [] })
+    expect(old).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+    const full: ConversationTurn = { type: 'agentConversationTurn', turn: { steps: Array.from({ length: MAX_CHAT_ITEMS }, () => ({ type: 'assistantMessage', message: { text: 'Reply' } })) } }
+    expect(await cursorCloudHistory(async () => ({ items: [cloudRun('new', 2, [turn('Older'), full])] }), 'bc-agent')).toEqual({ turns: [full], skipped: 0, runIds: ['new'], skippedRunning: [] })
+  })
+  it('reattaches the newest running run without reading its blocking conversation', async () => {
+    const conversation = vi.fn(() => new Promise<ConversationTurn[]>(() => {}))
+    const run = cloudRun('live', 2, [], { status: 'running', conversation })
+    const read = async () => ({ items: [cloudRun('old', 1, [turn('Old')]), run] })
+    expect(await cursorCloudHistory(read, 'bc-agent')).toEqual({ turns: [turn('Old')], skipped: 0, runIds: ['live', 'old'], skippedRunning: ['live'], running: { id: 'live' } })
+    expect(conversation).not.toHaveBeenCalled()
+  })
+  it('does not read or reattach an older running run and rejects repeated cursors', async () => {
+    const conversation = vi.fn(() => new Promise<ConversationTurn[]>(() => {}))
+    expect(await cursorCloudHistory(async () => ({ items: [cloudRun('old', 1, [], { status: 'running', conversation }), cloudRun('new', 2, [turn('New')])] }), 'bc-agent')).toEqual({ turns: [turn('New')], skipped: 0, runIds: ['new', 'old'], skippedRunning: ['old'] })
+    expect(conversation).not.toHaveBeenCalled()
+    await expect(cursorCloudHistory(async () => ({ items: [], nextCursor: 'same' }), 'bc-agent')).rejects.toThrow('repeated')
+  })
+  it('reports every skipped running run oldest first across pages', async () => {
+    const conversation = vi.fn(() => new Promise<ConversationTurn[]>(() => {}))
+    const read = vi.fn(async (_id: string, options: { cursor?: string }) => options.cursor
+      ? { items: [cloudRun('old-live', 1, [], { status: 'running', conversation })] }
+      : { items: [cloudRun('new-live', 3, [], { status: 'running', conversation }), cloudRun('middle', 2, [turn('Middle')])], nextCursor: 'older' })
+    expect(await cursorCloudHistory(read, 'bc-agent')).toEqual({
+      turns: [turn('Middle')], skipped: 0, runIds: ['new-live', 'middle', 'old-live'],
+      skippedRunning: ['old-live', 'new-live'], running: { id: 'new-live' },
+    })
+    expect(conversation).not.toHaveBeenCalled()
+  })
+})
+
+describe('cloud SDK wiring', () => {
+  it('routes history and reattachment to cloud APIs without loading the real SDK', async () => {
+    const run = cloudRun('run-cloud', 1, [turn('Cloud prompt')])
+    const listRuns = vi.fn(async () => ({ items: [run] }))
+    const getRun = vi.fn(async () => run)
+    vi.doMock('@cursor/sdk', () => ({ Agent: { listRuns, getRun }, Cursor: {} }))
+    try {
+      const sdk = await loadCursorSdk()
+      expect(await sdk.cloudHistory('bc-agent')).toEqual({ turns: [turn('Cloud prompt')], skipped: 0, runIds: ['run-cloud'], skippedRunning: [] })
+      expect(listRuns).toHaveBeenCalledWith('bc-agent', { runtime: 'cloud', limit: 100 })
+      expect(await sdk.latestCloudRun('bc-agent')).toBe(run)
+      expect(listRuns).toHaveBeenLastCalledWith('bc-agent', { runtime: 'cloud', limit: 1 })
+      expect(await sdk.getRun('run-cloud', 'bc-agent')).toBe(run)
+      expect(getRun).toHaveBeenCalledWith('run-cloud', { runtime: 'cloud', agentId: 'bc-agent' })
+    } finally { vi.doUnmock('@cursor/sdk') }
+  })
+})
+
+describe('independent newest cloud run lookup', () => {
+  it.each(['page', 'conversation'] as const)('finds the newest run even when an older %s fails', async (failure) => {
+    const conversation = vi.fn(async (): Promise<ConversationTurn[]> => { throw new Error('Must not read the active conversation') })
+    const latest = cloudRun('run-latest', 2, [], { status: 'running', conversation })
+    const olderConversation = vi.fn(async (): Promise<ConversationTurn[]> => { throw new Error('Older conversation unavailable') })
+    const listRuns = vi.fn(async (_id: string, options: { limit?: number; cursor?: string }) => {
+      if (options.limit === 1) return { items: [latest], nextCursor: 'older' }
+      if (options.cursor) throw new Error('Older page unavailable')
+      return failure === 'page' ? { items: [latest], nextCursor: 'older' }
+        : { items: [latest, cloudRun('run-older', 1, [], { conversation: olderConversation })] }
+    })
+    vi.doMock('@cursor/sdk', () => ({ Agent: { listRuns }, Cursor: {} }))
+    try {
+      const sdk = await loadCursorSdk()
+      if (failure === 'page') await expect(sdk.cloudHistory('bc-agent')).rejects.toThrow('Older page unavailable')
+      else expect(await sdk.cloudHistory('bc-agent')).toMatchObject({ turns: [], skipped: 1 })
+      listRuns.mockClear()
+      expect(await sdk.latestCloudRun('bc-agent')).toBe(latest)
+      expect(listRuns.mock.calls).toEqual([['bc-agent', { runtime: 'cloud', limit: 1 }]])
+      expect(conversation).not.toHaveBeenCalled()
+      expect(olderConversation).toHaveBeenCalledTimes(failure === 'conversation' ? 1 : 0)
+    } finally { vi.doUnmock('@cursor/sdk') }
+  })
+
+  it('returns no run for an empty cloud chat', async () => {
+    const listRuns = vi.fn(async () => ({ items: [] }))
+    vi.doMock('@cursor/sdk', () => ({ Agent: { listRuns }, Cursor: {} }))
+    try {
+      const sdk = await loadCursorSdk()
+      expect(await sdk.latestCloudRun('bc-agent')).toBeUndefined()
+      expect(listRuns).toHaveBeenCalledExactlyOnceWith('bc-agent', { runtime: 'cloud', limit: 1 })
+    } finally { vi.doUnmock('@cursor/sdk') }
+  })
+})
+
+describe('cloudStreamUpdates', () => {
+  const envelope = { agent_id: 'bc-agent', run_id: 'run-cloud' }
+  it('maps thinking and assistant chunks in order, including assistant tool_use blocks', () => {
+    expect(cloudStreamUpdates({ ...envelope, type: 'thinking', text: 'Think', thinking_duration_ms: 10 })).toEqual([{ type: 'thinking-delta', text: 'Think' }])
+    const message: SDKMessage = { ...envelope, type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'text', text: 'Before' }, { type: 'tool_use', id: 's', name: 'shell', input: { command: 'pwd' } }, { type: 'text', text: 'After' },
+    ] } }
+    expect(cloudStreamUpdates(message)).toEqual([
+      { type: 'text-delta', text: 'Before' }, { type: 'tool-call-started', callId: 's', toolCall: { type: 'shell', args: { command: 'pwd' } } }, { type: 'text-delta', text: 'After' },
+    ])
+    expect(message.message.content[0]).toEqual({ type: 'text', text: 'Before' })
+    expect(cloudStreamUpdates({ ...envelope, type: 'assistant', message: { role: 'assistant', content: [] } })).toEqual([])
+  })
+  it('maps running, completed and failed tools to the mapper tool-call shapes', () => {
+    const base = { ...envelope, type: 'tool_call' as const, call_id: 's', name: 'shell', args: { command: 'pwd' } }
+    expect(cloudStreamUpdates({ ...base, status: 'running' })).toEqual([{ type: 'tool-call-started', callId: 's', toolCall: { type: 'shell', args: base.args } }])
+    const result = { status: 'success', value: { stdout: '/cloud', stderr: '' } }
+    expect(cloudStreamUpdates({ ...base, status: 'completed', result })).toEqual([{ type: 'tool-call-completed', callId: 's', toolCall: { type: 'shell', args: base.args, result } }])
+    expect(cloudStreamUpdates({ ...base, status: 'error', result: 'Denied' })).toEqual([{ type: 'tool-call-completed', callId: 's', toolCall: { type: 'shell', args: base.args, result: { status: 'error', error: 'Denied' } } }])
+    expect(cloudStreamUpdates({ ...base, status: 'error', result: { status: 'error', error: 'Failed' } })).toEqual([{ type: 'tool-call-completed', callId: 's', toolCall: { type: 'shell', args: base.args, result: { status: 'error', error: 'Failed' } } }])
+    expect(cloudStreamUpdates({ ...envelope, type: 'tool_call', call_id: 's', name: 'shell', status: 'completed', result: { stdout: 'Raw' } }))
+      .toEqual([{ type: 'tool-call-completed', callId: 's', toolCall: { type: 'shell', result: { status: 'success', value: { stdout: 'Raw' } } } }])
+    expect(cloudStreamUpdates({ ...envelope, type: 'tool_call', call_id: 's', name: 'shell', status: 'running' }))
+      .toEqual([{ type: 'tool-call-started', callId: 's', toolCall: { type: 'shell' } }])
+  })
+  it('ignores status, usage, system, task, request and user messages', () => {
+    const messages: SDKMessage[] = [
+      { ...envelope, type: 'status', status: 'FINISHED' }, { ...envelope, type: 'system', subtype: 'init' },
+      { ...envelope, type: 'usage', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 2 } }, { ...envelope, type: 'task', text: 'Task text' },
+      { ...envelope, type: 'request', request_id: 'request-1' }, { ...envelope, type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Ignored' }] } },
+    ]
+    expect(messages.flatMap(cloudStreamUpdates)).toEqual([])
+  })
+  it('feeds the existing mapper without duplicating text chunks or tool rows', () => {
+    const mapper = new CursorItemMapper()
+    mapper.begin('stream')
+    const messages: SDKMessage[] = [
+      { ...envelope, type: 'thinking', text: 'Think' }, { ...envelope, type: 'thinking', text: ' more' },
+      { ...envelope, type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] } },
+      { ...envelope, type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: ' world' }] } },
+      { ...envelope, type: 'tool_call', call_id: 's', name: 'shell', status: 'running', args: { command: 'false' } },
+      { ...envelope, type: 'tool_call', call_id: 's', name: 'shell', status: 'error', args: { command: 'false' }, result: { status: 'error', error: 'Denied' } },
+    ]
+    messages.flatMap(cloudStreamUpdates).forEach((update) => mapper.delta(update))
+    expect(mapper.list()).toMatchObject([
+      { kind: 'reasoning', text: 'Think more', status: 'completed' }, { kind: 'assistant_message', text: 'Hello world', status: 'completed' },
+      { kind: 'command', command: 'false', status: 'failed', isError: true, output: '"Denied"' },
+    ])
   })
 })

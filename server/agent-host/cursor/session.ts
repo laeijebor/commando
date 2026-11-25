@@ -12,7 +12,7 @@ import type { ChatProviderSession, ChatProviderSessionEvents } from '../provider
 import { hasInitialTurn, type AgentSessionSpec } from '../session.js'
 import { CursorItemMapper, record, string } from './items.js'
 import { CursorMcpController, type CursorMcpCli } from './mcp.js'
-import { loadCursorSdk, type CursorAgent, type CursorRun, type CursorSdk } from './sdk.js'
+import { cloudStreamUpdates, loadCursorSdk, type CursorAgent, type CursorCloudHistory, type CursorCloudRun, type CursorGitBranch, type CursorRun, type CursorSdk } from './sdk.js'
 
 const errorText = (error: unknown) => string(record(error).message) ?? String(error)
 const EFFORT_PARAMETERS = ['effort', 'reasoning_effort', 'reasoning']
@@ -58,7 +58,13 @@ export function cursorImageMime(data: Buffer): string | undefined {
   return undefined
 }
 
-interface ActiveRun { run: CursorRun; turnId: string; text: string; images: ChatImageRef[] }
+function cloudPermissions(mode: ChatSessionPermissionMode, prePlan?: ChatSessionPermissionMode): void {
+  if (mode !== 'bypassPermissions' && mode !== 'plan' || prePlan && prePlan !== 'bypassPermissions') throw new Error('Cursor cloud supports only Full access (bypassPermissions) and Plan (plan) permission modes')
+}
+interface ActiveRun {
+  run: CursorRun; turnId: string; text: string; images: ChatImageRef[]
+  reattached?: { run: CursorCloudRun; stream: Promise<void> }
+}
 export class CursorChatSession implements ChatProviderSession {
   readonly commands: ChatCommand[] = [{ name: 'login', description: 'Log in to Cursor', argumentHint: '[cancel]', kind: 'command' }]
   private sdk?: CursorSdk
@@ -67,7 +73,7 @@ export class CursorChatSession implements ChatProviderSession {
   /** The folder attached videos are copied to; Cursor's agent id isn't known before its first run. */
   private readonly attachmentFolder = randomUUID()
   private readonly files: WorkspaceFileIndex
-  private readonly mcpController: CursorMcpController
+  private readonly mcpController?: CursorMcpController
   private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private info: ChatSessionInfo
   private modelItems: ModelListItem[] = []
@@ -93,11 +99,12 @@ export class CursorChatSession implements ChatProviderSession {
   private initialSent = false
 
   constructor(private readonly spec: AgentSessionSpec, sdk?: CursorSdk, mcpCli?: CursorMcpCli | null) {
-    cursorPermissions(spec.permissionMode, spec.prePlanPermissionMode)
+    if (spec.cursorCloud) cloudPermissions(spec.permissionMode, spec.prePlanPermissionMode)
+    else cursorPermissions(spec.permissionMode, spec.prePlanPermissionMode)
     this.apiKey = spec.env.CURSOR_API_KEY
     this.sdk = sdk
     this.files = new WorkspaceFileIndex(spec.cwd)
-    this.mcpController = new CursorMcpController({
+    this.mcpController = spec.cursorCloud ? undefined : new CursorMcpController({
       cwd: spec.cwd,
       env: spec.env,
       ...(mcpCli !== undefined ? { cli: mcpCli } : {}),
@@ -112,15 +119,18 @@ export class CursorChatSession implements ChatProviderSession {
       permissionMode: spec.permissionMode, selectedModel: spec.model, effort: spec.effort, fast: spec.fast,
       prePlanPermissionMode: spec.prePlanPermissionMode, hostBuild: spec.hostBuild, resumeCommand: spec.resumeCommand,
       ...(spec.resume ? { sessionId: spec.resume } : {}),
+      ...(spec.cursorCloud ? { cloud: { provider: 'cursor', ...spec.cursorCloud, ...(spec.resume ? { webUrl: `https://cursor.com/agents/${spec.resume}` } : {}) } } : {}),
     }
   }
   get paneId(): string { return this.spec.paneId }
   get busy(): boolean { return Boolean(this.active || this.sending || this.queue.length || this.loginController || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
-  private emitItems(items: ChatItem[]): void { if (!this.closing && items.length) this.listeners.items.forEach((listener) => listener(items)) }
+  private emitItems(items: ChatItem[], replace?: true): void { if (!this.closing && (items.length || replace)) this.listeners.items.forEach((listener) => listener(items, replace)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
+  private agentId(id: string): void { this.update({ sessionId: id, ...(this.info.cloud ? { cloud: { ...this.info.cloud, webUrl: `https://cursor.com/agents/${id}` } } : {}) }) }
+  private cloudGit(git?: CursorGitBranch): void { if (this.info.cloud && git) this.update({ cloud: { ...this.info.cloud, branch: git.branch ?? this.info.cloud.branch, prUrl: git.prUrl ?? this.info.cloud.prUrl } }) }
   setResumeCommand(command: string): void { if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
   private safeError(error: unknown): string {
     const message = errorText(error)
@@ -167,7 +177,8 @@ export class CursorChatSession implements ChatProviderSession {
     if (!option) throw new Error('Cursor has no available model')
     return cursorModelSelection(option, this.info.effort, this.info.fast)
   }
-  private agentOptions(): AgentOptions {
+  private agentOptions(resume = false): AgentOptions {
+    if (this.spec.cursorCloud) return { model: this.model(), ...(!resume ? { cloud: { repos: [{ url: this.spec.cursorCloud.repoUrl, startingRef: this.spec.cursorCloud.startingRef }], autoCreatePR: true, metadata: { commando: 'chat' } } } : {}) }
     // Local runs silently refuse askQuestion; the agent should ask in plain text instead.
     return {
       model: this.model(),
@@ -185,27 +196,103 @@ export class CursorChatSession implements ChatProviderSession {
     const id = this.info.sessionId
     if (id) {
       this.executorStarted = true
-      const agent = await this.sdk!.resume(id, this.agentOptions())
+      const agent = await this.sdk!.resume(id, this.agentOptions(true))
       if (this.closing) { agent.close(); return }
       this.agent = agent
-      this.update({ sessionId: agent.agentId })
+      this.agentId(agent.agentId)
     }
     this.stale = false
     if (this.spec.resume && !this.historyLoaded) {
       this.historyLoaded = true
+      let cloudHistory: CursorCloudHistory | undefined
+      if (this.spec.cursorCloud) {
+        this.mapper.begin('cloud-history-loading')
+        this.emitItems(this.mapper.notice('info', 'Loading this Cursor cloud chat…'))
+      }
       try {
-        const history = await this.sdk!.history(this.agent!.agentId, this.spec.cwd)
+        const history: CursorCloudHistory = await (this.spec.cursorCloud ? this.sdk!.cloudHistory(this.agent!.agentId) : this.sdk!.history(this.agent!.agentId, this.spec.cwd))
         if (this.closing) return
-        history.turns.forEach((turn) => this.mapper.replay(turn))
-        this.emitItems(this.mapper.list())
-        if (history.skipped) this.emitItems(this.mapper.notice('info', `${history.skipped} earlier Cursor turns couldn't be loaded.`))
+        if (this.spec.cursorCloud) cloudHistory = history
+        if (this.spec.cursorCloud) this.emitItems(this.mapper.replaceTurn('cloud-history-loading', history.turns), true)
+        else {
+          history.turns.forEach((turn) => this.mapper.replay(turn))
+          this.emitItems(this.mapper.list())
+        }
+        if (history.skipped) {
+          if (this.spec.cursorCloud) this.mapper.begin('cloud-history-skipped')
+          this.emitItems(this.mapper.notice('info', `${history.skipped} earlier Cursor turns couldn't be loaded.`))
+          if (this.spec.cursorCloud) this.mapper.begin('cloud-history-ready')
+        }
+        this.cloudGit(history.git)
       } catch (error) {
         if (this.closing) return
+        if (this.spec.cursorCloud) this.emitItems(this.mapper.replaceTurn('cloud-history-loading', []), true)
         this.emitItems(this.mapper.notice('info', `Couldn't load this chat's earlier messages: ${this.safeError(error)}`))
+      }
+      if (this.spec.cursorCloud) {
+        const pending = new Set(cloudHistory?.skippedRunning)
+        let skipped = 0
+        try {
+          // History can fail on an older page or conversation while the newest run is still working.
+          const latest = await this.sdk!.latestCloudRun(this.agent!.agentId)
+          if (this.closing) return
+          const refresh = latest && (latest.status === 'running' || (cloudHistory && (pending.has(latest.id) || !cloudHistory.runIds?.includes(latest.id))))
+          if (latest) pending.delete(latest.id)
+          if (latest && refresh) {
+            let run: CursorCloudRun | undefined
+            try { run = await this.sdk!.getRun(latest.id, this.agent!.agentId) }
+            catch (error) {
+              if (latest.status === 'running') throw error
+              skipped++
+            }
+            if (this.closing) return
+            if (run?.status === 'running') {
+              this.reattach(run)
+            } else if (run && cloudHistory) {
+              const runIds = cloudHistory.runIds ?? []
+              const newestReadIndex = runIds.findIndex((id) => !cloudHistory.skippedRunning?.includes(id))
+              const newer = newestReadIndex < 0 || runIds.indexOf(latest.id) < newestReadIndex
+              if (newer) {
+                // Its branch and PR may only exist now that it has finished.
+                this.cloudGit(run.git?.branches[0])
+                try {
+                  const turns = await run.conversation()
+                  if (this.closing) return
+                  turns.forEach((turn) => this.mapper.replay(turn))
+                  this.emitItems(this.mapper.list(), true)
+                } catch {
+                  if (this.closing) return
+                  skipped++
+                }
+              } else skipped++
+            }
+          }
+        } catch (error) {
+          if (this.closing) return
+          this.emitItems(this.mapper.notice('info', `Couldn't reconnect to this Cursor cloud run: ${this.safeError(error)}`))
+        }
+        // Flat history turns have no per-run boundaries for inserting an older recovered run.
+        // Keep those runs in the skipped notice rather than appending them out of order.
+        for (const id of pending) {
+          try {
+            const run = await this.sdk!.getRun(id, this.agent!.agentId)
+            if (this.closing) return
+            if (run.status !== 'running') skipped++
+          } catch {
+            if (this.closing) return
+            skipped++
+          }
+        }
+        if (this.closing) return
+        if (skipped) {
+          this.mapper.replaceTurn('cloud-history-skipped', [])
+          this.mapper.notice('info', `${(cloudHistory?.skipped ?? 0) + skipped} earlier Cursor turns couldn't be loaded.`)
+          this.emitItems(this.mapper.list(), true)
+        }
       }
     }
     this.readyToSend = true
-    this.update({ status: 'idle', error: undefined })
+    this.update({ status: this.active ? 'running' : 'idle', error: undefined })
     this.listeners.commands.forEach((listener) => listener(this.commands))
   }
   private sendInitialPrompt(): void {
@@ -283,6 +370,7 @@ export class CursorChatSession implements ChatProviderSession {
       return
     }
     if (options.relayTo) { this.emitItems(this.mapper.notice('error', 'Cursor subagent relay is not available in this chat.')); return }
+    if (this.spec.cursorCloud && images.some((image) => isChatVideoId(image.id))) { this.emitItems(this.mapper.notice('error', "Cursor cloud chats don't support video attachments; the staged file is only available on this Mac.")); return }
     this.sending++
     this.operations = this.operations.then(async () => {
       await this.start()
@@ -327,8 +415,8 @@ export class CursorChatSession implements ChatProviderSession {
     if (this.closing) return
     const agentOptions = this.agentOptions()
     const model = agentOptions.model!
-    const sandboxed = agentOptions.local!.sandboxOptions!.enabled
-    if (sandboxed && this.ranUnsandboxed) {
+    const sandboxed = agentOptions.local?.sandboxOptions?.enabled
+    if (!this.spec.cursorCloud && sandboxed && this.ranUnsandboxed) {
       this.listeners.restart.forEach((listener) => listener())
       throw new Error("Cursor's sandbox can't turn on until this chat restarts; it restarts when idle, then send this again (or switch to Full access)")
     }
@@ -339,38 +427,86 @@ export class CursorChatSession implements ChatProviderSession {
       this.agent?.close()
       this.agent = undefined
       this.executorStarted = true
-      const agent = id ? await this.sdk!.resume(id, agentOptions) : await this.sdk!.create({ ...agentOptions, name: text.trim().slice(0, 80) })
+      const agent = id ? await this.sdk!.resume(id, this.agentOptions(true)) : await this.sdk!.create({ ...agentOptions, name: text.trim().slice(0, 80) })
       if (this.closing) { agent.close(); return }
       this.agent = agent
       this.stale = false
-      this.update({ sessionId: agent.agentId })
+      this.agentId(agent.agentId)
     }
     const turnId = `turn-${++this.turnCounter}`
     this.mapper.begin(turnId)
     this.emitItems(this.mapper.expectUser(text, images))
-    if (!sandboxed) this.ranUnsandboxed = true
+    if (!this.spec.cursorCloud && !sandboxed) this.ranUnsandboxed = true
     const run = await this.agent.send({ text: [text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
       model, mode: this.info.permissionMode === 'plan' ? 'plan' : 'agent',
       onDelta: ({ update }) => { if (!this.closing) this.emitItems(this.mapper.delta(update)) },
     })
-    if (this.closing) { await run.cancel().catch(() => {}); return }
+    if (this.closing) { if (!this.spec.cursorCloud) await run.cancel().catch(() => {}); return }
     this.active = { run, turnId, text, images }
     this.update({ status: 'running', model: model.id, ...(!this.info.title && text ? { title: text.slice(0, 80) } : {}) })
     void this.wait(this.active)
   }
+  private reattach(run: CursorCloudRun): void {
+    const active: ActiveRun = { run, turnId: `cloud-${run.id}`, text: '', images: [] }
+    active.reattached = { run, stream: Promise.resolve() }
+    this.active = active
+    this.emitItems(this.mapper.notice('info', 'Reconnected to a Cursor cloud run that was already working.'))
+    this.mapper.begin(active.turnId)
+    this.update({ status: 'running' })
+    active.reattached.stream = this.consumeCloudStream(active, run)
+    void this.wait(active)
+  }
+  private async consumeCloudStream(active: ActiveRun, run: CursorCloudRun): Promise<void> {
+    const calls = new Map<string, { type: string; args?: unknown; result?: unknown }>()
+    try {
+      for await (const message of run.stream()) {
+        if (this.closing || this.active !== active) return
+        for (const update of cloudStreamUpdates(message)) {
+          if ('callId' in update) {
+            // Completion events can omit arguments already supplied by tool_use or tool_call.
+            update.toolCall = { ...calls.get(update.callId), ...update.toolCall }
+            calls.set(update.callId, update.toolCall)
+          }
+          this.emitItems(this.mapper.delta(update))
+        }
+      }
+    } catch (error) {
+      if (!this.closing) this.spec.log?.(`Couldn't stream Cursor cloud run: ${this.safeError(error)}`)
+    }
+  }
   private async wait(active: ActiveRun): Promise<void> {
     try {
-      const result = await active.run.wait()
-      if (this.closing) return
+      let result
+      for (;;) {
+        if (active.reattached) await active.reattached.stream
+        result = await active.run.wait()
+        if (this.closing) return
+        // SDK 1.0.37's two-hour client deadline has no code and does not cancel the cloud run.
+        if (!this.spec.cursorCloud || result.status !== 'error' || result.error?.message !== 'Timed out waiting for the cloud run to finish.' || result.error.code !== undefined) break
+        const id = string(record(active.run).id)
+        if (!id) break
+        const run = await this.sdk!.getRun(id, this.agent!.agentId)
+        if (this.closing) return
+        if (run.status !== 'running') { result = await run.wait(); break }
+        // Keep the same turn and queue while renewing the client stream, with no reconnect notice.
+        active.run = run
+        active.reattached = { run, stream: this.consumeCloudStream(active, run) }
+      }
+      this.cloudGit(result.git?.branches[0])
+      if (active.reattached) {
+        try { this.emitItems(this.mapper.replaceTurn(active.turnId, await active.reattached.run.conversation()), true) }
+        catch (error) { this.emitItems(this.mapper.notice('info', `Couldn't reload this Cursor cloud run: ${this.safeError(error)}`)) }
+        if (this.closing) return
+      }
       this.emitItems(this.mapper.settle(active.turnId, result.status === 'finished' ? 'completed' : result.status === 'cancelled' ? 'interrupted' : 'failed'))
       if (result.status === 'error') {
-        if (isCursorAuthError(result)) { this.authRequired(); this.enqueue(active.text, active.images, true) }
+        if (isCursorAuthError(result)) { this.authRequired(); if (!active.reattached) this.enqueue(active.text, active.images, true) }
         else this.emitItems(this.mapper.notice('error', this.safeError(result.error ?? 'Cursor run failed')))
       }
     } catch (error) {
       if (this.closing) return
       this.emitItems(this.mapper.settle(active.turnId, 'failed'))
-      if (isCursorAuthError(error)) { this.authRequired(); this.enqueue(active.text, active.images, true) }
+      if (isCursorAuthError(error)) { this.authRequired(); if (!active.reattached) this.enqueue(active.text, active.images, true) }
       else this.emitItems(this.mapper.notice('error', this.safeError(error)))
     } finally {
       if (this.active === active) this.active = undefined
@@ -435,12 +571,15 @@ export class CursorChatSession implements ChatProviderSession {
     const mode = change.permissionMode
     const prePlan = mode === 'plan' ? this.info.permissionMode === 'plan' ? this.info.prePlanPermissionMode : this.info.permissionMode as ChatSessionPermissionMode
       : mode ? undefined : this.info.prePlanPermissionMode
-    if (mode) cursorPermissions(mode, prePlan)
+    if (mode) {
+      if (this.spec.cursorCloud) cloudPermissions(mode, prePlan)
+      else cursorPermissions(mode, prePlan)
+    }
     const permissionChanged = mode && (mode !== this.info.permissionMode || prePlan !== this.info.prePlanPermissionMode)
-    const needsRestart = permissionChanged && this.ranUnsandboxed && cursorPermissions(mode, prePlan).sandboxOptions.enabled
+    const needsRestart = !this.spec.cursorCloud && permissionChanged && this.ranUnsandboxed && cursorPermissions(mode, prePlan).sandboxOptions.enabled
     // The restart would drop the running turn's queue, so it waits for a quiet chat.
     if (needsRestart && (this.active || this.queue.length)) throw new Error("Cursor restarts the chat to turn its sandbox on; switch once this turn has finished and nothing is queued")
-    if (permissionChanged) this.stale = true
+    if (permissionChanged && !this.spec.cursorCloud) this.stale = true
     const effort = change.effort ?? (this.info.effort && model?.efforts?.includes(this.info.effort) ? this.info.effort : undefined)
     const fast = (change.fast ?? this.info.fast) && model?.supportsFast ? true : undefined
     this.update({ ...(change.model ? { selectedModel: change.model } : {}), effort, fast, ...(mode ? { permissionMode: mode, prePlanPermissionMode: prePlan } : {}) })
@@ -451,7 +590,7 @@ export class CursorChatSession implements ChatProviderSession {
   }
   hostNotice(level: 'info' | 'error', text: string): void { this.emitItems(this.mapper.notice(level, text)) }
   searchFiles(query: string): Promise<ChatFileSearchResult> { return this.files.search(query) }
-  mcp(request: ChatMcpRequest): Promise<ChatMcpResult> { return this.mcpController.handle(request) }
+  mcp(request: ChatMcpRequest): Promise<ChatMcpResult> { return this.mcpController ? this.mcpController.handle(request) : Promise.resolve({ servers: [], error: "MCP servers aren't available in Cursor cloud chats" }) }
   private async reloadMcp(): Promise<void> {
     if (this.closing || !this.agent) return
     if (this.agent.reload) await this.agent.reload()
@@ -477,10 +616,10 @@ export class CursorChatSession implements ChatProviderSession {
     if (this.closing) return
     this.closing = true
     if (this.authRestartTimer) { clearTimeout(this.authRestartTimer); this.authRestartTimer = undefined }
-    this.mcpController.dispose()
+    this.mcpController?.dispose()
     this.loginController?.abort()
     void (async () => {
-      if (this.active) await this.active.run.cancel().catch(() => {})
+      if (this.active && !this.spec.cursorCloud) await this.active.run.cancel().catch(() => {})
       await this.operations
       await this.startPromise
       try { this.agent?.close() } catch { /* Best effort when the SDK is already closed. */ }

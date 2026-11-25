@@ -27,3 +27,13 @@ it('keeps DeepSeek permissions separate from Claude and Muse preferences', () =>
   expect(loadChatLaunch('/repo', 'muse-chat')).toEqual({ permissionMode: 'default' })
   expect(loadChatLaunch('/repo')).toEqual({ permissionMode: 'bypassPermissions', configDir: '/home/.claude' })
 })
+
+it('remembers Cursor runtime per repo and host without affecting other providers', () => {
+  saveChatLaunch('/repo', { permissionMode: 'plan', cursorRuntime: 'cloud' }, 'cursor-chat')
+  saveChatLaunch('/other', { permissionMode: 'bypassPermissions', cursorRuntime: 'local' }, 'cursor-chat')
+  expect(loadChatLaunch('/repo', 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud' })
+  expect(loadChatLaunch('/new', 'cursor-chat')).toEqual({ permissionMode: 'bypassPermissions', cursorRuntime: 'local' })
+  expect(loadChatLaunch('/repo', 'cursor-chat', 'remote')).toEqual({ permissionMode: 'bypassPermissions' })
+  saveChatLaunch('/repo', { permissionMode: 'plan', cursorRuntime: 'cloud' }, 'codex-chat')
+  expect(loadChatLaunch('/repo', 'codex-chat')).toEqual({ permissionMode: 'plan' })
+})

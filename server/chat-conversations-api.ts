@@ -191,6 +191,7 @@ export class ChatConversationsApi {
     if (input.paneId === undefined && placement !== 'session') throw new HttpError(400, 'paneId is required outside session placement')
     if (!isChatConversationProvider(provider)) throw new HttpError(400, 'Unsupported conversation provider')
     if (!isChatConversationSessionId(sessionId)) throw new HttpError(400, 'Invalid conversation id')
+    if (provider === 'cursor' && sessionId.startsWith('bc-')) throw new HttpError(409, 'Open Cursor cloud agents from the Cloud area')
     if (placement !== 'replace' && placement !== 'split' && placement !== 'session') throw new HttpError(400, 'placement must be replace, split or session')
     const snapshot = this.dependencies.snapshot()
     const paneId = input.paneId as string | undefined

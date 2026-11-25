@@ -37,6 +37,8 @@ export type ChatPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPer
 export type SessionAgentLaunch = {
   provider: SessionAgentProvider
   prompt?: string
+  /** Cursor chat only: start from a pushed GitHub branch in Cursor's VM; ref may be omitted when resuming. */
+  cursorCloud?: { repoUrl: string; ref?: string }
   /** claude-chat and claude: the Claude config dir (`~/.claudep`, `~/.claudew`) that picks the login. */
   configDir?: string
   /** Chat providers, claude and codex: the model to start on (a picker value such as `sonnet` or `gpt-6.1-sol`). */
@@ -82,6 +84,8 @@ export const CURSOR_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode;
   { value: 'auto', label: 'Auto-review' },
   { value: 'plan', label: 'Plan' },
 ]
+
+export const CURSOR_CLOUD_PERMISSION_MODES = CURSOR_CHAT_PERMISSION_MODES.filter((mode) => mode.value === 'bypassPermissions' || mode.value === 'plan')
 
 /** Muse has no plan mode; "Ask when needed" is its own default. */
 export const MUSE_CHAT_PERMISSION_MODES: readonly { value: ChatPermissionMode; label: string }[] = [
@@ -155,6 +159,7 @@ export function sessionAgentArgv(launch: SessionAgentLaunch): string[] {
       ...(launch.provider === 'muse-chat' && launch.permissionMode === 'bypassPermissions' && launch.fullAccess === true ? ['--yolo'] : []),
       ...(launch.resume ? ['--resume', launch.resume] : []),
       ...(launch.images ?? []).flatMap((image) => ['--image', chatImageArg(image)]),
+      ...(launch.provider === 'cursor-chat' && launch.cursorCloud ? ['--runtime', 'cloud', '--cloud-repo', launch.cursorCloud.repoUrl, ...(launch.cursorCloud.ref ? ['--cloud-ref', launch.cursorCloud.ref] : [])] : []),
       // Last: the host reads everything after --prompt as prompt text.
       ...(launch.prompt?.trim() ? ['--prompt', launch.prompt] : []),
     ]
@@ -186,6 +191,10 @@ export function parseChatImageArg(value: string): ChatImageRef {
 export type CreateTmuxSessionWorktree = {
   /** Branch to create (or reuse when it exists and is not checked out elsewhere). */
   branch: string
+  /** Check out the branch pushed to the remote instead of branching from the default branch. */
+  fromRemote?: true
+  /** Fetch from the remote matching this Cursor cloud GitHub repository. */
+  repoUrl?: string
   /** Absolute worktree path; defaults to `defaultWorktreePath(mainRoot, branch, worktreesParent)` when omitted. */
   path?: string
   /** Multiline shell command to run in the new worktree before opening its interactive shell. */
@@ -252,7 +261,7 @@ export type TmuxCreatedWorktree = {
   /** Ref the branch was created from, e.g. `origin/main`; empty when an existing branch was reused. */
   base: string
   reusedBranch: boolean
-  /** Set when the pre-branch fetch failed and the local remote-tracking ref was used instead. */
+  /** Fetch fallback, or local commits kept instead of updating from the remote. */
   warning?: string
 }
 
@@ -395,6 +404,8 @@ export type GitRepoInfo = {
   name?: string
   branch?: string
   isWorktree?: boolean
+  /** GitHub remote and cached tracking state for the current branch (default branch when detached). */
+  github?: { repoUrl: string; remote: string; ref: string; pushed: boolean; ahead: number; behind: number }
   /** Default branch on the remote, e.g. `main`; undefined without a remote. */
   defaultBranch?: string
   remote?: string

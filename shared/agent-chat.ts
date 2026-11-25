@@ -495,6 +495,7 @@ export interface ChatLogin {
 }
 
 export interface ChatSessionInfo {
+  cloud?: { provider: 'cursor'; repoUrl: string; startingRef?: string; branch?: string; prUrl?: string; webUrl?: string }
   login?: ChatLogin
   /** tmux pane id (`%N`) the session belongs to. */
   paneId: string
@@ -1093,6 +1094,22 @@ function parseChatLogin(value: unknown): ChatLogin | undefined {
   return { state: value.state, ...(typeof value.reason === 'string' ? { reason: value.reason.slice(0, 500) } : {}), ...(url ? { url } : {}) }
 }
 
+function parseChatCloud(value: unknown): ChatSessionInfo['cloud'] {
+  if (!isRecord(value) || value.provider !== 'cursor' || !shortString(value.repoUrl, 4096)) return undefined
+  const repoUrl = value.repoUrl
+  if (!/^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/.test(repoUrl) || repoUrl !== repoUrl.trim() || repoUrl.endsWith('.git') || /\/(?:\.|\.\.)$/.test(repoUrl)) return undefined
+  const ref = (value: unknown) => shortString(value, 200) && /^[A-Za-z0-9._/-]{1,200}$/.test(value) && value === value.trim() && !value.startsWith('-') && !value.includes('..') ? value : undefined
+  let prUrl: string | undefined
+  if (shortString(value.prUrl, 4096) && /^https:\/\//i.test(value.prUrl) && !/[\s\\\u0000-\u001f\u007f]/.test(value.prUrl)) {
+    try {
+      const url = new URL(value.prUrl)
+      if (url.protocol === 'https:' && url.hostname === 'github.com' && !url.username && !url.password && !url.port) prUrl = value.prUrl
+    } catch { /* Drop invalid links. */ }
+  }
+  const webUrl = shortString(value.webUrl, 4096) && /^https:\/\/cursor\.com\/agents\/bc-[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.webUrl) && value.webUrl === value.webUrl.trim() ? value.webUrl : undefined
+  return withOptional({ provider: 'cursor', repoUrl } as NonNullable<ChatSessionInfo['cloud']>, { startingRef: ref(value.startingRef), branch: ref(value.branch), prUrl, webUrl })
+}
+
 export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   if (!isRecord(value)) return null
   if (!isPaneId(value.paneId) || !isChatProvider(value.provider) || typeof value.cwd !== 'string') return null
@@ -1108,8 +1125,10 @@ export function parseChatSessionInfo(value: unknown): ChatSessionInfo | null {
   const contextUsage = parseContextUsage(value.contextUsage)
   const planUsage = parsePlanUsage(value.planUsage)
   const queue = parseQueue(value.queue)
+  const cloud = parseChatCloud(value.cloud)
   return {
     paneId: value.paneId,
+    ...(cloud ? { cloud } : {}),
     provider: value.provider,
     cwd: value.cwd,
     status: value.status as ChatSessionStatus,

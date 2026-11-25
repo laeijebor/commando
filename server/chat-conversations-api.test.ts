@@ -84,6 +84,14 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
 }
 
 describe('ChatConversationsApi', () => {
+  it('directs cloud conversations to Cloud without launching the Cursor CLI', async () => {
+    const f = setup({ conversation: { provider: 'cursor', sessionId: 'bc-12345678-abcd' } })
+    expect(await f.resume({ provider: 'cursor', sessionId: 'bc-12345678-abcd' })).toMatchObject({ status: 409, body: { error: 'Open Cursor cloud agents from the Cloud area' } })
+    expect(f.creator.respawnChatPane).not.toHaveBeenCalled()
+    expect(f.creator.createPane).not.toHaveBeenCalled()
+    expect(f.creator.createSession).not.toHaveBeenCalled()
+  })
+
   it.each([
     ['live TUI after a completed turn', '2.1.295', false, 409],
     ['pane back at zsh before registry reconciliation', 'zsh', false, 200],

@@ -91,3 +91,19 @@ describe('Codex model and permissions controls', () => {
     expect(screen.queryByRole('menuitemradio', { name: /Accept edits|Auto/ })).not.toBeInTheDocument()
   })
 })
+
+it('offers only Full access and Plan for a Cursor cloud session', async () => {
+  const onConfigure = vi.fn()
+  render(<PermissionPicker session={{ ...fresh, provider: 'cursor', hostVersion: 3, permissionMode: 'bypassPermissions', cloud: { provider: 'cursor', repoUrl: 'https://github.com/acme/app' } }} disabled={false} onConfigure={onConfigure} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Full access' }))
+  const options = await screen.findAllByRole('menuitemradio')
+  expect(options.map((option) => option.children[1]?.textContent)).toEqual(['Full access', 'Plan'])
+  fireEvent.click(screen.getByRole('menuitemradio', { name: /^Plan/ }))
+  expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'plan' })
+})
+
+it('keeps all local Cursor permission modes', async () => {
+  render(<PermissionPicker session={{ ...fresh, provider: 'cursor', permissionMode: 'bypassPermissions' }} disabled={false} onConfigure={vi.fn()} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Full access' }))
+  expect((await screen.findAllByRole('menuitemradio')).map((option) => option.children[1]?.textContent)).toEqual(['Full access', 'Sandboxed', 'Auto-review', 'Plan'])
+})

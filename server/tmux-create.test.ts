@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chatProfileConfigDir, defaultClaudeProfile, sessionAgentArgv, type GitRepoInfo } from '../shared/tmux-create.js'
 import { GitWorktreeError, type CreateWorktreeInput, type CreateWorktreeResult } from './git-worktree.js'
-import { TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, emptyPaneCommand, emptyPaneShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
+import { GitCursorCloud } from './git-cursor-cloud.js'
+import { validatedAgent, TmuxCreator, AGENT_LAUNCH_ENV_KEYS, COMMANDO_AGENT_LAUNCHER, agentLaunchPaneCommand, listClaudeProfiles, validClaudeConfigDir, agentLaunchShellCommand, emptyPaneCommand, emptyPaneShellCommand, tmuxSocketArgsFromEnv, worktreePreparationShellCommand } from './tmux-create.js'
 import { chatPlansDir } from './chat-plans-dir.js'
 
 const separator = '\u001f'
@@ -710,6 +711,43 @@ describe('TmuxCreator worktree-backed sessions', () => {
     expect(git.createWorktree.mock.calls[0][0].path).toBe(target)
   })
 
+  it('passes remote checkout and progress to the worktree service for a shell session', async () => {
+    const git = worktrees()
+    const run = tmuxRunner()
+    const onProgress = vi.fn()
+    await new TmuxCreator(run, [], git).createSession({
+      name: 'fix-flaky-test-1a2b', cwd: MAIN,
+      worktree: { branch: 'cursor/fix-flaky-test-1a2b', fromRemote: true, repoUrl: 'https://github.com/acme/app' },
+    }, undefined, onProgress)
+    expect(git.createWorktree).toHaveBeenCalledWith({
+      mainRoot: MAIN, branch: 'cursor/fix-flaky-test-1a2b',
+      path: `${MAIN}-worktrees/cursor/fix-flaky-test-1a2b`,
+      defaultBranch: 'main', remote: 'origin', fromRemote: true, repoUrl: 'https://github.com/acme/app', onProgress,
+    })
+    const args = run.mock.calls.find(([args]) => args.includes('new-session'))?.[0]
+    expect(args?.slice(-2)).toEqual(['-c', `${MAIN}-worktrees/cursor/fix-flaky-test-1a2b`])
+  })
+
+  it('passes remote checkout for panes too and rejects invalid remote options before creating a worktree', async () => {
+    const git = worktrees()
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    await creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: MAIN, worktree: { branch: 'cursor/fix', fromRemote: true, repoUrl: 'https://github.com/acme/app' } })
+    expect(git.createWorktree).toHaveBeenCalledWith(expect.objectContaining({ branch: 'cursor/fix', fromRemote: true, repoUrl: 'https://github.com/acme/app' }))
+    git.createWorktree.mockClear()
+    await expect(creator.createSession({ name: 'fix', cwd: MAIN, worktree: { branch: 'cursor/fix', fromRemote: false } } as never)).rejects.toThrow('fromRemote must be true')
+    await expect(creator.createSession({ name: 'fix', autoName: true, cwd: MAIN, worktree: { branch: '', fromRemote: true } })).rejects.toThrow('A branch is required')
+    expect(git.createWorktree).not.toHaveBeenCalled()
+  })
+
+  it.each(['https://github.com/acme/app.git', 'git@github.com:acme/app', 'https://user@github.com/acme/app', 'https://github.com:443/acme/app', 'https://github.com/acme/app?x=1', 'https://github.com/acme/app#x', 'https://gitlab.com/acme/app', 42])('validates remote checkout URL %j before creating a session or pane', async (repoUrl) => {
+    const git = worktrees()
+    const creator = new TmuxCreator(tmuxRunner(), [], git)
+    const worktree = { branch: 'cursor/fix', fromRemote: true, repoUrl } as never
+    await expect(creator.createSession({ name: 'fix', cwd: MAIN, worktree })).rejects.toThrow('Cursor cloud requires an https://github.com/')
+    await expect(creator.createPane({ targetId: '%1', direction: 'horizontal', cwd: MAIN, worktree })).rejects.toThrow('Cursor cloud requires an https://github.com/')
+    expect(git.createWorktree).not.toHaveBeenCalled()
+  })
+
   it('defaults the worktree path under the worktrees parent the probe reports', async () => {
     const git = worktrees({ probe: { ...repo, worktreesParent: '/Volumes/Dev/worktrees' } })
     const creator = new TmuxCreator(tmuxRunner(), [], git)
@@ -922,6 +960,15 @@ describe('auto-named sessions', () => {
     const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
     await expect(new TmuxCreator(tmuxWith([]), [], git, async () => '/never', {}).createSession({ name: '', autoName: true, cwd: '/repo', worktree: { branch: '', path: '/mine' }, agent: { provider: 'claude-chat', prompt: 'Go' } })).rejects.toThrow(/already exists/)
     expect(createWorktree).toHaveBeenCalledOnce()
+  })
+
+  it('uses a free session name for cloud checkout without changing the remote branch', async () => {
+    const run = tmuxWith(['fix-cloud'])
+    const createWorktree = vi.fn(async (input: CreateWorktreeInput): Promise<CreateWorktreeResult> => ({ worktree: { path: input.path, branch: input.branch, base: '', reusedBranch: true }, rollback: async () => {} }))
+    const git = { probe: vi.fn(async () => ({ isRepo: true, mainRoot: '/repo' } as GitRepoInfo)), createWorktree }
+    await new TmuxCreator(run, [], git, async () => '/never', {}).createSession({ name: 'fix-cloud', autoName: true, cwd: '/repo', worktree: { branch: 'cursor/fix-cloud', fromRemote: true, repoUrl: 'https://github.com/acme/app' } })
+    expect(sessionName(run)).toBe('fix-cloud-2')
+    expect(createWorktree).toHaveBeenCalledWith(expect.objectContaining({ branch: 'cursor/fix-cloud', fromRemote: true, repoUrl: 'https://github.com/acme/app' }))
   })
 
   it('keeps a branch the user typed, and refuses a taken name when not auto-named', async () => {
@@ -1219,5 +1266,62 @@ describe('Cursor chat creation', () => {
     const run = runner()
     await expect(new TmuxCreator(run, []).createSession({ name: 'test', agent: { provider: 'cursor-chat', ...settings } } as never)).rejects.toThrow(/Cursor/)
     expect(run).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('Cursor cloud creation', () => {
+  it('allows no ref only for a resume and skips pushed-ref checks for existing agents', async () => {
+    const agent = { provider: 'cursor-chat' as const, resume: 'bc-12345678-abcd', cursorCloud: { repoUrl: 'https://github.com/acme/app' } }
+    expect(validatedAgent(agent)).toEqual(agent)
+    expect(() => validatedAgent({ ...agent, resume: undefined })).toThrow('ref')
+    expect(() => validatedAgent({ ...agent, cursorCloud: { ...agent.cursorCloud, ref: '-bad' } })).toThrow('ref')
+    const pushed = vi.spyOn(GitCursorCloud.prototype, 'assertPushed')
+    try {
+      const run = runner()
+      await new TmuxCreator(run, [], undefined, async () => '/host/commando-agent').createSession({ name: 'resume-cloud', cwd: '/repo', agent })
+      expect(pushed).not.toHaveBeenCalled()
+      expect(run.mock.calls[0]![0].at(-1)).toContain('--runtime')
+      expect(run.mock.calls[0]![0].at(-1)).toContain('bc-12345678-abcd')
+      expect(run.mock.calls[0]![0].at(-1)).not.toContain('--cloud-ref')
+    } finally { pushed.mockRestore() }
+  })
+
+  const cursorCloud = { repoUrl: 'https://github.com/acme/app', ref: 'feature/cloud' }
+  it.each(['bypassPermissions', 'plan', undefined] as const)('accepts cloud mode %s and whitelists its fields', (permissionMode) => {
+    expect(validatedAgent({ provider: 'cursor-chat', permissionMode, cursorCloud: { ...cursorCloud, extra: 'ignored' } })).toMatchObject({ provider: 'cursor-chat', cursorCloud })
+    expect(validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, extra: true } })?.cursorCloud).not.toHaveProperty('extra')
+  })
+  it.each(['claude-chat', 'codex-chat', 'cursor'])('rejects cloud for %s', (provider) => {
+    expect(() => validatedAgent({ provider, cursorCloud })).toThrow('Only Cursor chat')
+  })
+  it.each(['default', 'auto', 'acceptEdits'])('rejects local-only mode %s', (permissionMode) => {
+    expect(() => validatedAgent({ provider: 'cursor-chat', cursorCloud, permissionMode })).toThrow('only Full access and Plan')
+  })
+  it.each(['https://github.com/acme/app.git', 'https://user@github.com/acme/app', 'https://github.com:443/acme/app', 'https://github.com/acme/app?x=1', 'https://github.com/acme/app#x', 'https://gitlab.com/acme/app', 'git@github.com:acme/app', 'https://github.com/acme/..'])('rejects cloud URL %s', (repoUrl) => {
+    expect(() => validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, repoUrl } })).toThrow('URL')
+  })
+  it.each(['', '-main', 'a..b', 'main space', 'x'.repeat(201), 'main\n'])('rejects cloud ref %j', (ref) => {
+    expect(() => validatedAgent({ provider: 'cursor-chat', cursorCloud: { ...cursorCloud, ref } })).toThrow('ref')
+  })
+  it('rejects combining cloud and worktree before any mutation', async () => {
+    const run = runner()
+    await expect(new TmuxCreator(run).createSession({ name: 'cloud', cwd: '/repo', worktree: { branch: 'fix' }, agent: { provider: 'cursor-chat', cursorCloud } })).rejects.toThrow('cannot create a local worktree')
+    expect(run).not.toHaveBeenCalled()
+  })
+  it('checks the remote before creating a pane in the chosen existing checkout', async () => {
+    const pushed = vi.spyOn(GitCursorCloud.prototype, 'assertPushed').mockResolvedValue(undefined)
+    try {
+      const run = runner()
+      const creator = new TmuxCreator(run, [], undefined, async () => '/host/commando-agent')
+      await creator.createSession({ name: 'cloud', cwd: '/repo', agent: { provider: 'cursor-chat', cursorCloud } })
+      expect(pushed).toHaveBeenCalledWith('/repo', cursorCloud.repoUrl, cursorCloud.ref)
+      expect(run.mock.calls[0]![0]).toContain('/repo')
+      expect(run.mock.calls[0]![0].at(-1)).toContain('--runtime')
+      run.mockClear()
+      pushed.mockRejectedValue(new Error('Push first'))
+      await expect(creator.createSession({ name: 'cloud', cwd: '/repo', agent: { provider: 'cursor-chat', cursorCloud } })).rejects.toThrow('Push first')
+      expect(run).not.toHaveBeenCalled()
+    } finally { pushed.mockRestore() }
   })
 })

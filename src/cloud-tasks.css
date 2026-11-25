@@ -12,6 +12,18 @@
 .cloud-tasks .cloud-primary { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
 .cloud-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 8px; min-height: 38px; border-bottom: 1px solid var(--border); }
 .cloud-toolbar h1 { flex: 1; margin: 0; font-size: 12px; letter-spacing: -.025em; }
+.cursor-cloud-agents { border-bottom: 1px solid var(--border); }
+.cursor-cloud-agents > p { margin: 10px; }
+.cursor-cloud-agents h2 { flex: 1; margin: 0; font-size: 12px; }
+.cursor-cloud-agent-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 8px; padding: 8px; }
+.cursor-cloud-agent { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); }
+.cursor-cloud-agent .cloud-task-copy { gap: 4px; }
+.cursor-cloud-agent .cloud-task-copy strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.cursor-cloud-agent .cloud-actions { margin: 6px 0 0; }
+.cursor-cloud-agent-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font: 9px var(--mono); }
+.cursor-cloud-agent .cursor-cloud-status { padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; }
+.cursor-cloud-agent .cursor-cloud-status[data-status="running"] { color: var(--accent); }
+.cursor-cloud-agent .cursor-cloud-status[data-status="error"] { color: var(--amber); }
 .cloud-content { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); min-height: 0; }
 .cloud-list { min-width: 0; padding: 8px; background: var(--surface); border-right: 1px solid var(--border); }
 .cloud-list-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; color: var(--muted); font-size: 10px; }
