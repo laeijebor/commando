@@ -5,7 +5,7 @@ import { CODE_NAV_KINDS, type CodeNavFile, type CodeNavKind, type CodeNavLocatio
 import type { GitDiffApiClient } from './gitApi'
 import { contentSignature } from './gitBlame'
 import { PIERRE_BASE_CSS } from './PierreDiffView'
-import { PIERRE_THEME } from './pierreWorker'
+import { PIERRE_THEME, pierreHighlighterOptions } from './pierreWorker'
 
 /** Where a navigation started: the clicked symbol in one diff side. */
 export type CodeNavOrigin = Omit<CodeNavRequest, 'kind'>
@@ -92,6 +92,8 @@ function LocationPreview({ path, rev, contents, line, endLine }: { path: string;
   const options = useMemo<FileOptions<undefined, undefined>>(() => ({
     theme: PIERRE_THEME,
     themeType: 'dark',
+    // Must match the worker pool's options, or the pool's highlight results aren't used.
+    useTokenTransformer: pierreHighlighterOptions.useTokenTransformer,
     overflow: 'scroll',
     disableFileHeader: true,
     unsafeCSS: PIERRE_BASE_CSS,

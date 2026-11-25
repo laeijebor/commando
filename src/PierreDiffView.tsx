@@ -234,6 +234,7 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
   const options = useMemo<FileDiffOptions<undefined, undefined>>(() => ({
     theme: PIERRE_THEME,
     themeType: 'dark',
+    useTokenTransformer: pierreHighlighterOptions.useTokenTransformer,
     diffStyle: display === 'inline' ? 'unified' : 'split',
     diffIndicators: 'bars',
     lineDiffType: 'word-alt',

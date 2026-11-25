@@ -7,6 +7,7 @@ import { PierreDiffView } from './PierreDiffView'
 import { relativeTime, type FileBlame } from './gitBlame'
 import type { GitBlame, GitFileContents } from './gitApi'
 import { pierreRenders } from './pierreReactMock'
+import { pierreHighlighterOptions } from './pierreWorker'
 
 vi.mock('@pierre/diffs/react', () => import('./pierreReactMock'))
 
@@ -75,6 +76,12 @@ function hoverLine(side: 'deletions' | 'additions', lineNumber: number, lineType
 }
 
 describe('PierreDiffView', () => {
+  it('renders tokens with the transformer the worker pool uses, so Cmd-click reaches token handlers', () => {
+    render(view())
+    expect(pierreHighlighterOptions.useTokenTransformer).toBe(true)
+    expect(pierreRenders.at(-1)?.options?.useTokenTransformer).toBe(true)
+  })
+
   it('maps the layout toggle onto Pierre diff styles', () => {
     const { rerender } = render(view())
     expect(pierreRenders.at(-1)?.options?.diffStyle).toBe('split')
