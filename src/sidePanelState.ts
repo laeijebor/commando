@@ -59,7 +59,7 @@ export type BuiltinPanelTab = {
 export type PanelTab = WebPane | BuiltinPanelTab
 export function isBuiltinTab(tab: PanelTab): tab is BuiltinPanelTab { return 'key' in tab }
 export function panelTabKey(tab: PanelTab): string { return isBuiltinTab(tab) ? tab.key : tab.id }
-export function builtinPanelTab(anchorPaneId: string, key: BuiltinPanelKey, label: string = key === 'session' ? 'Session' : key === 'terminal' ? 'Terminal' : key === 'changes' ? 'Changes' : `#${parsePrPanelKey(key)?.number}`): BuiltinPanelTab {
+export function builtinPanelTab(anchorPaneId: string, key: BuiltinPanelKey, label: string = key === 'session' ? 'Board' : key === 'terminal' ? 'Terminal' : key === 'changes' ? 'Changes' : `#${parsePrPanelKey(key)?.number}`): BuiltinPanelTab {
   return { id: `panel:${anchorPaneId}:${key}`, key, anchorPaneId, label }
 }
 export function hasPaneChanges(summary: GitDiffSummary | null): boolean {

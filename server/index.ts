@@ -1,4 +1,3 @@
-import { parseCanvasSource } from '../shared/deck.js'
 import { AgentChatsApi } from './agent-chats-api.js'
 import { HostRegistry } from './hosts.js'
 import { HostsApi } from './hosts-api.js'
@@ -28,7 +27,7 @@ import { TurnBriefs } from './turn-briefs.js'
 import { defaultGuideStatePath, GuideStateStore, Guides } from './guides.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createReadStream, readFileSync } from 'node:fs'
+import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import {
   createServer,
@@ -86,7 +85,7 @@ import { handleLinearApi } from './linear-api.js'
 import { PrService, githubDisabledReason } from './prs.js'
 import { PrAutofixStore, PrAutofixWatcher } from './pr-autofix.js'
 import { handlePrsApi } from './prs-api.js'
-import { defaultPanePrRecordsPath } from './pane-pr-records.js'
+import { PanePrRecords, defaultPanePrRecordsPath } from './pane-pr-records.js'
 import { CloudTaskStore } from './cloud-task-store.js'
 import { CloudTaskService } from './cloud-task-service.js'
 import { handleCloudTasksApi } from './cloud-tasks-api.js'
@@ -136,7 +135,7 @@ import {
   disabledAuthBootstrap,
 } from './auth.js'
 import { createNetworkAccess, isLocalClient, isLoopbackAddress } from './network-access.js'
-import { openUrlInBrowser } from './open-folder.js'
+import { openUrlInBrowser, revealInFinder } from './open-folder.js'
 import { BusyProcessWatch, DeviceLockApi } from './device-lock-api.js'
 import { DeviceLockRegistry, defaultDeviceLockStatePath, deviceLockClaimsByPane } from './device-locks.js'
 import { DeviceDiscovery, DeviceWallApi, deviceLockAlerts } from './device-wall.js'
@@ -157,6 +156,12 @@ import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/age
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
+import { BoardChangeNotifications, BoardTileTitles } from './boards-publish.js'
+import { BoardStore, defaultBoardsPath, defaultBoardSnapshotsPath } from './boards.js'
+import { BoardThumbCache, BoardThumbWorker, BoardPreviewQueue, defaultBoardThumbsPath } from './board-thumbs.js'
+import { BoardLinkPreviews, defaultBoardLinkPreviewsPath } from './board-link-previews.js'
+import { BoardLinkHarvest } from './board-link-harvest.js'
+import { BoardsApi } from './boards-api.js'
 import { PaneTargetApi } from './pane-target-api.js'
 import { SessionBriefStore } from './session-briefs.js'
 import {
@@ -679,10 +684,28 @@ async function main(): Promise<void> {
     reloads: webPaneAgentRequests.reloads(),
   })
   // Declared before publishWebPanes, which keeps tabs' artifact registrations alive.
-  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port) })
+  const boardOptions = {
+    origin: `http://127.0.0.1:${port}`,
+    root: defaultBoardsPath(port), snapshotRoot: defaultBoardSnapshotsPath(port), webPanes,
+    artifacts: undefined as RedlineArtifactRegistry | undefined,
+    onChange: undefined as ((targetId: string, rev: number) => void) | undefined,
+    onError: (error: unknown) => console.warn('[commando] Board capture/persistence failed', error),
+    onRead: undefined as ((targetId: string) => void) | undefined,
+  }
+  const boards = new BoardStore(boardOptions)
+  const boardThumbCache = new BoardThumbCache({ root: defaultBoardThumbsPath(port), origin: `http://127.0.0.1:${port}`, capture: (url, w, h) => chromiumEngine.screenshot(url, w, h) })
+  const boardPreviewQueue = new BoardPreviewQueue(boardOptions.onError)
+  const boardLinkPreviews = new BoardLinkPreviews({ store: boards, thumbs: boardThumbCache, statePath: defaultBoardLinkPreviewsPath(port) })
+  const boardThumbWorker = new BoardThumbWorker(boards, boardThumbCache, boardPreviewQueue, boardLinkPreviews)
+  const boardLinkHarvest = new BoardLinkHarvest(boards, port)
+  boardOptions.onRead = (targetId) => boardThumbWorker.enqueue(targetId)
+
+  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port), retainedIds: [...boards.artifactIds(), ...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? [])] })
+  boardOptions.artifacts = redlineArtifacts
   /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
   const retainTabArtifacts = (): void => {
-    redlineArtifacts.retain(webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []))
+    boards.prune()
+    redlineArtifacts.retain([...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? []), ...boards.artifactIds()])
   }
   /**
    * Single funnel for web-pane changes: closes engine targets and tile
@@ -697,6 +720,7 @@ async function main(): Promise<void> {
     tileViews.update(new Set([...clients].flatMap((client) => [...client.tilesOnScreen]).filter((id) => live.has(id))))
   }
   const publishWebPanes = (): void => {
+    captureOpenBoardTabs()
     const streamable = new Set(
       webPanes
         .list()
@@ -725,7 +749,19 @@ async function main(): Promise<void> {
   const linear = new LinearService()
   const githubOffReason = githubDisabledReason(process.env, port, DEFAULT_PORT)
   if (githubOffReason) console.log(`[commando] ${githubOffReason}`)
-  const prs = new PrService({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
+  const boardPrRecords = new PanePrRecords(defaultPanePrRecordsPath(port))
+  const seededBoardTargets = new Set<string>()
+  // Observe existing reads without adding a GitHub poll or changing PR service behavior.
+  const prs = new class extends PrService {
+    override async listPanePullRequests(...args: Parameters<PrService['listPanePullRequests']>) {
+      const list = await super.listPanePullRequests(...args)
+      const pane = snapshot.panes.find((p) => p.targetId === list.targetId)
+      try {
+        for (const pr of [...list.pullRequests, ...list.impacted ?? []]) boards.capturePr(list.targetId, pr, pane && sessionBriefs.get(pane.id)?.agentSession)
+      } catch (error) { boardOptions.onError(error) }
+      return list
+    }
+  }({ githubDisabledReason: githubOffReason, panePrRecordsPath: defaultPanePrRecordsPath(port) })
   let cloudTaskStore: CloudTaskStore | undefined
   let cloudTasks: CloudTaskService | undefined
   try {
@@ -866,6 +902,13 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
+  const boardChanges = new BoardChangeNotifications((targetId, rev) => broadcast({ type: 'board:changed', targetId, rev }))
+  boardOptions.onChange = (targetId, rev) => {
+    try { retainTabArtifacts() } catch (error) { boardOptions.onError(error) }
+    boardChanges.enqueue(targetId, rev)
+    boardThumbWorker.enqueue(targetId)
+  }
+
   const simLeaseStatePath = defaultSimLeaseStatePath(port)
   const simLeaseRegistry = new SimLeaseRegistry({ statePath: simLeaseStatePath, pool: new SimPoolRegistry({ statePath: defaultSimPoolStatePath() }) })
   const simPoolReaper = simPoolReaperEnabled(process.env, port, DEFAULT_PORT) ? new SimPoolReaper({
@@ -914,6 +957,7 @@ async function main(): Promise<void> {
   }
 
   const publishSessionBrief = (brief: SessionBrief): Promise<void> => {
+    try { boards.captureBrief(brief) } catch (error) { boardOptions.onError(error) }
     if (reconcileWebPaneAgentSession(brief.paneId)) publishWebPanes()
     const pane = snapshot.panes.find((candidate) => candidate.id === brief.paneId)
     const previousTargetId = briefTargetIds.get(brief.paneId)
@@ -1706,6 +1750,15 @@ async function main(): Promise<void> {
             broadcast({ type: 'session_brief_snapshot', briefs: await clientSessionBriefs() })
           })
         }
+        for (const pane of snapshot.panes) if (!seededBoardTargets.has(pane.targetId)) {
+          seededBoardTargets.add(pane.targetId)
+          const session = sessionBriefs.get(pane.id)?.agentSession
+          void boardPrRecords.list(pane.targetId).then((refs) => {
+            for (const ref of refs) boards.capturePr(pane.targetId, ref, session)
+          }).catch(boardOptions.onError)
+          const brief = sessionBriefs.get(pane.id)
+          if (brief) { try { boards.captureBrief(brief) } catch (error) { boardOptions.onError(error) } }
+        }
         await agentHosts.reconcile()
         if (tmux.serverId) agentResume.reconcile(snapshot.panes, tmux.serverId, (paneId) => {
           const pane = paneForId(paneId)
@@ -2070,17 +2123,28 @@ async function main(): Promise<void> {
     onChange: publishAgentStatusChange,
     onPullRequestsCreated: (paneId, refs) => {
       const targetId = paneForId(paneId)?.targetId
+      if (targetId) {
+        try { for (const ref of refs) boards.capturePr(targetId, ref, sessionBriefs.get(paneId)?.agentSession) }
+        catch (error) { boardOptions.onError(error) }
+      }
       if (targetId) void prs.recordPanePullRequests(targetId, refs).catch((error: unknown) => console.error('[commando] failed to record created PRs', error))
     },
     onPullRequestsImpacted: (paneId, reports) => {
       const targetId = paneForId(paneId)?.targetId
-      if (targetId) void prs.recordPaneImpacts(targetId, reports).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
+      if (targetId) void prs.recordPaneImpacts(targetId, reports).then(() => prs.listPanePullRequests(targetId)).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
     },
     interactions,
     chatAsideSession: (paneId, sessionId) => agentHosts.isAsideSession(paneId, sessionId),
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,
     cursorForeground: cursorForegroundIsCurrent,
+  })
+  const boardsApi = new BoardsApi({
+    store: boards, thumbs: boardThumbCache, agentToken: agentHookToken, ownerAuthorized: requestIsOwnerAuthorized,
+    paneForId, paneForTarget: (targetId) => snapshot.panes.find((p) => p.targetId === targetId && !p.dead),
+    agentSession: (paneId) => sessionBriefs.get(paneId)?.agentSession,
+    artifacts: redlineArtifacts, onRevive: publishWebPanes,
+    revealInFinder: process.platform === 'darwin' ? revealInFinder : undefined,
   })
   const sessionBriefApi = new SessionBriefApi({
     token: agentHookToken,
@@ -2161,16 +2225,23 @@ async function main(): Promise<void> {
   // One paste at a time per agent pane, whichever tab is pushing.
   const agentPushes = new Set<string>()
   const chatSessionFor = (paneId: string) => agentHosts.states().find((chat) => chat.paneId === paneId)?.session
-  /** A canvas's manifest title, or a page's title; undefined when neither is known yet. */
-  const tileTitle = (pane: WebPane): string | undefined => {
-    if (pane.content?.kind === 'canvas') {
-      const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
-      try { if (path) return parseCanvasSource(readFileSync(path, 'utf8'), pane.content.manifest).manifest.title || undefined } catch { /* The journal still works without a manifest. */ }
-      return undefined
+  const boardTileTitles = new BoardTileTitles({ artifacts: redlineArtifacts, changed: () => captureOpenBoardTabs() })
+  const tileTitle = (pane: WebPane): string | undefined => boardTileTitles.title(pane)
+  let publishedBoardTabs = new Map<string, string>()
+  const captureOpenBoardTabs = (): void => {
+    const current = new Map<string, string>()
+    for (const pane of webPanes.list()) {
+      const targetId = paneForId(pane.anchorPaneId)?.targetId
+      if (!targetId) continue
+      current.set(pane.id, targetId)
+      try { boards.captureWebPane(targetId, pane, sessionBriefs.get(pane.anchorPaneId)?.agentSession, tileTitle(pane)) }
+      catch (error) { boardOptions.onError(error) }
     }
-    return pane.title?.trim() || undefined
+    for (const targetId of new Set([...publishedBoardTabs].filter(([id, target]) => current.get(id) !== target).map(([, target]) => target))) boards.changed(targetId)
+    publishedBoardTabs = current
   }
   webPanes.closedTabHooks = {
+    onClosed: (targetId, pane, title) => boards.snapshotOnClose(targetId, pane, title, sessionBriefs.get(pane.anchorPaneId)?.agentSession),
     targetIdFor: (paneId) => paneForId(paneId)?.targetId ?? paneTargets.get(paneId),
     titleFor: tileTitle,
     liveTargets: () => new Set(snapshot.panes.map((pane) => pane.targetId)),
@@ -2319,7 +2390,15 @@ async function main(): Promise<void> {
     pane: paneForId, owns: (id) => agentHosts.owns(id), items: (id) => agentHosts.items(id),
     finalMessage: (id) => agentStatuses.finalMessage(id), sessionBrief: (id) => sessionBriefs.get(id) ?? undefined,
     chatSession: (id) => agentHosts.states().find((s) => s.paneId === id)?.session,
-    briefs: turnBriefs, stalls: commanderStalls, relays: commanderRelays, error: commanderError,
+    briefs: {
+      observe: (turn) => {
+        turnBriefs.observe(turn)
+        const prompt = [...agentHosts.items(turn.status.paneId)].reverse().find((item) => item.kind === 'user_message')
+        try { boardLinkHarvest.observe(turn, prompt?.kind === 'user_message' ? prompt.text : undefined, sessionBriefs.get(turn.status.paneId)?.agentSession) }
+        catch (error) { boardOptions.onError(error) }
+      },
+      remove: (paneId) => { turnBriefs.remove(paneId); boardLinkHarvest.remove(paneId) },
+    }, stalls: commanderStalls, relays: commanderRelays, error: commanderError,
   })
   reconcileCommander = () => {
     commander.reconcile()
@@ -2515,7 +2594,11 @@ async function main(): Promise<void> {
   })
   const canvasSnapshots = new CanvasSnapshotsStore(redlineArtifacts, defaultCanvasSnapshotsPath(port))
   canvasSnapshots.prune()
-  const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => broadcast({ type: 'canvas_changed', ...change }))
+  const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => {
+    broadcast({ type: 'canvas_changed', ...change })
+    boardThumbWorker.changed(change.artifactId)
+    captureOpenBoardTabs()
+  })
   canvasWatch.sync(webPanes.list())
   canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.retainedIds()]))
   const redlineApi = new RedlineApi({
@@ -3216,6 +3299,7 @@ async function main(): Promise<void> {
 
       if (await agentStatusHooks.handle(request, response, url)) return
       if (await sessionBriefApi.handle(request, response, url)) return
+      if (await boardsApi.handle(request, response, url)) return
       if (await simLeaseApi.handle(request, response, url)) return
       if (await deviceLockApi?.handle(request, response, url)) return
       if (paneTargetApi.handle(request, response, url)) return
@@ -3490,6 +3574,7 @@ async function main(): Promise<void> {
     paneSeen.flush()
     paneViews.flush()
     tileViews.flush()
+    try { boards.flush() } catch (error) { boardOptions.onError(error) }
     stopRunningGit()
     hostsHealth.stop()
     hostsProxy.close()
@@ -3513,6 +3598,8 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    boardChanges.stop()
+    boardThumbWorker.stop()
     turnBriefs.stop()
     commanderRelays.stop()
     commanderStalls.stop()
