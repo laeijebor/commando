@@ -3436,6 +3436,27 @@ describe('chat asides', () => {
   const asideChat = () => ({ ...mainChat(), paneId: asidePaneId, session: { ...mainChat().session, paneId: asidePaneId, sessionId: 'aside-session', aside: { ...record, parentPaneId: pane.id } } })
   const input = () => within(document.querySelector<HTMLElement>(`[data-pane-id="${pane.id}"]`)!).getByRole('textbox', { name: /^Message/ })
 
+  it.each(['idle', 'running'] as const)('drafts in the aside and sends a queued report to %s Main', async (status) => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    const main = { ...mainChat(), asides: [record], session: { ...mainChat().session, status } }
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [main, asideChat()] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Report to Main' }))
+    const drafting = appMocks.send.mock.calls.map(([message]) => message).find((message) => message.type === 'chat_send' && message.paneId === asidePaneId)
+    expect(drafting.text).toMatch(/^Report to Main: summarise/)
+    const base = { turnId: 'report-turn', createdAt: 1, updatedAt: 1, status: 'completed' as const }
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [main, { ...asideChat(), items: [
+      { ...base, id: 'report-prompt', kind: 'user_message', text: drafting.text },
+      { ...base, id: 'report-reply', kind: 'assistant_message', text: 'Fix polling in src/file.ts' },
+    ] }] }))
+    expect(screen.getByRole('textbox', { name: 'Report text' })).toHaveValue('Fix polling in src/file.ts')
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Main' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: pane.id,
+      delivery: 'queue', text: '**From aside “Investigate flaky test”**\n<!-- commando-aside:abcdefgh -->\n\nFix polling in src/file.ts' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_aside', paneId: pane.id, action: { action: 'close', asideId: record.id } }))
+  })
+
   it('routes Restart to update from an aside to its parent pane', async () => {
     appMocks.send.mockReturnValue(true)
     await renderAppWithSnapshot()

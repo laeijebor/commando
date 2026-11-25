@@ -56,13 +56,14 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled,
   </div>
 }
 
-export function AsideBanner({ aside, disabled, onAction }: { aside: ChatAsideRecord; disabled: boolean; onAction: (action: ChatAsideAction) => void }) {
+export function AsideBanner({ aside, disabled, onAction, onReport, reportDisabled }: { aside: ChatAsideRecord; disabled: boolean; onAction: (action: ChatAsideAction) => void; onReport?: () => void; reportDisabled?: boolean }) {
   const now = useNow(true)
   const minutes = Math.max(0, Math.floor((now - aside.createdAt) / 60_000))
   const age = minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`
   const mode = aside.mode === 'inherit' ? 'Full access' : aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'
   return <div className="chat-aside-banner">
     <span className="min-w-0 flex-1"><strong>Aside</strong> · forked from Main {age} · {mode}{aside.lastError ? <small className="block text-destructive">{aside.lastError}</small> : null}</span>
+    {onReport ? <Button size="xs" variant="ghost-muted" disabled={disabled || reportDisabled} onClick={onReport}>Report to Main</Button> : null}
     <Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => onAction({ action: 'mode', asideId: aside.id, mode: aside.mode === 'read-only' ? 'inherit' : 'read-only' })} title={aside.mode === 'read-only' ? "Lets this aside use Main's permissions, including edits" : 'Blocks edit tools in this aside'}>{aside.mode === 'read-only' ? 'Allow edits' : 'Make read-only'}</Button>
     <Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => {
       if (window.confirm("Replaces this aside's conversation with a fresh fork of Main's latest finished turn")) onAction({ action: 'refork', asideId: aside.id })

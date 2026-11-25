@@ -2,7 +2,7 @@ import { Children, cloneElement, isValidElement, createContext, memo, use, useEf
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, parseAsideReport, type AsideReport, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
 import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
@@ -46,7 +46,7 @@ const markdownComponents: Components = {
 }
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void }>({ items: [], now: 0, provider: 'Claude' })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void; onOpenReport?: (report: AsideReport) => void }>({ items: [], now: 0, provider: 'Claude' })
 
 /** Resource actions stay stable while timeline items and clocks update. */
 const ResourceActionsContext = createContext<{ cwd: string; onResourceAction?: ResourceActionHandler }>({ cwd: '' })
@@ -381,7 +381,16 @@ export interface ChatFocusMessageRequest {
 function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; highlighted?: boolean }) {
   const context = use(TimelineContext)
   switch (row.kind) {
-    case 'user':
+    case 'user': {
+      const report = parseAsideReport(row.item.text)
+      if (report) return <div className="flex justify-end pb-3 pt-1" data-chat-item-id={row.item.id}>
+        <div className={cn('chat-aside-report-bubble', highlighted && 'chat-message-highlight')}>
+          <div className="chat-aside-report-source"><span>From aside</span><strong>{report.title}</strong>
+            {context.onOpenReport ? <button type="button" onClick={() => context.onOpenReport?.(report)}>Open aside ↗</button> : null}</div>
+          <Markdown text={report.body} />
+          {row.item.images?.length ? <ImageStrip images={row.item.images} /> : null}
+        </div>
+      </div>
       if (row.item.tileEvents?.length) {
         return (
           <div className="flex flex-col items-end gap-1.5 pb-3 pt-1" data-chat-item-id={row.item.id}>
@@ -410,6 +419,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
           ) : null}
         </div>
       )
+    }
     case 'plan':
       return <PlanCard item={row.item} markdown={Markdown} {...(context.onSavePlan ? { onSave: context.onSavePlan } : {})} />
     case 'subagents':
@@ -440,7 +450,8 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled, onOpenReport }: {
+  onOpenReport?: (report: AsideReport) => void
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -472,7 +483,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
   const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
+  const context = useMemo(() => ({ items, now, onOpenReport, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenReport, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
   const resourceActions = useMemo(() => ({ cwd, onResourceAction }), [cwd, onResourceAction])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)

@@ -1,7 +1,9 @@
 import { useHost } from '../HostContext'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Archive, ArrowUp, CheckSquare, Circle, CircleDot, Paperclip, Square, SquareCheckBig, X, Rabbit } from 'lucide-react'
 import {
+  asideReportText,
+  type AsideReport,
   CHAT_IMAGE_TYPES,
   CHAT_VIDEO_TYPES,
   MAX_CHAT_VIDEO_BYTES,
@@ -56,6 +58,7 @@ import { shortPath, type PlanItem } from '../../shared/chat-timeline'
 import { Button } from './ui/button'
 import { useComposerStash, type StashedDraft } from './useComposerStash'
 import { loadDraft, saveDraft } from './draftStore'
+import type { AsideReportDraft } from './AsideReport'
 
 /** What the composer asks of the app for `@`, `#` and images. */
 export interface ChatInputServices {
@@ -359,7 +362,19 @@ export function ChatComposer({
   insert,
   onOpenAside,
   newAside = false,
+  reportSheet,
+  reportDraft,
+  onReportDraftTaken,
+  reportReferences = [],
+  onRemoveReportReference,
+  onReportsSent,
 }: {
+  reportSheet?: ReactNode
+  reportDraft?: AsideReportDraft
+  onReportDraftTaken?: () => void
+  reportReferences?: AsideReport[]
+  onRemoveReportReference?: (index: number) => void
+  onReportsSent?: () => void
   onOpenAside?: (text: string, images?: ChatImageRef[]) => Promise<boolean>
   newAside?: boolean
   session: ChatSessionInfo
@@ -439,6 +454,13 @@ export function ChatComposer({
     return () => window.clearTimeout(timeout)
   }, [session.sessionId, draft, images])
   const textarea = useRef<HTMLTextAreaElement>(null)
+  const takenReportDraft = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (!reportDraft || takenReportDraft.current === reportDraft.id) return
+    takenReportDraft.current = reportDraft.id
+    setDraft((current) => [current, reportDraft.text].filter(Boolean).join('\n\n'))
+    onReportDraftTaken?.()
+  }, [reportDraft, onReportDraftTaken])
   const fileInput = useRef<HTMLInputElement>(null)
   const pendingCaret = useRef<number | null>(null)
   const menuId = useId()
@@ -783,10 +805,11 @@ export function ChatComposer({
 
     if (!canSend) return
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
-    const text = draft.trim()
+    const typedText = draft.trim()
+    const text = [...reportReferences.map(asideReportText), typedText].filter(Boolean).join('\n\n')
     const reply = replyingTo.current
     replyingTo.current = null
-    const answersAsk = reply && !relayTarget && text.startsWith(reply.prefix) ? { answersAsk: reply.key } : {}
+    const answersAsk = reply && !relayTarget && typedText.startsWith(reply.prefix) ? { answersAsk: reply.key } : {}
     const options: ChatSendOptions = relayTarget
       ? { relayTo: relayTarget }
       : { ...(running && turnFlow ? { delivery: steer ? 'steer' as const : 'queue' as const } : {}), ...answersAsk }
@@ -796,6 +819,7 @@ export function ChatComposer({
       window.setTimeout(() => sentDrafts.current.delete(requestId), CHAT_SEND_REFUSAL_MS)
     }
     clearDraft()
+    if (reportReferences.length) onReportsSent?.()
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -898,7 +922,9 @@ export function ChatComposer({
   const planUsage = usePlanUsage(session)
   return (
     <div className="px-4 pb-3 pt-2">
+      {reportSheet}
       <div
+        hidden={Boolean(reportSheet)}
         className={cn(
           'mx-auto w-full max-w-[var(--chat-content-max-width)] overflow-hidden rounded-xl border border-input bg-card shadow-sm focus-within:border-primary/60',
           dragging && 'border-primary ring-2 ring-primary/30',
@@ -908,6 +934,11 @@ export function ChatComposer({
         onDrop={onDrop}
         data-testid="chat-composer"
       >
+        {reportReferences.length ? <div className="chat-aside-references" aria-label="Aside references">
+          {reportReferences.map((report, index) => <span key={`${report.asideId}-${index}`} className="chat-aside-reference">
+            From aside {report.title}<button type="button" aria-label={`Remove reference ${report.title}`} onClick={() => onRemoveReportReference?.(index)}>✕</button>
+          </span>)}
+        </div> : null}
         {relayTarget && onClearRelay ? <RelayChip provider={provider} label={relayTarget.label} onClear={onClearRelay} /> : null}
         {planFollowUp ? <PlanReadyBanner provider={provider} session={session} title={chatPlanTitle(planFollowUp.item.text)} implementMode={planFollowUp.implementMode} refining={refining} /> : null}
         {queue.length && onQueue ? (
