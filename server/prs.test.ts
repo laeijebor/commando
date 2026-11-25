@@ -1826,6 +1826,21 @@ describe('chat PR chip summaries', () => {
     expect((await service.pullRequestSummary('acme/widgets', 12)).state).toBe(state)
   })
 
+  it('reads at most four PRs at once', async () => {
+    let active = 0, maximum = 0
+    const runner = vi.fn(async () => {
+      maximum = Math.max(maximum, ++active)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      active--
+      return pr()
+    })
+    const service = new PrService({ runner })
+    const results = await Promise.all(Array.from({ length: 10 }, (_, index) => service.pullRequestSummary('acme/widgets', index + 1)))
+    expect(results).toHaveLength(10)
+    expect(runner).toHaveBeenCalledTimes(10)
+    expect(maximum).toBe(4)
+  })
+
   it('rejects invalid input and reports GitHub being off', async () => {
     await expect(new PrService({ runner: vi.fn() }).pullRequestSummary('not a repo', 12)).rejects.toMatchObject({ status: 400 })
     await expect(new PrService({ githubDisabledReason: 'off' }).pullRequestSummary('acme/widgets', 12)).rejects.toMatchObject({ code: 'github_disabled' })

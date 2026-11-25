@@ -60,6 +60,8 @@ const RATE_LIMIT_BACKOFF_MS = 60_000
 const MAX_RATE_LIMIT_BACKOFF_MS = 15 * 60_000
 const RATE_LIMIT_FIELD = 'rateLimit { remaining resetAt cost limit }'
 const PR_METADATA_TTL_MS = 5 * 60_000
+/** Chat PR chips each read one PR; a long chat must not start dozens of `gh` processes at once. */
+const MAX_CONCURRENT_SUMMARIES = 4
 // Background pane reads (session tree counts) poll every 5 minutes, so a page
 // load can reuse any pane list fetched within that window instead of
 // searching GitHub once per pane.
@@ -794,6 +796,8 @@ export class PrService {
   private readonly entities = new PrEntities()
   private readonly conflictInspector = new PrConflictInspector()
   private readonly merging = new Set<string>()
+  private summaryReads = 0
+  private readonly summaryWaiters: Array<() => void> = []
   private readonly runner: GhRunner
   private readonly gitRunner: GitRunner
   private readonly preferences: PrPreferencesStore
@@ -1606,11 +1610,21 @@ export class PrService {
     }, refresh)
   }
 
-  /** Title and state for a chat PR chip; shares PR Quick Look's cached metadata read. */
+  /** Title and state for a chat PR chip; shares PR Quick Look's cached metadata read. At most four run at once. */
   async pullRequestSummary(repoInput: unknown, numberInput: unknown): Promise<PrChipSummary> {
     const repo = validateRepo(repoInput)
     const number = validatePrNumber(numberInput)
-    const pr = (await this.metadata(repo, number)).value
+    // A finished read hands its slot straight to the next waiter.
+    if (this.summaryReads >= MAX_CONCURRENT_SUMMARIES) await new Promise<void>((resolve) => this.summaryWaiters.push(resolve))
+    else this.summaryReads++
+    let pr: JsonRecord
+    try {
+      pr = (await this.metadata(repo, number)).value
+    } finally {
+      const next = this.summaryWaiters.shift()
+      if (next) next()
+      else this.summaryReads--
+    }
     const user = optionalObject(pr, 'user')
     const head = optionalObject(pr, 'head')
     const state = pr.merged === true || typeof pr.merged_at === 'string' ? 'merged'
