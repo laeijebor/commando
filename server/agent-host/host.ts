@@ -4,11 +4,14 @@ import {
   AGENT_HOST_PROTOCOL_VERSION,
   HOST_REFUSED_CLOSE_CODE,
   parseDaemonMessage,
+  parseAsideKey,
   type ChatItem,
   type DaemonToHostMessage,
   type HostToDaemonMessage,
 } from '../../shared/agent-chat.js'
+import { ChatAsides } from './asides.js'
 import type { ChatProviderSession } from './provider.js'
+import type { AgentSessionSpec } from './session.js'
 
 const FLUSH_MS = 50
 /** Keeps snapshots well under the daemon's 4 MB frame limit. */
@@ -134,6 +137,7 @@ export class DaemonLink {
  */
 export class AgentHost {
   readonly hostId = randomUUID()
+  private readonly asides = new Map<string, ChatAsides>()
   private readonly sessions = new Map<string, ChatProviderSession>()
   private readonly pendingItems = new Map<string, Map<string, ChatItem>>()
   private readonly handoffs = new Map<string, (result: { ok: boolean; error?: string }) => void>()
@@ -163,6 +167,7 @@ export class AgentHost {
   }
 
   stop(): void {
+    for (const manager of this.asides.values()) manager.stop()
     this.link.stop()
   }
 
@@ -170,20 +175,36 @@ export class AgentHost {
     return this.link.connected
   }
 
-  add(session: ChatProviderSession): void {
+  add(session: ChatProviderSession, spec?: AgentSessionSpec): void {
     this.sessions.set(session.paneId, session)
+    if (spec && !parseAsideKey(session.paneId)) {
+      const manager = new ChatAsides(session, spec, {
+        add: (aside) => this.add(aside), remove: (key) => this.remove(key),
+        changed: (asides) => this.link.send({ type: 'asides', paneId: session.paneId, asides }),
+        log: (error) => this.log.info(`Couldn't restore or save asides: ${error instanceof Error ? error.message : String(error)}`),
+      })
+      this.asides.set(session.paneId, manager)
+      manager.sync()
+    }
     session.on('items', (items, replace) => {
+      if (this.sessions.get(session.paneId) !== session) return
       if (!replace) return this.queueItems(session.paneId, items)
       // Updates still queued belong to the old timeline.
       this.pendingItems.delete(session.paneId)
       this.link.send({ type: 'items', paneId: session.paneId, items, replace })
     })
     session.on('session', (info) => {
+      if (this.sessions.get(session.paneId) !== session) return
+      this.asides.get(session.paneId)?.sync()
       this.flush()
       this.link.send({ type: 'session_update', session: info })
     })
-    session.on('commands', (commands) => this.link.send({ type: 'commands', paneId: session.paneId, commands }))
+    session.on('commands', (commands) => {
+      if (this.sessions.get(session.paneId) === session) this.link.send({ type: 'commands', paneId: session.paneId, commands })
+    })
     session.on('closed', () => {
+      if (this.sessions.get(session.paneId) !== session) return
+      this.asides.get(session.paneId)?.stop()
       this.flush()
       this.link.send({ type: 'session_update', session: session.snapshot().session })
     })
@@ -191,6 +212,8 @@ export class AgentHost {
   }
 
   remove(paneId: string): void {
+    this.asides.get(paneId)?.stop()
+    this.asides.delete(paneId)
     this.flush()
     this.sessions.delete(paneId)
     this.link.send({ type: 'session_closed', paneId })
@@ -200,6 +223,7 @@ export class AgentHost {
     this.link.send({ type: 'hello', hostId: this.hostId, version: AGENT_HOST_PROTOCOL_VERSION, mode: this.mode, pid: process.pid })
     this.pendingItems.clear()
     for (const session of this.sessions.values()) this.sendSnapshot(session)
+    for (const manager of this.asides.values()) manager.publish()
   }
 
   private sendSnapshot(session: ChatProviderSession): void {
@@ -230,6 +254,12 @@ export class AgentHost {
 
   private async onMessage(message: DaemonToHostMessage): Promise<void> {
     if (message.type === 'welcome') return
+    if (message.type === 'aside') {
+      const manager = this.asides.get(message.paneId)
+      const result = manager ? await manager.act(message.action) : { ok: false, error: 'This chat cannot open asides; restart it first' }
+      this.link.send({ type: 'aside_result', paneId: message.paneId, requestId: message.requestId, ...result })
+      return
+    }
     if (message.type === 'handoff_saved') {
       this.handoffs.get(message.paneId)?.({ ok: message.ok, ...(message.error ? { error: message.error } : {}) })
       return
@@ -238,6 +268,7 @@ export class AgentHost {
     if (!session) return
     if (message.type === 'send') {
       const { type: _type, paneId: _paneId, requestId: _requestId, text, images, ...options } = message
+      if (session.snapshot().session.aside?.mode === 'read-only' && options.permissionMode) options.permissionMode = 'default'
       session.send(text, images, options)
     } else if (message.type === 'file_search') {
       const result = await session.searchFiles(message.query)
@@ -258,7 +289,11 @@ export class AgentHost {
     else if (message.type === 'interrupt') await session.interrupt(message.dropQueued)
     else if (message.type === 'answer') session.answer(message.chatRequestId, message.answer)
     else if (message.type === 'restart') this.events.restart?.(message.paneId)
-    else if (message.type === 'configure') await session.configure(message.settings)
+    else if (message.type === 'configure') {
+      const settings = { ...message.settings }
+      if (session.snapshot().session.aside?.mode === 'read-only' && settings.permissionMode) settings.permissionMode = 'default'
+      await session.configure(settings)
+    }
     else if (message.type === 'switch') await session.tui?.requestSwitch(message.action)
   }
 

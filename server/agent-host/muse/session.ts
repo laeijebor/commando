@@ -1,3 +1,4 @@
+import { asideEnv, asideInstructions } from '../aside-brief.js'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
@@ -139,17 +140,19 @@ export class MuseChatSession implements ChatProviderSession {
   constructor(private readonly spec: AgentSessionSpec, client?: MuseTransport, private readonly executable = 'muse') {
     museApprovalMode(spec.permissionMode)
     // Full access needs both: bypassPermissions alone, from before --yolo existed, meant approve-everything inside the sandbox.
-    this.fullAccess = spec.permissionMode === 'bypassPermissions' && spec.fullAccess === true
+    this.fullAccess = !spec.readOnly && spec.permissionMode === 'bypassPermissions' && spec.fullAccess === true
     const permissionMode = spec.permissionMode === 'bypassPermissions' && !this.fullAccess ? 'acceptEdits' : spec.permissionMode
     this.client = client ?? new MuseRpcClient({
       sandbox: !this.fullAccess,
+      readOnly: spec.readOnly,
       cwd: spec.cwd,
-      env: { ...spec.env, ...(spec.resumeCommand ? resumeEnv(spec.resumeCommand) : {}) },
+      env: { ...(spec.aside ? asideEnv(spec.env, spec.aside.id) : spec.env), ...(!spec.aside && spec.resumeCommand ? resumeEnv(spec.resumeCommand) : {}) },
       executable,
       log: spec.log,
     })
     this.files = new WorkspaceFileIndex(spec.cwd)
     this.info = {
+      ...(spec.aside ? { aside: spec.aside } : {}),
       paneId: spec.paneId,
       provider: 'muse',
       cwd: spec.cwd,
@@ -294,6 +297,7 @@ export class MuseChatSession implements ChatProviderSession {
         await this.applySettings({ permissionMode: options.permissionMode })
       }
       const input = await this.input(trimmed, images, sessionId)
+      if (this.spec.aside) input.unshift({ type: 'text', text: asideInstructions(this.spec.aside.mode) })
       const steer = Boolean(this.activeTurn)
       const commandId = uuidv7()
       this.mapper.expectUser(trimmed, images)

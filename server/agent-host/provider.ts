@@ -1,5 +1,6 @@
 import type {
   ChatAnswer,
+  ChatForkPoint,
   ChatCommand,
   ChatFileSearchResult,
   ChatImageRef,
@@ -46,6 +47,7 @@ export interface ChatProviderSession {
   readonly queued: ChatQueuedMessage[]
   readonly tui?: ChatProviderTui
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void
+  forkPoint?(): ChatForkPoint | null
   start(): Promise<void>
   send(text: string, images?: ChatImageRef[], options?: ChatSendOptions): void
   updateQueue(change: ChatQueueAction): void

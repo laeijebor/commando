@@ -26,7 +26,7 @@ class FakeClient implements CodexTransport {
   request = vi.fn(async <M extends keyof ClientMethods>(method: M, params: ClientMethods[M]): Promise<unknown> => {
     this.requests.push({ method, params })
     if (method === 'model/list') return { data: [model('test-model', undefined, true), model('other-model', ['low'])], nextCursor: null }
-    if (method === 'thread/start' || method === 'thread/resume') return { thread, model: 'test-model', modelProvider: 'openai', serviceTier: null, disabledPluginIds: [], cwd: '/tmp', instructionSources: [], approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: codexPermissions('default', '/tmp').sandboxPolicy, reasoningEffort: 'medium' }
+    if (method === 'thread/start' || method === 'thread/resume' || method === 'thread/fork') return { thread, model: 'test-model', modelProvider: 'openai', serviceTier: null, disabledPluginIds: [], cwd: '/tmp', instructionSources: [], approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: codexPermissions('default', '/tmp').sandboxPolicy, reasoningEffort: 'medium' }
     if (method === 'thread/read') return { thread: { ...thread, name: 'Old chat', turns: [turn('history', 'completed', [{ type: 'agentMessage', id: 'h', text: 'Earlier', phase: null, memoryCitation: null, delivery: null, questions: null }])] } }
     if (method === 'turn/start') {
       const id = `turn-${++this.count}`
@@ -487,6 +487,34 @@ describe('Codex paginated history and request validation', () => {
     client.server('item/tool/requestUserInput', 'secret', { questions: [{ id: 'secret', question: 'Password?', header: '', isSecret: true, isOther: true, options: null }], isBlocking: true, autoResolutionMs: null })
     expect(client.errors.at(-1)).toMatchObject({ id: 'secret', code: -32602 })
     expect(session.snapshot().session.status).toBe('running')
+    session.close()
+  })
+})
+
+describe('Codex aside forks', () => {
+  it('uses thread/fork through a completed turn and keeps read-only on subsequent turns', async () => {
+    const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished-turn' }, createdAt: 1 }
+    const { session, client } = harness({ paneId: '%3~abcd1234', aside, fork: aside.forkedFrom, readOnly: true })
+    await session.start()
+    expect(client.requests.find((request) => request.method === 'thread/fork')?.params).toMatchObject({ threadId: 'main', lastTurnId: 'finished-turn', sandbox: 'read-only', developerInstructions: expect.stringContaining('aside') })
+    expect(client.requests.some((request) => request.method === 'thread/start')).toBe(false)
+    expect(session.snapshot().session.aside).toEqual(aside)
+    session.send('Why?')
+    await tick()
+    expect(client.requests.find((request) => request.method === 'turn/start')?.params).toMatchObject({ sandboxPolicy: { type: 'readOnly' } })
+    session.close()
+  })
+  it('exposes the last completed turn, including resumed history, while a new turn runs', async () => {
+    const { session, client } = harness({ resume: 'thread-123' })
+    await session.start()
+    expect(session.forkPoint()).toEqual({ sessionId: 'thread-123', at: 'history' })
+    client.notify('turn/started', { turn: turn('new') })
+    expect(session.forkPoint()?.at).toBe('history')
+    client.notify('turn/completed', { turn: turn('new', 'completed') })
+    expect(session.forkPoint()?.at).toBe('new')
+    client.notify('turn/started', { turn: turn('aborted') })
+    client.notify('turn/completed', { turn: turn('aborted', 'interrupted') })
+    expect(session.forkPoint()?.at).toBe('new')
     session.close()
   })
 })

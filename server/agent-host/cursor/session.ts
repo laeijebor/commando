@@ -1,3 +1,4 @@
+import { asideEnv, asideInstructions } from '../aside-brief.js'
 import { randomUUID } from 'node:crypto'
 import type { AgentOptions, ModelListItem, ModelSelection, SDKImage, SettingSource } from '@cursor/sdk'
 import {
@@ -99,7 +100,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.files = new WorkspaceFileIndex(spec.cwd)
     this.mcpController = new CursorMcpController({
       cwd: spec.cwd,
-      env: spec.env,
+      env: spec.aside ? asideEnv(spec.env, spec.aside.id) : spec.env,
       ...(mcpCli !== undefined ? { cli: mcpCli } : {}),
       callbacks: {
         reloadAgent: () => this.reloadMcp(),
@@ -107,6 +108,7 @@ export class CursorChatSession implements ChatProviderSession {
       },
     })
     this.info = {
+      ...(spec.aside ? { aside: spec.aside } : {}),
       paneId: spec.paneId, provider: 'cursor', cwd: spec.cwd, status: 'starting', models: [],
       hostPid: process.pid, hostVersion: AGENT_HOST_PROTOCOL_VERSION, bypassAllowed: true,
       permissionMode: spec.permissionMode, selectedModel: spec.model, effort: spec.effort, fast: spec.fast,
@@ -349,7 +351,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.mapper.begin(turnId)
     this.emitItems(this.mapper.expectUser(text, images))
     if (!sandboxed) this.ranUnsandboxed = true
-    const run = await this.agent.send({ text: [text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
+    const run = await this.agent.send({ text: [...(this.spec.aside ? [asideInstructions(this.spec.aside.mode)] : []), text, ...notes].filter(Boolean).join('\n\n'), ...(input.length ? { images: input } : {}) }, {
       model, mode: this.info.permissionMode === 'plan' ? 'plan' : 'agent',
       onDelta: ({ update }) => { if (!this.closing) this.emitItems(this.mapper.delta(update)) },
     })

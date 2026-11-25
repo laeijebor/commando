@@ -13,7 +13,7 @@ import { agentHostBuild } from './build.js'
 import { AgentHost } from './host.js'
 import { createChatProviderSession } from './factory.js'
 import type { ChatProviderSession } from './provider.js'
-import { claudeCodeSwitchCommand as providerSwitchCommand } from './session.js'
+import { claudeCodeSwitchCommand as providerSwitchCommand, type AgentSessionSpec } from './session.js'
 
 export { claudeCodeFlags } from './session.js'
 
@@ -286,8 +286,9 @@ async function main(): Promise<void> {
     { restart: () => requestRestart() },
   )
   let session: ChatProviderSession
+  let sessionSpec: AgentSessionSpec
   try {
-    session = await createChatProviderSession(parsed.provider, {
+    session = await createChatProviderSession(parsed.provider, sessionSpec = {
       paneId,
       cwd: process.cwd(),
       permissionMode: parsed.permissionMode,
@@ -341,7 +342,7 @@ async function main(): Promise<void> {
     const { session: info } = session.snapshot()
     write(color(31, `Session ended${info.error ? `: ${info.error}` : ''}. Press Ctrl-C twice to quit.`))
   })
-  host.add(session)
+  host.add(session, sessionSpec)
   write(dim(`Commando chat · ${providerName(parsed.provider)}${parsed.configDir ? ` (${parsed.configDir.replace(homedir(), '~')})` : ''} · ${process.cwd().replace(homedir(), '~')}`))
   write(dim('Type here or in the Commando chat. Ctrl-C interrupts a turn; press it twice to quit.'))
   void session.start()

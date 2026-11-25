@@ -414,3 +414,10 @@ describe('MuseItemMapper', () => {
     expect(mapper.delta({ itemId: 'c', field: 'output', delta: 'a.txt' })).toMatchObject([{ kind: 'command', output: 'a.txt' }])
   })
 })
+
+describe('Muse aside read-only posture', () => {
+  it('disables filesystem writes and shell execution with real serve flags', () => {
+    expect(museServeArgs(true, true)).toEqual(['serve', '--trust-workspace', '--sandbox-network', 'enabled', '--disable-write', '--disable-shell'])
+    expect(museServeArgs(true)).not.toContain('--disable-write')
+  })
+})
