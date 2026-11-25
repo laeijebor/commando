@@ -773,6 +773,7 @@ export type LayoutSpec =
   | { kind: 'split'; direction: 'row' | 'column'; children: LayoutSpec[] }
 
 export type ServerMessage =
+  | { type: 'board:changed'; targetId: string; rev: number }
   | { type: 'snapshot'; snapshot: CommandoSnapshot }
   | { type: 'session_ides'; ides: SessionIde[] }
   | { type: 'capabilities'; capabilities: { revealInFinder: boolean } }
