@@ -9,6 +9,7 @@ import {
   FlaskConical,
   FolderClosed,
   FolderOpen,
+  History,
   List,
   ListTree,
   LoaderCircle,
@@ -32,6 +33,8 @@ import { parseAnsi } from './ansi'
 import { updateDiffFilters, useDiffFilters } from './diffFilters'
 import { AnsiText, findTextMatches } from './AnsiText'
 export { AnsiText } from './AnsiText'
+import { useGitBlame } from './gitBlame'
+import { PierreDiffView, PierreWorkerPool } from './PierreDiffView'
 import type {
   DiffDisplay,
   DiffEngine,
@@ -39,6 +42,7 @@ import type {
   GitDiffApiClient,
   GitDiffSearchResult,
   GitDiffSummary,
+  GitFileContents,
 } from './gitApi'
 
 type Props = {
@@ -65,6 +69,7 @@ export type GitDiffComparison = {
 const APPROXIMATE_CHARACTER_WIDTH = 7.25
 const AUTO_TARGET = 'auto'
 const ENGINE_STORAGE_KEY = 'commando-diff-engine'
+const BLAME_STORAGE_KEY = 'commando-diff-blame'
 const DISPLAY_STORAGE_KEY = 'commando-diff-display'
 const FILE_VIEW_STORAGE_KEY = 'commando-diff-file-view'
 const FILE_PANEL_WIDTH_STORAGE_KEY = 'commando-diff-file-panel-width'
@@ -73,6 +78,9 @@ const MIN_FILE_PANEL_WIDTH = 180
 const MAX_FILE_PANEL_WIDTH = 640
 const MIN_DIFF_OUTPUT_WIDTH = 320
 
+/** 'rich' renders both file versions client-side with @pierre/diffs; the others are daemon-rendered ANSI. */
+type ViewEngine = DiffEngine | 'rich'
+type RichResult = { key: string; contents: GitFileContents }
 type FileView = 'tree' | 'list'
 type SearchScope = 'file' | 'all'
 
@@ -113,6 +121,22 @@ function storedNumber(key: string, fallback: number, minimum: number, maximum: n
   } catch {
     return fallback
   }
+}
+
+function sameSide(left: GitFileContents['old'], right: GitFileContents['old']): boolean {
+  return left === right || (left !== null && right !== null &&
+    left.path === right.path && left.rev === right.rev && left.contents === right.contents)
+}
+
+/** Refreshes that return the same contents keep the old object, so the rich view doesn't re-render. */
+function sameContents(left: GitFileContents, right: GitFileContents): boolean {
+  return left.file === right.file && left.unavailable === right.unavailable &&
+    sameSide(left.old, right.old) && sameSide(left.new, right.new)
+}
+
+const RICH_FALLBACK_NOTE: Record<NonNullable<GitFileContents['unavailable']>, string> = {
+  binary: 'Binary file: showing difftastic instead of the rich view.',
+  'too-large': 'Too large for the rich view: showing difftastic instead.',
 }
 
 function buildFileTree(files: GitChangedFile[]): FileTreeFolder {
@@ -171,9 +195,14 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   const [allSearchResult, setAllSearchResult] = useState<GitDiffSearchResult | null>(null)
   const [allSearchLoading, setAllSearchLoading] = useState(false)
   const [allSearchError, setAllSearchError] = useState('')
-  const [engine, setEngine] = useState<DiffEngine>(
-    () => storedChoice(ENGINE_STORAGE_KEY, ['difftastic', 'delta'], 'difftastic'),
+  const [engine, setEngine] = useState<ViewEngine>(
+    () => storedChoice(ENGINE_STORAGE_KEY, ['rich', 'difftastic', 'delta'], 'rich'),
   )
+  const [blameOn, setBlameOn] = useState(() => storedChoice(BLAME_STORAGE_KEY, ['on', 'off'], 'off') === 'on')
+  const [richResult, setRichResult] = useState<RichResult | null>(null)
+  const [richError, setRichError] = useState('')
+  const [richLoading, setRichLoading] = useState(false)
+  const [richMatchCount, setRichMatchCount] = useState(0)
   const [display, setDisplay] = useState<DiffDisplay>(
     () => storedChoice(DISPLAY_STORAGE_KEY, ['side-by-side', 'inline'], 'side-by-side'),
   )
@@ -200,6 +229,9 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   const resizeCleanup = useRef<(() => void) | null>(null)
   const generation = useRef(0)
   const diffGeneration = useRef(0)
+  const richGeneration = useRef(0)
+  const richRequestKey = useRef<string | null>(null)
+  const richResultKey = useRef<string | null>(null)
   const searchGeneration = useRef(0)
   const summaryRequestKey = useRef<string | null>(null)
   const diffRequestKey = useRef<string | null>(null)
@@ -387,6 +419,13 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   const deferredFileFilter = useDeferredValue(fileFilter)
   const normalizedFileFilter = deferredFileFilter.trim().toLowerCase()
   const contentQuery = diffSearch.trim()
+  const richKey = JSON.stringify([paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile])
+  const richContents = engine === 'rich' && richResult?.key === richKey ? richResult.contents : null
+  const richFallback = richContents?.unavailable ?? null
+  // Rich mode falls back to difftastic for files it can't show (binary or too large).
+  const ansiEngine: DiffEngine | null = engine === 'rich' ? (richFallback ? 'difftastic' : null) : engine
+  const showingPierre = engine === 'rich' && !richLoading && !richError && richContents !== null && !richFallback &&
+    (richContents.old !== null || richContents.new !== null) && richContents.old?.contents !== richContents.new?.contents
   const plainDiff = useMemo(
     () => parseAnsi(diff).map((segment) => segment.text).join(''),
     [diff],
@@ -395,7 +434,9 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     () => findTextMatches(plainDiff, contentQuery),
     [plainDiff, contentQuery],
   )
-  const currentDiffMatch = Math.min(activeDiffMatch, Math.max(0, diffMatches.length - 1))
+  // The rich view finds matches in its rendered rows and reports the count back.
+  const matchCount = showingPierre ? richMatchCount : diffMatches.length
+  const currentDiffMatch = Math.min(activeDiffMatch, Math.max(0, matchCount - 1))
   const allSearchCurrent = allSearchResult?.query.toLowerCase() === contentQuery.toLowerCase()
   const allFileMatchCounts = useMemo(() => {
     if (!allSearchResult || !allSearchCurrent) return new Map<string, number>()
@@ -419,7 +460,52 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
 
   const selectedFileStats = JSON.stringify(files.find((file) => file.path === selectedFile) ?? null)
   useEffect(() => {
-    if (!comparisonVisible) { diffRequestKey.current = null; return }
+    if (engine !== 'rich' || !comparisonVisible) { richRequestKey.current = null; return }
+    if (!selectedFile) {
+      richRequestKey.current = null
+      setRichLoading(false)
+      setRichResult(null)
+      setRichError('')
+      return
+    }
+    const resultKey = JSON.stringify([richKey, selectedFileStats])
+    if (comparison && richResultKey.current === resultKey) return
+    richResultKey.current = null
+    const request = ++richGeneration.current
+    const background = richRequestKey.current === richKey
+    richRequestKey.current = richKey
+    if (!background) {
+      setRichLoading(true)
+      setRichError('')
+    }
+    apiRef.current
+      .fileContents(paneId, selectedFile, {
+        target: selectedTarget,
+        ...(comparison ? { head: comparison.head, baseFallbackRepo: comparison.baseFallbackRepo, baseFallbackBranch: comparison.baseFallbackBranch } : {}),
+      })
+      .then((next) => {
+        if (request !== richGeneration.current) return
+        richResultKey.current = resultKey
+        setRichError('')
+        setRichResult((current) => (
+          current?.key === richKey && sameContents(current.contents, next) ? current : { key: richKey, contents: next }
+        ))
+      })
+      .catch((cause: unknown) => {
+        if (request !== richGeneration.current) return
+        if (!background) {
+          setRichResult(null)
+          setRichError(cause instanceof Error ? cause.message : 'Unable to load file contents')
+        }
+      })
+      .finally(() => {
+        if (request === richGeneration.current) setRichLoading(false)
+      })
+    return () => { richGeneration.current++ }
+  }, [paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile, engine, richKey, selectedFileStats, comparisonVisible])
+
+  useEffect(() => {
+    if (!comparisonVisible || !ansiEngine) { diffRequestKey.current = null; return }
     if (!selectedFile) {
       diffRequestKey.current = null
       setDiffLoading(false)
@@ -427,7 +513,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
       setDiffError('')
       return
     }
-    const key = JSON.stringify([paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile, engine, display, diffViewportVersion])
+    const key = JSON.stringify([paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile, ansiEngine, display, diffViewportVersion])
     const resultKey = JSON.stringify([key, selectedFileStats])
     if (comparison && diffResultKey.current === resultKey) return
     diffResultKey.current = null
@@ -447,7 +533,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         target: selectedTarget,
         ...(comparison ? { head: comparison.head, baseFallbackRepo: comparison.baseFallbackRepo, baseFallbackBranch: comparison.baseFallbackBranch } : {}),
         width,
-        engine,
+        engine: ansiEngine,
         display,
       })
       .then((next) => {
@@ -467,7 +553,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
         if (request === diffGeneration.current) setDiffLoading(false)
       })
     return () => { diffGeneration.current++ }
-  }, [paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile, engine, display, diffViewportVersion, selectedFileStats, comparisonVisible])
+  }, [paneId, selectedTarget, comparison?.head, comparison?.baseFallbackRepo, comparison?.baseFallbackBranch, selectedFile, ansiEngine, display, diffViewportVersion, selectedFileStats, comparisonVisible])
 
   useEffect(() => {
     if (!comparisonVisible) return
@@ -516,21 +602,30 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
 
   useEffect(() => {
     setActiveDiffMatch(0)
-  }, [diff, contentQuery])
+  }, [diff, richContents, contentQuery])
 
   useEffect(() => {
-    if (!diffMatches.length) return
+    if (showingPierre || !diffMatches.length) return
     const match = outputRef.current?.querySelector<HTMLElement>(
       `[data-diff-search-match="${currentDiffMatch}"]`,
     )
     if (match && typeof match.scrollIntoView === 'function') {
       match.scrollIntoView({ block: 'center', inline: 'nearest' })
     }
-  }, [currentDiffMatch, diffMatches.length])
+  }, [currentDiffMatch, diffMatches.length, showingPierre])
 
-  const chooseEngine = (next: DiffEngine) => {
+  const blame = useGitBlame(api, paneId, showingPierre ? richContents : null, engine === 'rich' && blameOn)
+
+  const chooseEngine = (next: ViewEngine) => {
     setEngine(next)
     storeChoice(ENGINE_STORAGE_KEY, next)
+  }
+
+  const toggleBlame = () => {
+    setBlameOn((current) => {
+      storeChoice(BLAME_STORAGE_KEY, current ? 'off' : 'on')
+      return !current
+    })
   }
 
   const chooseDisplay = (next: DiffDisplay) => {
@@ -550,9 +645,9 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
   }
 
   const moveDiffMatch = (direction: 1 | -1) => {
-    if (!diffMatches.length) return
+    if (!matchCount) return
     setActiveDiffMatch((current) => (
-      (Math.min(current, diffMatches.length - 1) + direction + diffMatches.length) % diffMatches.length
+      (Math.min(current, matchCount - 1) + direction + matchCount) % matchCount
     ))
   }
 
@@ -718,6 +813,20 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     )
   }
 
+  const noContentChanges = selectedFile
+    ? <div className="git-diff-status">No content changes (permissions or identical after merge base)</div>
+    : null
+  const ansiOutput = (
+    <>
+      {diffLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Running {ansiEngine ?? 'difftastic'}</div> : null}
+      {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}{errorHint}</div> : null}
+      {!diffLoading && !diffError && diff.trim() === '' ? noContentChanges : null}
+      {!diffLoading && !diffError && diff.trim() !== ''
+        ? <pre><AnsiText text={diff} query={contentQuery} activeMatch={currentDiffMatch} /></pre>
+        : null}
+    </>
+  )
+
   return (
     <div className="git-diff-view">
       <section className="git-diff-main" aria-label="Git diff">
@@ -802,6 +911,15 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
           <div className="git-diff-segment" role="group" aria-label="Diff engine">
             <button
               type="button"
+              className={engine === 'rich' ? 'active' : undefined}
+              aria-pressed={engine === 'rich'}
+              onClick={() => chooseEngine('rich')}
+              title="Syntax-highlighted diff with blame (@pierre/diffs)"
+            >
+              rich
+            </button>
+            <button
+              type="button"
               className={engine === 'difftastic' ? 'active' : undefined}
               aria-pressed={engine === 'difftastic'}
               onClick={() => chooseEngine('difftastic')}
@@ -839,6 +957,19 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
               <Rows3 aria-hidden="true" /> inline
             </button>
           </div>
+          {engine === 'rich' ? (
+            <div className="git-diff-segment" role="group" aria-label="Rich diff options">
+              <button
+                type="button"
+                className={blameOn ? 'active' : undefined}
+                aria-pressed={blameOn}
+                onClick={toggleBlame}
+                title={blameOn ? 'Hide line blame' : 'Show who last changed each line on hover'}
+              >
+                <History aria-hidden="true" /> blame
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="git-diff-body" ref={bodyRef}>
           <aside className="git-diff-files" aria-label="Changed files" style={{ width: filePanelWidth }}>
@@ -1044,16 +1175,16 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                   : allSearchError
                     ? allSearchError
                     : searchScope === 'all' && contentQuery && allSearchCurrent && allSearchResult
-                      ? <>{diffMatches.length ? `${currentDiffMatch + 1}/${diffMatches.length} here · ` : ''}{allSearchResult.totalMatches} across {allSearchResult.matchingFiles} files{allSearchResult.truncated ? '+' : ''}</>
+                      ? <>{matchCount ? `${currentDiffMatch + 1}/${matchCount} here · ` : ''}{allSearchResult.totalMatches} across {allSearchResult.matchingFiles} files{allSearchResult.truncated ? '+' : ''}</>
                       : contentQuery
-                        ? `${diffMatches.length ? currentDiffMatch + 1 : 0} / ${diffMatches.length}`
+                        ? `${matchCount ? currentDiffMatch + 1 : 0} / ${matchCount}`
                         : 'Cmd F'}
               </span>
               <button
                 type="button"
                 className="git-diff-search-nav"
                 onClick={() => moveDiffMatch(-1)}
-                disabled={!diffMatches.length}
+                disabled={!matchCount}
                 aria-label="Previous diff match"
                 title="Previous match (Shift+Enter)"
               >
@@ -1063,7 +1194,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
                 type="button"
                 className="git-diff-search-nav"
                 onClick={() => moveDiffMatch(1)}
-                disabled={!diffMatches.length}
+                disabled={!matchCount}
                 aria-label="Next diff match"
                 title="Next match (Enter)"
               >
@@ -1099,14 +1230,29 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
               ) : null}
             </div>
             <div className="git-diff-output" ref={outputRef}>
-              {diffLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Running difftastic</div> : null}
-              {!diffLoading && diffError ? <div className="git-diff-error" role="alert">{diffError}{errorHint}</div> : null}
-              {!diffLoading && !diffError && selectedFile && diff.trim() === ''
-                ? <div className="git-diff-status">No content changes (permissions or identical after merge base)</div>
-                : null}
-              {!diffLoading && !diffError && diff.trim() !== ''
-                ? <pre><AnsiText text={diff} query={contentQuery} activeMatch={currentDiffMatch} /></pre>
-                : null}
+              {engine === 'rich' ? (
+                <PierreWorkerPool>
+                  {richLoading ? <div className="git-diff-status"><LoaderCircle className="spin" />Loading file contents</div> : null}
+                  {!richLoading && richError ? <div className="git-diff-error" role="alert">{richError}{errorHint}</div> : null}
+                  {!richLoading && !richError && richFallback ? (
+                    <>
+                      <div className="git-diff-fallback-note" role="note">{RICH_FALLBACK_NOTE[richFallback]}</div>
+                      {ansiOutput}
+                    </>
+                  ) : null}
+                  {!richLoading && !richError && richContents && !richFallback && !showingPierre ? noContentChanges : null}
+                  {showingPierre && richContents ? (
+                    <PierreDiffView
+                      contents={richContents}
+                      display={display}
+                      query={contentQuery}
+                      activeMatch={currentDiffMatch}
+                      onMatchCountChange={setRichMatchCount}
+                      blame={blameOn ? blame : null}
+                    />
+                  ) : null}
+                </PierreWorkerPool>
+              ) : ansiOutput}
             </div>
           </div>
         </div>

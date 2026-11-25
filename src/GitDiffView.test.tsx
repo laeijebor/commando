@@ -2,17 +2,26 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { GitDiffView } from './GitDiffView'
-import type { GitDiffApiClient, GitDiffSummary } from './gitApi'
+import type { GitDiffApiClient, GitDiffSummary, GitFileContents } from './gitApi'
+import { pierreRenders } from './pierreReactMock'
 import { applyDiffFiltersChange, DEFAULT_DIFF_FILTERS, type DiffFiltersChange } from '../shared/diff-filters'
 import { currentDiffFilters, resetDiffFilters, setDiffFilters, setDiffFiltersSaver } from './diffFilters'
+
+vi.mock('@pierre/diffs/react', () => import('./pierreReactMock'))
+
+// Most of these tests exercise the daemon-rendered ANSI output; the rich engine has its own suite below.
+beforeEach(() => {
+  window.localStorage.setItem('commando-diff-engine', 'difftastic')
+})
 
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
   window.localStorage.clear()
+  pierreRenders.length = 0
 })
 
 const summary: GitDiffSummary = {
@@ -757,4 +766,168 @@ it('closes the generated-pattern editor when the pane moves to another repo, ins
   expect(saved).toEqual([])
   setDiffFiltersSaver(null)
   setDiffFilters(DEFAULT_DIFF_FILTERS)
+})
+
+describe('GitDiffView rich engine', () => {
+  beforeEach(() => { window.localStorage.removeItem('commando-diff-engine') })
+
+  const contents: GitFileContents = {
+    file: 'a.ts',
+    old: { path: 'a.ts', contents: 'const needle = 1\nkeep\n', rev: 'base-sha' },
+    new: { path: 'a.ts', contents: 'const needle = 2\nkeep\nneedle again\n', rev: 'worktree' },
+  }
+
+  function richApi(nextSummary: GitDiffSummary = summary, next: GitFileContents = contents) {
+    const api = fakeApi(nextSummary)
+    vi.mocked(api.fileContents).mockImplementation(async (_paneId, file) => ({ ...next, file }))
+    return api
+  }
+
+  it('is the default engine and renders both file versions without asking the daemon for ANSI', async () => {
+    const api = richApi()
+    renderView(api)
+    expect(await screen.findByTestId('pierre-diff')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'rich' })).toHaveAttribute('aria-pressed', 'true')
+    expect(api.fileContents).toHaveBeenCalledWith('%1', 'a.ts', { target: undefined })
+    expect(api.fileDiff).not.toHaveBeenCalled()
+    expect(pierreRenders.at(-1)?.oldFile?.contents).toBe(contents.old!.contents)
+    expect(pierreRenders.at(-1)?.newFile?.contents).toBe(contents.new!.contents)
+    expect(pierreRenders.at(-1)?.options?.diffStyle).toBe('split')
+    expect(window.localStorage.getItem('commando-diff-engine')).toBeNull()
+  })
+
+  it('respects a stored ANSI engine choice', async () => {
+    window.localStorage.setItem('commando-diff-engine', 'delta')
+    const api = richApi()
+    renderView(api)
+    await screen.findByText('DIFF')
+    expect(api.fileDiff).toHaveBeenCalledWith('%1', 'a.ts', expect.objectContaining({ engine: 'delta' }))
+    expect(api.fileContents).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /blame/ })).not.toBeInTheDocument()
+  })
+
+  it('names the running engine while loading', async () => {
+    const api = richApi()
+    vi.mocked(api.fileContents).mockImplementation(() => new Promise(() => undefined))
+    renderView(api)
+    expect(await screen.findByText('Loading file contents')).toBeInTheDocument()
+    cleanup()
+    window.localStorage.setItem('commando-diff-engine', 'delta')
+    vi.mocked(api.fileDiff).mockImplementation(() => new Promise(() => undefined))
+    renderView(api)
+    expect(await screen.findByText('Running delta')).toBeInTheDocument()
+  })
+
+  it('passes a PR comparison and its fallbacks to the file contents request', async () => {
+    const api = richApi()
+    render(
+      <GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={summary}
+        comparison={{ base: 'base-oid', head: 'head-oid', baseFallbackRepo: 'owner/repo', baseFallbackBranch: 'main', baseLabel: 'main', headLabel: 'feature' }} />,
+    )
+    await screen.findByTestId('pierre-diff')
+    expect(api.fileContents).toHaveBeenCalledWith('%1', 'a.ts', {
+      target: 'base-oid', head: 'head-oid', baseFallbackRepo: 'owner/repo', baseFallbackBranch: 'main',
+    })
+  })
+
+  it.each([
+    ['binary', 'Binary file'],
+    ['too-large', 'Too large for the rich view'],
+  ] as const)('falls back to difftastic for a %s file and says why', async (unavailable, note) => {
+    const api = richApi(summary, { file: 'a.ts', old: null, new: null, unavailable })
+    renderView(api)
+    expect(await screen.findByText('DIFF')).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(note)
+    expect(api.fileDiff).toHaveBeenCalledWith('%1', 'a.ts', expect.objectContaining({ engine: 'difftastic' }))
+    expect(screen.queryByTestId('pierre-diff')).not.toBeInTheDocument()
+  })
+
+  it('shows added and deleted files with only one side', async () => {
+    const api = richApi(summary, { file: 'a.ts', old: null, new: { path: 'a.ts', contents: 'new\n', rev: 'worktree' } })
+    renderView(api)
+    await screen.findByTestId('pierre-diff')
+    expect(pierreRenders.at(-1)).toMatchObject({ oldFile: null, newFile: { name: 'a.ts', contents: 'new\n' } })
+  })
+
+  it('keeps the rendered diff across silent refreshes and re-fetches only when stats change', async () => {
+    vi.useFakeTimers()
+    const api = richApi()
+    await act(async () => { renderView(api) })
+    const output = document.querySelector('.git-diff-output') as HTMLElement
+    const rendered = screen.getByTestId('pierre-diff')
+    const renders = pierreRenders.length
+    output.scrollTop = 90
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(api.fileContents).toHaveBeenCalledTimes(1)
+
+    let finish!: (value: GitFileContents) => void
+    vi.mocked(api.fileContents).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    vi.mocked(api.summary).mockResolvedValue({ ...summary, files: [{ ...summary.files![0], additions: 4 }] })
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(api.fileContents).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('Loading file contents')).not.toBeInTheDocument()
+    expect(screen.getByTestId('pierre-diff')).toBe(rendered)
+    // Identical contents keep the same objects, so Pierre has nothing to re-render.
+    await act(async () => { finish({ ...contents, old: { ...contents.old! }, new: { ...contents.new! } }) })
+    expect(pierreRenders.at(-1)?.newFile).toBe(pierreRenders[renders - 1].newFile)
+    expect(screen.getByTestId('pierre-diff')).toBe(rendered)
+    expect(output.scrollTop).toBe(90)
+  })
+
+  it('counts, highlights and steps through matches in the rendered rows', async () => {
+    renderView(richApi())
+    await screen.findByTestId('pierre-diff')
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'NEEDLE' } })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('1 / 3'))
+    const active = () => document.querySelector('[data-commando-search-active]')?.textContent
+    expect(active()).toBe('const needle = 1')
+    fireEvent.click(screen.getByRole('button', { name: 'Next diff match' }))
+    expect(screen.getByRole('status')).toHaveTextContent('2 / 3')
+    await waitFor(() => expect(active()).toBe('const needle = 2'))
+    fireEvent.keyDown(screen.getByRole('searchbox', { name: 'Search diff contents' }), { key: 'Enter' })
+    await waitFor(() => expect(active()).toBe('needle again'))
+    fireEvent.keyDown(screen.getByRole('searchbox', { name: 'Search diff contents' }), { key: 'Enter', shiftKey: true })
+    expect(screen.getByRole('status')).toHaveTextContent('2 / 3')
+  })
+
+  it('keeps searching all files while the rich view is showing', async () => {
+    const api = richApi()
+    vi.mocked(api.search).mockResolvedValue({ query: 'needle', matches: [], files: [{ file: 'a.ts', matches: 3 }], totalMatches: 3, matchingFiles: 1, truncated: false })
+    renderView(api)
+    await screen.findByTestId('pierre-diff')
+    fireEvent.click(screen.getByRole('button', { name: 'all' }))
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search diff contents' }), { target: { value: 'needle' } })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('1/3 here · 3 across 1 files'))
+  })
+
+  it('fetches blame for both revisions when turned on, and remembers the choice', async () => {
+    const api = richApi()
+    renderView(api)
+    await screen.findByTestId('pierre-diff')
+    expect(api.blame).not.toHaveBeenCalled()
+    const toggle = screen.getByRole('button', { name: 'blame' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(api.blame).toHaveBeenCalledTimes(2))
+    expect(api.blame).toHaveBeenCalledWith('%1', 'a.ts', 'base-sha')
+    expect(api.blame).toHaveBeenCalledWith('%1', 'a.ts', 'worktree')
+    expect(window.localStorage.getItem('commando-diff-blame')).toBe('on')
+
+    // Cached per file and revision: toggling off and on again doesn't refetch.
+    fireEvent.click(toggle)
+    fireEvent.click(toggle)
+    expect(api.blame).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: 'difftastic' }))
+    expect(screen.queryByRole('button', { name: 'blame' })).not.toBeInTheDocument()
+  })
+
+  it('skips the missing side of an added file and keeps the diff when blame fails', async () => {
+    window.localStorage.setItem('commando-diff-blame', 'on')
+    const api = richApi(summary, { file: 'a.ts', old: null, new: { path: 'a.ts', contents: 'new\n', rev: 'head-sha' } })
+    vi.mocked(api.blame).mockRejectedValue(new Error('no such path'))
+    renderView(api)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Blame unavailable: no such path')
+    expect(api.blame).toHaveBeenCalledExactlyOnceWith('%1', 'a.ts', 'head-sha')
+    expect(screen.getByTestId('pierre-diff')).toBeInTheDocument()
+  })
 })

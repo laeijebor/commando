@@ -803,3 +803,77 @@
 @keyframes git-diff-spin {
   to { transform: rotate(360deg); }
 }
+
+/* Rich engine (@pierre/diffs renders the diff itself inside a shadow root). */
+.git-diff-output .pierre-diff {
+  position: relative;
+  min-width: 0;
+}
+
+.git-diff-fallback-note,
+.pierre-blame-status {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 11px;
+}
+
+.pierre-blame-status.error { color: var(--red); }
+
+.pierre-blame-hint {
+  position: absolute;
+  z-index: 2;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--terminal-mono);
+  font-size: 11px;
+  font-style: italic;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.pierre-blame-card {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-soft);
+  background: var(--surface-raised);
+  box-shadow: 0 8px 28px #000c;
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.pierre-blame-card-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pierre-blame-card-meta code {
+  color: var(--accent);
+  font-family: var(--terminal-mono);
+  font-size: 10.5px;
+}
+
+.pierre-blame-card-meta strong {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pierre-blame-card-meta time { margin-left: auto; color: var(--muted); white-space: nowrap; }
+
+.pierre-blame-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
