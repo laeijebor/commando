@@ -24,10 +24,11 @@ image. Use absolute paths, or paths relative to the working folder.
 - `[label](path)` becomes a clickable card or chip that opens the file or folder.
 - A backticked path such as `` `src/chat/ChatTimeline.tsx` `` becomes a chip when
   the path exists. Prefer a real path over describing where something is.
-- Add a line with `:line` or `#L42`: `[the handler](server/api.ts:120)` or
-  `` `server/api.ts#L120` `` opens at that line.
-- A list where **every** item starts with a path (link or backticked) becomes a
-  card list, with the rest of the item as its description:
+- Add a line number to open at that line: `[the handler](server/api.ts:120)` or
+  `[the handler](server/api.ts#L120)` in a link, and `` `server/api.ts:120` `` in
+  backticks. A backticked path takes `:line` only, not `#L120`.
+- A list of **two or more** items where **every** item starts with a path (link or
+  backticked) becomes a card list, with the rest of the item as its description:
 
   ```markdown
   - `server/api.ts`: the new endpoint
@@ -36,7 +37,8 @@ image. Use absolute paths, or paths relative to the working folder.
 
   One item without a leading path keeps it as an ordinary list.
 
-Paths that do not exist stay plain text, so do not guess them. Links to URLs are
+A backticked path that does not exist stays plain code. A link to a missing path
+renders as a struck-through "not found" chip, so do not guess paths. Links to URLs are
 clickable too; write them bare or as `[Preview](http://127.0.0.1:4330/page)`,
 not in backticks.
 

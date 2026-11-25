@@ -4,6 +4,7 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatItem } from '../../shared/agent-chat'
 import { ChatTimeline, Markdown } from './ChatTimeline'
+import { stableAnswerPositions } from './CommandoUiBlock'
 
 afterEach(cleanup)
 const fence = (value: unknown) => '```commando-ui\n' + (typeof value === 'string' ? value : JSON.stringify(value)) + '\n```'
@@ -12,8 +13,8 @@ const user = (id: string, text: string, createdAt: number): ChatItem => ({ id, t
 const choice = { component: 'choice', prompt: 'Archive storage', options: ['SQLite', 'JSONL', 'Both'] }
 const approve = { component: 'approve', prompt: 'Ship the migration' }
 
-function timeline(items: ChatItem[], onUiAnswer?: (text: string) => void) {
-  return <ChatTimeline items={items} cwd="/work" working={false} {...(onUiAnswer ? { onUiAnswer } : {})} />
+function timeline(items: ChatItem[], onUiAnswer?: (text: string) => void, queuedAnswers?: string[]) {
+  return <ChatTimeline items={items} cwd="/work" working={false} {...(onUiAnswer ? { onUiAnswer } : {})} {...(queuedAnswers ? { queuedAnswers } : {})} />
 }
 
 describe('commando-ui rendering', () => {
@@ -23,7 +24,7 @@ describe('commando-ui rendering', () => {
       { component: 'checklist', title: 'Rollout', items: [{ label: 'Build', done: true }, { label: 'Deploy' }] },
       { component: 'table', columns: ['Name', 'Qty'], rows: [['apples', 3]] },
       { component: 'stats', items: [{ label: 'Tests', value: 42, delta: '+3', tone: 'good' }] },
-    ])} />)
+    ])} answerable />)
     expect(screen.getByRole('button', { name: 'SQLite' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
     expect(screen.getByText('Rollout')).toBeInTheDocument()
@@ -96,6 +97,44 @@ describe('commando-ui answers', () => {
     expect(onUiAnswer).toHaveBeenLastCalledWith('Rejected: Ship the migration')
   })
 
+  it('does not let an answer approve with Enter in the note field', () => {
+    const onUiAnswer = vi.fn()
+    render(timeline([reply(fence(approve))], onUiAnswer))
+    fireEvent.keyDown(screen.getByLabelText('Note'), { key: 'Enter' })
+    expect(onUiAnswer).not.toHaveBeenCalled()
+  })
+
+  it('settles when the answer was merged into a longer queued message', () => {
+    render(timeline([reply(fence(choice)), user('u', 'Archive storage: Both\n\nalso fix the tests', 20)], vi.fn()))
+    expect(screen.getByTestId('commando-ui-settled')).toHaveTextContent('Sent · Both')
+  })
+
+  it('treats an answer still in the send queue as given, after a remount', () => {
+    render(timeline([reply(fence(choice))], vi.fn(), ['Archive storage: JSONL']))
+    expect(screen.getByTestId('commando-ui-settled')).toHaveTextContent('Sent · JSONL')
+    expect(screen.getByRole('button', { name: 'Both' })).toBeDisabled()
+  })
+
+  it('orders by position when every item has the same timestamp', () => {
+    const same = (item: ChatItem): ChatItem => ({ ...item, createdAt: 7, updatedAt: 7 })
+    const early = render(timeline([same(user('u', 'Archive storage: Both', 7)), same(reply(fence(choice)))], vi.fn()))
+    expect(screen.queryByTestId('commando-ui-settled')).toBeNull()
+    early.unmount()
+    render(timeline([same(reply(fence(choice))), same(user('u', 'Archive storage: Both', 7))], vi.fn()))
+    expect(screen.getByTestId('commando-ui-settled')).toHaveTextContent('Sent · Both')
+  })
+
+  it('shows blocks outside an assistant reply read-only, with no controls', () => {
+    const { container } = render(<Markdown text={fence(choice)} />)
+    expect(container.querySelector('button')).toBeNull()
+    expect(screen.getByText('Archive storage')).toBeInTheDocument()
+    expect(screen.getByText('JSONL')).toBeInTheDocument()
+    cleanup()
+    render(<Markdown text={fence(approve)} />)
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByLabelText('Note')).toBeNull()
+  })
+
   it('shows a block as settled after a reload, from the later user message', () => {
     render(timeline([reply(fence(choice), 10), user('u', 'Archive storage: Both', 20)], vi.fn()))
     expect(screen.getByTestId('commando-ui-settled')).toHaveTextContent('Sent · Both')
@@ -106,5 +145,16 @@ describe('commando-ui answers', () => {
     render(timeline([user('u', 'Archive storage: Both', 5), reply(fence(choice), 10)], vi.fn()))
     expect(screen.queryByTestId('commando-ui-settled')).toBeNull()
     expect(screen.getByRole('button', { name: 'SQLite' })).toBeEnabled()
+  })
+})
+
+describe('answer positions', () => {
+  const at = (item: ChatItem) => item
+  const items = [at(user('u1', 'hi', 1)), at(reply('one', 2))]
+  it('stay the same object while only streaming text and tool items change', () => {
+    const first = stableAnswerPositions({ replyOrder: new Map(), userMessages: [], keys: [] }, items)
+    const streamed = [...items.slice(0, 1), { ...items[1]!, text: 'one two', updatedAt: 9 } as ChatItem, { ...items[1]!, id: 'tool', kind: 'command', toolUseId: 'x', command: 'ls' } as ChatItem]
+    expect(stableAnswerPositions(first, streamed)).toBe(first)
+    expect(stableAnswerPositions(first, [...items, user('u2', 'more', 3)])).not.toBe(first)
   })
 })

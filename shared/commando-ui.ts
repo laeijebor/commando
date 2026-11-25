@@ -55,8 +55,10 @@ function text(value: unknown, where: string, max: number, options?: { optional?:
 function text(value: unknown, where: string, max: number, options: { optional?: boolean } = {}): string | undefined {
   if (value === undefined && options.optional) return undefined
   if (typeof value !== 'string' || !value.trim()) fail(`${where} must be a non-empty string`)
-  if (value.length > max) fail(`${where} is longer than ${max} characters`)
-  return value
+  // Trimmed, because the answer is sent trimmed and must match the block's own text.
+  const trimmed = value.trim()
+  if (trimmed.length > max) fail(`${where} is longer than ${max} characters`)
+  return trimmed
 }
 
 function list(value: unknown, where: string, min: number, max: number): unknown[] {
@@ -182,6 +184,8 @@ export function parseCommandoUi(source: string): CommandoUiParse {
   const hit = cache.get(source)
   if (hit) return hit
   const result = parseUncached(source)
+  // An oversized source is rejected cheaply; keeping it would hold its memory for nothing.
+  if (source.length > COMMANDO_UI_LIMITS.source) return result
   if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value as string)
   cache.set(source, result)
   return result
@@ -203,10 +207,12 @@ export function formatApproveAnswer(block: Pick<Approve, 'prompt'>, verdict: App
   return `${verdict}: ${block.prompt}${trimmed ? ` — note: ${trimmed}` : ''}`
 }
 
-/** The answer text a user message holds for this block, as the label to show, or undefined when it isn't one. */
+/** The answer text a message holds for this block, as the label to show, or undefined when it isn't one. */
 export function matchBlockAnswer(block: CommandoUiBlock, message: string): string | undefined {
   const sent = message.trim()
   if (block.component === 'choice') {
+    // Cheap exit before trying subsets: every answer starts with the prompt.
+    if (!sent.startsWith(`${block.prompt}: `)) return undefined
     if (!block.multiple) return block.options.find((option) => formatChoiceAnswer(block, [option]) === sent)
     // Every subset in option order, since a label may itself hold a comma.
     for (let mask = 1; mask < 1 << block.options.length; mask++) {
@@ -218,21 +224,25 @@ export function matchBlockAnswer(block: CommandoUiBlock, message: string): strin
   if (block.component === 'approve') {
     for (const verdict of ['Approved', 'Rejected'] as const) {
       const base = formatApproveAnswer(block, verdict)
-      if (sent === base) return verdict === 'Approved' ? block.approveLabel : block.rejectLabel
-      if (sent.startsWith(`${base} — note: `)) return `${verdict === 'Approved' ? block.approveLabel : block.rejectLabel}${sent.slice(base.length).replace(' — note: ', ' — ')}`
+      const label = verdict === 'Approved' ? block.approveLabel : block.rejectLabel
+      if (sent === base) return label
+      if (sent.startsWith(`${base} — note: `)) return `${label}${sent.slice(base.length).replace(' — note: ', ' — ')}`
     }
   }
   return undefined
 }
 
-export type UserMessageRef = { text: string; createdAt: number }
-
-/** The answer a later user message gave this block; settled state is derived from the transcript, never stored. */
-export function settledAnswer(block: CommandoUiBlock, replyCreatedAt: number, userMessages: readonly UserMessageRef[]): string | undefined {
-  for (const message of userMessages) {
-    if (message.createdAt < replyCreatedAt) continue
-    const answer = matchBlockAnswer(block, message.text)
-    if (answer !== undefined) return answer
+/**
+ * The answer given to this block by one of the texts: user messages after its reply, or queued
+ * messages not yet sent. A host joins queued messages with a blank line when a turn ends, so
+ * each part of a text is tried as well as the whole.
+ */
+export function settledAnswer(block: CommandoUiBlock, texts: readonly string[]): string | undefined {
+  for (const text of texts) {
+    for (const part of text.split('\n\n')) {
+      const answer = matchBlockAnswer(block, part)
+      if (answer !== undefined) return answer
+    }
   }
   return undefined
 }

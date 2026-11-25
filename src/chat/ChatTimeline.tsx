@@ -9,8 +9,8 @@ import { cn } from './cn'
 import { Button } from './ui/button'
 import { providerLabel } from './ComposerControls'
 import { MarkdownPre, fenceLanguage, textOf, type HastNode } from '../MarkdownCode'
-import { COMMANDO_UI_FENCE, type UserMessageRef } from '../../shared/commando-ui'
-import { CommandoUiActionsContext, CommandoUiFence, CommandoUiReplyContext, stableUserMessages } from './CommandoUiBlock'
+import { COMMANDO_UI_FENCE } from '../../shared/commando-ui'
+import { CommandoUiActionsContext, CommandoUiFence, CommandoUiReplyContext, stableAnswerPositions } from './CommandoUiBlock'
 import { PlanCard, type SavePlan } from './PlanCard'
 import type { ResourceActionHandler } from '../paneManagementApi'
 import { ResourceChip, ResourceCardList } from './ResourceChip'
@@ -51,6 +51,7 @@ const markdownComponents: Components = {
 const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void }>({ items: [], now: 0, provider: 'Claude' })
 
 /** Resource actions stay stable while timeline items and clocks update. */
+const NO_QUEUED: readonly string[] = []
 const ResourceActionsContext = createContext<{ cwd: string; onResourceAction?: ResourceActionHandler }>({ cwd: '' })
 
 /** Image addresses reach `ReplyImage` as written: it decides what loads, and a local path is never a link. */
@@ -126,11 +127,11 @@ const replyComponents: Components = {
 }
 
 /** Local images and resources are attached by the daemon while a reply streams. */
-export const Markdown = memo(function Markdown({ text, images, resources, running, createdAt = 0 }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean; /** When the reply was written; answers to its commando-ui blocks come after it. */ createdAt?: number }) {
+export const Markdown = memo(function Markdown({ text, images, resources, running, itemId, answerable = false }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean; /** The assistant reply this text is; only its commando-ui blocks take answers. */ itemId?: string; answerable?: boolean }) {
   const actions = use(ResourceActionsContext)
   const reply = useMemo(() => ({ images, running }), [images, running])
   const resourceReply = useMemo(() => ({ resources, text, cwd: actions.cwd, onAction: actions.onResourceAction }), [resources, text, actions])
-  const uiReply = useMemo(() => ({ createdAt, running }), [createdAt, running])
+  const uiReply = useMemo(() => ({ itemId, answerable, running }), [itemId, answerable, running])
   return (
     <CommandoUiReplyContext value={uiReply}>
     <ReplyImagesContext value={reply}>
@@ -425,7 +426,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
       const asks = context.askMarkers?.get(row.item.id)
       return (
         <div className="chat-reply pb-3" {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
-          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} createdAt={row.item.createdAt} />
+          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} itemId={row.item.id} answerable />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
               <span className="chat-ask-marker-diamond" aria-hidden="true">◆</span>
@@ -447,7 +448,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, queuedAnswers, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -468,6 +469,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onResourceAction?: ResourceActionHandler
   /** Sends a commando-ui answer as a chat message; absent while the pane can't send, which disables the blocks. */
   onUiAnswer?: (text: string) => void
+  /** Texts queued to send when the turn ends; a queued answer already counts as given. */
+  queuedAnswers?: readonly string[]
   /** Opens an auto-fix card's PR in the side panel. */
   onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   /** Replies where the agent raised asks that are still open, by item id, with how many. */
@@ -483,9 +486,9 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const now = useNow(live)
   const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
   const resourceActions = useMemo(() => ({ cwd, onResourceAction }), [cwd, onResourceAction])
-  const userMessagesRef = useRef<readonly UserMessageRef[]>([])
-  const userMessages = (userMessagesRef.current = stableUserMessages(userMessagesRef.current, items.flatMap((item) => item.kind === 'user_message' ? [{ text: item.text.trim(), createdAt: item.createdAt }] : [])))
-  const uiActions = useMemo(() => ({ ...(onUiAnswer ? { onAnswer: onUiAnswer } : {}), userMessages }), [onUiAnswer, userMessages])
+  const positionsRef = useRef<ReturnType<typeof stableAnswerPositions>>({ replyOrder: new Map(), userMessages: [], keys: [] })
+  const positions = (positionsRef.current = stableAnswerPositions(positionsRef.current, items))
+  const uiActions = useMemo(() => ({ ...(onUiAnswer ? { onAnswer: onUiAnswer } : {}), positions, queued: queuedAnswers ?? NO_QUEUED }), [onUiAnswer, positions, queuedAnswers])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const lastTop = useRef(0)

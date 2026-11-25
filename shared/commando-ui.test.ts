@@ -55,6 +55,17 @@ describe('commando-ui catalog', () => {
     expect(reason({ component: 'approve', prompt: 'p', id: 5 })).toMatch(/id/)
   })
 
+  it('trims text and compares options after trimming', () => {
+    expect(reason({ component: 'choice', prompt: 'p', options: ['a', ' a '] })).toMatch(/different/)
+    const result = parse({ component: 'approve', prompt: '  Ship it  ', approveLabel: ' Go ' })
+    expect(result).toMatchObject({ ok: true, blocks: [{ prompt: 'Ship it', approveLabel: 'Go' }] })
+  })
+
+  it('does not cache an oversized source', () => {
+    const big = '{"component":"approve","prompt":"' + 'y'.repeat(COMMANDO_UI_LIMITS.source) + '"}'
+    expect(parseCommandoUi(big)).not.toBe(parseCommandoUi(big))
+  })
+
   it('caps text lengths', () => {
     const long = 'x'.repeat(COMMANDO_UI_LIMITS.prompt + 1)
     expect(reason({ component: 'approve', prompt: long })).toMatch(/longer than/)
@@ -112,12 +123,19 @@ describe('answers', () => {
     expect(matchBlockAnswer({ component: 'checklist', items: [{ label: 'a', done: false }] }, 'a')).toBeUndefined()
   })
 
-  it('settles only on a user message sent after the reply', () => {
-    const messages = [{ text: 'Approved: Ship the migration', createdAt: 5 }]
-    expect(settledAnswer(approve, 10, messages)).toBeUndefined()
-    expect(settledAnswer(approve, 5, messages)).toBe('Ship it')
-    expect(settledAnswer(approve, 1, messages)).toBe('Ship it')
-    expect(settledAnswer(approve, 1, [])).toBeUndefined()
+  it('settles from any text, including one part of a merged queue flush', () => {
+    expect(settledAnswer(approve, [])).toBeUndefined()
+    expect(settledAnswer(approve, ['hello', 'Approved: Ship the migration'])).toBe('Ship it')
+    expect(settledAnswer(choice(), ['Archive storage: Both\n\nalso fix the tests'])).toBe('Both')
+    expect(settledAnswer(choice(), ['first fix this\n\nArchive storage: Both'])).toBe('Both')
+    expect(settledAnswer(choice(), ['Archive storage: Neither\n\nAnother: Both'])).toBeUndefined()
+  })
+
+  it('matches trimmed text, so padded prompts and options still settle', () => {
+    const padded = parseCommandoUi(JSON.stringify({ component: 'choice', prompt: '  Pick one ', options: [' a ', 'b '] }))
+    expect(padded).toMatchObject({ ok: true, blocks: [{ prompt: 'Pick one', options: ['a', 'b'] }] })
+    const block = padded.ok ? padded.blocks[0]! : approve
+    expect(matchBlockAnswer(block, 'Pick one: a')).toBe('a')
   })
 })
 

@@ -1,22 +1,39 @@
 import { createContext, use, useMemo, useState } from 'react'
 import { Check, CircleCheck, Circle } from 'lucide-react'
+import type { ChatItem } from '../../shared/agent-chat'
 import {
   COMMANDO_UI_LIMITS, formatApproveAnswer, formatChoiceAnswer, parseCommandoUi, settledAnswer,
-  type ApproveVerdict, type CommandoUiBlock as Block, type UserMessageRef,
+  type ApproveVerdict, type CommandoUiBlock as Block,
 } from '../../shared/commando-ui'
 import { cn } from './cn'
 import { Button } from './ui/button'
 
-/** What a block needs to answer: the pane's send path, and the user's messages to find its answer in. */
-export type CommandoUiActions = { onAnswer?: (text: string) => void; userMessages: readonly UserMessageRef[] }
-export const CommandoUiActionsContext = createContext<CommandoUiActions>({ userMessages: [] })
+/** Where the user's messages sit among the assistant replies, by position in the timeline rather than by clock. */
+export type AnswerPositions = { replyOrder: ReadonlyMap<string, number>; userMessages: readonly { text: string; order: number }[] }
+const NO_POSITIONS: AnswerPositions = { replyOrder: new Map(), userMessages: [] }
 
-/** The reply a block sits in: its time orders answers after it, and `running` means its JSON may be half-written. */
-export const CommandoUiReplyContext = createContext<{ createdAt: number; running?: boolean }>({ createdAt: 0 })
+/** What a block needs to answer: the pane's send path, the transcript to find its answer in, and answers queued but not yet sent. */
+export type CommandoUiActions = { onAnswer?: (text: string) => void; positions: AnswerPositions; queued: readonly string[] }
+export const CommandoUiActionsContext = createContext<CommandoUiActions>({ positions: NO_POSITIONS, queued: [] })
 
-/** Keeps the previous list while the user's messages are unchanged, so streaming flushes don't re-render blocks. */
-export function stableUserMessages(previous: readonly UserMessageRef[], next: readonly UserMessageRef[]): readonly UserMessageRef[] {
-  return previous.length === next.length && previous.every((entry, i) => entry.text === next[i]!.text && entry.createdAt === next[i]!.createdAt) ? previous : next
+/** The reply a block sits in. Only an assistant reply's blocks are live; `running` means its JSON may be half-written. */
+export const CommandoUiReplyContext = createContext<{ itemId?: string; answerable: boolean; running?: boolean }>({ answerable: false })
+
+/** Positions from the items; the previous object is kept while the user and assistant messages are unchanged, so streaming flushes don't re-render blocks. */
+export function stableAnswerPositions(previous: AnswerPositions & { keys?: readonly string[] }, items: readonly ChatItem[]): AnswerPositions & { keys: readonly string[] } {
+  const keys: string[] = []
+  for (const item of items) {
+    if (item.kind === 'assistant_message') keys.push(`a\0${item.id}`)
+    else if (item.kind === 'user_message') keys.push(`u\0${item.text.trim()}`)
+  }
+  if (previous.keys && previous.keys.length === keys.length && previous.keys.every((key, i) => key === keys[i])) return previous as AnswerPositions & { keys: readonly string[] }
+  const replyOrder = new Map<string, number>()
+  const userMessages: { text: string; order: number }[] = []
+  keys.forEach((key, order) => {
+    if (key[0] === 'a') replyOrder.set(key.slice(2), order)
+    else userMessages.push({ text: key.slice(2), order })
+  })
+  return { replyOrder, userMessages, keys }
 }
 
 /** A fenced `commando-ui` block: our own components from validated JSON, or the plain code when it isn't valid. */
@@ -44,19 +61,38 @@ function UiBlock({ block }: { block: Block }) {
 
 /** The answer already given (found in the transcript) or just sent from this block, and whether answering is possible. */
 function useAnswer(block: Block) {
-  const { onAnswer, userMessages } = use(CommandoUiActionsContext)
-  const { createdAt } = use(CommandoUiReplyContext)
+  const { onAnswer, positions, queued } = use(CommandoUiActionsContext)
+  const { itemId, answerable } = use(CommandoUiReplyContext)
   const [sent, setSent] = useState<string>()
-  const settled = useMemo(() => settledAnswer(block, createdAt, userMessages), [block, createdAt, userMessages])
+  const settled = useMemo(() => {
+    const order = itemId === undefined ? undefined : positions.replyOrder.get(itemId)
+    if (order === undefined) return settledAnswer(block, queued)
+    return settledAnswer(block, [...positions.userMessages.filter((message) => message.order > order).map((message) => message.text), ...queued])
+  }, [block, itemId, positions, queued])
   const answer = settled ?? sent
-  return { answer, disabled: answer !== undefined || !onAnswer, send: (text: string, label: string) => { setSent(label); onAnswer?.(text) } }
+  return { answer, disabled: answer !== undefined || !onAnswer || !answerable, send: (text: string, label: string) => { setSent(label); onAnswer?.(text) } }
 }
 
 function Settled({ answer }: { answer: string }) {
   return <div className="chat-ui-foot" data-testid="commando-ui-settled"><Check aria-hidden="true" className="size-3" />Sent · {answer}</div>
 }
 
+/** Blocks outside a reply (a thought, a plan) show their question but take no answers. */
+function ReadOnlyAsk({ prompt, labels }: { prompt: string; labels: readonly string[] }) {
+  return (
+    <div className="chat-ui-card">
+      <div className="chat-ui-title">{prompt}</div>
+      <ul className="chat-ui-readonly">{labels.map((label) => <li key={label}>{label}</li>)}</ul>
+    </div>
+  )
+}
+
 function ChoiceBlock({ block }: { block: Extract<Block, { component: 'choice' }> }) {
+  const { answerable } = use(CommandoUiReplyContext)
+  return answerable ? <LiveChoice block={block} /> : <ReadOnlyAsk prompt={block.prompt} labels={block.options} />
+}
+
+function LiveChoice({ block }: { block: Extract<Block, { component: 'choice' }> }) {
   const { answer, disabled, send } = useAnswer(block)
   const [picked, setPicked] = useState<readonly string[]>([])
   return (
@@ -85,6 +121,11 @@ function ChoiceBlock({ block }: { block: Extract<Block, { component: 'choice' }>
 }
 
 function ApproveBlock({ block }: { block: Extract<Block, { component: 'approve' }> }) {
+  const { answerable } = use(CommandoUiReplyContext)
+  return answerable ? <LiveApprove block={block} /> : <ReadOnlyAsk prompt={block.prompt} labels={[block.approveLabel, block.rejectLabel]} />
+}
+
+function LiveApprove({ block }: { block: Extract<Block, { component: 'approve' }> }) {
   const { answer, disabled, send } = useAnswer(block)
   const [note, setNote] = useState('')
   const decide = (verdict: ApproveVerdict) => send(formatApproveAnswer(block, verdict, note), verdict === 'Approved' ? block.approveLabel : block.rejectLabel)
@@ -93,8 +134,7 @@ function ApproveBlock({ block }: { block: Extract<Block, { component: 'approve' 
       <div className="chat-ui-title">{block.prompt}</div>
       {answer === undefined ? (
         <input className="chat-ui-note" type="text" placeholder="Add a note (optional)" aria-label="Note" maxLength={COMMANDO_UI_LIMITS.note}
-          value={note} disabled={disabled} onChange={(event) => setNote(event.target.value)}
-          onKeyDown={(event) => { if (event.key === 'Enter' && !disabled) decide('Approved') }} />
+          value={note} disabled={disabled} onChange={(event) => setNote(event.target.value)} />
       ) : null}
       <div className="chat-ui-options">
         <Button size="sm" disabled={disabled} onClick={() => decide('Approved')}>{block.approveLabel}</Button>

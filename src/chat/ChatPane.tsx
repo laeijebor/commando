@@ -411,7 +411,12 @@ function ChatColumn({
     onSend(askAnswerText(ask, option), undefined, { ...(askBusy && hostTakesTurnFlow(chat.session) ? { delivery: 'queue' as const } : {}), answersAsk: ask.key })
   }
   // A commando-ui block's answer is an ordinary message, queued like a typed one while the turn runs.
-  const answerUi = (text: string) => { onSend(text, undefined, askBusy && hostTakesTurnFlow(chat.session) ? { delivery: 'queue' as const } : undefined) }
+  // Stable, so streaming flushes don't re-render every block: the changing inputs are read from a ref.
+  const uiSend = useRef({ onSend, queue: false })
+  uiSend.current = { onSend, queue: askBusy && hostTakesTurnFlow(chat.session) }
+  const answerUi = useCallback((text: string) => { uiSend.current.onSend(text, undefined, uiSend.current.queue ? { delivery: 'queue' as const } : undefined) }, [])
+  const queuedTexts = chat.session.queue
+  const queuedAnswers = useMemo(() => (queuedTexts ?? []).map((message) => message.text.trim()), [queuedTexts])
   // An answer goes to the main agent, never to a subagent picked for a relay.
   const replyToAsk = (ask: SessionAsk) => {
     setRelay(undefined)
@@ -529,6 +534,7 @@ function ChatColumn({
           provider={chat.session.provider}
           onResourceAction={onResourceAction}
           {...(asksDisabled ? {} : { onUiAnswer: answerUi })}
+          queuedAnswers={queuedAnswers}
           items={timelineItems}
           {...(onOpenTile ? { onOpenTile } : {})}
           {...(onOpenPr ? { onOpenPr } : {})}
