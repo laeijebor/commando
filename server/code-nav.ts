@@ -296,6 +296,8 @@ export class CodeNavService {
     relative: string,
     request: CodeNavRequest,
   ): Promise<CodeNavResult> {
+    // The provider reads the disk, so the clicked path must not leave the repository through a symlink.
+    await this.worktreeSource(root, relative)
     const found = await provider.query({
       root,
       kind: request.kind,
