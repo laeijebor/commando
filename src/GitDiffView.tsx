@@ -700,6 +700,14 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
     setDiffReveal({ id: ++navCounter.current, context: navContext, file: path, side, line })
   }
   const onRevealed = useCallback((id: number) => setDiffReveal((current) => (current?.id === id ? null : current)), [])
+  // A reveal waits for its file's rows. It is dropped once it can't happen: another file is selected,
+  // the engine changes, or the file's contents arrive without a rich view (difftastic fallback,
+  // no content changes), so it never scrolls a file that is selected again later.
+  const revealSettled = diffReveal !== null && (
+    selectedFile !== diffReveal.file || engine !== 'rich' ||
+    (richContents?.file === diffReveal.file && !richLoading && !showingPierre)
+  )
+  useEffect(() => { if (revealSettled) setDiffReveal(null) }, [revealSettled])
   const openNavInIde = onOpenInIde && summary?.root
     ? (path: string, line: number, column: number) => onOpenInIde(`${summary.root}/${path}`, { line, column })
     : undefined

@@ -1130,6 +1130,41 @@ describe('GitDiffView code navigation', () => {
     expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
   })
 
+  it('forgets Show in diff when another file is selected before the target renders', async () => {
+    const api = navApi()
+    let finishB!: (contents: GitFileContents) => void
+    await renderNav(api)
+    clickToken('additions', 3, 4, 'needle')
+    vi.mocked(api.fileContents).mockImplementationOnce(() => new Promise((resolve) => { finishB = resolve }))
+    fireEvent.click(await screen.findByRole('button', { name: /Show in diff/ }))
+    fireEvent.click(screen.getByRole('treeitem', { name: /a\.ts/ }).querySelector('.git-diff-file')!)
+    await act(async () => { finishB(sides['b.ts']) })
+    await waitFor(() => expect(screen.getByTestId('pierre-diff')).toHaveTextContent('use(needle)'))
+    fireEvent.click(screen.getByRole('treeitem', { name: /b\.ts/ }).querySelector('.git-diff-file')!)
+    await waitFor(() => expect(screen.getByTestId('pierre-diff')).toHaveTextContent('export function needle() {}'))
+    expect(screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')).toBeNull()
+  })
+
+  it('forgets Show in diff when the target file has no rich view', async () => {
+    const api = navApi()
+    vi.mocked(api.fileContents).mockImplementation(async (_paneId, file) => (
+      file === 'b.ts' ? { file, old: null, new: null, unavailable: 'binary' } : sides[file]
+    ))
+    const props = { paneId: '%1', panePath: '/repo', api, initialSummary: navSummary }
+    const { rerender } = render(<GitDiffView {...props} />)
+    await screen.findByTestId('pierre-diff')
+    clickToken('additions', 3, 4, 'needle')
+    fireEvent.click(await screen.findByRole('button', { name: /Show in diff/ }))
+    expect(await screen.findByText(/Binary file: showing difftastic/)).toBeInTheDocument()
+    // Later the same file becomes showable: showing the diff again refreshes it with new stats.
+    vi.mocked(api.fileContents).mockImplementation(async (_paneId, file) => sides[file])
+    vi.mocked(api.summary).mockResolvedValue({ ...navSummary, files: [navSummary.files![0], { ...navSummary.files![1], additions: 5 }] })
+    rerender(<GitDiffView {...props} visible={false} />)
+    rerender(<GitDiffView {...props} visible />)
+    await waitFor(() => expect(screen.getByTestId('pierre-diff')).toHaveTextContent('export function needle() {}'))
+    expect(screen.getByTestId('pierre-diff').querySelector('[data-commando-nav-target]')).toBeNull()
+  })
+
   it('drops the peek when the diff it was opened on changes', async () => {
     const api = navApi()
     const comparison = { base: 'base-oid', head: 'head-1', baseLabel: 'main', headLabel: 'feature' }
