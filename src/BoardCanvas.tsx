@@ -1,19 +1,21 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import type { BoardPlacement, BoardView } from '../shared/board'
 import type { PanePrSummary } from './prsApi'
-import { canvasTransform, createCanvasCameraStore, fitCanvas, unionCanvasBounds, zoomAt, type CanvasBounds, type CanvasCamera } from './canvasCamera'
+import { canvasTransform, createCanvasCameraStore, unionCanvasBounds, zoomAt, type CanvasCamera } from './canvasCamera'
 import { canvasGestureStep, snapCanvasMove } from './canvasInteraction'
 import { canvasConnector } from './canvasGeometry'
-import { BOARD_CARD_SIZE, boardGroupAt, boardInViewport, boardLod, boardWorldPoint, type BoardEntry } from './BoardGeometry'
+import { BOARD_CARD_SIZE, boardGroupAt, boardInViewport, boardLod, boardWorldPoint, fitBoard, storedBoardCamera, type BoardEntry } from './BoardGeometry'
 import { BoardCard, type BoardThumbUrl } from './BoardCards'
 
 type Drag = { id: number; key?: string; start: { x: number; y: number }; origin: { x: number; y: number }; camera: CanvasCamera; moved: boolean }
 
-export function BoardCanvas({ board, items, thumbUrl, prs, pending, onOpen, onPlace }: {
-  board: BoardView; items: BoardEntry[]; thumbUrl: BoardThumbUrl; prs: ReadonlyMap<string, PanePrSummary>; pending: boolean
+export function BoardCanvas({ board, items, thumbUrl, prs, pending, onOpen, onPlace, cameraKey }: {
+  board: BoardView; items: BoardEntry[]; thumbUrl: BoardThumbUrl; prs: ReadonlyMap<string, PanePrSummary>; pending: boolean; cameraKey: string
   onOpen: (item: BoardEntry, trigger: HTMLElement) => void; onPlace: (key: string, placement: Partial<BoardPlacement>) => void
 }) {
-  const [store] = useState(() => createCanvasCameraStore({ x: 24, y: 24, scale: 1 }))
+  const [savedCamera] = useState(() => storedBoardCamera(cameraKey))
+  const cameraReady = useRef(savedCamera !== null)
+  const [store] = useState(() => createCanvasCameraStore(savedCamera ?? { x: 24, y: 24, scale: 1 }))
   const stage = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const world = useRef<HTMLDivElement>(null)
@@ -21,29 +23,35 @@ export function BoardCanvas({ board, items, thumbUrl, prs, pending, onOpen, onPl
   const drag = useRef<Drag | null>(null)
   const suppressClick = useRef(false)
   const [preview, setPreview] = useState<{ key: string; x: number; y: number } | null>(null)
-  const [size, setSize] = useState({ w: 800, h: 600 })
+  const [size, setSize] = useState({ w: 0, h: 0 })
   const [drawCamera, setDrawCamera] = useState(store.get)
   const arrowId = `board-arrow-${useId().replace(/:/g, '')}`
   const lod = boardLod(drawCamera.scale)
   const placed = useMemo(() => items.filter((item) => board.placements[item.key]), [board.placements, items])
   const unplaced = useMemo(() => items.filter((item) => !board.placements[item.key]).sort((a, b) => b.addedAt - a.addedAt), [board.placements, items])
+  // Search affects cards, but fitting always includes the whole board.
+  const boxes = useMemo(() => [...board.groups, ...board.items.filter((item) => board.placements[item.key]).map((item) => ({ ...board.placements[item.key], ...BOARD_CARD_SIZE }))], [board.groups, board.items, board.placements])
 
   useLayoutEffect(() => {
     let settle = 0
     let previousLod = boardLod(store.get().scale)
-    const update = () => {
+    const update = (changed = false) => {
       const camera = store.get()
+      if (changed) cameraReady.current = true
       if (world.current) world.current.style.transform = canvasTransform(camera)
       if (zoomLabel.current) zoomLabel.current.textContent = `${Math.round(camera.scale * 100)}%`
+      if (cameraReady.current) {
+        try { sessionStorage.setItem(cameraKey, JSON.stringify(camera)) } catch { /* Camera still works in memory. */ }
+      }
       // Transform every frame; throttle React culling while the screen of overscan covers movement.
       if (previousLod !== boardLod(camera.scale)) setDrawCamera(camera)
       previousLod = boardLod(camera.scale)
       if (!settle) settle = window.setTimeout(() => { settle = 0; setDrawCamera(store.get()) }, 100)
     }
     update()
-    const stop = store.subscribe(update)
+    const stop = store.subscribe(() => update(true))
     return () => { stop(); window.clearTimeout(settle) }
-  }, [store])
+  }, [store, cameraKey])
   useLayoutEffect(() => {
     const node = viewport.current
     if (!node) return
@@ -56,6 +64,14 @@ export function BoardCanvas({ board, items, thumbUrl, prs, pending, onOpen, onPl
     const observer = new ResizeObserver(update); observer.observe(node)
     return () => observer.disconnect()
   }, [])
+  useLayoutEffect(() => {
+    if (cameraReady.current || !size.w || !size.h || !boxes.length) return
+    cameraReady.current = true
+    const camera = fitBoard(unionCanvasBounds(boxes), size)
+    store.set(camera)
+    try { sessionStorage.setItem(cameraKey, JSON.stringify(camera)) } catch { /* Camera still works in memory. */ }
+    setDrawCamera(camera)
+  }, [boxes, size, store, cameraKey])
   useEffect(() => {
     const node = viewport.current
     if (!node) return
@@ -128,7 +144,6 @@ export function BoardCanvas({ board, items, thumbUrl, prs, pending, onOpen, onPl
   const open = (item: BoardEntry, trigger: HTMLElement) => { if (!suppressClick.current) onOpen(item, trigger) }
   const card = (item: BoardEntry, compact = false) => <BoardCard item={item} thumbUrl={thumbUrl} onOpen={open} compact={compact}
     onPointerDown={(event, entry) => start(event, entry)} lod={lod === 'full' ? 'full' : 'thumbnail'} pr={prs.get(item.key)} />
-  const boxes: CanvasBounds[] = [...board.groups, ...placed.map((item) => ({ ...board.placements[item.key], ...BOARD_CARD_SIZE }))]
   const endpoint = (id: string) => board.groups.find((group) => group.id === id) ?? (board.placements[id] ? { ...board.placements[id], ...BOARD_CARD_SIZE } : undefined)
   const zoom = (factor: number) => store.set((camera) => zoomAt(camera, factor, { x: size.w / 2, y: size.h / 2 }))
   return <div className="board-canvas" ref={stage} onPointerMove={move} onPointerUp={(event) => finish(event, true)} onPointerCancel={(event) => finish(event, false)}
@@ -157,7 +172,7 @@ export function BoardCanvas({ board, items, thumbUrl, prs, pending, onOpen, onPl
       {!!board.items.length && !placed.length && <p className="board-placement-hint">Drag an item from Unplaced to start your board.</p>}
       <div className="board-zoom" onPointerDown={(event) => event.stopPropagation()}>
         <button type="button" aria-label="Zoom out" onClick={() => zoom(1 / 1.2)}>−</button><output ref={zoomLabel} aria-label="Board zoom">100%</output>
-        <button type="button" aria-label="Zoom in" onClick={() => zoom(1.2)}>+</button><button type="button" onClick={() => store.set(fitCanvas(unionCanvasBounds(boxes), size))}>Fit</button>
+        <button type="button" aria-label="Zoom in" onClick={() => zoom(1.2)}>+</button><button type="button" onClick={() => store.set(fitBoard(unionCanvasBounds(boxes), size))}>Fit</button>
       </div>
     </div>
     <aside className="board-inbox" aria-label="Unplaced inbox"><h3>Unplaced <b>{unplaced.length}</b></h3><p>Captured automatically. Drag onto the board or into a group.</p>

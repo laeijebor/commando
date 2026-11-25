@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BoardView } from '../shared/board'
-import { boardGroupAt, boardInViewport, boardLod, boardMatches, boardPlaced, boardType, boardWorldPoint } from './BoardGeometry'
+import { boardGroupAt, boardInViewport, boardLod, boardMatches, boardPlaced, boardType, boardWorldPoint, fitBoard, boardMatchesClosed } from './BoardGeometry'
 
 const board: BoardView = { targetId: 'target', rev: 1, groups: [{ id: 'spec', title: 'Spec', by: 'agent', x: 100, y: 100, w: 464, h: 180 }], items: [], placements: {}, links: [] }
 
@@ -37,4 +37,17 @@ describe('Board geometry and level of detail', () => {
     expect(boardMatches(item, '/docs')).toBe(true)
     expect(boardMatches(item, 'unknown')).toBe(false)
   })
+})
+
+
+it('fits content without enlarging it beyond 100%', () => {
+  expect(fitBoard({ x: 100, y: 200, w: 100, h: 100 }, { w: 800, h: 600 })).toEqual({ x: 250, y: 50, scale: 1 })
+  expect(fitBoard({ x: 1000, y: 500, w: 1600, h: 800 }, { w: 800, h: 600 })).toEqual({ x: -446, y: -123, scale: .47 })
+})
+it('restricts Only closed to tile kinds and leaves available non-tile items visible', () => {
+  const item = { key: 'url:a', kind: 'canvas' as const, title: 'Canvas', ref: {}, state: 'open' as const, source: 'user' as const, addedAt: 1, updatedAt: 1 }
+  expect(boardMatchesClosed(item, true)).toBe(false)
+  expect(boardMatchesClosed({ ...item, state: 'closed' }, true)).toBe(true)
+  expect(boardMatchesClosed({ ...item, state: 'snapshot' }, true)).toBe(false)
+  for (const kind of ['link', 'clip', 'pr', 'file', 'video', 'screenshot'] as const) expect(boardMatchesClosed({ ...item, kind }, true)).toBe(true)
 })

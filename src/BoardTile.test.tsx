@@ -6,7 +6,7 @@ import type { BoardView } from '../shared/board'
 import type { SessionBrief } from '../shared/protocol'
 import { BoardTile } from './BoardTile'
 import { boardThumbPath, publishBoardChange, publishBoardRefresh, type BoardsApiClient } from './boardsApi'
-import { boardPlaced } from './BoardGeometry'
+import { boardPlaced, storedBoardCamera } from './BoardGeometry'
 import { HostProvider } from './HostContext'
 
 const brief: SessionBrief = {
@@ -19,7 +19,7 @@ const fixture: BoardView = {
   items: [
     { key: 'canvas:/spec', title: 'Design canvas', kind: 'canvas', source: 'agent', ref: { path: '/spec', manifest: 'canvas.json' }, state: 'closed', addedAt: 10, updatedAt: 10, origin: { at: 10, agentSession: { provider: 'claude', id: 'conversation-1' } }, caption: 'Layout choices' },
     { key: 'url:https://example.com', title: 'Reference docs', kind: 'link', source: 'auto', ref: { url: 'https://example.com' }, state: 'open', addedAt: 30, updatedAt: 30 },
-    { key: 'file:/tmp/proof.png', title: 'Proof screenshot', kind: 'screenshot', source: 'user', ref: { path: '/tmp/proof.png' }, state: 'snapshot', addedAt: 20, updatedAt: 20 },
+    { key: 'file:/tmp/proof.png', title: 'Proof screenshot', kind: 'screenshot', source: 'user', ref: { path: '/tmp/proof.png' }, state: 'open', addedAt: 20, updatedAt: 20 },
   ], groups: [{ id: 'spec', title: 'Spec', by: 'agent', tone: 'accent', x: 0, y: 0, w: 480, h: 250 }], placements: { 'canvas:/spec': { group: 'spec', x: 12, y: 40 } }, links: [],
 }
 function setup(initial = fixture) {
@@ -37,6 +37,7 @@ const showByType = () => fireEvent.click(screen.getByRole('button', { name: 'By 
 const openItem = (title: string) => fireEvent.click(screen.getByRole('button', { name: `Quick look: ${title}` }))
 
 beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 800, height: 600, left: 0, right: 800, top: 0, bottom: 600, x: 0, y: 0, toJSON() {} })
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0))
   vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
   HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -45,7 +46,7 @@ beforeEach(() => {
   HTMLElement.prototype.releasePointerCapture = vi.fn()
   vi.stubGlobal('PointerEvent', MouseEvent)
 })
-afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); localStorage.clear(); sessionStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('BoardTile', () => {
   it('shows the brief, tasks, default Board view and groups without embedding live frames', async () => {
@@ -94,8 +95,8 @@ describe('BoardTile', () => {
     fireEvent.click(within(filters).getByRole('button', { name: 'Links 1' }))
     expect(screen.queryByRole('button', { name: 'Quick look: Design canvas' })).toBeNull()
     fireEvent.click(within(filters).getByRole('button', { name: 'Only closed' }))
-    expect(screen.getByText('No matching items.')).toBeInTheDocument()
-    expect(within(filters).getByRole('button', { name: 'All 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Quick look: Reference docs' })).toBeInTheDocument()
+    expect(within(filters).getByRole('button', { name: 'All 3' })).toBeInTheDocument()
   })
   it('opens the unchanged worklog, edits the original note store and preserves hidden attention', async () => {
     const { props } = setup(), attention = vi.fn()
@@ -146,6 +147,7 @@ describe('BoardTile', () => {
     expect(api.get).toHaveBeenCalledOnce()
   })
   it('places an inbox item into a group with an optimistic update', async () => {
+    sessionStorage.setItem(`commando.board.local:${brief.targetId}.camera`, JSON.stringify({ x: 24, y: 24, scale: 1 }))
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 800, height: 600, left: 0, right: 800, top: 0, bottom: 600, x: 0, y: 0, toJSON() {} })
     const { props, api } = setup()
     const { container } = render(<BoardTile {...props} />)
@@ -162,6 +164,7 @@ describe('BoardTile', () => {
     await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
   })
   it('snaps free placement to 10px and rolls back failed drops', async () => {
+    sessionStorage.setItem(`commando.board.local:${brief.targetId}.camera`, JSON.stringify({ x: 24, y: 24, scale: 1 }))
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 800, height: 600, left: 0, right: 800, top: 0, bottom: 600, x: 0, y: 0, toJSON() {} })
     const { props, api } = setup()
     vi.mocked(api.place).mockRejectedValue(new Error('Placement failed'))
@@ -197,6 +200,7 @@ describe('BoardTile', () => {
     expect(container.querySelector('.board-placeholder')).toHaveTextContent('Canvas')
   })
   it('culls distant cards and changes detail at zoom thresholds using one world transform', async () => {
+    sessionStorage.setItem(`commando.board.local:${brief.targetId}.camera`, JSON.stringify({ x: 24, y: 24, scale: 1 }))
     const near = { ...fixture.items[0], thumb: { hash: 'b'.repeat(64), w: 960, h: 600 } }
     const far = { ...near, key: 'canvas:/far', title: 'Distant artifact' }
     const { props } = setup({ ...fixture, items: [near, far], placements: { ...fixture.placements, [far.key]: { x: 20000, y: 20000 } } })
@@ -213,6 +217,67 @@ describe('BoardTile', () => {
     expect(world).toHaveClass('lod-groups')
     expect(world.querySelector('img')).toBeNull()
     expect(world.querySelector('.board-group')).toHaveTextContent('Spec')
+  })
+  it('shows a centered host-aware favicon and site name when a link has no preview image', async () => {
+    localStorage.setItem('commando.active-host', 'build-host')
+    const favicon = 'f'.repeat(64)
+    const link = { ...fixture.items[1], preview: { favicon, siteName: 'Reference site' } }
+    const { props } = setup({ ...fixture, items: [link], placements: {} })
+    const { container } = render(<HostProvider><BoardTile {...props} token="owner" /></HostProvider>)
+    await screen.findByLabelText('Board canvas')
+    expect(container.querySelector('.board-favicon img')).toHaveAttribute('src', `/h/build-host${boardThumbPath(favicon, 320)}?token=owner`)
+    expect(container.querySelector('.board-favicon')).toHaveTextContent('Reference site')
+    expect(container.querySelector('.board-placeholder')).toBeNull()
+    fireEvent.error(container.querySelector('.board-favicon img')!)
+    expect(container.querySelector('.board-placeholder')).toHaveTextContent('Link')
+  })
+  it('fits the full content on first load and keeps camera changes across views and revisits', async () => {
+    const key = `commando.board.local:${brief.targetId}.camera`
+    const { props } = setup()
+    const tile = render(<BoardTile {...props} />)
+    const viewport = await screen.findByLabelText('Board canvas')
+    expect(storedBoardCamera(key)).toEqual({ x: 160, y: 175, scale: 1 })
+    fireEvent.wheel(viewport, { deltaX: 40, deltaY: 70 })
+    const moved = storedBoardCamera(key)!
+    expect(moved).toEqual({ x: 120, y: 105, scale: 1 })
+    showByType()
+    fireEvent.click(screen.getByRole('button', { name: 'Board' }))
+    expect(document.querySelector<HTMLElement>('.board-world')!.style.transform).toBe('translate(120px, 105px) scale(1)')
+    tile.unmount()
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas')
+    expect(document.querySelector<HTMLElement>('.board-world')!.style.transform).toBe('translate(120px, 105px) scale(1)')
+  })
+  it('fits when returning to Board without a saved camera, and ignores search and later board refreshes', async () => {
+    const key = `commando.board.local:${brief.targetId}.camera`
+    const { props, update } = setup()
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); showByType()
+    sessionStorage.removeItem(key)
+    const large = { ...fixture, rev: 2, groups: [{ ...fixture.groups[0], x: 1000, y: 500, w: 1600, h: 800 }] }
+    update(large)
+    await act(async () => publishBoardChange({ targetId: brief.targetId!, rev: 2, host: 'local' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Board' }))
+    await waitFor(() => expect(storedBoardCamera(key)?.scale).toBeLessThan(1))
+    const fitted = storedBoardCamera(key)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search board' }), { target: { value: 'not found' } })
+    expect(storedBoardCamera(key)).toEqual(fitted)
+    fireEvent.click(screen.getByRole('button', { name: 'Fit' }))
+    expect(storedBoardCamera(key)).toEqual(fitted)
+  })
+  it('remembers camera movement on an empty board', async () => {
+    const key = `commando.board.local:${brief.targetId}.camera`
+    const { props } = setup({ ...fixture, items: [], groups: [], placements: {} })
+    render(<BoardTile {...props} />)
+    const viewport = await screen.findByLabelText('Board canvas')
+    fireEvent.wheel(viewport, { deltaX: 10, deltaY: 20 })
+    expect(storedBoardCamera(key)).toEqual({ x: 14, y: 4, scale: 1 })
+    showByType(); fireEvent.click(screen.getByRole('button', { name: 'Board' }))
+    expect(document.querySelector<HTMLElement>('.board-world')!.style.transform).toBe('translate(14px, 4px) scale(1)')
+  })
+  it.each(['null', '{bad', '{"x":0,"y":0,"scale":0}', '{"x":0,"y":0,"scale":3}', '{"x":0,"y":"0","scale":1}'])('ignores invalid saved camera %s', (value) => {
+    sessionStorage.setItem('camera', value)
+    expect(storedBoardCamera('camera')).toBeNull()
   })
   it('renders compact Recent, counts and tasks when the tile is narrower than 420px', async () => {
     vi.stubGlobal('ResizeObserver', class { constructor(private cb: ResizeObserverCallback) {} observe() { this.cb([], this as unknown as ResizeObserver) } disconnect() {} })
@@ -263,7 +328,7 @@ describe('Board quick look', () => {
     vi.mocked(api.revive).mockResolvedValue({ path: '/tmp/proof.png' })
     render(<BoardTile {...props} />)
     await screen.findByLabelText('Board canvas'); openItem('Proof screenshot')
-    fireEvent.click(screen.getByRole('button', { name: 'Reopen in a tile' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }))
     await waitFor(() => expect(api.reveal).toHaveBeenCalledWith(brief.targetId, 'file:/tmp/proof.png'))
   })
   it('hides Reveal when the host lacks the capability, and Escape restores focus', async () => {
@@ -271,11 +336,66 @@ describe('Board quick look', () => {
     render(<BoardTile {...props} revealInFinder={false} />)
     await screen.findByLabelText('Board canvas'); openItem('Proof screenshot')
     expect(screen.queryByRole('button', { name: 'Reveal in Finder' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Reopen in a tile' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Open' })).toBeDisabled()
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.getByRole('button', { name: 'Quick look: Proof screenshot' })).toHaveFocus()
     expect(api.reveal).not.toHaveBeenCalled()
+  })
+  it.each([
+    ['canvas', 'open', 'Reopen in a tile'], ['slides', 'closed', 'Reopen in a tile'], ['guide', 'snapshot', 'Open snapshot'],
+    ['redline', 'missing', 'Gone'], ['page', 'open', 'Open link'], ['link', 'open', 'Open link'], ['page', 'snapshot', 'Open snapshot'],
+  ] as const)('uses the %s / %s primary action %s', async (kind, state, label) => {
+    const item = { ...fixture.items[0], kind, state }
+    const { props, api } = setup({ ...fixture, items: [item], placements: {} })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); openItem(item.title)
+    if (kind === 'link') expect(screen.getByRole('dialog').querySelector('.board-state')).toBeNull()
+    const action = screen.getByRole('button', { name: label })
+    if (state === 'missing') expect(action).toBeDisabled()
+    else {
+      fireEvent.click(action)
+      await waitFor(() => expect(api.revive).toHaveBeenCalledWith(brief.targetId, item.key, brief.paneId))
+    }
+  })
+  it('opens PRs through the existing App callback without reviving a web tile', async () => {
+    const item = { ...fixture.items[0], key: 'pr:acme/app#42', kind: 'pr' as const, ref: { pr: { repo: 'acme/app', number: 42 } }, state: 'open' as const }
+    const { props, api } = setup({ ...fixture, items: [item], placements: {} }), onOpenPr = vi.fn()
+    render(<BoardTile {...props} onOpenPr={onOpenPr} />)
+    await screen.findByLabelText('Board canvas'); openItem(item.title)
+    expect(screen.getByRole('dialog').querySelector('.board-state')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open PR' }))
+    expect(onOpenPr).toHaveBeenCalledWith('acme/app', 42)
+    expect(api.revive).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+  it.each(['screenshot', 'video', 'file'] as const)('opens %s files and reveals the returned path', async (kind) => {
+    const item = { ...fixture.items[2], kind, state: 'open' as const }
+    const { props, api } = setup({ ...fixture, items: [item], placements: {} })
+    vi.mocked(api.revive).mockResolvedValue({ path: item.ref.path })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); openItem(item.title)
+    expect(screen.getByRole('dialog').querySelector('.board-state')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }))
+    await waitFor(() => expect(api.reveal).toHaveBeenCalledWith(brief.targetId, item.key))
+  })
+  it('shows missing files as Missing and disables Open', async () => {
+    const item = { ...fixture.items[2], state: 'missing' as const }
+    const { props } = setup({ ...fixture, items: [item], placements: {} })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); openItem(item.title)
+    expect(within(screen.getByRole('dialog')).getByText('Missing')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open' })).toBeDisabled()
+  })
+  it('shows clipping text large without an image, duplicated caption or primary action', async () => {
+    const item = { ...fixture.items[0], kind: 'clip' as const, title: 'Keep the oldest id', caption: 'Keep the oldest id', tone: 'decision' as const, state: 'open' as const }
+    const { props } = setup({ ...fixture, items: [item], placements: {} })
+    render(<BoardTile {...props} />)
+    await screen.findByLabelText('Board canvas'); openItem(item.title)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.querySelector('.board-clip-text.is-large blockquote')).toHaveTextContent(item.caption)
+    expect(within(dialog).getAllByText(item.caption)).toHaveLength(1)
+    expect(dialog.querySelector('.board-primary, .board-preview, .board-state')).toBeNull()
   })
   it('reverts a failed pin and shows the error inside quick look', async () => {
     const { props, api } = setup()

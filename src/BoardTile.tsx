@@ -5,7 +5,7 @@ import { useHost } from './HostContext'
 import { boardThumbPath, createBoardsApi, type BoardsApiClient } from './boardsApi'
 import { BoardCanvas } from './BoardCanvas'
 import { BoardCard, type BoardThumbUrl } from './BoardCards'
-import { BOARD_TYPES, boardMatches, boardPlaced, boardType, type BoardEntry, type BoardType } from './BoardGeometry'
+import { BOARD_TYPES, boardMatches, boardMatchesClosed, boardPlaced, boardType, type BoardEntry, type BoardType } from './BoardGeometry'
 import { BoardQuickLook } from './BoardQuickLook'
 import { useBoard } from './useBoard'
 import type { PanePrList, PanePrSummary } from './prsApi'
@@ -75,13 +75,13 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
   const completed = tasks.filter((task) => task.status === 'completed').length
   const terms = (brief.references?.length ?? 0) + (local ? (brief.simulator ? 1 : 0) + (brief.devices?.length ?? 0) : 0)
   const items = useMemo(() => board?.items.filter((item) => boardMatches(item, query)) ?? [], [board, query])
-  const counts = useMemo(() => Object.fromEntries(BOARD_TYPES.map((type) => [type.id, items.filter((item) => boardType(item) === type.id && (!closedOnly || item.state === 'closed')).length])) as Record<BoardType, number>, [items, closedOnly])
+  const counts = useMemo(() => Object.fromEntries(BOARD_TYPES.map((type) => [type.id, items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).length])) as Record<BoardType, number>, [items, closedOnly])
   const cachedPrs = panePrs
   const prs = new Map<string, PanePrSummary>()
   if (cachedPrs && (!brief.targetId || cachedPrs.targetId === brief.targetId)) for (const pr of [...cachedPrs.pullRequests, ...cachedPrs.impacted ?? []]) prs.set(`pr:${pr.repo.toLowerCase()}#${pr.number}`, pr)
   // The thumb route is a host-owned image resource; no live content is embedded here.
-  const thumbUrl: BoardThumbUrl = useCallback((item, size) => {
-    const url = path(boardThumbPath(item.thumb?.hash || item.preview?.image || '', size))
+  const thumbUrl: BoardThumbUrl = useCallback((item, size, hash) => {
+    const url = path(boardThumbPath(hash ?? (item.thumb?.hash || item.preview?.image || ''), size))
     return token ? `${url}?token=${encodeURIComponent(token)}` : url
   }, [path, token])
   const card = (item: BoardEntry, compact = false) => <BoardCard key={item.key} item={item} thumbUrl={thumbUrl} onOpen={open} pr={prs.get(item.key)} compact={compact} />
@@ -105,14 +105,14 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
         <section><h3>On the board</h3><div className="board-type-counts">{BOARD_TYPES.map((type) => <span key={type.id}>{type.label}<b>{counts[type.id]}</b></span>)}</div>
           <button type="button" disabled title="Widen this tile to at least 420 px to open the board">Open board ↗</button><small>Widen this tile to open the board.</small></section>
         <section><h3>Tasks <small>{completed}/{tasks.length}</small></h3><ul className="board-compact-tasks">{tasks.slice(0, 4).map((task) => <li key={task.id} data-status={task.status}><span aria-hidden="true">{task.status === 'completed' ? '✓' : '□'}</span>{task.content}</li>)}</ul>{tasks.length > 4 && <button type="button" onClick={() => openDetails()}>All {tasks.length} tasks</button>}</section>
-      </div> : view === 'board' ? <BoardCanvas board={board} items={items} thumbUrl={thumbUrl} prs={prs} pending={pending || !connected} onOpen={open}
+      </div> : view === 'board' ? <BoardCanvas key={`${activeHost}:${targetId}`} cameraKey={`commando.board.${activeHost}:${targetId}.camera`} board={board} items={items} thumbUrl={thumbUrl} prs={prs} pending={pending || !connected} onOpen={open}
         onPlace={(key, placement) => { void mutate((current) => boardPlaced(current, key, placement), () => api.place(targetId, key, placement)) }} />
         : <div className="board-by-type"><div className="board-filter-chips" role="group" aria-label="Filter by type">
           <button type="button" aria-pressed={filter === null} onClick={() => setFilter(null)}>All <b>{Object.values(counts).reduce((sum, count) => sum + count, 0)}</b></button>
           {BOARD_TYPES.map((type) => <button key={type.id} type="button" aria-pressed={filter === type.id} onClick={() => setFilter((current) => current === type.id ? null : type.id)}>{type.label} <b>{counts[type.id]}</b></button>)}
           <button type="button" aria-pressed={closedOnly} onClick={() => setClosedOnly((current) => !current)}>Only closed</button>
         </div><div className="board-type-scroll">{BOARD_TYPES.filter((type) => filter === null || type.id === filter).map((type) => {
-          const entries = items.filter((item) => boardType(item) === type.id && (!closedOnly || item.state === 'closed')).sort((a, b) => b.addedAt - a.addedAt)
+          const entries = items.filter((item) => boardType(item) === type.id && boardMatchesClosed(item, closedOnly)).sort((a, b) => b.addedAt - a.addedAt)
           return entries.length > 0 && <section className="board-type-row" key={type.id} aria-label={type.label}><h3>{type.label} <small>{entries.length}</small></h3><div className="board-type-cards">{entries.map((item) => card(item))}</div></section>
         })}{!BOARD_TYPES.some((type) => (filter === null || type.id === filter) && counts[type.id] > 0) && <p className="board-empty">{query || closedOnly || filter ? 'No matching items.' : 'Artifacts appear here as you work.'}</p>}</div></div>)}
       <div className="board-details" hidden={!details} ref={detailsPanel} onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); closeDetails() } }}>
@@ -120,7 +120,16 @@ export function BoardTile({ token = '', boardApi, panePrs, ...worklog }: BoardTi
         <PaneWorklog {...worklog} fullWidth visible={visible && details} />
       </div>
       {selected && visible && <BoardQuickLook key={selected.key} item={selected} thumbUrl={thumbUrl} revealInFinder={revealInFinder} pending={pending || !connected} boardError={error} onClose={close}
-        onRevive={async () => { const result = await api.revive(targetId, selected.key, brief.paneId); if (result.path) await api.reveal(targetId, selected.key); close(); retry() }}
+        onRevive={async () => {
+          if (selected.kind === 'pr') {
+            if (!selected.ref.pr || !worklog.onOpenPr) throw new Error('PR quick look is unavailable')
+            worklog.onOpenPr(selected.ref.pr.repo, selected.ref.pr.number)
+          } else {
+            const result = await api.revive(targetId, selected.key, brief.paneId)
+            if (result.path) await api.reveal(targetId, selected.key)
+          }
+          close(); retry()
+        }}
         onReveal={() => api.reveal(targetId, selected.key)}
         onPin={async () => { await mutate((current) => ({ ...current, items: current.items.map((item) => item.key === selected.key ? { ...item, pinned: !item.pinned } : item) }), () => api.patch(targetId, selected.key, { pinned: !selected.pinned })) }}
         onRemove={async () => { const removed = await mutate((current) => ({ ...current, items: current.items.filter((item) => item.key !== selected.key) }), () => api.remove(targetId, selected.key)); if (removed) close() }} />}
