@@ -151,7 +151,8 @@ import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
-import { parseAsideKey, AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
+import { isMainChatKey } from './chat-main-key.js'
+import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
@@ -1162,7 +1163,7 @@ async function main(): Promise<void> {
       sendError(client, 'chat_unavailable', 'No agent host is connected for this pane', message.requestId)
       return
     }
-    if (answersAsk && !parseAsideKey(message.paneId)) {
+    if (answersAsk && isMainChatKey(message.paneId)) {
       const brief = await sessionBriefs.answerAsk(message.paneId, answersAsk)
       if (brief) void publishSessionBrief(brief)
     }
@@ -2390,7 +2391,7 @@ async function main(): Promise<void> {
     snapshot: () => snapshot,
     serverId: () => snapshotServerId,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
-    chatSessions: () => agentHosts.states().filter((state) => !parseAsideKey(state.paneId)).map((state) => state.session),
+    chatSessions: () => agentHosts.states().filter((state) => isMainChatKey(state.paneId)).map((state) => state.session),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {
@@ -2414,7 +2415,7 @@ async function main(): Promise<void> {
     index: chatMessageIndex,
     snapshot: () => snapshot,
     briefs: sessionBriefs,
-    chats: () => agentHosts.states().filter((state) => !parseAsideKey(state.paneId)),
+    chats: () => agentHosts.states().filter((state) => isMainChatKey(state.paneId)),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
   })
   setTimeout(() => { void chatMessageIndex.triggerSync() }, 6_000).unref()

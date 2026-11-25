@@ -1742,6 +1742,16 @@ describe('Claude aside forks', () => {
     expect(await pending).toMatchObject({ behavior: 'allow', updatedInput: input })
     session.close()
   })
+  it('clamps a bypassPermissions configure attempt using the readOnly spec', async () => {
+    const { fake, session } = started({ readOnly: true, bypassAllowed: true })
+    try {
+      await tick()
+      await session.configure({ permissionMode: 'bypassPermissions' })
+      expect(fake.setPermissionMode).toHaveBeenCalledWith('default')
+      expect(fake.setPermissionMode).not.toHaveBeenCalledWith('bypassPermissions')
+      expect(session.snapshot().session.permissionMode).toBe('default')
+    } finally { session.close() }
+  })
   it('uses native fork options, disallows edits, and strips pane identity from the child env', async () => {
     const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
     const { fake, session } = started({ paneId: '%3~abcd1234', fork: aside.forkedFrom, aside, readOnly: true, permissionMode: 'bypassPermissions', env: { TMUX_PANE: '%3', COMMANDO_CHAT_RESUME: 'main', COMMANDO_CHAT_RESUME_B64: 'bWFpbg==' } })

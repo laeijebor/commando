@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ChatItem } from '../../shared/agent-chat.js'
+import type { ChatItem, DaemonToHostMessage } from '../../shared/agent-chat.js'
 import { AgentHost, snapshotItems } from './host.js'
 import { ChatAsides } from './asides.js'
 import type { ChatProviderSession } from './provider.js'
@@ -77,6 +77,21 @@ describe('DaemonLink', () => {
 })
 
 describe('AgentHost input relays', () => {
+  it('clamps read-only aside configure and send permissions without a daemon connection', async () => {
+    const host = new AgentHost('ws://unused', async () => 'token', 'pane', { info: vi.fn() })
+    const session = {
+      paneId: '%4~abcd1234', on: vi.fn(), commands: [], close: vi.fn(), send: vi.fn(), configure: vi.fn(),
+      snapshot: () => ({ session: { paneId: '%4~abcd1234', aside: { mode: 'read-only' } }, items: [] }),
+    }
+    try {
+      host.add(session as unknown as ChatProviderSession)
+      const relay = host as unknown as { onMessage(message: DaemonToHostMessage): Promise<void> }
+      await relay.onMessage({ type: 'configure', paneId: session.paneId, requestId: 'c', settings: { permissionMode: 'bypassPermissions', model: 'sonnet' } })
+      await relay.onMessage({ type: 'send', paneId: session.paneId, requestId: 's', text: 'Try edits', permissionMode: 'bypassPermissions' })
+      expect(session.configure).toHaveBeenCalledWith({ permissionMode: 'default', model: 'sonnet' })
+      expect(session.send).toHaveBeenCalledWith('Try edits', undefined, { permissionMode: 'default' })
+    } finally { host.stop() }
+  })
   it('sends the command list after the snapshot and answers file searches', async () => {
     const { WebSocketServer } = await import('ws')
     const { AgentHost } = await import('./host.js')
