@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PreciseNavUnavailable, type PreciseQuery } from './code-nav-provider.js'
 import {
   HUNG_MESSAGE,
+  INFERRED_MESSAGE,
   LOADING_MESSAGE,
   resolveTsServer,
   STOPPED_MESSAGE,
@@ -95,6 +96,7 @@ function cannedHandler(overrides: Record<string, (request: Request) => unknown> 
     const override = overrides[request.command]
     if (override) return override(request)
     if (request.command === 'updateOpen') return true
+    if (request.command === 'projectInfo') return { configFileName: '/repo/tsconfig.json', languageServiceDisabled: false }
     if (request.command === 'definition') return [{ file: '/repo/a.ts', ...span(3, 17, 22) }]
     return undefined
   }
@@ -235,7 +237,7 @@ describe('TypeScriptNavProvider', () => {
       }),
     )
     const result = await provider.query(query({ kind: 'references', character: 0 }))
-    expect(spawned[0].server.commands()).toEqual(['updateOpen', 'references'])
+    expect(spawned[0].server.commands()).toEqual(['updateOpen', 'projectInfo', 'references'])
     expect(result).toEqual([
       { path: '/repo/a.ts', line: 1, character: 16, endLine: 1, endCharacter: 21, preview: 'export function greet() {}' },
       { path: '/repo/b.ts', line: 2, character: 0, endLine: 2, endCharacter: 5, preview: 'greet("x")' },
@@ -263,12 +265,13 @@ describe('TypeScriptNavProvider', () => {
     const server = spawned[0].server
     expect(server.commands()).toEqual([
       'updateOpen',
+      'projectInfo',
       'prepareCallHierarchy',
       'provideCallHierarchyIncomingCalls',
       'provideCallHierarchyIncomingCalls',
     ])
-    expect(server.requests[2].arguments).toEqual({ file: '/repo/a.ts', line: 1, offset: 17 })
-    expect(server.requests[3].arguments).toEqual({ file: '/repo/a.d.ts', line: 4, offset: 3 })
+    expect(server.requests[3].arguments).toEqual({ file: '/repo/a.ts', line: 1, offset: 17 })
+    expect(server.requests[4].arguments).toEqual({ file: '/repo/a.d.ts', line: 4, offset: 3 })
     expect(result).toEqual([
       { path: '/repo/b.ts', line: 3, character: 9, endLine: 3, endCharacter: 14, container: 'first' },
       { path: '/repo/b.ts', line: 4, character: 9, endLine: 4, endCharacter: 14, container: 'first' },
@@ -518,6 +521,19 @@ describe('TypeScriptNavProvider with a real tsserver', () => {
         { path: b, line: 8, character: 9, container: 'second' },
       ])
       console.info(`[code-nav-tsserver] real tsserver: cold definition ${coldMs.toFixed(0)} ms, warm references ${warmMs.toFixed(0)} ms`)
+
+      // A JS folder with no jsconfig/tsconfig is an inferred project: definition still works, but
+      // references and callers would miss importers, so they're refused (the service shows name matches).
+      const plain = join(root, 'plain')
+      mkdirSync(plain)
+      writeFileSync(join(plain, 'a.js'), 'export function foo() {}\n')
+      writeFileSync(join(plain, 'b.js'), "import { foo } from './a.js'\nfoo()\n")
+      const fromB = await provider.query({ root, kind: 'definition', path: join(plain, 'b.js'), line: 2, character: 0 })
+      expect(fromB).toEqual([expect.objectContaining({ path: join(plain, 'a.js'), line: 1 })])
+      await expect(provider.query({ root, kind: 'references', path: join(plain, 'a.js'), line: 1, character: 16 }))
+        .rejects.toThrow(INFERRED_MESSAGE)
+      await expect(provider.query({ root, kind: 'callers', path: join(plain, 'a.js'), line: 1, character: 16 }))
+        .rejects.toThrow(INFERRED_MESSAGE)
 
       // tsserver exits on its own when its stdin closes, so it can't outlive the daemon.
       expect(children).toHaveLength(1)
