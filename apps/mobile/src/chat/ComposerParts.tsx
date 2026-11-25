@@ -4,6 +4,7 @@ import Feather from '@expo/vector-icons/Feather'
 import * as Haptics from 'expo-haptics'
 
 import {
+  chatMessageSummary,
   hostTakesSettings,
   selectedModelOption,
   type ChatCommand,
@@ -80,7 +81,7 @@ export function QueueList({ queue, disabled, onChange, onEditOrphaned, provider 
             ) : (
               <>
                 <Text numberOfLines={2} style={[styles.queuedText, { color: theme.textSoft }]}>
-                  {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{queued.text || '(images only)'}
+                  {queued.images?.length ? `▣ ${queued.images.length} · ` : ''}{chatMessageSummary(queued.text) || '(images only)'}
                 </Text>
                 <IconButton disabled={disabled || !queued.text} icon="edit-2" label="Edit queued message" onPress={() => setEditing({ id: queued.id, text: queued.text })} />
                 <SmallButton disabled={disabled} icon="zap" label="Steer" onPress={() => onChange({ action: 'steer', id: queued.id })} />

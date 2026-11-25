@@ -1,5 +1,4 @@
-import { asideKey, type ChatAsideRecord } from '@commando/agent-chat'
-import { ASIDE_REPORT_PROMPT } from '../chat/asideReport'
+import { ASIDE_REPORT_PROMPT, asideKey, chatMessageSummary, type ChatAsideRecord } from '@commando/agent-chat'
 import { demoAsideChat } from './asides'
 import type { ServerMessage } from '@commando/protocol'
 import { DaemonClient, nextRequestId, type DaemonClientOptions, type OutgoingMessage, type ServerMessageListener } from '../daemon/client'
@@ -61,7 +60,7 @@ export class DemoDaemonClient extends DaemonClient {
         return requestId
       }
       const record: ChatAsideRecord = action.action === 'open' ? {
-        id: `demo${String(records.length + 1).padStart(4, '0')}`, title: action.text.slice(0, 45) || 'New aside', mode: action.mode ?? 'read-only', method: 'fork', readOnlyEnforced: true,
+        id: `demo${String(records.length + 1).padStart(4, '0')}`, title: chatMessageSummary(action.text).slice(0, 45) || 'New aside', mode: action.mode ?? 'read-only', method: 'fork', readOnlyEnforced: true,
         forkedFrom: { sessionId: chat.session.sessionId || 'demo-main' }, status: 'open', createdAt: Date.now(),
       } : { ...current!, ...(action.action === 'close' ? { status: 'closed', closedAt: Date.now() } : action.action === 'mode' ? { mode: action.mode } : { status: 'open', lastError: undefined }) }
       records = [...records.filter((entry) => entry.id !== record.id), record]

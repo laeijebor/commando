@@ -1,4 +1,5 @@
 import { ChatChannel } from '../chat/channel'
+import { ASIDE_REPORT_PROMPT, hostTakesAsides, parseAsideReports } from '@commando/agent-chat'
 import { pendingRequests } from '@commando/chat-timeline'
 import { DemoDaemonClient } from './client'
 import { demoMessages, demoIdentities } from './seed'
@@ -144,10 +145,13 @@ it('seeds an open aside, a closed aside and a Main report without adding a pane 
   client.start()
   const chats = useChatStore.getState().byHost[client.hostId]!
   const main = chats['%demo0']!
+  expect(hostTakesAsides(main.session)).toBe(true)
   expect(main.asides?.map((record) => record.status)).toEqual(['open', 'closed'])
   expect(chats['%demo0~layout01']?.session.aside?.parentPaneId).toBe('%demo0')
   expect(chats['%demo0~layout01']?.items.some((entry) => entry.kind === 'assistant_message')).toBe(true)
   expect(main.items.some((entry) => entry.kind === 'user_message' && entry.text.includes('<!-- commando-aside:report01 -->'))).toBe(true)
+  const report = main.items.find((entry) => entry.kind === 'user_message' && entry.text.includes('<!-- commando-aside:report01 -->'))!
+  expect(report.kind === 'user_message' && parseAsideReports(report.text)).toEqual([expect.objectContaining({ kind: 'report', asideId: 'report01' })])
   expect(useDaemonStore.getState().byHost[client.hostId]?.snapshot?.panes.some((pane) => pane.id.includes('~'))).toBe(false)
   client.stop()
 })
@@ -165,4 +169,15 @@ it('supports demo aside lifecycle and drafting over the real channel', async () 
   await expect(channel.aside({ action: 'reopen', asideId: opened.asideId! })).resolves.toMatchObject({ ok: true })
   expect(useChatStore.getState().byHost[client.hostId]?.[key]).toBeDefined()
   unsubscribe(); channel.dispose(); client.stop()
+})
+it('drafts a demo report when the shared report prompt is sent', () => {
+  const client = new DemoDaemonClient({ host: demoHost() })
+  client.start()
+  const channel = new ChatChannel(client, '%demo0~layout01', { sendRefused: jest.fn(), actionRefused: jest.fn() })
+  channel.send(ASIDE_REPORT_PROMPT)
+  jest.advanceTimersByTime(250)
+  const aside = useChatStore.getState().byHost[client.hostId]!['%demo0~layout01']!
+  expect(aside.items.at(-1)).toMatchObject({ kind: 'assistant_message', status: 'completed', text: expect.stringContaining('Keyboard layout checked') })
+  expect(aside.session.status).toBe('idle')
+  channel.dispose(); client.stop()
 })

@@ -1,8 +1,14 @@
 import { NOW, WORKLOG_BRIEF, WORKING_STATUS } from '../testing/fixtures'
+import { asideReportText } from '@commando/agent-chat'
 import { parseInline, parseMarkdown } from './markdown'
 import { buildWorklogView, hudDetailsView, planProgress, timelineEntries } from './worklog'
 
 describe('the worklog view model', () => {
+  it('cleans report envelopes in the headline and task intent', () => {
+    const text = asideReportText({ asideId: 'aside001', title: 'Layout', body: 'Ready for review\n- Check iPad' })
+    expect(buildWorklogView({ ...WORKLOG_BRIEF, headline: text }).headline).toBe('From aside “Layout”: Ready for review')
+    expect(hudDetailsView({ ...WORKING_STATUS, details: { ...WORKING_STATUS.details!, intent: text } })?.intent).toBe('From aside “Layout”: Ready for review')
+  })
   it('leaves cancelled tasks out of the progress denominator', () => {
     const progress = planProgress(WORKLOG_BRIEF.tasks)
     // Eight tasks, one cancelled: four of the seven that count are done.

@@ -1,5 +1,6 @@
 import { FlatList } from 'react-native'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
+import { asideReportText } from '@commando/agent-chat'
 import { ThemeProvider } from '../theme'
 import { ChatTimeline } from './ChatTimeline'
 import { item } from './testing'
@@ -54,4 +55,39 @@ it('marks an attached video with a film tile instead of loading it as an image',
   expect(screen.getByLabelText('Video: clip.mov')).toBeTruthy()
   expect(screen.queryByLabelText('Open clip.mov')).toBeNull()
   expect(screen.getByLabelText('Open pane.png')).toBeTruthy()
+})
+it('renders reports and typed text in order, with separate report links and a single attachment strip', () => {
+  const first = { asideId: 'aside001', title: 'First', body: 'First finding' }
+  const second = { asideId: 'aside002', title: 'Second', body: 'Second finding' }
+  const text = ['Before', asideReportText(first), 'Between', asideReportText(second), 'After'].join('\n\n')
+  const onOpenReport = jest.fn()
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false} onOpenReport={onOpenReport}
+    items={[item('user_message', { text, images: [{ id: `${'a'.repeat(64)}.png`, name: 'pane.png' }], steered: true })]} /></ThemeProvider>)
+  const ordered = screen.getAllByText(/^(Before|Between|After|From aside “First”|From aside “Second”)$/)
+  expect(ordered.map((node) => node.props.children)).toEqual(['Before', ['From aside “', 'First', '”'], 'Between', ['From aside “', 'Second', '”'], 'After'])
+  expect(screen.getByText('First finding')).toBeTruthy()
+  expect(screen.getByText('Second finding')).toBeTruthy()
+  expect(screen.getAllByLabelText('Open pane.png')).toHaveLength(1)
+  expect(screen.getAllByText(/Steered: sent while/)).toHaveLength(1)
+  expect(screen.queryByText(/<!--/)).toBeNull()
+  fireEvent.press(screen.getByLabelText('Open aside First'))
+  expect(onOpenReport).toHaveBeenLastCalledWith(expect.objectContaining(first))
+  fireEvent.press(screen.getByLabelText('Open aside Second'))
+  expect(onOpenReport).toHaveBeenLastCalledWith(expect.objectContaining(second))
+})
+it('renders adjacent reports individually without an empty user bubble', () => {
+  const reports = ['First', 'Second'].map((title, index) => asideReportText({ asideId: `aside00${index}`, title, body: `${title} finding` }))
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false}
+    items={[item('user_message', { text: reports.join('\n\n') })]} /></ThemeProvider>)
+  expect(screen.getAllByText(/^From aside “/)).toHaveLength(2)
+  expect(screen.queryByText(/<!--/)).toBeNull()
+})
+it.each([
+  '**From aside “Unfinished”**\n<!-- commando-aside:aside001 -->\n\nStill typing',
+  '**From aside “Invalid ID”**\n<!-- commando-aside:%ZZ -->\n\nFinding\n<!-- /commando-aside -->',
+])('keeps an unrecognised envelope as normal user text', (text) => {
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false}
+    items={[item('user_message', { text })]} /></ThemeProvider>)
+  expect(screen.getByText(text)).toBeTruthy()
+  expect(screen.queryByText(/^From aside “/)).toBeNull()
 })

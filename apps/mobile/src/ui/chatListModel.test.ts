@@ -1,9 +1,19 @@
 import { deriveSessionIdentity } from '@commando/session-identity'
+import { asideReportText } from '@commando/agent-chat'
 import { EMPTY_HOST_STATE } from '../daemon/state'
 import { SNAPSHOT, NEEDS_INPUT_STATUS, WORKING_STATUS, DONE_STATUS } from '../testing/fixtures'
 import { buildChatGroups, paneAttention, placeSessionCreations, sessionIndicator } from './chatListModel'
 
 const state = { ...EMPTY_HOST_STATE, snapshot: SNAPSHOT, agentStatuses: { '%14': NEEDS_INPUT_STATUS, '%20': WORKING_STATUS } }
+it('cleans report envelopes from native chat titles and status summary fallbacks', () => {
+  const { chatState, session } = require('../chat/testing') as typeof import('../chat/testing')
+  const text = asideReportText({ asideId: 'aside001', title: 'Layout', body: 'Ready for review\n- Check iPad' })
+  const chat = chatState({ paneId: '%14', session: session({ paneId: '%14', title: text }) })
+  const native = buildChatGroups({ ...EMPTY_HOST_STATE, snapshot: SNAPSHOT }, { '%14': chat }).flatMap((group) => group.sessions).find((row) => row.session.id === '$1')!
+  expect(native.subtitle).toBe('From aside “Layout”: Ready for review')
+  const hooks = buildChatGroups({ ...state, agentStatuses: { '%14': { ...WORKING_STATUS, paneId: '%14', details: undefined, summary: text } } }).flatMap((group) => group.sessions).find((row) => row.session.id === '$1')!
+  expect(hooks.subtitle).toBe('From aside “Layout”: Ready for review')
+})
 it('groups by repo, resolves identities, and opens the only agent rather than a shell', () => {
   const groups = buildChatGroups(state)
   const commando = groups.find((group) => group.name === 'commando')!.sessions[0]!

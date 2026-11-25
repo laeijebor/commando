@@ -31,6 +31,7 @@ type Report = AsideReport & {
   error?: string
 }
 const EMPTY_CHATS: Record<string, ChatState> = {}
+const isSavedAside = (record: ChatAsideRecord) => !record.ephemeral && record.status !== 'discarded'
 
 function Button({ label, onPress, disabled = false, selected }: { label: string; onPress: () => void; disabled?: boolean; selected?: boolean }) {
   const theme = useTheme()
@@ -70,12 +71,13 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled 
 }) {
   const [closedVisible, setClosedVisible] = useState(false)
   const theme = useTheme()
-  const closed = main.asides?.filter((record) => record.status === 'closed') ?? []
+  const asides = main.asides?.filter(isSavedAside) ?? []
+  const closed = asides.filter((record) => record.status === 'closed' || record.status === 'promoted')
   return <View>
     {main.asidesError ? <Text accessibilityRole="alert" style={[styles.note, { color: theme.red }]}>Saved asides couldn't be read: {main.asidesError}</Text> : null}
     <ScrollView horizontal showsHorizontalScrollIndicator={false} accessibilityLabel="Chat threads" keyboardShouldPersistTaps="handled" style={styles.strip} contentContainerStyle={styles.row}>
       <ThreadChip title="Main" chat={main} selected={!selected} onPress={() => onSelect()} />
-      {main.asides?.filter((record) => record.status === 'open').map((record) => {
+      {asides.filter((record) => record.status === 'open').map((record) => {
         const chat = chats[asideKey(main.paneId, record.id)]
         return <ThreadChip key={record.id} title={chat?.session.title || record.title} chat={chat} selected={selected === record.id} onPress={() => onSelect(record.id)} />
       })}
@@ -87,7 +89,8 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled 
       {closed.map((record) => <View key={record.id} style={styles.section}>
         <Text style={{ color: theme.text }}>{record.title}</Text>
         {record.lastError ? <Text style={{ color: theme.red }}>{record.lastError}</Text> : null}
-        <Button label={`Reopen ${record.title}`} disabled={disabled} onPress={() => { void onAction({ action: 'reopen', asideId: record.id }).then((ok) => { if (ok) setClosedVisible(false) }) }} />
+        {record.status === 'promoted' ? <Text style={{ color: theme.muted }}>Opened as chat</Text>
+          : <Button label={`Reopen ${record.title}`} disabled={disabled} onPress={() => { void onAction({ action: 'reopen', asideId: record.id }).then((ok) => { if (ok) setClosedVisible(false) }) }} />}
       </View>)}
     </AsideSheet> : null}
   </View>
@@ -144,7 +147,7 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
   const reportKey = report ? asideKey(main.paneId, report.asideId) : undefined
   // This channel survives tab switches along with the report sheet.
   const { channel: reportChannel, sendError: reportError } = useChatChannel(client, reportKey)
-  const record = main.asides?.find((entry) => entry.id === selected && entry.status === 'open')
+  const record = main.asides?.find((entry) => entry.id === selected && isSavedAside(entry) && entry.status === 'open')
   const chat = record ? chats[asideKey(main.paneId, record.id)] : undefined
   const connected = phase === 'live' && main.hostConnected
   const disabled = busy || !connected || Boolean(main.session.claudeCodeSwitch) || main.session.status === 'closed' || main.session.status === 'error'
@@ -161,7 +164,7 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
   }, [sendError])
   useEffect(() => {
     if (record) { seenRecord.current = record.id; awaitingRecord.current = undefined }
-    else if (selected && !busy && awaitingRecord.current !== selected && (seenRecord.current === selected || main.asides?.some((entry) => entry.id === selected && entry.status === 'closed'))) setSelection(undefined)
+    else if (selected && !busy && (main.asides?.some((entry) => entry.id === selected && (!isSavedAside(entry) || entry.status !== 'open')) || (awaitingRecord.current !== selected && seenRecord.current === selected))) setSelection(undefined)
   }, [main.asides, selected, busy, record])
 
   const request = async (action: ChatAsideAction): Promise<boolean> => {
@@ -232,15 +235,17 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
     if (report.close) void request({ action: 'close', asideId: report.asideId })
   }
   const onOpenReport = (source: AsideReport) => {
-    if (main.asides?.some((entry) => entry.id === source.asideId && entry.status === 'open')) setSelection(source.asideId)
-    else Alert.alert(`From aside “${source.title}”`, 'This aside is closed or unavailable.', [
+    const sourceRecord = main.asides?.find((entry) => entry.id === source.asideId && isSavedAside(entry))
+    if (sourceRecord?.status === 'open') setSelection(source.asideId)
+    else if (sourceRecord?.status === 'closed') Alert.alert(`From aside “${source.title}”`, 'This aside is closed.', [
       { text: 'Cancel', style: 'cancel' }, { text: 'Reopen', onPress: () => { void request({ action: 'reopen', asideId: source.asideId }) } },
     ])
+    else Alert.alert(`From aside “${source.title}”`, sourceRecord?.status === 'promoted' ? 'Opened as chat' : 'This aside is unavailable.')
   }
   const newChat: ChatState = { ...main, paneId: `${main.paneId}:new-aside`, items: [], commands: [], carried: undefined, omittedItems: 0,
     session: { ...main.session, paneId: `${main.paneId}:new-aside`, status: 'idle', queue: [], claudeCodeSwitch: undefined, contextUsage: undefined, models: [], permissionMode: undefined } }
   return <View style={styles.root}>
-    {available && (main.asides?.length || main.asidesError || selected || busy) ? <AsideTabs main={main} chats={chats} selected={selected} onSelect={setSelection} onAction={request} disabled={disabled} /> : null}
+    {available && (main.asides?.some(isSavedAside) || main.asidesError || selected || busy) ? <AsideTabs main={main} chats={chats} selected={selected} onSelect={setSelection} onAction={request} disabled={disabled} /> : null}
     {error ? <View accessibilityRole="alert" style={styles.section}><Text style={{ color: theme.red }}>{error}</Text><Button label="Dismiss aside error" onPress={() => setError(undefined)} /></View> : null}
     {record ? <AsideBanner aside={record} disabled={disabled} reportDisabled={!chat?.hostConnected || chat.session.status !== 'idle' || Boolean(report)} onAction={request} onReport={startReport} /> : null}
     {selected === 'new' ? <>

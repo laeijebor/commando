@@ -1,4 +1,4 @@
-import { parseAsideKey } from '@commando/agent-chat'
+import { chatMessageSummary, parseAsideKey } from '@commando/agent-chat'
 import { providerPresentation } from '../ui/providerPresentation'
 
 import type {
@@ -162,7 +162,7 @@ export function buildAgentRows({ statuses, snapshot, briefs = {} }: AgentRowInpu
       sessionId: pane?.sessionId,
       sessionName: session?.name ?? brief?.sessionName ?? status.agentSessionName ?? status.paneId,
       windowName: window?.name,
-      headline: briefHeadline(status, brief),
+      headline: chatMessageSummary(briefHeadline(status, brief)),
       activity: activityLine(status),
       progress: progress ? { completed: progress.completed, total: progress.total } : undefined,
       pendingQuestionCount: status.details?.requests?.length ?? 0,

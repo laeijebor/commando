@@ -1,6 +1,6 @@
 import { Alert } from 'react-native'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
-import { asideKey, asideReportText, type ChatAsideRecord, type ChatState } from '@commando/agent-chat'
+import { ASIDE_REPORT_PROMPT, CHAT_ASIDES_HOST_VERSION, asideKey, asideReportText, type ChatAsideRecord, type ChatState } from '@commando/agent-chat'
 import type { ServerMessage } from '@commando/protocol'
 import { ThemeProvider } from '../theme'
 import type { Host } from '../hosts/types'
@@ -8,7 +8,6 @@ import { createChatRowSelector } from '../ui/chatRowMetadata'
 import { parseNotificationData, notificationRoute } from '../notifications/routing'
 import { PaneView } from '../terminal/PaneView'
 import { threadStatus } from './AsideThreads'
-import { ASIDE_REPORT_PROMPT } from './asideReport'
 import { ChatView } from './ChatView'
 import { applyChatMessage, useChat, useChatStore } from './store'
 import { chatState, fakeClient, item, session } from './testing'
@@ -19,8 +18,8 @@ const HOST: Host = { id: 'asides-test', name: 'studio', baseUrl: 'http://studio:
 const OPEN: ChatAsideRecord = { id: 'aside001', title: 'Investigate layout', status: 'open', mode: 'read-only', method: 'fork', readOnlyEnforced: true, createdAt: 1000, forkedFrom: { sessionId: 'main-session' } }
 const CLOSED: ChatAsideRecord = { ...OPEN, id: 'aside002', title: 'Previous check', status: 'closed' }
 const KEY = asideKey('%7', OPEN.id)
-const mainChat = () => chatState({ asides: [OPEN, CLOSED], session: session({ hostVersion: 9, sessionId: 'main-session' }), items: [item('user_message', { text: 'Main question' })] })
-const asideChat = () => chatState({ paneId: KEY, session: session({ aside: { ...OPEN, parentPaneId: '%7' }, paneId: KEY, hostVersion: 9, title: OPEN.title, sessionId: 'aside-session' }), items: [item('assistant_message', { text: 'Aside answer' })] })
+const mainChat = () => chatState({ asides: [OPEN, CLOSED], session: session({ hostVersion: CHAT_ASIDES_HOST_VERSION, sessionId: 'main-session' }), items: [item('user_message', { text: 'Main question' })] })
+const asideChat = () => chatState({ paneId: KEY, session: session({ aside: { ...OPEN, parentPaneId: '%7' }, paneId: KEY, hostVersion: CHAT_ASIDES_HOST_VERSION, title: OPEN.title, sessionId: 'aside-session' }), items: [item('assistant_message', { text: 'Aside answer' })] })
 
 function setup(main = mainChat(), aside: ChatState | null = asideChat()) {
   const client = fakeClient()
@@ -84,6 +83,36 @@ it('draws status chips and a closed sheet; all aside sends target the aside key'
   expect(client.last('chat_aside')).toMatchObject({ paneId: '%7', action: { action: 'reopen', asideId: CLOSED.id } })
   emit({ type: 'chat_aside_result', paneId: '%7', requestId: client.last('chat_aside')!.requestId, ok: true, asideId: CLOSED.id })
   await settle()
+})
+it('hides ephemeral and discarded asides and lists promoted asides without Reopen', () => {
+  const hidden: ChatAsideRecord[] = [
+    { ...OPEN, id: 'temp0001', title: 'Temporary open', ephemeral: true },
+    { ...CLOSED, id: 'temp0002', title: 'Temporary closed', ephemeral: true },
+    { ...CLOSED, id: 'temp0003', title: 'Temporary promoted', status: 'promoted', ephemeral: true },
+    { ...OPEN, id: 'drop0001', title: 'Discarded check', status: 'discarded' },
+  ]
+  setup({ ...mainChat(), asides: [...mainChat().asides!, ...hidden, { ...CLOSED, id: 'chat0001', title: 'Promoted check', status: 'promoted' }] })
+  for (const record of hidden) expect(screen.queryByLabelText(`${record.title}, stopped-error`)).toBeNull()
+  expect(screen.getAllByRole('tab')).toHaveLength(2)
+  fireEvent.press(screen.getByLabelText('Closed (2)'))
+  for (const record of hidden) expect(screen.queryByText(record.title)).toBeNull()
+  expect(screen.getByText('Promoted check')).toBeTruthy()
+  expect(screen.getByText('Opened as chat')).toBeTruthy()
+  expect(screen.queryByLabelText('Reopen Promoted check')).toBeNull()
+  expect(screen.getByLabelText('Reopen Previous check')).toBeTruthy()
+})
+it('does not show the thread strip for only ephemeral or discarded records', () => {
+  setup({ ...mainChat(), asides: [{ ...OPEN, ephemeral: true }, { ...CLOSED, status: 'discarded' }] })
+  expect(screen.queryByLabelText('Chat threads')).toBeNull()
+  expect(screen.queryByText(/^Closed \(/)).toBeNull()
+})
+it.each(['discarded', 'promoted', 'ephemeral'] as const)('returns to Main when the selected aside becomes %s', (state) => {
+  const { emit } = setup()
+  selectAside()
+  emit({ type: 'chat_asides', paneId: '%7', asides: [{ ...OPEN, ...(state === 'ephemeral' ? { ephemeral: true as const } : { status: state }) }] })
+  expect(screen.getByText('Main question')).toBeTruthy()
+  expect(screen.queryByText('Aside answer')).toBeNull()
+  expect(screen.queryByText('Loading aside…')).toBeNull()
 })
 it('shows stopped records with lastError and Reopen, and surfaces saved-aside errors', () => {
   setup({ ...mainChat(), asides: [{ ...OPEN, lastError: 'Host exited' }], asidesError: 'Permission denied' }, null)
@@ -157,6 +186,14 @@ it('places a report beside an existing Main draft, leaving the aside open when r
   expect(client.last('chat_aside')).toBeUndefined()
   expect(client.sent.filter((message) => message.type === 'chat_send')).toHaveLength(1)
 })
+it('shows a clean queued report preview while preserving its envelope for editing', () => {
+  const text = asideReportText({ asideId: OPEN.id, title: OPEN.title, body: 'Queue headline\n- Detailed finding' })
+  setup({ ...mainChat(), session: { ...mainChat().session, status: 'running', queue: [{ id: 'report-queue', text }] } })
+  expect(screen.getByText(`From aside “${OPEN.title}”: Queue headline`)).toBeTruthy()
+  expect(screen.queryByText(/<!--/)).toBeNull()
+  fireEvent.press(screen.getByLabelText('Edit queued message'))
+  expect(screen.getByLabelText('Edit queued message').props.value).toBe(text)
+})
 it('restores a refused queued report to Main and lets users write after drafting disconnects', async () => {
   const { client, emit } = setup()
   await report()
@@ -178,14 +215,22 @@ it('renders report envelopes as From aside bubbles with Open aside routing', () 
   fireEvent.press(screen.getByLabelText('Open aside Investigate layout'))
   expect(screen.getByText('Aside answer')).toBeTruthy()
 })
+it.each(['promoted', 'discarded', 'ephemeral'] as const)('never offers to reopen a %s report source', (state) => {
+  const alert = jest.spyOn(Alert, 'alert')
+  setup({ ...mainChat(), asides: [{ ...OPEN, ...(state === 'ephemeral' ? { ephemeral: true as const } : { status: state }) }],
+    items: [item('user_message', { text: asideReportText({ asideId: OPEN.id, title: OPEN.title, body: 'Finding' }) })] })
+  fireEvent.press(screen.getByLabelText(`Open aside ${OPEN.title}`))
+  expect(alert).toHaveBeenCalledWith(`From aside “${OPEN.title}”`, state === 'promoted' ? 'Opened as chat' : 'This aside is unavailable.')
+  expect(screen.queryByText('Aside answer')).toBeNull()
+})
 it('keeps older hosts on Main with no aside affordances', () => {
-  setup({ ...mainChat(), session: session({ hostVersion: 8 }) })
+  setup({ ...mainChat(), session: session({ hostVersion: CHAT_ASIDES_HOST_VERSION - 1 }) })
   expect(screen.queryByLabelText('+ Aside')).toBeNull()
   expect(screen.queryByLabelText('Send as aside: Send as aside')).toBeNull()
 })
 
 it('routes answers, settings, Stop, queue and full history to the selected aside', () => {
-  const { client } = setup(mainChat(), { ...asideChat(), omittedItems: 30, session: session({ paneId: KEY, hostVersion: 9, status: 'running' }), items: [
+  const { client } = setup(mainChat(), { ...asideChat(), omittedItems: 30, session: session({ paneId: KEY, hostVersion: CHAT_ASIDES_HOST_VERSION, status: 'running' }), items: [
     item('request', { requestId: 'approve-edit', requestKind: 'approval', toolName: 'Edit', title: 'Allow edit?', status: 'running' }),
   ] })
   fireEvent.press(screen.getByLabelText('Investigate layout, needs answer'))

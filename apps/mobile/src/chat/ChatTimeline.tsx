@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, St
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
-import { parseAsideReport, type AsideReport, PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, isChatVideoId, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
+import { parseAsideReports, type AsideReport, PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, isChatVideoId, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
 import {
   canCollapsePlan,
   collapsedPlanPreview,
@@ -254,7 +254,7 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
 function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }): React.JSX.Element {
   const theme = useTheme()
   const { provider, onOpenTile, openTileIds, onOpenReport } = use(TimelineContext)
-  const report = parseAsideReport(item.text)
+  const segments = parseAsideReports(item.text)
   // A message Commando sent for a redline, canvas or auto-fix is its card, not the prompt it typed.
   if (item.tileEvents?.length) {
     return (
@@ -280,15 +280,15 @@ function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }
         </View>
       ) : null}
       {item.images?.length ? <ImageStrip images={item.images} /> : null}
-      {item.text ? (
-        <View style={[styles.bubble, { backgroundColor: theme.surfaceSoft, borderColor: theme.border }]}>
-          {report ? <>
-            <Text style={[styles.userTagText, { color: theme.muted }]}>From aside “{report.title}”</Text>
-            <Markdown text={report.body} />
-            {onOpenReport ? <Pressable accessibilityRole="button" accessibilityLabel={`Open aside ${report.title}`} onPress={() => onOpenReport(report)} style={{ paddingVertical: 8 }}><Text style={{ color: theme.accent }}>Open aside</Text></Pressable> : null}
-          </> : <UserText text={item.text} />}
+      {segments.map((segment, index) => (
+        <View key={index} style={[styles.bubble, { backgroundColor: theme.surfaceSoft, borderColor: theme.border }]}>
+          {segment.kind === 'report' ? <>
+            <Text style={[styles.userTagText, { color: theme.muted }]}>From aside “{segment.title}”</Text>
+            <Markdown text={segment.body} />
+            {onOpenReport ? <Pressable accessibilityRole="button" accessibilityLabel={`Open aside ${segment.title}`} onPress={() => onOpenReport(segment)} style={{ paddingVertical: 8 }}><Text style={{ color: theme.accent }}>Open aside</Text></Pressable> : null}
+          </> : <UserText text={segment.text} />}
         </View>
-      ) : null}
+      ))}
     </View>
   )
 }
