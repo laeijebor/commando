@@ -3433,7 +3433,8 @@ describe('chat asides', () => {
     expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: asidePaneId, text: 'Aside follow-up' }))
     // Nothing in the pane tree or the terminal pane DOM uses the aside's identity.
     expect(document.querySelector(`[data-pane-id="${asidePaneId}"]`)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle mode' }))
+    expect(screen.getByText('Read-only')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Allow edits' }))
     expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_aside', paneId: pane.id, action: { action: 'mode', asideId: record.id, mode: 'inherit' } }))
   })
 
@@ -3470,10 +3471,11 @@ describe('chat asides', () => {
     act(() => daemonMessage?.({ type: 'chat_removed', paneId: asidePaneId }))
     expect(screen.getByText('Closed (1)')).toBeInTheDocument()
   })
-  it('configures the aside and loads its MCP servers through the pane palette', async () => {
+  it('configures a full-access aside and loads its MCP servers through the pane palette', async () => {
     appMocks.send.mockReturnValue(true)
     await renderAppWithSnapshot()
-    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [record] }, { ...asideChat(), session: { ...asideChat().session, permissionMode: 'default' } }] }))
+    const fullAccess = { ...record, mode: 'inherit' as const }
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [fullAccess] }, { ...asideChat(), session: { ...asideChat().session, aside: { ...fullAccess, parentPaneId: pane.id }, permissionMode: 'default' } }] }))
     fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Ask before edits' }))
     fireEvent.click(screen.getByRole('menuitemradio', { name: /Plan mode/ }))

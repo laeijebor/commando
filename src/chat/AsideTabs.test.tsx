@@ -93,7 +93,7 @@ describe('aside threads', () => {
   it('changes mode, confirms refork, closes and reopens', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { request } = setup({ ...main, asides: [record, { ...record, id: 'ijklmnop', title: 'Old aside', status: 'closed' }] }, record.id)
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle mode' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Allow edits' }))
     await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'mode', asideId: record.id, mode: 'inherit' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refork' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Refork' }))
@@ -115,6 +115,47 @@ describe('aside threads', () => {
     expect(within(screen.getByRole('tab', { name: /Main/ })).getByRole('img', { name: 'running' })).toBeInTheDocument()
     expect(within(screen.getByRole('tab', { name: /Why flaky/ })).getByRole('img', { name: 'needs answer' })).toBeInTheDocument()
   })
+  it('prefers provider titles, falls back to record titles, and keeps close buttons outside tabs', () => {
+    const onSelect = vi.fn(), onAction = vi.fn()
+    const titled = { ...aside, session: { ...aside.session, title: 'Provider title' } }
+    const view = render(<AsideTabs main={main} chats={{ [key]: titled }} selected={record.id} onSelect={onSelect} onAction={onAction} disabled={false} />)
+    const tab = screen.getByRole('tab', { name: /Provider title/ })
+    expect(tab).toHaveAttribute('title', 'Provider title')
+    expect(within(tab).queryByRole('button')).toBeNull()
+    const close = screen.getByRole('button', { name: 'Close aside Provider title' })
+    expect(close).toHaveAttribute('type', 'button')
+    expect(close.closest('[role=tab]')).toBeNull()
+    close.focus()
+    expect(close).toHaveFocus()
+    fireEvent.keyDown(close, { key: 'ArrowRight' })
+    expect(onSelect).not.toHaveBeenCalled()
+    fireEvent.click(close)
+    expect(onAction).toHaveBeenCalledWith({ action: 'close', asideId: record.id })
+    expect(onSelect).not.toHaveBeenCalled()
+    fireEvent.keyDown(tab, { key: 'ArrowLeft' })
+    expect(onSelect).toHaveBeenCalledWith(undefined)
+    expect(screen.getByRole('tab', { name: /Main/ })).toHaveFocus()
+    view.rerender(<AsideTabs main={main} chats={{}} selected={record.id} onSelect={onSelect} onAction={onAction} disabled />)
+    expect(screen.getByRole('tab', { name: /Why flaky/ })).toHaveAttribute('title', record.title)
+    const disabledClose = screen.getByRole('button', { name: `Close aside ${record.title}` })
+    expect(disabledClose).toBeDisabled()
+    onAction.mockClear()
+    fireEvent.click(disabledClose)
+    expect(onAction).not.toHaveBeenCalled()
+  })
+  it('uses provider titles in the closed list', () => {
+    render(<AsideTabs main={{ ...main, asides: [{ ...record, status: 'closed' }] }} chats={{ [key]: { ...aside, session: { ...aside.session, title: 'Finished investigation' } } }} selected={undefined} onSelect={() => {}} onAction={() => {}} disabled={false} />)
+    fireEvent.click(screen.getByText('Closed (1)'))
+    expect(screen.getByText('Finished investigation')).toHaveAttribute('title', 'Finished investigation')
+    expect(screen.getByRole('button', { name: 'Reopen Finished investigation' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Close aside/ })).toBeNull()
+  })
+  it.each([undefined, record.id])('closes an aside from its tab when selection is %s', async (selected) => {
+    const { request } = setup(main, selected)
+    fireEvent.click(screen.getByRole('button', { name: `Close aside ${record.title}` }))
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ action: 'close', asideId: record.id }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Main/ })).toHaveAttribute('aria-selected', 'true'))
+  })
   it('handles success arriving before the record broadcast', async () => {
     const { request } = setup({ ...main, asides: [] })
     let finish!: (result: { ok: boolean; asideId: string }) => void
@@ -125,13 +166,16 @@ describe('aside threads', () => {
     expect(screen.getByText('Loading aside…')).toBeInTheDocument()
   })
   it.each([
+    { mode: 'read-only' as const, readOnlyEnforced: true, label: 'Read-only', next: 'inherit' },
     { mode: 'read-only' as const, readOnlyEnforced: false, label: 'Read-only (advisory)', next: 'inherit' },
     { mode: 'inherit' as const, readOnlyEnforced: true, label: 'Full access', next: 'read-only' },
   ])('labels $label and toggles its mode', ({ mode, readOnlyEnforced, label, next }) => {
     const onAction = vi.fn()
     render(<AsideBanner aside={{ ...record, mode, readOnlyEnforced }} disabled={false} onAction={onAction} />)
     expect(screen.getByText(new RegExp(label.replace(/[()]/g, '\\$&')))).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle mode' }))
+    const toggle = screen.getByRole('button', { name: mode === 'read-only' ? 'Allow edits' : 'Make read-only' })
+    expect(toggle).toHaveAttribute('title', mode === 'read-only' ? "Lets this aside use Main's permissions, including edits" : 'Blocks edit tools in this aside')
+    fireEvent.click(toggle)
     expect(onAction).toHaveBeenCalledWith({ action: 'mode', asideId: record.id, mode: next })
   })
 

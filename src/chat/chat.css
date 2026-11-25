@@ -265,7 +265,13 @@
 .chat-aside-strip { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 0 12px; }
 .chat-aside-tabs { display: flex; align-items: stretch; flex: 1; min-width: 0; overflow-x: auto; }
 .chat-aside-tabs button { display: flex; align-items: center; gap: 6px; max-width: 180px; flex-shrink: 0; padding: 9px 10px; font-size: 12px; color: var(--text-soft); cursor: pointer; }
-.chat-aside-tabs [aria-selected=true] { color: var(--cyan); box-shadow: inset 0 2px var(--cyan); background: color-mix(in srgb, var(--cyan) 7%, transparent); }
+.chat-aside-tab { display: flex; flex-shrink: 0; max-width: 180px; }
+.chat-aside-tab [role=tab] { flex: 1; min-width: 0; padding-right: 4px; }
+.chat-aside-tabs > [aria-selected=true], .chat-aside-tab.is-selected { color: var(--cyan); box-shadow: inset 0 2px var(--cyan); background: color-mix(in srgb, var(--cyan) 7%, transparent); }
+.chat-aside-tab.is-selected [role=tab] { color: var(--cyan); }
+.chat-aside-tabs .chat-aside-close { flex-shrink: 0; padding: 4px 6px; font-size: 11px; opacity: .5; }
+.chat-aside-tabs .chat-aside-close:hover, .chat-aside-tabs .chat-aside-close:focus-visible { opacity: 1; }
+.chat-aside-tabs button:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
 .chat-aside-tabs .chat-aside-add { color: var(--cyan); }
 .chat-aside-tabs button:disabled { opacity: .5; cursor: default; }
 .chat-aside-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--text-soft); }

@@ -1037,7 +1037,11 @@ export function ChatComposer({
             ) : null}
             {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
             <ModelPicker session={session} disabled={newAside || disabled || session.status === 'starting'} onConfigure={onConfigure} open={modelMenuOpen} onOpenChange={setModelMenuOpen} />
-            <PermissionPicker session={session} disabled={newAside || disabled || session.status === 'starting'} onConfigure={onConfigure} />
+            {newAside || session.aside?.mode === 'read-only' ? (
+              <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground">
+                {session.aside?.mode === 'read-only' && session.aside.readOnlyEnforced === false ? 'Read-only (advisory)' : 'Read-only'}
+              </span>
+            ) : <PermissionPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />}
             {profile ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={session.configDir}>{profile}</span> : null}
             {todos && todos.todos.length ? <TodoChip todos={todos} /> : null}
             {stash.entries.length ? (

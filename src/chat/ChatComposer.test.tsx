@@ -40,6 +40,40 @@ function renderComposer(props: Partial<Parameters<typeof ChatComposer>[0]> = {})
 const menu = () => screen.getByTestId('composer-menu')
 const options = () => within(menu()).queryAllByRole('option').map((option) => option.textContent)
 
+describe('aside permission controls', () => {
+  const asideInfo: NonNullable<ChatSessionInfo['aside']> = {
+    id: 'abcdefgh', parentPaneId: '%5', title: 'Aside', mode: 'read-only', method: 'fork',
+    readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1,
+  }
+
+  it.each([true, false])('shows a static read-only chip when enforcement is %s', (readOnlyEnforced) => {
+    const { onConfigure } = renderComposer({ session: { ...session, aside: { ...asideInfo, readOnlyEnforced } } })
+    const label = readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'
+    const chip = screen.getByText(label)
+    expect(chip.tagName).toBe('SPAN')
+    expect(chip.closest('button')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ask before edits' })).toBeNull()
+    fireEvent.click(chip)
+    expect(screen.queryByRole('menu', { name: 'Permissions' })).toBeNull()
+    expect(onConfigure).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, { ...asideInfo, mode: 'inherit' as const }])('keeps the permission picker for Main and full-access asides (%j)', async (aside) => {
+    const { onConfigure } = renderComposer({ session: { ...session, aside } })
+    expect(screen.queryByText('Read-only')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Ask before edits' }))
+    const permissions = await screen.findByRole('menu', { name: 'Permissions' })
+    fireEvent.click(within(permissions).getByRole('menuitemradio', { name: /Plan mode/ }))
+    expect(onConfigure).toHaveBeenCalledWith({ permissionMode: 'plan' })
+  })
+
+  it('shows a read-only chip while composing a new aside', () => {
+    renderComposer({ newAside: true })
+    expect(screen.getByText('Read-only').closest('button')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ask before edits' })).toBeNull()
+  })
+})
+
 beforeEach(() => {
   let next = 0
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => `blob:preview-${next++}`), revokeObjectURL: vi.fn() }))

@@ -26,6 +26,7 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled 
     <div role="tablist" aria-label="Chat threads" className="chat-aside-tabs" onKeyDown={(event) => {
       const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=tab]')]
       const index = tabs.indexOf(event.target as HTMLButtonElement)
+      if (index < 0) return
       const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index - 1 + tabs.length) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1
       if (next < 0) return
       event.preventDefault()
@@ -33,12 +34,22 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled 
       tabs[next]?.click()
     }}>
       <button type="button" role="tab" aria-selected={!selected} onClick={() => onSelect(undefined)}><ThreadStatus chat={main} />Main</button>
-      {records.filter((aside) => aside.status === 'open').map((aside) => <button type="button" role="tab" aria-selected={selected === aside.id} title={aside.title} key={aside.id} onClick={() => onSelect(aside.id)}><ThreadStatus chat={chats[asideKey(main.paneId, aside.id)]} /><span className="truncate">{aside.title}</span></button>)}
+      {records.filter((aside) => aside.status === 'open').map((aside) => {
+        const chat = chats[asideKey(main.paneId, aside.id)]
+        const title = chat?.session.title || aside.title
+        return <div role="presentation" className={`chat-aside-tab${selected === aside.id ? ' is-selected' : ''}`} key={aside.id}>
+          <button type="button" role="tab" aria-selected={selected === aside.id} title={title} onClick={() => onSelect(aside.id)}><ThreadStatus chat={chat} /><span className="truncate">{title}</span></button>
+          <button type="button" className="chat-aside-close" disabled={disabled} aria-label={`Close aside ${title}`} onClick={() => onAction({ action: 'close', asideId: aside.id })}>✕</button>
+        </div>
+      })}
       {selected === 'new' ? <button type="button" role="tab" aria-selected>New aside</button> : null}
       <button type="button" disabled={disabled} className="chat-aside-add" onClick={() => onSelect('new')}>＋ Aside</button>
     </div>
     {closed.length ? <details className="chat-aside-closed"><summary aria-controls={id}>Closed ({closed.length})</summary><div id={id} className="chat-aside-closed-list">
-      {closed.map((aside) => <div key={aside.id}><span className="truncate" title={aside.title}>{aside.title}</span><Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => onAction({ action: 'reopen', asideId: aside.id })} aria-label={`Reopen ${aside.title}`}>Reopen</Button></div>)}
+      {closed.map((aside) => {
+        const title = chats[asideKey(main.paneId, aside.id)]?.session.title || aside.title
+        return <div key={aside.id}><span className="truncate" title={title}>{title}</span><Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => onAction({ action: 'reopen', asideId: aside.id })} aria-label={`Reopen ${title}`}>Reopen</Button></div>
+      })}
     </div></details> : null}
   </div>
 }
@@ -50,7 +61,7 @@ export function AsideBanner({ aside, disabled, onAction }: { aside: ChatAsideRec
   const mode = aside.mode === 'inherit' ? 'Full access' : aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'
   return <div className="chat-aside-banner">
     <span className="min-w-0 flex-1"><strong>Aside</strong> · forked from Main {age} · {mode}</span>
-    <Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => onAction({ action: 'mode', asideId: aside.id, mode: aside.mode === 'read-only' ? 'inherit' : 'read-only' })} title={`Switch to ${aside.mode === 'read-only' ? 'full access' : 'read-only'}`}>Toggle mode</Button>
+    <Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => onAction({ action: 'mode', asideId: aside.id, mode: aside.mode === 'read-only' ? 'inherit' : 'read-only' })} title={aside.mode === 'read-only' ? "Lets this aside use Main's permissions, including edits" : 'Blocks edit tools in this aside'}>{aside.mode === 'read-only' ? 'Allow edits' : 'Make read-only'}</Button>
     <Button size="xs" variant="ghost-muted" disabled={disabled} onClick={() => {
       if (window.confirm("Replaces this aside's conversation with a fresh fork of Main's latest finished turn")) onAction({ action: 'refork', asideId: aside.id })
     }}>Refork</Button>
