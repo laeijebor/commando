@@ -2,6 +2,8 @@ import type { AgentSessionRef } from './protocol.js'
 
 export type BoardItemKind = 'pr' | 'canvas' | 'redline' | 'slides' | 'guide' | 'page' | 'diagram' | 'screenshot' | 'video' | 'link' | 'file' | 'clip'
 export type BoardItemSource = 'auto' | 'agent' | 'user'
+/** For non-tile kinds, 'open' means available: links, clips and PRs always are;
+ * file-backed items are available while ref.path exists. Tile kinds retain tab/snapshot state. */
 export type BoardItemState = 'open' | 'closed' | 'snapshot' | 'missing'
 export type BoardItem = {
   key: string

@@ -29,6 +29,7 @@ const safeText = (s: unknown, max = 8192): s is string => typeof s === 'string' 
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const sourceValid = (v: unknown): v is BoardItemSource => typeof v === 'string' && sources.includes(v)
 const overlaps = (a: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>, b: Pick<BoardGroup, 'x' | 'y' | 'w' | 'h'>) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+const fileItem = (item: BoardItem) => ['screenshot', 'video', 'file'].includes(item.kind) || (item.kind === 'diagram' && !!item.ref.path)
 
 /** Absolute board coordinates; append into a free cell, including cells occupied by fixed items. */
 export function packBoardItem(board: Board, key: string, groupId: string): { placement: BoardPlacement; group: BoardGroup } {
@@ -44,9 +45,9 @@ export function packBoardItem(board: Board, key: string, groupId: string): { pla
 }
 
 export function packBoardGroup(groups: readonly BoardGroup[], group: BoardGroup, near?: string): BoardGroup {
-  const anchor = near ? groups.find((g) => g.id === near) : groups.at(-1)
+  const anchor = near ? groups.find((g) => g.id === near) : undefined
   if (near && !anchor) throw new BoardError(404, 'Near group does not exist')
-  const result = { ...group, x: anchor ? anchor.x + anchor.w + 32 : 0, y: anchor?.y ?? 0 }
+  const result = { ...group, x: anchor ? anchor.x + anchor.w + 32 : 0, y: anchor ? anchor.y : groups.length ? Math.max(...groups.map((g) => g.y + g.h)) + 32 : 0 }
   for (;;) {
     const collisions = groups.filter((g) => overlaps(result, g))
     if (!collisions.length) return result
@@ -147,8 +148,9 @@ export class BoardStore {
   get(targetId: string): Board { this.prune(targetId); return clone(this.board(targetId)) }
   view(targetId: string): BoardView {
     const b = this.get(targetId)
+    const paths = new Map<string, boolean>()
     this.options.onRead?.(targetId)
-    return { ...b, items: b.items.map((i) => ({ ...i, state: this.state(i, targetId) })) }
+    return { ...b, items: b.items.map((i) => ({ ...i, state: this.state(i, targetId, paths) })) }
   }
   targets(): string[] { return [...this.boards.keys()] }
   /** Derived previews do not change source, user edits, placements, or auto-retention timestamps. */
@@ -269,7 +271,7 @@ export class BoardStore {
     if (!current && b.groups.length >= 500) throw new BoardError(409, 'Too many groups')
     const { near, ...fields } = patch
     if (by !== 'user' && ['x', 'y', 'w', 'h'].some((k) => Object.hasOwn(fields, k))) throw new BoardError(400, 'Agents place groups by relationship, not coordinates')
-    let next: BoardGroup = { id, title: id, x: 0, y: 0, w: 684, h: 222, by, ...current, ...fields }
+    let next: BoardGroup = { id, title: id, x: 0, y: 0, w: by === 'user' ? 684 : 464, h: 222, by, ...current, ...fields }
     if (!current || near) next = packBoardGroup(b.groups.filter((g) => g.id !== id), next, near)
     if (!current && by === 'user' && fields.x !== undefined && fields.y !== undefined) next = { ...next, x: fields.x, y: fields.y }
     if (!safeText(next.title, 500) || !next.title.trim() || (next.tone !== undefined && !BOARD_GROUP_TONES.includes(next.tone)) || ![next.x, next.y, next.w, next.h].every(finite) || next.w < 244 || next.h < 100) throw new BoardError(400, 'Invalid group')
@@ -333,9 +335,20 @@ export class BoardStore {
     try { if (!lstatSync(path).isSymbolicLink() && this.sourceExists({ ...item, ref: { path, manifest, file } })) return path } catch { /* Absent snapshots are missing. */ }
     return undefined
   }
-  state(item: BoardItem, targetId?: string): BoardItemState {
+  state(item: BoardItem, targetId?: string, paths = new Map<string, boolean>()): BoardItemState {
+    if (['link', 'clip', 'pr'].includes(item.kind)) return 'open'
+    if (fileItem(item)) {
+      const path = item.ref.path
+      if (!path) return 'missing'
+      let available = paths.get(path)
+      if (available === undefined) {
+        try { available = !!statSync(path, { throwIfNoEntry: false }) } catch { available = false }
+        paths.set(path, available)
+      }
+      return available ? 'open' : 'missing'
+    }
     if (this.livePane(item, targetId)) return 'open'
-    if (item.kind === 'clip' || item.kind === 'pr' || (!item.ref.artifactId && item.ref.url)) return 'closed'
+    if (!item.ref.artifactId && item.ref.url) return 'closed'
     if (this.sourceExists(item)) return 'closed'
     if (this.snapshotDir(item)) return 'snapshot'
     return 'missing'
@@ -417,7 +430,7 @@ export class BoardStore {
   revive(targetId: string, key: string, anchor: Pick<OpenWebPaneInput, 'anchorPaneId' | 'sessionId' | 'windowId'>, by: 'agent' | 'user'): { webPaneId?: string; path?: string } {
     const item = this.item(targetId, key), state = this.state(item, targetId), webPanes = this.options.webPanes
     if (state === 'missing') throw new BoardError(409, 'Artifact source and snapshot are missing; this item cannot be revived')
-    if (['file', 'screenshot', 'video'].includes(item.kind)) { this.changed(targetId); return { path: item.ref.path } }
+    if (fileItem(item)) { this.changed(targetId); return { path: item.ref.path } }
     if (!webPanes) throw new BoardError(503, 'Web panes are unavailable')
     const live = this.livePane(item, targetId)
     if (live) { webPanes.setActiveTab(live.id); this.changed(targetId); return { webPaneId: live.id } }

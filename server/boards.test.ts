@@ -7,6 +7,10 @@ import type { Board, BoardGroup, BoardItem } from '../shared/board.js'
 import type { SessionBrief, WebPane } from '../shared/protocol.js'
 import { MAX_ARTIFACT_DIRS, REDLINE_ARTIFACT_TTL_MS, RedlineArtifactRegistry } from './redline-artifacts.js'
 import { WebPaneService } from './web-panes.js'
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>()
+  return { ...fs, statSync: vi.fn(fs.statSync) }
+})
 const target = '00000000-0000-4000-8000-000000000001'
 const other = '00000000-0000-4000-8000-000000000002'
 const session = { provider: 'codex' as const, id: 'conversation-one' }
@@ -37,7 +41,7 @@ describe('BoardStore', () => {
     s.upsert(target, item()); s.upsert(other, item('b', 'agent')); s.flush()
     expect(readdirSync(root).sort()).toEqual([`${target}.json`, `${other}.json`])
     expect(readFileSync(join(root, `${target}.json`), 'utf8')).not.toContain('"state"')
-    expect(store({ root }).view(target).items[0].state).toBe('closed')
+    expect(store({ root }).view(target).items[0].state).toBe('open')
     writeFileSync(join(root, `${other}.json`), '{"board":{"targetId":"bad"}}')
     const onError = vi.fn(); expect(store({ root, onError }).get(other).items).toEqual([]); expect(onError).toHaveBeenCalled()
     expect(() => s.get('../../escape')).toThrow('Invalid board target')
@@ -83,6 +87,53 @@ describe('BoardStore', () => {
     s.capturePr(target, { repo: 'Owner/Repo', number: 42 }, session)
     expect(s.get(target).items[0].title).toBe('Add Board')
     expect(s.get(target).rev).toBe(rev)
+  })
+  it.each(['link', 'clip', 'pr'] as const)('always derives %s items as available without a tab or file', (kind) => {
+    const s = store(), stored = s.upsert(target, { ...item(), kind, ref: {} })
+    expect(s.state(stored, target)).toBe('open')
+    expect(s.view(target).items[0].state).toBe('open')
+  })
+  it('stats shared file paths once per read and refreshes both positive and negative availability on the next read', () => {
+    const dir = temp(), path = join(dir, 'present'), missing = join(dir, 'absent'), s = store()
+    writeFileSync(path, 'file')
+    for (const p of [path, missing]) for (const kind of ['screenshot', 'video', 'file', 'diagram'] as const) {
+      s.upsert(target, { key: `file:${p}#${kind}`, kind, title: kind, source: 'user', ref: { path: p } })
+    }
+    const board = s.get(target), stats = vi.mocked(statSync)
+    stats.mockClear()
+    expect(s.view(target).items.map((i) => i.state)).toEqual(['open', 'open', 'open', 'open', 'missing', 'missing', 'missing', 'missing'])
+    expect(stats.mock.calls.map(([p]) => p)).toEqual([path, missing])
+    rmSync(path); writeFileSync(missing, 'now available'); stats.mockClear()
+    expect(s.view(target).items.map((i) => i.state)).toEqual(['missing', 'missing', 'missing', 'missing', 'open', 'open', 'open', 'open'])
+    expect(stats.mock.calls.map(([p]) => p)).toEqual([path, missing])
+    expect(s.get(target)).toEqual(board)
+  })
+  it.each(['screenshot', 'video', 'file', 'diagram'] as const)('revives an available %s as a file path without requiring web panes', (kind) => {
+    const dir = temp(), path = join(dir, 'file'), s = store()
+    writeFileSync(path, 'file')
+    const stored = s.upsert(target, { key: `file:${path}`, kind, title: kind, source: 'user', ref: { path } })
+    expect(s.state(stored, target)).toBe('open')
+    expect(s.revive(target, stored.key, anchor, 'user')).toEqual({ path })
+    rmSync(path)
+    expect(() => s.revive(target, stored.key, anchor, 'user')).toThrow('missing')
+  })
+  it('defaults agent groups to two columns, stacks them below all groups, and keeps existing/custom widths', () => {
+    const s = store()
+    const first = s.group(target, 'first', { title: 'First' }, 'agent', true)
+    expect(first).toMatchObject({ w: 464, x: 0, y: 0 })
+    for (const id of ['a', 'b', 'c']) s.upsert(target, item(id), 'first')
+    const board = s.get(target), expanded = board.groups[0]
+    expect(board.placements[item('a').key]).toMatchObject({ x: 12, y: 40 })
+    expect(board.placements[item('b').key]).toMatchObject({ x: 232, y: 40 })
+    expect(board.placements[item('c').key]).toMatchObject({ x: 12, y: 210 })
+    const second = s.group(target, 'second', { title: 'Second' }, 'agent', true)
+    expect(second).toMatchObject({ w: 464, x: 0, y: expanded.y + expanded.h + 32 })
+    expect(s.group(target, 'adjacent', { title: 'Adjacent', near: 'first' }, 'agent', true)).toMatchObject({ x: 496, y: 0 })
+    const custom = s.group(target, 'custom', { title: 'Custom', w: 900 }, 'user', true)
+    expect(custom.w).toBe(900)
+    expect(custom.y).toBe(second.y + second.h + 32)
+    expect(s.group(target, 'custom', { title: 'Renamed' }, 'agent').w).toBe(900)
+    expect(s.group(target, 'manual', { title: 'Manual', w: 800, x: 100, y: 200 }, 'user', true)).toMatchObject({ w: 800, x: 100, y: 200 })
   })
   it('packs group items, protects user drags, removes group into unplaced inbox and cascades links', () => {
     const s = store(); s.upsert(target, item()); s.upsert(target, item('b'))
@@ -142,6 +193,12 @@ describe('pure packing', () => {
     expect(result).toMatchObject({ x: 496, y: 132 })
     expect(() => packBoardGroup([g], g, 'absent')).toThrow('Near group')
   })
+  it('stacks below the lowest existing group rather than the last or rightmost one', () => {
+    const lower = { ...g, id: 'lower', x: 100, y: 500 }
+    const right = { ...g, id: 'right', x: 496 }
+    expect(packBoardGroup([lower, right], { ...g, id: 'new' })).toMatchObject({ x: 0, y: 632 })
+    expect(packBoardGroup([], g)).toMatchObject({ x: 0, y: 0 })
+  })
 })
 
 describe('artifact lifetime, snapshot and revive', () => {
@@ -198,7 +255,7 @@ describe('artifact lifetime, snapshot and revive', () => {
   it('derives matching manually added URLs as open only within the board target', async () => {
     const f = await fixture()
     const pane = f.webPanes.open({ ...anchor, url: 'http://localhost:4410/page/?utm_source=x', openedBy: 'agent', engine: 'chromium' })
-    const input = boardInput({ url: 'http://localhost:4410/page' }, 'agent')
+    const input = boardInput({ url: 'http://localhost:4410/page', kind: 'page' }, 'agent')
     f.s.upsert(target, input); f.s.upsert(other, input)
     expect(f.s.view(target).items[0].state).toBe('open')
     expect(f.s.view(other).items[0].state).toBe('closed')
