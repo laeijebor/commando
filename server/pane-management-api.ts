@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, relative, isAbsolute, join, sep } from 'node:path'
 import { REDLINE_ARTIFACT_TTL_MS, type RedlineArtifactRegistry } from './redline-artifacts.js'
@@ -19,6 +19,9 @@ import { parseDeck } from '../shared/deck.js'
 const API_ROOT = '/api/pane-management'
 const MAX_REQUEST_BYTES = 16 * 1024
 const MAX_DECK_BYTES = 2 * 1024 * 1024
+const DECK_SNAPSHOT_LIMITS = { files: 2000, bytes: 100 * 1024 * 1024 }
+/** Hidden folders a deck may live in and still be served directly. */
+const SERVABLE_DOT_FOLDERS = new Set(['.slides', '.redline', '.canvas', '.pr'])
 
 type PaneManagementDependencies = {
   actions?: TmuxPaneActions
@@ -36,6 +39,8 @@ type PaneManagementDependencies = {
   resourceHome?: string
   resourceTempRoots?: readonly string[]
   resourceTileRoot?: string
+  /** Most a deck snapshot copies before Present falls back to Open. */
+  deckSnapshotLimits?: { files: number; bytes: number }
   resourceNow?: () => number
   artifacts?: Pick<RedlineArtifactRegistry, 'register' | 'hasDirectory'>
   /** Opens a tile beside the pane; `content` makes it a canvas, as slides decks are. */
@@ -186,7 +191,7 @@ export class PaneManagementApi {
       if (!stats.isFile()) throw new HttpError(400, 'Only files can be opened in an editor')
       await openResourceInEditor(path, body.line as number | undefined, execute, platform)
     }
-    if (body.action === 'slides') return this.presentSlides(paneId, path, stats.isDirectory())
+    if (body.action === 'slides') return this.presentSlides(paneId, path, stats.isDirectory(), execute, platform)
     if (body.action === 'tile') {
       if (!stats.isFile() || !/\.(?:html?|svg|png|jpe?g|gif|webp|pdf)$/i.test(extname(path))) throw new HttpError(400, 'This resource cannot be opened as a tile')
       const parent = await realpath(dirname(path))
@@ -251,8 +256,13 @@ export class PaneManagementApi {
     return { ok: true, performed: body.action }
   }
 
-  /** Opens a slides deck as a canvas tile, as `scripts/commando-slides` does. `path` is a real path inside an allowed root. */
-  private async presentSlides(paneId: string, path: string, directory: boolean) {
+  /**
+   * Opens a slides deck as a canvas tile, as `scripts/commando-slides` does. `path` is a real path inside an allowed root.
+   * The tile is served from an unauthenticated artifact URL, so only a folder that is plainly a deck is served as it is:
+   * a repo root, the pane's folder or a folder holding `.env` files is copied without its hidden files first, and
+   * hidden folders such as `~/.ssh` (which keep secrets in ordinary files) are refused.
+   */
+  private async presentSlides(paneId: string, path: string, directory: boolean, execute: FolderOpenExecutor | undefined, platform: NodeJS.Platform) {
     const folder = directory ? path : dirname(path)
     const manifest = directory ? 'deck.html' : basename(path)
     const notDeck = new HttpError(400, 'Only a slides deck can be presented')
@@ -265,15 +275,27 @@ export class PaneManagementApi {
       text = await readFile(join(folder, manifest), 'utf8')
     } catch { throw notDeck }
     if (!parseDeck(text, manifest).deck.slides.length) throw notDeck
-    // The whole folder is served to the tile, so it must not be a broad or daemon-state directory.
     const home = await realpath(this.dependencies.resourceHome ?? homedir()).catch(() => undefined)
     const broad = await Promise.all([home, home ? dirname(home) : undefined, '/', '/Users', '/Volumes', tmpdir(), '/tmp', '/private/tmp',
       ...(this.dependencies.resourceTempRoots ?? [])].map((entry) => entry ? realpath(entry).catch(() => undefined) : undefined))
     const statePath = join(this.dependencies.resourceHome ?? homedir(), '.commando')
     const state = await realpath(statePath).catch(() => home ? join(home, '.commando') : statePath)
-    if (broad.includes(folder) || containsPath(state, folder) || containsPath(folder, state)) throw new HttpError(403, 'This folder cannot be presented')
+    const hidden = folder.split(sep).some((segment) => segment.startsWith('.') && !SERVABLE_DOT_FOLDERS.has(segment))
+    if (broad.includes(folder) || containsPath(state, folder) || containsPath(folder, state) || hidden) throw new HttpError(403, 'This folder cannot be presented')
     if (!this.dependencies.artifacts || !this.dependencies.openResourceTile) throw new HttpError(503, 'Slides tiles are unavailable')
-    const { id } = this.dependencies.artifacts.register(folder)
+    const paneCwd = this.dependencies.panePath(paneId)
+    const cwd = paneCwd ? await realpath(paneCwd).catch(() => undefined) : undefined
+    const entries = await readdir(folder)
+    const direct = !entries.includes('.git') && !entries.some((name) => name.startsWith('.env')) && !(cwd && containsPath(folder, cwd))
+    let served = folder
+    if (!direct) {
+      const root = this.dependencies.resourceTileRoot ?? join(this.dependencies.resourceHome ?? homedir(), '.commando', 'resource-tiles')
+      await this.pruneResourceSnapshots(root)
+      const snapshot = await this.snapshotDeck(folder, root)
+      if (!snapshot) return { ok: true, performed: await openResource(path, execute, platform) }
+      served = snapshot
+    }
+    const { id } = this.dependencies.artifacts.register(served)
     try {
       const webPaneId = this.dependencies.openResourceTile(paneId, `/redline/artifacts/${id}/`, { kind: 'canvas', artifactId: id, manifest })
       return { ok: true, performed: 'slides', webPaneId }
@@ -281,6 +303,45 @@ export class PaneManagementApi {
       const status = (error as { status?: number }).status
       if (status && status >= 400 && status <= 599) throw new HttpError(status, error instanceof Error ? error.message : 'Unable to open the slides')
       throw error
+    }
+  }
+
+  /**
+   * Copies a deck, without hidden entries, `node_modules` or symlinks, into a private per-deck folder under the
+   * snapshot root, replacing an earlier copy. Undefined when the deck is too large to copy.
+   */
+  private async snapshotDeck(folder: string, root: string): Promise<string | undefined> {
+    const limits = this.dependencies.deckSnapshotLimits ?? DECK_SNAPSHOT_LIMITS
+    const key = createHash('sha256').update(`deck:${folder}`).digest('hex').slice(0, 16)
+    await mkdir(root, { recursive: true, mode: 0o700 })
+    const realRoot = await realpath(root)
+    const target = join(realRoot, key)
+    const temporary = join(realRoot, `.${key}.${randomBytes(8).toString('hex')}.tmp`)
+    let files = 0, bytes = 0
+    const copy = async (from: string, to: string): Promise<boolean> => {
+      await mkdir(to, { mode: 0o700 })
+      for (const entry of await readdir(from, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+        const source = join(from, entry.name)
+        if (entry.isDirectory()) {
+          if (!(await copy(source, join(to, entry.name)))) return false
+        } else if (entry.isFile()) {
+          bytes += (await lstat(source)).size
+          if (++files > limits.files || bytes > limits.bytes) return false
+          await copyFile(source, join(to, entry.name))
+        }
+      }
+      return true
+    }
+    try {
+      if (!(await copy(folder, temporary))) return undefined
+      const previous = `${temporary}.old`
+      await rename(target, previous).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error })
+      await rename(temporary, target)
+      await rm(previous, { recursive: true, force: true })
+      return target
+    } finally {
+      await rm(temporary, { recursive: true, force: true })
     }
   }
 

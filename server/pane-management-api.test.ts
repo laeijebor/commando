@@ -635,6 +635,86 @@ describe('resource actions', () => {
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
+  it('serves a repo-root or pane-folder deck only as a copy without hidden files, and refuses hidden folders', async () => {
+    const { mkdir, readdir, realpath } = await import('node:fs/promises')
+    const root = await mkdtemp(join(tmpdir(), 'deck-snapshots-'))
+    const { dir, home, cwd, request, register, openResourceTile } = await setup({ resourceTileRoot: root })
+    try {
+      const page = '<main class="deck"><section class="slide" id="intro"><h1>Hi</h1></section></main>'
+      // A repo root holding a deck, secrets and its git folder.
+      const repo = join(cwd, 'repo')
+      await mkdir(join(repo, '.git'), { recursive: true })
+      await mkdir(join(repo, 'assets'))
+      await mkdir(join(repo, 'node_modules', 'x'), { recursive: true })
+      await writeFile(join(repo, 'deck.html'), page)
+      await writeFile(join(repo, '.env'), 'SECRET=1')
+      await writeFile(join(repo, '.git', 'config'), '[core]')
+      await writeFile(join(repo, 'assets', 'chart.svg'), '<svg/>')
+      await writeFile(join(repo, 'node_modules', 'x', 'index.js'), '')
+      expect(await (await request({ path: repo, action: 'slides' })).json()).toMatchObject({ performed: 'slides' })
+      const snapshot = register.mock.lastCall![0] as string
+      expect(snapshot.startsWith(await realpath(root))).toBe(true)
+      expect((await readdir(snapshot)).sort()).toEqual(['assets', 'deck.html'])
+      expect(await readdir(join(snapshot, 'assets'))).toEqual(['chart.svg'])
+      expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', expect.objectContaining({ manifest: 'deck.html' }))
+      // Presenting again replaces the copy in place.
+      await writeFile(join(repo, 'notes.md'), 'new')
+      await request({ path: repo, action: 'slides' })
+      expect(register.mock.lastCall![0]).toBe(snapshot)
+      expect((await readdir(snapshot)).sort()).toEqual(['assets', 'deck.html', 'notes.md'])
+
+      // A deck folder inside a repo is served as it is.
+      const talk = join(repo, 'docs', 'talk')
+      await mkdir(talk, { recursive: true })
+      await writeFile(join(talk, 'deck.html'), page)
+      await request({ path: talk, action: 'slides' })
+      expect(register).toHaveBeenLastCalledWith(await realpath(talk))
+      // ...unless it holds .env files, or is the pane's folder.
+      await writeFile(join(talk, '.env.local'), 'SECRET=1')
+      await request({ path: talk, action: 'slides' })
+      expect(register.mock.lastCall![0]).not.toBe(await realpath(talk))
+      await writeFile(join(cwd, 'deck.html'), page)
+      await request({ path: cwd, action: 'slides' })
+      expect(register.mock.lastCall![0]).not.toBe(await realpath(cwd))
+
+      // Hidden folders keep secrets in ordinary files: refused, never registered or copied.
+      await mkdir(join(home, '.ssh'))
+      await writeFile(join(home, '.ssh', 'deck.html'), page)
+      await writeFile(join(home, '.ssh', 'id_ed25519'), 'PRIVATE KEY')
+      const calls = register.mock.calls.length
+      expect((await request({ path: join(home, '.ssh', 'deck.html'), action: 'slides' })).status).toBe(403)
+      expect(register).toHaveBeenCalledTimes(calls)
+      // A deck in an artifact folder is fine.
+      await mkdir(join(cwd, '.slides', 'q4'), { recursive: true })
+      await writeFile(join(cwd, '.slides', 'q4', 'deck.html'), page)
+      await request({ path: join(cwd, '.slides', 'q4'), action: 'slides' })
+      expect(register).toHaveBeenLastCalledWith(await realpath(join(cwd, '.slides', 'q4')))
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to Open when a deck is too large to copy', async () => {
+    const { mkdir } = await import('node:fs/promises')
+    const root = await mkdtemp(join(tmpdir(), 'deck-snapshots-'))
+    const { dir, cwd, request, register, execute } = await setup({ resourceTileRoot: root, deckSnapshotLimits: { files: 2, bytes: 1_000_000 } })
+    try {
+      const repo = join(cwd, 'repo')
+      await mkdir(join(repo, '.git'), { recursive: true })
+      await writeFile(join(repo, 'deck.html'), '<main class="deck"><section class="slide" id="a"></section></main>')
+      for (const name of ['a.png', 'b.png']) await writeFile(join(repo, name), 'x')
+      expect(await (await request({ path: repo, action: 'slides' })).json()).toEqual({ ok: true, performed: 'open' })
+      expect(register).not.toHaveBeenCalled()
+      expect(execute).toHaveBeenCalled()
+      const { readdir } = await import('node:fs/promises')
+      expect((await readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects Markdown tiles without registering their folder', async () => {
     const { dir, home, request, register, openResourceTile } = await setup()
     try {
