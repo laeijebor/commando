@@ -1,6 +1,6 @@
 ---
 name: commando-ui
-description: How to write replies that Commando's chat renders richly: inline images and SVG, clickable file and folder cards, Mermaid and pr-diagram diagrams, and interactive commando-ui blocks (choice, approve, checklist, table, stats). Use when a reply would be clearer with an image, a diagram, linked files, a structured table or status list, or when you need the user to pick between options or approve something.
+description: "How to write replies that Commando's chat renders richly: inline images and SVG, clickable file and folder cards, Mermaid and pr-diagram diagrams, and interactive commando-ui blocks (choice, approve, checklist, table, stats). Use when a reply would be clearer with an image, a diagram, linked files, a structured table or status list, or when you need the user to pick between options or approve something."
 ---
 
 # Writing for the Commando chat
