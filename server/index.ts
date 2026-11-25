@@ -151,6 +151,7 @@ import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
 import { ChatReplyResources } from './chat-reply-resources.js'
 import { ChatReplyImages } from './chat-reply-images.js'
+import { ChatReplyDiagrams } from './chat-reply-diagrams.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
 import { asideSessionIds, isMainChatKey, PersistedAsideSessions } from './chat-main-key.js'
 import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
@@ -1054,6 +1055,7 @@ async function main(): Promise<void> {
   const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
   const replyResources = new ChatReplyResources(undefined, (message) => console.warn(`[chat-resources] ${message}`))
   const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
+  const replyDiagrams = new ChatReplyDiagrams(chatImages, { log: (message) => console.warn(`[chat-diagrams] ${message}`) })
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
   const modelCatalog = new ModelCatalog()
@@ -1093,6 +1095,7 @@ async function main(): Promise<void> {
     handoffs: chatHandoffs,
     replyResources: (items, cwd) => replyResources.attach(items, cwd),
     replyImages: (items, cwd) => replyImages.attach(items, cwd),
+    replyDiagrams: (items) => replyDiagrams.attach(items),
     onHandoffsChange: () => publishChatHandoffs(),
   })
   const prAutofix = new PrAutofixWatcher(new PrAutofixStore(), {

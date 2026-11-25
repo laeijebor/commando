@@ -85,6 +85,34 @@ describe('AgentHostHub', () => {
     expect(broadcasts.at(-2)).toMatchObject({ type: 'chat_items', items: [{ id: 'b', images: [{ src: 'a.png' }] }] })
   })
 
+  it('renders pr-diagram fences in snapshots and streamed items, and keeps the reply when rendering fails', async () => {
+    const calls: string[] = []
+    const logs: string[] = []
+    let fail = false
+    const hub = new AgentHostHub({
+      paneExists: () => true, targetIdFor: () => undefined, broadcast: () => undefined, log: (message) => logs.push(message),
+      replyDiagrams: async (items) => {
+        if (fail) throw new Error('renderer exploded')
+        return items.map((entry) => {
+          calls.push(entry.id)
+          return entry.kind === 'assistant_message' ? { ...entry, diagrams: [{ hash: 'a'.repeat(64), id: `${'b'.repeat(64)}.svg` }] } : entry
+        })
+      },
+    })
+    const socket = new FakeSocket()
+    hub.connect(socket as unknown as WebSocket)
+    socket.host({ type: 'session_snapshot', session: session('%1'), items: [item('a', '```pr-diagram\n{}\n```')] })
+    socket.host({ type: 'items', paneId: '%1', items: [item('p', 'plain')] })
+    await settle()
+    fail = true
+    socket.host({ type: 'items', paneId: '%1', items: [item('b', '```pr-diagram\n{}\n```')] })
+    await settle()
+    // Only batches that mention pr-diagram are rendered.
+    expect(calls).toEqual(['a'])
+    expect(hub.items('%1').map((entry) => entry.kind === 'assistant_message' && Boolean(entry.diagrams))).toEqual([true, false, false])
+    expect(logs).toEqual([expect.stringContaining('renderer exploded')])
+  })
+
   it('shows replies without their images when storing them fails', async () => {
     const logs: string[] = []
     const hub = new AgentHostHub({
