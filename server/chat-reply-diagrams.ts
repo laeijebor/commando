@@ -142,16 +142,14 @@ export class ChatReplyDiagrams {
   private async attachTo(item: Extract<ChatItem, { kind: 'assistant_message' }>): Promise<ChatItem> {
     const { diagrams: _previous, ...rest } = item
     const streaming = item.status === 'running'
-    const diagrams: ChatReplyDiagram[] = []
-    for (const source of this.sources(item)) {
+    const results = await Promise.all(this.sources(item).map(async (source): Promise<ChatReplyDiagram | undefined> => {
       const hash = prDiagramHash(source)
-      let result = this.cached(hash)
-      if (!result) {
-        const task = this.start(hash, source)
-        if (!streaming) result = await task
-      }
-      if (result) diagrams.push({ hash, ...result })
-    }
+      const cached = this.cached(hash)
+      if (cached) return { hash, ...cached }
+      const task = this.start(hash, source)
+      return streaming ? undefined : { hash, ...await task }
+    }))
+    const diagrams = results.filter((diagram): diagram is ChatReplyDiagram => diagram !== undefined)
     return diagrams.length ? { ...rest, diagrams } : rest
   }
 
