@@ -1,3 +1,6 @@
+import { asideKey, type ChatAsideRecord } from '@commando/agent-chat'
+import { ASIDE_REPORT_PROMPT } from '../chat/asideReport'
+import { demoAsideChat } from './asides'
 import type { ServerMessage } from '@commando/protocol'
 import { DaemonClient, nextRequestId, type DaemonClientOptions, type OutgoingMessage, type ServerMessageListener } from '../daemon/client'
 import { useDaemonStore } from '../daemon/store'
@@ -49,16 +52,40 @@ export class DemoDaemonClient extends DaemonClient {
     if (message.type === 'mark_panes_seen') this.emit({ type: 'pane_seen', seen: Object.fromEntries(message.paneIds.map((id) => [id, Date.now()])) })
     const chat = 'paneId' in message ? useChatStore.getState().byHost[this.hostId]?.[message.paneId] : undefined
     if (!chat) return requestId
-    if (message.type === 'chat_send') {
+    if (message.type === 'chat_aside') {
+      const action = message.action
+      let records = chat.asides ?? []
+      const current = action.action === 'open' ? undefined : records.find((record) => record.id === action.asideId)
+      if (action.action !== 'open' && !current) {
+        this.emit({ type: 'chat_aside_result', paneId: chat.paneId, requestId, ok: false, error: 'This demo aside is unavailable' })
+        return requestId
+      }
+      const record: ChatAsideRecord = action.action === 'open' ? {
+        id: `demo${String(records.length + 1).padStart(4, '0')}`, title: action.text.slice(0, 45) || 'New aside', mode: action.mode ?? 'read-only', method: 'fork', readOnlyEnforced: true,
+        forkedFrom: { sessionId: chat.session.sessionId || 'demo-main' }, status: 'open', createdAt: Date.now(),
+      } : { ...current!, ...(action.action === 'close' ? { status: 'closed', closedAt: Date.now() } : action.action === 'mode' ? { mode: action.mode } : { status: 'open', lastError: undefined }) }
+      records = [...records.filter((entry) => entry.id !== record.id), record]
+      const key = asideKey(chat.paneId, record.id)
+      if (record.status === 'closed') this.emit({ type: 'chat_removed', paneId: key })
+      else {
+        const existing = useChatStore.getState().byHost[this.hostId]?.[key]
+        const asideChat = action.action === 'mode' && existing ? { ...existing, session: { ...existing.session, aside: { ...record, parentPaneId: chat.paneId } } } : demoAsideChat(chat, record)
+        if (action.action === 'open') asideChat.items = [item('user_message', { text: action.text, images: action.images }), item('assistant_message', { text: 'I’ll explore that here, keeping Main focused.' })]
+        this.emit({ type: 'chat_state', chat: asideChat })
+      }
+      this.emit({ type: 'chat_asides', paneId: chat.paneId, asides: records })
+      this.emit({ type: 'chat_aside_result', paneId: chat.paneId, requestId, ok: true, asideId: record.id })
+    } else if (message.type === 'chat_send') {
       this.emit({ type: 'chat_items', paneId: chat.paneId, items: [item('user_message', { text: message.text, images: message.images, ...(message.relayTo ? { relayTo: message.relayTo } : {}) })] })
       this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'running' }, hostConnected: true })
       const reply = item('assistant_message', { text: 'I’m on it.', status: 'running' })
       const chunks = message.relayTo
         ? ['Passing that on', `Passing that on to @${message.relayTo.label} with SendMessage.`]
         : ['I’m on it.', 'I’m on it. The next pass keeps the desktop hierarchy', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout', 'I’m on it. The next pass keeps the desktop hierarchy and makes the phone layout easier to scan.']
-      chunks.forEach((text, index) => this.later(() => {
+      const response = message.text === ASIDE_REPORT_PROMPT ? ['Keyboard layout checked\n- Keep the composer above the keyboard.\n- Verify thread chips on iPhone and iPad.'] : chunks
+      response.forEach((text, index) => this.later(() => {
         if (reply.kind !== 'assistant_message') return
-        const done = index === chunks.length - 1
+        const done = index === response.length - 1
         this.emit({ type: 'chat_items', paneId: chat.paneId, items: [{ ...reply, text, status: done ? 'completed' : 'running', updatedAt: Date.now() }] })
         if (done) this.emit({ type: 'chat_session', paneId: chat.paneId, session: { ...chat.session, status: 'idle' }, hostConnected: true })
       }, 250 + index * 450))
