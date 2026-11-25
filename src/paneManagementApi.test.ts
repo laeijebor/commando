@@ -68,3 +68,21 @@ describe('pane management API client', () => {
     await expect(createPaneManagementApi('', fetcher).ensurePaneShell('%12')).rejects.toThrow('did not report a shell pane')
   })
 })
+
+it('sends resource actions and returns the performed action and tile id', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ ok: true, performed: 'tile', webPaneId: 'w-12345678' }))
+  const api = createPaneManagementApi('secret', fetcher)
+  await expect(api.resourceAction('%12', '/tmp/a file.html', 'tile', 42)).resolves.toMatchObject({ performed: 'tile', webPaneId: 'w-12345678' })
+  expect(fetcher).toHaveBeenCalledWith('/api/pane-management/panes/%2512/resource', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ path: '/tmp/a file.html', action: 'tile', line: 42 }),
+    headers: expect.objectContaining({ Authorization: 'Bearer secret' }),
+  }))
+})
+
+it('surfaces resource errors and rejects malformed tile responses', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: 'Outside allowed roots' }, { status: 403 }))
+    .mockResolvedValueOnce(Response.json({ ok: true, performed: 'tile' }))
+  const api = createPaneManagementApi('', fetcher)
+  await expect(api.resourceAction('%12', '/outside/file', 'open')).rejects.toThrow('Outside allowed roots')
+  await expect(api.resourceAction('%12', '/tmp/file.html', 'tile')).rejects.toThrow('did not report')
+})

@@ -90,6 +90,8 @@ type HubDependencies = {
   handoffs?: Pick<ChatHandoffStore, 'save' | 'returned' | 'take' | 'discard'>
   /** A chat switched to Claude Code, or came back. */
   onHandoffsChange?: () => void
+  /** Resolves local file and folder references in replies and attaches their metadata. */
+  replyResources?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
   /** Stores the local images replies show with Markdown and attaches them (see chat-reply-images.ts). */
   replyImages?: (items: readonly ChatItem[], cwd: string) => Promise<ChatItem[]>
 }
@@ -200,6 +202,22 @@ export class AgentHostHub {
     })
   }
 
+  private loggedResourceFailure = false
+
+  /** Attaches reply resources, preserving items if resolution fails. */
+  private async withReplyResources(items: ChatItem[], cwd: string | undefined): Promise<ChatItem[]> {
+    if (!this.dependencies.replyResources || !cwd || !items.some((item) => item.kind === 'assistant_message' && (item.text.includes('`') || item.text.includes('[')))) return items
+    try {
+      return await this.dependencies.replyResources(items, cwd)
+    } catch (error) {
+      if (!this.loggedResourceFailure) {
+        this.loggedResourceFailure = true
+        this.dependencies.log?.(`[agent-host] couldn't attach reply resources: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return items
+    }
+  }
+
   /** Items with their replies' local images stored and attached; as they came if that fails. */
   private async withReplyImages(items: ChatItem[], cwd: string | undefined): Promise<ChatItem[]> {
     if (!this.dependencies.replyImages || !cwd || !items.some((item) => item.kind === 'assistant_message' && item.text.includes('!['))) return items
@@ -245,7 +263,7 @@ export class AgentHostHub {
         // A chat back from Claude Code offers its draft and queue to the composer again.
         const carried = !aside && message.session.sessionId ? this.dependencies.handoffs?.returned(message.session.sessionId) : undefined
         if (!aside && message.session.sessionId && this.dependencies.handoffs) this.dependencies.onHandoffsChange?.()
-        const items = await this.withReplyImages(message.items, message.session.cwd)
+        const items = await this.withReplyResources(await this.withReplyImages(message.items, message.session.cwd), message.session.cwd)
         if (socket.readyState !== socket.OPEN) return
         const state: ChatState = {
           paneId,
@@ -299,7 +317,7 @@ export class AgentHostHub {
       }
       case 'items': {
         if (!this.owned(socket, message.paneId) || (message.items.length === 0 && !message.replace)) return
-        const items = await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd)
+        const items = await this.withReplyResources(await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd), this.chats.get(message.paneId)?.state.session.cwd)
         // The host may have been replaced while the images were stored.
         const entry = this.owned(socket, message.paneId)
         if (!entry) return
@@ -336,7 +354,7 @@ export class AgentHostHub {
       case 'subagent_transcript_result': {
         const read = this.transcripts.get(message.requestId)
         if (!read || read.socket !== socket || read.paneId !== message.paneId) return
-        const items = await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd)
+        const items = await this.withReplyResources(await this.withReplyImages(message.items, this.chats.get(message.paneId)?.state.session.cwd), this.chats.get(message.paneId)?.state.session.cwd)
         this.finish(this.transcripts, message.requestId, message.error ? { items, error: message.error } : { items })
         return
       }

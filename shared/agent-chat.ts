@@ -262,6 +262,17 @@ export function chatImageContentType(id: string): string {
   return id.endsWith('.svg.png') ? 'image/png' : chatImageType(id)
 }
 
+/** Local files and folders explicitly referenced by an assistant reply. */
+export type ChatReplyResource = { ref: string; path: string; missing: true } | {
+  ref: string
+  path: string
+  kind: 'file' | 'folder'
+  size?: number
+  mtimeMs?: number
+  entries?: number
+  line?: number
+}
+
 /** Why a reply image isn't shown: no file there, one the daemon can't read, not an image, or the store failed. */
 export type ChatReplyImageError = 'missing' | 'unreadable' | 'unsupported' | 'too_large' | 'empty' | 'failed'
 
@@ -394,6 +405,7 @@ export type ChatItem = ChatItemBase & (
       text: string
       /** Local images the reply shows with Markdown; added by the daemon. */
       images?: ChatReplyImage[]
+      resources?: ChatReplyResource[]
     }
   | { kind: 'reasoning'; text: string }
   | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
@@ -924,6 +936,28 @@ function optionalImages(value: unknown): ChatImageRef[] | undefined {
   return refs?.length ? refs : undefined
 }
 
+function parseChatReplyResources(value: unknown): ChatReplyResource[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const resources = value.slice(0, 50).flatMap((resource): ChatReplyResource[] => {
+    if (!isRecord(resource) || typeof resource.ref !== 'string' || !resource.ref || resource.ref.length > 4096 ||
+      typeof resource.path !== 'string' || !resource.path.startsWith('/') || resource.path.length > 4096 || /[\u0000-\u001f\u007f-\u009f]/u.test(resource.path)) return []
+    const base = { ref: resource.ref, path: resource.path }
+    if (resource.missing === true) return [{ ...base, missing: true }]
+    if (resource.kind !== 'file' && resource.kind !== 'folder') return []
+    for (const key of ['size', 'mtimeMs', 'entries', 'line'] as const) {
+      const number = resource[key]
+      if (number !== undefined && (typeof number !== 'number' || !Number.isFinite(number) || number < 0 ||
+        (key === 'entries' && (!Number.isInteger(number) || number > 9999)) ||
+        (key === 'line' && (!Number.isSafeInteger(number) || number < 1)))) return []
+    }
+    return [withOptional({ ...base, kind: resource.kind }, {
+      size: resource.size as number | undefined, mtimeMs: resource.mtimeMs as number | undefined,
+      entries: resource.entries as number | undefined, line: resource.line as number | undefined,
+    })]
+  })
+  return resources.length ? resources : undefined
+}
+
 const REPLY_IMAGE_ERRORS: readonly ChatReplyImageError[] = ['missing', 'unreadable', 'unsupported', 'too_large', 'empty', 'failed']
 
 /** A reply's images; one that doesn't parse is dropped, and the reply shows its address instead. */
@@ -1066,7 +1100,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
         : null
     case 'assistant_message':
       return typeof value.text === 'string'
-        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images) })
+        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images), resources: parseChatReplyResources(value.resources) })
         : null
     case 'reasoning':
       return typeof value.text === 'string' ? { ...base, kind: value.kind, text: value.text.slice(0, MAX_TEXT) } : null

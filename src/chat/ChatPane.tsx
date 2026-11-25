@@ -1,3 +1,4 @@
+import type { PaneManagementApiClient, ResourceActionHandler } from '../paneManagementApi'
 import type { CommanderState } from '../../shared/commander'
 import { AgentsInbox, type AgentsInboxProps } from './AgentsInbox'
 import { CommanderSplit, type CommanderPeek } from './CommanderReadingPane'
@@ -203,6 +204,7 @@ function ChatColumn({
   externalRuns = EMPTY_EXTERNAL_RUNS,
   tileEvents = EMPTY_TILE_EVENTS,
   onOpenTile,
+  paneManagementApi,
   paneId,
   pane,
   snapshot,
@@ -240,6 +242,7 @@ function ChatColumn({
   tileEvents?: readonly ChatCardEvent[]
   /** Brings a tile forward in this pane's side panel; false when it is gone. */
   onOpenTile?: (webPaneId: string) => boolean
+  paneManagementApi?: Pick<PaneManagementApiClient, 'resourceAction'>
   paneId?: string
   pane?: TmuxPane
   snapshot?: LineageSnapshot
@@ -280,6 +283,16 @@ function ChatColumn({
   focusMessage?: ChatFocusMessageRequest
   onFocusMessageHandled?: (seq: number) => void
 }) {
+  const openTileRef = useRef(onOpenTile)
+  openTileRef.current = onOpenTile
+  const resourcePaneId = paneId ?? hostChat.paneId
+  const resourceAction = useCallback<ResourceActionHandler>(async (path, action, line) => {
+    if (!paneManagementApi) throw new Error('Resource actions are unavailable')
+    const result = await paneManagementApi.resourceAction(resourcePaneId, path, action, line)
+    if (result.webPaneId) openTileRef.current?.(result.webPaneId)
+    return result
+  }, [paneManagementApi, resourcePaneId])
+  const onResourceAction = paneManagementApi ? resourceAction : undefined
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
   // Cards only join the timeline; plan follow-ups and the opening task read the conversation itself.
@@ -507,11 +520,12 @@ function ChatColumn({
             onTask={task}
             onMessage={() => agent.agentId && setRelay({ agentId: agent.agentId, label: subagentLabel(agent) })}
           />
-          <SubagentTimeline provider={chat.session.provider} agent={agent} items={chat.items} ownItems={ownItems} transcript={transcript} cwd={chat.session.cwd} onOpenSubagent={select} onRetry={() => agent.agentId && retryTranscript(agent.agentId)} />
+          <SubagentTimeline provider={chat.session.provider} agent={agent} items={chat.items} ownItems={ownItems} transcript={transcript} cwd={chat.session.cwd} onOpenSubagent={select} onResourceAction={onResourceAction} onRetry={() => agent.agentId && retryTranscript(agent.agentId)} />
         </>
       ) : (
         <ChatTimeline
           provider={chat.session.provider}
+          onResourceAction={onResourceAction}
           items={timelineItems}
           {...(onOpenTile ? { onOpenTile } : {})}
           {...(onOpenPr ? { onOpenPr } : {})}
@@ -630,7 +644,7 @@ function ClaudeCodeSwitchBanner({ state, disabled, onSwitch, provider }: {
  * One subagent's own turns: live from items tagged with its Agent call, or
  * from its saved transcript when none are in the pane (after a resume).
  */
-function SubagentTimeline({ provider, agent, items, ownItems, transcript, cwd, onOpenSubagent, onRetry }: {
+function SubagentTimeline({ provider, agent, items, ownItems, transcript, cwd, onOpenSubagent, onRetry, onResourceAction }: {
   provider: ChatProvider
   agent: SubagentItem
   items: readonly ChatItem[]
@@ -638,6 +652,7 @@ function SubagentTimeline({ provider, agent, items, ownItems, transcript, cwd, o
   transcript: TranscriptState | undefined
   cwd: string
   onOpenSubagent: (toolUseId: string) => void
+  onResourceAction?: ResourceActionHandler
   onRetry: () => void
 }) {
   const live = ownItems.length > 0
@@ -656,6 +671,7 @@ function SubagentTimeline({ provider, agent, items, ownItems, transcript, cwd, o
   const error = !live && transcript && !transcript.loading ? transcript.error : undefined
   return (
     <ChatTimeline
+      onResourceAction={onResourceAction}
       provider={provider}
       items={shown}
       cwd={cwd}

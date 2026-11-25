@@ -42,6 +42,7 @@ async function createService(): Promise<WebPaneService> {
 type Overrides = Partial<ConstructorParameters<typeof WebPanesApi>[0]>
 
 async function startApi(service: WebPaneService, overrides: Overrides = {}): Promise<{
+  api: WebPanesApi
   baseUrl: string
   onChange: ReturnType<typeof vi.fn>
   onPendingChanged: ReturnType<typeof vi.fn>
@@ -101,6 +102,7 @@ async function startApi(service: WebPaneService, overrides: Overrides = {}): Pro
     server.listen(0, '127.0.0.1', resolve)
   })
   return {
+    api,
     baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     onChange,
     onPendingChanged,
@@ -1578,4 +1580,24 @@ describe('closed tab routes', () => {
     expect((await post(baseUrl, '/api/web-panes/closed-tabs/forget', { targetId: target, id: opened.webPaneId }, ownerAuth)).status).toBe(404)
     expect((await post(baseUrl, '/api/web-panes/closed-tabs/forget', { targetId: target }, ownerAuth)).status).toBe(400)
   })
+})
+
+it('uses the same validation and open/reuse notifications through the shared opener', async () => {
+  const service = await createService()
+  const onOpened = vi.fn()
+  const onReopen = vi.fn()
+  const { api, baseUrl, onChange } = await startApi(service, { onOpened, onReopen })
+  const body = { url: 'http://localhost:5199/resource.html', anchor: '%12', engine: 'webkit' }
+  const { pane, reused } = api.open(body, 'owner')
+  expect(reused).toBe(false)
+  expect(pane).toMatchObject({ openedBy: 'user', engine: 'webkit', anchorPaneId: '%12' })
+  expect(onOpened).toHaveBeenCalledWith(pane)
+  const response = await post(baseUrl, '/api/web-panes', body, ownerAuth)
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({ webPaneId: pane.id, reused: true })
+  expect(onReopen).toHaveBeenCalledWith(expect.objectContaining({ id: pane.id }))
+  expect(onOpened).toHaveBeenCalledTimes(1)
+  expect(onChange).toHaveBeenCalledTimes(2)
+  expect(() => api.open({ ...body, anchor: 'bad' }, 'owner')).toThrow('anchor must be')
+  expect((await post(baseUrl, '/api/web-panes', { ...body, anchor: 'bad' }, ownerAuth)).status).toBe(400)
 })
