@@ -65,7 +65,7 @@ describe('ChatReplyImages', () => {
     const [item] = await images.attach([reply(text)], dir)
     expect(item).toMatchObject({ kind: 'assistant_message', text, images: [
       { src: '~/Downloads/slide.png', id: expect.stringMatching(/^[0-9a-f]{64}\.png$/) },
-      { src: 'diagram.svg', id: expect.stringMatching(/^[0-9a-f]{64}\.svg$/) },
+      { src: 'diagram.svg', id: expect.stringMatching(/^[0-9a-f]{64}\.svg$/), path: join(dir, 'diagram.svg') },
     ] })
   })
 
