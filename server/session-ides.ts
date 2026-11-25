@@ -8,6 +8,7 @@ import { isAbsolute, join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { SessionIde } from '../shared/protocol.js'
+import { ideGotoSuffix, type IdeFilePosition } from '../shared/ide-position.js'
 import { importIdeProfile } from './ide-profile.js'
 
 /** sessionSocketPath is code-server's registry of open workbench windows (see openFile). */
@@ -319,9 +320,10 @@ export class SessionIdeService {
   /**
    * Open a file in the session's already-loaded IDE window, without reloading
    * it. The window registers itself a moment after the workbench loads, so a
-   * short wait covers an IDE that was only just shown.
+   * short wait covers an IDE that was only just shown. `position` puts the
+   * cursor on a line (and column) of the file.
    */
-  async openFile(sessionId: string, filePath: string, waitMs = 10_000): Promise<void> {
+  async openFile(sessionId: string, filePath: string, position?: IdeFilePosition, waitMs = 10_000): Promise<void> {
     const entry = this.sessions.get(sessionId)
     const sessionSocketPath = entry?.public.state === 'ready' ? entry.runtime?.sessionSocketPath : undefined
     if (!entry || !sessionSocketPath) throw new Error('Open this session’s IDE first')
@@ -349,9 +351,11 @@ export class SessionIdeService {
           const otherWindows = await Promise.all(others.map((other) => registryLookup(sessionSocketPath, workspaceProbe(other))))
           if (otherWindows.includes(windowSocket)) throw new IdeWindowAmbiguousError()
         }
-        // The window's CLI server, as `code-server --reuse-window <file>` would call it.
+        // The window's CLI server, as `code-server --reuse-window [--goto] <file>[:line[:column]]` would call it.
+        const suffix = ideGotoSuffix(canonicalPath, position)
         const { status, text } = await unixRequest(windowSocket, '/', {
-          type: 'open', fileURIs: [pathToFileURL(canonicalPath).href], folderURIs: [], forceReuseWindow: true,
+          type: 'open', fileURIs: [pathToFileURL(canonicalPath).href + suffix], folderURIs: [], forceReuseWindow: true,
+          ...(suffix ? { gotoLineMode: true } : {}),
         })
         if (status !== 200) throw new Error(`The IDE could not open the file${text ? `: ${text.replace(/^"|"$/g, '')}` : ''}`)
         return

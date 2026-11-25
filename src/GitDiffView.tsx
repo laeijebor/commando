@@ -31,6 +31,7 @@ import {
   type ReactNode,
 } from 'react'
 import { generatedMatcher, isTestPath, repoGeneratedPatterns } from '../shared/diff-filters'
+import type { IdeFilePosition } from '../shared/ide-position'
 import { parseAnsi } from './ansi'
 import { updateDiffFilters, useDiffFilters } from './diffFilters'
 import { AnsiText, findTextMatches } from './AnsiText'
@@ -55,8 +56,8 @@ type Props = {
   comparison?: GitDiffComparison
   visible?: boolean
   errorHint?: ReactNode
-  /** Opens an absolute file path in the session's IDE; omitted where there is none. */
-  onOpenInIde?: (path: string) => void
+  /** Opens an absolute file path in the session's IDE, optionally at a line; omitted where there is none. */
+  onOpenInIde?: (path: string, position?: IdeFilePosition) => void
 }
 
 export type GitDiffComparison = {
