@@ -186,7 +186,7 @@ export class AgentHost {
     if (spec && !parseAsideKey(session.paneId)) {
       const manager = new ChatAsides(session, spec, {
         add: (aside) => this.add(aside), remove: (key) => this.remove(key),
-        changed: (asides) => this.link.send({ type: 'asides', paneId: session.paneId, asides }),
+        changed: (asides, error) => this.link.send({ type: 'asides', paneId: session.paneId, asides, ...(error ? { error } : {}) }),
         activity: () => this.events.activity?.(session.paneId),
         log: (error) => this.log.info(`Couldn't restore or save asides: ${error instanceof Error ? error.message : String(error)}`),
       })

@@ -9,7 +9,7 @@ import type { ChatProviderSession, ChatProviderSessionEvents } from './provider.
 import type { AgentSessionSpec } from './session.js'
 
 const cleanups: (() => Promise<void>)[] = []
-afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
+afterEach(async () => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks() })
 const item = (kind: 'user_message' | 'assistant_message', text: string): ChatItem => ({ id: text, kind, text, turnId: 't', createdAt: 1, updatedAt: 1, status: 'completed' })
 function fake(spec: AgentSessionSpec, provider: ChatProvider = 'claude') {
   let info: ChatSessionInfo = { paneId: spec.paneId, provider, cwd: '/work', status: 'idle', sessionId: spec.resume ?? (spec.aside ? `child-${spec.aside.id}` : 'main-session'), hostPid: 1, hostVersion: AGENT_HOST_PROTOCOL_VERSION, permissionMode: spec.permissionMode, ...(spec.aside ? { aside: spec.aside } : {}) }
@@ -26,7 +26,7 @@ function fake(spec: AgentSessionSpec, provider: ChatProvider = 'claude') {
     controlTask: vi.fn(async () => {}), subagentTranscript: vi.fn(async () => ({ items: [] })), setResumeCommand: vi.fn(),
     snapshot: () => ({ session: { ...info }, items }),
   }
-  return { session, set: (change: Partial<ChatSessionInfo>) => { info = { ...info, ...change }; listeners.session.forEach((listener) => listener(info)) }, setItems: (value: ChatItem[]) => { items = value }, setBusy: (value: boolean) => { busy = value }, crash: () => { listeners.closed.forEach((listener) => listener()) } }
+  return { session, set: (change: Partial<ChatSessionInfo>) => { info = { ...info, ...change }; listeners.session.forEach((listener) => listener(info)) }, setItems: (value: ChatItem[]) => { items = value }, setBusy: (value: boolean) => { busy = value }, restart: () => { listeners.restart.forEach((listener) => listener()) }, crash: () => { listeners.closed.forEach((listener) => listener()) } }
 }
 async function setup(provider: ChatProvider = 'claude') {
   const directory = await mkdtemp(join(tmpdir(), 'commando-asides-'))
@@ -38,7 +38,7 @@ async function setup(provider: ChatProvider = 'claude') {
   const factory = vi.fn(async (p: ChatProvider, s: AgentSessionSpec) => { const child = fake(s, p); created.push(child); return child.session })
   const host = { add: vi.fn(), remove: vi.fn(), changed: vi.fn(), log: vi.fn() }
   const manager = new ChatAsides(main.session, spec, host, store, factory)
-  cleanups.push(async () => { manager.stop() })
+  cleanups.push(async () => { manager.stop(); await manager.sync() })
   return { directory, store, spec, main, factory, created, host, manager }
 }
 
@@ -160,14 +160,15 @@ describe('chat asides', () => {
     expect(host.log).toHaveBeenCalledTimes(1)
   })
   it('drops crashed sessions from the cap and restarts them on Reopen, ignoring stale closed events', async () => {
-    const { manager, created, host, factory } = await setup()
+    const { manager, created, host, factory, store } = await setup()
     for (let i = 0; i < 5; i++) await manager.act({ action: 'open', text: `Q${i}` })
     const crashed = manager.list()[0]!
     created[0]!.crash()
     expect(host.remove).toHaveBeenCalledWith(created[0]!.session.paneId)
-    expect(manager.list()[0]).toMatchObject({ status: 'open', sessionId: crashed.sessionId })
-    expect(host.changed).toHaveBeenLastCalledWith(manager.list())
+    expect(manager.list()[0]).toMatchObject({ status: 'open', sessionId: crashed.sessionId, lastError: 'The aside session closed unexpectedly' })
+    expect(host.changed).toHaveBeenLastCalledWith(manager.list(), undefined)
     expect((await manager.act({ action: 'open', text: 'Replacement slot' })).ok).toBe(true)
+    expect(await store.load('main-session')).toEqual(manager.list())
     expect(await manager.act({ action: 'reopen', asideId: crashed.id })).toMatchObject({ ok: false, error: expect.stringContaining('5 open') })
     await manager.act({ action: 'close', asideId: manager.list().at(-1)!.id })
     expect((await manager.act({ action: 'reopen', asideId: crashed.id })).ok).toBe(true)
@@ -177,6 +178,7 @@ describe('chat asides', () => {
     expect(host.remove).not.toHaveBeenCalled()
     expect((await manager.act({ action: 'reopen', asideId: crashed.id })).ok).toBe(true)
     expect(factory).toHaveBeenCalledTimes(7)
+    expect(manager.list()[0]?.lastError).toBeUndefined()
   })
   it('reports pending lifecycle work and live busy sessions, and releases crashed sessions', async () => {
     const { manager, factory, created } = await setup()
@@ -196,6 +198,7 @@ describe('chat asides', () => {
     expect(manager.busy).toBe(false)
     created[0]!.setBusy(true)
     created[0]!.crash()
+    await manager.sync()
     expect(manager.busy).toBe(false)
   })
   it('serializes concurrent opens and preserves closed records without a TTL', async () => {
@@ -204,6 +207,196 @@ describe('chat asides', () => {
     expect(results.filter((result) => result.ok)).toHaveLength(5)
     for (const record of manager.list()) await manager.act({ action: 'close', asideId: record.id })
     expect((await store.load('main-session')).filter((record) => record.status === 'closed')).toHaveLength(5)
+  })
+  it.each(['EACCES', 'EMFILE', 'EIO'])('retries %s reads without quarantining or overwriting saved records', async (code) => {
+    const { manager, store, factory, host } = await setup()
+    const load = vi.spyOn(store, 'load').mockRejectedValue(Object.assign(new Error(code), { code }))
+    const quarantine = vi.spyOn(store, 'quarantine'), save = vi.spyOn(store, 'save')
+    await manager.sync()
+    expect(host.changed).toHaveBeenLastCalledWith([], code)
+    expect(await manager.act({ action: 'open', text: 'Question' })).toEqual({ ok: false, error: `Saved asides couldn't be read: ${code}` })
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(factory).not.toHaveBeenCalled()
+    expect(save).not.toHaveBeenCalled()
+    expect(quarantine).not.toHaveBeenCalled()
+    load.mockRestore()
+    expect((await manager.act({ action: 'open', text: 'Recovered' })).ok).toBe(true)
+    expect(host.changed).toHaveBeenLastCalledWith(manager.list(), undefined)
+    expect(await store.load('main-session')).toEqual(manager.list())
+  })
+  it('persists a crash reason and clears it after a successful reopen', async () => {
+    const { manager, created, store } = await setup()
+    await manager.act({ action: 'open', text: 'Question' })
+    const id = manager.list()[0]!.id
+    created[0]!.set({ error: 'Provider exited with code 9', status: 'error' })
+    created[0]!.crash()
+    await manager.sync()
+    expect(manager.list()[0]).toMatchObject({ status: 'open', lastError: 'Provider exited with code 9' })
+    expect((await store.load('main-session'))[0]?.lastError).toBe('Provider exited with code 9')
+    expect((await manager.act({ action: 'reopen', asideId: id })).ok).toBe(true)
+    expect(manager.list()[0]?.lastError).toBeUndefined()
+    expect((await store.load('main-session'))[0]?.lastError).toBeUndefined()
+  })
+  it('rolls back an open whose provider starts in error', async () => {
+    const { manager, factory, created, store, host } = await setup()
+    const create = factory.getMockImplementation()!
+    factory.mockImplementationOnce(async (provider, spec) => {
+      const session = await create(provider, spec)
+      created.at(-1)!.set({ status: 'error', error: 'Start rejected' })
+      return session
+    })
+    expect(await manager.act({ action: 'open', text: 'Question' })).toEqual({ ok: false, error: 'Start rejected' })
+    expect(manager.list()).toEqual([])
+    expect(await store.load('main-session')).toEqual([])
+    expect(host.remove).toHaveBeenCalledWith(created[0]!.session.paneId)
+    expect(created[0]!.session.close).toHaveBeenCalled()
+  })
+  it.each([false, true])('keeps a failed refork closed with its original error (cleanup save fails: %s)', async (saveFails) => {
+    const { manager, factory, created, store, host } = await setup()
+    await manager.act({ action: 'open', text: 'Question' })
+    const id = manager.list()[0]!.id, create = factory.getMockImplementation()!
+    factory.mockImplementationOnce(async (provider, spec) => {
+      const session = await create(provider, spec)
+      created.at(-1)!.set({ status: 'error', error: 'Refork rejected' })
+      return session
+    })
+    if (saveFails) vi.spyOn(store, 'save').mockRejectedValue(new Error('Disk full'))
+    expect(await manager.act({ action: 'refork', asideId: id })).toEqual({ ok: false, error: 'Refork rejected' })
+    expect(manager.list()[0]).toMatchObject({ status: 'closed', lastError: 'Refork rejected' })
+    expect(created[1]!.session.close).toHaveBeenCalled()
+    expect(host.remove).toHaveBeenCalledWith(created[1]!.session.paneId)
+    expect(host.changed).toHaveBeenLastCalledWith(manager.list(), undefined)
+    if (saveFails) expect(host.log).toHaveBeenCalledWith(expect.objectContaining({ message: 'Disk full' }))
+    else expect((await store.load('main-session'))[0]).toMatchObject({ status: 'closed', lastError: 'Refork rejected' })
+  })
+  it('preserves the start failure when open rollback cannot save', async () => {
+    const { manager, factory, store, host } = await setup()
+    factory.mockRejectedValueOnce(new Error('Provider unavailable'))
+    vi.spyOn(store, 'save').mockResolvedValueOnce().mockRejectedValue(new Error('Disk full'))
+    expect(await manager.act({ action: 'open', text: 'Question' })).toEqual({ ok: false, error: 'Provider unavailable' })
+    expect(manager.list()).toEqual([])
+    expect(host.changed).toHaveBeenLastCalledWith([], undefined)
+    expect(host.log).toHaveBeenCalledWith(expect.objectContaining({ message: 'Disk full' }))
+  })
+  it('reforks a closed Cursor aside with a fresh brief, separator and title', async () => {
+    const { manager, created, factory, main } = await setup('cursor')
+    await manager.act({ action: 'open', text: 'Why?\nOriginal details' })
+    const record = manager.list()[0]!
+    await manager.act({ action: 'close', asideId: record.id })
+    expect((await manager.act({ action: 'refork', asideId: record.id })).ok).toBe(true)
+    expect(factory.mock.calls.at(-1)?.[1]).toMatchObject({ resume: undefined, fork: undefined })
+    expect(created.at(-1)!.session.send).toHaveBeenCalledWith(`${asideBrief(main.session.snapshot().items, record.mode)}\n---\n${record.title}`, undefined)
+    expect(manager.list()[0]).toMatchObject({ status: 'open' })
+  })
+  it('records restore failures and publishes restored running tabs even if saving fails', async () => {
+    const { manager, store, main, spec, host, factory, created } = await setup()
+    await manager.act({ action: 'open', text: 'Works' })
+    await manager.act({ action: 'open', text: 'Fails' })
+    manager.stop()
+    const create = factory.getMockImplementation()!
+    factory.mockImplementationOnce(create).mockRejectedValueOnce(new Error('Resume rejected'))
+    vi.spyOn(store, 'save').mockRejectedValue(new Error('Disk full'))
+    const restored = new ChatAsides(main.session, spec, host, store, factory)
+    cleanups.push(async () => restored.stop())
+    await expect(restored.sync()).rejects.toThrow('Disk full')
+    expect(restored.list()).toMatchObject([{ status: 'open' }, { status: 'closed', lastError: 'Resume rejected' }])
+    expect(host.changed).toHaveBeenLastCalledWith(restored.list(), undefined)
+    expect(created.at(-1)!.session.close).not.toHaveBeenCalled()
+  })
+  it('publishes a close even when saving fails', async () => {
+    const { manager, store, created, host } = await setup()
+    await manager.act({ action: 'open', text: 'Question' })
+    vi.spyOn(store, 'save').mockRejectedValue(new Error('Disk full'))
+    expect(await manager.act({ action: 'close', asideId: manager.list()[0]!.id })).toEqual({ ok: false, error: 'Disk full' })
+    expect(host.changed).toHaveBeenLastCalledWith(manager.list(), undefined)
+    expect(manager.list()[0]?.status).toBe('closed')
+    expect(created[0]!.session.close).toHaveBeenCalled()
+  })
+  it('records session-id save failures without losing the live tab', async () => {
+    const { manager, created, store, host } = await setup()
+    await manager.act({ action: 'open', text: 'Question' })
+    vi.spyOn(store, 'save').mockRejectedValue(new Error('Session id could not be saved'))
+    created[0]!.set({ sessionId: 'updated-id' })
+    await manager.sync()
+    expect(manager.list()[0]).toMatchObject({ sessionId: 'updated-id', lastError: 'Session id could not be saved' })
+    expect(host.changed).toHaveBeenLastCalledWith(manager.list(), undefined)
+    expect(host.log).toHaveBeenCalledWith(expect.objectContaining({ message: 'Session id could not be saved' }))
+  })
+  it('defers and coalesces provider restarts until idle, then resumes', async () => {
+    const { manager, created, factory } = await setup('cursor')
+    await manager.act({ action: 'open', text: 'Question' })
+    const record = manager.list()[0]!, child = created[0]!
+    child.setBusy(true)
+    child.restart(); child.restart()
+    await manager.sync()
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(child.session.interrupt).not.toHaveBeenCalled()
+    child.setBusy(false); child.set({ status: 'idle' })
+    await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2))
+    await manager.sync()
+    expect(factory.mock.calls.at(-1)?.[1]).toMatchObject({ resume: record.sessionId })
+    expect(created[1]!.session.send).not.toHaveBeenCalled()
+    child.restart()
+    await manager.sync()
+    expect(factory).toHaveBeenCalledTimes(2)
+  })
+  it('records a provider restart failure on the closed record', async () => {
+    const { manager, created, factory } = await setup('cursor')
+    await manager.act({ action: 'open', text: 'Question' })
+    factory.mockRejectedValueOnce(new Error('Credentials expired'))
+    created[0]!.restart()
+    await vi.waitFor(() => expect(manager.list()[0]?.status).toBe('closed'))
+    await manager.sync()
+    expect(manager.list()[0]?.lastError).toBe('Credentials expired')
+  })
+  it('rechecks idle status after waiting behind another lifecycle action', async () => {
+    const { manager, created, factory } = await setup('cursor')
+    await manager.act({ action: 'open', text: 'First' })
+    const child = created[0]!, create = factory.getMockImplementation()!
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    factory.mockImplementationOnce(async (provider, spec) => { await gate; return create(provider, spec) })
+    const opening = manager.act({ action: 'open', text: 'Second' })
+    await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2))
+    child.restart()
+    await Promise.resolve()
+    child.setBusy(true)
+    release()
+    await opening
+    await manager.sync()
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(child.session.interrupt).not.toHaveBeenCalled()
+    child.setBusy(false); child.set({ status: 'idle' })
+    await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(3))
+    await manager.sync()
+    expect(factory.mock.calls.at(-1)?.[1].resume).toBe(child.session.snapshot().session.sessionId)
+  })
+  it.each(['start', 'interrupt'] as const)('bounds a hung %s and releases the serial action chain', async (operation) => {
+    const { manager, created, factory } = await setup()
+    await manager.act({ action: 'open', text: 'Question' })
+    const id = manager.list()[0]!.id
+    if (operation === 'interrupt') vi.mocked(created[0]!.session.interrupt).mockReturnValueOnce(new Promise(() => {}))
+    else {
+      const create = factory.getMockImplementation()!
+      factory.mockImplementationOnce(async (provider, spec) => {
+        const session = await create(provider, spec)
+        vi.mocked(session.start).mockReturnValueOnce(new Promise(() => {}))
+        return session
+      })
+    }
+    vi.useFakeTimers()
+    const action = manager.act({ action: operation === 'start' ? 'refork' : 'close', asideId: id })
+    // Real storage promises must settle before advancing the provider deadline.
+    await vi.waitFor(() => {
+      expect(vi.mocked(created.at(-1)!.session[operation])).toHaveBeenCalled()
+      if (operation === 'start') expect(created).toHaveLength(2)
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+    })
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(await action).toEqual({ ok: false, error: `Aside ${operation} timed out after 60 seconds` })
+    expect(manager.list()[0]).toMatchObject({ status: 'closed', lastError: `Aside ${operation} timed out after 60 seconds` })
+    expect(created.at(-1)!.session.close).toHaveBeenCalled()
+    expect((await manager.act({ action: 'open', text: 'Next action' })).ok).toBe(true)
   })
 })
 

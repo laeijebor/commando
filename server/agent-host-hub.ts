@@ -251,6 +251,7 @@ export class AgentHostHub {
           paneId,
           ...(targetId ? { targetId } : {}),
           ...(previous?.state.asides ? { asides: previous.state.asides } : {}),
+          ...(previous?.state.asidesError ? { asidesError: previous.state.asidesError } : {}),
           session: message.session,
           items: mergeChatItems([], items),
           hostConnected: true,
@@ -342,8 +343,8 @@ export class AgentHostHub {
       case 'asides': {
         const entry = this.owned(socket, message.paneId)
         if (!entry) return
-        entry.state = { ...entry.state, asides: message.asides }
-        if (entry.visible) this.dependencies.broadcast({ type: 'chat_asides', paneId: message.paneId, asides: message.asides })
+        entry.state = { ...entry.state, asides: message.asides, asidesError: message.error }
+        if (entry.visible) this.dependencies.broadcast({ type: 'chat_asides', paneId: message.paneId, asides: message.asides, ...(message.error ? { error: message.error } : {}) })
         return
       }
       case 'aside_result': {
@@ -457,7 +458,7 @@ export class AgentHostHub {
     const socket = entry.socket
     const requestId = randomUUID()
     return new Promise((resolve) => {
-      const timer = setTimeout(() => this.finish(this.asideRequests, requestId, { ok: false, error: 'The aside operation timed out' }), 120_000)
+      const timer = setTimeout(() => this.finish(this.asideRequests, requestId, { ok: false, error: 'The aside operation timed out and may still be in progress' }), 120_000)
       this.asideRequests.set(requestId, { paneId, socket, timer, resolve })
       if (!this.sendTo(socket, { type: 'aside', paneId, requestId, action })) {
         this.finish(this.asideRequests, requestId, { ok: false, error: 'No agent host is connected for this pane' })

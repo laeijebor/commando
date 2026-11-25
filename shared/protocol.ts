@@ -879,7 +879,7 @@ export type ServerMessage =
   | { type: 'diff_filters'; filters: DiffFilters }
   /** Answers one client's `chat_mcp`. */
   | ({ type: 'chat_aside_result'; paneId: string; requestId: string } & ChatAsideResult)
-  | { type: 'chat_asides'; paneId: string; asides: ChatAsideRecord[] }
+  | { type: 'chat_asides'; paneId: string; asides: ChatAsideRecord[]; error?: string }
   | ({ type: 'chat_mcp_result'; paneId: string; requestId: string } & ChatMcpResult)
   | { type: 'error'; code: string; message: string; requestId?: string }
 

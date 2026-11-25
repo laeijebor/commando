@@ -17,6 +17,9 @@ describe('aside protocol', () => {
   })
   it('strictly validates records and session metadata', () => {
     expect(parseChatAsideRecords([record])).toEqual([record])
+    expect(parseChatAsideRecords([{ ...record, lastError: 'Provider exited' }])?.[0]?.lastError).toBe('Provider exited')
+    expect(parseChatAsideRecords([{ ...record, lastError: 3 }])).toBeNull()
+    expect(parseChatAsideRecords([{ ...record, lastError: 'x'.repeat(4097) }])).toBeNull()
     for (const change of [{ mode: 'unsafe' }, { createdAt: NaN }, { method: 'copy' }, { forkedFrom: {} }, { sessionId: '' }, { readOnlyEnforced: 'yes' }, { title: 'x'.repeat(61) }, { closedAt: 0 }]) expect(parseChatAsideRecords([{ ...record, ...change }])).toBeNull()
     expect(parseChatAsideRecords([record, record])).toBeNull()
     expect(parseChatSessionInfo(info)?.aside).toEqual(info.aside)
@@ -33,6 +36,8 @@ describe('aside protocol', () => {
     }
     for (const action of [{ action: 'open', text: '' }, { action: 'open', text: 'x', mode: 'wrong' }, { action: 'open', text: 'x', images: [{}] }, { action: 'close', asideId: '../abc' }, { action: 'mode', asideId: record.id }, { action: 'delete', asideId: record.id }]) expect(parseChatAsideAction(action)).toBeNull()
     expect(parseHostMessage({ type: 'asides', paneId: '%4', asides: [record] })).not.toBeNull()
+    expect(parseHostMessage({ type: 'asides', paneId: '%4', asides: [], error: 'EIO' })).toEqual({ type: 'asides', paneId: '%4', asides: [], error: 'EIO' })
+    expect(parseHostMessage({ type: 'asides', paneId: '%4', asides: [], error: 1 })).toBeNull()
     expect(parseHostMessage({ type: 'aside_result', paneId: '%4', requestId: 'r', ok: true, asideId: record.id })).not.toBeNull()
     expect(parseHostMessage({ type: 'aside_result', paneId: '%4', requestId: 'r', ok: 'yes' })).toBeNull()
   })

@@ -79,6 +79,7 @@ export interface ChatAsideRecord {
   status: 'open' | 'closed'
   createdAt: number
   closedAt?: number
+  lastError?: string
 }
 export type ChatAsideInfo = { parentPaneId: string } & Pick<ChatAsideRecord, 'id' | 'title' | 'mode' | 'method' | 'readOnlyEnforced' | 'forkedFrom' | 'createdAt'>
 export type ChatAsideAction =
@@ -630,6 +631,7 @@ export function selectedModelOption(session: Pick<ChatSessionInfo, 'models' | 's
 /** A chat as the daemon relays it to clients: session plus its items in order. */
 export interface ChatState {
   asides?: ChatAsideRecord[]
+  asidesError?: string
   paneId: string
   targetId?: string
   session: ChatSessionInfo
@@ -650,7 +652,7 @@ export interface ChatState {
 
 export type HostToDaemonMessage =
   | ({ type: 'aside_result'; paneId: string; requestId: string } & ChatAsideResult)
-  | { type: 'asides'; paneId: string; asides: ChatAsideRecord[] }
+  | { type: 'asides'; paneId: string; asides: ChatAsideRecord[]; error?: string }
   | { type: 'hello'; hostId: string; version: number; mode: 'pane' | 'shared'; pid: number }
   /** Full state for one session: sent on (re)connect and when a session starts. */
   | { type: 'session_snapshot'; session: ChatSessionInfo; items: ChatItem[] }
@@ -1201,7 +1203,8 @@ export function parseHostMessage(value: unknown): HostToDaemonMessage | null {
     }
     case 'asides': {
       const asides = parseChatAsideRecords(value.asides)
-      return isPaneId(value.paneId) && asides ? { type: 'asides', paneId: value.paneId, asides } : null
+      return isPaneId(value.paneId) && asides && optionalString(value.error, 4096)
+        ? { type: 'asides', paneId: value.paneId, asides, ...(typeof value.error === 'string' ? { error: value.error } : {}) } : null
     }
     case 'hello':
       if (!shortString(value.hostId) || typeof value.version !== 'number' || typeof value.pid !== 'number') return null
@@ -1385,18 +1388,21 @@ export function parseChatAsideRecord(value: unknown): ChatAsideRecord | null {
   if (!isRecord(value)) return null
   const info = parseChatAsideInfo({ ...value, parentPaneId: '%0' })
   if (!info || (value.status !== 'open' && value.status !== 'closed')
+    || !optionalString(value.lastError, 4096)
     || !optionalString(value.sessionId, MAX_ID) || value.sessionId === ''
     || (value.closedAt !== undefined && (typeof value.closedAt !== 'number' || !Number.isFinite(value.closedAt) || value.closedAt < info.createdAt))) return null
   const { parentPaneId: _parent, ...fields } = info
   return { ...fields, status: value.status, ...(typeof value.sessionId === 'string' ? { sessionId: value.sessionId } : {}),
-    ...(typeof value.closedAt === 'number' ? { closedAt: value.closedAt } : {}) }
+    ...(typeof value.closedAt === 'number' ? { closedAt: value.closedAt } : {}),
+    ...(typeof value.lastError === 'string' ? { lastError: value.lastError } : {}) }
 }
 export function parseChatAsideRecords(value: unknown): ChatAsideRecord[] | null {
   if (!Array.isArray(value)) return null
   const records = value.map(parseChatAsideRecord)
   if (records.some((record) => record === null)) return null
   const result = records as ChatAsideRecord[]
-  if (new Set(result.map((record) => record.id)).size !== result.length || result.filter((record) => record.status === 'open').length > 5) return null
+  // Crashed asides keep open records; the host caps live sessions, not saved tabs.
+  if (new Set(result.map((record) => record.id)).size !== result.length) return null
   return result
 }
 export function parseChatAsideResult(value: unknown): ChatAsideResult | null {

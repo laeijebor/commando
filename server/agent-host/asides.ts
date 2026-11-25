@@ -11,6 +11,19 @@ import { createChatProviderSession } from './factory.js'
 import type { ChatProviderSession } from './provider.js'
 import type { AgentSessionSpec } from './session.js'
 
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
+const isCorrupt = (error: Error): boolean => error instanceof SyntaxError || error.message === 'Invalid saved aside records'
+const ACTION_DEADLINE_MS = 60_000
+
+async function deadline<T>(operation: Promise<T>, name: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([operation, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Aside ${name} timed out after 60 seconds`)), ACTION_DEADLINE_MS)
+    })])
+  } finally { clearTimeout(timer) }
+}
+
 export class AsideStore {
   constructor(private readonly directory = process.env.COMMANDO_ASIDES_DIR ?? join(homedir(), '.commando', 'asides')) {}
   private path(sessionId: string): string { return join(this.directory, `${encodeURIComponent(sessionId)}.json`) }
@@ -43,7 +56,7 @@ export class AsideStore {
 type AsideHost = {
   add(session: ChatProviderSession): void
   remove(key: string): void
-  changed(asides: ChatAsideRecord[]): void
+  changed(asides: ChatAsideRecord[], error?: string): void
   activity?(): void
   log(error: unknown): void
 }
@@ -79,7 +92,7 @@ export class ChatAsides {
     return result
   }
   sync(): Promise<void> { return this.serial(() => this.loadConversation()) }
-  publish(): void { this.host.changed(this.list()) }
+  publish(): void { this.host.changed(this.list(), this.loadError?.message) }
   stop(): void {
     this.stopped = true
     this.closeSessions()
@@ -94,7 +107,7 @@ export class ChatAsides {
   private async loadConversation(): Promise<void> {
     if (this.stopped) return
     const id = this.main.snapshot().session.sessionId
-    if (id === this.mainId) return
+    if (id === this.mainId && (!this.loadError || isCorrupt(this.loadError))) return
     this.closeSessions()
     this.mainId = id
     this.records = []
@@ -108,6 +121,7 @@ export class ChatAsides {
         this.loggedLoadErrors.add(id)
         this.host.log(this.loadError)
       }
+      this.publish()
       return
     }
     if (this.stopped) return
@@ -120,6 +134,7 @@ export class ChatAsides {
       } catch (error) {
         record.status = 'closed'
         record.closedAt = Date.now()
+        record.lastError = errorMessage(error)
         this.host.log(error)
       }
     }
@@ -128,8 +143,15 @@ export class ChatAsides {
   }
   private async save(): Promise<void> {
     if (this.stopped) return
-    if (this.mainId) await this.store.save(this.mainId, this.records)
-    this.publish()
+    try { if (this.mainId) await this.store.save(this.mainId, this.records) }
+    finally { this.publish() }
+  }
+  private async cleanupSave(record?: ChatAsideRecord): Promise<void> {
+    try { await this.save() }
+    catch (error) {
+      if (record) { record.lastError = errorMessage(error); this.publish() }
+      this.host.log(error)
+    }
   }
   private forkPoint(): ChatForkPoint {
     const info = this.main.snapshot().session
@@ -167,29 +189,47 @@ export class ChatAsides {
     if (this.stopped || main.sessionId !== this.main.snapshot().session.sessionId) { session.close(); throw new Error('The main conversation changed') }
     this.sessions.set(record.id, session)
     const mainId = this.mainId
+    let restartPending = false
+    const checkRestart = () => {
+      if (!restartPending || session.busy || this.sessions.get(record.id) !== session || this.stopped) return
+      restartPending = false
+      void this.actWhen({ action: 'mode', asideId: record.id, mode: record.mode }, () => {
+        if (this.sessions.get(record.id) !== session) return false
+        if (session.busy) { restartPending = true; return false }
+        return true
+      }).then((result) => {
+        if (!result.ok) this.host.log(result.error)
+      })
+    }
     session.on('session', (info) => {
-      if (!info.sessionId || this.sessions.get(record.id) !== session || mainId !== this.mainId || this.stopped) return
+      if (this.sessions.get(record.id) !== session || mainId !== this.mainId || this.stopped) return
+      queueMicrotask(checkRestart)
+      if (!info.sessionId) return
       if (record.sessionId === info.sessionId) return
       record.sessionId = info.sessionId
-      void this.serial(() => this.save())
+      void this.serial(() => this.cleanupSave(record))
     })
     session.on('restart', () => {
-      void this.act({ action: 'mode', asideId: record.id, mode: record.mode }).then((result) => { if (!result.ok) this.host.log(result.error) })
+      restartPending = true
+      queueMicrotask(checkRestart)
     })
     session.on('closed', () => {
       if (this.sessions.get(record.id) !== session) return
       this.sessions.delete(record.id)
       this.host.remove(session.paneId)
       // Keep the record open so its tab can offer Reopen after a crash.
+      record.lastError = session.snapshot().session.error ?? 'The aside session closed unexpectedly'
       this.publish()
+      void this.serial(() => this.cleanupSave())
       this.host.activity?.()
     })
     this.host.add(session)
     try {
-      await session.start()
+      await deadline(session.start(), 'start')
       if (this.stopped || main.sessionId !== this.main.snapshot().session.sessionId) throw new Error('The main conversation changed')
       const state = session.snapshot().session
       if (state.status === 'error' || state.status === 'closed') throw new Error(state.error ?? 'The aside could not start')
+      delete record.lastError
       if (state.sessionId) record.sessionId = state.sessionId
       if (options.text !== undefined || options.fork && record.method === 'brief') {
         const text = options.text ?? record.title
@@ -198,6 +238,7 @@ export class ChatAsides {
         session.send(prompt, options.images)
       }
     } catch (error) {
+      record.lastError = errorMessage(error)
       if (this.sessions.get(record.id) === session) {
         this.sessions.delete(record.id)
         this.host.remove(session.paneId)
@@ -211,19 +252,32 @@ export class ChatAsides {
     if (!session) return
     // Remove ownership before interrupting, so late events cannot resurrect this session.
     this.sessions.delete(record.id)
-    try { await session.interrupt(session.queued.map((message) => message.id)) }
-    catch (error) { this.host.log(error) }
+    let failed = false
+    try { await deadline(session.interrupt(session.queued.map((message) => message.id)), 'interrupt') }
+    catch (error) {
+      failed = true
+      record.status = 'closed'
+      record.closedAt = Date.now()
+      record.lastError = errorMessage(error)
+      throw error
+    }
     finally {
       record.sessionId = session.snapshot().session.sessionId ?? record.sessionId
       this.host.remove(session.paneId)
       session.close()
+      if (failed) await this.cleanupSave()
     }
   }
   act(action: ChatAsideAction): Promise<ChatAsideResult> {
+    return this.actWhen(action)
+  }
+  private actWhen(action: ChatAsideAction, ready?: () => boolean): Promise<ChatAsideResult> {
     return this.serial(async () => {
       try {
         if (this.stopped) throw new Error('The main chat is closed')
         await this.loadConversation()
+        if (ready && !ready()) return { ok: true }
+        if (this.loadError && !isCorrupt(this.loadError)) throw new Error(`Saved asides couldn't be read: ${this.loadError.message}`)
         if (action.action === 'open') {
           if (this.loadError && this.mainId) {
             await this.store.quarantine(this.mainId)
@@ -246,9 +300,9 @@ export class ChatAsides {
             await this.start(record, { ...(record.method === 'fork' ? { fork: point } : {}), text: action.text, images: action.images })
             await this.save()
           } catch (error) {
-            await this.end(record)
+            try { await this.end(record) } catch (cleanupError) { this.host.log(cleanupError) }
             this.records = this.records.filter((entry) => entry !== record)
-            await this.save()
+            await this.cleanupSave()
             throw error
           }
           return { ok: true, asideId: id }
@@ -274,7 +328,11 @@ export class ChatAsides {
             delete record.closedAt
             try {
               await this.start(record, point ? { fork: record.method === 'fork' ? point : undefined, ...(record.method === 'brief' ? { text: record.title } : {}) } : { resume: record.sessionId })
-            } catch (error) { record.status = 'closed'; record.closedAt = Date.now(); await this.save(); throw error }
+            } catch (error) {
+              record.status = 'closed'; record.closedAt = Date.now(); record.lastError = errorMessage(error)
+              await this.cleanupSave()
+              throw error
+            }
           }
         }
         await this.save()
