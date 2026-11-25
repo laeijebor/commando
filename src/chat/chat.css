@@ -320,8 +320,8 @@
 .chat-ui-note:focus { outline: none; border-color: var(--accent); }
 .chat-ui-foot { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
 .chat-ui-invalid { margin: 0 0 8px; font-size: 11px; color: var(--muted); }
-.chat-ui-checklist { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
-.chat-ui-checklist li { display: flex; align-items: flex-start; gap: 8px; padding: 0; }
+.chat-markdown .chat-ui-checklist { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0 !important; list-style: none; font-size: 13px; }
+.chat-markdown .chat-ui-checklist li { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 0; }
 .chat-ui-checklist li > svg { margin-top: 2px; }
 .chat-ui-checklist li[data-done='true'] > span { color: var(--muted); }
 .chat-ui-table { margin: 0; }
