@@ -2310,6 +2310,8 @@ const paneProps = {
   gitApi: {
     summary: vi.fn().mockResolvedValue({ isRepo: false }),
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
+    fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
+    blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
     search: vi.fn().mockResolvedValue({ query: '', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
     repo: vi.fn().mockResolvedValue({ isRepo: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: false }),
