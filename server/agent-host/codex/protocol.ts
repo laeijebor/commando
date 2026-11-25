@@ -23,6 +23,7 @@ export interface ClientMethods {
   initialize: { clientInfo: { name: string; title: string; version: string }; capabilities: { experimentalApi: boolean; requestAttestation: boolean } }
   'model/list': { cursor?: string; limit?: number }
   'thread/start': ThreadSettings
+  'thread/fork': ThreadSettings & { threadId: string; lastTurnId?: string; developerInstructions?: string }
   'thread/resume': ThreadSettings & { threadId: string }
   'thread/read': { threadId: string; includeTurns: boolean }
   'thread/turns/list': { threadId: string; cursor?: string; limit: number; sortDirection: 'asc' | 'desc'; itemsView: 'full' }

@@ -1,4 +1,4 @@
-import type { ChatState } from '../shared/agent-chat'
+import { parseAsideKey, type ChatState } from '../shared/agent-chat'
 import { COMMANDER_NO_REPO, commanderPaneFilter, commanderRepoKey, type CommanderRelay, type TurnBrief } from '../shared/commander'
 import { sessionRepo } from '../shared/session-repositories'
 import type { AgentStatus, SessionBrief, TmuxPane, TmuxSession } from '../shared/protocol'
@@ -49,7 +49,7 @@ export function commanderInbox(input: CommanderInboxInput): CommanderInbox {
   }
   const watched = commanderPaneFilter(input.repoFilter, input.snapshot?.sessions ?? [], input.snapshot?.panes ?? [])
   for (const pane of input.snapshot?.panes ?? []) {
-    if (pane.id === input.commanderPaneId || !watched(pane)) continue
+    if (parseAsideKey(pane.id) || pane.id === input.commanderPaneId || !watched(pane)) continue
     const suppliedChat = input.chats[pane.id]
     const chat = suppliedChat && (!suppliedChat.targetId || suppliedChat.targetId === pane.targetId) ? suppliedChat : undefined
     const suppliedStatus = input.agentStatuses[pane.id]

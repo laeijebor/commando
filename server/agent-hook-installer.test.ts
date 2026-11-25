@@ -2788,3 +2788,55 @@ describe('generated session title CLI', () => {
     } finally { log.mockRestore() }
   })
 })
+
+describe('aside hook isolation', () => {
+  it('makes generated Claude, Codex and Muse bridges ignore a pane when COMMANDO_ASIDE is set', async () => {
+    const home = await temporaryHome()
+    await mkdir(join(home, '.config', 'muse'), { recursive: true })
+    const paths = await new AgentHookInstaller({ home }).install()
+    const payload = JSON.stringify({ type: 'agent-turn-complete', hook_event_name: 'SessionStart', session_id: 'aside-session' })
+    for (const path of [paths.claudeBridgePath, paths.codexBridgePath, paths.museBridgePath]) {
+      const result = await new Promise<{ code: number | null; out: string; err: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [path, payload], { env: { ...process.env, TMUX_PANE: '%42', COMMANDO_ASIDE: 'abcd1234', COMMANDO_PORT: '1' }, stdio: 'pipe' })
+        let out = ''; let err = ''
+        child.stdout.on('data', (data) => { out += String(data) })
+        child.stderr.on('data', (data) => { err += String(data) })
+        child.on('error', reject)
+        child.on('close', (code) => resolve({ code, out, err }))
+        child.stdin.end(payload)
+      })
+      expect(result).toEqual({ code: 0, out: '', err: '' })
+    }
+    const muse = await readFile(paths.museBridgePath, 'utf8')
+    expect(muse.indexOf('COMMANDO_ASIDE=')).toBeLessThan(muse.indexOf('const pane = words.find'))
+    expect(muse).toContain('if (inherited.aside) return')
+  })
+  it('refuses pane commands for an aside even if it inherited TMUX_PANE', async () => {
+    const cli = await loadChatCli()
+    const fetchRequest = vi.fn()
+    await expect(cli.chatRequest({ TMUX_PANE: '%42', COMMANDO_ASIDE: 'abcd1234' }, fetchRequest, async () => 'token')).rejects.toThrow('Asides have no pane integration')
+    expect(fetchRequest).not.toHaveBeenCalled()
+  })
+})
+
+describe('Muse inherited aside marker', () => {
+  it('stops at an ancestor aside marker before adopting an inherited pane', async () => {
+    const home = await temporaryHome()
+    await mkdir(join(home, '.config', 'muse'), { recursive: true })
+    const paths = await new AgentHookInstaller({ home }).install()
+    const bin = join(home, 'bin')
+    await mkdir(bin)
+    await writeFile(join(bin, 'ps'), '#!/bin/sh\necho COMMANDO_ASIDE=abcd1234 TMUX_PANE=%42\n', { mode: 0o700 })
+    const result = await new Promise<{ code: number | null; out: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [paths.museBridgePath], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMUX_PANE: '', COMMANDO_ASIDE: '', COMMANDO_PORT: '1' }, stdio: ['pipe', 'pipe', 'inherit'],
+      })
+      let out = ''
+      child.stdout.on('data', (data) => { out += String(data) })
+      child.on('error', reject)
+      child.on('close', (code) => resolve({ code, out }))
+      child.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'aside-session' }))
+    })
+    expect(result).toEqual({ code: 0, out: '' })
+  })
+})

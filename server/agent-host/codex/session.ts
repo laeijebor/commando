@@ -1,3 +1,5 @@
+import { asideEnv, asideInstructions } from '../aside-brief.js'
+import { AsideTimeline, countTimelineMessages } from '../aside-timeline.js'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_ITEMS,
@@ -133,6 +135,8 @@ export class CodexChatSession implements ChatProviderSession {
   private readonly fastTiers = new Map<string, string>()
   private info: ChatSessionInfo
   private startPromise?: Promise<void>
+  private lastCompletedTurn?: string
+  private readonly asideTimeline: AsideTimeline
   private activeTurn?: string
   private readonly endedTurns = new Set<string>()
   private sending = 0
@@ -148,14 +152,16 @@ export class CodexChatSession implements ChatProviderSession {
   private interrupting = false
 
   constructor(private readonly spec: AgentSessionSpec, client?: CodexTransport, executable = 'codex') {
+    this.asideTimeline = new AsideTimeline(spec.aside)
     codexPermissions(spec.permissionMode, spec.cwd)
-    this.client = client ?? new CodexRpcClient({ cwd: spec.cwd, env: { ...spec.env, ...(spec.resumeCommand ? { COMMANDO_CHAT_RESUME: spec.resumeCommand } : {}) }, executable, log: spec.log })
+    this.client = client ?? new CodexRpcClient({ cwd: spec.cwd, env: { ...(spec.aside ? asideEnv(spec.env, spec.aside.id) : spec.env), ...(!spec.aside && spec.resumeCommand ? { COMMANDO_CHAT_RESUME: spec.resumeCommand } : {}) }, executable, log: spec.log })
     this.mapper = new CodexItemMapper(Date.now, (path) => {
       const image = spec.images?.stagedImage(path)
       return image ? { id: image.id } : undefined
     })
     this.files = new WorkspaceFileIndex(spec.cwd)
     this.info = {
+      ...(spec.aside ? { aside: spec.aside } : {}),
       paneId: spec.paneId,
       provider: 'codex',
       cwd: spec.cwd,
@@ -198,12 +204,14 @@ export class CodexChatSession implements ChatProviderSession {
   get busy(): boolean { return Boolean(this.activeTurn || this.sending || this.pending.size || this.queue.length || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
-  private emitItems(items: ChatItem[]): void { if (items.length) this.listeners.items.forEach((listener) => listener(items)) }
+  private emitItems(items: ChatItem[]): void { items = this.asideTimeline.updates(items); if (items.length) this.listeners.items.forEach((listener) => listener(items)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
-  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
+  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.asideTimeline.snapshot(this.mapper.list()) } }
   setResumeCommand(command: string): void { this.tui.env.COMMANDO_CHAT_RESUME = command; if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
+  forkPoint() { return this.info.sessionId && this.lastCompletedTurn ? { sessionId: this.info.sessionId, at: this.lastCompletedTurn } : null }
   start(): Promise<void> { return this.startPromise ??= this.initialize() }
   private async initialize(): Promise<void> {
+    this.emitItems([])
     try {
       await this.client.start()
       void this.readPlanUsage()
@@ -222,9 +230,9 @@ export class CodexChatSession implements ChatProviderSession {
         if (cursor) cursors.add(cursor)
       } while (cursor)
       this.update({ models })
-      const { sandbox, approvalPolicy } = codexPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
-      const settings = { cwd: this.spec.cwd, sandbox, approvalPolicy, approvalsReviewer: 'user' as const, ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}) }
-      const response = record(await (this.spec.resume ? this.client.request('thread/resume', { threadId: this.spec.resume, ...settings }) : this.client.request('thread/start', settings)))
+      const { sandbox, approvalPolicy } = codexPermissions(this.spec.readOnly ? 'plan' : this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
+      const settings = { cwd: this.spec.cwd, sandbox, approvalPolicy, approvalsReviewer: 'user' as const, ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}), ...(this.spec.aside ? { developerInstructions: asideInstructions(this.spec.aside.mode) } : {}) }
+      const response = record(await (this.spec.fork ? this.client.request('thread/fork', { threadId: this.spec.fork.sessionId, ...(this.spec.fork.at ? { lastTurnId: this.spec.fork.at } : {}), ...settings }) : this.spec.resume ? this.client.request('thread/resume', { threadId: this.spec.resume, ...settings }) : this.client.request('thread/start', settings)))
       const thread = parseThread(response.thread)
       if (this.closing) return
       const runningModel = this.info.selectedModel ?? string(response.model)
@@ -234,7 +242,7 @@ export class CodexChatSession implements ChatProviderSession {
         // thread reports the tier of its last turn, which an unsent fast-off pick (no --fast) overrides.
         ...(!this.spec.resume && runningModel && response.serviceTier && response.serviceTier === this.fastTiers.get(runningModel) ? { fast: true } : {}),
         title: thread.name || thread.preview || undefined })
-      if (this.spec.resume) {
+      if (this.spec.resume || this.spec.fork) {
         if (thread.historyMode === 'paginated') {
           let cursor: string | undefined
           const seen = new Set<string>()
@@ -258,11 +266,12 @@ export class CodexChatSession implements ChatProviderSession {
             if (cursor) seen.add(cursor)
           } while (cursor && itemCount < MAX_CHAT_ITEMS && !this.closing)
           if (this.closing) return
-          this.emitItems(history.reverse().flatMap((turn) => this.mapper.replay(turn)))
+          const ordered = history.reverse()
+          this.replay(ordered)
         } else {
-          const read = record(await this.client.request('thread/read', { threadId: thread.id, includeTurns: true }))
-          const history = parseThread(read.thread)
-          this.emitItems(history.turns.flatMap((turn) => this.mapper.replay(turn)))
+          // Fork/resume can return inline turns; older servers require a separate read.
+          const history = thread.turns.length ? thread : parseThread(record(await this.client.request('thread/read', { threadId: thread.id, includeTurns: true })).thread)
+          this.replay(history.turns)
           if (history.name) this.update({ title: history.name })
         }
       }
@@ -276,6 +285,14 @@ export class CodexChatSession implements ChatProviderSession {
       if (!this.closing) { this.emitItems(this.mapper.notice('error', `Couldn't start Codex: ${errorText(error)}`)); this.update({ status: 'error', error: errorText(error) }) }
       this.close()
     }
+  }
+  private replay(history: CodexTurn[]): void {
+    this.lastCompletedTurn = [...history].reverse().find((turn) => turn.status === 'completed')?.id
+    const visible = this.asideTimeline.cut(history, (turn) => turn.id, (hidden) => {
+      const counter = new CodexItemMapper()
+      return countTimelineMessages(hidden.flatMap((turn) => counter.replay(turn)))
+    })
+    this.emitItems(visible.flatMap((turn) => this.mapper.replay(turn)))
   }
   send(text: string, images: ChatImageRef[] = [], options: ChatSendOptions = {}): void {
     const trimmed = text.trim()
@@ -328,7 +345,7 @@ export class CodexChatSession implements ChatProviderSession {
     }).finally(() => { this.sending--; this.switchReady(); this.flushQueue() })
   }
   private async startTurn(threadId: string, input: UserInput[]): Promise<void> {
-    const { sandboxPolicy, approvalPolicy } = codexPermissions(this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
+    const { sandboxPolicy, approvalPolicy } = codexPermissions(this.spec.readOnly ? 'plan' : this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
     const model = this.info.selectedModel
     const effort = this.info.effort ?? null
     this.update({ status: 'running' })
@@ -476,6 +493,7 @@ export class CodexChatSession implements ChatProviderSession {
     if (message.method === 'serverRequest/resolved') this.update({ status: this.pending.size ? 'waiting' : this.activeTurn ? 'running' : 'idle' })
     if (message.method === 'turn/completed') {
       const turnId = string(record(params.turn).id)
+      if (turnId && record(params.turn).status === 'completed') this.lastCompletedTurn = turnId
       if (turnId) {
         this.endedTurns.add(turnId)
         if (this.endedTurns.size > 100) this.endedTurns.delete(this.endedTurns.values().next().value!)

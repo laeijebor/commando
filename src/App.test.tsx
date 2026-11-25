@@ -1258,7 +1258,7 @@ describe('HUD tabs', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Back to PR summary' })).not.toBeInTheDocument()
       expect(within(panel).queryByRole('button', { name: 'Jump to pane' })).not.toBeInTheDocument()
-      expect(within(panel).getByText('Structural diff')).toBeVisible()
+      expect(within(panel).getByText('Diff', { selector: '.git-diff-heading > span' })).toBeVisible()
       await waitFor(() => expect(fetch).toHaveBeenCalledWith(`/api/git/summary?paneId=%2513&target=${pr.baseRefOid}&head=${pr.headRefOid}&baseFallbackRepo=acme%2Fwidgets&baseFallbackBranch=main`, expect.any(Object)))
       expect(fetch).toHaveBeenCalledWith('/api/web-panes/pr%3Aacme%3Awidgets%3A12/active-tab', expect.objectContaining({ body: JSON.stringify({ anchorPaneId: adjacentPane.id }) }))
       // Return to the HUD and quick look explicitly selects Description on the mounted view.
@@ -1280,7 +1280,7 @@ describe('HUD tabs', () => {
       const panel = document.querySelector('[id="panel-tab-panel:%21:pr:acme:widgets:12"]') as HTMLElement
       await waitFor(() => expect(within(panel).getByRole('tab', { name: new RegExp(subTab) })).toHaveAttribute('aria-selected', 'true'))
       if (subTab === 'Diff') {
-        expect(within(panel).getByText('Structural diff')).toBeVisible()
+        expect(within(panel).getByText('Diff', { selector: '.git-diff-heading > span' })).toBeVisible()
         await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => {
           const url = new URL(String(input), 'http://localhost')
           return url.pathname === '/api/git/summary' && url.searchParams.get('paneId') === remotePane.id
@@ -2331,6 +2331,8 @@ const paneProps = {
   gitApi: {
     summary: vi.fn().mockResolvedValue({ isRepo: false }),
     fileDiff: vi.fn().mockResolvedValue({ file: '', diff: '' }),
+    fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
+    blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
     search: vi.fn().mockResolvedValue({ query: '', matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false }),
     repo: vi.fn().mockResolvedValue({ isRepo: false }),
     branches: vi.fn().mockResolvedValue({ isRepo: false }),
@@ -3425,4 +3427,120 @@ describe('remote host workspace', () => {
     expect(document.querySelector('.host-connection-banner')).toBeNull()
     expect(document.getElementById('workspace-main')).not.toHaveAttribute('data-host-connection')
   })
+})
+
+describe('chat asides', () => {
+  const record = { id: 'abcdefgh', title: 'Investigate flaky test', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main-session' }, createdAt: Date.now(), status: 'open' as const }
+  const asidePaneId = `${pane.id}~${record.id}`
+  const mainChat = () => ({ paneId: pane.id, hostConnected: true, items: [], session: { paneId: pane.id, sessionId: 'main-session', provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 9 } })
+  const asideChat = () => ({ ...mainChat(), paneId: asidePaneId, session: { ...mainChat().session, paneId: asidePaneId, sessionId: 'aside-session', aside: { ...record, parentPaneId: pane.id } } })
+  const input = () => within(document.querySelector<HTMLElement>(`[data-pane-id="${pane.id}"]`)!).getByRole('textbox', { name: /^Message/ })
+
+  it('routes Restart to update from an aside to its parent pane', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [record] }, { ...asideChat(), updateAvailable: true }] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restart to update' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_restart', paneId: pane.id }))
+    expect(appMocks.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_restart', paneId: asidePaneId }))
+  })
+
+  it('applies and clears saved-aside read errors from daemon messages', async () => {
+    await renderAppWithSnapshot()
+    act(() => {
+      daemonMessage?.({ type: 'chat_state', chat: mainChat() })
+      daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [], error: 'EIO' })
+    })
+    expect(screen.getByText("Saved asides couldn't be read: EIO")).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [] }))
+    expect(screen.queryByText("Saved asides couldn't be read: EIO")).toBeNull()
+  })
+
+  it('says a timed-out aside action may still be in progress', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_state', chat: mainChat() }))
+    vi.useFakeTimers()
+    try {
+      fireEvent.change(input(), { target: { value: '/aside Question' } })
+      fireEvent.keyDown(input(), { key: 'Enter' })
+      await act(async () => { await vi.advanceTimersByTimeAsync(125_000) })
+      expect(screen.getByText('The aside operation timed out and may still be in progress')).toBeInTheDocument()
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each(['slash', 'shortcut'] as const)('sends chat_aside from %s and resolves success into a separate chat', async (entry) => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_state', chat: mainChat() }))
+    expect(screen.queryByRole('tablist', { name: 'Chat threads' })).toBeNull()
+    fireEvent.change(input(), { target: { value: entry === 'slash' ? '/aside Investigate flaky test' : 'Investigate flaky test' } })
+    fireEvent.keyDown(input(), { key: 'Enter', ...(entry === 'shortcut' ? { ctrlKey: true, metaKey: true, shiftKey: true } : {}) })
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_aside', paneId: pane.id, action: { action: 'open', text: record.title, mode: 'read-only' } }))
+    const sent = appMocks.send.mock.calls.map(([message]) => message).find((message) => message.type === 'chat_aside')
+    act(() => {
+      daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [record] })
+      daemonMessage?.({ type: 'chat_state', chat: asideChat() })
+      daemonMessage?.({ type: 'chat_aside_result', paneId: pane.id, requestId: sent.requestId, ok: true, asideId: record.id })
+    })
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Investigate flaky test/ })).toHaveAttribute('aria-selected', 'true'))
+    fireEvent.change(input(), { target: { value: 'Aside follow-up' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: asidePaneId, text: 'Aside follow-up' }))
+    // Nothing in the pane tree or the terminal pane DOM uses the aside's identity.
+    expect(document.querySelector(`[data-pane-id="${asidePaneId}"]`)).toBeNull()
+    expect(screen.getByText('Read-only')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Allow edits' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_aside', paneId: pane.id, action: { action: 'mode', asideId: record.id, mode: 'inherit' } }))
+  })
+
+  it('handles aside records in a snapshot and lifecycle refusal without losing the draft', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [record] }, asideChat()] }))
+    expect(screen.getByRole('tab', { name: /Investigate flaky test/ })).toBeInTheDocument()
+    fireEvent.change(input(), { target: { value: '/aside another question' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    const sent = appMocks.send.mock.calls.map(([message]) => message).find((message) => message.type === 'chat_aside')
+    act(() => daemonMessage?.({ type: 'chat_aside_result', paneId: pane.id, requestId: sent.requestId, ok: false, error: 'At most 5 open asides' }))
+    expect(await screen.findByText('At most 5 open asides')).toBeInTheDocument()
+    expect(input()).toHaveValue('/aside another question')
+  })
+
+  it('addresses queue, interrupt, approvals and file searches to the selected thread', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [record] }, { ...asideChat(), session: { ...asideChat().session, status: 'running' } }] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.change(input(), { target: { value: 'Queued follow-up' } })
+    fireEvent.keyDown(input(), { key: 'Enter' })
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_send', paneId: asidePaneId, delivery: 'queue' }))
+    fireEvent.click(within(screen.getByTestId('chat-pane')).getByRole('button', { name: 'Stop' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_interrupt', paneId: asidePaneId }))
+    act(() => daemonMessage?.({ type: 'chat_items', paneId: asidePaneId, items: [{ id: 'approval', requestId: 'r1', kind: 'request', requestKind: 'approval', toolName: 'Bash', title: 'Allow Bash?', turnId: 't', status: 'running', createdAt: 1, updatedAt: 1 }] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_answer', paneId: asidePaneId, chatRequestId: 'r1' }))
+    fireEvent.change(input(), { target: { value: '@foo', selectionStart: 4 } })
+    await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_file_search', paneId: asidePaneId, query: 'foo' })))
+    act(() => daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [{ ...record, status: 'closed' }] }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Main/ })).toHaveAttribute('aria-selected', 'true'))
+    act(() => daemonMessage?.({ type: 'chat_removed', paneId: asidePaneId }))
+    expect(screen.getByText('Closed (1)')).toBeInTheDocument()
+  })
+  it('configures a full-access aside and loads its MCP servers through the pane palette', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    const fullAccess = { ...record, mode: 'inherit' as const }
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [fullAccess] }, { ...asideChat(), session: { ...asideChat().session, aside: { ...fullAccess, parentPaneId: pane.id }, permissionMode: 'default' } }] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ask before edits' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Plan mode/ }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_configure', paneId: asidePaneId, settings: { permissionMode: 'plan' } }))
+    fireEvent.keyDown(input(), { key: 'p', metaKey: true })
+    const menu = await screen.findByRole('dialog', { name: 'Pane palette' })
+    fireEvent.click(within(menu).getByRole('option', { name: /MCP servers/ }))
+    await waitFor(() => expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_mcp', paneId: asidePaneId, request: { action: 'status' } })))
+  })
+
 })

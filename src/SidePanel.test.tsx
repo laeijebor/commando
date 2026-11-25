@@ -358,6 +358,8 @@ describe('narrow tabs drawer', () => {
     const api = {
       summary: vi.fn(async () => summary),
       fileDiff: vi.fn(async () => ({ file: 'a.ts', diff: 'DIFF' })),
+      fileContents: vi.fn().mockResolvedValue({ file: "", old: null, new: null }),
+      blame: vi.fn().mockResolvedValue({ file: "", rev: "worktree", commits: {}, lines: [] }),
       search: vi.fn(async (query: string) => ({ query, matches: [], files: [], totalMatches: 0, matchingFiles: 0, truncated: false })),
       repo: vi.fn(async () => ({ isRepo: false })),
       branches: vi.fn(async () => ({ isRepo: true, branches: ['main'] })),

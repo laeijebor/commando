@@ -266,6 +266,144 @@ describe('AgentResumeService', () => {
     expect(sent).toEqual([])
   })
 
+  describe('agents that go down together while tmux keeps running', () => {
+    const THIRD_TARGET = '33333333-3333-4333-8333-333333333333'
+    const targets = [
+      pane(),
+      pane({ id: '%2', targetId: OTHER_TARGET, processId: 501 }),
+      pane({ id: '%3', targetId: THIRD_TARGET, processId: 502 }),
+    ]
+    const shell = (target: ResumePane) => ({ ...target, command: 'zsh' })
+
+    async function recordAll(): Promise<AgentResumeService> {
+      const resume = service({
+        readProcessTable: vi.fn(async () => targets.map((target) => `  ${target.processId! + 200}   ${target.processId} ${CLAUDE}`).join('\n')),
+      })
+      for (const target of targets) await recordOn(OLD_SERVER, resume, target)
+      return resume
+    }
+
+    function exit(resume: AgentResumeService, ...exited: ResumePane[]): void {
+      for (const target of exited) panes.set(target.targetId, shell(target))
+      resume.reconcile([...panes.values()], OLD_SERVER)
+    }
+
+    it('resumes them, as a restart would', async () => {
+      const resume = await recordAll()
+      exit(resume, ...targets)
+      expect(resumes.get(TARGET)?.state).toBe('queued')
+      await advance(30_000)
+      expect(sent.map((entry) => entry.paneId).sort()).toEqual(['%1', '%2', '%3'])
+    })
+
+    it('brings back the earlier exits when a crash spreads over several discoveries', async () => {
+      const resume = await recordAll()
+      exit(resume, targets[0])
+      expect(resume.get(TARGET)).toBeUndefined()
+      await advance(2_000)
+      exit(resume, targets[1])
+      await advance(2_000)
+      exit(resume, targets[2])
+      await advance(30_000)
+      expect(sent.map((entry) => entry.paneId).sort()).toEqual(['%1', '%2', '%3'])
+    })
+
+    it('treats exits further apart than the crash window as deliberate', async () => {
+      const resume = await recordAll()
+      exit(resume, targets[0])
+      await advance(11_000)
+      exit(resume, targets[1])
+      await advance(11_000)
+      exit(resume, targets[2])
+      await advance(30_000)
+      expect(sent).toEqual([])
+      expect(targets.map((target) => resume.get(target.targetId))).toEqual([undefined, undefined, undefined])
+    })
+
+    it('leaves two agents exiting together to the user', async () => {
+      const resume = await recordAll()
+      exit(resume, targets[0], targets[1])
+      await advance(30_000)
+      expect(sent).toEqual([])
+    })
+
+    it('resumes them when the daemon went down with them and finds them on its first discovery', async () => {
+      await (await recordAll()).flush()
+      const restarted = service()
+      await restarted.load()
+      exit(restarted, ...targets)
+      await advance(30_000)
+      expect(sent).toHaveLength(3)
+    })
+
+    /** Crashes all three and lets their resumes start and report in, so each resume is confirmed. */
+    async function crashAndResume(resume: AgentResumeService): Promise<void> {
+      exit(resume, ...targets)
+      await advance(15_000)
+      expect(sent).toHaveLength(3)
+      for (const target of targets) {
+        panes.set(target.targetId, target)
+        await resume.observeHookStatus(hookStatus({ paneId: target.id }), target, OLD_SERVER)
+      }
+      await advance(30_000)
+      expect(resumes.get(TARGET)?.state).toBe('resumed')
+    }
+
+    it('does not resume them again when they go down soon after their resume', async () => {
+      const resume = await recordAll()
+      await crashAndResume(resume)
+      await advance(60_000)
+      exit(resume, ...targets)
+      await advance(30_000)
+      expect(sent).toHaveLength(3)
+      expect(targets.map((target) => resume.get(target.targetId))).toEqual([undefined, undefined, undefined])
+    })
+
+    it('resumes them again after a later crash, once the grace has passed', async () => {
+      const resume = await recordAll()
+      await crashAndResume(resume)
+      await advance(10 * 60_000)
+      exit(resume, ...targets)
+      await advance(30_000)
+      expect(sent).toHaveLength(6)
+    })
+
+    it('keeps the grace after a resume across a daemon restart', async () => {
+      const resume = await recordAll()
+      await crashAndResume(resume)
+      await resume.flush()
+      const restarted = service()
+      await restarted.load()
+      exit(restarted, ...targets)
+      await advance(30_000)
+      expect(sent).toHaveLength(3)
+    })
+
+    it('does not type over input the user started after the exit', async () => {
+      const typed = new Map<string, number>()
+      const resume = await recordAll()
+      const watching = service({ lastInputAt: (paneId) => typed.get(paneId), readProcessTable: deps.readProcessTable })
+      await resume.flush()
+      await watching.load()
+      exit(watching, targets[0])
+      await advance(1_000)
+      typed.set('%1', now)
+      await advance(1_000)
+      exit(watching, targets[1], targets[2])
+      await advance(30_000)
+      expect(sent.map((entry) => entry.paneId).sort()).toEqual(['%2', '%3'])
+      expect(resumes.get(TARGET)?.state).toBe('failed')
+    })
+
+    it('leaves a pane that runs something new by the time its turn comes', async () => {
+      const resume = await recordAll()
+      exit(resume, ...targets)
+      panes.set(THIRD_TARGET, { ...targets[2], command: 'vim' })
+      await advance(30_000)
+      expect(sent.map((entry) => entry.paneId).sort()).toEqual(['%1', '%2'])
+    })
+  })
+
   it('resumes a pane restored on a new tmux server once its shell is ready', async () => {
     const resume = await recordOn(OLD_SERVER)
     panes.set(TARGET, pane({ id: '%9', command: 'zsh' }))

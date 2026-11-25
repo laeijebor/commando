@@ -49,18 +49,18 @@ export const MUSE_SANDBOX_NETWORK = ['--sandbox-network', 'enabled'] as const
  * and skills; `sandbox: false` runs every session on it without Muse's sandbox, for full access.
  * The sandbox keeps the network open, so agents can run and reach dev servers.
  */
-export function museServeArgs(sandbox: boolean): string[] {
-  return ['serve', '--trust-workspace', ...(sandbox ? MUSE_SANDBOX_NETWORK : ['--disable-sandbox'])]
+export function museServeArgs(sandbox: boolean, readOnly = false): string[] {
+  return ['serve', '--trust-workspace', ...(sandbox ? MUSE_SANDBOX_NETWORK : ['--disable-sandbox']), ...(readOnly ? ['--disable-write', '--disable-shell'] : [])]
 }
 
 /** One owned `muse serve` child, which keeps its sessions on disk so they can be resumed. */
 export class MuseRpcClient extends StdioRpcClient<MuseMethods> {
-  constructor(options: StdioRpcClientOptions & { sandbox?: boolean }) {
-    const { sandbox = true, ...rest } = options
+  constructor(options: StdioRpcClientOptions & { sandbox?: boolean; readOnly?: boolean }) {
+    const { sandbox = true, readOnly = false, ...rest } = options
     super({ killGraceMs: 3000, ...rest }, {
       label: 'Muse',
       executable: 'muse',
-      args: museServeArgs(sandbox),
+      args: museServeArgs(sandbox, readOnly),
       jsonrpc: true,
       initialize: { clientInfo: { name: 'commando', title: 'Commando', version: '1' }, capabilities: {} },
     })

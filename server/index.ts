@@ -148,8 +148,10 @@ import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
+import { ChatReplyResources } from './chat-reply-resources.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
+import { asideSessionIds, isMainChatKey, PersistedAsideSessions } from './chat-main-key.js'
 import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
@@ -1094,6 +1096,7 @@ async function main(): Promise<void> {
   }
   const interactions = new AgentInteractionBroker()
   const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
+  const replyResources = new ChatReplyResources(undefined, (message) => console.warn(`[chat-resources] ${message}`))
   const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
@@ -1132,6 +1135,7 @@ async function main(): Promise<void> {
     }),
     log: (message) => console.log(message),
     handoffs: chatHandoffs,
+    replyResources: (items, cwd) => replyResources.attach(items, cwd),
     replyImages: (items, cwd) => replyImages.attach(items, cwd),
     onHandoffsChange: () => publishChatHandoffs(),
   })
@@ -1206,7 +1210,7 @@ async function main(): Promise<void> {
       sendError(client, 'chat_unavailable', 'No agent host is connected for this pane', message.requestId)
       return
     }
-    if (answersAsk) {
+    if (answersAsk && isMainChatKey(message.paneId)) {
       const brief = await sessionBriefs.answerAsk(message.paneId, answersAsk)
       if (brief) void publishSessionBrief(brief)
     }
@@ -2011,6 +2015,8 @@ async function main(): Promise<void> {
     panePath: (paneId) => paneForId(paneId)?.path,
     paneTargetId: (paneId) => paneForId(paneId)?.targetId,
     screenshots: paneScreenshots,
+    artifacts: redlineArtifacts,
+    openResourceTile: (paneId, url) => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, engine: 'webkit' }, 'owner').pane.id,
     setPaneMark: (targetId, input) => paneMarks.set(targetId, input),
     acknowledgePaneMark: (targetId) => paneMarks.acknowledge(targetId),
     clearPaneMark: (targetId) => paneMarks.remove(targetId),
@@ -2128,6 +2134,7 @@ async function main(): Promise<void> {
       if (targetId) void prs.recordPaneImpacts(targetId, reports).then(() => prs.listPanePullRequests(targetId)).catch((error: unknown) => console.error('[commando] failed to record impacted PRs', error))
     },
     interactions,
+    chatAsideSession: (paneId, sessionId) => agentHosts.isAsideSession(paneId, sessionId),
     chatOwnsPane: (paneId) => agentHosts.owns(paneId),
     verifyCursorAssociation: verifyCursorHookAssociation,
     cursorForeground: cursorForegroundIsCurrent,
@@ -2460,6 +2467,7 @@ async function main(): Promise<void> {
   })
   const conversationTitles = new ConversationTitles({ briefs: sessionBriefs, index: chatConversations, onChange: publishSessionBrief })
   conversationTitles.start()
+  const persistedAsides = new PersistedAsideSessions()
   const chatConversationsApi = new ChatConversationsApi({
     index: chatConversations,
     resumes: agentResume,
@@ -2469,6 +2477,7 @@ async function main(): Promise<void> {
     serverId: () => snapshotServerId,
     chatSession: (paneId) => agentHosts.states().find((state) => state.paneId === paneId)?.session,
     chatSessions: () => agentHosts.states().map((state) => state.session),
+    asideSessionIds: async () => asideSessionIds(agentHosts.states(), await persistedAsides.sessionIds()),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
     creator: tmuxCreator,
     beforePaneCreated: async (paneId) => {
@@ -2492,7 +2501,7 @@ async function main(): Promise<void> {
     index: chatMessageIndex,
     snapshot: () => snapshot,
     briefs: sessionBriefs,
-    chats: () => agentHosts.states(),
+    chats: () => agentHosts.states().filter((state) => isMainChatKey(state.paneId)),
     agentSessions: () => snapshot.panes.flatMap((pane) => agentStatuses.openConversationStatus(pane.id, pane.command, processStatusForPane(pane).provider) ?? []),
   })
   setTimeout(() => { void chatMessageIndex.triggerSync() }, 6_000).unref()
@@ -2953,6 +2962,17 @@ async function main(): Promise<void> {
         void agentHosts.searchFiles(message.paneId, message.query).then((result) => {
           send(client, { type: 'chat_file_search_result', paneId: message.paneId, requestId: message.requestId, ...result })
         })
+        return
+      }
+      case 'chat_aside': {
+        void (async () => {
+          if (message.action.action === 'open' && message.action.images?.length) {
+            const stored = await Promise.all(message.action.images.map((image) => chatImages.exists(image.id)))
+            if (stored.includes(false)) return send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ok: false, error: 'An attached image is no longer stored; attach it again' })
+          }
+          const result = await agentHosts.aside(message.paneId, message.action)
+          send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ...result })
+        })().catch((error: unknown) => send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ok: false, error: error instanceof Error ? error.message : String(error) }))
         return
       }
       case 'chat_mcp': {

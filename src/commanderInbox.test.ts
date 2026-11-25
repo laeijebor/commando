@@ -163,3 +163,14 @@ describe('keepNeedsYouOrder', () => {
     expect(keepNeedsYouOrder(groups, new Map()).groups.finished).toBe(groups.finished)
   })
 })
+
+it('keeps aside keys out of inbox attention and unread counts even if supplied as panes', () => {
+  const asideId = '%1~abcdefgh'
+  const result = commanderInbox(input({
+    snapshot: { panes: [pane('%1'), pane(asideId)], sessions: [] },
+    chats: { '%1': chat(), [asideId]: chat({ paneId: asideId }) },
+    agentStatuses: { '%1': status('%1'), [asideId]: status(asideId, { status: 'needs_input', settledAt: 999 }) },
+  }))
+  expect(Object.values(result).flat().map((row) => row.paneId)).toEqual(['%1'])
+  expect(result.needs_you).toEqual([])
+})

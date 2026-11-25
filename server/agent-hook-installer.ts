@@ -221,6 +221,7 @@ async function inheritedPaneEnv() {
   let pid = process.ppid
   for (let depth = 0; depth < 4 && pid > 1; depth += 1) {
     const words = await environment(pid)
+    if (words.some((word) => /^COMMANDO_ASIDE=.+/.test(word))) return { aside: true }
     const pane = words.find((word) => /^TMUX_PANE=%\\d+$/.test(word))
     if (pane) {
       const port = words.find((word) => /^COMMANDO_PORT=\\d{1,5}$/.test(word))
@@ -576,6 +577,7 @@ function resumeContext(sessionId, inheritedChat) {
 }
 
 async function main() {
+  if (process.env.COMMANDO_ASIDE) return
   try {
     let raw = ''
     for await (const chunk of process.stdin) {
@@ -596,6 +598,7 @@ async function main() {
       return
     }
     const inherited = PROVIDER === 'muse' && !process.env.TMUX_PANE ? await inheritedPaneEnv() : {}
+    if (inherited.aside) return
     const pane = process.env.TMUX_PANE ?? inherited.pane
     if (!pane || !/^%\\d+$/.test(pane)) return
     const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
@@ -758,6 +761,7 @@ function forwardPreviousNotifier(argument) {
 }
 
 async function main() {
+  if (process.env.COMMANDO_ASIDE) return
   const argument = process.argv[2]
   forwardPreviousNotifier(argument)
   try {
@@ -895,6 +899,7 @@ async function bodyFromArgs() {
 }
 
 try {
+  if (process.env.COMMANDO_ASIDE) throw new Error('Asides have no pane integration')
   const paneId = process.env.TMUX_PANE
   if (!/^%\\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
   const port = Number.parseInt(process.env.COMMANDO_PORT ?? '4310', 10)
@@ -969,6 +974,7 @@ export async function runAgentsCli(args, request, { out = (value) => console.log
   return 0
 }
 export async function agentsRequest(env = process.env, fetchRequest = fetch, read = readFile) {
+  if (env.COMMANDO_ASIDE) throw new Error('Asides have no pane integration')
   const paneId = env.TMUX_PANE
   if (!/^%\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
   const port = Number(env.COMMANDO_PORT ?? '4310')
@@ -1046,6 +1052,7 @@ export async function runChatCli(args, request, { out = (value) => console.log(J
 }
 
 export async function chatRequest(env = process.env, fetchRequest = fetch, read = readFile) {
+  if (env.COMMANDO_ASIDE) throw new Error('Asides have no pane integration')
   const paneId = env.TMUX_PANE
   if (!/^%\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
   const port = Number(env.COMMANDO_PORT ?? '4310')
@@ -1408,6 +1415,7 @@ export async function runSimCommand(args, { request, run, exists, onPath }) {
 }
 
 async function main() {
+  if (process.env.COMMANDO_ASIDE) return
   try {
     const paneId = process.env.TMUX_PANE
     if (!/^%\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
@@ -1457,6 +1465,7 @@ import { readFile } from 'node:fs/promises'
 const tokenPath = ${JSON.stringify(tokenPath)}
 
 try {
+  if (process.env.COMMANDO_ASIDE) throw new Error('Asides have no pane integration')
   const paneId = process.env.TMUX_PANE
   if (!/^%\\d+$/.test(paneId ?? '')) throw new Error('TMUX_PANE must identify the current pane')
   const port = Number.parseInt(process.env.COMMANDO_PORT ?? '4310', 10)
@@ -1843,6 +1852,7 @@ async function report(directory, event, onStarted) {
     onStarted?.()
   }
   try {
+    if (process.env.COMMANDO_ASIDE) return
     const pane = process.env.TMUX_PANE
     if (!pane || !/^%\\d+$/.test(pane)) return
     const token = (await readFile(${JSON.stringify(tokenPath)}, 'utf8')).trim()
@@ -1915,6 +1925,7 @@ function enqueueInteraction(directory, event, client) {
 
 export const CommandoAgentStatusPlugin = async ({ directory, client }) => ({
   'experimental.chat.system.transform': async (input, output) => {
+    if (process.env.COMMANDO_ASIDE) return
     if (!/^%\\d+$/.test(process.env.TMUX_PANE ?? '')) return
     const sessionId = typeof input?.sessionID === 'string' && /^ses_[A-Za-z0-9]{8,80}$/.test(input.sessionID) ? input.sessionID : ''
     const instructions = ${JSON.stringify(instructions)}

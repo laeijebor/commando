@@ -24,6 +24,8 @@ type AgentStatusApiDependencies = {
   /** PRs the agent pushed to, reviewed or commented on, as the hook read them from its commands. */
   onPullRequestsImpacted?: (paneId: string, reports: PrImpactReport[]) => void
   interactions?: AgentInteractionBroker
+  /** Hook events from a chat's aside sessions are not the pane's main agent. */
+  chatAsideSession?: (paneId: string, sessionId: string) => boolean
   /** A chat pane's host answers permission prompts itself (SDK canUseTool), so hooks never hold them. */
   chatOwnsPane?: (paneId: string) => boolean
   now?: () => number
@@ -182,6 +184,12 @@ export class AgentStatusHookApi {
       const processCommand = this.dependencies.paneCommand(targetPaneId) ?? null
 
       const body = await readJson(request)
+      const hookSessionId = body.session_id ?? body.conversation_id ?? body['thread-id']
+      if (typeof hookSessionId === 'string' && this.dependencies.chatOwnsPane?.(targetPaneId)
+        && this.dependencies.chatAsideSession?.(targetPaneId, hookSessionId)) {
+        writeJson(response, 200, { ok: true, changed: false })
+        return true
+      }
       const updatedAt = this.dependencies.now?.() ?? Date.now()
       if (provider === 'cursor' && this.dependencies.chatOwnsPane?.(targetPaneId)) {
         writeJson(response, 200, { ok: true, changed: false })

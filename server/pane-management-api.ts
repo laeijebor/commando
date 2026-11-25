@@ -1,10 +1,15 @@
+import { createHash, randomBytes } from 'node:crypto'
+import { copyFile, mkdir, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { basename, dirname, extname, relative, isAbsolute, join, sep } from 'node:path'
+import { REDLINE_ARTIFACT_TTL_MS, type RedlineArtifactRegistry } from './redline-artifacts.js'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   TmuxPaneActions,
   validateTmuxPaneId,
   validateTmuxPaneTitle,
 } from './tmux-pane-actions.js'
-import { openFolderInFinder, revealInFinder } from './open-folder.js'
+import { openFolderInFinder, revealInFinder, openResource, openResourceInEditor, validResourcePath, type FolderOpenExecutor } from './open-folder.js'
 import type { PaneScreenshotRegistry } from './pane-screenshots.js'
 import { runCommand, validateRunCommand } from './run-command.js'
 import { validatePaneMarkInput, type PaneMarkInput } from './pane-marks.js'
@@ -24,6 +29,14 @@ type PaneManagementDependencies = {
   onPaneMarkChanged?: (change: { type: 'upsert'; mark: PaneMark } | { type: 'remove'; targetId: string }) => void
   openFolder?: (path: string) => Promise<void>
   revealFile?: (path: string) => Promise<void>
+  resourceExecutor?: FolderOpenExecutor
+  platform?: NodeJS.Platform
+  resourceHome?: string
+  resourceTempRoots?: readonly string[]
+  resourceTileRoot?: string
+  resourceNow?: () => number
+  artifacts?: Pick<RedlineArtifactRegistry, 'register' | 'hasDirectory'>
+  openResourceTile?: (paneId: string, url: string) => string
   screenshots?: PaneScreenshotRegistry
   runCommand?: (command: string, cwd: string) => Promise<void>
   beforePaneDeleted?: (paneId: string) => void | Promise<void>
@@ -80,10 +93,15 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return value as Record<string, unknown>
 }
 
-type PaneAction = 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'shell' | 'mark' | 'acknowledge-mark' | 'capture'
+function containsPath(root: string, path: string): boolean {
+  const fromRoot = relative(root, path)
+  return fromRoot === '' || (!isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`))
+}
+
+type PaneAction = 'resource' | 'rename' | 'delete' | 'open' | 'reveal' | 'run' | 'shell' | 'mark' | 'acknowledge-mark' | 'capture'
 
 function paneRoute(pathname: string): { paneId: string; action: PaneAction } | null {
-  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|reveal|run|shell|mark|capture)(?:\/(acknowledge))?$/.exec(pathname)
+  const match = /^\/api\/pane-management\/panes\/([^/]+)\/(rename|delete|open|reveal|run|shell|mark|capture|resource)(?:\/(acknowledge))?$/.exec(pathname)
   if (!match) return null
   try {
     return {
@@ -98,6 +116,8 @@ function paneRoute(pathname: string): { paneId: string; action: PaneAction } | n
 }
 
 export class PaneManagementApi {
+  private lastResourcePruneAt: number | undefined
+  private resourcePruning: Promise<void> | undefined
   private readonly actions: TmuxPaneActions
   private readonly openFolder: (path: string) => Promise<void>
   private readonly runCommand: (command: string, cwd: string) => Promise<void>
@@ -108,6 +128,123 @@ export class PaneManagementApi {
     this.openFolder = dependencies.openFolder ?? openFolderInFinder
     this.revealFile = dependencies.revealFile ?? revealInFinder
     this.runCommand = dependencies.runCommand ?? runCommand
+  }
+
+  private async pruneResourceSnapshots(root: string): Promise<void> {
+    if (this.resourcePruning) return this.resourcePruning
+    const now = (this.dependencies.resourceNow ?? Date.now)()
+    if (this.lastResourcePruneAt !== undefined && now - this.lastResourcePruneAt < 60 * 60 * 1000) return
+    this.lastResourcePruneAt = now
+    const prune = async () => {
+      let entries
+      try { entries = await readdir(root, { withFileTypes: true }) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+        throw error
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !/^[a-f0-9]{16}$/.test(entry.name)) continue
+        const path = join(root, entry.name)
+        try {
+          if ((await stat(path)).mtimeMs >= now - REDLINE_ARTIFACT_TTL_MS) continue
+          if (this.dependencies.artifacts?.hasDirectory(await realpath(path))) continue
+          await rm(path, { recursive: true, force: true })
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+      }
+    }
+    this.resourcePruning = prune()
+    try { await this.resourcePruning } finally { this.resourcePruning = undefined }
+  }
+
+  private async resource(paneId: string, body: Record<string, unknown>) {
+    if (!validResourcePath(body.path)) throw new HttpError(400, 'path must be absolute, at most 4096 bytes, and contain no control characters')
+    if (!['open', 'reveal', 'editor', 'tile'].includes(body.action as string)) throw new HttpError(400, 'Invalid resource action')
+    if (body.line !== undefined && (typeof body.line !== 'number' || !Number.isSafeInteger(body.line) || body.line < 1)) throw new HttpError(400, 'line must be a positive integer')
+    const platform = this.dependencies.platform ?? process.platform
+    if (platform !== 'darwin') throw new HttpError(501, 'Resource actions are only available on macOS')
+    let path: string
+    try { path = await realpath(body.path) } catch { throw new HttpError(404, 'Resource does not exist') }
+    const roots = [this.dependencies.resourceHome ?? homedir(), this.dependencies.panePath(paneId),
+      ...(this.dependencies.resourceTempRoots ?? [tmpdir(), '/private/tmp', '/tmp'])].filter((root): root is string => Boolean(root))
+    const allowed = await Promise.all(roots.map(async (root) => {
+      try {
+        const rel = relative(await realpath(root), path)
+        return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+      } catch { return false }
+    }))
+    if (!allowed.some(Boolean)) throw new HttpError(403, 'Resource is outside the home, pane, and temporary directories')
+    const stats = await stat(path)
+    if (!stats.isFile() && !stats.isDirectory()) throw new HttpError(400, 'Resource must be a file or folder')
+    const execute = this.dependencies.resourceExecutor
+    if (body.action === 'reveal') await revealInFinder(path, execute, platform)
+    if (body.action === 'open') return { ok: true, performed: await openResource(path, execute, platform) }
+    if (body.action === 'editor') {
+      if (!stats.isFile()) throw new HttpError(400, 'Only files can be opened in an editor')
+      await openResourceInEditor(path, body.line as number | undefined, execute, platform)
+    }
+    if (body.action === 'tile') {
+      if (!stats.isFile() || !/\.(?:html?|svg|png|jpe?g|gif|webp|pdf)$/i.test(extname(path))) throw new HttpError(400, 'This resource cannot be opened as a tile')
+      const parent = await realpath(dirname(path))
+      const home = await realpath(this.dependencies.resourceHome ?? homedir()).catch(() => undefined)
+      const broadDirectories = [home, home ? dirname(home) : undefined, '/', '/Users', '/Volumes',
+        tmpdir(), '/tmp', '/private/tmp', ...(this.dependencies.resourceTempRoots ?? [])]
+      const broadRealpaths = await Promise.all(broadDirectories.map(async (directory) =>
+        directory ? realpath(directory).catch(() => undefined) : undefined))
+      if (broadRealpaths.includes(parent)) return { ok: true, performed: await openResource(path, execute, platform) }
+      const root = this.dependencies.resourceTileRoot ?? join(this.dependencies.resourceHome ?? homedir(), '.commando', 'resource-tiles')
+      const statePath = join(this.dependencies.resourceHome ?? homedir(), '.commando')
+      const stateDirectory = await realpath(statePath).catch(() => home ? join(home, '.commando') : statePath)
+      let directory = parent
+      let snapshotDirectory: string | undefined
+      const html = /\.html?$/i.test(path)
+      if (html) {
+        const artifactFolders = new Set(['.redline', '.canvas', '.pr'])
+        while (!artifactFolders.has(basename(directory))) {
+          const ancestor = dirname(directory)
+          if (ancestor === directory) return { ok: true, performed: await openResource(path, execute, platform) }
+          directory = ancestor
+        }
+        directory = await realpath(directory)
+        const paneCwd = this.dependencies.panePath(paneId)
+        const cwd = paneCwd ? await realpath(paneCwd).catch(() => undefined) : undefined
+        if (!cwd || !containsPath(cwd, directory) || containsPath(stateDirectory, directory) || broadRealpaths.includes(directory)) {
+          return { ok: true, performed: await openResource(path, execute, platform) }
+        }
+      }
+      if (!this.dependencies.artifacts || !this.dependencies.openResourceTile) throw new HttpError(503, 'Resource tiles are unavailable')
+      await this.pruneResourceSnapshots(root)
+      if (!html) {
+        const key = createHash('sha256').update(path).digest('hex').slice(0, 16)
+        directory = join(root, key)
+        await mkdir(root, { recursive: true, mode: 0o700 })
+        await mkdir(directory, { recursive: true, mode: 0o700 })
+        snapshotDirectory = join(await realpath(root), key)
+        directory = await realpath(directory)
+        if (directory !== snapshotDirectory) return { ok: true, performed: await openResource(path, execute, platform) }
+        const temporary = join(directory, `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`)
+        try {
+          await copyFile(path, temporary)
+          await rename(temporary, join(directory, basename(path)))
+        } finally { await rm(temporary, { force: true }) }
+      }
+      // Only a per-file directory under the snapshot root may expose any daemon state path.
+      if (containsPath(stateDirectory, directory) && (html || directory !== snapshotDirectory)) {
+        return { ok: true, performed: await openResource(path, execute, platform) }
+      }
+      const { id } = this.dependencies.artifacts.register(directory)
+      const file = html ? relative(directory, path).split(sep).map(encodeURIComponent).join('/') : encodeURIComponent(basename(path))
+      const url = `/redline/artifacts/${id}/${file}`
+      try {
+        const webPaneId = this.dependencies.openResourceTile(paneId, url)
+        return { ok: true, performed: 'tile', webPaneId }
+      } catch (error) {
+        const status = (error as { status?: number }).status
+        if (status && status >= 400 && status <= 599) throw new HttpError(status, error instanceof Error ? error.message : 'Unable to open resource tile')
+        throw error
+      }
+    }
+    return { ok: true, performed: body.action }
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
@@ -144,6 +281,13 @@ export class PaneManagementApi {
         if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed')
         const text = await this.actions.capture(route.paneId)
         writeJson(response, 200, { paneId: route.paneId, text })
+        return true
+      }
+
+      if (route.action === 'resource') {
+        if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
+        const result = await this.resource(route.paneId, await readJson(request))
+        writeJson(response, 200, result)
         return true
       }
 

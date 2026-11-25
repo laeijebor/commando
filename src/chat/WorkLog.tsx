@@ -1,5 +1,9 @@
 // From t3code (MIT, T3 Tools Inc.): apps/web/src/components/chat/WorkLog.tsx.
 import { createContext, use, type ComponentProps, type ReactNode } from "react";
+import { FolderOpen, Pencil } from 'lucide-react';
+import { useHost } from '../HostContext';
+import type { ResourceActionHandler } from '../paneManagementApi';
+import { useResourceActions } from './ResourceChip';
 import { cn } from "./cn";
 
 const GroupedRows = createContext(false);
@@ -139,4 +143,17 @@ export function WorkLogDetails({
       {children}
     </div>
   );
+}
+
+/** Kept outside the disclosure label so an action never toggles its patch. */
+export function WorkLogResourceActions({ path, onAction }: { path: string; onAction?: ResourceActionHandler }) {
+  const { local } = useHost();
+  const { run, notice, busy } = useResourceActions(onAction);
+  if (!local || !path.startsWith('/')) return null;
+  const resource = { ref: path, path, kind: 'file' as const };
+  return <span className="chat-work-resource-actions" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+    <button type="button" disabled={busy} title="Reveal in Finder" aria-label="Reveal in Finder" onClick={() => void run(resource, 'reveal')}><FolderOpen className="size-3.5" /></button>
+    <button type="button" disabled={busy} title="Open in editor" aria-label="Open in editor" onClick={() => void run(resource, 'editor')}><Pencil className="size-3.5" /></button>
+    {notice ? <span role="status" className="text-xs text-destructive">{notice}</span> : null}
+  </span>;
 }
