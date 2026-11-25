@@ -75,8 +75,10 @@ function declarationPatterns(name: string): RegExp[] {
     new RegExp(`^\\s*func\\s+\\([^)]*\\)\\s*(?<name>${name})${end}`, 'u'),
     // Rust: `impl name`, `impl<T> Trait for name`.
     new RegExp(`^\\s*impl${TYPE_ARGUMENTS}\\s+(?:[\\w:]+${TYPE_ARGUMENTS}\\s+for\\s+)?(?<name>${name})${end}`, 'u'),
-    // Methods with a body: `async name<T>(a: A): R {`, or a parameter list continuing on the next line.
-    new RegExp(`^\\s*${MEMBER_MODIFIERS}\\*?#?(?<name>${name})\\??\\s*${TYPE_ARGUMENTS}\\s*\\((?:.*\\)\\s*(?::[^=;{]+)?\\{\\s*|.*\\)\\s*:\\s*[^=;{]+;?\\s*)$`, 'u'),
+    // Methods and signatures: `async name<T>(a: A): R {`, `name(a: A): R`, `name() {`.
+    new RegExp(`^\\s*${MEMBER_MODIFIERS}\\*?#?(?<name>${name})\\??\\s*${TYPE_ARGUMENTS}\\s*\\(.*\\)\\s*(?::.*|\\{\\s*)$`, 'u'),
+    // A modified method whose parameter list continues on the next line: `async name(`.
+    new RegExp(`^\\s*${MEMBER_MODIFIERS.replace(/\*$/u, '+')}\\*?#?(?<name>${name})\\s*${TYPE_ARGUMENTS}\\s*\\(\\s*$`, 'u'),
     // Properties: `name: T`, `name = value`, `readonly name?: T = value`.
     new RegExp(`^\\s*${MEMBER_MODIFIERS}#?(?<name>${name})[?!]?\\s*(?::(?!:)|=(?![=>]))`, 'u'),
   ]
@@ -107,9 +109,11 @@ function enclosingName(lines: readonly string[], index: number): string | undefi
     if (line.trim().length === 0) continue
     const depth = indentation(line)
     if (depth >= limit) continue
-    limit = depth
+    // A closing bracket (`): R {` ending a parameter list) belongs to a header at its own depth.
+    limit = /^\s*[)\]}]/u.test(line) ? depth + 1 : depth
     if (line.length > MAX_MATCHED_LINE_LENGTH) continue
-    for (const pattern of GENERIC_DECLARATIONS.slice(0, 4)) {
+    // Every pattern but the last (properties) can name a function or class.
+    for (const pattern of GENERIC_DECLARATIONS.slice(0, -1)) {
       const name = pattern.exec(line)?.groups?.name
       if (!name || CONTROL_WORDS.has(name)) continue
       const keyword = /^\s*(?:export\s+)?(\w+)/u.exec(line)?.[1]

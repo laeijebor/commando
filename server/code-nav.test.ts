@@ -36,6 +36,21 @@ const UTIL_TS = [
   '',
 ].join('\n')
 
+const STORE_TS = [
+  'export class Store {',
+  '  private async load(id: string): Promise<{ id: string } | null> {',
+  '    return null',
+  '  }',
+  '',
+  '  async fetchAll(',
+  '    ids: string[],',
+  '  ): Promise<void> {',
+  '    await this.load(ids[0])',
+  '  }',
+  '}',
+  '',
+].join('\n')
+
 const TOOL_PY = [
   'def greet(name):',
   '    return "hi " + name',
@@ -166,6 +181,7 @@ describe('CodeNavService (real repository)', () => {
     await writeFile(path.join(root, 'src/app.ts'), APP_TS)
     await writeFile(path.join(root, 'src/util.ts'), UTIL_TS)
     await writeFile(path.join(root, 'tool.py'), TOOL_PY)
+    await writeFile(path.join(root, 'src/store.ts'), STORE_TS)
     await writeFile(path.join(root, 'odd:name.ts'), 'greet(1)\n')
     await writeFile(path.join(root, 'blob.bin'), Buffer.from([0, 1, 2, 3]))
     await symlink('src/app.ts', path.join(root, 'link'))
@@ -202,6 +218,12 @@ describe('CodeNavService (real repository)', () => {
     expect(where(await nav({ kind: 'definition', symbol: 'helper' }))).toEqual(['src/util.ts:1:13'])
     expect(where(await nav({ kind: 'definition', symbol: 'Greeter' }))).toEqual(['src/app.ts:7:13'])
     expect(where(await nav({ kind: 'definition', symbol: 'run', rev: first }))).toEqual(['src/app.ts:8:2', 'tool.py:5:8'])
+  })
+
+  it('finds methods whose return type has braces, and containers with wrapped parameters', async () => {
+    expect(where(await nav({ kind: 'definition', symbol: 'load', file: 'src/store.ts' }))).toEqual(['src/store.ts:2:16'])
+    const callers = await nav({ kind: 'callers', symbol: 'load', file: 'src/store.ts' })
+    expect(callers.locations).toMatchObject([{ file: 'src/store.ts', line: 9, character: 15, container: 'fetchAll' }])
   })
 
   it('suggests References when no declaration is found', async () => {
