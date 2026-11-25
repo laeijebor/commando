@@ -5,6 +5,7 @@ import type { AgentSessionSpec } from '../session.js'
 import { CURSOR_SETTING_SOURCES, CursorChatSession, cursorImageMime, cursorModels, cursorModelSelection, cursorPermissions, isCursorAuthError } from './session.js'
 import type { CursorMcpCli, CursorMcpLoginProcess } from './mcp.js'
 import type { CursorAgent, CursorHistory, CursorRun, CursorSdk } from './sdk.js'
+import { asideBrief, asideInstructions } from '../aside-brief.js'
 
 const models: ModelListItem[] = [
   { id: 'auto', displayName: 'Auto', description: 'Automatic' },
@@ -22,6 +23,49 @@ const liveModels: ModelListItem[] = [
   ] },
 ]
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+describe('Cursor brief aside timeline', () => {
+  const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'brief' as const, readOnlyEnforced: false, forkedFrom: { sessionId: 'main' }, createdAt: 1 }
+  const question = 'Side question\n---\nMore detail'
+  const prompt = `${asideBrief([{ id: 'u', turnId: 't', kind: 'user_message', text: 'Main question', status: 'completed', createdAt: 1, updatedAt: 1 }], aside.mode)}\n---\n${question}`
+
+  it('shows only the question live and after close/reopen while sending and retaining the brief', async () => {
+    const first = harness({ aside })
+    await first.session.start()
+    first.session.send(prompt)
+    await tick()
+    const sent = first.sdk.sends[0].message.text
+    expect(sent).toBe(`${asideInstructions(aside.mode)}\n\n${prompt}`)
+    expect(first.session.snapshot().items).toMatchObject([
+      { kind: 'notice', level: 'info', text: 'Started from a summary of Main' }, { kind: 'user_message', text: question },
+    ])
+    first.sdk.runs[0].finish()
+    await tick()
+    first.session.close()
+
+    const { session, sdk } = harness({ aside, resume: 'agent-123' })
+    sdk.history.mockResolvedValue({ skipped: 0, turns: [
+      { type: 'agentConversationTurn', turn: { userMessage: { text: sent }, steps: [{ type: 'assistantMessage', message: { text: 'Side answer' } }] } },
+      { type: 'agentConversationTurn', turn: { userMessage: { text: 'Follow-up\n---\nKeep this' }, steps: [] } },
+    ] })
+    const emitted = new Map<string, unknown>()
+    session.on('items', (items) => items.forEach((item) => emitted.set(item.id, item)))
+    await session.start()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Started from a summary of Main', question, 'Side answer', 'Follow-up\n---\nKeep this'])
+    expect([...emitted.values()]).toEqual(session.snapshot().items)
+    await expect(sdk.history.mock.results[0].value).resolves.toMatchObject({ turns: [{ turn: { userMessage: { text: sent } } }, {}] })
+    session.close()
+  })
+
+  it('keeps the first user message if resumed history has no brief delimiter', async () => {
+    const { session, sdk } = harness({ aside, resume: 'agent-123' })
+    sdk.history.mockResolvedValue({ skipped: 0, turns: [{ type: 'agentConversationTurn', turn: { userMessage: { text: 'An ordinary question\n---\nKeep this' }, steps: [] } }] })
+    await session.start()
+    expect(session.snapshot().items.at(-1)).toMatchObject({ kind: 'user_message', text: 'An ordinary question\n---\nKeep this' })
+    session.close()
+  })
+})
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void

@@ -1674,3 +1674,111 @@ describe('DeepSeek through Claude Code', () => {
     session.close()
   })
 })
+
+describe('Claude aside forks', () => {
+  const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
+  const inherited = [
+    { type: 'user', uuid: 'main-user', message: { role: 'user', content: 'Main question' }, parent_tool_use_id: null },
+    { type: 'assistant', uuid: 'finished', message: { id: 'main-reply', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Main answer' }] }, parent_tool_use_id: null },
+  ]
+  const own = [
+    { type: 'user', uuid: 'aside-user', message: { role: 'user', content: 'Side question' }, parent_tool_use_id: null },
+    { type: 'assistant', uuid: 'aside-finished', message: { id: 'aside-reply', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Side answer' }] }, parent_tool_use_id: null },
+  ]
+
+  it('starts a fresh fork with one origin notice and only its own live messages', async () => {
+    const { session, fake, items } = started({ aside, fork: aside.forkedFrom }, { messages: async () => [...inherited, ...own], title: async () => undefined })
+    await tick()
+    expect(session.snapshot().items).toMatchObject([{ kind: 'notice', level: 'info', text: 'Forked from Main · 2 earlier messages hidden' }])
+    session.send('Side question')
+    await tick()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Forked from Main · 2 earlier messages hidden', 'Side question'])
+    expect([...items.values()]).toEqual(session.snapshot().items)
+    expect(fake.options).toMatchObject({ resume: 'main', forkSession: true, resumeSessionAt: 'finished' })
+    session.close()
+  })
+
+  it('can start a fresh SDK fork even when its optional hidden-message count cannot be loaded', async () => {
+    const { session, fake } = started({ aside, fork: aside.forkedFrom }, { messages: async () => { throw new Error('source transcript unavailable') }, title: async () => undefined })
+    await tick()
+    expect(session.snapshot().items).toMatchObject([{ kind: 'notice', level: 'info', text: 'Forked from Main' }])
+    expect(fake.options).toMatchObject({ resume: 'main', forkSession: true })
+    expect(session.snapshot().session.status).toBe('idle')
+    session.close()
+  })
+
+  it.each([false, true])('cuts inherited transcript on reopen, preserving full-history fork tracking (has aside reply: %s)', async (hasReply) => {
+    const store = { messages: async () => [...inherited, ...(hasReply ? own : [])], title: async () => undefined }
+    const first = started({ aside, fork: aside.forkedFrom }, store)
+    await tick()
+    first.session.close()
+    const { session, items } = started({ aside, resume: 'saved-aside' }, store)
+    await tick()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual([
+      'Forked from Main · 2 earlier messages hidden', ...(hasReply ? ['Side question', 'Side answer'] : []),
+    ])
+    expect([...items.values()]).toEqual(session.snapshot().items)
+    expect(session.forkPoint()).toEqual({ sessionId: 'saved-aside', at: hasReply ? 'aside-finished' : 'finished' })
+    session.close()
+  })
+
+  it.each([undefined, 'missing'])('keeps all resumed aside messages when the fork uuid is %s', async (at) => {
+    const { session } = started({ aside: { ...aside, forkedFrom: { sessionId: 'main', at } }, resume: 'saved-aside' }, { messages: async () => own, title: async () => undefined })
+    await tick()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Forked from Main', 'Side question', 'Side answer'])
+    expect(session.forkPoint()?.at).toBe('aside-finished')
+    session.close()
+  })
+
+  it.each(['bypassPermissions', 'acceptEdits'] as const)('keeps read-only edit blocks and Bash approval prompts with %s', async (permissionMode) => {
+    const { fake, session, items } = started({ readOnly: true, permissionMode })
+    await tick()
+    expect(fake.options.permissionMode).toBe('default')
+    expect(fake.options.disallowedTools).toEqual(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+    const input = { command: 'printf example > file.txt' }
+    const pending = fake.canUseTool('Bash', input, signalOptions('aside-bash'))
+    expect(items.get('request-aside-bash')).toMatchObject({ requestKind: 'approval', toolName: 'Bash' })
+    expect(session.answer('aside-bash', { kind: 'approval', decision: 'allow' })).toBe(true)
+    expect(await pending).toMatchObject({ behavior: 'allow', updatedInput: input })
+    session.close()
+  })
+  it('clamps a bypassPermissions configure attempt using the readOnly spec', async () => {
+    const { fake, session } = started({ readOnly: true, bypassAllowed: true })
+    try {
+      await tick()
+      await session.configure({ permissionMode: 'bypassPermissions' })
+      expect(fake.setPermissionMode).toHaveBeenCalledWith('default')
+      expect(fake.setPermissionMode).not.toHaveBeenCalledWith('bypassPermissions')
+      expect(session.snapshot().session.permissionMode).toBe('default')
+    } finally { session.close() }
+  })
+  it('uses native fork options, disallows edits, and strips pane identity from the child env', async () => {
+    const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
+    const { fake, session } = started({ paneId: '%3~abcd1234', fork: aside.forkedFrom, aside, readOnly: true, permissionMode: 'bypassPermissions', env: { TMUX_PANE: '%3', COMMANDO_CHAT_RESUME: 'main', COMMANDO_CHAT_RESUME_B64: 'bWFpbg==' } })
+    await tick()
+    expect(fake.options).toMatchObject({ resume: 'main', forkSession: true, resumeSessionAt: 'finished', permissionMode: 'default', disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'], systemPrompt: { append: expect.stringContaining('Do not modify files') } })
+    expect(fake.options.env).toMatchObject({ COMMANDO_ASIDE: 'abcd1234' })
+    expect(fake.options.env).not.toHaveProperty('TMUX_PANE')
+    expect(fake.options.env).not.toHaveProperty('COMMANDO_CHAT_RESUME')
+    expect(fake.options.env).not.toHaveProperty('COMMANDO_CHAT_RESUME_B64')
+    expect(session.snapshot().session.aside).toEqual(aside)
+    session.close()
+  })
+  it('keeps the last completed assistant uuid while a newer turn is streaming', async () => {
+    const { fake, session } = started()
+    await tick()
+    fake.push({ type: 'assistant', uuid: 'assistant-1', session_id: 'main', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'Finished' }] } } as unknown as SDKMessage)
+    await tick()
+    expect(session.forkPoint()).toBeNull()
+    fake.push({ type: 'result', subtype: 'success', session_id: 'main' } as SDKMessage)
+    await tick()
+    expect(session.forkPoint()).toEqual({ sessionId: 'main', at: 'assistant-1' })
+    fake.push({ type: 'assistant', uuid: 'assistant-2', session_id: 'main', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'Still writing' }] } } as unknown as SDKMessage)
+    await tick()
+    expect(session.forkPoint()).toEqual({ sessionId: 'main', at: 'assistant-1' })
+    fake.push({ type: 'system', subtype: 'init', session_id: 'new-main' } as SDKMessage)
+    await tick()
+    expect(session.forkPoint()).toBeNull()
+    session.close()
+  })
+})

@@ -273,15 +273,18 @@ function menuGroups(
   session: ChatSessionInfo,
   commands: readonly ChatCommand[] | undefined,
   files: { result: ChatFileSearchResult | null; loading: boolean },
+  asides: boolean,
+  newAside: boolean,
   prs: { prs: PullRequestOption[]; error?: string; loading: boolean },
 ): { groups: ComposerMenuGroup[]; status: string | null } {
   if (trigger.kind === 'slash') {
     const query = trigger.query.toLowerCase()
     const natives = [
-      ...(modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
-      ...(fastModeAvailable(session) ? [{ name: 'fast', description: fastModeOn(session) ? 'Turn fast mode off' : 'Turn fast mode on' }] : []),
+      ...(asides ? [{ name: 'aside', description: "Ask in a side thread with this chat’s context" }] : []),
+      ...(!newAside && modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
+      ...(!newAside && fastModeAvailable(session) ? [{ name: 'fast', description: fastModeOn(session) ? 'Turn fast mode off' : 'Turn fast mode on' }] : []),
       // Muse has no plan mode.
-      ...(hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
+      ...(!newAside && hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
         ? [{ name: 'plan', description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
         : []),
     ].filter((native) => native.name.includes(query))
@@ -354,7 +357,11 @@ export function ChatComposer({
   registerDraft,
   onUploadingChange,
   insert,
+  onOpenAside,
+  newAside = false,
 }: {
+  onOpenAside?: (text: string, images?: ChatImageRef[]) => Promise<boolean>
+  newAside?: boolean
   session: ChatSessionInfo
   hostConnected: boolean
   requests: RequestItem[]
@@ -440,7 +447,8 @@ export function ChatComposer({
   const closed = session.status === 'closed' || session.status === 'error'
   // A switch to Claude Code takes the draft as it is; answers and Stop still work.
   const switching = session.provider !== 'cursor' && Boolean(session.claudeCodeSwitch)
-  const disabled = !hostConnected || closed || switching
+  const [openingAside, setOpeningAside] = useState(false)
+  const disabled = openingAside || !hostConnected || closed || switching
   const request = requests[0]
   // Hosts started before 1b·2 can't search files or take images.
   const richInput = Boolean(services) && hostTakesInput(session)
@@ -497,8 +505,8 @@ export function ChatComposer({
   const menuOpen = trigger !== null && !disabled
     && (trigger.kind === 'slash' || (trigger.kind === 'mention' && richInput) || (trigger.kind === 'pr' && Boolean(services)))
   const { groups, status } = useMemo(
-    () => (menuOpen && trigger ? menuGroups(trigger, session, commands, files, prs) : { groups: [], status: null }),
-    [menuOpen, trigger, session, commands, files, prs],
+    () => (menuOpen && trigger ? menuGroups(trigger, session, commands, files, Boolean(onOpenAside), newAside, prs) : { groups: [], status: null }),
+    [menuOpen, trigger, session, commands, files, prs, onOpenAside, newAside],
   )
   const items = useMemo(() => groups.flatMap((group) => group.items), [groups])
   const active = items.find((item) => item.key === activeKey) ?? items[0]
@@ -525,6 +533,10 @@ export function ChatComposer({
     if (!trigger) return
     switch (item.type) {
       case 'native':
+        if (item.name === 'aside') {
+          applyText(moveCommandToStart(draft, trigger, 'aside'))
+          return
+        }
         applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, ''))
         if (item.name === 'model') setModelMenuOpen(true)
         else if (item.name === 'fast') onConfigure({ fast: !fastModeOn(session) })
@@ -750,14 +762,25 @@ export function ChatComposer({
     onUploadingChange(uploading)
     return () => onUploadingChange(false)
   }, [uploading, onUploadingChange])
-  const canSend = !disabled && !uploading && Boolean(draft.trim() || attachments.length)
+  const canSend = !openingAside && !disabled && !uploading && Boolean(draft.trim() || attachments.length)
   const planFollowUp = plan && !running && !relayTarget ? plan : undefined
   const refining = Boolean(draft.trim() || attachments.length)
   /**
    * Enter queues while Claude works (the host holds it until the turn ends);
    * ⌘Enter steers. A relay always goes now: main Claude forwards it.
    */
+  const submitAside = async () => {
+    if (!canSend || !onOpenAside || openingAside) return
+    const text = draft.trim().replace(/^\/aside(?:\s+|$)/, '')
+    if (!text && !images.length) return
+    setOpeningAside(true)
+    try {
+      if (await onOpenAside(text, images.length ? images : undefined)) clearDraft()
+    } finally { setOpeningAside(false) }
+  }
   const submit = (steer = false) => {
+    if (onOpenAside && (newAside || /^\/aside(?:\s|$)/.test(draft.trim()))) { void submitAside(); return }
+
     if (!canSend) return
     const images = attachments.flatMap((attachment) => (attachment.ref ? [attachment.ref] : []))
     const text = draft.trim()
@@ -777,6 +800,11 @@ export function ChatComposer({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
+    if (onOpenAside && event.key === 'Enter' && event.shiftKey && !event.altKey && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey)) {
+      event.preventDefault()
+      void submitAside()
+      return
+    }
     if (stash.onKeyDown(event)) return
     if (triggerMenuOpen && trigger) {
       if (items.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
@@ -792,7 +820,7 @@ export function ChatComposer({
         return
       }
       // A fully typed command sends on Enter, as in the TUI; Tab still completes it.
-      const exact = active?.type === 'command' && active.runsHere && active.command.name === trigger.query
+      const exact = (active?.type === 'command' && active.runsHere && active.command.name === trigger.query) || (active?.type === 'native' && active.name === 'aside' && trigger.query === 'aside')
       if (active && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !exact))) {
         event.preventDefault()
         pick(active)
@@ -865,6 +893,7 @@ export function ChatComposer({
     else if (sendError) onDismissSendError?.()
     else onDismissActionError?.()
   }
+  const asideHint = onOpenAside ? `${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘⇧↵' : 'Ctrl+Shift+Enter'} send as new aside` : ''
   const profile = profileLabel(session.configDir)
   const planUsage = usePlanUsage(session)
   return (
@@ -972,11 +1001,13 @@ export function ChatComposer({
               ? `Switching to ${providerTuiLabel(session.provider)}…`
                 : closed
                 ? 'This session has ended'
-                : relayTarget
+                : newAside
+                  ? 'Ask in a new aside…'
+                  : relayTarget
                   ? `Message @${relayTarget.label} through main ${provider}…`
                   : running
-                    ? turnFlow ? 'Queue a follow-up (Enter) · ⌘Enter steers now' : 'Queue a follow-up…'
-                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : `Ask ${provider}… / for commands, @ for files`}
+                    ? turnFlow ? `Queue a follow-up (Enter) · ⌘Enter steers now${asideHint ? ` · ${asideHint}` : ''}` : 'Queue a follow-up…'
+                    : planFollowUp ? 'Implement the plan, or type changes to refine it' : `Ask ${provider}… / for commands, @ for files${asideHint ? ` · ${asideHint}` : ''}`}
           aria-label={`Message ${provider}`}
           aria-controls={stash.menuOpen ? stashMenuId : triggerMenuOpen ? menuId : undefined}
           aria-autocomplete="list"
@@ -1005,8 +1036,12 @@ export function ChatComposer({
               </>
             ) : null}
             {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
-            <ModelPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} open={modelMenuOpen} onOpenChange={setModelMenuOpen} />
-            <PermissionPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />
+            <ModelPicker session={session} disabled={newAside || disabled || session.status === 'starting'} onConfigure={onConfigure} open={modelMenuOpen} onOpenChange={setModelMenuOpen} />
+            {newAside || session.aside?.mode === 'read-only' ? (
+              <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground">
+                {session.aside?.mode === 'read-only' && session.aside.readOnlyEnforced === false ? 'Read-only (advisory)' : 'Read-only'}
+              </span>
+            ) : <PermissionPicker session={session} disabled={disabled || session.status === 'starting'} onConfigure={onConfigure} />}
             {profile ? <span className="truncate rounded-full border border-border px-2 py-0.5 text-2xs text-muted-foreground" title={session.configDir}>{profile}</span> : null}
             {todos && todos.todos.length ? <TodoChip todos={todos} /> : null}
             {stash.entries.length ? (

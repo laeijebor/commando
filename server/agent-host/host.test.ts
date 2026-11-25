@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest'
-import type { ChatItem } from '../../shared/agent-chat.js'
-import { snapshotItems } from './host.js'
+import { describe, expect, it, vi } from 'vitest'
+import type { ChatItem, DaemonToHostMessage } from '../../shared/agent-chat.js'
+import { AgentHost, snapshotItems } from './host.js'
+import { ChatAsides } from './asides.js'
+import type { ChatProviderSession } from './provider.js'
 
 describe('snapshotItems', () => {
   it('keeps the newest items that fit, in order', () => {
@@ -10,6 +12,44 @@ describe('snapshotItems', () => {
     const size = JSON.stringify(items[0]).length
     expect(snapshotItems(items, size * 3).map((item) => item.id)).toEqual(['i7', 'i8', 'i9'])
     expect(snapshotItems(items)).toHaveLength(10)
+  })
+})
+
+describe('aside restart readiness', () => {
+  it('scopes aside busy state to its main pane and notifies after lifecycle work', async () => {
+    const activity = vi.fn()
+    const host = new AgentHost('ws://unused', async () => 'token', 'pane', { info: vi.fn() }, { activity })
+    const busy = vi.spyOn(ChatAsides.prototype, 'busy', 'get').mockReturnValue(true)
+    const main = {
+      paneId: '%4', on: vi.fn(), commands: [],
+      snapshot: () => ({ session: { paneId: '%4' }, items: [] }),
+    } as unknown as ChatProviderSession
+    try {
+      expect(host.asidesBusy('%4')).toBe(false)
+      host.add(main, { paneId: '%4', cwd: '/work', env: {}, permissionMode: 'default' })
+      expect(host.asidesBusy('%4')).toBe(true)
+      expect(host.asidesBusy('%5')).toBe(false)
+      busy.mockReturnValue(false)
+      expect(host.asidesBusy('%4')).toBe(false)
+      await vi.waitFor(() => expect(activity).toHaveBeenCalledWith('%4'))
+      host.remove('%4')
+      expect(host.asidesBusy('%4')).toBe(false)
+    } finally { host.stop(); busy.mockRestore() }
+  })
+  it('notifies the parent when an aside session changes without opening a daemon connection', () => {
+    const activity = vi.fn()
+    const host = new AgentHost('ws://unused', async () => 'token', 'pane', { info: vi.fn() }, { activity })
+    const on = vi.fn()
+    const aside = {
+      paneId: '%4~abcd1234', on, commands: [],
+      snapshot: () => ({ session: { paneId: '%4~abcd1234' }, items: [] }),
+    } as unknown as ChatProviderSession
+    try {
+      host.add(aside)
+      const update = on.mock.calls.find(([event]) => event === 'session')![1]
+      update({ paneId: aside.paneId, status: 'idle' })
+      expect(activity).toHaveBeenCalledWith('%4')
+    } finally { host.stop() }
   })
 })
 
@@ -37,6 +77,21 @@ describe('DaemonLink', () => {
 })
 
 describe('AgentHost input relays', () => {
+  it('clamps read-only aside configure and send permissions without a daemon connection', async () => {
+    const host = new AgentHost('ws://unused', async () => 'token', 'pane', { info: vi.fn() })
+    const session = {
+      paneId: '%4~abcd1234', on: vi.fn(), commands: [], close: vi.fn(), send: vi.fn(), configure: vi.fn(),
+      snapshot: () => ({ session: { paneId: '%4~abcd1234', aside: { mode: 'read-only' } }, items: [] }),
+    }
+    try {
+      host.add(session as unknown as ChatProviderSession)
+      const relay = host as unknown as { onMessage(message: DaemonToHostMessage): Promise<void> }
+      await relay.onMessage({ type: 'configure', paneId: session.paneId, requestId: 'c', settings: { permissionMode: 'bypassPermissions', model: 'sonnet' } })
+      await relay.onMessage({ type: 'send', paneId: session.paneId, requestId: 's', text: 'Try edits', permissionMode: 'bypassPermissions' })
+      expect(session.configure).toHaveBeenCalledWith({ permissionMode: 'default', model: 'sonnet' })
+      expect(session.send).toHaveBeenCalledWith('Try edits', undefined, { permissionMode: 'default' })
+    } finally { host.stop() }
+  })
   it('sends the command list after the snapshot and answers file searches', async () => {
     const { WebSocketServer } = await import('ws')
     const { AgentHost } = await import('./host.js')

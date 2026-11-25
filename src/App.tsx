@@ -180,7 +180,7 @@ import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
 import { PaneWorklog } from './PaneWorklog'
-import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
+import { ChatPane, type ChatFlowServices, type ChatAsideServices } from './chat/ChatPane'
 import { paneAsks } from './chat/sessionAsks'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
 import { PlanUsageContext, newestPlanUsage } from './chat/planUsage'
@@ -192,6 +192,10 @@ import { loadChatLaunch } from './chatLaunchPreferences'
 import { chatLaunchPermission, chatProfileConfigDir, type SessionAgentLaunch, type SessionCreation } from '../shared/tmux-create'
 import { EmptyPane, type EmptyPaneChoice } from './EmptyPane'
 import {
+  asideKey,
+  parseAsideKey,
+  type ChatAsideResult,
+  type ChatAsideAction,
   hostTakesMcp,
   providerName,
   hostTakesSwitch,
@@ -434,6 +438,7 @@ type TerminalPaneProps = {
   onChatOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   onChatDismissPrs?: (prs: PanePrSummary[]) => void
   chatServices?: ChatInputServices
+  chatAsides?: ChatAsideServices
   chatFlow?: ChatFlowServices
   /** Why the daemon refused one of this pane's chat sends. */
   chatSendError?: ChatSendError
@@ -536,6 +541,7 @@ export function TerminalPaneCard({
   onChatDismissPrs,
   chatServices,
   chatFlow,
+  chatAsides,
   chatSendError,
   onDismissChatSendError,
   chatActionError,
@@ -822,6 +828,7 @@ export function TerminalPaneCard({
       <div ref={bodyRef} className="terminal-pane-body">
         {showChat && chat ? (
           <ChatPane
+            {...(chatAsides ? { asides: chatAsides } : {})}
             paneId={pane.id}
             registerFocusable={registerFocusable}
             pane={pane}
@@ -1180,6 +1187,10 @@ function HostApp() {
   const [externalRuns, setExternalRuns] = useState<Record<string, ExternalAgentRun[]>>({})
   const [tileEvents, setTileEvents] = useState<Record<string, ChatCardEvent[]>>({})
   const [chats, setChats] = useState<Record<string, ChatState>>({})
+  const [asideViews, setAsideViews] = useState<Record<string, string | undefined>>({})
+  const chatAsideReplies = useRef(new Map<string, (result: ChatAsideResult) => void>())
+  // Pane consumers only see main chats. Aside states remain available to their chat column.
+  const paneChats = useMemo(() => Object.fromEntries(Object.entries(chats).filter(([key]) => !parseAsideKey(key))), [chats])
   /** Conversations running in Claude Code that started as a chat. */
   const [chatHandoffs, setChatHandoffs] = useState<ReadonlySet<string>>(() => new Set())
   const [chatHandoffEntries, setChatHandoffEntries] = useState<ChatHandoffInfo[]>([])
@@ -1680,6 +1691,14 @@ function HostApp() {
       case 'chat_subagent_transcript_result': {
         const { type: _type, paneId: _paneId, requestId: readId, ...result } = message
         chatTranscripts.current.get(readId)?.(result)
+        break
+      }
+      case 'chat_asides':
+        setChats((current) => current[message.paneId] ? { ...current, [message.paneId]: { ...current[message.paneId]!, asides: message.asides, asidesError: message.error } } : current)
+        break
+      case 'chat_aside_result': {
+        const { type: _type, paneId: _paneId, requestId, ...result } = message
+        chatAsideReplies.current.get(requestId)?.(result)
         break
       }
       case 'chat_mcp_result': {
@@ -2818,7 +2837,7 @@ function HostApp() {
    * prompt, a pointer to it saved where the new chat can read it).
    */
   const implementPlanInNewPane = async (paneId: string, plan: string, mode: ChatSessionPermissionMode): Promise<void> => {
-    const pane = paneMap.get(paneId)
+    const pane = paneMap.get(parseAsideKey(paneId)?.paneId ?? paneId)
     if (!pane) throw new Error('The chat pane is gone')
     const session = chats[paneId]?.session
     let prompt = planImplementationPrompt(plan)
@@ -2830,7 +2849,7 @@ function HostApp() {
       readableDir = stashed.dir
     }
     const created = await tmuxCreateApi.createPane({
-      targetId: paneId,
+      targetId: pane.id,
       direction: 'horizontal',
       placement: 'after',
       cwd: session?.cwd ?? pane.path,
@@ -2842,9 +2861,9 @@ function HostApp() {
   const chatStashApi = useMemo(() => createChatStashApi(token, daemonFetch), [token])
   const chatStash = useMemo<ChatStash>(() => ({ entries: chatStashEntries, ...chatStashApi }), [chatStashEntries, chatStashApi])
   // Rebuilt only when a reading changes, not on every streamed chat item.
-  const planUsageKey = Object.values(chats).map(({ session }) => `${session.provider}:${session.configDir ?? ''}:${session.planUsage?.updatedAt ?? ''}`).join(',')
+  const planUsageKey = Object.values(paneChats).map(({ session }) => `${session.provider}:${session.configDir ?? ''}:${session.planUsage?.updatedAt ?? ''}`).join(',')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const planUsageByProfile = useMemo(() => newestPlanUsage(Object.values(chats).map((chat) => chat.session)), [planUsageKey])
+  const planUsageByProfile = useMemo(() => newestPlanUsage(Object.values(paneChats).map((chat) => chat.session)), [planUsageKey])
   // One stable service object per pane, so the composer's effects don't refire each render.
   const chatServiceCache = useRef(new Map<string, ChatInputServices>())
   const latestChatDeps = useRef({ send, token, prsApi, implementPlanInNewPane, sendChatAction, switchChat })
@@ -2866,7 +2885,7 @@ function HostApp() {
             finish({ entries: [], truncated: false, error: 'Not connected to Commando' })
           }
         }),
-        pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, paneId),
+        pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, parseAsideKey(paneId)?.paneId ?? paneId),
         uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image, daemonFetch),
         uploadVideo: (file, signal) => uploadChatVideo(latestChatDeps.current.token, file, signal, daemonFetch),
       }
@@ -2936,6 +2955,33 @@ function HostApp() {
     }
     return flow
   }
+  const chatAsidesFor = (paneId: string): ChatAsideServices => ({
+    chats,
+    selected: asideViews[paneId],
+    select: (id) => setAsideViews((current) => ({ ...current, [paneId]: id })),
+    request: (action: ChatAsideAction) => new Promise<ChatAsideResult>((resolve) => {
+      const id = requestId('chat-aside')
+      const finish = (result: ChatAsideResult) => {
+        window.clearTimeout(timer)
+        chatAsideReplies.current.delete(id)
+        resolve(result)
+      }
+      const timer = window.setTimeout(() => finish({ ok: false, error: 'The aside operation timed out and may still be in progress' }), 125_000)
+      chatAsideReplies.current.set(id, finish)
+      if (!send({ type: 'chat_aside', paneId, requestId: id, action })) finish({ ok: false, error: 'Not connected to Commando' })
+    }),
+    bindings: (key) => ({
+      onSend: (text, images, options) => sendChat(key, text, images, options),
+      onInterrupt: (dropQueued) => interruptChat(key, dropQueued),
+      onAnswer: (requestId, answer) => answerChat(key, requestId, answer),
+      onConfigure: (settings) => configureChat(key, settings),
+      onRestart: () => restartChat(parseAsideKey(key)?.paneId ?? key),
+      services: chatServicesFor(key), flow: chatFlowFor(key),
+      sendError: chatSendErrors[key], actionError: chatActionErrors[key],
+      onDismissSendError: () => setChatSendErrors((current) => { const next = { ...current }; delete next[key]; return next }),
+      onDismissActionError: () => setChatActionErrors((current) => { const next = { ...current }; delete next[key]; return next }),
+    }),
+  })
   const simulatorTabKey = webPanes.flatMap((pane) => pane.content?.kind === 'simulator' ? [pane.content.udid] : []).join(',')
   useEffect(() => {
     if (!local || !simulatorTabKey || !connected) return
@@ -2987,12 +3033,12 @@ function HostApp() {
   const needsYouOrder = useRef<NeedsYouOrder>(new Map())
   const commanderGroups = useMemo(() => {
     const kept = keepNeedsYouOrder(commanderInbox({
-      snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays,
+      snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats: paneChats, relays,
       commanderPaneId: commanderState.paneId, repoFilter: commanderState.repoFilter,
     }), needsYouOrder.current)
     needsYouOrder.current = kept.order
     return kept.groups
-  }, [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, chats, relays, commanderState.paneId, commanderState.repoFilter])
+  }, [snapshot, agentStatuses, paneBriefs, paneSeen, turnBriefs, paneChats, relays, commanderState.paneId, commanderState.repoFilter])
   const commanderRepos = useMemo(() => commanderRepoOptions(snapshot, commanderState.repoFilter, commanderState.sessionId),
     [snapshot, commanderState.repoFilter, commanderState.sessionId])
   const commanderRows = useMemo(() => GROUP_ORDER.flatMap((group) => commanderGroups[group].map((row) => ({ row, group }))), [commanderGroups])
@@ -3024,7 +3070,7 @@ function HostApp() {
       setPaneActionError('')
       if (sessionActionsRef.current) void action(sessionActionsRef.current)
     }
-    const warning = () => sessionProcessesWarning(session.name, sessionProcesses(panes, sessionId, new Set(Object.keys(chats))))
+    const warning = () => sessionProcessesWarning(session.name, sessionProcesses(panes, sessionId, new Set(Object.keys(paneChats))))
     const auxiliary = auxiliarySessionIds(snapshot?.sessions ?? [], panes, commanderState.sessionId).has(sessionId)
     return [
       { label: 'Open IDE', icon: Code2, onSelect: () => { void openSessionIde(sessionId) } },
@@ -3063,7 +3109,7 @@ function HostApp() {
           onRestart={() => restartChat(row.paneId)}
           onOpenPr={(repo, number, tab) => { void revealPrTab(row.paneId, repo, number, tab) }}
           onDismissPrs={(prs) => closePrTabs(row.paneId, prs)}
-          services={chatServicesFor(row.paneId)} flow={chatFlowFor(row.paneId)}
+          asides={chatAsidesFor(row.paneId)} services={chatServicesFor(row.paneId)} flow={chatFlowFor(row.paneId)}
           {...(chatSendErrors[row.paneId] ? { sendError: chatSendErrors[row.paneId] } : {})}
           onDismissSendError={() => setChatSendErrors((current) => { const next = { ...current }; delete next[row.paneId]; return next })}
           {...(chatActionErrors[row.paneId] ? { actionError: chatActionErrors[row.paneId] } : {})}
@@ -3597,7 +3643,9 @@ function HostApp() {
   })
 
   const conversationPane = palettePaneId ? paneMap.get(palettePaneId) : undefined
-  const conversationChat = palettePaneId ? chats[palettePaneId] : undefined
+  const conversationKey = palettePaneId && asideViews[palettePaneId] && asideViews[palettePaneId] !== 'new'
+    ? asideKey(palettePaneId, asideViews[palettePaneId]!) : palettePaneId
+  const conversationChat = conversationKey ? chats[conversationKey] : undefined
   const conversationSessionFilter = panePalette?.sessionFilter
   const backToPaneMenu = () => setPanePalette((current) => current && { paneId: current.paneId, screen: 'menu' })
   const conversationPicker = conversationPane ? (
@@ -3609,7 +3657,7 @@ function HostApp() {
       defaultPlacement={conversationSessionFilter ? 'session' : conversationChat || conversationPane.empty ? 'replace' : 'split'}
       sessionName={sessionMap.get(conversationPane.sessionId)?.name ?? conversationPane.sessionId}
       {...(conversationChat?.session.sessionId ? { current: chatConversationKey(conversationChat.session.provider, conversationChat.session.sessionId) } : {})}
-      chats={chats}
+      chats={paneChats}
       paneLabel={(paneId) => {
         const pane = paneMap.get(paneId)
         return (pane && sessionMap.get(pane.sessionId)?.name) ?? paneId
@@ -3636,7 +3684,7 @@ function HostApp() {
           key={`${conversationPane.id}:mcp`}
           agentLabel={providerLabel(conversationChat.session)}
           provider={conversationChat.session.provider}
-          load={chatMcpFor(conversationPane.id)}
+          load={chatMcpFor(conversationKey ?? conversationPane.id)}
           onBack={backToPaneMenu}
           onClose={() => setPanePalette(null)}
         />
@@ -3806,7 +3854,7 @@ function HostApp() {
     query: paletteQuery,
     connected,
     api: chatMessagesApi,
-    chats,
+    chats: paneChats,
     lookupPane: (paneId) => {
       const pane = paneMap.get(paneId)
       const session = pane ? sessionMap.get(pane.sessionId) : undefined
@@ -4658,6 +4706,7 @@ function HostApp() {
                             chatView={chatViews[pane.id] ?? 'chat'}
                             onChatView={(view) => setChatViews((current) => ({ ...current, [pane.id]: view }))}
                             onChatSend={(text, images, options) => sendChat(pane.id, text, images, options)}
+                            chatAsides={chatAsidesFor(pane.id)}
                             chatServices={chatServicesFor(pane.id)}
                             chatFlow={chatFlowFor(pane.id)}
                             {...(chatSendErrors[pane.id] ? { chatSendError: chatSendErrors[pane.id] } : {})}
