@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -14,9 +14,10 @@ const item = (kind: 'user_message' | 'assistant_message', text: string): ChatIte
 function fake(spec: AgentSessionSpec, provider: ChatProvider = 'claude') {
   let info: ChatSessionInfo = { paneId: spec.paneId, provider, cwd: '/work', status: 'idle', sessionId: spec.resume ?? (spec.aside ? `child-${spec.aside.id}` : 'main-session'), hostPid: 1, hostVersion: AGENT_HOST_PROTOCOL_VERSION, permissionMode: spec.permissionMode, ...(spec.aside ? { aside: spec.aside } : {}) }
   let items = [item('user_message', 'Main goal'), item('assistant_message', 'Main context')]
+  let busy = false
   const listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   const session: ChatProviderSession = {
-    paneId: spec.paneId, commands: [], busy: false, queued: [],
+    paneId: spec.paneId, commands: [], get busy() { return busy }, queued: [],
     on: (event, listener) => { listeners[event].push(listener) },
     forkPoint: () => info.sessionId ? { sessionId: info.sessionId, at: 'finished-turn' } : null,
     start: vi.fn(async () => {}), send: vi.fn(), updateQueue: vi.fn(), interrupt: vi.fn(async () => {}),
@@ -25,7 +26,7 @@ function fake(spec: AgentSessionSpec, provider: ChatProvider = 'claude') {
     controlTask: vi.fn(async () => {}), subagentTranscript: vi.fn(async () => ({ items: [] })), setResumeCommand: vi.fn(),
     snapshot: () => ({ session: { ...info }, items }),
   }
-  return { session, set: (change: Partial<ChatSessionInfo>) => { info = { ...info, ...change }; listeners.session.forEach((listener) => listener(info)) }, setItems: (value: ChatItem[]) => { items = value } }
+  return { session, set: (change: Partial<ChatSessionInfo>) => { info = { ...info, ...change }; listeners.session.forEach((listener) => listener(info)) }, setItems: (value: ChatItem[]) => { items = value }, setBusy: (value: boolean) => { busy = value }, crash: () => { listeners.closed.forEach((listener) => listener()) } }
 }
 async function setup(provider: ChatProvider = 'claude') {
   const directory = await mkdtemp(join(tmpdir(), 'commando-asides-'))
@@ -102,15 +103,100 @@ describe('chat asides', () => {
     expect((await store.load('main-session'))[0]?.sessionId).toBe(open!.sessionId)
     expect(await store.load('new-main')).toEqual([])
   })
-  it('rejects unsaved main conversations and bad saved data without overwriting it', async () => {
-    const { manager, main, directory, factory } = await setup()
+  it('rejects unsaved main conversations', async () => {
+    const { manager, main, factory } = await setup()
     main.set({ sessionId: undefined })
     expect(await manager.act({ action: 'open', text: 'Why?' })).toEqual({ ok: false, error: 'This chat has no saved conversation yet' })
-    main.set({ sessionId: 'broken' })
-    await writeFile(join(directory, 'broken.json'), '{broken')
-    expect((await manager.act({ action: 'open', text: 'Why?' })).ok).toBe(false)
     expect(factory).not.toHaveBeenCalled()
-    expect(await readdir(directory)).toEqual(['broken.json'])
+  })
+  it('does not create empty history files during sync or conversation changes', async () => {
+    const { manager, main, directory, store } = await setup()
+    const save = vi.spyOn(store, 'save')
+    await manager.sync()
+    await manager.sync()
+    main.set({ sessionId: 'another-main' })
+    await manager.sync()
+    expect(save).not.toHaveBeenCalled()
+    expect(await readdir(directory)).toEqual([])
+    const empty = '{ "version": 1, "asides": [] }'
+    await writeFile(join(directory, 'empty.json'), empty)
+    main.set({ sessionId: 'empty' })
+    await manager.sync()
+    expect(await readFile(join(directory, 'empty.json'), 'utf8')).toBe(empty)
+    expect(manager.list()).toEqual([])
+  })
+  it.each(['{broken', '{"version":2,"asides":[]}'])('logs corrupt history once per conversation and preserves it before opening fresh: %s', async (bad) => {
+    const { manager, main, directory, host, store } = await setup()
+    main.set({ sessionId: 'broken' })
+    await writeFile(join(directory, 'broken.json'), bad)
+    await manager.sync()
+    await manager.sync()
+    main.set({ sessionId: 'other' })
+    await writeFile(join(directory, 'other.json'), bad)
+    await manager.sync()
+    main.set({ sessionId: 'broken' })
+    await manager.sync()
+    expect(host.log).toHaveBeenCalledTimes(2)
+    expect(await readFile(join(directory, 'broken.json'), 'utf8')).toBe(bad)
+    expect((await manager.act({ action: 'open', text: 'Fresh question' })).ok).toBe(true)
+    const backup = (await readdir(directory)).find((name) => /^broken\.json\.bad-\d+$/.test(name))
+    expect(backup).toBeDefined()
+    expect(await readFile(join(directory, backup!), 'utf8')).toBe(bad)
+    expect(await store.load('broken')).toEqual(manager.list())
+    expect(manager.list()).toHaveLength(1)
+    await manager.sync()
+    expect(host.log).toHaveBeenCalledTimes(2)
+  })
+  it('keeps corrupt history intact if quarantine fails and allows retry', async () => {
+    const { manager, directory, store, factory, host } = await setup()
+    const path = join(directory, 'main-session.json')
+    await writeFile(path, '{broken')
+    const quarantine = vi.spyOn(store, 'quarantine').mockRejectedValueOnce(new Error('rename denied'))
+    expect(await manager.act({ action: 'open', text: 'Fresh' })).toEqual({ ok: false, error: 'rename denied' })
+    expect(await readFile(path, 'utf8')).toBe('{broken')
+    expect(factory).not.toHaveBeenCalled()
+    expect((await manager.act({ action: 'open', text: 'Retry' })).ok).toBe(true)
+    expect(quarantine).toHaveBeenCalledTimes(2)
+    expect(host.log).toHaveBeenCalledTimes(1)
+  })
+  it('drops crashed sessions from the cap and restarts them on Reopen, ignoring stale closed events', async () => {
+    const { manager, created, host, factory } = await setup()
+    for (let i = 0; i < 5; i++) await manager.act({ action: 'open', text: `Q${i}` })
+    const crashed = manager.list()[0]!
+    created[0]!.crash()
+    expect(host.remove).toHaveBeenCalledWith(created[0]!.session.paneId)
+    expect(manager.list()[0]).toMatchObject({ status: 'open', sessionId: crashed.sessionId })
+    expect(host.changed).toHaveBeenLastCalledWith(manager.list())
+    expect((await manager.act({ action: 'open', text: 'Replacement slot' })).ok).toBe(true)
+    expect(await manager.act({ action: 'reopen', asideId: crashed.id })).toMatchObject({ ok: false, error: expect.stringContaining('5 open') })
+    await manager.act({ action: 'close', asideId: manager.list().at(-1)!.id })
+    expect((await manager.act({ action: 'reopen', asideId: crashed.id })).ok).toBe(true)
+    expect(factory.mock.calls.at(-1)?.[1]).toMatchObject({ resume: crashed.sessionId })
+    host.remove.mockClear()
+    created[0]!.crash()
+    expect(host.remove).not.toHaveBeenCalled()
+    expect((await manager.act({ action: 'reopen', asideId: crashed.id })).ok).toBe(true)
+    expect(factory).toHaveBeenCalledTimes(7)
+  })
+  it('reports pending lifecycle work and live busy sessions, and releases crashed sessions', async () => {
+    const { manager, factory, created } = await setup()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const create = factory.getMockImplementation()!
+    factory.mockImplementationOnce(async (provider, spec) => { await gate; return create(provider, spec) })
+    const opening = manager.act({ action: 'open', text: 'Question' })
+    await vi.waitFor(() => expect(factory).toHaveBeenCalled())
+    expect(manager.busy).toBe(true)
+    release()
+    await opening
+    expect(manager.busy).toBe(false)
+    created[0]!.setBusy(true)
+    expect(manager.busy).toBe(true)
+    created[0]!.setBusy(false)
+    expect(manager.busy).toBe(false)
+    created[0]!.setBusy(true)
+    created[0]!.crash()
+    expect(manager.busy).toBe(false)
   })
   it('serializes concurrent opens and preserves closed records without a TTL', async () => {
     const { manager, store } = await setup()

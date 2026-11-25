@@ -1,9 +1,12 @@
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatSessionInfo } from '../../shared/agent-chat.js'
+import type { HostEvents } from './host.js'
 
 const state = vi.hoisted(() => ({
   busy: false,
+  asidesBusy: false,
+  hostEvents: {} as HostEvents,
   info: { paneId: '%77', provider: 'cursor', cwd: '/workspace', status: 'idle', hostPid: 1, hostVersion: 1, sessionId: 'agent-123', permissionMode: 'default' } as ChatSessionInfo,
   listeners: new Map<string, ((info: ChatSessionInfo) => void)[]>(),
   execFile: vi.fn(),
@@ -13,7 +16,12 @@ vi.mock('node:child_process', async (original) => ({ ...await original<typeof im
 vi.mock('node:readline', () => ({ createInterface: () => ({ on: vi.fn() }) }))
 vi.mock('./build.js', () => ({ agentHostBuild: async () => 'test-build' }))
 vi.mock('../chat-images.js', () => ({ ChatImageStore: class {} }))
-vi.mock('./host.js', () => ({ AgentHost: class { add() {} start() {} } }))
+vi.mock('./host.js', () => ({ AgentHost: class {
+  constructor(_url: string, _token: unknown, _mode: string, _log: unknown, events: HostEvents) { state.hostEvents = events }
+  add() {}
+  start() {}
+  asidesBusy() { return state.asidesBusy }
+} }))
 vi.mock('./factory.js', () => ({ createChatProviderSession: async () => ({
   get busy() { return state.busy },
   on: (event: string, listener: (info: ChatSessionInfo) => void) => state.listeners.set(event, [...state.listeners.get(event) ?? [], listener]),
@@ -31,6 +39,8 @@ beforeEach(() => {
   state.execFile.mockReset()
   state.hostNotice.mockReset()
   state.busy = false
+  state.asidesBusy = false
+  state.hostEvents = {}
   state.info = { ...state.info, status: 'idle', permissionMode: 'default' }
   originalSignals = new Map((['SIGTERM', 'SIGHUP'] as const).map((signal) => [signal, process.listeners(signal)]))
   vi.stubEnv('TMUX_PANE', '%77')
@@ -49,6 +59,42 @@ afterEach(() => {
 const emit = (event: string) => state.listeners.get(event)?.forEach((listener) => listener(state.info))
 
 describe('provider restart requests', () => {
+  it('waits for a running aside even when the main chat is idle, and rechecks on aside activity', async () => {
+    state.asidesBusy = true
+    await import('./main.js')
+    await vi.waitFor(() => expect(state.listeners.has('restart')).toBe(true))
+    emit('restart')
+    emit('session')
+    state.hostEvents.activity?.('%77')
+    await Promise.resolve()
+    expect(state.execFile).not.toHaveBeenCalled()
+    state.asidesBusy = false
+    state.hostEvents.activity?.('%77')
+    await Promise.resolve()
+    expect(state.execFile).toHaveBeenCalledTimes(1)
+    state.hostEvents.activity?.('%77')
+    await Promise.resolve()
+    expect(state.execFile).toHaveBeenCalledTimes(1)
+  })
+  it('waits until both the main turn and aside lifecycle work finish', async () => {
+    state.busy = true
+    state.asidesBusy = true
+    await import('./main.js')
+    await vi.waitFor(() => expect(state.listeners.has('restart')).toBe(true))
+    emit('restart')
+    state.asidesBusy = false
+    state.hostEvents.activity?.('%77')
+    await Promise.resolve()
+    expect(state.execFile).not.toHaveBeenCalled()
+    state.asidesBusy = true
+    state.busy = false
+    emit('session')
+    expect(state.execFile).not.toHaveBeenCalled()
+    state.asidesBusy = false
+    state.hostEvents.activity?.('%77')
+    await Promise.resolve()
+    expect(state.execFile).toHaveBeenCalledTimes(1)
+  })
   it('respawns an idle Cursor chat with its current permissions and resume id', async () => {
     await import('./main.js')
     await vi.waitFor(() => expect(state.listeners.has('restart')).toBe(true))

@@ -283,7 +283,7 @@ async function main(): Promise<void> {
     async () => (await readFile(tokenPath, 'utf8')).trim(),
     'pane',
     { info: (message) => write(dim(message)) },
-    { restart: () => requestRestart() },
+    { restart: () => requestRestart(), activity: () => queueMicrotask(() => checkRestart()) },
   )
   let session: ChatProviderSession
   let sessionSpec: AgentSessionSpec
@@ -345,10 +345,7 @@ async function main(): Promise<void> {
   host.add(session, sessionSpec)
   write(dim(`Commando chat · ${providerName(parsed.provider)}${parsed.configDir ? ` (${parsed.configDir.replace(homedir(), '~')})` : ''} · ${process.cwd().replace(homedir(), '~')}`))
   write(dim('Type here or in the Commando chat. Ctrl-C interrupts a turn; press it twice to quit.'))
-  void session.start()
-  host.start()
-
-  // Restart on the same conversation (to pick up new host code) once Claude is idle.
+  // Restart on the same conversation once the main chat and its asides are idle.
   let restarting = false
   // Set from the respawn until it fails: a later idle update must not respawn the new host too.
   let respawning = false
@@ -416,14 +413,17 @@ async function main(): Promise<void> {
   const requestRestart = () => {
     if (restarting) return
     restarting = true
-    if (!session.busy) return void restartNow()
-    write(dim('Will restart to update when this turn finishes.'))
-    session.on('session', (info) => {
-      // Queued messages go out when a turn ends; wait until they have been answered too.
-      if (restarting && info.status === 'idle' && !session.busy) void restartNow()
-    })
+    if (!session.busy && !host.asidesBusy(paneId)) return void restartNow()
+    write(dim('Will restart to update when this chat and its asides finish.'))
   }
+  const checkRestart = () => {
+    // Busy includes pending answers and queued sends, as well as active turns.
+    if (restarting && !session.busy && !host.asidesBusy(paneId)) void restartNow()
+  }
+  session.on('session', () => checkRestart())
   session.on('restart', () => requestRestart())
+  void session.start()
+  host.start()
 
   const prompt = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY })
   let lastInterrupt = 0

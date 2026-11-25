@@ -45,6 +45,8 @@ export interface HostLog {
 export interface HostEvents {
   /** The daemon asked to restart a session's host on the same conversation. */
   restart?: (paneId: string) => void
+  /** A session or its aside lifecycle changed; restart readiness may have changed. */
+  activity?: (paneId: string) => void
 }
 
 /**
@@ -175,12 +177,17 @@ export class AgentHost {
     return this.link.connected
   }
 
+  asidesBusy(paneId: string): boolean {
+    return this.asides.get(paneId)?.busy ?? false
+  }
+
   add(session: ChatProviderSession, spec?: AgentSessionSpec): void {
     this.sessions.set(session.paneId, session)
     if (spec && !parseAsideKey(session.paneId)) {
       const manager = new ChatAsides(session, spec, {
         add: (aside) => this.add(aside), remove: (key) => this.remove(key),
         changed: (asides) => this.link.send({ type: 'asides', paneId: session.paneId, asides }),
+        activity: () => this.events.activity?.(session.paneId),
         log: (error) => this.log.info(`Couldn't restore or save asides: ${error instanceof Error ? error.message : String(error)}`),
       })
       this.asides.set(session.paneId, manager)
@@ -198,6 +205,7 @@ export class AgentHost {
       this.asides.get(session.paneId)?.sync()
       this.flush()
       this.link.send({ type: 'session_update', session: info })
+      this.events.activity?.(parseAsideKey(session.paneId)?.paneId ?? session.paneId)
     })
     session.on('commands', (commands) => {
       if (this.sessions.get(session.paneId) === session) this.link.send({ type: 'commands', paneId: session.paneId, commands })

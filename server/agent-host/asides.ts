@@ -33,12 +33,18 @@ export class AsideStore {
       await rename(temporary, path)
     } finally { await rm(temporary, { force: true }) }
   }
+  async quarantine(sessionId: string): Promise<void> {
+    const path = this.path(sessionId)
+    try { await rename(path, `${path}.bad-${Date.now()}`) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  }
 }
 
 type AsideHost = {
   add(session: ChatProviderSession): void
   remove(key: string): void
   changed(asides: ChatAsideRecord[]): void
+  activity?(): void
   log(error: unknown): void
 }
 
@@ -50,6 +56,8 @@ export class ChatAsides {
   private operations: Promise<unknown> = Promise.resolve()
   private stopped = false
   private loadError?: Error
+  private readonly loggedLoadErrors = new Set<string>()
+  private pendingOperations = 0
 
   constructor(
     private readonly main: ChatProviderSession,
@@ -60,8 +68,13 @@ export class ChatAsides {
   ) {}
 
   list(): ChatAsideRecord[] { return structuredClone(this.records) }
+  get busy(): boolean { return this.pendingOperations > 0 || [...this.sessions.values()].some((session) => session.busy) }
   private serial<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operations.then(operation)
+    this.pendingOperations++
+    const result = this.operations.then(operation).finally(() => {
+      this.pendingOperations--
+      this.host.activity?.()
+    })
     this.operations = result.catch((error: unknown) => this.host.log(error))
     return result
   }
@@ -81,10 +94,7 @@ export class ChatAsides {
   private async loadConversation(): Promise<void> {
     if (this.stopped) return
     const id = this.main.snapshot().session.sessionId
-    if (id === this.mainId) {
-      if (this.loadError) throw this.loadError
-      return
-    }
+    if (id === this.mainId) return
     this.closeSessions()
     this.mainId = id
     this.records = []
@@ -92,7 +102,14 @@ export class ChatAsides {
     this.publish()
     if (!id) return
     try { this.records = await this.store.load(id) }
-    catch (error) { this.loadError = error instanceof Error ? error : new Error(String(error)); throw error }
+    catch (error) {
+      this.loadError = error instanceof Error ? error : new Error(String(error))
+      if (!this.loggedLoadErrors.has(id)) {
+        this.loggedLoadErrors.add(id)
+        this.host.log(this.loadError)
+      }
+      return
+    }
     if (this.stopped) return
     if (this.main.snapshot().session.sessionId !== id) return this.loadConversation()
     for (const record of this.records) {
@@ -106,7 +123,8 @@ export class ChatAsides {
         this.host.log(error)
       }
     }
-    await this.save()
+    if (this.records.length) await this.save()
+    else this.publish()
   }
   private async save(): Promise<void> {
     if (this.stopped) return
@@ -120,13 +138,14 @@ export class ChatAsides {
     return point
   }
   private room(): void {
-    if (this.records.filter((record) => record.status === 'open').length >= 5) throw new Error('A chat can have at most 5 open asides')
+    if (this.sessions.size >= 5) throw new Error('A chat can have at most 5 open asides')
   }
   private info(record: ChatAsideRecord): ChatAsideInfo {
     const { id, title, mode, method, readOnlyEnforced, forkedFrom, createdAt } = record
     return { parentPaneId: this.main.paneId, id, title, mode, method, readOnlyEnforced, forkedFrom, createdAt }
   }
   private async start(record: ChatAsideRecord, options: { resume?: string; fork?: ChatForkPoint; text?: string; images?: AgentSessionSpec['initialImages'] }): Promise<void> {
+    this.room()
     const main = this.main.snapshot().session
     const context = this.main.snapshot().items
     const readOnly = record.mode === 'read-only'
@@ -157,6 +176,14 @@ export class ChatAsides {
     session.on('restart', () => {
       void this.act({ action: 'mode', asideId: record.id, mode: record.mode }).then((result) => { if (!result.ok) this.host.log(result.error) })
     })
+    session.on('closed', () => {
+      if (this.sessions.get(record.id) !== session) return
+      this.sessions.delete(record.id)
+      this.host.remove(session.paneId)
+      // Keep the record open so its tab can offer Reopen after a crash.
+      this.publish()
+      this.host.activity?.()
+    })
     this.host.add(session)
     try {
       await session.start()
@@ -171,8 +198,10 @@ export class ChatAsides {
         session.send(prompt, options.images)
       }
     } catch (error) {
-      this.sessions.delete(record.id)
-      this.host.remove(session.paneId)
+      if (this.sessions.get(record.id) === session) {
+        this.sessions.delete(record.id)
+        this.host.remove(session.paneId)
+      }
       session.close()
       throw error
     }
@@ -196,6 +225,10 @@ export class ChatAsides {
         if (this.stopped) throw new Error('The main chat is closed')
         await this.loadConversation()
         if (action.action === 'open') {
+          if (this.loadError && this.mainId) {
+            await this.store.quarantine(this.mainId)
+            this.loadError = undefined
+          }
           this.room()
           const point = this.forkPoint()
           const provider = this.main.snapshot().session.provider
@@ -230,7 +263,7 @@ export class ChatAsides {
           if (record.status === 'closed' && action.action === 'mode') {
             record.mode = action.mode
           } else {
-            if (record.status === 'closed') this.room()
+            if (!this.sessions.has(record.id)) this.room()
             const point = action.action === 'refork' ? this.forkPoint() : undefined
             if (!point && !record.sessionId) throw new Error('This aside has no saved conversation yet; refork it to start again')
             if (action.action === 'reopen' && this.sessions.has(record.id)) return { ok: true, asideId: record.id }
