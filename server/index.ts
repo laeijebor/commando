@@ -149,6 +149,7 @@ import { repairAgentStatusHooks } from './agent-hook-installer.js'
 import { AgentHostHub, hostRunsInPane } from './agent-host-hub.js'
 import { agentHostBuild } from './agent-host/build.js'
 import { ChatImageStore, handleChatImage, handleChatImageUpload, handleChatVideoUpload } from './chat-images.js'
+import { ChatReplyResources } from './chat-reply-resources.js'
 import { ChatReplyImages } from './chat-reply-images.js'
 import { ChatStashStore, defaultChatStashPath, handleChatStashApi } from './chat-stash.js'
 import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/agent-chat.js'
@@ -1050,6 +1051,7 @@ async function main(): Promise<void> {
   }
   const interactions = new AgentInteractionBroker()
   const chatImages = new ChatImageStore(undefined, (message) => console.warn(`[chat-images] ${message}`))
+  const replyResources = new ChatReplyResources(undefined, (message) => console.warn(`[chat-resources] ${message}`))
   const replyImages = new ChatReplyImages(chatImages, undefined, (message) => console.warn(`[chat-images] ${message}`))
   // A turn can launch a background run and finish between two external-run polls, so report it as it happens.
   let noteChatBusy: ((paneId: string) => void) | undefined
@@ -1088,6 +1090,7 @@ async function main(): Promise<void> {
     }),
     log: (message) => console.log(message),
     handoffs: chatHandoffs,
+    replyResources: (items, cwd) => replyResources.attach(items, cwd),
     replyImages: (items, cwd) => replyImages.attach(items, cwd),
     onHandoffsChange: () => publishChatHandoffs(),
   })
@@ -1958,6 +1961,8 @@ async function main(): Promise<void> {
     panePath: (paneId) => paneForId(paneId)?.path,
     paneTargetId: (paneId) => paneForId(paneId)?.targetId,
     screenshots: paneScreenshots,
+    artifacts: redlineArtifacts,
+    openResourceTile: (paneId, url) => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, engine: 'webkit' }, 'owner').pane.id,
     setPaneMark: (targetId, input) => paneMarks.set(targetId, input),
     acknowledgePaneMark: (targetId) => paneMarks.acknowledge(targetId),
     clearPaneMark: (targetId) => paneMarks.remove(targetId),

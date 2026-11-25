@@ -453,16 +453,7 @@ export class WebPanesApi {
         if (request.method !== 'POST') throw new HttpError(405, 'Method not allowed')
         if (!this.openLimiter.take(1)) throw new HttpError(429, 'Too many web pane requests')
         const body = await readJson(request)
-        const existingIds = new Set(this.dependencies.service.list().map((pane) => pane.id))
-        const pane = this.openPane(body, caller)
-        const reused = !pane.content && existingIds.has(pane.id)
-        if (reused && pane.status === 'open') {
-          this.dependencies.agentRequests.reload(pane.id)
-          this.dependencies.onReopen?.(pane)
-        }
-        this.adoptPending(pane)
-        if (!existingIds.has(pane.id)) this.dependencies.onOpened?.(pane)
-        this.dependencies.onChange()
+        const { pane, reused } = this.open(body, caller)
         writeJson(response, reused ? 200 : 201, {
           ok: true,
           reused,
@@ -1175,6 +1166,21 @@ export class WebPanesApi {
               ? 'navigate'
               : match[2] === 'reload' ? 'reload' : 'delete'
     return { kind: 'pane', id: match[1], action }
+  }
+
+  /** Shared validated opener for HTTP requests and local resource actions. */
+  open(body: Record<string, unknown>, caller: 'owner' | 'agent'): { pane: WebPane; reused: boolean } {
+    const existingIds = new Set(this.dependencies.service.list().map((pane) => pane.id))
+    const pane = this.openPane(body, caller)
+    const reused = !pane.content && existingIds.has(pane.id)
+    if (reused && pane.status === 'open') {
+      this.dependencies.agentRequests.reload(pane.id)
+      this.dependencies.onReopen?.(pane)
+    }
+    this.adoptPending(pane)
+    if (!existingIds.has(pane.id)) this.dependencies.onOpened?.(pane)
+    this.dependencies.onChange()
+    return { pane, reused }
   }
 
   private openPane(body: Record<string, unknown>, caller: 'owner' | 'agent'): WebPane {
