@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { lstat, readFile, readlink, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { githubThrottle, repoFromGithubRemote, validateRepo, type GithubGate } from './prs.js'
 
@@ -22,6 +22,14 @@ const MAX_SEARCH_QUERY_LENGTH = 200
 const MAX_SEARCH_MATCH_LINES = 500
 const MAX_SEARCH_PREVIEW_LENGTH = 240
 const MAX_SEARCHED_UNTRACKED_CHARS = 2 * 1024 * 1024
+/** Either side of a file over this many bytes is not sent to the client renderer. */
+export const MAX_FILE_CONTENTS_BYTES = 1024 * 1024
+const MAX_BLAME_CACHE_ENTRIES = 100
+const UNCOMMITTED_SHA = '0'.repeat(40)
+const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u
+const BLAME_HEADER = /^([0-9a-f]{40}|[0-9a-f]{64}) \d+ (\d+)(?: \d+)?$/u
+/** git blame's answer for a worktree path HEAD doesn't have (untracked, or no commits yet). */
+const BLAME_NOT_IN_HEAD = /no such path .* in HEAD|no such ref: HEAD|bad revision 'HEAD'/iu
 const NUL = '\u0000'
 const REF_FORBIDDEN = /[\s~^:?*[\\]/u
 const PULL_REQUEST_URL = /https?:\/\/[a-z0-9.-]+\/[a-z0-9_.-]+\/[a-z0-9_.-]+\/pull\/([1-9]\d*)/giu
@@ -73,6 +81,127 @@ export type GitDiffSearchResult = {
   totalMatches: number
   matchingFiles: number
   truncated: boolean
+}
+
+export type GitFileSide = {
+  path: string
+  contents: string
+  /** Full commit SHA the contents were read from, or 'worktree' for the files on disk. */
+  rev: string
+}
+
+export type GitFileContents = {
+  file: string
+  /** null when the file is new (added or untracked). */
+  old: GitFileSide | null
+  /** null when the file was deleted. */
+  new: GitFileSide | null
+  /** Set when a side is binary or over the size limit; both sides are then null. */
+  unavailable?: 'binary' | 'too-large'
+}
+
+export type GitBlameCommit = {
+  sha: string
+  author: string
+  /** Unix seconds. */
+  authorTime: number
+  summary: string
+  /** True for lines not committed yet (worktree edits and untracked files). */
+  uncommitted: boolean
+}
+
+export type GitBlame = {
+  file: string
+  rev: string
+  commits: Record<string, GitBlameCommit>
+  /** lines[i] is the commit SHA of 1-based line i + 1. */
+  lines: string[]
+}
+
+export type WorktreeEntry = { kind: 'file' | 'symlink' | 'directory' | 'other'; size: number }
+
+/** Filesystem reads for the working-tree side of a comparison; injectable for tests. */
+export type WorktreeFiles = {
+  /** Like lstat (never follows a symlink); undefined when the path doesn't exist. */
+  entry(file: string): Promise<WorktreeEntry | undefined>
+  readlink(file: string): Promise<string>
+  realpath(file: string): Promise<string>
+}
+
+export const nodeWorktreeFiles: WorktreeFiles = {
+  async entry(file) {
+    try {
+      const stats = await lstat(file)
+      const kind = stats.isSymbolicLink() ? 'symlink' : stats.isFile() ? 'file' : stats.isDirectory() ? 'directory' : 'other'
+      return { kind, size: stats.size }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ENOTDIR') return undefined
+      throw error
+    }
+  },
+  readlink: (file) => readlink(file, 'utf8'),
+  realpath: (file) => realpath(file),
+}
+
+/** One side of a comparison before its contents are read, so oversize files are never loaded. */
+type FileSource = { size: number; read: () => Promise<string> }
+
+export function validateBlameRev(value: unknown): string {
+  if (value === 'worktree' || (typeof value === 'string' && COMMIT_SHA.test(value))) return value
+  throw new GitDiffError('bad-param', 'rev must be "worktree" or a full commit SHA')
+}
+
+function lineCount(contents: string): number {
+  if (contents.length === 0) return 0
+  const lines = contents.split('\n').length
+  return contents.endsWith('\n') ? lines - 1 : lines
+}
+
+function uncommittedCommit(authorTime: number): GitBlameCommit {
+  return { sha: UNCOMMITTED_SHA, author: 'You', authorTime, summary: 'Not committed yet', uncommitted: true }
+}
+
+/** Parses `git blame --porcelain`; metadata follows only the first header of each commit. */
+export function parseBlamePorcelain(output: string, now: () => number = Date.now): Pick<GitBlame, 'commits' | 'lines'> {
+  const commits: Record<string, GitBlameCommit> = {}
+  const lines: string[] = []
+  let sha: string | undefined
+  let finalLine = 0
+  for (const line of output.split('\n')) {
+    if (line.startsWith('\t')) {
+      if (sha && finalLine > 0) lines[finalLine - 1] = sha
+      continue
+    }
+    const header = BLAME_HEADER.exec(line)
+    if (header) {
+      sha = header[1]
+      finalLine = Number(header[2])
+      if (!commits[sha]) {
+        commits[sha] = /^0+$/u.test(sha)
+          ? uncommittedCommit(Math.floor(now() / 1000))
+          : { sha, author: '', authorTime: 0, summary: '', uncommitted: false }
+      }
+      continue
+    }
+    const commit = sha ? commits[sha] : undefined
+    if (!commit || commit.uncommitted) continue
+    const space = line.indexOf(' ')
+    const key = space < 0 ? line : line.slice(0, space)
+    const value = space < 0 ? '' : line.slice(space + 1)
+    if (key === 'author') commit.author = value
+    else if (key === 'author-time') commit.authorTime = Number(value) || 0
+    else if (key === 'summary') commit.summary = value
+  }
+  return { commits, lines }
+}
+
+function gitFailure(error: unknown, action: string): GitDiffError {
+  if (error instanceof GitDiffError) return error
+  if (error instanceof GitCommandFailure) {
+    if (error.missingBinary) return new GitDiffError('exec', 'git is not installed on the daemon host')
+    return new GitDiffError('exec', `${action} failed: ${error.stderr || error.message}`)
+  }
+  return new GitDiffError('exec', error instanceof Error ? error.message : `${action} failed`)
 }
 
 export class GitDiffError extends Error {
@@ -403,6 +532,8 @@ export class GitDiffInspector {
   private readonly branchesCache = new Map<string, { at: number; result: Promise<GitBranches> }>()
   private readonly autoBaseCache = new Map<string, { at: number; result: Promise<ResolvedBase> }>()
   private readonly pullRequestCache = new Map<string, { at: number; result: Promise<GitPullRequest | undefined> }>()
+  /** Blames at a commit SHA never change; worktree blames are never cached. */
+  private readonly blameCache = new Map<string, Promise<GitBlame>>()
 
   constructor(
     private readonly execute: GitProcessExecutor = defaultGitProcessExecutor,
@@ -410,6 +541,7 @@ export class GitDiffInspector {
     private readonly now: () => number = Date.now,
     private readonly readTextFile: (file: string) => Promise<string> = (file) => readFile(file, 'utf8'),
     private readonly github?: GithubGate,
+    private readonly files: WorktreeFiles = nodeWorktreeFiles,
   ) {}
 
   async summary(cwd: string, target?: string, head?: string, baseFallbackRepo?: string, baseFallbackBranch?: string): Promise<GitDiffSummary> {
@@ -564,6 +696,175 @@ export class GitDiffInspector {
         throw new GitDiffError('exec', `git diff search failed: ${error.stderr || error.message}`)
       }
       throw new GitDiffError('exec', error instanceof Error ? error.message : 'git diff search failed')
+    }
+  }
+
+  /**
+   * Both sides of one file in full, for client-side diff rendering. Paths are the same on both
+   * sides (status semantics follow `git diff --no-renames`); each side's rev is an immutable SHA,
+   * or 'worktree' for the files on disk when no head is given.
+   */
+  async fileContents(
+    cwd: string,
+    file: string,
+    target?: string,
+    head?: string,
+    baseFallbackRepo?: string,
+    baseFallbackBranch?: string,
+  ): Promise<GitFileContents> {
+    const repo = await this.repoContext(cwd)
+    if (!repo) throw new GitDiffError('exec', 'Not a git repository')
+    const relative = validateRepoRelativePath(repo.root, file)
+    const resolved = await this.resolveBase(repo.root, repo.branch, target, head, baseFallbackRepo, baseFallbackBranch)
+
+    try {
+      const [baseSha, headSha] = await Promise.all([
+        this.commitSha(repo.root, resolved.base),
+        resolved.head === undefined ? undefined : this.commitSha(repo.root, resolved.head),
+      ])
+      const [oldSource, newSource] = await Promise.all([
+        this.treeSource(repo.root, baseSha, relative),
+        headSha ? this.treeSource(repo.root, headSha, relative) : this.worktreeSource(repo.root, relative),
+      ])
+      if (!oldSource && !newSource) throw new GitDiffError('bad-file', `File not found on either side: ${relative}`)
+      const tooLarge = { file, old: null, new: null, unavailable: 'too-large' } as const
+      if ((oldSource?.size ?? 0) > MAX_FILE_CONTENTS_BYTES || (newSource?.size ?? 0) > MAX_FILE_CONTENTS_BYTES) return tooLarge
+      const [oldText, newText] = await Promise.all([oldSource?.read(), newSource?.read()])
+      if (oldText?.includes(NUL) || newText?.includes(NUL)) return { file, old: null, new: null, unavailable: 'binary' }
+      // The file on disk may have grown since it was measured.
+      if (newText !== undefined && Buffer.byteLength(newText) > MAX_FILE_CONTENTS_BYTES) return tooLarge
+      return {
+        file,
+        old: oldText === undefined ? null : { path: relative, contents: oldText, rev: baseSha },
+        new: newText === undefined ? null : { path: relative, contents: newText, rev: headSha ?? 'worktree' },
+      }
+    } catch (error) {
+      throw gitFailure(error, 'git file contents')
+    }
+  }
+
+  /** Line-by-line blame at a rev from fileContents: a full commit SHA, or 'worktree'. */
+  async blame(cwd: string, file: string, value: unknown): Promise<GitBlame> {
+    const rev = validateBlameRev(value)
+    const repo = await this.repoContext(cwd)
+    if (!repo) throw new GitDiffError('exec', 'Not a git repository')
+    const relative = validateRepoRelativePath(repo.root, file)
+    if (rev === 'worktree') return this.computeBlame(repo.root, file, relative, rev)
+
+    const key = `${repo.root}${NUL}${rev}${NUL}${relative}`
+    const cached = this.blameCache.get(key)
+    if (cached) {
+      this.blameCache.delete(key)
+      this.blameCache.set(key, cached)
+      return cached
+    }
+    const result = this.computeBlame(repo.root, file, relative, rev)
+    this.blameCache.set(key, result)
+    if (this.blameCache.size > MAX_BLAME_CACHE_ENTRIES) this.blameCache.delete(this.blameCache.keys().next().value!)
+    result.catch(() => { if (this.blameCache.get(key) === result) this.blameCache.delete(key) })
+    return result
+  }
+
+  private async computeBlame(root: string, file: string, relative: string, rev: string): Promise<GitBlame> {
+    try {
+      const { stdout } = await this.execute(
+        'git',
+        ['blame', '--porcelain', ...(rev === 'worktree' ? [] : [rev]), '--', relative],
+        this.options(root, DIFF_TIMEOUT_MS, DIFF_BUFFER_BYTES),
+      )
+      return { file, rev, ...parseBlamePorcelain(stdout, this.now) }
+    } catch (error) {
+      if (!(error instanceof GitCommandFailure) || error.missingBinary || error.timedOut) throw gitFailure(error, 'git blame')
+      if (rev !== 'worktree') {
+        if (/no such path/iu.test(error.stderr)) throw new GitDiffError('bad-file', `${relative} does not exist at ${rev}`)
+        throw gitFailure(error, 'git blame')
+      }
+      if (!BLAME_NOT_IN_HEAD.test(error.stderr)) throw gitFailure(error, 'git blame')
+      // Untracked (or no commits yet): every line on disk is uncommitted.
+      const source = await this.worktreeSource(root, relative).catch((cause: unknown) => { throw gitFailure(cause, 'git blame') })
+      if (!source) throw new GitDiffError('bad-file', `File not found: ${relative}`)
+      if (source.size > MAX_FILE_CONTENTS_BYTES) throw new GitDiffError('bad-file', `${relative} is too large to blame`)
+      const count = lineCount(await source.read())
+      const commit = uncommittedCommit(Math.floor(this.now() / 1000))
+      return {
+        file,
+        rev,
+        commits: count > 0 ? { [commit.sha]: commit } : {},
+        lines: Array.from({ length: count }, () => commit.sha),
+      }
+    }
+  }
+
+  private async commitSha(root: string, rev: string): Promise<string> {
+    const { stdout } = await this.git(root, ['rev-parse', '--verify', '--quiet', `${rev}^{commit}`])
+    const sha = stdout.trim()
+    if (!COMMIT_SHA.test(sha)) throw new GitDiffError('bad-target', `Unknown git ref: ${rev}`)
+    return sha
+  }
+
+  /** The file as committed at a SHA; undefined when it doesn't exist there (or is a directory). */
+  private async treeSource(root: string, sha: string, relative: string): Promise<FileSource | undefined> {
+    const { stdout } = await this.git(root, ['ls-tree', '-l', '-z', sha, '--', relative])
+    for (const entry of splitZeroTerminated(stdout)) {
+      const tab = entry.indexOf('\t')
+      if (tab < 0 || entry.slice(tab + 1) !== relative) continue
+      const [, type, object, size] = entry.slice(0, tab).split(/ +/u)
+      if (type === 'commit') {
+        const contents = `Subproject commit ${object}\n`
+        return { size: contents.length, read: async () => contents }
+      }
+      if (type !== 'blob') return undefined
+      return {
+        size: Number(size),
+        read: async () => (await this.execute('git', ['cat-file', 'blob', object],
+          this.options(root, DIFF_TIMEOUT_MS, MAX_FILE_CONTENTS_BYTES + 1))).stdout,
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * The file on disk, read as git would: a symlink is its target text, never followed, and a
+   * path whose parent directories lead outside the repository is refused.
+   */
+  private async worktreeSource(root: string, relative: string): Promise<FileSource | undefined> {
+    const absolute = path.join(root, relative)
+    let parent: string
+    try {
+      parent = await this.files.realpath(path.dirname(absolute))
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'ENOTDIR') return undefined
+      throw error
+    }
+    const realRoot = await this.files.realpath(root)
+    if (parent !== realRoot && !parent.startsWith(`${realRoot}${path.sep}`)) {
+      throw new GitDiffError('bad-file', 'File path escapes the repository')
+    }
+    const entry = await this.files.entry(absolute)
+    if (!entry) return undefined
+    if (entry.kind === 'file') return { size: entry.size, read: () => this.readTextFile(absolute) }
+    if (entry.kind === 'symlink') {
+      const target = await this.files.readlink(absolute)
+      return { size: Buffer.byteLength(target), read: async () => target }
+    }
+    if (entry.kind === 'directory') {
+      const commit = await this.submoduleHead(path.join(parent, path.basename(absolute)))
+      if (!commit) return undefined
+      const contents = `Subproject commit ${commit}\n`
+      return { size: contents.length, read: async () => contents }
+    }
+    return undefined
+  }
+
+  /** The checked-out commit of a submodule directory, or undefined for a plain directory. */
+  private async submoduleHead(directory: string): Promise<string | undefined> {
+    try {
+      const { stdout } = await this.git(directory, ['rev-parse', '--show-toplevel', 'HEAD'])
+      const [top, sha] = stdout.split('\n').map((line) => line.trim())
+      return top === directory && sha && COMMIT_SHA.test(sha) ? sha : undefined
+    } catch {
+      return undefined
     }
   }
 

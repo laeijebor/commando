@@ -58,7 +58,10 @@ export class GitDiffApi {
     if (url.pathname !== API_ROOT && !url.pathname.startsWith(`${API_ROOT}/`)) return false
 
     try {
-      const routes = [`${API_ROOT}/summary`, `${API_ROOT}/file-diff`, `${API_ROOT}/search`, `${API_ROOT}/branches`, `${API_ROOT}/repo`]
+      const routes = [
+        `${API_ROOT}/summary`, `${API_ROOT}/file-diff`, `${API_ROOT}/file-contents`, `${API_ROOT}/blame`,
+        `${API_ROOT}/search`, `${API_ROOT}/branches`, `${API_ROOT}/repo`,
+      ]
       if (!routes.includes(url.pathname)) {
         throw new HttpError(404, 'Not found')
       }
@@ -113,6 +116,17 @@ export class GitDiffApi {
 
       const file = url.searchParams.get('file')
       if (!file) throw new HttpError(400, 'file query parameter is required')
+
+      if (url.pathname === `${API_ROOT}/file-contents`) {
+        writeJson(response, 200, await this.inspector.fileContents(panePath, file, target, head, baseFallbackRepo, baseFallbackBranch))
+        return true
+      }
+
+      if (url.pathname === `${API_ROOT}/blame`) {
+        writeJson(response, 200, await this.inspector.blame(panePath, file, url.searchParams.get('rev')))
+        return true
+      }
+
       const width = validateDiffWidth(url.searchParams.get('width') ?? undefined)
       const engine = validateDiffEngine(url.searchParams.get('engine') ?? undefined)
       const display = validateDiffDisplay(url.searchParams.get('display') ?? undefined)
