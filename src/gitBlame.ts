@@ -11,7 +11,7 @@ export type FileBlame = {
 const MAX_CACHED_BLAMES = 40
 
 /** Cheap content fingerprint: worktree blame changes with every edit while its rev stays 'worktree'. */
-function contentSignature(contents: string): string {
+export function contentSignature(contents: string): string {
   let hash = 0x811c9dc5
   for (let index = 0; index < contents.length; index += 1) {
     hash ^= contents.charCodeAt(index)

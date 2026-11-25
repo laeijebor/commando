@@ -56,9 +56,9 @@ function view(overrides: Partial<Parameters<typeof PierreDiffView>[0]> = {}) {
   )
 }
 
-function hoverLine(side: 'deletions' | 'additions', lineNumber: number, lineType: string, altLine = lineNumber) {
+function hoverLine(side: 'deletions' | 'additions', lineNumber: number, lineType: string, altLine: number | null = lineNumber) {
   const lineElement = document.createElement('div')
-  lineElement.dataset.altLine = String(altLine)
+  if (altLine !== null) lineElement.dataset.altLine = String(altLine)
   lineElement.getBoundingClientRect = () => ({ left: 0, right: 800, top: 0, bottom: 18, width: 800, height: 18, x: 0, y: 0, toJSON: () => ({}) })
   act(() => {
     pierreRenders.at(-1)!.options!.onLineEnter!({
@@ -128,6 +128,24 @@ describe('PierreDiffView', () => {
     act(() => { pierreRenders.at(-1)!.options!.onLineLeave!({} as never) })
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     expect(document.querySelector('.pierre-blame-hint')).not.toBeInTheDocument()
+  })
+
+  it('keys working-tree files by content, so a same-length edit re-renders', () => {
+    const { rerender } = render(view())
+    const before = pierreRenders.at(-1)!.newFile!.cacheKey
+    rerender(view({ contents: { ...contents, new: { ...contents.new!, contents: 'one\nTWX\nthree\n' } } }))
+    expect(pierreRenders.at(-1)!.newFile!.cacheKey).not.toBe(before)
+    expect(pierreRenders.at(-1)!.oldFile!.cacheKey).toBe(pierreRenders[0].oldFile!.cacheKey)
+  })
+
+  it('never attributes an added line to the old file while new-side blame is loading', () => {
+    vi.useFakeTimers()
+    render(view({ blame: { old: oldBlame, loading: true, error: '' } }))
+    // Pierre gives changed rows no data-alt-line.
+    hoverLine('additions', 2, 'change-addition', null)
+    expect(document.querySelector('.pierre-blame-hint')).toHaveTextContent('Loading blame')
+    act(() => { vi.advanceTimersByTime(500) })
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 
   it('shows nothing on hover while blame is off', () => {

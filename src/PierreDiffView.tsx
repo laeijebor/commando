@@ -1,6 +1,6 @@
 import { MultiFileDiff, WorkerPoolContextProvider, type DiffTokenEventBaseProps, type FileContents, type FileDiffOptions } from '@pierre/diffs/react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
-import { blameCommitAt, relativeTime, type FileBlame } from './gitBlame'
+import { blameCommitAt, contentSignature, relativeTime, type FileBlame } from './gitBlame'
 import type { DiffDisplay, GitBlameCommit, GitFileContents, GitFileSide } from './gitApi'
 import {
   findRowMatches,
@@ -75,7 +75,7 @@ function useFileContents(side: GitFileSide | null): FileContents | null {
   const contents = side?.contents
   const rev = side?.rev
   return useMemo(
-    () => (path === undefined || contents === undefined ? null : { name: path, contents, cacheKey: `${rev}:${path}:${contents.length}` }),
+    () => (path === undefined || contents === undefined ? null : { name: path, contents, cacheKey: `${rev}:${path}:${rev === 'worktree' ? contentSignature(contents) : ''}` }),
     [path, contents, rev],
   )
 }
@@ -111,11 +111,12 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     if (!current || !wrapper) return
     // Deletions come from the old file; additions and context from the new one, by its own numbering.
     const context = props.lineType === 'context' || props.lineType === 'context-expanded'
-    const newLine = props.annotationSide === 'additions'
-      ? props.lineNumber
-      : context ? Number(props.lineElement.dataset.altLine ?? props.lineNumber) : undefined
+    // Changed rows carry no alternate line number, so they only ever read their own side.
+    const altLine = props.lineElement.dataset.altLine === undefined ? undefined : Number(props.lineElement.dataset.altLine)
+    const newLine = props.annotationSide === 'additions' ? props.lineNumber : context ? altLine : undefined
+    const oldLine = props.annotationSide === 'deletions' ? props.lineNumber : context ? altLine : undefined
     const commit = (newLine !== undefined ? blameCommitAt(current.new, newLine) : undefined)
-      ?? blameCommitAt(current.old, props.annotationSide === 'deletions' ? props.lineNumber : Number(props.lineElement.dataset.altLine ?? props.lineNumber))
+      ?? (oldLine !== undefined ? blameCommitAt(current.old, oldLine) : undefined)
     if (!commit && !current.loading) return
     const base = wrapper.getBoundingClientRect()
     const row = props.lineElement.getBoundingClientRect()
