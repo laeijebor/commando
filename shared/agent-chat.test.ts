@@ -329,3 +329,33 @@ it('validates reply resources, drops malformed entries, and preserves only known
   expect(capped?.kind === 'assistant_message' && capped.resources?.length).toBe(50)
   expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'files', resources: [{ path: '/bad' }] })).not.toHaveProperty('resources')
 })
+
+it('keeps the path of a stored reply image only when it is a clean absolute path', () => {
+  const id = `${'b'.repeat(64)}.svg`
+  const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', images: [
+    { src: 'a.svg', id, path: '/work/a.svg' }, { src: 'b.svg', id, path: 'relative.svg' }, { src: 'c.svg', id, path: '/bad\u0007.svg' },
+  ] })
+  expect(parsed).toEqual({ ...base, kind: 'assistant_message', text: 'x', images: [{ src: 'a.svg', id, path: '/work/a.svg' }, { src: 'b.svg', id }, { src: 'c.svg', id }] })
+})
+
+it('validates rendered pr-diagram fences and drops malformed ones', () => {
+  const hash = 'c'.repeat(64)
+  const id = `${'d'.repeat(64)}.svg`
+  const parsed = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: [
+    { hash, id, extra: 'drop' },
+    { hash, error: 'invalid', message: 'title: is required' },
+    { hash, error: 'renderer_missing', message: '   ' },
+    { hash, id: `${'d'.repeat(64)}.png` },
+    { hash: 'short', id },
+    { hash, error: 'exploded' },
+    { hash, id: '../etc/passwd.svg' },
+  ] })
+  expect(parsed).toEqual({ ...base, kind: 'assistant_message', text: 'x', diagrams: [
+    { hash, id }, { hash, error: 'invalid', message: 'title: is required' }, { hash, error: 'renderer_missing' },
+  ] })
+  const long = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: [{ hash, error: 'invalid', message: 'x'.repeat(5000) }] })
+  expect(long?.kind === 'assistant_message' && long.diagrams?.[0]).toMatchObject({ message: 'x'.repeat(2000) })
+  const capped = parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: Array(20).fill({ hash, id }) })
+  expect(capped?.kind === 'assistant_message' && capped.diagrams?.length).toBe(10)
+  expect(parseChatItem({ ...base, kind: 'assistant_message', text: 'x', diagrams: 'nope' })).not.toHaveProperty('diagrams')
+})

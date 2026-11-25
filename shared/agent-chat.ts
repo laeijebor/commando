@@ -281,11 +281,30 @@ export type ChatReplyImageError = 'missing' | 'unreadable' | 'unsupported' | 'to
  * `src` is the address exactly as the Markdown parser reads it, so the
  * renderer can match it; the daemon stores the file and gives it an id.
  */
-export type ChatReplyImage = { src: string; id: string } | {
+export type ChatReplyImage = {
+  src: string
+  id: string
+  /** The file the daemon stored, so the renderer can reveal or tile it. */
+  path?: string
+} | {
   src: string
   error: ChatReplyImageError
   /** The file the daemon looked for, when `src` is relative or `~/`. */
   path?: string
+}
+
+/** Why a ```pr-diagram fence has no picture: see `ChatReplyDiagram`. */
+export type ChatReplyDiagramError = 'invalid' | 'too_large' | 'timeout' | 'failed' | 'renderer_missing'
+
+/**
+ * A ```pr-diagram fence the daemon rendered, attached under `prDiagramHash`
+ * of its source (shared/pr-diagram.ts). `id` is the stored SVG; `message`
+ * says what the renderer reported for an invalid document.
+ */
+export type ChatReplyDiagram = { hash: string; id: string } | {
+  hash: string
+  error: ChatReplyDiagramError
+  message?: string
 }
 
 function decodedAddress(value: string): string {
@@ -406,6 +425,8 @@ export type ChatItem = ChatItemBase & (
       /** Local images the reply shows with Markdown; added by the daemon. */
       images?: ChatReplyImage[]
       resources?: ChatReplyResource[]
+      /** Rendered ```pr-diagram fences; added by the daemon. */
+      diagrams?: ChatReplyDiagram[]
     }
   | { kind: 'reasoning'; text: string }
   | { kind: 'command'; toolUseId: string; command: string; description?: string; output?: string; isError?: boolean }
@@ -965,12 +986,31 @@ function parseChatReplyImages(value: unknown): ChatReplyImage[] | undefined {
   if (!Array.isArray(value)) return undefined
   const images = value.slice(0, MAX_ITEM_IMAGES).flatMap((image): ChatReplyImage[] => {
     if (!isRecord(image) || typeof image.src !== 'string' || !image.src || image.src.length > 4096) return []
-    if (isChatReplyImageId(image.id)) return [{ src: image.src, id: image.id }]
+    if (isChatReplyImageId(image.id)) {
+      const path = typeof image.path === 'string' && image.path.startsWith('/') && image.path.length <= 4096 && !/[\u0000-\u001f\u007f-\u009f]/u.test(image.path) ? image.path : undefined
+      return [withOptional({ src: image.src, id: image.id }, { path })]
+    }
     if (!REPLY_IMAGE_ERRORS.includes(image.error as ChatReplyImageError)) return []
     const path = typeof image.path === 'string' && image.path && image.path.length <= 4096 && image.path !== image.src ? image.path : undefined
     return [withOptional({ src: image.src, error: image.error as ChatReplyImageError }, { path })]
   })
   return images.length ? images : undefined
+}
+
+const REPLY_DIAGRAM_ERRORS: readonly ChatReplyDiagramError[] = ['invalid', 'too_large', 'timeout', 'failed', 'renderer_missing']
+const MAX_REPLY_DIAGRAMS = 10
+
+/** A reply's rendered diagrams; one that doesn't parse is dropped, and its fence shows as code. */
+export function parseChatReplyDiagrams(value: unknown): ChatReplyDiagram[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const diagrams = value.slice(0, MAX_REPLY_DIAGRAMS).flatMap((diagram): ChatReplyDiagram[] => {
+    if (!isRecord(diagram) || typeof diagram.hash !== 'string' || !/^[0-9a-f]{64}$/.test(diagram.hash)) return []
+    if (isChatReplyImageId(diagram.id) && diagram.id.endsWith('.svg')) return [{ hash: diagram.hash, id: diagram.id }]
+    if (!REPLY_DIAGRAM_ERRORS.includes(diagram.error as ChatReplyDiagramError)) return []
+    const message = typeof diagram.message === 'string' && diagram.message.trim() ? diagram.message.slice(0, 2000) : undefined
+    return [withOptional({ hash: diagram.hash, error: diagram.error as ChatReplyDiagramError }, { message })]
+  })
+  return diagrams.length ? diagrams : undefined
 }
 
 const COMMAND_NAME = /^[\w][\w:.@-]{0,127}$/
@@ -1100,7 +1140,7 @@ export function parseChatItem(value: unknown): ChatItem | null {
         : null
     case 'assistant_message':
       return typeof value.text === 'string'
-        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images), resources: parseChatReplyResources(value.resources) })
+        ? withOptional({ ...base, kind: 'assistant_message' as const, text: value.text.slice(0, MAX_TEXT) }, { images: parseChatReplyImages(value.images), resources: parseChatReplyResources(value.resources), diagrams: parseChatReplyDiagrams(value.diagrams) })
         : null
     case 'reasoning':
       return typeof value.text === 'string' ? { ...base, kind: value.kind, text: value.text.slice(0, MAX_TEXT) } : null
