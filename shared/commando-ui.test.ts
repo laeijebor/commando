@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { COMMANDO_UI_LIMITS, formatApproveAnswer, formatChoiceAnswer, matchBlockAnswer, parseCommandoUi, settledAnswer, type CommandoUiBlock } from './commando-ui.js'
 
@@ -117,5 +118,18 @@ describe('answers', () => {
     expect(settledAnswer(approve, 5, messages)).toBe('Ship it')
     expect(settledAnswer(approve, 1, messages)).toBe('Ship it')
     expect(settledAnswer(approve, 1, [])).toBeUndefined()
+  })
+})
+
+describe('the commando-ui skill', () => {
+  it('only teaches blocks that validate, one example per component', () => {
+    const skill = readFileSync(new URL('../skills/commando-ui/SKILL.md', import.meta.url), 'utf8')
+    const fences = [...skill.matchAll(/^```commando-ui\n([\s\S]*?)\n```$/gm)].map((match) => match[1]!)
+    const components = fences.flatMap((source) => {
+      const result = parseCommandoUi(source)
+      expect(result, source).toMatchObject({ ok: true })
+      return result.ok ? result.blocks.map((block) => block.component) : []
+    })
+    expect(components.sort()).toEqual(['approve', 'checklist', 'choice', 'stats', 'table'])
   })
 })
