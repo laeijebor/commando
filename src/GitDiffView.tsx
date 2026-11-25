@@ -833,7 +833,7 @@ export function GitDiffView({ paneId, panePath, api, initialSummary, comparison,
       <section className="git-diff-main" aria-label="Git diff">
         <header className="git-diff-header">
           <div className="git-diff-heading">
-            <span><FileDiff aria-hidden="true" /> Structural diff</span>
+            <span><FileDiff aria-hidden="true" /> {engine === 'difftastic' ? 'Structural diff' : 'Diff'}</span>
             <strong id="git-diff-title" title={summary?.root ?? panePath}>{summary?.root ?? panePath}</strong>
           </div>
           <div className="git-diff-target">
