@@ -3413,6 +3413,40 @@ describe('chat asides', () => {
   const asideChat = () => ({ ...mainChat(), paneId: asidePaneId, session: { ...mainChat().session, paneId: asidePaneId, sessionId: 'aside-session', aside: { ...record, parentPaneId: pane.id } } })
   const input = () => within(document.querySelector<HTMLElement>(`[data-pane-id="${pane.id}"]`)!).getByRole('textbox', { name: /^Message/ })
 
+  it('routes Restart to update from an aside to its parent pane', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [record] }, { ...asideChat(), updateAvailable: true }] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Restart to update' }))
+    expect(appMocks.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_restart', paneId: pane.id }))
+    expect(appMocks.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'chat_restart', paneId: asidePaneId }))
+  })
+
+  it('applies and clears saved-aside read errors from daemon messages', async () => {
+    await renderAppWithSnapshot()
+    act(() => {
+      daemonMessage?.({ type: 'chat_state', chat: mainChat() })
+      daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [], error: 'EIO' })
+    })
+    expect(screen.getByText("Saved asides couldn't be read: EIO")).toBeInTheDocument()
+    act(() => daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [] }))
+    expect(screen.queryByText("Saved asides couldn't be read: EIO")).toBeNull()
+  })
+
+  it('says a timed-out aside action may still be in progress', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_state', chat: mainChat() }))
+    vi.useFakeTimers()
+    try {
+      fireEvent.change(input(), { target: { value: '/aside Question' } })
+      fireEvent.keyDown(input(), { key: 'Enter' })
+      await act(async () => { await vi.advanceTimersByTimeAsync(125_000) })
+      expect(screen.getByText('The aside operation timed out and may still be in progress')).toBeInTheDocument()
+    } finally { vi.useRealTimers() }
+  })
+
   it.each(['slash', 'shortcut'] as const)('sends chat_aside from %s and resolves success into a separate chat', async (entry) => {
     appMocks.send.mockReturnValue(true)
     await renderAppWithSnapshot()

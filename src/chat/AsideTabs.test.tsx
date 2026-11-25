@@ -14,14 +14,14 @@ const main: ChatState = { paneId: '%5', hostConnected: true, asides: [record], s
 const key = asideKey(main.paneId, record.id)
 const aside: ChatState = { ...main, paneId: key, asides: undefined, session: { ...main.session, paneId: key, sessionId: 'aside', status: 'idle', aside: { ...record, parentPaneId: main.paneId } }, items: [{ id: 'aside-message', turnId: 't', kind: 'assistant_message', text: 'Aside answer', status: 'completed', createdAt: 1, updatedAt: 1 }] }
 const handlers = () => ({ onSend: vi.fn(), onInterrupt: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn() })
-function setup(state = main, initial?: string, thread = aside) {
+function setup(state = main, initial?: string, thread: ChatState | null = aside) {
   const mainHandlers = handlers(), asideHandlers = handlers()
   const request = vi.fn<ChatAsideServices['request']>().mockResolvedValue({ ok: true, asideId: record.id })
   const flow = { queue: vi.fn(), task: vi.fn(), subagentTranscript: vi.fn(async () => ({ items: [] })), savePlan: vi.fn(async () => ({ path: '/plan.md' })) }
   const bindings = vi.fn((): ChatThreadBindings => ({ ...asideHandlers, flow }))
   function Harness() {
     const [selected, select] = useState(initial)
-    return <ChatPane chat={state} connected focused={false} onFocus={() => {}} {...mainHandlers} asides={{ chats: { [key]: thread }, selected, select, request, bindings }} />
+    return <ChatPane chat={state} connected focused={false} onFocus={() => {}} {...mainHandlers} asides={{ chats: thread ? { [key]: thread } : {}, selected, select, request, bindings }} />
   }
   const view = render(<Harness />)
   return { ...view, mainHandlers, asideHandlers, request, bindings, flow }
@@ -114,6 +114,38 @@ describe('aside threads', () => {
     render(<AsideTabs main={main} chats={{ [key]: waiting }} selected={undefined} onSelect={() => {}} onAction={() => {}} disabled={false} />)
     expect(within(screen.getByRole('tab', { name: /Main/ })).getByRole('img', { name: 'running' })).toBeInTheDocument()
     expect(within(screen.getByRole('tab', { name: /Why flaky/ })).getByRole('img', { name: 'needs answer' })).toBeInTheDocument()
+  })
+  it('offers reopen and an error dot for a stopped aside without a chat', async () => {
+    const { request } = setup({ ...main, asides: [{ ...record, lastError: 'Provider crashed' }] }, record.id, null)
+    expect(within(screen.getByRole('tab', { name: /Why flaky/ })).getByRole('img', { name: 'error' })).toBeInTheDocument()
+    expect(screen.getByText(/This aside stopped: Provider crashed/)).toBeInTheDocument()
+    let finish!: () => void
+    request.mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ ok: false, error: 'Resume failed' }) }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+    expect(request).toHaveBeenCalledWith({ action: 'reopen', asideId: record.id })
+    expect(screen.queryByText(/This aside stopped/)).toBeNull()
+    expect(screen.getByText('Loading aside…')).toBeInTheDocument()
+    expect(within(screen.getByRole('tab', { name: /Why flaky/ })).queryByRole('img', { name: 'error' })).toBeNull()
+    await act(async () => finish())
+    expect(screen.getByText(/This aside stopped: Provider crashed/)).toBeInTheDocument()
+  })
+  it('shows saved-aside read errors even with an empty record list', () => {
+    setup({ ...main, asides: [], asidesError: 'EACCES' })
+    expect(screen.getByRole('alert')).toHaveTextContent("Saved asides couldn't be read: EACCES")
+  })
+  it('shows the last error in the Closed list', () => {
+    setup({ ...main, asides: [{ ...record, status: 'closed', lastError: 'Resume failed' }] })
+    fireEvent.click(screen.getByText('Closed (1)'))
+    expect(screen.getByText('Resume failed')).toBeInTheDocument()
+  })
+  it('shows session-id save errors in the live aside banner', () => {
+    setup({ ...main, asides: [{ ...record, lastError: 'Disk full' }] }, record.id)
+    expect(screen.getByText('Disk full')).toBeInTheDocument()
+    expect(screen.getByText('Aside answer')).toBeInTheDocument()
+  })
+  it('keeps the error dot for a stopped aside while a different aside is pending', () => {
+    render(<AsideTabs main={main} chats={{}} selected={record.id} onSelect={() => {}} onAction={() => {}} disabled pending={(id) => id === 'ijklmnop'} />)
+    expect(within(screen.getByRole('tab', { name: /Why flaky/ })).getByRole('img', { name: 'error' })).toBeInTheDocument()
   })
   it('prefers provider titles, falls back to record titles, and keeps close buttons outside tabs', () => {
     const onSelect = vi.fn(), onAction = vi.fn()

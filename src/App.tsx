@@ -1694,7 +1694,7 @@ function HostApp() {
         break
       }
       case 'chat_asides':
-        setChats((current) => current[message.paneId] ? { ...current, [message.paneId]: { ...current[message.paneId]!, asides: message.asides } } : current)
+        setChats((current) => current[message.paneId] ? { ...current, [message.paneId]: { ...current[message.paneId]!, asides: message.asides, asidesError: message.error } } : current)
         break
       case 'chat_aside_result': {
         const { type: _type, paneId: _paneId, requestId, ...result } = message
@@ -2966,7 +2966,7 @@ function HostApp() {
         chatAsideReplies.current.delete(id)
         resolve(result)
       }
-      const timer = window.setTimeout(() => finish({ ok: false, error: 'The aside operation timed out' }), 125_000)
+      const timer = window.setTimeout(() => finish({ ok: false, error: 'The aside operation timed out and may still be in progress' }), 125_000)
       chatAsideReplies.current.set(id, finish)
       if (!send({ type: 'chat_aside', paneId, requestId: id, action })) finish({ ok: false, error: 'Not connected to Commando' })
     }),
@@ -2975,7 +2975,7 @@ function HostApp() {
       onInterrupt: (dropQueued) => interruptChat(key, dropQueued),
       onAnswer: (requestId, answer) => answerChat(key, requestId, answer),
       onConfigure: (settings) => configureChat(key, settings),
-      onRestart: () => restartChat(key),
+      onRestart: () => restartChat(parseAsideKey(key)?.paneId ?? key),
       services: chatServicesFor(key), flow: chatFlowFor(key),
       sendError: chatSendErrors[key], actionError: chatActionErrors[key],
       onDismissSendError: () => setChatSendErrors((current) => { const next = { ...current }; delete next[key]; return next }),

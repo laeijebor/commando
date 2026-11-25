@@ -113,6 +113,8 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   }, [props.paneId, props.registerFocusable])
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
+  const [pendingAction, setPendingAction] = useState<ChatAsideAction>()
+  const beforeOpen = useRef(new Set<string>())
   const [reforks, setReforks] = useState<Record<string, number>>({})
   const available = asides && hostTakesAsides(props.chat.session)
   const selected = available ? asides.selected : undefined
@@ -137,6 +139,8 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   const request = async (action: ChatAsideAction) => {
     if (!asides || busy) return false
     setBusy(true)
+    beforeOpen.current = new Set(props.chat.asides?.map((aside) => aside.id))
+    setPendingAction(action)
     setError(undefined)
     try {
       const result = await asides.request(action)
@@ -151,10 +155,11 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error))
       return false
-    } finally { setBusy(false) }
+    } finally { setBusy(false); setPendingAction(undefined) }
   }
+  const pending = (id: string) => busy && (pendingAction?.action === 'open' ? !beforeOpen.current.has(id) : pendingAction?.asideId === id)
   const open = available ? (text: string, images?: ChatImageRef[]) => request({ action: 'open', text, ...(images?.length ? { images } : {}), mode: 'read-only' }) : undefined
-  const showStrip = available && (Boolean(props.chat.asides?.length) || Boolean(selected) || busy)
+  const showStrip = available && (Boolean(props.chat.asides?.length) || Boolean(props.chat.asidesError) || Boolean(selected) || busy)
   const columnProps = selectedChat && asides ? {
     ...props, ...asides.bindings(selectedChat.paneId), chat: selectedChat,
     externalRuns: EMPTY_EXTERNAL_RUNS, tileEvents: EMPTY_TILE_EVENTS, asks: NO_ASKS,
@@ -169,7 +174,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       event.preventDefault()
       asides?.select(undefined)
     }}>
-      {showStrip ? <AsideTabs main={props.chat} chats={asides.chats} selected={selected} onSelect={asides.select} onAction={(action) => { void request(action) }} disabled={busy || !props.connected || !props.chat.hostConnected} /> : null}
+      {showStrip ? <AsideTabs main={props.chat} chats={asides.chats} selected={selected} onSelect={asides.select} onAction={(action) => { void request(action) }} pending={pending} disabled={busy || !props.connected || !props.chat.hostConnected} /> : null}
       {record ? <AsideBanner aside={record} disabled={busy || !props.connected || !props.chat.hostConnected} onAction={(action) => { void request(action) }} /> : null}
       {error ? <div role="alert" className="px-3 py-2 text-xs text-destructive">{error}<Button size="xs" variant="ghost-muted" onClick={() => setError(undefined)}>Dismiss</Button></div> : null}
       {selected === 'new' ? <>
@@ -181,7 +186,10 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
           requests={[]} services={props.services} onOpenAside={open} newAside
           onSend={() => {}} onInterrupt={() => {}} onAnswer={() => {}} onConfigure={() => {}}
         />
-      </> : selected && !selectedChat ? <div role="status" className="p-4 text-sm text-muted-foreground">Loading aside…</div>
+      </> : selected && !selectedChat ? record && !pending(record.id) ? <div role="alert" className="p-4 text-sm text-destructive">
+        This aside stopped: {record.lastError ?? 'The aside session closed unexpectedly'}
+        <Button size="xs" variant="outline" disabled={!props.connected || !props.chat.hostConnected} onClick={() => { void request({ action: 'reopen', asideId: record.id }) }}>Reopen</Button>
+      </div> : <div role="status" className="p-4 text-sm text-muted-foreground">Loading aside…</div>
         : <ChatColumn key={selectedChat ? `${selectedChat.paneId}:${reforks[record!.id] ?? 0}` : props.chat.paneId} {...columnProps} registerFocusable={undefined} {...(open ? { onOpenAside: open } : {})} />}
     </div>
   </ChatErrorBoundary>
