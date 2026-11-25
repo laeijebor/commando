@@ -35,7 +35,7 @@ type PaneManagementDependencies = {
   resourceTempRoots?: readonly string[]
   resourceTileRoot?: string
   resourceNow?: () => number
-  artifacts?: Pick<RedlineArtifactRegistry, 'register'>
+  artifacts?: Pick<RedlineArtifactRegistry, 'register' | 'hasDirectory'>
   openResourceTile?: (paneId: string, url: string) => string
   screenshots?: PaneScreenshotRegistry
   runCommand?: (command: string, cwd: string) => Promise<void>
@@ -145,7 +145,9 @@ export class PaneManagementApi {
         if (!entry.isDirectory() || !/^[a-f0-9]{16}$/.test(entry.name)) continue
         const path = join(root, entry.name)
         try {
-          if ((await stat(path)).mtimeMs < now - REDLINE_ARTIFACT_TTL_MS) await rm(path, { recursive: true, force: true })
+          if ((await stat(path)).mtimeMs >= now - REDLINE_ARTIFACT_TTL_MS) continue
+          if (this.dependencies.artifacts?.hasDirectory(await realpath(path))) continue
+          await rm(path, { recursive: true, force: true })
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }

@@ -354,7 +354,7 @@ describe('resource actions', () => {
     const openResourceTile = vi.fn().mockReturnValue('w-12345678')
     const api = new PaneManagementApi({
       currentPaneIds: () => ['%12'], panePath: () => cwd, platform: 'darwin', resourceHome: home,
-      resourceTempRoots: [], resourceExecutor: execute, artifacts: { register }, openResourceTile, ...overrides,
+      resourceTempRoots: [], resourceExecutor: execute, artifacts: { register, hasDirectory: () => false }, openResourceTile, ...overrides,
     })
     const baseUrl = await startApi(api)
     const request = (body: unknown) => fetch(`${baseUrl}/api/pane-management/panes/%2512/resource`, {
@@ -436,7 +436,7 @@ describe('resource actions', () => {
     const root = await mkdtemp(join(tmpdir(), 'resource-tile-snapshots-'))
     const registry = new RedlineArtifactRegistry()
     const register = vi.fn((directory: string) => registry.register(directory))
-    const { dir, cwd, request, openResourceTile } = await setup({ resourceTileRoot: join(root, 'tiles'), artifacts: { register } })
+    const { dir, cwd, request, openResourceTile } = await setup({ resourceTileRoot: join(root, 'tiles'), artifacts: { register, hasDirectory: registry.hasDirectory.bind(registry) } })
     try {
       await writeFile(join(cwd, 'secret.txt'), 'must not be served')
       for (const extension of ['png', 'svg', 'pdf']) {
@@ -467,23 +467,31 @@ describe('resource actions', () => {
     }
   })
 
-  it('prunes expired snapshot folders at most once an hour', async () => {
+  it('prunes old unregistered snapshots at most hourly and keeps old registered ones', async () => {
     const root = await mkdtemp(join(tmpdir(), 'resource-tile-pruning-'))
     let now = Date.now()
     const expired = join(root, '0'.repeat(16))
     const recent = join(root, '1'.repeat(16))
     const later = join(root, '2'.repeat(16))
+    const retained = join(root, '3'.repeat(16))
+    const registry = new RedlineArtifactRegistry({ now: () => now })
     const oldTime = new Date(now - REDLINE_ARTIFACT_TTL_MS - 1_000)
     await mkdir(expired)
     await mkdir(recent)
     await writeFile(join(expired, 'old.png'), 'old')
     await utimes(expired, oldTime, oldTime)
-    const { dir, cwd, request } = await setup({ resourceTileRoot: root, resourceNow: () => now })
+    await mkdir(retained)
+    await writeFile(join(retained, 'kept.png'), 'still shown by an open tile')
+    await utimes(retained, oldTime, oldTime)
+    const { id: retainedId } = registry.register(retained)
+    const { dir, cwd, request } = await setup({ resourceTileRoot: root, resourceNow: () => now, artifacts: registry })
     try {
       const path = join(cwd, 'preview.png')
       await writeFile(path, 'preview bytes')
       expect((await request({ path, action: 'tile' })).status).toBe(200)
       await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect((await stat(retained)).mtimeMs).toBeLessThan(now - REDLINE_ARTIFACT_TTL_MS)
+      expect(registry.resolve(retainedId, 'kept.png')).toBe(join(await realpath(retained), 'kept.png'))
       expect((await stat(recent)).isDirectory()).toBe(true)
       await mkdir(later)
       await utimes(later, oldTime, oldTime)
@@ -492,6 +500,7 @@ describe('resource actions', () => {
       now += 60 * 60 * 1000
       expect((await request({ path, action: 'tile' })).status).toBe(200)
       await expect(stat(later)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(registry.resolve(retainedId, 'kept.png')).toBe(join(await realpath(retained), 'kept.png'))
       expect((await stat(recent)).isDirectory()).toBe(true)
     } finally {
       await rm(dir, { recursive: true, force: true })

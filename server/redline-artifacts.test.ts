@@ -41,6 +41,45 @@ describe('RedlineArtifactRegistry', () => {
     expect(registry.resolve(id, 'assets/app.css')).toBe(join(dir, 'assets', 'app.css'))
   })
 
+  it('finds only non-expired directory registrations by realpath', () => {
+    let now = 1_000
+    const registry = new RedlineArtifactRegistry({ now: () => now })
+    const dir = artifactDir()
+    try {
+      const alias = join(dir, 'alias')
+      symlinkSync(realpathSync(dir), alias)
+      expect(registry.hasDirectory(dir)).toBe(false)
+      registry.register(dir)
+      expect(registry.hasDirectory(realpathSync(dir))).toBe(true)
+      expect(registry.hasDirectory(alias)).toBe(true)
+      expect(registry.hasDirectory(join(dir, 'assets'))).toBe(false)
+      expect(registry.hasDirectory(join(dir, 'missing'))).toBe(false)
+      now += REDLINE_ARTIFACT_TTL_MS
+      expect(registry.hasDirectory(dir)).toBe(true)
+      now++
+      expect(registry.hasDirectory(alias)).toBe(false)
+      const fresh = registry.register(dir)
+      expect(registry.hasDirectory(dir)).toBe(true)
+      registry.unregister(fresh.id)
+      expect(registry.hasDirectory(dir)).toBe(false)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('finds a retained directory past its original registration ttl without changing its mtime', () => {
+    let now = 1_000
+    const registry = new RedlineArtifactRegistry({ now: () => now })
+    const dir = artifactDir()
+    try {
+      const { id } = registry.register(dir)
+      const mtime = statSync(dir).mtimeMs
+      now += REDLINE_ARTIFACT_TTL_MS - 1
+      registry.retain([id])
+      now += 2
+      expect(registry.hasDirectory(dir)).toBe(true)
+      expect(statSync(dir).mtimeMs).toBe(mtime)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('serves index.html for the empty path and trailing slash', () => {
     const registry = new RedlineArtifactRegistry()
     const { id } = registry.register(realpathSync(artifactDir()))

@@ -113,6 +113,17 @@ export class RedlineArtifactRegistry {
     return entry && entry.registeredAt >= this.now() - REDLINE_ARTIFACT_TTL_MS ? entry.dir : null
   }
 
+  /** Whether a live registration still serves this directory, including symlink aliases. */
+  hasDirectory(dir: string): boolean {
+    let real: string
+    try { real = realpathSync(dir) } catch { return false }
+    const cutoff = this.now() - REDLINE_ARTIFACT_TTL_MS
+    for (const entry of this.entries.values()) {
+      if (entry.dir === real && entry.registeredAt >= cutoff) return true
+    }
+    return false
+  }
+
   /** Maps an artifact request path to an absolute file path, or null. */
   resolve(id: string, requestPath: string): string | null {
     const entry = this.entries.get(id)
