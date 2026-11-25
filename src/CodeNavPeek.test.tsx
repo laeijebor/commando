@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CodeNavFile, CodeNavKind, CodeNavResult } from '../shared/code-nav'
@@ -123,16 +123,55 @@ describe('CodeNavPeek', () => {
     expect(file.querySelector('[data-selected-line]')).toHaveTextContent('const out = render()')
     expect(pierreFileRenders.at(-1)?.selectedLines).toEqual({ start: 4, end: 4 })
 
-    const peek = screen.getByRole('region', { name: 'Navigation for render' })
-    fireEvent.keyDown(peek, { key: 'ArrowDown' })
+    const list = screen.getByRole('listbox', { name: 'References locations' })
+    fireEvent.keyDown(list, { key: 'ArrowDown' })
     expect(await screen.findByText('lib/other.ts:9')).toBeInTheDocument()
     expect((await screen.findByTestId('pierre-file')).querySelector('[data-selected-line]')).toHaveTextContent('line 9')
-    fireEvent.keyDown(peek, { key: 'ArrowDown' })
+    fireEvent.keyDown(list, { key: 'ArrowDown' })
     expect(await screen.findByText('lib/other.ts:12')).toBeInTheDocument()
-    fireEvent.keyDown(peek, { key: 'ArrowUp' })
-    fireEvent.keyDown(peek, { key: 'ArrowUp' })
+    fireEvent.keyDown(list, { key: 'ArrowUp' })
+    fireEvent.keyDown(list, { key: 'ArrowUp' })
     expect(await screen.findByText('src/a.ts:4')).toBeInTheDocument()
     expect(api.fileAt).toHaveBeenCalledTimes(2)
+  })
+
+  it('wires the tabs, panel and listbox for assistive technology', async () => {
+    renderPeek()
+    const list = await screen.findByRole('listbox', { name: 'Definition locations' })
+    // Focus moves from the peek to the list once it has locations, so Up/Down work at once.
+    expect(list).toHaveFocus()
+    expect(list).toHaveAttribute('tabindex', '0')
+    const option = within(list).getByRole('option')
+    expect(option.id).not.toBe('')
+    expect(list).toHaveAttribute('aria-activedescendant', option.id)
+    const panel = screen.getByRole('tabpanel')
+    const definitionTab = screen.getByRole('tab', { name: 'Definition 1' })
+    expect(panel).toHaveAttribute('aria-labelledby', definitionTab.id)
+    expect(definitionTab).toHaveAttribute('aria-controls', panel.id)
+    expect(definitionTab).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('tab', { name: 'References' })).toHaveAttribute('tabindex', '-1')
+
+    // Left/Right move between tabs, wrapping, and take focus along.
+    fireEvent.keyDown(definitionTab, { key: 'ArrowRight' })
+    const references = screen.getByRole('tab', { name: /References/ })
+    expect(references).toHaveAttribute('aria-selected', 'true')
+    expect(references).toHaveFocus()
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', references.id)
+    fireEvent.keyDown(references, { key: 'ArrowLeft' })
+    fireEvent.keyDown(screen.getByRole('tab', { name: /Definition/ }), { key: 'ArrowLeft' })
+    expect(screen.getByRole('tab', { name: /Callers/ })).toHaveAttribute('aria-selected', 'true')
+
+    // Status, errors and the truncation note sit outside the listbox.
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('No callers found for render'))
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /References/ }))
+    const references3 = await screen.findByRole('listbox', { name: 'References locations' })
+    expect(within(references3).queryByText('More matches exist than are shown.')).not.toBeInTheDocument()
+    expect(screen.getByText('More matches exist than are shown.')).toBeInTheDocument()
+    fireEvent.keyDown(references3, { key: 'ArrowDown' })
+    const options = within(references3).getAllByRole('option')
+    expect(references3).toHaveAttribute('aria-activedescendant', options[1].id)
+    expect(new Set(options.map((item) => item.id)).size).toBe(options.length)
   })
 
   it('reports a file it cannot preview', async () => {
@@ -148,6 +187,7 @@ describe('CodeNavPeek', () => {
     api.navigate.mockRejectedValueOnce(new Error('git grep failed'))
     renderPeek(api)
     expect(await screen.findByRole('alert')).toHaveTextContent('git grep failed')
+    expect(screen.getByRole('alert').closest('[role="listbox"]')).toBeNull()
   })
 
   it('shows a location in the diff from the button, Enter or a double-click, and opens it in the IDE at its column', async () => {
@@ -156,7 +196,7 @@ describe('CodeNavPeek', () => {
     expect(await screen.findByText('src/a.ts:4')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Show in diff/ }))
     expect(props.onShowInDiff).toHaveBeenLastCalledWith('src/a.ts', 'additions', 4)
-    fireEvent.keyDown(screen.getByRole('region', { name: 'Navigation for render' }), { key: 'Enter' })
+    fireEvent.keyDown(screen.getByRole('listbox', { name: 'References locations' }), { key: 'Enter' })
     expect(props.onShowInDiff).toHaveBeenCalledTimes(2)
     fireEvent.click(screen.getByRole('button', { name: /Open in IDE/ }))
     expect(props.onOpenInIde).toHaveBeenLastCalledWith('src/a.ts', 4, 7)

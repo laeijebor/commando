@@ -1,6 +1,6 @@
 import { File as PierreFile, type FileContents, type FileOptions } from '@pierre/diffs/react'
 import { Code2, FileDiff, LoaderCircle, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { CODE_NAV_KINDS, type CodeNavFile, type CodeNavKind, type CodeNavLocation, type CodeNavRequest, type CodeNavResult } from '../shared/code-nav'
 import type { GitDiffApiClient } from './gitApi'
 import { contentSignature } from './gitBlame'
@@ -174,22 +174,45 @@ export function CodeNavPeek({ paneId, api, origin, changedFiles, diffSide, onSho
   const openInIde = () => { if (location) onOpenInIde?.(location.file, location.line, location.character + 1) }
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      event.stopPropagation()
-      onClose()
-      return
-    }
-    const onButton = event.target instanceof HTMLElement && event.target.closest('button')
+    if (event.key !== 'Escape') return
+    event.preventDefault()
+    event.stopPropagation()
+    onClose()
+  }
+
+  // The listbox keeps focus and points at the selected option (aria-activedescendant).
+  const onListKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && flat.length) {
       event.preventDefault()
       const step = event.key === 'ArrowDown' ? 1 : -1
       select(Math.min(flat.length - 1, Math.max(0, selectedIndex + step)))
-    } else if (event.key === 'Enter' && !onButton && side) {
+    } else if (event.key === 'Enter' && side) {
       event.preventDefault()
       showInDiff()
     }
   }
+
+  // Tabs follow the ARIA tabs pattern: Left/Right move between them, with roving focus.
+  const tabRefs = useRef<Partial<Record<CodeNavKind, HTMLButtonElement | null>>>({})
+  const onTabKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const index = CODE_NAV_KINDS.indexOf(tab) + (event.key === 'ArrowRight' ? 1 : -1)
+    const next = CODE_NAV_KINDS[(index + CODE_NAV_KINDS.length) % CODE_NAV_KINDS.length]
+    setTab(next)
+    tabRefs.current[next]?.focus()
+  }
+
+  const ids = useId()
+  const tabId = (kind: CodeNavKind) => `${ids}-tab-${kind}`
+  const optionId = (index: number) => `${ids}-option-${index}`
+  const panelId = `${ids}-panel`
+
+  // Once locations load, move focus from the peek itself to the list so Up/Down work straight away.
+  const hasLocations = flat.length > 0
+  useEffect(() => {
+    if (hasLocations && document.activeElement === rootRef.current) listRef.current?.focus({ preventScroll: true })
+  }, [hasLocations, tab])
 
   // Esc also closes the peek after clicking back into the diff, which leaves focus on the page.
   const onCloseRef = useRef(onClose)
@@ -222,15 +245,19 @@ export function CodeNavPeek({ paneId, api, origin, changedFiles, diffSide, onSho
     <section className="code-nav-peek" aria-label={`Navigation for ${origin.symbol}`} ref={rootRef} tabIndex={-1} onKeyDown={onKeyDown}>
       <header className="code-nav-header">
         <code className="code-nav-symbol" title={origin.symbol}>{origin.symbol}</code>
-        <div className="code-nav-tabs" role="tablist" aria-label="Navigation kind">
+        <div className="code-nav-tabs" role="tablist" aria-label="Navigation kind" onKeyDown={onTabKeyDown}>
           {CODE_NAV_KINDS.map((kind) => {
             const loaded = count(kind)
             return (
               <button
                 key={kind}
+                ref={(element) => { tabRefs.current[kind] = element }}
+                id={tabId(kind)}
                 type="button"
                 role="tab"
                 aria-selected={kind === tab}
+                aria-controls={panelId}
+                tabIndex={kind === tab ? 0 : -1}
                 className={kind === tab ? 'active' : undefined}
                 onClick={() => setTab(kind)}
               >
@@ -250,38 +277,51 @@ export function CodeNavPeek({ paneId, api, origin, changedFiles, diffSide, onSho
           <X aria-hidden="true" />
         </button>
       </header>
-      <div className="code-nav-body">
-        <div className="code-nav-list" ref={listRef} role="listbox" aria-label={`${TAB_LABEL[tab]} locations`}>
+      <div className="code-nav-body" role="tabpanel" id={panelId} aria-labelledby={tabId(tab)}>
+        <div className="code-nav-list">
           {!current || current.status === 'loading'
-            ? <div className="git-diff-status"><LoaderCircle className="spin" />Finding {TAB_LABEL[tab].toLowerCase()}</div>
+            ? <div className="git-diff-status" role="status"><LoaderCircle className="spin" />Finding {TAB_LABEL[tab].toLowerCase()}</div>
             : null}
           {current?.status === 'error' ? <div className="git-diff-error" role="alert">{current.message}</div> : null}
-          {result && !flat.length ? <div className="git-diff-status">No {TAB_LABEL[tab].toLowerCase()} found for {origin.symbol}</div> : null}
-          {groups.map((group) => (
-            <div className="code-nav-group" key={group.file} role="group" aria-label={group.file}>
-              <div className="code-nav-group-file" title={group.file}>
-                <span>{group.file}</span>
-                {group.changed ? <span className="code-nav-changed" title="Changed in this diff">changed</span> : null}
-              </div>
-              {group.locations.map((item) => {
-                const index = flatIndex++
-                return (
-                  <div
-                    key={`${item.line}:${item.character}:${index}`}
-                    role="option"
-                    aria-selected={index === selectedIndex}
-                    className={`code-nav-location${index === selectedIndex ? ' selected' : ''}`}
-                    onClick={() => select(index)}
-                    onDoubleClick={() => reveal(item)}
-                  >
-                    <span className="code-nav-line">{item.line}</span>
-                    <span className="code-nav-preview-text"><PreviewText text={item.preview} symbol={origin.symbol} /></span>
-                    {item.container ? <span className="code-nav-container">{item.container}</span> : null}
+          {result && !flat.length ? <div className="git-diff-status" role="status">No {TAB_LABEL[tab].toLowerCase()} found for {origin.symbol}</div> : null}
+          {hasLocations ? (
+            <div
+              className="code-nav-options"
+              ref={listRef}
+              role="listbox"
+              tabIndex={0}
+              aria-label={`${TAB_LABEL[tab]} locations`}
+              aria-activedescendant={optionId(selectedIndex)}
+              onKeyDown={onListKeyDown}
+            >
+              {groups.map((group) => (
+                <div className="code-nav-group" key={group.file} role="group" aria-label={group.file}>
+                  <div className="code-nav-group-file" title={group.file}>
+                    <span>{group.file}</span>
+                    {group.changed ? <span className="code-nav-changed" title="Changed in this diff">changed</span> : null}
                   </div>
-                )
-              })}
+                  {group.locations.map((item) => {
+                    const index = flatIndex++
+                    return (
+                      <div
+                        key={`${item.line}:${item.character}:${index}`}
+                        id={optionId(index)}
+                        role="option"
+                        aria-selected={index === selectedIndex}
+                        className={`code-nav-location${index === selectedIndex ? ' selected' : ''}`}
+                        onClick={() => select(index)}
+                        onDoubleClick={() => reveal(item)}
+                      >
+                        <span className="code-nav-line">{item.line}</span>
+                        <span className="code-nav-preview-text"><PreviewText text={item.preview} symbol={origin.symbol} /></span>
+                        {item.container ? <span className="code-nav-container">{item.container}</span> : null}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
             </div>
-          ))}
+          ) : null}
           {result?.truncated ? <div className="code-nav-truncated">More matches exist than are shown.</div> : null}
         </div>
         <div className="code-nav-preview">

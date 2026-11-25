@@ -1001,6 +1001,9 @@
   border-right: 1px solid var(--border);
 }
 
+.code-nav-options { outline: none; }
+.code-nav-options:focus-visible .code-nav-location.selected { box-shadow: inset 2px 0 var(--accent); }
+
 .code-nav-group + .code-nav-group { margin-top: 4px; }
 
 .code-nav-group-file {

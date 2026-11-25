@@ -1199,7 +1199,7 @@ describe('GitDiffView code navigation', () => {
     await screen.findByTestId('pierre-diff')
     clickToken('additions', 3, 4, 'needle')
     const peek = await screen.findByRole('region', { name: 'Navigation for needle' })
-    expect(peek).toHaveFocus()
+    await waitFor(() => expect(peek).toContainElement(document.activeElement as HTMLElement))
     rerender(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} visible={false} />)
     expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
     rerender(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} visible />)
