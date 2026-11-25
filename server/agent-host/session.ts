@@ -520,6 +520,7 @@ export class AgentSession implements ChatProviderSession {
         } } : this.spec.fast ? { settings: { fastMode: true } } : {}),
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
         thinking: { type: 'adaptive', display: 'summarized' },
+        // Read-only blocks edit tools and drops bypass/acceptEdits to default; Bash still follows the user's permission rules and prompts.
         permissionMode: this.spec.readOnly && this.spec.permissionMode !== 'plan' ? 'default' : this.spec.permissionMode,
         ...(this.spec.readOnly ? { disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] } : {}),
         // Commander may run its own CLI without asking; nothing else is pre-approved.

@@ -5,6 +5,7 @@ import type { CodexTransport } from './client.js'
 import { CodexChatSession, codexContextUsage, codexModels, codexPermissions, codexTuiSwitchCommand } from './session.js'
 import type { AgentSessionSpec } from '../session.js'
 import { MAX_CHAT_ITEMS, parseChatSessionInfo } from '../../../shared/agent-chat.js'
+import { asideInstructions } from '../aside-brief.js'
 
 const model = (id: string, efforts = ['low', 'medium', 'high'], fast = false) => ({ id, model: id, upgrade: null, upgradeInfo: null, availabilityNux: null, displayName: id, description: 'Test model', modelSpecialty: null, hidden: false, supportedReasoningEfforts: efforts.map((reasoningEffort) => ({ reasoningEffort, description: reasoningEffort })), defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], supportsPersonality: false, multiAgentVersion: null, additionalSpeedTiers: fast ? ['fast'] : [], serviceTiers: fast ? [{ id: 'priority', name: 'Fast', description: '2x speed, increased usage' }] : [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: id === 'test-model' })
 const thread = { id: 'thread-123', sessionId: 'thread-123', forkedFromId: null, parentThreadId: null, preview: '', ephemeral: false, section: null, sectionEnteredAt: null, projectId: null, historyMode: 'legacy', modelProvider: 'openai', model: 'test-model', reasoningEffort: 'medium', createdAt: 1, updatedAt: 1, recencyAt: null, status: { type: 'idle' }, path: null, cwd: '/tmp', cliVersion: '0.159.3', originator: 'commando', source: 'appServer', threadSource: null, agentNickname: null, agentRole: null, gitInfo: null, name: null, turns: [] }
@@ -492,6 +493,14 @@ describe('Codex paginated history and request validation', () => {
 })
 
 describe('Codex aside forks', () => {
+  it.each(['read-only', 'inherit'] as const)('resumes an aside with instructions matching its current %s mode', async (mode) => {
+    const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1 }
+    const { session, client } = harness({ paneId: '%3~abcd1234', aside, resume: 'saved-aside', readOnly: mode === 'read-only' })
+    await session.start()
+    expect(client.requests.find((request) => request.method === 'thread/resume')?.params).toMatchObject({ threadId: 'saved-aside', developerInstructions: asideInstructions(mode), sandbox: mode === 'read-only' ? 'read-only' : 'workspace-write' })
+    expect(client.requests.some((request) => request.method === 'thread/fork')).toBe(false)
+    session.close()
+  })
   it('uses thread/fork through a completed turn and keeps read-only on subsequent turns', async () => {
     const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished-turn' }, createdAt: 1 }
     const { session, client } = harness({ paneId: '%3~abcd1234', aside, fork: aside.forkedFrom, readOnly: true })

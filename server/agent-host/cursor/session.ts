@@ -100,6 +100,7 @@ export class CursorChatSession implements ChatProviderSession {
     this.files = new WorkspaceFileIndex(spec.cwd)
     this.mcpController = new CursorMcpController({
       cwd: spec.cwd,
+      // The SDK forwards no per-agent env to local tool execution, so Cursor aside hook isolation is advisory.
       env: spec.aside ? asideEnv(spec.env, spec.aside.id) : spec.env,
       ...(mcpCli !== undefined ? { cli: mcpCli } : {}),
       callbacks: {

@@ -227,8 +227,8 @@ export class CodexChatSession implements ChatProviderSession {
       } while (cursor)
       this.update({ models })
       const { sandbox, approvalPolicy } = codexPermissions(this.spec.readOnly ? 'plan' : this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
-      const settings = { cwd: this.spec.cwd, sandbox, approvalPolicy, approvalsReviewer: 'user' as const, ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}) }
-      const response = record(await (this.spec.fork ? this.client.request('thread/fork', { threadId: this.spec.fork.sessionId, ...(this.spec.fork.at ? { lastTurnId: this.spec.fork.at } : {}), ...settings, ...(this.spec.aside ? { developerInstructions: asideInstructions(this.spec.aside.mode) } : {}) }) : this.spec.resume ? this.client.request('thread/resume', { threadId: this.spec.resume, ...settings }) : this.client.request('thread/start', settings)))
+      const settings = { cwd: this.spec.cwd, sandbox, approvalPolicy, approvalsReviewer: 'user' as const, ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}), ...(this.spec.aside ? { developerInstructions: asideInstructions(this.spec.aside.mode) } : {}) }
+      const response = record(await (this.spec.fork ? this.client.request('thread/fork', { threadId: this.spec.fork.sessionId, ...(this.spec.fork.at ? { lastTurnId: this.spec.fork.at } : {}), ...settings }) : this.spec.resume ? this.client.request('thread/resume', { threadId: this.spec.resume, ...settings }) : this.client.request('thread/start', settings)))
       const thread = parseThread(response.thread)
       if (this.closing) return
       const runningModel = this.info.selectedModel ?? string(response.model)

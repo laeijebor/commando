@@ -1676,6 +1676,18 @@ describe('DeepSeek through Claude Code', () => {
 })
 
 describe('Claude aside forks', () => {
+  it.each(['bypassPermissions', 'acceptEdits'] as const)('keeps read-only edit blocks and Bash approval prompts with %s', async (permissionMode) => {
+    const { fake, session, items } = started({ readOnly: true, permissionMode })
+    await tick()
+    expect(fake.options.permissionMode).toBe('default')
+    expect(fake.options.disallowedTools).toEqual(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+    const input = { command: 'printf example > file.txt' }
+    const pending = fake.canUseTool('Bash', input, signalOptions('aside-bash'))
+    expect(items.get('request-aside-bash')).toMatchObject({ requestKind: 'approval', toolName: 'Bash' })
+    expect(session.answer('aside-bash', { kind: 'approval', decision: 'allow' })).toBe(true)
+    expect(await pending).toMatchObject({ behavior: 'allow', updatedInput: input })
+    session.close()
+  })
   it('uses native fork options, disallows edits, and strips pane identity from the child env', async () => {
     const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
     const { fake, session } = started({ paneId: '%3~abcd1234', fork: aside.forkedFrom, aside, readOnly: true, permissionMode: 'bypassPermissions', env: { TMUX_PANE: '%3', COMMANDO_CHAT_RESUME: 'main', COMMANDO_CHAT_RESUME_B64: 'bWFpbg==' } })
