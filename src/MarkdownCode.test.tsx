@@ -7,6 +7,7 @@ import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MarkdownPre, MermaidDiagram } from './MarkdownCode'
+import { applyTheme } from './theme'
 
 const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }))
 vi.mock('mermaid', () => ({ default: mermaid }))
@@ -59,6 +60,28 @@ describe('MarkdownPre', () => {
     expect(await screen.findByTestId('second')).toBeInTheDocument()
     const ids = mermaid.render.mock.calls.map(([id]) => id)
     expect(new Set(ids).size).toBe(3)
+  })
+
+  it('draws in the active theme, in a block with a source toggle, and redraws when the theme changes', async () => {
+    document.documentElement.style.setProperty('--surface-soft', '#142028')
+    mermaid.render.mockResolvedValue({ svg: '<svg data-testid="themed"></svg>' })
+    render(<MermaidDiagram source={'sequenceDiagram\n  A->>B: hi'} />)
+    expect(await screen.findByTestId('themed')).toBeInTheDocument()
+    expect(mermaid.initialize).toHaveBeenLastCalledWith(expect.objectContaining({ theme: 'base', securityLevel: 'strict', themeVariables: expect.objectContaining({ primaryColor: '#142028' }) }))
+    expect(screen.getByRole('figure', { name: 'Sequence diagram' })).toHaveTextContent('Sequence diagram · mermaid')
+    expect(screen.getByRole('button', { name: 'Show source' })).toBeInTheDocument()
+
+    document.documentElement.style.setProperty('--surface-soft', '#281419')
+    applyTheme('rose')
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2))
+    expect(mermaid.initialize).toHaveBeenLastCalledWith(expect.objectContaining({ themeVariables: expect.objectContaining({ primaryColor: '#281419' }) }))
+    applyTheme('purple')
+    document.documentElement.style.removeProperty('--surface-soft')
+  })
+
+  it('leaves pr-diagram fences as code outside a chat reply', () => {
+    const { container } = renderMarkdown('```pr-diagram\n{"type":"pipeline"}\n```\n')
+    expect(container.querySelector('pre > code.language-pr-diagram')).toHaveTextContent('{"type":"pipeline"}')
   })
 
   it('colours diff fences line by line', () => {

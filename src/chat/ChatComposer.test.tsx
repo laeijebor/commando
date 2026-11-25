@@ -617,7 +617,9 @@ describe('images in the timeline', () => {
     expect(screen.getByRole('img', { name: 'web' })).toHaveAttribute('src', 'https://example.com/chart.png')
     expect(screen.getByRole('img', { name: "Image isn't available: javascript:alert(1)" })).toBeInTheDocument()
     expect(document.querySelector('img[src^="javascript:"], img[src^="/Users/"]')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Open PR diagram' }))
+    // A screenshot enlarges on click; an SVG is a diagram block with its own tools.
+    expect(screen.getByRole('button', { name: 'Open Slide preview' })).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('figure', { name: 'PR diagram' })).getByRole('button', { name: 'Expand' }))
     const viewer = await screen.findByRole('dialog', { name: 'PR diagram' })
     expect(within(viewer).getByRole('img', { name: 'PR diagram' })).toHaveAttribute('src', `/chat-images/${svg}`)
   })

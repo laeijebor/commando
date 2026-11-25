@@ -2,7 +2,7 @@ import { Children, cloneElement, isValidElement, createContext, memo, use, useEf
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
+import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, stripAttachmentNotes, type ChatItem, type ChatProvider, type ChatReplyDiagram, type ChatReplyImage, type ChatReplyResource, type ChatTaskAction } from '../../shared/agent-chat'
 import { normalizeMessageSearchText } from '../../shared/chat-messages'
 import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
@@ -13,6 +13,7 @@ import { PlanCard, type SavePlan } from './PlanCard'
 import type { ResourceActionHandler } from '../paneManagementApi'
 import { ResourceChip, ResourceCardList } from './ResourceChip'
 import { ReplyImage } from './ReplyImage'
+import { ReplyDiagramsContext } from './DiagramBlock'
 import { SubagentGroup, useNow } from './Subagents'
 import { TileEventCard } from './TileEventCard'
 import { AutofixCard } from './AutofixCard'
@@ -59,7 +60,8 @@ const ReplyImagesContext = createContext<{ images?: readonly ChatReplyImage[]; r
 
 function MarkdownImage({ src, alt }: { src?: unknown; alt?: string }) {
   const { images, running } = use(ReplyImagesContext)
-  return <ReplyImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} images={images} running={running} />
+  const { onAction } = use(ReplyResourcesContext)
+  return <ReplyImage src={typeof src === 'string' ? src : ''} alt={alt ?? ''} images={images} running={running} onAction={onAction} />
 }
 
 const ReplyResourcesContext = createContext<{ resources?: readonly ChatReplyResource[]; text: string; cwd: string; onAction?: ResourceActionHandler }>({ text: '', cwd: '' })
@@ -122,18 +124,21 @@ const replyComponents: Components = {
 }
 
 /** Local images and resources are attached by the daemon while a reply streams. */
-export const Markdown = memo(function Markdown({ text, images, resources, running }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean }) {
+export const Markdown = memo(function Markdown({ text, images, resources, diagrams, running }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; diagrams?: readonly ChatReplyDiagram[]; running?: boolean }) {
   const actions = use(ResourceActionsContext)
   const reply = useMemo(() => ({ images, running }), [images, running])
   const resourceReply = useMemo(() => ({ resources, text, cwd: actions.cwd, onAction: actions.onResourceAction }), [resources, text, actions])
+  const diagramReply = useMemo(() => ({ diagrams, running }), [diagrams, running])
   return (
     <ReplyImagesContext value={reply}>
       <ReplyResourcesContext value={resourceReply}>
-        <div className="chat-markdown">
-          <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={rehypePlugins} components={replyComponents} urlTransform={keepImageSources}>
-            {text}
-          </ReactMarkdown>
-        </div>
+        <ReplyDiagramsContext value={diagramReply}>
+          <div className="chat-markdown">
+            <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={rehypePlugins} components={replyComponents} urlTransform={keepImageSources}>
+              {text}
+            </ReactMarkdown>
+          </div>
+        </ReplyDiagramsContext>
       </ReplyResourcesContext>
     </ReplyImagesContext>
   )
@@ -418,7 +423,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
       const asks = context.askMarkers?.get(row.item.id)
       return (
         <div className="chat-reply pb-3" {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
-          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} />
+          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} diagrams={row.item.diagrams} running={row.item.status === 'running'} />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
               <span className="chat-ask-marker-diamond" aria-hidden="true">◆</span>

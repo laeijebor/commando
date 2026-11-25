@@ -1,0 +1,118 @@
+/*
+ * ChatBlock: plain CSS on Commando's theme variables, because blocks also
+ * render outside the chat (Mermaid in Linear and PR descriptions), where the
+ * chat's Tailwind utilities and reset aren't loaded.
+ */
+.chat-block {
+  position: relative;
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+* + .chat-block { margin-top: 10px; }
+.chat-block-body { display: block; }
+.chat-block-body > img, .chat-block-body > .chat-block-picture > img {
+  display: block;
+  width: 100%;
+  max-height: min(70vh, 720px);
+  height: auto;
+  object-fit: contain;
+}
+.chat-block-body > pre { margin: 0; border: 0; border-radius: 0; }
+.chat-block-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 6px 4px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+.chat-block-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chat-block-title b { color: var(--text-soft); font-weight: 500; }
+.chat-block-status { flex-shrink: 0; color: var(--text-soft); }
+svg.chat-block-icon { flex-shrink: 0; width: 14px; height: 14px; color: var(--accent); stroke-width: 2; }
+
+.chat-block-button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  min-width: 26px;
+  margin: 0;
+  padding: 0 7px;
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-block-button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-hover); color: var(--text); }
+.chat-block-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-block-button:disabled { cursor: default; opacity: 0.5; }
+.chat-block-button svg { width: 14px; height: 14px; stroke-width: 2; }
+.chat-block-ghost { padding: 0 6px; border-color: transparent; background: transparent; }
+.chat-block-ghost[aria-pressed='true'] { border-color: var(--border-mid); background: var(--surface-soft); color: var(--text); }
+
+.chat-block-toolbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.chat-block:hover > .chat-block-toolbar, .chat-block-toolbar:focus-within { opacity: 1; }
+.chat-block-toolbar .chat-block-button { background: color-mix(in srgb, var(--surface-deep) 92%, transparent); }
+@media (hover: none) { .chat-block-toolbar { opacity: 1; } }
+
+.chat-block[data-maximised] {
+  position: fixed;
+  inset: 16px;
+  z-index: 130;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow);
+}
+.chat-block[data-maximised] > .chat-block-body { flex: 1; min-height: 0; overflow: auto; }
+
+/* Diagrams */
+.chat-block .markdown-mermaid { margin: 0; border-radius: 0; }
+.chat-block-picture { display: block; padding: 12px; background: var(--surface); }
+.chat-block-source { margin: 0; padding: 10px 12px; overflow: auto; max-height: min(60vh, 560px); background: var(--surface-soft); font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre; }
+.chat-block-source code { padding: 0; border: 0; background: none; font: inherit; }
+.chat-block-error {
+  display: block;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--red) 8%, var(--surface));
+  color: var(--red);
+  font-size: 12px;
+  line-height: 17px;
+  white-space: pre-wrap;
+}
+.chat-diagram-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-diagram-pending svg { width: 14px; height: 14px; animation: chat-block-spin 1s linear infinite; }
+@keyframes chat-block-spin { to { transform: rotate(360deg); } }
+.chat-diagram-note { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }

@@ -2,7 +2,9 @@ import { useHost } from '../HostContext'
 import { useState } from 'react'
 import { ImageOff, LoaderCircle } from 'lucide-react'
 import { chatImageUrl, findChatReplyImage, type ChatReplyImage, type ChatReplyImageError } from '../../shared/agent-chat'
+import type { ResourceActionHandler } from '../paneManagementApi'
 import { ImageViewer } from './ChatImages'
+import { DiagramBlock } from './DiagramBlock'
 
 const NOTICES: Record<ChatReplyImageError | 'undrawable' | 'unresolved', string> = {
   missing: 'Image not found',
@@ -28,8 +30,14 @@ function Notice({ reason, src, path }: { reason: keyof typeof NOTICES; src: stri
   )
 }
 
+/** An SVG, or a PNG whose caption or name says it is a diagram; other images (screenshots) stay plain. */
+export function isDiagramImage(id: string, src: string, alt: string): boolean {
+  if (id.endsWith('.svg')) return true
+  return id.endsWith('.png') && /\b(?:diagram|architecture|flowchart|sequence|pr-diagram)\b/i.test(`${alt} ${fileName(src).replace(/[-_.]/g, ' ')}`)
+}
+
 /** A stored reply image; a click enlarges it. Keyed by id, so a newer copy of the file gets a fresh try. */
-function StoredImage({ id, src, alt }: { id: string; src: string; alt: string }) {
+function StoredImage({ id, src, alt, path, onAction }: { id: string; src: string; alt: string; path?: string; onAction?: ResourceActionHandler }) {
   const { local } = useHost()
   const [open, setOpen] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -37,6 +45,13 @@ function StoredImage({ id, src, alt }: { id: string; src: string; alt: string })
   if (failed) return <Notice reason="undrawable" src={src} />
   const url = chatImageUrl(id)
   const name = alt || fileName(src)
+  if (isDiagramImage(id, src, alt)) {
+    return (
+      <DiagramBlock inline title={name} {...(alt ? { detail: fileName(src) } : {})} imageUrl={url} {...(path ? { file: { path, onAction } } : {})}>
+        <img src={url} alt={alt} loading="lazy" draggable={false} onError={() => setFailed(true)} />
+      </DiagramBlock>
+    )
+  }
   return (
     <>
       <button type="button" className="chat-reply-image" onClick={() => setOpen(true)} aria-label={`Open ${name}`} title={src}>
@@ -52,9 +67,9 @@ function StoredImage({ id, src, alt }: { id: string; src: string; alt: string })
  * it (`images`); a web address loads as before; anything else is named, never
  * shown as a broken image.
  */
-export function ReplyImage({ src, alt, images, running }: { src: string; alt: string; images?: readonly ChatReplyImage[]; running?: boolean }) {
+export function ReplyImage({ src, alt, images, running, onAction }: { src: string; alt: string; images?: readonly ChatReplyImage[]; running?: boolean; onAction?: ResourceActionHandler }) {
   const image = findChatReplyImage(images, src)
-  if (image && 'id' in image) return <StoredImage key={image.id} id={image.id} src={image.src} alt={alt} />
+  if (image && 'id' in image) return <StoredImage key={image.id} id={image.id} src={image.src} alt={alt} {...(image.path ? { path: image.path } : {})} onAction={onAction} />
   if (image) return <Notice reason={image.error} src={image.src} {...(image.path ? { path: image.path } : {})} />
   if (/^https?:\/\//i.test(src)) return <img src={src} alt={alt} className="chat-reply-web-image" />
   // Streaming: the daemon stores the file with the next update.
