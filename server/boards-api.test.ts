@@ -29,7 +29,7 @@ beforeEach(async () => {
 
 })
 function makeApi(revealInFinder?: (path: string) => Promise<void>) {
-  return new BoardsApi({ store, artifacts, agentToken, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', paneForId: (id) => id === '%1' ? anchor : undefined, paneForTarget: (t) => t === target ? anchor : undefined, agentSession: () => ({ provider: 'codex', id: 'session-one' }), onRevive: revived, revealInFinder })
+  return new BoardsApi({ store, artifacts, agentToken, ownerAuthorized: async (r) => r.headers.authorization === 'Bearer owner', paneForId: (id) => id === '%1' ? anchor : id === '%2' ? { ...anchor, id: '%2', targetId: other } : undefined, paneForTarget: (t) => t === target ? anchor : undefined, agentSession: () => ({ provider: 'codex', id: 'session-one' }), onRevive: revived, revealInFinder })
 }
 afterEach(async () => { store.flush(); await panes.flush(); rmSync(root, { recursive: true, force: true }) })
 async function http(url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
@@ -42,19 +42,36 @@ async function http(url: string, init: { method?: string; headers?: Record<strin
   return { status: handled ? status : 404, json: async () => output ? JSON.parse(output) : null }
 }
 async function request(path = '', method = 'GET', data?: unknown, auth = 'owner', byPane = false) {
-  const res = await http(`${base}/api/boards/${byPane ? 'by-pane/%251' : target}${path}`, { method, headers: { ...(auth ? { Authorization: `Bearer ${auth}` } : {}), ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, body: data === undefined ? undefined : JSON.stringify(data) })
+  const res = await http(`${base}/api/boards/${byPane ? 'by-pane/%251' : target}${path}`, { method, headers: { ...(auth ? { Authorization: `Bearer ${auth}` } : {}), ...(auth === agentToken ? { 'X-Commando-Pane': '%1' } : {}), ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, body: data === undefined ? undefined : JSON.stringify(data) })
   return { status: res.status, data: await res.json() }
 }
 
 describe('BoardsApi', () => {
   it('requires owner or hook auth, scopes hook requests to a pane and accepts owner detached reads', async () => {
     expect((await request('', 'GET', undefined, '')).status).toBe(401)
-    expect((await request('', 'GET', undefined, agentToken)).status).toBe(403)
+    expect((await http(`${base}/api/boards/${target}`, { headers: { Authorization: `Bearer ${agentToken}` } })).status).toBe(403)
     expect((await request('', 'GET', undefined, agentToken, true)).data).toMatchObject({ targetId: target, rev: 0, items: [] })
     const detached = await http(`${base}/api/boards/${other}`, { headers: { Authorization: 'Bearer owner' } })
     expect(detached.status).toBe(200)
     const mismatched = await http(`${base}/api/boards/${other}`, { headers: { Authorization: `Bearer ${agentToken}`, 'X-Commando-Pane': '%1' } })
     expect(mismatched.status).toBe(403)
+  })
+  it('requires the same owning-pane header for the by-pane alias and refuses mismatches without mutation', async () => {
+    const item = store.upsert(other, { key: 'clip:other', title: 'Keep', kind: 'clip', source: 'user', ref: {} })
+    const url = `${base}/api/boards/by-pane/%252/items/${encodeURIComponent(item.key)}`
+    for (const pane of [undefined, '%1', 'invalid', '%999']) {
+      const res = await http(url, { method: 'DELETE', headers: { Authorization: `Bearer ${agentToken}`, ...(pane ? { 'X-Commando-Pane': pane } : {}) } })
+      expect(res.status).toBe(403)
+      expect(store.item(other, item.key).title).toBe('Keep')
+    }
+    expect((await http(url, { method: 'DELETE', headers: { Authorization: `Bearer ${agentToken}`, 'X-Commando-Pane': '%2' } })).status).toBe(200)
+  })
+  it('infers GitHub PR identities for CLI-style URL adds and attaches instead of duplicating', async () => {
+    store.capturePr(target, { repo: 'owner/repo', number: 12, title: 'Known PR' })
+    const result = await request('/items', 'POST', { url: 'https://github.com/Owner/Repo/pull/12?utm_source=chat' }, agentToken, true)
+    expect(result.status).toBe(201)
+    expect(result.data).toMatchObject({ title: 'Known PR', key: 'pr:owner/repo#12', kind: 'pr', ref: { pr: { repo: 'Owner/Repo', number: 12 } } })
+    expect(store.get(target).items).toHaveLength(1)
   })
   it('adds, patches, reads and deletes encoded canonical keys, notifying each mutation', async () => {
     const added = await request('/items', 'POST', { url: 'https://EXAMPLE.com/a/?utm_source=x', title: 'Example', pinned: true })

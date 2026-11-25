@@ -56,7 +56,8 @@ switch (command) {
   case 'list': method = 'GET'; break
   case 'add': {
     const value = positional[0]
-    payload = { ...(/^https?:\/\//i.test(value) ? { url: value } : { path: resolve(value) }), title: flags.title, caption: flags.caption, group: flags.group, pinned: flags.pin || undefined }
+    const pr = /^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?(?:[?#][^\s]*)?$/i.test(value)
+    payload = { kind: pr ? 'pr' : undefined, ...(/^https?:\/\//i.test(value) ? { url: value } : { path: resolve(value) }), title: flags.title, caption: flags.caption, group: flags.group, pinned: flags.pin || undefined }
     path = '/items'; break
   }
   case 'clip': payload = { text: positional[0], tone: flags.tone, group: flags.group }; path = '/items'; break

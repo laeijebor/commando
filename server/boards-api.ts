@@ -105,12 +105,12 @@ export class BoardsApi {
         targetId = parts.shift() ?? ''
         if (!isCommandoTargetId(targetId)) throw new BoardError(400, 'Invalid board target id')
         pane = this.deps.paneForTarget(targetId)
-        if (agent) {
-          const paneId = request.headers['x-commando-pane']
-          const resolved = typeof paneId === 'string' && PANE_ID.test(paneId) ? this.deps.paneForId(paneId) : undefined
-          if (!resolved || resolved.targetId !== targetId) throw new BoardError(403, 'Agent requests must identify the owning pane with X-Commando-Pane or by-pane')
-          pane = resolved
-        }
+      }
+      if (agent) {
+        const paneId = request.headers['x-commando-pane']
+        const resolved = typeof paneId === 'string' && PANE_ID.test(paneId) ? this.deps.paneForId(paneId) : undefined
+        if (!resolved || resolved.targetId !== targetId) throw new BoardError(403, 'Agent requests must identify the owning pane with X-Commando-Pane')
+        pane = resolved
       }
       const source = owner ? 'user' : 'agent', store = this.deps.store, method = request.method
       if (parts.length === 0 && method === 'GET') { json(response, 200, store.view(targetId)); return true }
@@ -125,6 +125,7 @@ export class BoardsApi {
           const tone = text(b, 'tone', 20)
           if (tone !== undefined && !['decision', 'gotcha', 'note'].includes(tone)) throw new BoardError(400, 'Invalid tone')
           const item = boardInput({ kind: kind as BoardItem['kind'] | undefined, url: text(b, 'url', 8192), path: text(b, 'path', 4096), text: text(b, 'text', 16000), title: text(b, 'title'), caption: text(b, 'caption', 16000), tone: tone as BoardItem['tone'], pinned: bool(b, 'pinned') }, source, this.deps.artifacts, pane && this.deps.agentSession(pane.id))
+          if (item.kind === 'pr' && b.title === undefined) item.title = store.get(targetId).items.find((i) => i.key === item.key)?.title ?? item.title
           json(response, 201, store.upsert(targetId, item, groupId(b))); return true
         }
         if (key && parts.length === 2 && method === 'PATCH') {

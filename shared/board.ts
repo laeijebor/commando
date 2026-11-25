@@ -53,3 +53,13 @@ export const boardItemKeyForUrl = (url: string) => `url:${normalizeBoardUrl(url)
 export const boardItemKeyForFile = (realPath: string) => `file:${realPath}`
 export const boardItemKeyForPr = (repo: string, number: number) => `pr:${repo.toLowerCase()}#${number}`
 export const boardItemKeyForClip = (id: string) => `clip:${id}`
+
+/** Shared identity for PR URLs captured by chat, hooks or the Board CLI. */
+export function boardPrRefForUrl(value: string): { repo: string; number: number } | undefined {
+  let url: URL
+  try { url = new URL(normalizeBoardUrl(value)) } catch { return }
+  if (url.hostname !== 'github.com') return
+  const match = /^\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/.exec(url.pathname)
+  const number = match ? Number(match[3]) : 0
+  if (match && Number.isSafeInteger(number) && number > 0) return { repo: `${match[1]}/${match[2]}`, number }
+}

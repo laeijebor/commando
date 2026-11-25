@@ -17,30 +17,36 @@ export const thumbHash = (parts: unknown[]) => createHash('sha256').update(JSON.
 
 /** One lazy, yielding queue for both rendering and network previews. No HTTP handler awaits it. */
 export class BoardPreviewQueue {
-  private jobs = new Map<string, () => Promise<void>>()
+  private jobs = new Map<string, Map<string, () => Promise<void>>>()
+  private ready: string[] = []
   private active = false
   private stopped = false
   private waiters: (() => void)[] = []
   constructor(private readonly error: (error: unknown) => void = () => {}) {}
-  enqueue(key: string, job: () => Promise<void>): void {
+  enqueue(key: string, job: () => Promise<void>, target = 'default'): void {
     if (this.stopped) return
     // Keep one pending rerun even when the key is currently running (sources can change mid-render).
-    this.jobs.set(key, job)
+    let jobs = this.jobs.get(target)
+    if (!jobs) { jobs = new Map(); this.jobs.set(target, jobs); this.ready.push(target) }
+    jobs.set(key, job)
     if (!this.active) { this.active = true; void this.run() }
   }
   private async run(): Promise<void> {
     try {
-      while (this.jobs.size && !this.stopped) {
+      while (this.ready.length && !this.stopped) {
         await yieldToHttp()
         if (this.stopped) break
-        const [key, job] = this.jobs.entries().next().value!
-        this.jobs.delete(key)
+        const target = this.ready.shift()!, jobs = this.jobs.get(target)!
+        const [key, job] = jobs.entries().next().value!
+        jobs.delete(key)
         try { await job() } catch (error) { this.error(error) }
+        if (!this.stopped && jobs.size) this.ready.push(target)
+        else this.jobs.delete(target)
       }
     } finally { this.active = false; for (const resolve of this.waiters.splice(0)) resolve() }
   }
   async idle(): Promise<void> { if (this.active) await new Promise<void>((resolve) => this.waiters.push(resolve)) }
-  stop(): void { this.stopped = true; this.jobs.clear() }
+  stop(): void { this.stopped = true; this.jobs.clear(); this.ready = [] }
 }
 
 type Run = (command: string, args: string[]) => Promise<void>
@@ -211,30 +217,28 @@ export class BoardThumbWorker {
   private stopped = false
   constructor(private readonly store: BoardStore, readonly cache: BoardThumbCache, readonly queue: BoardPreviewQueue, private readonly links?: LinkPreviewer) {}
   enqueue(targetId: string): void {
-    this.queue.enqueue(`board:${targetId}`, async () => {
-      for (const item of this.store.get(targetId).items) {
-        if (this.stopped) return
-        try {
-          if (item.kind === 'link') { await this.links?.refresh(targetId, item); continue }
-          const source = await this.cache.source(item)
-          if (!source) continue
-          const key = `${targetId}:${item.key}`, previous = this.fingerprints.get(key)
-          this.fingerprints.set(key, source.hash)
-          if (previous && previous !== source.hash) {
-            clearTimeout(this.timers.get(key))
-            const timer = setTimeout(() => { this.timers.delete(key); this.enqueue(targetId) }, 5000)
-            timer.unref(); this.timers.set(key, timer); continue
-          }
-          if (this.timers.has(key)) continue
-          if (item.thumb?.hash === source.hash && await this.cache.has(source.hash)) continue
-          const thumb = await this.cache.render(item, source)
-          // Never resurrect a removed item or attach a result to an edited/replaced source.
-          if (thumb && (await this.cache.source(this.store.item(targetId, item.key)))?.hash === source.hash) this.store.setPreview(targetId, item.key, { thumb })
-        } catch { /* Missing or unsupported sources stay as kind icons. */ }
-        finally { await yieldToHttp() }
+    for (const item of this.store.get(targetId).items) this.queue.enqueue(item.key, () => this.process(targetId, item.key), targetId)
+  }
+  private async process(targetId: string, itemKey: string): Promise<void> {
+    if (this.stopped) return
+    try {
+      const item = this.store.item(targetId, itemKey)
+      if (item.kind === 'link') { await this.links?.refresh(targetId, item); return }
+      const source = await this.cache.source(item)
+      if (!source) return
+      const key = `${targetId}:${item.key}`, previous = this.fingerprints.get(key)
+      this.fingerprints.set(key, source.hash)
+      if (previous && previous !== source.hash) {
+        clearTimeout(this.timers.get(key))
+        const timer = setTimeout(() => { this.timers.delete(key); this.enqueue(targetId) }, 5000)
+        timer.unref(); this.timers.set(key, timer); return
       }
-      await this.cache.evict()
-    })
+      if (this.timers.has(key)) return
+      if (item.thumb?.hash === source.hash && await this.cache.has(source.hash)) return
+      const thumb = await this.cache.render(item, source)
+      if (thumb && (await this.cache.source(this.store.item(targetId, item.key)))?.hash === source.hash) this.store.setPreview(targetId, item.key, { thumb })
+    } catch { /* Missing or unsupported sources stay as kind icons. */ }
+    finally { await this.cache.evict() }
   }
   changed(artifactId: string): void {
     for (const target of this.store.targets()) if (this.store.get(target).items.some((i) => i.ref.artifactId === artifactId)) this.enqueue(target)

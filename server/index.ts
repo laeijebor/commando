@@ -1,4 +1,3 @@
-import { parseCanvasSource } from '../shared/deck.js'
 import { AgentChatsApi } from './agent-chats-api.js'
 import { HostRegistry } from './hosts.js'
 import { HostsApi } from './hosts-api.js'
@@ -28,7 +27,7 @@ import { TurnBriefs } from './turn-briefs.js'
 import { defaultGuideStatePath, GuideStateStore, Guides } from './guides.js'
 import { cursorAssociationIsCurrent, cursorForegroundIsCurrent, cursorProducerIdentity, verifyCursorHookAssociation, type CursorHookAssociation } from './cursor-hook-ownership.js'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createReadStream, readFileSync } from 'node:fs'
+import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import {
   createServer,
@@ -155,6 +154,7 @@ import { AGENT_HOST_WS_PATH, isChatProvider, isChatVideoId } from '../shared/age
 import { loadOrCreateAgentHookToken } from './agent-hook-token.js'
 import { AgentStatusHookApi } from './agent-status-api.js'
 import { SessionBriefApi } from './session-brief-api.js'
+import { BoardChangeNotifications, BoardTileTitles } from './boards-publish.js'
 import { BoardStore, defaultBoardsPath, defaultBoardSnapshotsPath } from './boards.js'
 import { BoardThumbCache, BoardThumbWorker, BoardPreviewQueue, defaultBoardThumbsPath } from './board-thumbs.js'
 import { BoardLinkPreviews, defaultBoardLinkPreviewsPath } from './board-link-previews.js'
@@ -683,6 +683,7 @@ async function main(): Promise<void> {
   })
   // Declared before publishWebPanes, which keeps tabs' artifact registrations alive.
   const boardOptions = {
+    origin: `http://127.0.0.1:${port}`,
     root: defaultBoardsPath(port), snapshotRoot: defaultBoardSnapshotsPath(port), webPanes,
     artifacts: undefined as RedlineArtifactRegistry | undefined,
     onChange: undefined as ((targetId: string, rev: number) => void) | undefined,
@@ -697,7 +698,7 @@ async function main(): Promise<void> {
   const boardLinkHarvest = new BoardLinkHarvest(boards, port)
   boardOptions.onRead = (targetId) => boardThumbWorker.enqueue(targetId)
 
-  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port), retainedIds: boards.artifactIds() })
+  const redlineArtifacts = new RedlineArtifactRegistry({ statePath: defaultRedlineArtifactStatePath(port), retainedIds: [...boards.artifactIds(), ...webPanes.retainedUrls().flatMap((url) => redlineArtifactId(url) ?? [])] })
   boardOptions.artifacts = redlineArtifacts
   /** Keeps artifact registrations alive while a live, parked or closed tab points at them. */
   const retainTabArtifacts = (): void => {
@@ -899,9 +900,10 @@ async function main(): Promise<void> {
     for (const client of clients) send(client, message)
   }
 
+  const boardChanges = new BoardChangeNotifications((targetId, rev) => broadcast({ type: 'board:changed', targetId, rev }))
   boardOptions.onChange = (targetId, rev) => {
     try { retainTabArtifacts() } catch (error) { boardOptions.onError(error) }
-    broadcast({ type: 'board:changed', targetId, rev })
+    boardChanges.enqueue(targetId, rev)
     boardThumbWorker.enqueue(targetId)
   }
 
@@ -2216,15 +2218,8 @@ async function main(): Promise<void> {
   // One paste at a time per agent pane, whichever tab is pushing.
   const agentPushes = new Set<string>()
   const chatSessionFor = (paneId: string) => agentHosts.states().find((chat) => chat.paneId === paneId)?.session
-  /** A canvas's manifest title, or a page's title; undefined when neither is known yet. */
-  const tileTitle = (pane: WebPane): string | undefined => {
-    if (pane.content?.kind === 'canvas') {
-      const path = redlineArtifacts.resolve(pane.content.artifactId, pane.content.manifest)
-      try { if (path) return parseCanvasSource(readFileSync(path, 'utf8'), pane.content.manifest).manifest.title || undefined } catch { /* The journal still works without a manifest. */ }
-      return undefined
-    }
-    return pane.title?.trim() || undefined
-  }
+  const boardTileTitles = new BoardTileTitles({ artifacts: redlineArtifacts, changed: () => captureOpenBoardTabs() })
+  const tileTitle = (pane: WebPane): string | undefined => boardTileTitles.title(pane)
   let publishedBoardTabs = new Map<string, string>()
   const captureOpenBoardTabs = (): void => {
     const current = new Map<string, string>()
@@ -2593,6 +2588,7 @@ async function main(): Promise<void> {
   const canvasWatch = new CanvasWatch(redlineArtifacts, (change) => {
     broadcast({ type: 'canvas_changed', ...change })
     boardThumbWorker.changed(change.artifactId)
+    captureOpenBoardTabs()
   })
   canvasWatch.sync(webPanes.list())
   canvasThreads.retain(new Set([...webPanes.list().map((pane) => pane.id), ...webPanes.retainedIds()]))
@@ -3582,6 +3578,7 @@ async function main(): Promise<void> {
     // Agent hosts keep their turns running and reconnect to the next daemon.
     for (const socket of agentHostWebSocketServer.clients) socket.terminate()
     companion?.close()
+    boardChanges.stop()
     boardThumbWorker.stop()
     turnBriefs.stop()
     commanderRelays.stop()

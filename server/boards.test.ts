@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BOARD_AUTO_TTL_MS, BoardStore, MAX_BOARD_ITEMS, boardInput, copyBoardSnapshot, packBoardGroup, packBoardItem } from './boards.js'
+import { BOARD_AUTO_TTL_MS, BoardStore, MAX_BOARD_ITEMS, MAX_BOARD_HISTORY, MAX_BOARD_STATE_BYTES, boardInput, copyBoardSnapshot, packBoardGroup, packBoardItem } from './boards.js'
 import type { Board, BoardGroup, BoardItem } from '../shared/board.js'
 import type { SessionBrief, WebPane } from '../shared/protocol.js'
 import { MAX_ARTIFACT_DIRS, REDLINE_ARTIFACT_TTL_MS, RedlineArtifactRegistry } from './redline-artifacts.js'
@@ -69,7 +69,7 @@ describe('BoardStore', () => {
     expect(() => full.upsert(target, item('overflow'))).toThrow('Board is full')
     expect(full.get(target).items).toHaveLength(500)
   })
-  it('keeps auto captures idempotent, preserving deletion and origin across reload', () => {
+  it('keeps captures idempotent and forgets dropped-item history across reload', () => {
     const root = temp(); let now = 1000
     const s = store({ root, now: () => now })
     s.capture(target, { ...item(), origin: { at: now, agentSession: session } }, 'event-one')
@@ -77,9 +77,40 @@ describe('BoardStore', () => {
     expect(s.get(target).rev).toBe(1); expect(s.get(target).items[0].updatedAt).toBe(1000)
     s.remove(target, item().key); s.flush()
     const restored = store({ root, now: () => now })
-    restored.capture(target, item(), 'event-one'); expect(restored.get(target).items).toEqual([])
+    restored.capture(target, item(), 'event-one'); expect(restored.get(target).items).toHaveLength(1)
     restored.capture(target, item(), 'event-two'); expect(restored.get(target).items).toHaveLength(1)
   })
+  it('bounds persisted capture history, hashes large fingerprints, and forgets evicted items', () => {
+    const root = temp(), s = store({ root, now: () => 1000 })
+    for (let i = 0; i <= MAX_BOARD_ITEMS; i++) s.capture(target, item(String(i)), 'large fingerprint '.repeat(1000))
+    s.flush()
+    const data = JSON.parse(readFileSync(join(root, `${target}.json`), 'utf8'))
+    expect(Object.keys(data.observed)).toHaveLength(MAX_BOARD_ITEMS)
+    expect(data.observed[item('0').key]).toBeUndefined()
+    expect(Object.values(data.observed).every((v) => typeof v === 'string' && /^sha256:[0-9a-f]{64}$/.test(v))).toBe(true)
+    const legacy = Object.fromEntries(Array.from({ length: MAX_BOARD_HISTORY + 20 }, (_, i) => [item(`legacy-${i}`).key, 'raw history']))
+    writeFileSync(join(root, `${other}.json`), JSON.stringify({ version: 1, board: { ...s.get(other), rev: 1 }, observed: legacy }))
+    const restored = store({ root }); restored.capture(other, item('new')); restored.flush()
+    const history = JSON.parse(readFileSync(join(root, `${other}.json`), 'utf8')).observed
+    expect(Object.keys(history)).toHaveLength(MAX_BOARD_HISTORY)
+    expect(history[item('legacy-0').key]).toBeUndefined()
+  })
+  it('never persists a payload above the loader limit and loudly reports oversized input files', () => {
+    const root = temp(), board: Board = { targetId: target, rev: 1, items: Array.from({ length: 350 }, (_, i) => ({ ...item(String(i), 'user'), caption: '', addedAt: 0, updatedAt: 0 })), groups: [], links: [], placements: {} }
+    let remaining = MAX_BOARD_STATE_BYTES - 1024 - Buffer.byteLength(JSON.stringify({ version: 1, board, observed: {} }))
+    for (const i of board.items) { const chars = Math.min(16000, Math.floor(remaining / 3)); i.caption = '漢'.repeat(chars); remaining -= chars * 3 }
+    const path = join(root, `${target}.json`)
+    writeFileSync(path, JSON.stringify({ version: 1, board, observed: {} }))
+    const s = store({ root, now: () => 0 })
+    expect(s.get(target).items).toHaveLength(350)
+    for (const i of board.items.slice(0, 12)) s.capture(target, i, 'new event')
+    s.flush(); expect(statSync(path).size).toBeLessThanOrEqual(MAX_BOARD_STATE_BYTES)
+    expect(() => s.upsert(target, { ...item('too-big', 'user'), caption: '漢'.repeat(16000) })).toThrow('16 MiB')
+    expect(s.get(target).items).toHaveLength(350)
+    const oversized = join(root, `${other}.json`); writeFileSync(oversized, ' '.repeat(MAX_BOARD_STATE_BYTES + 1))
+    const onError = vi.fn(); store({ root, onError })
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('16 MiB') }))
+  }, 20000)
   it('keeps a learned PR title when a bare persisted ref is seen again', () => {
     const s = store()
     s.capturePr(target, { repo: 'Owner/Repo', number: 42, title: 'Add Board' }, session)
@@ -227,6 +258,37 @@ describe('artifact lifetime, snapshot and revive', () => {
     expect(f.artifacts.directory(f.s.item(target, key).ref.artifactId!)).toContain(f.snapshots)
     f.s.captureWebPane(target, f.webPanes.get(revived.webPaneId!)!, session)
     expect(f.s.get(target).items).toHaveLength(1)
+    await f.webPanes.flush()
+  })
+  it.each(['live', 'parked', 'closed'] as const)('retains snapshot folders backing %s panes after their Board card is removed', async (owner) => {
+    const f = await fixture()
+    const pane = f.webPanes.open({ ...anchor, url: `http://127.0.0.1:4410/redline/artifacts/${f.id}/`, content: { kind: 'canvas', artifactId: f.id, manifest: 'canvas.json' }, openedBy: 'agent' })
+    const key = f.s.captureWebPane(target, pane, session)!
+    f.webPanes.close(pane.id); f.webPanes.forgetClosed(target, pane.id)
+    const snapshotId = f.s.item(target, key).ref.snapshotId!, path = join(f.snapshots, snapshotId)
+    rmSync(f.dir, { recursive: true })
+    const revived = f.s.revive(target, key, anchor, 'user')
+    if (owner === 'closed') f.webPanes.close(revived.webPaneId!)
+    if (owner === 'parked') f.webPanes.prune([{ id: '@2', sessionId: '$2', paneIds: ['%2'] }])
+    expect(f.webPanes.retainedUrls().some((url) => url.includes(f.s.item(target, key).ref.artifactId!))).toBe(true)
+    f.s.remove(target, key); f.s.flush()
+    expect(existsSync(join(path, 'canvas.json'))).toBe(true)
+    if (owner === 'closed') { f.webPanes.forgetClosed(target, revived.webPaneId!); f.s.flush(); expect(existsSync(path)).toBe(false) }
+    await f.webPanes.flush()
+  })
+  it.each(['canvas', 'slides', 'guide'] as const)('uses the daemon origin to revive path-added %s artifacts', async (kind) => {
+    const f = await fixture(), s = store({ artifacts: f.artifacts, webPanes: f.webPanes, origin: 'http://127.0.0.1:4499' })
+    const path = kind === 'canvas' ? f.dir : join(f.dir, kind === 'slides' ? 'deck.html' : 'guide.md')
+    const added = s.upsert(target, boardInput({ path, kind }, 'user', f.artifacts))
+    const revived = s.revive(target, added.key, anchor, 'user'), pane = f.webPanes.get(revived.webPaneId!)!
+    expect(new URL(pane.url).origin).toBe('http://127.0.0.1:4499')
+    await f.webPanes.flush()
+  })
+  it('returns split-out live pane identities without selecting a panel tab', async () => {
+    const f = await fixture(), pane = f.webPanes.open({ ...anchor, url: 'http://localhost:4410/split', engine: 'chromium', openedBy: 'user', dock: 'split', anchorSize: { cols: 200, rows: 50 } })
+    const key = f.s.captureWebPane(target, pane, session)!, active = vi.spyOn(f.webPanes, 'setActiveTab')
+    expect(f.s.revive(target, key, anchor, 'user')).toEqual({ webPaneId: pane.id })
+    expect(active).not.toHaveBeenCalled()
     await f.webPanes.flush()
   })
   it('opens links through the existing confirmation policy, focuses open tabs and returns file paths', async () => {

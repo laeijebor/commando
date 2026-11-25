@@ -27,6 +27,21 @@ When creating a PR, use the `commando-prs` skill: retrieve the pane marker
 with `node "$HOME/.commando/hooks/commando-pr-marker.mjs"` and append it to
 the PR body. Status hooks and worklog updates alone do not stamp PRs.
 
+## Board
+
+Use `node "$HOME/.commando/hooks/commando-board.mjs"` (or `scripts/commando-board`
+from the Commando checkout) to add things Commando cannot see, such as a recording
+saved in `/tmp`, clip a decision, or group related items such as a spec and its
+evidence. Run `--help` for all commands; the CLI uses the current pane and port.
+
+```bash
+node "$HOME/.commando/hooks/commando-board.mjs" group evidence --title "Spec and evidence"
+node "$HOME/.commando/hooks/commando-board.mjs" add /tmp/demo.mp4 --group evidence
+node "$HOME/.commando/hooks/commando-board.mjs" clip "Keep the existing token model" --tone decision --group evidence
+```
+
+Use groups and optional `--near` relationships; never assign pixel positions.
+
 ## Publish an update
 
 The CLI reads `TMUX_PANE`, the private Commando hook token, and

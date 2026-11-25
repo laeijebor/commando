@@ -74,21 +74,17 @@ export class RedlineArtifactRegistry {
       if (entry.dir === real) {
         // Same directory keeps its id (and its URLs) across re-registrations.
         nextEntries.set(id, { ...entry, registeredAt })
+        this.trim(nextEntries)
         this.commit(nextEntries)
         return { id }
       }
-    }
-    const evictable = [...nextEntries].filter(([id]) => !this.retained.has(id))
-    if (evictable.length >= MAX_ARTIFACT_DIRS) {
-      // Full: release the oldest registration. Re-registering refreshes an entry.
-      const [oldestId] = evictable.reduce((oldest, next) => (next[1].registeredAt < oldest[1].registeredAt ? next : oldest))
-      nextEntries.delete(oldestId)
     }
     let id: string
     do {
       id = randomBytes(8).toString('hex')
     } while (this.entries.has(id))
     nextEntries.set(id, { dir: real, registeredAt })
+    this.trim(nextEntries)
     this.commit(nextEntries)
     return { id }
   }
@@ -107,7 +103,9 @@ export class RedlineArtifactRegistry {
       nextEntries ??= new Map(this.entries)
       nextEntries.set(id, { ...entry, registeredAt: now })
     }
-    if (nextEntries) this.commit(nextEntries)
+    const trimmed = nextEntries ?? new Map(this.entries)
+    this.trim(trimmed)
+    if (nextEntries || trimmed.size !== this.entries.size) this.commit(trimmed)
   }
 
   unregister(id: string): boolean {
@@ -218,6 +216,11 @@ export class RedlineArtifactRegistry {
       dirs.add(entry.dir)
     }
     if (dirty) this.persist(this.entries)
+  }
+
+  private trim(entries: Map<string, Entry>): void {
+    const unretained = [...entries].filter(([id]) => !this.retained.has(id)).sort((a, b) => a[1].registeredAt - b[1].registeredAt)
+    for (const [id] of unretained.slice(0, Math.max(0, unretained.length - MAX_ARTIFACT_DIRS))) entries.delete(id)
   }
 
   private commit(entries: ReadonlyMap<string, Entry>): void {

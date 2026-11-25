@@ -37,6 +37,23 @@ describe('BoardPreviewQueue', () => {
 })
 
 describe('Board thumbnails', () => {
+  it('schedules individual items round-robin across targets and deduplicates pending item jobs', async () => {
+    const store = new BoardStore(), queue = new BoardPreviewQueue(), c = cache(), events: string[] = []
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const links = { refresh: vi.fn(async (t: string, item: BoardItem) => {
+      events.push(`${t}:${item.title}`)
+      if (item.title === 'a1') await blocked
+    }) }
+    const worker = new BoardThumbWorker(store, c, queue, links), other = '00000000-0000-4000-8000-000000000002'
+    for (const title of ['a1', 'a2', 'a3']) store.upsert(target, { key: `url:https://example.com/${title}`, title, kind: 'link', source: 'user', ref: { url: `https://example.com/${title}` } })
+    store.upsert(other, { key: 'url:https://example.com/b1', title: 'b1', kind: 'link', source: 'user', ref: { url: 'https://example.com/b1' } })
+    worker.enqueue(target); worker.enqueue(target)
+    await vi.waitFor(() => expect(events).toHaveLength(1))
+    worker.enqueue(other); release(); await queue.idle()
+    expect(events).toEqual([`${target}:a1`, `${other}:b1`, `${target}:a2`, `${target}:a3`])
+    worker.stop()
+  })
   it('hashes canonical source content, reuses two cached sizes and updates the store without extending retention', async () => {
     const file = join(root, 'photo.png'); await writeFile(file, png())
     let now = 1000

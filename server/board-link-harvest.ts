@@ -1,4 +1,4 @@
-import { boardItemKeyForPr, boardItemKeyForUrl, normalizeBoardUrl } from '../shared/board.js'
+import { boardItemKeyForPr, boardItemKeyForUrl, boardPrRefForUrl, normalizeBoardUrl } from '../shared/board.js'
 import type { AgentSessionRef } from '../shared/protocol.js'
 import type { BoardStore } from './boards.js'
 import type { TurnBriefs } from './turn-briefs.js'
@@ -6,7 +6,8 @@ import type { TurnBriefs } from './turn-briefs.js'
 type Turn = Parameters<TurnBriefs['observe']>[0]
 /** Markdown destinations and bare URLs, including inline code, excluding fenced code blocks. */
 export function extractBoardLinks(message: string, port: number): { url: string; title?: string; pr?: { repo: string; number: number } }[] {
-  const lines = message.split(/\r?\n/), visible: string[] = []
+  const bounded = Buffer.from(message.slice(0, 64 * 1024)).subarray(0, 64 * 1024).toString('utf8')
+  const lines = bounded.split(/\r?\n/), visible: string[] = []
   let fence: { char: string; length: number } | undefined
   for (const line of lines) {
     const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1]
@@ -18,28 +19,39 @@ export function extractBoardLinks(message: string, port: number): { url: string;
     visible.push(line)
   }
   const text = visible.join('\n'), results: ReturnType<typeof extractBoardLinks> = [], seen = new Set<string>()
-  const titles = new Map<string, string>()
-  for (const match of text.matchAll(/\[([^\]\n]+)\]\(<?(https?:\/\/[^\s<>]+?)(?:>|\s+["'][^\n]*?["'])?\)/gi)) titles.set(match[2], match[1])
+  const titles = new Map<number, string>()
+  let labelStart = -1, labelEnd = -1
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '[') { labelStart = i + 1; labelEnd = -1 }
+    else if (text[i] === ']' && labelStart >= 0) labelEnd = i
+    else if (text[i] === '(' && labelStart >= 0 && labelEnd === i - 1) {
+      titles.set(i + 1 + (text[i + 1] === '<' ? 1 : 0), text.slice(labelStart, Math.min(labelEnd, labelStart + 500)))
+      labelStart = labelEnd = -1
+    } else if (text[i] === '\n') labelStart = labelEnd = -1
+  }
   for (const match of text.matchAll(/https?:\/\/[^\s<>"'`\u0000-\u001f]+/gi)) {
-    let raw = match[0].replace(/[.,;:!?]+$/, '')
-    for (;;) {
-      const end = raw.at(-1)
-      if (end === ')' && [...raw].filter((c) => c === ')').length > [...raw].filter((c) => c === '(').length) raw = raw.slice(0, -1)
-      else if (end === ']' && [...raw].filter((c) => c === ']').length > [...raw].filter((c) => c === '[').length) raw = raw.slice(0, -1)
-      else if (end === '}' && !raw.includes('{')) raw = raw.slice(0, -1)
+    const candidate = match[0]
+    if (candidate.length > 2048) continue
+    const counts: Record<string, number> = { '(': 0, ')': 0, '[': 0, ']': 0, '{': 0, '}': 0 }
+    for (const char of candidate) if (Object.hasOwn(counts, char)) counts[char]++
+    const opening: Record<string, string> = { ')': '(', ']': '[', '}': '{' }
+    let end = candidate.length
+    while (end) {
+      const char = candidate[end - 1]
+      if ('.,;:!?'.includes(char)) end--
+      else if (opening[char] && counts[char] > counts[opening[char]]) { counts[char]--; end-- }
       else break
-      raw = raw.replace(/[.,;:!?]+$/, '')
     }
+    const raw = candidate.slice(0, end)
     try {
       const url = normalizeBoardUrl(raw), parsed = new URL(url)
       if (['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) && Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80)) === port) continue
       // Local file paths and file: image references are not http(s) candidates to begin with.
-      const prMatch = parsed.hostname === 'github.com' ? /^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/.exec(parsed.pathname) : null
-      const number = prMatch ? Number(prMatch[3]) : 0
-      const pr = prMatch && Number.isSafeInteger(number) && number > 0 && /^[\w.-]+\/[\w.-]+$/.test(`${prMatch[1]}/${prMatch[2]}`) ? { repo: `${prMatch[1]}/${prMatch[2]}`, number } : undefined
+      if (url.length > 2048) continue
+      const pr = boardPrRefForUrl(url)
       const key = pr ? boardItemKeyForPr(pr.repo, pr.number) : boardItemKeyForUrl(url)
       if (seen.has(key)) continue
-      seen.add(key); results.push({ url, title: titles.get(raw)?.slice(0, 500), ...(pr ? { pr } : {}) })
+      seen.add(key); results.push({ url, title: titles.get(match.index), ...(pr ? { pr } : {}) })
       if (results.length === 20) break
     } catch { /* Invalid URLs/credentials are not board references. */ }
   }

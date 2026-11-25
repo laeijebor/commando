@@ -78,6 +78,24 @@ async function loadOpenCodePlugin(
   return module.CommandoAgentStatusPlugin({ directory: '/workspace', client })
 }
 
+describe('portable Board CLI', () => {
+  it('installs a standalone private CLI and points agent instructions at it', async () => {
+    const home = await temporaryHome(), paths = await new AgentHookInstaller({ home }).install()
+    const source = await readFile(paths.boardCliPath, 'utf8')
+    expect(source).toContain('commando-board add')
+    expect(source).toContain(JSON.stringify(paths.tokenPath))
+    expect((await stat(paths.boardCliPath)).mode & 0o777).toBe(0o700)
+    const bridge = await readFile(paths.claudeBridgePath, 'utf8')
+    expect(bridge).toContain(paths.boardCliPath)
+    const result = await new Promise<{ code: number | null; text: string }>((resolve) => {
+      const child = spawn(process.execPath, [paths.boardCliPath, '--help'], { cwd: home })
+      let text = ''; child.stdout.on('data', (chunk) => { text += chunk })
+      child.on('close', (code) => resolve({ code, text }))
+    })
+    expect(result.code).toBe(0); expect(result.text).toContain('commando-board group')
+  })
+})
+
 describe('agent hook token', () => {
   it('persists a private token in a private directory', async () => {
     const home = await temporaryHome()

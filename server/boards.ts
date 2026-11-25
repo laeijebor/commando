@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
-import { BOARD_ARTIFACT_ID, BOARD_ID, BOARD_ITEM_KEY, BOARD_ITEM_KINDS, BOARD_SNAPSHOT_ID, boardItemKeyForCanvas, boardItemKeyForClip, boardItemKeyForFile, boardItemKeyForGuide, boardItemKeyForPage, boardItemKeyForPr, boardItemKeyForRedline, boardItemKeyForUrl, normalizeBoardUrl, type Board, type BoardGroup, type BoardItem, type BoardItemKind, type BoardItemSource, type BoardItemState, type BoardLink, type BoardPlacement, type BoardView } from '../shared/board.js'
+import { BOARD_ARTIFACT_ID, BOARD_ID, BOARD_ITEM_KEY, BOARD_ITEM_KINDS, BOARD_SNAPSHOT_ID, boardPrRefForUrl, boardItemKeyForCanvas, boardItemKeyForClip, boardItemKeyForFile, boardItemKeyForGuide, boardItemKeyForPage, boardItemKeyForPr, boardItemKeyForRedline, boardItemKeyForUrl, normalizeBoardUrl, type Board, type BoardGroup, type BoardItem, type BoardItemKind, type BoardItemSource, type BoardItemState, type BoardLink, type BoardPlacement, type BoardView } from '../shared/board.js'
 import { redlineArtifactId } from '../shared/chat-tile-events.js'
 import { canvasRelativePath } from '../shared/canvas-manifest.js'
 import { guideRelativePath } from '../shared/guide.js'
@@ -16,6 +16,9 @@ import { CANVAS_SNAPSHOT_ENTRY_LIMIT, CANVAS_SNAPSHOT_FILE_LIMIT, CANVAS_SNAPSHO
 
 export const BOARD_AUTO_TTL_MS = 30 * 24 * 60 * 60 * 1000
 export const MAX_BOARD_ITEMS = 500
+export const MAX_BOARD_HISTORY = 2000
+export const MAX_BOARD_STATE_BYTES = 16 * 1024 * 1024
+const fingerprintHash = (value: string) => /^sha256:[0-9a-f]{64}$/.test(value) ? value : `sha256:${createHash('sha256').update(value).digest('hex')}`
 export const defaultBoardsPath = (port: number) => join(homedir(), '.commando', `boards-${port}`)
 export const defaultBoardSnapshotsPath = (port: number) => join(homedir(), '.commando', `board-snapshots-${port}`)
 export class BoardError extends Error {
@@ -103,6 +106,7 @@ type InputItem = Pick<BoardItem, 'key' | 'kind' | 'title' | 'source' | 'ref'> & 
 type Options = {
   root?: string
   snapshotRoot?: string
+  origin?: string
   artifacts?: RedlineArtifactRegistry
   webPanes?: WebPaneService
   now?: () => number
@@ -128,14 +132,15 @@ export class BoardStore {
           if (name !== `${targetId}.json` || !isCommandoTargetId(targetId)) continue
           try {
             const path = join(options.root, name)
-            if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() || statSync(path).size > 16 * 1024 * 1024) continue
+            if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) continue
+            if (statSync(path).size > MAX_BOARD_STATE_BYTES) throw new Error(`Board state exceeds the 16 MiB limit: ${path}`)
             const data: unknown = JSON.parse(readFileSync(path, 'utf8'))
             if (!record(data) || !validateBoard(data.board, targetId)) throw new Error(`Invalid board ${targetId}`)
             const board = clone(data.board)
             for (const item of board.items) delete (item as BoardItem & { state?: string }).state
             this.boards.set(targetId, board)
-            if (record(data.observed)) this.observed.set(targetId, Object.fromEntries(Object.entries(data.observed).filter(([k, v]) => BOARD_ITEM_KEY.test(k) && typeof v === 'string')) as Record<string, string>)
-          } catch (error) { options.onError?.(error) }
+            if (record(data.observed)) this.observed.set(targetId, Object.fromEntries(Object.entries(data.observed).filter(([k, v]) => BOARD_ITEM_KEY.test(k) && typeof v === 'string').slice(-MAX_BOARD_HISTORY).map(([k, v]) => [k, fingerprintHash(v as string)])) as Record<string, string>)
+          } catch (error) { this.report(error) }
         }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') options.onError?.(error) }
     }
@@ -168,7 +173,13 @@ export class BoardStore {
     if (!item) throw new BoardError(404, 'Board item does not exist')
     return item
   }
+  private report(error: unknown): void {
+    if (this.options.onError) this.options.onError(error)
+    else console.error('[commando] Board persistence failed', error)
+  }
   private save(board: Board): void {
+    const payload = JSON.stringify({ version: 1, board: { ...board, rev: board.rev + 1 }, observed: {} })
+    if (Buffer.byteLength(payload) > MAX_BOARD_STATE_BYTES) throw new BoardError(413, 'Board state exceeds the 16 MiB limit')
     board.rev++
     this.boards.set(board.targetId, board)
     this.schedule(board.targetId)
@@ -189,22 +200,56 @@ export class BoardStore {
     for (const targetId of this.dirty) {
       const path = join(this.options.root, `${targetId}.json`), tmp = `${path}.${randomUUID()}.tmp`
       try {
-        writeFileSync(tmp, JSON.stringify({ version: 1, board: this.board(targetId), observed: this.observed.get(targetId) ?? {} }), { mode: 0o600, flag: 'wx' })
+        writeFileSync(tmp, this.persistedBoard(this.board(targetId)), { mode: 0o600, flag: 'wx' })
         renameSync(tmp, path)
         this.dirty.delete(targetId)
       } finally { rmSync(tmp, { force: true }) }
     }
     // All references are now durable; only this store's UUID folders are collectible.
     if (this.options.snapshotRoot) {
-      const retained = new Set([...this.boards.values()].flatMap((b) => b.items.flatMap((i) => i.ref.snapshotId ?? [])))
+      const retained = this.retainedSnapshots()
       try {
         for (const id of readdirSync(this.options.snapshotRoot)) if (BOARD_SNAPSHOT_ID.test(id) && !retained.has(id)) rmSync(join(this.options.snapshotRoot, id), { recursive: true, force: true })
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.options.onError?.(error) }
     }
   }
+  private persistedBoard(board: Board): string {
+    const prefix = `{"version":1,"board":${JSON.stringify(board)},"observed":{`
+    let bytes = Buffer.byteLength(prefix) + 2
+    if (bytes > MAX_BOARD_STATE_BYTES) {
+      const error = new BoardError(413, `Board state exceeds the 16 MiB limit: ${board.targetId}`)
+      this.report(error); throw error
+    }
+    const history = this.observed.get(board.targetId) ?? {}, retained: [string, string][] = []
+    for (const [key, value] of Object.entries(history).slice(-MAX_BOARD_HISTORY).reverse()) {
+      const entry = `${JSON.stringify(key)}:${JSON.stringify(value)}`
+      const size = Buffer.byteLength(entry) + (retained.length ? 1 : 0)
+      if (bytes + size > MAX_BOARD_STATE_BYTES) continue
+      retained.push([key, value]); bytes += size
+    }
+    retained.reverse()
+    this.observed.set(board.targetId, Object.fromEntries(retained))
+    return prefix + retained.map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`).join(',') + '}}'
+  }
+  private retainedSnapshots(): Set<string> {
+    const ids = new Set([...this.boards.values()].flatMap((b) => b.items.flatMap((i) => i.ref.snapshotId ?? [])))
+    if (!this.options.snapshotRoot) return ids
+    const paths = [...this.boards.values()].flatMap((b) => b.items.flatMap((i) => i.ref.path ?? []))
+    for (const url of this.options.webPanes?.retainedUrls() ?? []) {
+      const artifact = redlineArtifactId(url), dir = artifact && this.options.artifacts?.directory(artifact)
+      if (dir) paths.push(dir)
+    }
+    for (const path of paths) {
+      const rel = relative(this.options.snapshotRoot, path), id = rel.split(sep)[0]
+      if (BOARD_SNAPSHOT_ID.test(id)) ids.add(id)
+    }
+    return ids
+  }
   private drop(b: Board, key: string): void {
     b.items = b.items.filter((i) => i.key !== key)
     delete b.placements[key]
+    const history = this.observed.get(b.targetId)
+    if (history) delete history[key]
     b.links = b.links.filter((l) => l.from !== key && l.to !== key)
   }
   prune(targetId?: string): void {
@@ -232,13 +277,15 @@ export class BoardStore {
     this.save(b)
     return clone(next)
   }
-  /** Source fingerprints survive restart and deletion; scans neither re-add removed items nor extend retention. */
+  /** Compact, bounded capture fingerprints survive restart without extending retention. */
   capture(targetId: string, input: Omit<InputItem, 'source'>, fingerprint?: string): void {
     const seen = this.observed.get(targetId) ?? Object.create(null) as Record<string, string>
-    const signature = fingerprint ?? JSON.stringify({ kind: input.kind, title: input.title, ref: input.ref })
+    const signature = fingerprintHash(fingerprint ?? JSON.stringify({ kind: input.kind, title: input.title, ref: input.ref }))
     if (seen[input.key] === signature) return
     this.upsert(targetId, { ...input, source: 'auto' })
+    delete seen[input.key]
     seen[input.key] = signature
+    for (const key of Object.keys(seen).slice(0, -MAX_BOARD_HISTORY)) delete seen[key]
     this.observed.set(targetId, seen)
     this.schedule(targetId)
   }
@@ -422,7 +469,7 @@ export class BoardStore {
         this.save(b)
         // Only delete an old folder once the replacement reference is durable.
         this.flush()
-        if (old && ![...this.boards.values()].some((b) => b.items.some((i) => i.ref.snapshotId === old))) rmSync(join(this.options.snapshotRoot, old), { recursive: true, force: true })
+        if (old && !this.retainedSnapshots().has(old)) rmSync(join(this.options.snapshotRoot, old), { recursive: true, force: true })
       }
     }
     this.changed(targetId)
@@ -433,7 +480,7 @@ export class BoardStore {
     if (fileItem(item)) { this.changed(targetId); return { path: item.ref.path } }
     if (!webPanes) throw new BoardError(503, 'Web panes are unavailable')
     const live = this.livePane(item, targetId)
-    if (live) { webPanes.setActiveTab(live.id); this.changed(targetId); return { webPaneId: live.id } }
+    if (live) { if (live.dock === 'panel') webPanes.setActiveTab(live.id); this.changed(targetId); return { webPaneId: live.id } }
     if (state === 'closed' && item.ref.webPaneId && (webPanes.closedTabs()[targetId] ?? []).some((p) => p.id === item.ref.webPaneId)) {
       const pane = webPanes.reopenClosed(targetId, item.ref.webPaneId, anchor)
       this.changed(targetId); return { webPaneId: pane.id }
@@ -443,7 +490,7 @@ export class BoardStore {
     if (path) {
       artifactId = this.options.artifacts?.register(path).id
       if (!artifactId) throw new BoardError(503, 'Artifact registry is unavailable')
-      const parsed = new URL(url ?? 'http://127.0.0.1/')
+      const parsed = new URL(url ?? this.options.origin ?? 'http://127.0.0.1/')
       parsed.pathname = `/redline/artifacts/${artifactId}/${(item.ref.file ?? '').split('/').map(encodeURIComponent).join('/')}`
       url = parsed.href
       if (item.ref.manifest) content = { kind: 'canvas', artifactId, manifest: item.ref.manifest }
@@ -470,7 +517,7 @@ export function boardInput(input: { url?: string; path?: string; text?: string; 
     let url: string
     try { url = normalizeBoardUrl(input.url) } catch { throw new BoardError(400, 'Invalid http(s) URL') }
     const artifactId = redlineArtifactId(url), path = artifactId && artifacts?.directory(artifactId)
-    kind = artifactId ? 'redline' : 'link'
+    kind = artifactId ? 'redline' : boardPrRefForUrl(url) ? 'pr' : 'link'
     key = artifactId ? boardItemKeyForRedline(url) : boardItemKeyForUrl(url)
     const file = artifactId ? decodeURIComponent(new URL(url).pathname.split(`/artifacts/${artifactId}/`)[1] || 'index.html') : undefined
     ref = { url, ...(artifactId ? { artifactId } : {}), ...(path ? { path } : {}), ...(file ? { file } : {}) }; title = url.slice(0, 500)

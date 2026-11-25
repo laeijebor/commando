@@ -63,6 +63,7 @@ const MUSE_BRIDGE_FILENAME = 'commando-muse-agent-status.mjs'
 const OPENCODE_PLUGIN_FILENAME = 'commando-agent-status.js'
 const CODEX_BRIDGE_FILENAME = 'commando-codex-notify.mjs'
 const SESSION_BRIEF_CLI_FILENAME = 'commando-session-update.mjs'
+const BOARD_CLI_FILENAME = 'commando-board.mjs'
 const SIM_CLI_FILENAME = 'commando-sim.mjs'
 const DEVICE_CLI_FILENAME = 'commando-device.mjs'
 const CHAT_CLI_FILENAME = 'commando-chat.mjs'
@@ -88,6 +89,7 @@ export type AgentHookInstallerOptions = {
   agentsCliPath?: string
   chatCliPath?: string
   sessionBriefCliPath?: string
+  boardCliPath?: string
   tokenPath?: string
 }
 
@@ -119,6 +121,7 @@ export type AgentHookInstallResult = {
   agentsCliPath: string
   chatCliPath: string
   sessionBriefCliPath: string
+  boardCliPath: string
   tokenPath: string
 }
 
@@ -171,11 +174,12 @@ async function writeAtomically(path: string, content: string, mode: number): Pro
   }
 }
 
-function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string, simCliPath: string, chatCliPath: string, deviceCliPath: string): string {
+function agentIntegrationInstructions(prMarkerCliPath: string, sessionBriefCliPath: string, simCliPath: string, chatCliPath: string, deviceCliPath: string, boardCliPath: string): string {
   return [
     'Commando pane integration (this agent runs inside a tmux pane):',
     `When the user asks you to create a pull request, first run node ${JSON.stringify(prMarkerCliPath)} in this pane. Append its exact HTML comment to the PR body before creating the PR, including when using gh pr create or a GitHub MCP tool.`,
     'Preserve existing Commando markers when editing PR bodies. Never invent a target UUID or claim a PR created in another pane. If marker lookup fails, report that linkage is unavailable instead of silently omitting it.',
+    `Add otherwise unseen artifacts, clip decisions, and group related Board items with node ${JSON.stringify(boardCliPath)} (--help); use groups, never pixel positions.`,
     `Keep your task list current. Publish meaningful handoffs and screenshot folders with node ${JSON.stringify(sessionBriefCliPath)} (use --headline, --update, or --screenshots /absolute/path). Pin feature flags when adding or editing flagged behavior with --feature-flag NAME; useful routes with --url URL; issue/ticket links with --issue URL; deployment previews with --deployment URL; build or release identifiers with --build ID or --release ID. Pin the command that resumes this conversation with --session \"COMMAND\" using the resume command given below (it replaces the previous one). Link URL/issue/deployment entries using --url-label LABEL, or link a build/release ID using --link URL. Remove stale entries with --remove-<kind> VALUE.`,
     'After the first substantive exchange, set a 3–6 word title naming the conversation topic with --title, and change it only if the topic genuinely changes.',
     'When everything the user asked for in this conversation is finished (work committed, and PRs opened or merged where requested) so the conversation may be ready to close, make the last line of your final message start with 🟢 followed by a short summary. Commando shows the session as finished. Do not use 🟢 while anything is left to do or verify.',
@@ -2536,6 +2540,7 @@ export class AgentHookInstaller {
         options.simCliPath ?? resolve(resolvedHome, '.commando', 'hooks', SIM_CLI_FILENAME),
       ),
       deviceCliPath: resolve(options.deviceCliPath ?? resolve(resolvedHome, '.commando', 'hooks', DEVICE_CLI_FILENAME)),
+      boardCliPath: resolve(options.boardCliPath ?? resolve(resolvedHome, '.commando', 'hooks', BOARD_CLI_FILENAME)),
       sessionBriefCliPath: resolve(
         options.sessionBriefCliPath
           ?? resolve(resolvedHome, '.commando', 'hooks', SESSION_BRIEF_CLI_FILENAME),
@@ -2646,7 +2651,7 @@ export class AgentHookInstaller {
     }, [this.paths.cursorBridgePath, this.paths.cursorHooksPath])
     const staleBridgePaths = [...new Set([...staleClaude, ...staleCodex, ...staleCursor, ...staleMuse])].sort()
     if (staleBridgePaths.length === 0) return { repaired: false, staleBridgePaths, ...(warnings.length ? { warnings } : {}) }
-    for (const path of [this.paths.tokenPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.deviceCliPath, this.paths.chatCliPath, this.paths.agentsCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
+    for (const path of [this.paths.tokenPath, this.paths.boardCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.deviceCliPath, this.paths.chatCliPath, this.paths.agentsCliPath, this.paths.prMarkerCliPath]) await assertBoundedPath(this.home, path)
     await this.installGeneratedScripts({ claude: staleClaude.length > 0, openCode: false, muse: staleMuse.length > 0 })
     if (staleCursor.length > 0) await this.installCursorHooks(true)
     if (staleCodex.length > 0) await this.installCodexNotify()
@@ -2674,7 +2679,7 @@ export class AgentHookInstaller {
 
   private async installCursorHooks(repair = false): Promise<void> {
     const { settings, mode } = await readClaudeSettings(this.paths.cursorHooksPath)
-    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.deviceCliPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.deviceCliPath, this.paths.boardCliPath)
     await writeAtomically(this.paths.cursorBridgePath, generatedCursorBridge(this.paths.tokenPath, instructions), 0o600)
     await writeAtomically(this.paths.cursorHooksPath, `${JSON.stringify(mergeCursorHooks(settings, this.paths.cursorBridgePath, repair), null, 2)}\n`, mode)
     // Explicit install upgrades the healthy managed Claude bridge as well. Repair
@@ -2684,7 +2689,7 @@ export class AgentHookInstaller {
   private async installGeneratedScripts(
     providers = { claude: true, openCode: true, muse: true },
   ): Promise<void> {
-    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.deviceCliPath)
+    const instructions = agentIntegrationInstructions(this.paths.prMarkerCliPath, this.paths.sessionBriefCliPath, this.paths.simCliPath, this.paths.chatCliPath, this.paths.deviceCliPath, this.paths.boardCliPath)
     await new AgentHookTokenStore({ path: this.paths.tokenPath }).loadOrCreate()
     if (providers.claude) {
       await mkdir(dirname(this.paths.claudeBridgePath), { recursive: true, mode: 0o700 })
@@ -2712,6 +2717,9 @@ export class AgentHookInstaller {
       generatedSessionBriefCli(this.paths.tokenPath),
       0o700,
     )
+    const boardCli = (await readFile(new URL('../scripts/commando-board', import.meta.url), 'utf8'))
+      .replace('`${homedir()}/.commando/agent-hook-token`', JSON.stringify(this.paths.tokenPath))
+    await writeAtomically(this.paths.boardCliPath, boardCli, 0o700)
     await writeAtomically(this.paths.chatCliPath, generatedChatCli(this.paths.tokenPath), 0o700)
     await writeAtomically(this.paths.agentsCliPath, generatedAgentsCli(this.paths.tokenPath), 0o700)
     await writeAtomically(this.paths.simCliPath, generatedSimCli(this.paths.tokenPath), 0o700)

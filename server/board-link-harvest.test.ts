@@ -20,6 +20,14 @@ describe('Board link harvest', () => {
     expect(links[0].pr).toEqual({ repo: 'Owner/Repo', number: 12 })
     expect(extractBoardLinks(Array.from({ length: 50 }, (_, n) => `https://example.com/${n}`).join(' '), 4491)).toHaveLength(20)
   })
+  it('bounds pathological candidates and message scans and trims delimiters in linear time', () => {
+    const start = performance.now()
+    expect(extractBoardLinks('https://example.com/' + ')'.repeat(32000) + '\n' + '['.repeat(32000), 4491)).toEqual([])
+    expect(extractBoardLinks(' '.repeat(64 * 1024) + 'https://beyond-limit.example', 4491)).toEqual([])
+    expect(extractBoardLinks('https://example.com/' + 'a'.repeat(2048), 4491)).toEqual([])
+    expect(extractBoardLinks('(https://example.com/a_(b))).!?', 4491)).toEqual([{ url: 'https://example.com/a_(b)', title: undefined }])
+    expect(performance.now() - start).toBeLessThan(500)
+  })
   it('harvests once on completion with origin and no placement, never during work/restoration', () => {
     const store = new BoardStore({ now: () => 500 }), harvest = new BoardLinkHarvest(store, 4491)
     harvest.observe({ ...turn('done', 100), restored: true }); expect(store.get(target).items).toHaveLength(0)

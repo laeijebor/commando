@@ -37,6 +37,7 @@ describe('commando-board CLI', () => {
   })
   it.each([
     [['add', './file with spaces.png', '--title', 'Picture', '--caption', 'Look', '--group', 'evidence', '--pin'], '/items', 'POST', { path: resolve('./file with spaces.png'), title: 'Picture', caption: 'Look', group: 'evidence', pinned: true }],
+    [['add', 'https://github.com/Owner/Repo/pull/12'], '/items', 'POST', { url: 'https://github.com/Owner/Repo/pull/12', kind: 'pr' }],
     [['add', 'https://example.com/a?x=1'], '/items', 'POST', { url: 'https://example.com/a?x=1' }],
     [['clip', 'Decision with "quotes"\nand lines', '--tone', 'decision', '--group', 'g'], '/items', 'POST', { text: 'Decision with "quotes"\nand lines', tone: 'decision', group: 'g' }],
     [['group', 'g', '--title', 'Evidence', '--tone', 'green', '--near', 'h'], '/groups', 'POST', { id: 'g', title: 'Evidence', tone: 'green', near: 'h' }],
