@@ -1719,6 +1719,21 @@ describe('Claude aside forks', () => {
     expect(fake.options.systemPrompt).toMatchObject({ append: expect.stringContaining('Do not use tools unless strictly necessary') })
     session.close()
   })
+  it('resumes a kept quick answer visibly with ordinary read-only tools and instructions', async () => {
+    const store = { messages: async () => [...inherited, ...own], title: async () => undefined }
+    const quick = started({ aside: { ...aside, ephemeral: true }, readOnly: true, resume: 'saved-aside' }, store)
+    await tick()
+    expect(quick.fake.options.disallowedTools).toContain('Bash')
+    quick.session.close()
+    const kept = started({ aside, readOnly: true, resume: 'saved-aside' }, store)
+    await tick()
+    expect(kept.fake.options).toMatchObject({ resume: 'saved-aside', permissionMode: 'default', disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] })
+    expect(kept.fake.options.systemPrompt).toMatchObject({ append: expect.stringContaining('Do not modify files') })
+    expect(kept.fake.options.systemPrompt).not.toMatchObject({ append: expect.stringContaining('Do not use tools unless strictly necessary') })
+    expect(kept.session.snapshot().items).toEqual(quick.session.snapshot().items)
+    expect(kept.session.snapshot().items).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'assistant_message', text: 'Side answer' })]))
+    kept.session.close()
+  })
   it('starts a fresh fork with one origin notice and only its own live messages', async () => {
     const { session, fake, items } = started({ aside, fork: aside.forkedFrom }, { messages: async () => [...inherited, ...own], title: async () => undefined })
     await tick()
