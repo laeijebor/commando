@@ -11,7 +11,7 @@ import { saveDraft, loadDraft } from './draftStore'
 const record: ChatAsideRecord = { id: 'abcdefgh', title: 'Why flaky?', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1, status: 'open' }
 const key = asideKey('%5', record.id)
 const base = { turnId: 'old', status: 'completed' as const, createdAt: 1, updatedAt: 1 }
-const main: ChatState = { paneId: '%5', hostConnected: true, asides: [record], session: { paneId: '%5', sessionId: 'main', provider: 'claude', cwd: '/work', status: 'running', hostPid: 1, hostVersion: 9 }, items: [] }
+const main: ChatState = { paneId: '%5', hostConnected: true, asides: [record], session: { paneId: '%5', sessionId: 'main', provider: 'claude', cwd: '/work', status: 'running', hostPid: 1, hostVersion: 10 }, items: [] }
 const aside: ChatState = { ...main, paneId: key, asides: undefined, session: { ...main.session, paneId: key, sessionId: 'aside', status: 'idle', aside: { ...record, parentPaneId: '%5' } }, items: [{ ...base, id: 'old', kind: 'assistant_message', text: 'Old answer must not become the report' }] }
 const body = 'Found the race\n- Fix **polling** in `src/file.ts`'
 const envelope = asideReportText({ asideId: record.id, title: record.title, body })
