@@ -21,7 +21,6 @@
   height: auto;
   object-fit: contain;
 }
-.chat-block-body > pre { margin: 0; border: 0; border-radius: 0; }
 .chat-block-bar {
   display: flex;
   align-items: center;
@@ -91,7 +90,8 @@ svg.chat-block-icon { flex-shrink: 0; width: 14px; height: 14px; color: var(--ac
 /* Diagrams */
 .chat-block .markdown-mermaid { margin: 0; border-radius: 0; }
 .chat-block-picture { display: block; padding: 12px; background: var(--surface); }
-.chat-block-source { margin: 0; padding: 10px 12px; overflow: auto; max-height: min(60vh, 560px); background: var(--surface-soft); font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre; }
+/* Beats `.chat-markdown pre` and its sibling margin inside a reply. */
+.chat-block .chat-block-source { margin: 0; border: 0; border-radius: 0; padding: 10px 12px; overflow: auto; max-height: min(60vh, 560px); background: var(--surface-soft); font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre; }
 .chat-block-source code { padding: 0; border: 0; background: none; font: inherit; }
 .chat-block-error {
   display: block;
