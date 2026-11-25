@@ -43,6 +43,8 @@ function fakeApi(nextSummary: GitDiffSummary = summary): GitDiffApiClient {
     fileDiff: vi.fn(async (_paneId: string, file: string) => ({ file, diff: 'DIFF' })),
     fileContents: vi.fn(async (_paneId: string, file: string) => ({ file, old: null, new: null })),
     blame: vi.fn(async (_paneId: string, file: string, rev: string) => ({ file, rev, commits: {}, lines: [] })),
+    navigate: vi.fn().mockResolvedValue({ kind: "definition", source: "text", rev: "worktree", locations: [], truncated: false }),
+    fileAt: vi.fn().mockResolvedValue({ file: "", rev: "worktree", contents: null, unavailable: "missing" }),
     search: vi.fn(async (_paneId: string, query: string) => ({
       query,
       matches: [],
