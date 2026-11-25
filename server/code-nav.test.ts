@@ -148,8 +148,8 @@ describe('CodeNavService (fake executor)', () => {
     await service('', calls).navigate('/repo', query({ rev: SHA }))
     const greps = calls.filter((args) => args[0] === 'grep')
     expect(greps).toEqual([
-      ['grep', '-n', '--column', '-w', '-I', '-F', '-z', '--untracked', '-e', 'greet', '--'],
-      ['grep', '-n', '--column', '-w', '-I', '-F', '-z', '-e', 'greet', SHA, '--'],
+      ['grep', '--no-color', '-n', '--column', '-w', '-I', '-F', '-z', '--untracked', '-e', 'greet', '--'],
+      ['grep', '--no-color', '-n', '--column', '-w', '-I', '-F', '-z', '-e', 'greet', SHA, '--'],
     ])
   })
 
@@ -213,6 +213,17 @@ describe('CodeNavService (real repository)', () => {
 
   afterAll(async () => {
     await rm(root, { recursive: true, force: true })
+  })
+
+  it('keeps git grep output parseable when the user\'s git config forces colour', async () => {
+    run('config', 'color.ui', 'always')
+    run('config', 'color.grep', 'always')
+    try {
+      expect((await nav({})).locations.length).toBeGreaterThan(0)
+    } finally {
+      run('config', '--unset', 'color.ui')
+      run('config', '--unset', 'color.grep')
+    }
   })
 
   it('finds references at the worktree, including untracked files and paths with colons', async () => {
