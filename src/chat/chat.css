@@ -332,3 +332,17 @@
 .commando-chat .chat-aside-references { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
 .commando-chat .chat-aside-reference { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 6px; background: color-mix(in srgb, var(--cyan) 8%, transparent); color: var(--cyan); font-size: 12px; overflow-wrap: anywhere; }
 .commando-chat .chat-aside-reference button { cursor: pointer; }
+
+.commando-chat .chat-message-row { position: relative; }
+.commando-chat .chat-message-aside-action { position: absolute; right: 0; bottom: 0; opacity: 0; pointer-events: none; padding: 2px 6px; border-radius: 5px; color: var(--cyan); background: var(--surface-soft); font-size: 11px; cursor: pointer; }
+.commando-chat .chat-message-row:hover .chat-message-aside-action, .commando-chat .chat-message-row:focus-within .chat-message-aside-action, .commando-chat .chat-message-aside-action:focus-visible { opacity: 1; pointer-events: auto; }
+.commando-chat .chat-aside-marker { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0 10px 12px; padding: 3px 8px; border-left: 2px solid var(--cyan); border-radius: 0 6px 6px 0; background: color-mix(in srgb, var(--cyan) 6%, transparent); color: var(--cyan); font-size: 12px; cursor: pointer; overflow-anchor: none; }
+.commando-chat .chat-aside-marker.is-closed { opacity: .5; }
+.commando-chat .chat-aside-quote { margin: 12px 16px; padding: 6px 12px; border-left: 2px solid var(--cyan); color: var(--muted); max-height: 100px; overflow: auto; white-space: pre-wrap; }
+.commando-chat .chat-quick-aside { margin: 0 auto 8px; max-width: var(--chat-content-max-width); border: 1px solid var(--cyan); border-radius: 12px; background: var(--surface-soft); font-size: 13px; overflow: hidden; }
+.commando-chat .chat-quick-aside header, .commando-chat .chat-quick-aside footer, .commando-chat .chat-quick-aside form { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
+.commando-chat .chat-quick-aside header strong { color: var(--cyan); }
+.commando-chat .chat-quick-aside header span { flex: 1; color: var(--muted); }
+.commando-chat .chat-quick-question { padding: 0 12px; color: var(--muted); }
+.commando-chat .chat-quick-answer { padding: 8px 12px; max-height: 30vh; overflow: auto; }
+.commando-chat .chat-quick-aside input { flex: 1; min-width: 0; background: transparent; padding: 6px; color: var(--text); }

@@ -47,8 +47,9 @@ import { Button } from './ui/button'
 import { latestTodos, pendingRequests, withExternalAgentRuns, type SubagentItem } from '../../shared/chat-timeline'
 import { withTileEvents, type ChatCardEvent } from '../../shared/chat-tile-events'
 import { findSubagent, implementPermissionMode, planAwaitingFollowUp, subagentLabel, switcherSubagents } from './turnFlow'
-import { AsideTabs, AsideBanner } from './AsideTabs'
+import { AsideTabs, AsideBanner, asideStatus } from './AsideTabs'
 import { AsideReportSheet, useAsideReports, type AsideReportDraft } from './AsideReport'
+import { QuickAside } from './QuickAside'
 import './chat.css'
 
 /** What a chat pane asks of the app for queueing, subagents and plans. */
@@ -114,6 +115,9 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
     props.registerFocusable(props.paneId, shell.current)
     return () => props.registerFocusable?.(props.paneId!, null)
   }, [props.paneId, props.registerFocusable])
+  const [anchor, setAnchor] = useState<ChatItem>()
+  const [quickOpen, setQuickOpen] = useState(false)
+  const [quickId, setQuickId] = useState<string>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [pendingAction, setPendingAction] = useState<ChatAsideAction>()
@@ -122,6 +126,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   const reporting = useAsideReports(asides, props.chat.paneId, props.chat.session.sessionId, props.chat.asides, props.sendError)
   const [reportSource, setReportSource] = useState<AsideReport>()
   const [focusMain, setFocusMain] = useState(false)
+  useEffect(() => { setAnchor(undefined); setQuickOpen(false); setQuickId(undefined) }, [props.chat.session.sessionId])
   const available = asides && hostTakesAsides(props.chat.session)
   const selected = available ? asides.selected : undefined
   const latestSelected = useRef(selected)
@@ -134,7 +139,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       setFocusMain(false)
     }
   }, [selected, focusMain])
-  const record = props.chat.asides?.find((aside) => aside.id === selected && aside.status === 'open')
+  const record = props.chat.asides?.find((aside) => aside.id === selected && aside.status === 'open' && !aside.ephemeral)
   const selectedChat = record && asides?.chats[asideKey(props.chat.paneId, record.id)]
   const lastRecord = useRef<string | undefined>(undefined)
   // A result may beat its broadcast. Wait for a newly opened record, but leave a closed/removed one.
@@ -155,11 +160,12 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
     try {
       const result = await asides.request(action)
       if (!result.ok) { setError(result.error || 'The aside operation failed'); return false }
-      if (action.action === 'open' || action.action === 'reopen') {
-        const id = result.asideId ?? (action.action === 'reopen' ? action.asideId : undefined)
+      if (action.action === 'open' && action.ephemeral) { setQuickId(result.asideId); setQuickOpen(true) }
+      else if (action.action === 'open' || action.action === 'reopen' || action.action === 'keep') {
+        const id = result.asideId ?? (action.action !== 'open' ? action.asideId : undefined)
         awaitingRecord.current = id
         asides.select(id)
-      } else if (action.action === 'close' && action.asideId === latestSelected.current) asides.select(undefined)
+      } else if ((action.action === 'close' || action.action === 'promote') && action.asideId === latestSelected.current) asides.select(undefined)
       else if (action.action === 'refork') setReforks((current) => ({ ...current, [action.asideId]: (current[action.asideId] ?? 0) + 1 }))
       return true
     } catch (error) {
@@ -168,14 +174,39 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
     } finally { setBusy(false); setPendingAction(undefined) }
   }
   const pending = (id: string) => busy && (pendingAction?.action === 'open' ? !beforeOpen.current.has(id) : pendingAction?.asideId === id)
-  const open = available ? (text: string, images?: ChatImageRef[]) => request({ action: 'open', text, ...(images?.length ? { images } : {}), mode: 'read-only' }) : undefined
-  const showStrip = available && (Boolean(props.chat.asides?.length) || Boolean(props.chat.asidesError) || Boolean(selected) || busy)
+  const open = available ? (text: string, images?: ChatImageRef[]) => request({ action: 'open', text, ...(images?.length ? { images } : {}), mode: 'read-only', ...(selected === 'new' && anchor ? { at: anchor.id } : {}) }) : undefined
+  const showStrip = available && (Boolean(props.chat.asides?.some((entry) => !entry.ephemeral && entry.status !== 'discarded')) || Boolean(props.chat.asidesError) || Boolean(selected) || busy)
+  const quickRecord = props.chat.asides?.find((entry) => entry.ephemeral && entry.status === 'open')
+  const activeQuickId = quickRecord?.id ?? quickId
+  const quickChat = activeQuickId && asides?.chats[asideKey(props.chat.paneId, activeQuickId)]
+  const askQuick = async (text?: string, images?: ChatImageRef[]) => {
+    if (activeQuickId) { setQuickOpen(true); return !text }
+    setQuickOpen(true)
+    return text || images?.length ? request({ action: 'open', text: text ?? '', ephemeral: true, ...(images?.length ? { images } : {}) }) : true
+  }
+  const dismissQuick = async () => {
+    if (activeQuickId && !await request({ action: 'discard', asideId: activeQuickId })) return
+    setQuickOpen(false); setQuickId(undefined)
+    setFocusMain(true)
+  }
+  const quickPopover = available && !selected && (quickOpen || quickRecord) ? <QuickAside record={quickRecord} chat={quickChat || undefined} disabled={busy || !props.connected || !props.chat.hostConnected}
+    onAsk={askQuick} onKeep={() => { if (activeQuickId) void request({ action: 'keep', asideId: activeQuickId }).then((ok) => { if (ok) { setQuickOpen(false); setQuickId(undefined) } }) }}
+    onCopy={(text) => { reporting.appendDraft(text); setFocusMain(true) }} onDismiss={() => { void dismissQuick() }} /> : undefined
   const columnProps = selectedChat && asides ? {
     ...props, ...asides.bindings(selectedChat.paneId), chat: selectedChat,
     externalRuns: EMPTY_EXTERNAL_RUNS, tileEvents: EMPTY_TILE_EVENTS, asks: NO_ASKS,
-    commander: undefined, prsApi: undefined, focusMessage: undefined,
+    commander: undefined, prsApi: undefined, focusMessage: undefined, onAsideFromHere: undefined, asideMarkers: undefined, onQuickAside: undefined, quickAside: undefined,
   } : { ...props,
     reportDraft: reporting.draft, onReportDraftTaken: reporting.consumeDraft,
+    ...(available ? {
+      onQuickAside: askQuick, quickAside: quickPopover,
+      onAsideFromHere: (item: ChatItem) => { setAnchor(item); asides.select('new') },
+      asideMarkers: (props.chat.asides ?? []).filter((entry) => !entry.ephemeral && entry.status !== 'discarded' && entry.forkedFrom.itemId).map((entry) => ({
+        itemId: entry.forkedFrom.itemId!, id: entry.id, title: asides.chats[asideKey(props.chat.paneId, entry.id)]?.session.title || entry.title,
+        status: entry.status === 'closed' ? 'closed' : entry.status === 'promoted' ? 'Opened as chat' : asideStatus(asides.chats[asideKey(props.chat.paneId, entry.id)]),
+        onSelect: () => { if (entry.status === 'open') asides.select(entry.id); else void request({ action: entry.status === 'promoted' ? 'promote' : 'reopen', asideId: entry.id }) },
+      })),
+    } : {}),
     reportReferences: reporting.references, onRemoveReportReference: reporting.removeReference, onReportsSent: (requestId: string | void, text: string) => {
       reporting.rememberSend(requestId, text)
       const closing = new Set(reporting.references.filter((report) => report.close).map((report) => report.asideId))
@@ -200,15 +231,24 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     }} /> : undefined
   const column = <ChatErrorBoundary>
-    <div ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat chat-aside-column" onFocus={(event) => {
+    <div ref={shell} onKeyDownCapture={(event) => {
+      if (available && !selected && event.key === '/' && !event.shiftKey && !event.altKey && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey)) {
+        event.preventDefault(); event.stopPropagation(); void askQuick(); return
+      }
+      if (event.key === 'Escape' && !selected && (quickOpen || quickRecord)) {
+        event.preventDefault(); event.stopPropagation()
+        if (!busy) void dismissQuick()
+      }
+    }} tabIndex={-1} className="terminal-chat-shell commando-chat chat-aside-column" onFocus={(event) => {
       if (event.target === event.currentTarget) shell.current?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Report text"], textarea[data-chat-composer]')?.focus()
     }} onMouseDown={() => { if (selected === 'new' || (selected && !selectedChat)) props.onFocus() }} onKeyDown={(event) => {
+      if (event.key === 'Escape' && (quickOpen || quickRecord) && !selected && !event.defaultPrevented) { event.preventDefault(); if (!busy) void dismissQuick(); return }
       if (event.key !== 'Escape' || !selected || event.defaultPrevented) return
       if (event.target instanceof HTMLTextAreaElement && (event.target.value || selectedChat?.session.status === 'running')) return
       event.preventDefault()
       asides?.select(undefined)
     }}>
-      {showStrip ? <AsideTabs main={props.chat} chats={asides.chats} selected={selected} onSelect={asides.select} onAction={(action) => { void request(action) }} pending={pending} disabled={busy || !props.connected || !props.chat.hostConnected} /> : null}
+      {showStrip ? <AsideTabs main={props.chat} chats={asides.chats} selected={selected} onSelect={(id) => { if (id === 'new') setAnchor(undefined); asides.select(id) }} onAction={(action) => { void request(action) }} pending={pending} disabled={busy || !props.connected || !props.chat.hostConnected} /> : null}
       {record ? <AsideBanner aside={record} disabled={busy || !props.connected || !props.chat.hostConnected} onAction={(action) => { void request(action) }} onReport={() => reporting.start(record)} reportDisabled={!selectedChat?.hostConnected || selectedChat?.session.status !== 'idle' || Boolean(report)} /> : null}
       {reportSource && !selected ? <div className="chat-aside-banner" role="region" aria-label="Report source">
         <span>From aside “{reportSource.title}” · closed or unavailable</span>
@@ -217,7 +257,8 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       </div> : null}
       {error ? <div role="alert" className="px-3 py-2 text-xs text-destructive">{error}<Button size="xs" variant="ghost-muted" onClick={() => setError(undefined)}>Dismiss</Button></div> : null}
       {selected === 'new' ? <>
-        <div className="chat-aside-banner">New aside · fresh context from Main’s latest finished turn · Read-only</div>
+        <div className="chat-aside-banner">New aside · {anchor ? 'from this turn' : 'fresh context from Main’s latest finished turn'} · Read-only</div>
+        {anchor && (anchor.kind === 'user_message' || anchor.kind === 'assistant_message') ? <blockquote className="chat-aside-quote">{anchor.text}</blockquote> : null}
         <div className="min-h-0 flex-1" />
         <ChatComposer
           session={{ ...props.chat.session, sessionId: `${props.chat.session.sessionId ?? props.chat.paneId}:new-aside`, status: 'idle', queue: [], claudeCodeSwitch: undefined }}
@@ -272,6 +313,7 @@ function ChatColumn({
   focusMessage,
   onFocusMessageHandled,
   onOpenAside,
+  onAsideFromHere, asideMarkers, onQuickAside, quickAside,
   reportSheet,
   reportDraft,
   onReportDraftTaken,
@@ -280,6 +322,10 @@ function ChatColumn({
   onReportsSent,
   onOpenReport,
 }: {
+  onAsideFromHere?: (item: ChatItem) => void
+  asideMarkers?: Parameters<typeof ChatTimeline>[0]['asideMarkers']
+  onQuickAside?: (text?: string, images?: ChatImageRef[]) => Promise<boolean>
+  quickAside?: ReactNode
   reportSheet?: ReactNode
   reportDraft?: AsideReportDraft
   onReportDraftTaken?: () => void
@@ -577,6 +623,7 @@ function ChatColumn({
       ) : (
         <ChatTimeline
           onOpenReport={onOpenReport}
+          onAsideFromHere={onAsideFromHere} asideMarkers={asideMarkers}
           provider={chat.session.provider}
           onResourceAction={onResourceAction}
           items={timelineItems}
@@ -617,6 +664,7 @@ function ChatColumn({
       <AskTray asks={asks} disabled={asksDisabled} anchored={anchored} openSignal={askTraySignal} onAnswer={answerAsk} onReply={replyToAsk} onJump={jumpToAsk} />
       {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} sendError={sendError} {...(onOpenPr ? { onOpenPr } : {})} {...(onDismissPrs ? { onDismissPrs } : {})} /> : null}
       <ChatComposer
+        quickAside={quickAside} onQuickAside={onQuickAside}
         reportSheet={reportSheet} reportDraft={reportDraft} onReportDraftTaken={onReportDraftTaken}
         reportReferences={reportReferences} onRemoveReportReference={onRemoveReportReference} onReportsSent={onReportsSent}
         {...(onOpenAside ? { onOpenAside } : {})}

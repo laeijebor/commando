@@ -283,7 +283,7 @@ function menuGroups(
   if (trigger.kind === 'slash') {
     const query = trigger.query.toLowerCase()
     const natives = [
-      ...(asides ? [{ name: 'aside', description: "Ask in a side thread with this chat’s context" }] : []),
+      ...(asides ? [{ name: 'aside', description: "Ask in a side thread with this chat’s context" }, ...(!newAside ? [{ name: 'btw', description: 'Quick answer, no tools, nothing saved' }] : [])] : []),
       ...(!newAside && modelMenuAvailable(session) ? [{ name: 'model', description: 'Choose the model and effort' }] : []),
       ...(!newAside && fastModeAvailable(session) ? [{ name: 'fast', description: fastModeOn(session) ? 'Turn fast mode off' : 'Turn fast mode on' }] : []),
       // Muse has no plan mode.
@@ -361,6 +361,8 @@ export function ChatComposer({
   onUploadingChange,
   insert,
   onOpenAside,
+  onQuickAside,
+  quickAside,
   newAside = false,
   reportSheet,
   reportDraft,
@@ -369,6 +371,8 @@ export function ChatComposer({
   onRemoveReportReference,
   onReportsSent,
 }: {
+  quickAside?: ReactNode
+  onQuickAside?: (text?: string, images?: ChatImageRef[]) => Promise<boolean>
   reportSheet?: ReactNode
   reportDraft?: AsideReportDraft
   onReportDraftTaken?: () => void
@@ -558,8 +562,8 @@ export function ChatComposer({
     if (!trigger) return
     switch (item.type) {
       case 'native':
-        if (item.name === 'aside') {
-          applyText(moveCommandToStart(draft, trigger, 'aside'))
+        if (item.name === 'aside' || item.name === 'btw') {
+          applyText(moveCommandToStart(draft, trigger, item.name))
           return
         }
         applyText(replaceRange(draft, trigger.rangeStart, trigger.rangeEnd, ''))
@@ -804,6 +808,13 @@ export function ChatComposer({
     } finally { setOpeningAside(false) }
   }
   const submit = (steer = false) => {
+    if (onQuickAside && /^\/btw(?:\s|$)/.test(draft.trim())) {
+      if (!hostConnected || openingAside || attachments.some((attachment) => !attachment.ref)) return
+      setOpeningAside(true)
+      const images = attachments.flatMap((attachment) => attachment.ref ? [attachment.ref] : [])
+      void onQuickAside(draft.trim().replace(/^\/btw(?:\s+|$)/, ''), images.length ? images : undefined).then((ok) => { if (ok) clearDraft() }).finally(() => setOpeningAside(false))
+      return
+    }
     if (onOpenAside && (newAside || /^\/aside(?:\s|$)/.test(draft.trim()))) { void submitAside(); return }
 
     if (!canSend) return
@@ -827,6 +838,11 @@ export function ChatComposer({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return
+    if (onQuickAside && event.key === '/' && !event.shiftKey && !event.altKey && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey)) {
+      event.preventDefault()
+      void onQuickAside()
+      return
+    }
     if (onOpenAside && event.key === 'Enter' && event.shiftKey && !event.altKey && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey)) {
       event.preventDefault()
       void submitAside()
@@ -847,7 +863,7 @@ export function ChatComposer({
         return
       }
       // A fully typed command sends on Enter, as in the TUI; Tab still completes it.
-      const exact = (active?.type === 'command' && active.runsHere && active.command.name === trigger.query) || (active?.type === 'native' && active.name === 'aside' && trigger.query === 'aside')
+      const exact = (active?.type === 'command' && active.runsHere && active.command.name === trigger.query) || (active?.type === 'native' && (active.name === 'aside' || active.name === 'btw') && trigger.query === active.name)
       if (active && (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !exact))) {
         event.preventDefault()
         pick(active)
@@ -925,6 +941,7 @@ export function ChatComposer({
   const planUsage = usePlanUsage(session)
   return (
     <div className="px-4 pb-3 pt-2">
+      {quickAside}
       {reportSheet}
       <div
         hidden={Boolean(reportSheet)}

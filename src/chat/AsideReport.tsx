@@ -123,7 +123,7 @@ export function useAsideReports(asides: ChatAsideServices | undefined, paneId: s
     }
     cancel(report.asideId)
   }
-  return { reports, start, update, cancel, deliver, rememberSend, draft, consumeDraft: () => setDraft(undefined), references,
+  return { reports, start, update, cancel, deliver, rememberSend, draft, appendDraft, consumeDraft: () => setDraft(undefined), references,
     removeReference: (index: number) => saveReferences(references.filter((_, i) => i !== index)),
     clearReferences: () => saveReferences([]) }
 }

@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   asideKey, parseChatAsideRecords,
-  type ChatAsideAction, type ChatAsideInfo, type ChatAsideRecord, type ChatAsideResult, type ChatForkPoint,
+  type ChatAsideAction, type ChatAsideInfo, type ChatAsideRecord, type ChatAsideResult, type ChatForkPoint, type ChatItem,
 } from '../../shared/agent-chat.js'
 import { asideBrief, asideEnv } from './aside-brief.js'
 import { createChatProviderSession } from './factory.js'
@@ -132,6 +132,8 @@ export class ChatAsides {
     if (this.main.snapshot().session.sessionId !== id) return this.loadConversation()
     for (const record of this.records) {
       if (record.status !== 'open') continue
+      // Quick answers do not resume in the background after a host restart.
+      if (record.ephemeral) { record.status = 'discarded'; record.closedAt = Date.now(); continue }
       try {
         if (!record.sessionId) throw new Error(`Aside ${record.title} has no saved session yet`)
         await this.start(record, { resume: record.sessionId })
@@ -157,23 +159,44 @@ export class ChatAsides {
       this.host.log(error)
     }
   }
-  private forkPoint(): ChatForkPoint {
-    const info = this.main.snapshot().session
-    const point = this.main.forkPoint ? this.main.forkPoint() : info.sessionId ? { sessionId: info.sessionId } : null
-    if (!point) throw new Error('This chat has no saved conversation yet')
-    return point
+  private forkPoint(itemId?: string): ChatForkPoint {
+    const { session: info, items } = this.main.snapshot()
+    if (!info.sessionId) throw new Error('This chat has no saved conversation yet')
+    const item = itemId ? items.find((entry) => entry.id === itemId && !entry.parentToolUseId) : undefined
+    if (itemId && !item) throw new Error('That Main message is no longer available')
+    if (this.main.forkPoint) {
+      const point = this.main.forkPoint(itemId)
+      if (!point) throw new Error(itemId && this.main.busy ? 'That turn is still running' : 'That turn has no finished fork point')
+      return { ...point, ...(point.itemId ? {} : { itemId: itemId ?? items.filter((entry) => !entry.parentToolUseId).at(-1)?.id }) }
+    }
+    // Brief providers have no native resume boundary. Cut their snapshot at the
+    // last item of the selected turn, excluding the active turn for normal opens.
+    const lastTurn = items.filter((entry) => !entry.parentToolUseId).at(-1)?.turnId
+    const running = (turn: string) => items.some((entry) => entry.turnId === turn && entry.status === 'running')
+      || (turn === lastTurn && ['running', 'waiting', 'starting'].includes(info.status))
+    if (item && running(item.turnId)) throw new Error('That turn is still running')
+    const anchor = item ?? [...items].reverse().find((entry) => !entry.parentToolUseId && !running(entry.turnId))
+    if (!anchor) throw new Error('This chat has no finished turn yet')
+    return { sessionId: info.sessionId, itemId: anchor.id }
   }
-  private room(): void {
-    if (this.sessions.size >= 5) throw new Error('A chat can have at most 5 open asides')
+  private room(ephemeral = false): void {
+    if (!ephemeral && this.records.filter((record) => !record.ephemeral && this.sessions.has(record.id)).length >= 5) throw new Error('A chat can have at most 5 open asides')
+  }
+  private context(point: ChatForkPoint): ChatItem[] {
+    const items = this.main.snapshot().items
+    const item = items.find((entry) => entry.id === point.itemId)
+    if (!item) return items
+    const end = items.reduce((last, entry, index) => entry.turnId === item.turnId && !entry.parentToolUseId ? index : last, -1)
+    return items.slice(0, end + 1)
   }
   private info(record: ChatAsideRecord): ChatAsideInfo {
-    const { id, title, mode, method, readOnlyEnforced, forkedFrom, createdAt } = record
-    return { parentPaneId: this.main.paneId, id, title, mode, method, readOnlyEnforced, forkedFrom, createdAt }
+    const { id, title, mode, method, readOnlyEnforced, forkedFrom, createdAt, ephemeral } = record
+    return { parentPaneId: this.main.paneId, id, title, mode, method, readOnlyEnforced, forkedFrom, createdAt, ...(ephemeral ? { ephemeral } : {}) }
   }
-  private async start(record: ChatAsideRecord, options: { resume?: string; fork?: ChatForkPoint; text?: string; images?: AgentSessionSpec['initialImages'] }): Promise<void> {
-    this.room()
+  private async start(record: ChatAsideRecord, options: { resume?: string; fork?: ChatForkPoint; text?: string; images?: AgentSessionSpec['initialImages']; context?: ChatItem[] }): Promise<void> {
+    this.room(Boolean(record.ephemeral))
     const main = this.main.snapshot().session
-    const context = this.main.snapshot().items
+    const context = options.context ?? this.context(record.forkedFrom)
     const readOnly = record.mode === 'read-only'
     const permissionMode = readOnly ? 'default' : main.permissionMode ?? this.spec.permissionMode
     const spec: AgentSessionSpec = {
@@ -243,6 +266,7 @@ export class ChatAsides {
       }
     } catch (error) {
       record.lastError = errorMessage(error)
+      record.sessionId = session.snapshot().session.sessionId ?? record.sessionId
       if (this.sessions.get(record.id) === session) {
         this.sessions.delete(record.id)
         this.host.remove(session.paneId)
@@ -287,25 +311,31 @@ export class ChatAsides {
             await this.store.quarantine(this.mainId)
             this.loadError = undefined
           }
-          this.room()
-          const point = this.forkPoint()
+          this.room(Boolean(action.ephemeral))
+          if (action.ephemeral && this.records.some((record) => record.ephemeral && record.status === 'open')) throw new Error('Dismiss the current quick answer first')
+          const point = this.forkPoint(action.at)
+          const context = this.context(point)
           const provider = this.main.snapshot().session.provider
           let id: string
           do { id = randomBytes(4).toString('hex') } while (this.records.some((record) => record.id === id))
           const record: ChatAsideRecord = {
-            id, title: action.text.trim().split('\n')[0]?.slice(0, 60) || 'Aside', mode: action.mode ?? 'read-only',
+            id, title: action.text.trim().split('\n')[0]?.slice(0, 60) || 'Aside', mode: action.ephemeral ? 'read-only' : action.mode ?? 'read-only',
             method: provider === 'cursor' || provider === 'muse' ? 'brief' : 'fork',
             readOnlyEnforced: provider !== 'cursor',
-            forkedFrom: point, status: 'open', createdAt: Date.now(),
+            forkedFrom: point, status: 'open', createdAt: Date.now(), ...(action.ephemeral ? { ephemeral: true } : {}),
           }
           this.records.push(record)
           try {
             await this.save()
-            await this.start(record, { ...(record.method === 'fork' ? { fork: point } : {}), text: action.text, images: action.images })
+            await this.start(record, { ...(record.method === 'fork' ? { fork: point } : {}), text: action.text, images: action.images, context })
             await this.save()
           } catch (error) {
             try { await this.end(record) } catch (cleanupError) { this.host.log(cleanupError) }
-            this.records = this.records.filter((entry) => entry !== record)
+            if (record.ephemeral) {
+              // A failed start can still have written a provider transcript.
+              // Retain its exclusion from the picker, just like a dismissal.
+              record.status = 'discarded'; record.closedAt = Date.now(); record.lastError = errorMessage(error)
+            } else this.records = this.records.filter((entry) => entry !== record)
             await this.cleanupSave()
             throw error
           }
@@ -313,9 +343,25 @@ export class ChatAsides {
         }
         const record = this.records.find((entry) => entry.id === action.asideId)
         if (!record) throw new Error('No such aside')
-        if (action.action === 'close') {
+        if (record.status === 'discarded') throw new Error('That quick answer was discarded')
+        if (record.status === 'promoted') {
+          if (action.action === 'promote') { await this.save(); return { ok: true, asideId: record.id } }
+          throw new Error('That aside was opened as chat')
+        }
+        if (record.ephemeral && !['keep', 'discard', 'close'].includes(action.action)) throw new Error('Keep this quick answer as an aside first')
+        if (action.action === 'keep') {
+          if (record.ephemeral) {
+            this.room()
+            delete record.ephemeral
+          }
+        } else if (action.action === 'promote') {
+          if (!record.sessionId) throw new Error('This aside has no saved conversation yet')
           await this.end(record)
-          record.status = 'closed'
+          record.status = 'promoted'
+          record.closedAt = Date.now()
+        } else if (action.action === 'close' || action.action === 'discard') {
+          await this.end(record)
+          record.status = record.ephemeral || action.action === 'discard' ? 'discarded' : 'closed'
           record.closedAt = Date.now()
         } else {
           if (record.status === 'closed' && action.action === 'mode') {

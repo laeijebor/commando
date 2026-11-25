@@ -493,6 +493,27 @@ describe('Codex paginated history and request validation', () => {
 })
 
 describe('Codex aside forks', () => {
+  it('resolves live and replayed item ids to completed turn ids, never the active turn', async () => {
+    const { session, client } = harness({ resume: thread.id })
+    await session.start()
+    const historical = session.snapshot().items.find((item) => item.kind === 'assistant_message')!
+    expect(session.forkPoint(historical.id)).toEqual({ sessionId: thread.id, at: 'history', itemId: historical.id })
+    session.send('New question')
+    await tick()
+    const user = session.snapshot().items.find((item) => item.kind === 'user_message')!
+    expect(session.forkPoint(user.id)).toBeNull()
+    client.notify('item/completed', { turnId: 'turn-1', item: { id: 'reply', type: 'agentMessage', text: 'Answer' } })
+    client.notify('turn/completed', { turn: turn('turn-1', 'completed') })
+    expect(session.forkPoint(user.id)).toEqual({ sessionId: thread.id, at: 'turn-1', itemId: user.id })
+    expect(session.forkPoint()?.itemId).toContain('reply')
+    session.close()
+  })
+  it('uses a read-only sandbox and quick-answer guidance for ephemeral forks', async () => {
+    const { session, client } = harness({ readOnly: true, aside: { parentPaneId: '%3', id: 'abcd1234', title: 'Quick', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1, ephemeral: true } })
+    await session.start()
+    expect(client.request.mock.calls.find(([method]) => method === 'thread/start')?.[1]).toMatchObject({ sandbox: 'read-only', developerInstructions: expect.stringContaining('Do not use tools unless strictly necessary') })
+    session.close()
+  })
   const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
   const messageTurn = (id: string, question: string, answer: string) => turn(id, 'completed', [
     { type: 'userMessage', id: `${id}-user`, content: [{ type: 'text', text: question }] },
@@ -578,7 +599,7 @@ describe('Codex aside forks', () => {
   it('exposes the last completed turn, including resumed history, while a new turn runs', async () => {
     const { session, client } = harness({ resume: 'thread-123' })
     await session.start()
-    expect(session.forkPoint()).toEqual({ sessionId: 'thread-123', at: 'history' })
+    expect(session.forkPoint()).toMatchObject({ sessionId: 'thread-123', at: 'history', itemId: expect.any(String) })
     client.notify('turn/started', { turn: turn('new') })
     expect(session.forkPoint()?.at).toBe('history')
     client.notify('turn/completed', { turn: turn('new', 'completed') })

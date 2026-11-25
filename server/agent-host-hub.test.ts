@@ -590,12 +590,12 @@ describe('aside hub routing', () => {
     })
     const socket = new FakeSocket()
     hub.connect(socket as unknown as WebSocket)
-    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9, sessionId: 'main' }), items: [] })
-    socket.host({ type: 'session_snapshot', session: session('%1~abcd1234', { hostVersion: 9, sessionId: 'child', aside }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10, sessionId: 'main' }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1~abcd1234', { hostVersion: 10, sessionId: 'child', aside }), items: [] })
     await settle()
     const statusCount = statuses.length
     socket.host({ type: 'items', paneId: '%1~abcd1234', items: [{ ...item('request', ''), kind: 'request', requestId: 'ask', requestKind: 'approval', toolName: 'Bash', title: 'Allow?' }] })
-    socket.host({ type: 'session_update', session: session('%1~abcd1234', { hostVersion: 9, sessionId: 'child', status: 'waiting', aside }) })
+    socket.host({ type: 'session_update', session: session('%1~abcd1234', { hostVersion: 10, sessionId: 'child', status: 'waiting', aside }) })
     await settle()
     expect(checks).toEqual(['%1', '%1'])
     expect(statuses).toHaveLength(statusCount)
@@ -629,7 +629,7 @@ describe('aside hub routing', () => {
   it('matches lifecycle results by request, pane and socket, updates main state and rejects old hosts', async () => {
     const { hub, broadcasts, connect } = setup()
     const socket = connect()
-    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9 }), items: [] })
+    socket.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10 }), items: [] })
     await settle()
     const pending = hub.aside('%1', { action: 'open', text: 'Why?' })
     const request = socket.sent.at(-1) as { requestId: string }
@@ -653,10 +653,10 @@ describe('aside hub routing', () => {
   it('rejects aside snapshots from a different parent owner or host pid', async () => {
     const { hub, broadcasts, connect } = setup()
     const owner = connect(), impostor = connect()
-    owner.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 9 }), items: [] })
+    owner.host({ type: 'session_snapshot', session: session('%1', { hostVersion: 10 }), items: [] })
     await settle()
     const aside = { parentPaneId: '%1', id: 'abcd1234', title: 'Side', mode: 'read-only', method: 'fork', readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1 }
-    const child = session('%1~abcd1234', { hostVersion: 9, aside: aside as ChatSessionInfo['aside'] })
+    const child = session('%1~abcd1234', { hostVersion: 10, aside: aside as ChatSessionInfo['aside'] })
     impostor.host({ type: 'session_snapshot', session: child, items: [] })
     owner.host({ type: 'session_snapshot', session: { ...child, hostPid: 99 }, items: [] })
     await settle()

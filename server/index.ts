@@ -2971,6 +2971,14 @@ async function main(): Promise<void> {
             if (stored.includes(false)) return send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ok: false, error: 'An attached image is no longer stored; attach it again' })
           }
           const result = await agentHosts.aside(message.paneId, message.action)
+          if (result.ok && message.action.action === 'promote') {
+            const main = agentHosts.states().find((state) => state.paneId === message.paneId)
+            const asideId = message.action.asideId
+            const record = main?.asides?.find((entry) => entry.id === asideId && entry.status === 'promoted')
+            if (!main || !record?.sessionId) throw new Error('The promoted conversation is no longer available')
+            const created = await chatConversationsApi.promoteAside(main.session, record.sessionId)
+            return send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ...result, promotedPaneId: created.paneId })
+          }
           send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ...result })
         })().catch((error: unknown) => send(client, { type: 'chat_aside_result', paneId: message.paneId, requestId: message.requestId, ok: false, error: error instanceof Error ? error.message : String(error) }))
         return

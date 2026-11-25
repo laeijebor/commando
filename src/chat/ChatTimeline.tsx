@@ -1,4 +1,4 @@
-import { Children, cloneElement, isValidElement, createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, Children, cloneElement, isValidElement, createContext, memo, use, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components, type ExtraProps, type UrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowDown, ChevronRight, CircleAlert, Diamond, FilePen, Info, ListChecks, LoaderCircle, MessageCircleQuestion, MessageSquareShare, Search, ShieldCheck, ShieldX, SquareTerminal, Wrench, Rabbit } from 'lucide-react'
@@ -46,7 +46,7 @@ const markdownComponents: Components = {
 }
 
 /** What rows need beyond their own item: the whole list, the clock and the pane's actions. */
-const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void; onOpenReport?: (report: AsideReport) => void }>({ items: [], now: 0, provider: 'Claude' })
+const TimelineContext = createContext<{ items: readonly ChatItem[]; now: number; provider: string; onOpenSubagent?: (toolUseId: string) => void; onSavePlan?: SavePlan; onTask?: (action: ChatTaskAction, agent: SubagentItem) => void; controlsDisabled?: boolean; onOpenTile?: (webPaneId: string) => boolean; onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void; askMarkers?: ReadonlyMap<string, number>; onShowAsks?: () => void; onOpenReport?: (report: AsideReport) => void; onAsideFromHere?: (item: ChatItem) => void }>({ items: [], now: 0, provider: 'Claude' })
 
 /** Resource actions stay stable while timeline items and clocks update. */
 const ResourceActionsContext = createContext<{ cwd: string; onResourceAction?: ResourceActionHandler }>({ cwd: '' })
@@ -378,6 +378,11 @@ export interface ChatFocusMessageRequest {
   seq: number
 }
 
+function AsideFromHere({ item }: { item: ChatItem }) {
+  const context = use(TimelineContext)
+  return context.onAsideFromHere && !item.parentToolUseId ? <button type="button" className="chat-message-aside-action" onClick={() => context.onAsideFromHere?.(item)}>↳ Aside from here</button> : null
+}
+
 function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; highlighted?: boolean }) {
   const context = use(TimelineContext)
   switch (row.kind) {
@@ -448,8 +453,10 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled, onOpenReport }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled, onOpenReport, onAsideFromHere, asideMarkers }: {
   onOpenReport?: (report: AsideReport) => void
+  onAsideFromHere?: (item: ChatItem) => void
+  asideMarkers?: { itemId: string; id: string; title: string; status: string; onSelect: () => void }[]
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -479,9 +486,22 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   onFocusMessageHandled?: (seq: number) => void
 }) {
   const rows = useMemo(() => mergeActivityRows(deriveTimelineRows(items, scope)), [items, scope])
+  // Decorations sit outside the derived rows. Updating a marker never changes
+  // message counts or the scroll-to-latest effect's dependencies.
+  const markersByRow = new Map<number, NonNullable<typeof asideMarkers>>()
+  for (const marker of asideMarkers ?? []) {
+    const turn = items.find((item) => item.id === marker.itemId)?.turnId
+    if (!turn) continue
+    let last = -1
+    rows.forEach((row, index) => {
+      const entries = 'item' in row ? [row.item] : row.items
+      if (entries.some((item) => item.turnId === turn)) last = index
+    })
+    if (last >= 0) markersByRow.set(last, [...(markersByRow.get(last) ?? []), marker])
+  }
   const live = rows.some((row) => (row.kind === 'subagents' || row.kind === 'activity') && row.live)
   const now = useNow(live)
-  const context = useMemo(() => ({ items, now, onOpenReport, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenReport, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
+  const context = useMemo(() => ({ items, now, onOpenReport, onAsideFromHere, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenReport, onAsideFromHere, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
   const resourceActions = useMemo(() => ({ cwd, onResourceAction }), [cwd, onResourceAction])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
@@ -565,9 +585,15 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
             <TimelineContext value={context}>
               {rows.length === 0 && !header ? (
                 <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
-              ) : rows.map((row) => row.kind === 'user' && row.item.id === userMessageCard?.itemId
-                ? <div key={row.id} data-chat-item-id={row.item.id}>{userMessageCard.content}</div>
-                : <Row key={row.id} row={row} cwd={cwd} highlighted={row.kind === 'user' && row.item.id === highlightedItemId} />)}
+              ) : rows.map((row, index) => <Fragment key={row.id}>
+                <div className="chat-message-row">
+                  {row.kind === 'user' && row.item.id === userMessageCard?.itemId
+                    ? <div data-chat-item-id={row.item.id}>{userMessageCard.content}</div>
+                    : <Row row={row} cwd={cwd} highlighted={row.kind === 'user' && row.item.id === highlightedItemId} />}
+                  {row.kind === 'user' || row.kind === 'assistant' ? <AsideFromHere item={row.item} /> : null}
+                </div>
+                {markersByRow.get(index)?.map((marker) => <button key={marker.id} type="button" className={`chat-aside-marker${marker.status === 'closed' || marker.status === 'Opened as chat' ? ' is-closed' : ''}`} onClick={marker.onSelect}>↳ Aside: {marker.title} · {marker.status}</button>)}
+              </Fragment>)}
             </TimelineContext>
           </ResourceActionsContext>
           {working && !streaming && !liveWork ? (

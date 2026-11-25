@@ -1686,6 +1686,39 @@ describe('Claude aside forks', () => {
     { type: 'assistant', uuid: 'aside-finished', message: { id: 'aside-reply', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Side answer' }] }, parent_tool_use_id: null },
   ]
 
+  it('maps both live user and assistant items to the final SDK uuid only after the turn finishes', async () => {
+    const { session, fake } = started()
+    await tick()
+    session.send('Anchored question')
+    await tick()
+    const user = session.snapshot().items.find((item) => item.kind === 'user_message')!
+    fake.push({ type: 'assistant', uuid: 'sdk-first', session_id: 'main', parent_tool_use_id: null, message: { id: 'api-first', content: [{ type: 'text', text: 'First chunk' }] } } as unknown as SDKMessage)
+    fake.push({ type: 'assistant', uuid: 'sdk-subagent', session_id: 'main', parent_tool_use_id: 'tool-child', message: { id: 'api-child', content: [{ type: 'text', text: 'Child reply' }] } } as unknown as SDKMessage)
+    await tick()
+    expect(session.forkPoint(user.id)).toBeNull()
+    fake.push({ type: 'assistant', uuid: 'sdk-final', session_id: 'main', parent_tool_use_id: null, message: { id: 'api-final', content: [{ type: 'text', text: 'Final reply' }] } } as unknown as SDKMessage)
+    fake.push({ type: 'result', subtype: 'success', session_id: 'main' } as SDKMessage)
+    await tick()
+    expect(session.forkPoint(user.id)).toEqual({ sessionId: 'main', at: 'sdk-final', itemId: user.id })
+    expect(session.forkPoint('api-first:0')).toEqual({ sessionId: 'main', at: 'sdk-final', itemId: 'api-first:0' })
+    expect(session.forkPoint()?.itemId).toBe('api-final:0')
+    session.close()
+  })
+  it('rebuilds per-turn SDK boundaries and stable user anchors during history replay', async () => {
+    const { session } = started({ resume: 'main' }, { messages: async () => [...inherited, ...own], title: async () => undefined })
+    await tick()
+    expect(session.forkPoint('user-turn-main-user')).toEqual({ sessionId: 'main', at: 'finished', itemId: 'user-turn-main-user' })
+    expect(session.forkPoint('main-reply:0')?.at).toBe('finished')
+    expect(session.forkPoint('aside-reply:0')?.at).toBe('aside-finished')
+    session.close()
+  })
+  it('restricts quick answers beyond ordinary read-only asides', async () => {
+    const { session, fake } = started({ aside: { ...aside, ephemeral: true }, readOnly: true })
+    await tick()
+    expect(fake.options.disallowedTools).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash', 'Agent', 'Task']))
+    expect(fake.options.systemPrompt).toMatchObject({ append: expect.stringContaining('Do not use tools unless strictly necessary') })
+    session.close()
+  })
   it('starts a fresh fork with one origin notice and only its own live messages', async () => {
     const { session, fake, items } = started({ aside, fork: aside.forkedFrom }, { messages: async () => [...inherited, ...own], title: async () => undefined })
     await tick()
@@ -1718,7 +1751,7 @@ describe('Claude aside forks', () => {
       'Forked from Main · 2 earlier messages hidden', ...(hasReply ? ['Side question', 'Side answer'] : []),
     ])
     expect([...items.values()]).toEqual(session.snapshot().items)
-    expect(session.forkPoint()).toEqual({ sessionId: 'saved-aside', at: hasReply ? 'aside-finished' : 'finished' })
+    expect(session.forkPoint()).toMatchObject({ sessionId: 'saved-aside', at: hasReply ? 'aside-finished' : 'finished' })
     session.close()
   })
 
@@ -1772,10 +1805,10 @@ describe('Claude aside forks', () => {
     expect(session.forkPoint()).toBeNull()
     fake.push({ type: 'result', subtype: 'success', session_id: 'main' } as SDKMessage)
     await tick()
-    expect(session.forkPoint()).toEqual({ sessionId: 'main', at: 'assistant-1' })
+    expect(session.forkPoint()).toMatchObject({ sessionId: 'main', at: 'assistant-1' })
     fake.push({ type: 'assistant', uuid: 'assistant-2', session_id: 'main', parent_tool_use_id: null, message: { content: [{ type: 'text', text: 'Still writing' }] } } as unknown as SDKMessage)
     await tick()
-    expect(session.forkPoint()).toEqual({ sessionId: 'main', at: 'assistant-1' })
+    expect(session.forkPoint()).toMatchObject({ sessionId: 'main', at: 'assistant-1' })
     fake.push({ type: 'system', subtype: 'init', session_id: 'new-main' } as SDKMessage)
     await tick()
     expect(session.forkPoint()).toBeNull()

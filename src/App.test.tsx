@@ -3434,9 +3434,30 @@ describe('remote host workspace', () => {
 describe('chat asides', () => {
   const record = { id: 'abcdefgh', title: 'Investigate flaky test', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main-session' }, createdAt: Date.now(), status: 'open' as const }
   const asidePaneId = `${pane.id}~${record.id}`
-  const mainChat = () => ({ paneId: pane.id, hostConnected: true, items: [], session: { paneId: pane.id, sessionId: 'main-session', provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 9 } })
+  const mainChat = () => ({ paneId: pane.id, hostConnected: true, items: [], session: { paneId: pane.id, sessionId: 'main-session', provider: 'claude' as const, cwd: '/work', status: 'idle' as const, hostPid: 1, hostVersion: 10 } })
   const asideChat = () => ({ ...mainChat(), paneId: asidePaneId, session: { ...mainChat().session, paneId: asidePaneId, sessionId: 'aside-session', aside: { ...record, parentPaneId: pane.id } } })
   const input = () => within(document.querySelector<HTMLElement>(`[data-pane-id="${pane.id}"]`)!).getByRole('textbox', { name: /^Message/ })
+
+  it('focuses the promoted chat even when its pane snapshot arrives after the result', async () => {
+    appMocks.send.mockReturnValue(true)
+    await renderAppWithSnapshot()
+    act(() => daemonMessage?.({ type: 'chat_snapshot', chats: [{ ...mainChat(), asides: [record] }, asideChat()] }))
+    fireEvent.click(screen.getByRole('tab', { name: /Investigate flaky test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open as chat' }))
+    const sent = appMocks.send.mock.calls.map(([message]) => message).find((message) => message.type === 'chat_aside' && message.action.action === 'promote')
+    expect(sent.action).toEqual({ action: 'promote', asideId: record.id })
+    await act(async () => daemonMessage?.({ type: 'chat_aside_result', paneId: pane.id, requestId: sent.requestId, ok: true, asideId: record.id, promotedPaneId: '%99' }))
+    const promoted = { ...adjacentPane, id: '%99', targetId: 'promoted-chat', index: 2, active: false }
+    const snapshot = snapshotWith([pane, adjacentPane, promoted])
+    snapshot.windows[0]!.layout = 'dbde,242x24,0,0{80x24,0,0,12,80x24,81,0,13,80x24,162,0,99}'
+    act(() => {
+      daemonMessage?.({ type: 'snapshot', snapshot })
+      daemonMessage?.({ type: 'chat_asides', paneId: pane.id, asides: [{ ...record, status: 'promoted' }] })
+      daemonMessage?.({ type: 'chat_state', chat: { ...mainChat(), paneId: promoted.id, session: { ...mainChat().session, paneId: promoted.id, sessionId: 'aside-session' } } })
+    })
+    await waitFor(() => expect(document.querySelector('[data-pane-id="%99"] .pane-footer-focus')).toHaveTextContent('Focused / keys go here'))
+    expect(screen.getByRole('tab', { name: /Main/ })).toHaveAttribute('aria-selected', 'true')
+  })
 
   it.each(['idle', 'running'] as const)('drafts in the aside and sends a queued report to %s Main', async (status) => {
     appMocks.send.mockReturnValue(true)

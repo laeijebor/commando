@@ -136,6 +136,7 @@ export class CodexChatSession implements ChatProviderSession {
   private info: ChatSessionInfo
   private startPromise?: Promise<void>
   private lastCompletedTurn?: string
+  private readonly completedForkTurns = new Set<string>()
   private readonly asideTimeline: AsideTimeline
   private activeTurn?: string
   private readonly endedTurns = new Set<string>()
@@ -208,7 +209,13 @@ export class CodexChatSession implements ChatProviderSession {
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.asideTimeline.snapshot(this.mapper.list()) } }
   setResumeCommand(command: string): void { this.tui.env.COMMANDO_CHAT_RESUME = command; if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
-  forkPoint() { return this.info.sessionId && this.lastCompletedTurn ? { sessionId: this.info.sessionId, at: this.lastCompletedTurn } : null }
+  forkPoint(itemId?: string) {
+    const items = this.mapper.list()
+    const item = itemId ? items.find((entry) => entry.id === itemId) : undefined
+    const at = itemId ? item && this.completedForkTurns.has(item.turnId) ? item.turnId : undefined : this.lastCompletedTurn
+    const anchor = itemId ?? items.filter((entry) => entry.turnId === at && !entry.parentToolUseId).at(-1)?.id
+    return this.info.sessionId && at ? { sessionId: this.info.sessionId, at, ...(anchor ? { itemId: anchor } : {}) } : null
+  }
   start(): Promise<void> { return this.startPromise ??= this.initialize() }
   private async initialize(): Promise<void> {
     this.emitItems([])
@@ -231,7 +238,7 @@ export class CodexChatSession implements ChatProviderSession {
       } while (cursor)
       this.update({ models })
       const { sandbox, approvalPolicy } = codexPermissions(this.spec.readOnly ? 'plan' : this.info.permissionMode as ChatSessionPermissionMode, this.spec.cwd)
-      const settings = { cwd: this.spec.cwd, sandbox, approvalPolicy, approvalsReviewer: 'user' as const, ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}), ...(this.spec.aside ? { developerInstructions: asideInstructions(this.spec.aside.mode) } : {}) }
+      const settings = { cwd: this.spec.cwd, sandbox, approvalPolicy, approvalsReviewer: 'user' as const, ...(this.info.selectedModel ? { model: this.info.selectedModel } : {}), ...(this.spec.aside ? { developerInstructions: asideInstructions(this.spec.aside.mode, this.spec.aside.ephemeral) } : {}) }
       const response = record(await (this.spec.fork ? this.client.request('thread/fork', { threadId: this.spec.fork.sessionId, ...(this.spec.fork.at ? { lastTurnId: this.spec.fork.at } : {}), ...settings }) : this.spec.resume ? this.client.request('thread/resume', { threadId: this.spec.resume, ...settings }) : this.client.request('thread/start', settings)))
       const thread = parseThread(response.thread)
       if (this.closing) return
@@ -287,6 +294,7 @@ export class CodexChatSession implements ChatProviderSession {
     }
   }
   private replay(history: CodexTurn[]): void {
+    for (const turn of history) if (turn.status === 'completed') this.completedForkTurns.add(turn.id)
     this.lastCompletedTurn = [...history].reverse().find((turn) => turn.status === 'completed')?.id
     const visible = this.asideTimeline.cut(history, (turn) => turn.id, (hidden) => {
       const counter = new CodexItemMapper()
@@ -493,7 +501,7 @@ export class CodexChatSession implements ChatProviderSession {
     if (message.method === 'serverRequest/resolved') this.update({ status: this.pending.size ? 'waiting' : this.activeTurn ? 'running' : 'idle' })
     if (message.method === 'turn/completed') {
       const turnId = string(record(params.turn).id)
-      if (turnId && record(params.turn).status === 'completed') this.lastCompletedTurn = turnId
+      if (turnId && record(params.turn).status === 'completed') { this.lastCompletedTurn = turnId; this.completedForkTurns.add(turnId) }
       if (turnId) {
         this.endedTurns.add(turnId)
         if (this.endedTurns.size > 100) this.endedTurns.delete(this.endedTurns.values().next().value!)
