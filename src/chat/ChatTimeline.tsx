@@ -290,7 +290,7 @@ function ThoughtEntry({ item, defaultOpen = false }: { item: ReasoningItem; defa
     >
       {open ? (
         <WorkLogDetails>
-          <div className="chat-thought italic text-muted-foreground"><Markdown text={item.text} /></div>
+          <div className="chat-thought italic text-muted-foreground"><Markdown text={item.text} running={item.status === 'running'} /></div>
         </WorkLogDetails>
       ) : null}
     </WorkLogRow>

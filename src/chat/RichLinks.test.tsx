@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import '@testing-library/jest-dom/vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatReplyResource } from '../../shared/agent-chat'
-import { Markdown } from './ChatTimeline'
+import { ChatTimeline, Markdown } from './ChatTimeline'
+import type { ChatItem } from '../../shared/agent-chat'
 import { RichLinksContext, type RichLinkServices } from './RichLinks'
 import { ResourceCardList, ResourceChip } from './ResourceChip'
 
@@ -206,6 +207,25 @@ describe('when rich links load', () => {
     expect(prSummary).not.toHaveBeenCalled()
     expect(screen.getByRole('link', { name: 'acme/load#123' })).toBeInTheDocument()
     rerender(view(`See ${pr(123)} and more`, false))
+    expect(await screen.findByRole('link', { name: /PR 123/ })).toBeInTheDocument()
+    expect(prSummary).toHaveBeenCalledTimes(1)
+    expect(prSummary).toHaveBeenCalledWith('acme/load', 123)
+  })
+
+  it('does not look up a link in a thought that is still streaming', async () => {
+    const prSummary = vi.fn(async (_repo: string, number: number) => ({ title: `PR ${number}`, state: 'open' as const }))
+    const thought = (status: 'running' | 'completed', number: number): ChatItem => ({ id: 'th', turnId: 't', kind: 'reasoning', status, createdAt: 1_000, updatedAt: 5_000, text: `Checking ${pr(number)}` })
+    const view = (item: ChatItem) => <RichLinksContext value={{ prSummary }}><ChatTimeline items={[item]} cwd="/work" working={item.status === 'running'} /></RichLinksContext>
+    const { rerender } = render(view(thought('running', 1)))
+    fireEvent.click(screen.getByRole('button', { name: /Thinking/ }))
+    rerender(view(thought('running', 12)))
+    expect(await screen.findByRole('link', { name: 'acme/load#12' })).toBeInTheDocument()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+    expect(prSummary).not.toHaveBeenCalled()
+    rerender(view(thought('completed', 123)))
+    if (!screen.queryByRole('link', { name: /acme\/load#123/ })) {
+      for (const line of screen.getAllByRole('button', { name: /^Thought/ })) if (line.getAttribute('aria-expanded') === 'false') fireEvent.click(line)
+    }
     expect(await screen.findByRole('link', { name: /PR 123/ })).toBeInTheDocument()
     expect(prSummary).toHaveBeenCalledTimes(1)
     expect(prSummary).toHaveBeenCalledWith('acme/load', 123)
