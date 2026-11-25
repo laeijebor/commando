@@ -179,7 +179,8 @@ import { PanePathMenu } from './PanePathMenu'
 import { openPortUrl, PortsSection } from './PortsSection'
 import { AgentHudCard, type AgentHudAnswerState } from './AgentHudCard'
 import { HudPinnedNote } from './HudPinnedNote'
-import { PaneWorklog } from './PaneWorklog'
+import { BoardTile } from './BoardTile'
+import { publishBoardChange } from './boardsApi'
 import { ChatPane, type ChatFlowServices } from './chat/ChatPane'
 import { paneAsks } from './chat/sessionAsks'
 import { ChatStashContext, createChatStashApi, type ChatStash } from './chat/chatStash'
@@ -1489,6 +1490,9 @@ function HostApp() {
 
   const handleServerMessage = (message: ServerMessage) => {
     switch (message.type) {
+      case 'board:changed':
+        publishBoardChange({ targetId: message.targetId, rev: message.rev, host: activeHost })
+        break
       case 'capabilities':
         setRevealInFinder(local && message.capabilities.revealInFinder)
         break
@@ -4076,9 +4080,9 @@ function HostApp() {
     const brief = supplied && (!supplied.targetId || supplied.targetId === pane.targetId) ? supplied : undefined
     const worklogBrief: SessionBrief = brief ? { ...brief, targetId: pane.targetId } : {
       paneId: pane.id, targetId: pane.targetId, sessionId: pane.sessionId, sessionName: pane.sessionId,
-      state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Session', headlineSource: 'hook', updates: [], updatedAt: 0,
+      state: agentStatuses[pane.id]?.status ?? 'unknown', headline: 'Board', headlineSource: 'hook', updates: [], updatedAt: 0,
     }
-    return <PaneWorklog key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
+    return <BoardTile token={token} panePrs={data.prs} key={pane.targetId} brief={worklogBrief} paneLabel={pane.title || pane.command || `Pane ${pane.index}`}
       fullWidth visible={visible} onAttentionChange={reportSessionAttention}
       empty={!brief || brief.updatedAt === 0} hookConnected={agentStatuses[pane.id]?.source === 'hook'}
       simsApi={local ? simsApi : undefined} onShowSimulator={(udid) => { void showSimulator(udid, pane.id) }} prsApi={prsApi} connected={connected}
@@ -4597,7 +4601,7 @@ function HostApp() {
                             } else setOpenDrawers((current) => ({ ...current, [group.windowId]: !(current[group.windowId] && panelPaneId === pane.id) }))
                           }}>
                           <PanelTop aria-hidden="true" />{paneTabs.length > 0 && <span>{paneTabs.length}</span>}
-                          {hasNew && <i className={`side-panel-new${sessionWarnings[pane.id] ? ' is-warning' : ''}`} aria-label={sessionWarnings[pane.id] ? 'Session resume failed' : 'New updates'} />}
+                          {hasNew && <i className={`side-panel-new${sessionWarnings[pane.id] ? ' is-warning' : ''}`} aria-label={sessionWarnings[pane.id] ? 'Board resume failed' : 'New updates'} />}
                         </button> : undefined
                         if (pane.empty) {
                           return [
