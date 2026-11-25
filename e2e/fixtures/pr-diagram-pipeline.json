@@ -1,0 +1,116 @@
+{
+  "type": "pipeline",
+  "title": "Mobile JS ships from next without a build",
+  "caption": "Merging to next now publishes an over-the-air update when only JavaScript changed.",
+  "stages": [
+    {
+      "label": "Trigger",
+      "jobs": [
+        {
+          "id": "push",
+          "label": "push to next",
+          "sub": "was: push to main",
+          "delta": "changed"
+        }
+      ]
+    },
+    {
+      "label": "Check",
+      "jobs": [
+        {
+          "id": "types",
+          "label": "typecheck",
+          "sub": "tsc -b"
+        },
+        {
+          "id": "unit",
+          "label": "unit",
+          "sub": "vitest"
+        }
+      ]
+    },
+    {
+      "label": "Test",
+      "jobs": [
+        {
+          "id": "e2e",
+          "label": "e2e terminal",
+          "sub": "playwright"
+        }
+      ]
+    },
+    {
+      "label": "Publish",
+      "jobs": [
+        {
+          "id": "ota",
+          "label": "OTA publish",
+          "sub": "eas update",
+          "delta": "added"
+        }
+      ]
+    },
+    {
+      "label": "After",
+      "jobs": [
+        {
+          "id": "notify",
+          "label": "notify",
+          "sub": "slack"
+        },
+        {
+          "id": "baseline",
+          "label": "baseline",
+          "sub": "after native builds",
+          "delta": "added"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "push",
+      "to": "types"
+    },
+    {
+      "from": "push",
+      "to": "unit"
+    },
+    {
+      "from": "types",
+      "to": "e2e"
+    },
+    {
+      "from": "unit",
+      "to": "e2e"
+    },
+    {
+      "from": "e2e",
+      "to": "ota",
+      "label": "if mobile/** changed",
+      "delta": "added"
+    },
+    {
+      "from": "ota",
+      "to": "notify",
+      "delta": "added"
+    },
+    {
+      "from": "ota",
+      "to": "baseline",
+      "delta": "added"
+    }
+  ],
+  "notes": [
+    {
+      "text": "Merging to next ships JavaScript to phones within about 4 minutes, without a build."
+    },
+    {
+      "text": "Native changes are skipped: a fingerprint mismatch stops the publish job."
+    },
+    {
+      "text": "New secret required: EXPO_TOKEN in the LaunchAgent environment.",
+      "tone": "changed"
+    }
+  ]
+}
