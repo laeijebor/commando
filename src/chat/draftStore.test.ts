@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadDraft, readDraft, saveDraft } from './draftStore'
+import { appendDraftText, loadDraft, readDraft, saveDraft, updateDraftReports } from './draftStore'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -96,4 +96,33 @@ describe('saved chat drafts', () => {
     vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('Blocked') })
     expect(() => saveDraft('session', '')).not.toThrow()
   })
+})
+
+
+it('stores reference-only drafts and preserves them when the composer saves or clears text', () => {
+  const reference = { asideId: 'abcdefgh', title: 'Finding', body: 'A report', close: true }
+  updateDraftReports('main', { references: [reference] })
+  expect(loadDraft('main')).toEqual({ text: '', images: [], references: [reference] })
+  saveDraft('main', 'Typed text')
+  expect(loadDraft('main').references).toEqual([reference])
+  saveDraft('main', '')
+  expect(loadDraft('main').references).toEqual([reference])
+  updateDraftReports('main', { references: [] })
+  expect(localStorage.getItem(key('main'))).toBeNull()
+})
+
+it('merges refusal text without losing images, references or other pending report sends', () => {
+  const image = { id: `${'a'.repeat(64)}.png` }
+  const reference = { asideId: 'abcdefgh', title: 'Finding', body: 'A report', close: false }
+  const send = { requestId: 'send-1', text: 'Report envelope', at: Date.now() }
+  saveDraft('main', 'Typed text', [image])
+  updateDraftReports('main', { references: [reference], reportSends: [send] })
+  appendDraftText('main', 'Recovered report')
+  expect(loadDraft('main')).toEqual({ text: 'Typed text\n\nRecovered report', images: [image], references: [reference], reportSends: [send] })
+  expect(loadDraft('other').references).toBeUndefined()
+})
+
+it('rejects malformed reference and send metadata without losing valid draft content', () => {
+  localStorage.setItem(key('bad'), JSON.stringify({ text: 'Keep me', references: [null, { asideId: 3 }, { asideId: 'a', title: 't', body: 'b', close: 'true' }], reportSends: [null, { requestId: 3 }], updatedAt: Date.now() }))
+  expect(loadDraft('bad')).toEqual({ text: 'Keep me', images: [] })
 })

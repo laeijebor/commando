@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { asideKey, asideReportText, type AsideReport, type ChatAsideRecord } from '../../shared/agent-chat'
+import { ASIDE_REPORT_PROMPT, asideKey, asideReportText, type AsideReport, type ChatAsideRecord } from '../../shared/agent-chat'
 import type { ChatAsideServices, ChatThreadBindings } from './ChatPane'
 import { Button } from './ui/button'
 import { CHAT_SEND_REFUSAL_MS, type ChatSendError } from './ChatComposer'
+import { useHost } from '../HostContext'
+import { appendDraftText, loadDraft, updateDraftReports, type PendingAsideReference } from './draftStore'
 
-export const ASIDE_REPORT_PROMPT = 'Report to Main: summarise what this aside found for the main thread. Reply with only the report — a one-line headline, then up to 5 short bullets with file paths and concrete next steps. No preamble.'
 type Delivery = 'queue' | 'draft' | 'reference'
 type Report = AsideReport & {
   delivery: Delivery
@@ -14,26 +15,43 @@ type Report = AsideReport & {
   before: Set<string>
   sessionId?: string
   requestId?: string
-  active?: boolean
+  waiting?: boolean
 }
-export type AsideReportDraft = { id: number; text: string }
+export type AsideReportDraft = { id: number; text: string; savedText: string }
 
 /** Owned by the Main pane, not the mounted thread: drafting continues across tab switches. */
-export function useAsideReports(asides: ChatAsideServices | undefined, paneId: string, sendError?: ChatSendError) {
+export function useAsideReports(asides: ChatAsideServices | undefined, paneId: string, sessionId: string | undefined, records: ChatAsideRecord[] | undefined, sendError?: ChatSendError) {
   const [reports, setReports] = useState<Record<string, Report>>({})
   const [draft, setDraft] = useState<AsideReportDraft>()
-  const [references, setReferences] = useState<AsideReport[]>([])
+  const { activeHost } = useHost()
+  const draftId = sessionId && (activeHost === 'local' ? sessionId : `${activeHost}:${sessionId}`)
+  const [saved, setSaved] = useState(() => ({ id: draftId, references: loadDraft(draftId).references ?? [] }))
+  if (saved.id !== draftId) {
+    setSaved({ id: draftId, references: loadDraft(draftId).references ?? [] })
+    setReports({})
+    setDraft(undefined)
+  }
+  const references = saved.id === draftId ? saved.references : loadDraft(draftId).references ?? []
+  const saveReferences = (references: PendingAsideReference[]) => {
+    updateDraftReports(draftId, { references })
+    setSaved({ id: draftId, references })
+  }
+  const appendDraft = (text: string) => {
+    const savedText = appendDraftText(draftId, text)
+    const id = ++sequence.current
+    setDraft((current) => ({ id, text: [current?.text, text].filter(Boolean).join('\n\n'), savedText }))
+  }
   const sequence = useRef(0)
-  const sent = useRef(new Map<string, { text: string; at: number }>())
   useEffect(() => {
-    // Direct queue sends don't pass through the composer's own refusal recovery.
+    // Report sends survive a pane remount; their text is recovered here once.
     for (const { requestId } of sendError?.refused ?? []) {
-      const report = sent.current.get(requestId)
-      if (!report) continue
-      sent.current.delete(requestId)
-      setDraft((current) => ({ id: ++sequence.current, text: [current?.text, report.text].filter(Boolean).join('\n\n') }))
+      const sends = loadDraft(draftId).reportSends ?? []
+      const report = sends.find((send) => send.requestId === requestId)
+      if (!report || Date.now() - report.at > CHAT_SEND_REFUSAL_MS) continue
+      updateDraftReports(draftId, { reportSends: sends.filter((send) => send.requestId !== requestId) })
+      appendDraft(report.text)
     }
-  }, [sendError])
+  }, [sendError, draftId])
   const update = (id: string, change: Partial<Report>) => setReports((current) => current[id] ? { ...current, [id]: { ...current[id]!, ...change } } : current)
   const cancel = (id: string) => setReports((current) => {
     const next = { ...current }
@@ -48,10 +66,16 @@ export function useAsideReports(asides: ChatAsideServices | undefined, paneId: s
       const chat = asides.chats[key]
       const refused = asides.bindings(key).sendError
       const refusal = refused?.refused.some((entry) => entry.requestId === report.requestId)
-      if (!chat || !chat.hostConnected || chat.session.status === 'closed' || chat.session.status === 'error' || chat.session.sessionId !== report.sessionId || refusal) {
-        update(report.asideId, { drafting: false, error: refusal ? refused?.message : chat?.session.error || 'Drafting stopped or the aside disconnected. Write the report yourself.' })
+      const record = records?.find((aside) => aside.id === report.asideId)
+      if ((records && record?.status !== 'open') || (chat && (chat.session.status === 'closed' || chat.session.status === 'error' || chat.session.sessionId !== report.sessionId)) || refusal) {
+        update(report.asideId, { drafting: false, error: refusal ? refused?.message : chat?.session.error || 'Drafting stopped or the aside closed. Write the report yourself.' })
         continue
       }
+      if (!chat || chat.hostConnected === false) {
+        if (!report.waiting) update(report.asideId, { waiting: true })
+        continue
+      }
+      if (report.waiting) update(report.asideId, { waiting: false })
       const promptIndex = chat.items.findIndex((item) => !report.before.has(item.id) && !item.parentToolUseId && item.kind === 'user_message' && item.text === ASIDE_REPORT_PROMPT)
       const prompt = chat.items[promptIndex]
       const replies = prompt ? chat.items.slice(promptIndex + 1).filter((item) => item.kind === 'assistant_message' && !item.parentToolUseId && item.turnId === prompt.turnId && !report.before.has(item.id)) : []
@@ -59,12 +83,12 @@ export function useAsideReports(asides: ChatAsideServices | undefined, paneId: s
       const failure = chat.items.find((item) => !report.before.has(item.id) && !item.parentToolUseId && item.kind === 'notice' && (item.level === 'error' || item.text === 'Interrupted'))
       if (chat.session.status === 'idle' && prompt) {
         if (!failure && reply?.kind === 'assistant_message' && reply.status === 'completed' && reply.text.trim()) update(report.asideId, { drafting: false, body: reply.text })
-        else if (report.active || failure || (reply && reply.status !== 'running')) update(report.asideId, { drafting: false, error: failure?.kind === 'notice' ? failure.text : 'Drafting failed or was interrupted. Write the report yourself.' })
-      } else if (chat.session.status === 'idle' && (report.active || failure)) {
+        else if (failure || (reply && reply.status !== 'running')) update(report.asideId, { drafting: false, error: failure?.kind === 'notice' ? failure.text : 'Drafting failed or was interrupted. Write the report yourself.' })
+      } else if (chat.session.status === 'idle' && failure) {
         update(report.asideId, { drafting: false, error: failure?.kind === 'notice' ? failure.text : 'Drafting was interrupted. Write the report yourself.' })
-      } else if (chat.session.status !== 'idle' && !report.active) update(report.asideId, { active: true })
+      }
     }
-  }, [asides, paneId, reports])
+  }, [asides, paneId, reports, records])
   const start = (aside: ChatAsideRecord) => {
     if (!asides || reports[aside.id]) return
     const key = asideKey(paneId, aside.id)
@@ -80,25 +104,28 @@ export function useAsideReports(asides: ChatAsideServices | undefined, paneId: s
       ...(requestId ? { requestId } : {}),
     } }))
   }
+  const rememberSend = (requestId: string | void, text: string) => {
+    const sends = (loadDraft(draftId).reportSends ?? []).filter((send) => Date.now() - send.at <= CHAT_SEND_REFUSAL_MS)
+    if (requestId) updateDraftReports(draftId, { reportSends: [...sends, { requestId, text, at: Date.now() }] })
+  }
   const deliver = (report: Report, onSend: ChatThreadBindings['onSend']) => {
     const text = asideReportText(report)
     if (report.delivery === 'queue') {
       const requestId = onSend(text, undefined, { delivery: 'queue' })
-      for (const [id, entry] of sent.current) if (Date.now() - entry.at > CHAT_SEND_REFUSAL_MS) sent.current.delete(id)
-      if (requestId) sent.current.set(requestId, { text, at: Date.now() })
+      rememberSend(requestId, text)
     }
     else if (report.delivery === 'draft') {
-      setDraft((current) => ({ id: ++sequence.current, text: [current?.text, text].filter(Boolean).join('\n\n') }))
+      appendDraft(text)
       asides?.select(undefined)
     } else {
-      setReferences((current) => [...current, { asideId: report.asideId, title: report.title, body: report.body }])
+      saveReferences([...references, { asideId: report.asideId, title: report.title, body: report.body, close: report.close }])
       asides?.select(undefined)
     }
     cancel(report.asideId)
   }
-  return { reports, start, update, cancel, deliver, draft, consumeDraft: () => setDraft(undefined), references,
-    removeReference: (index: number) => setReferences((current) => current.filter((_, i) => i !== index)),
-    clearReferences: () => setReferences([]) }
+  return { reports, start, update, cancel, deliver, rememberSend, draft, consumeDraft: () => setDraft(undefined), references,
+    removeReference: (index: number) => saveReferences(references.filter((_, i) => i !== index)),
+    clearReferences: () => saveReferences([]) }
 }
 
 export function AsideReportSheet({ report, disabled, onChange, onCancel, onSend }: {
@@ -113,7 +140,7 @@ export function AsideReportSheet({ report, disabled, onChange, onCancel, onSend 
     <div className="chat-aside-report-body">
       <div className="mb-2">From aside “{report.title}”</div>
       {report.error ? <div role="alert" className="mb-2 text-destructive">{report.error}</div> : null}
-      {report.drafting ? <div className="flex items-center gap-2"><span role="status">Drafting…</span><Button size="xs" variant="ghost-muted" onClick={() => onChange({ drafting: false, body: '' })}>Write it myself</Button></div>
+      {report.drafting ? <div className="flex items-center gap-2"><span role="status">{report.waiting ? 'Waiting for the aside to reconnect…' : 'Drafting…'}</span><Button size="xs" variant="ghost-muted" onClick={() => onChange({ drafting: false, body: '' })}>Write it myself</Button></div>
         : <><textarea autoFocus aria-label="Report text" value={report.body} onChange={(event) => onChange({ body: event.target.value })} />
           {report.error ? <Button size="xs" variant="ghost-muted" onClick={() => onChange({ error: undefined, body: '' })}>Write it myself</Button> : null}</>}
       <fieldset className="chat-aside-report-delivery"><legend className="sr-only">Delivery</legend>

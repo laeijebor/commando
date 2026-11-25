@@ -374,7 +374,7 @@ export function ChatComposer({
   onReportDraftTaken?: () => void
   reportReferences?: AsideReport[]
   onRemoveReportReference?: (index: number) => void
-  onReportsSent?: () => void
+  onReportsSent?: (requestId: string | void, text: string) => void
   onOpenAside?: (text: string, images?: ChatImageRef[]) => Promise<boolean>
   newAside?: boolean
   session: ChatSessionInfo
@@ -458,7 +458,10 @@ export function ChatComposer({
   useEffect(() => {
     if (!reportDraft || takenReportDraft.current === reportDraft.id) return
     takenReportDraft.current = reportDraft.id
-    setDraft((current) => [current, reportDraft.text].filter(Boolean).join('\n\n'))
+    const text = draft === reportDraft.savedText ? draft : [draft, reportDraft.text].filter(Boolean).join('\n\n')
+    storedDraft.text = text
+    saveDraft(hostDraftId, text, storedDraft.images)
+    setDraft(text)
     onReportDraftTaken?.()
   }, [reportDraft, onReportDraftTaken])
   const fileInput = useRef<HTMLInputElement>(null)
@@ -815,11 +818,11 @@ export function ChatComposer({
       : { ...(running && turnFlow ? { delivery: steer ? 'steer' as const : 'queue' as const } : {}), ...answersAsk }
     const requestId = Object.keys(options).length ? onSend(text, images, options) : images.length ? onSend(text, images) : onSend(text)
     if (requestId) {
-      sentDrafts.current.set(requestId, { text, images })
+      sentDrafts.current.set(requestId, { text: reportReferences.length && onReportsSent ? '' : text, images })
       window.setTimeout(() => sentDrafts.current.delete(requestId), CHAT_SEND_REFUSAL_MS)
     }
     clearDraft()
-    if (reportReferences.length) onReportsSent?.()
+    if (reportReferences.length) onReportsSent?.(requestId, text)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {

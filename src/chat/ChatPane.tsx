@@ -119,7 +119,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
   const [pendingAction, setPendingAction] = useState<ChatAsideAction>()
   const beforeOpen = useRef(new Set<string>())
   const [reforks, setReforks] = useState<Record<string, number>>({})
-  const reporting = useAsideReports(asides, props.chat.paneId, props.sendError)
+  const reporting = useAsideReports(asides, props.chat.paneId, props.chat.session.sessionId, props.chat.asides, props.sendError)
   const [reportSource, setReportSource] = useState<AsideReport>()
   const [focusMain, setFocusMain] = useState(false)
   const available = asides && hostTakesAsides(props.chat.session)
@@ -176,7 +176,14 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
     commander: undefined, prsApi: undefined, focusMessage: undefined,
   } : { ...props,
     reportDraft: reporting.draft, onReportDraftTaken: reporting.consumeDraft,
-    reportReferences: reporting.references, onRemoveReportReference: reporting.removeReference, onReportsSent: reporting.clearReferences,
+    reportReferences: reporting.references, onRemoveReportReference: reporting.removeReference, onReportsSent: (requestId: string | void, text: string) => {
+      reporting.rememberSend(requestId, text)
+      const closing = new Set(reporting.references.filter((report) => report.close).map((report) => report.asideId))
+      reporting.clearReferences()
+      for (const asideId of closing) void asides?.request({ action: 'close', asideId }).then((result) => {
+        if (!result.ok) setError(result.error || 'Could not close the aside')
+      }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+    },
     onOpenReport: (report: AsideReport) => {
       const source = props.chat.asides?.find((aside) => aside.id === report.asideId)
       if (source?.status === 'open') asides?.select(source.id)
@@ -189,7 +196,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
       try {
         reporting.deliver(report, props.onSend)
         if (report.delivery !== 'queue') { props.onFocus(); setFocusMain(true) }
-        if (report.close) void request({ action: 'close', asideId: report.asideId })
+        if (report.close && report.delivery !== 'reference') void request({ action: 'close', asideId: report.asideId })
       } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     }} /> : undefined
   const column = <ChatErrorBoundary>
@@ -218,7 +225,7 @@ export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] 
           requests={[]} services={props.services} onOpenAside={open} newAside
           onSend={() => {}} onInterrupt={() => {}} onAnswer={() => {}} onConfigure={() => {}}
         />
-      </> : selected && !selectedChat ? record && !pending(record.id) ? <><div role="alert" className="p-4 text-sm text-destructive">
+      </> : selected && !selectedChat ? report?.drafting ? <>{reportSheet}</> : record && !pending(record.id) ? <><div role="alert" className="p-4 text-sm text-destructive">
         This aside stopped: {record.lastError ?? 'The aside session closed unexpectedly'}
         <Button size="xs" variant="outline" disabled={!props.connected || !props.chat.hostConnected} onClick={() => { void request({ action: 'reopen', asideId: record.id }) }}>Reopen</Button>
       </div>{reportSheet}</> : <div role="status" className="p-4 text-sm text-muted-foreground">Loading aside…</div>
@@ -278,7 +285,7 @@ function ChatColumn({
   onReportDraftTaken?: () => void
   reportReferences?: AsideReport[]
   onRemoveReportReference?: (index: number) => void
-  onReportsSent?: () => void
+  onReportsSent?: (requestId: string | void, text: string) => void
   onOpenReport?: (report: AsideReport) => void
   onOpenAside?: (text: string, images?: ChatImageRef[]) => Promise<boolean>
   chat: ChatState
