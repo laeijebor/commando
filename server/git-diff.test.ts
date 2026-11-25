@@ -1201,4 +1201,43 @@ describe('GitDiffInspector file contents and blame in a real repository', () => 
       await rm(root, { recursive: true, force: true })
     }
   })
+  it('marks a submodule with local changes dirty, as git diff does', async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-git-diff-')))
+    const env = { ...process.env, GIT_AUTHOR_NAME: 'Ada', GIT_AUTHOR_EMAIL: 'a@a', GIT_COMMITTER_NAME: 'Ada', GIT_COMMITTER_EMAIL: 'a@a' }
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', env })
+    const sub = path.join(root, 'sub')
+    try {
+      run(root, 'init', '-q', '-b', 'main')
+      execFileSync('mkdir', [sub])
+      run(sub, 'init', '-q', '-b', 'main')
+      await writeFile(path.join(sub, 'lib.ts'), 'one\n')
+      run(sub, 'add', '.')
+      run(sub, 'commit', '-q', '-m', 'Sub commit')
+      const subHead = run(sub, 'rev-parse', 'HEAD').trim()
+      run(root, 'add', 'sub')
+      run(root, 'commit', '-q', '-m', 'Add submodule')
+
+      const inspector = new GitDiffInspector(undefined, env)
+      await expect(inspector.fileContents(root, 'sub')).resolves.toMatchObject({
+        old: { contents: `Subproject commit ${subHead}\n` },
+        new: { contents: `Subproject commit ${subHead}\n` },
+      })
+
+      // Untracked files alone don't make git diff call it dirty.
+      await writeFile(path.join(sub, 'scratch.txt'), 'x\n')
+      expect(run(root, 'diff', 'HEAD', '--', 'sub')).toBe('')
+      await expect(inspector.fileContents(root, 'sub')).resolves.toMatchObject({
+        new: { contents: `Subproject commit ${subHead}\n` },
+      })
+
+      await writeFile(path.join(sub, 'lib.ts'), 'two\n')
+      expect(run(root, 'diff', 'HEAD', '--', 'sub')).toContain(`${subHead}-dirty`)
+      await expect(inspector.fileContents(root, 'sub')).resolves.toMatchObject({
+        old: { contents: `Subproject commit ${subHead}\n` },
+        new: { contents: `Subproject commit ${subHead}-dirty\n` },
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })

@@ -849,22 +849,34 @@ export class GitDiffInspector {
       return { size: Buffer.byteLength(target), read: async () => target }
     }
     if (entry.kind === 'directory') {
-      const commit = await this.submoduleHead(path.join(parent, path.basename(absolute)))
-      if (!commit) return undefined
-      const contents = `Subproject commit ${commit}\n`
+      const state = await this.submoduleState(path.join(parent, path.basename(absolute)))
+      if (!state) return undefined
+      const contents = `Subproject commit ${state}\n`
       return { size: contents.length, read: async () => contents }
     }
     return undefined
   }
 
-  /** The checked-out commit of a submodule directory, or undefined for a plain directory. */
-  private async submoduleHead(directory: string): Promise<string | undefined> {
+  /**
+   * The checked-out commit of a submodule directory, suffixed `-dirty` when it has local changes
+   * (as `git diff` prints it), or undefined for a plain directory.
+   */
+  private async submoduleState(directory: string): Promise<string | undefined> {
+    let sha: string | undefined
     try {
       const { stdout } = await this.git(directory, ['rev-parse', '--show-toplevel', 'HEAD'])
-      const [top, sha] = stdout.split('\n').map((line) => line.trim())
-      return top === directory && sha && COMMIT_SHA.test(sha) ? sha : undefined
+      const [top, head] = stdout.split('\n').map((line) => line.trim())
+      if (top !== directory || !head || !COMMIT_SHA.test(head)) return undefined
+      sha = head
     } catch {
       return undefined
+    }
+    try {
+      // Untracked files don't make git diff print -dirty, so they are left out here too.
+      const { stdout: status } = await this.git(directory, ['status', '--porcelain', '--untracked-files=no'])
+      return status.trim() ? `${sha}-dirty` : sha
+    } catch {
+      return sha
     }
   }
 
