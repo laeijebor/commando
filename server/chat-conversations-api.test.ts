@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ChatSessionInfo } from '../shared/agent-chat.js'
+import type { ChatSessionInfo, ChatState } from '../shared/agent-chat.js'
 import type { ChatConversation } from '../shared/chat-conversations.js'
 import type { AgentStatus, CommandoSnapshot, TmuxPane } from '../shared/protocol.js'
 import type { AgentResumeRecord } from './agent-resume.js'
@@ -13,13 +13,18 @@ import type { ConversationBriefRecord } from './session-briefs.js'
 import { AgentStatusRegistry } from './agent-status-registry.js'
 import { inferAgentProcessStatus } from './agent-status.js'
 import { ChatConversationsApi, deletedWorktreeLocation } from './chat-conversations-api.js'
+import { AsideStore } from './agent-host/asides.js'
+import { asideSessionIds, PersistedAsideSessions } from './chat-main-key.js'
 import { SessionPreferenceStore, type SessionGroupingMode } from './session-preferences.js'
 import { TmuxCreator, agentLaunchPaneCommand } from './tmux-create.js'
 
 const ID = '11111111-2222-3333-4444-555555555555'
 let folder: string
-beforeEach(async () => { folder = await mkdtemp(join(tmpdir(), 'commando-resume-')) })
-afterEach(async () => { await rm(folder, { recursive: true, force: true }) })
+beforeEach(async () => {
+  folder = await mkdtemp(join(tmpdir(), 'commando-resume-'))
+  vi.stubEnv('COMMANDO_ASIDES_DIR', join(folder, 'asides'))
+})
+afterEach(async () => { vi.unstubAllEnvs(); await rm(folder, { recursive: true, force: true }) })
 
 function request(method: string, path: string, value?: unknown): IncomingMessage {
   const stream = new PassThrough() as unknown as IncomingMessage & PassThrough
@@ -46,15 +51,16 @@ function openAgentSessions(registry: AgentStatusRegistry, panes: Pick<TmuxPane, 
   }).provider) ?? [])
 }
 
-function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: (Pick<TmuxPane, 'id'> & Partial<Pick<TmuxPane, 'sessionId' | 'windowId' | 'index' | 'repo' | 'command'>>)[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'loadReadOnly'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; agentSessions?: AgentStatus[] | (() => AgentStatus[]); serverId?: string; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>; listed?: Partial<ChatConversation>[]; restoreWorktree?: (worktree: { candidates: string[]; branch: string; path: string }) => Promise<void> } = {}) {
+function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: string; name: string; windowIds?: string[] }[]; panes?: (Pick<TmuxPane, 'id'> & Partial<Pick<TmuxPane, 'sessionId' | 'windowId' | 'index' | 'repo' | 'command'>>)[]; groups?: { id: string; name: string; sessionIds: string[] }[]; groupingMode?: SessionGroupingMode; sessionPreferences?: Pick<SessionPreferenceStore, 'loadReadOnly'>; conversation?: Partial<ChatConversation>; chats?: ChatSessionInfo[]; chatStates?: Pick<ChatState, 'paneId' | 'session' | 'asides'>[]; empty?: boolean; resumeRecord?: Partial<AgentResumeRecord>; agentSessions?: AgentStatus[] | (() => AgentStatus[]); serverId?: string; creator?: Pick<TmuxCreator, 'createPane' | 'respawnChatPane' | 'createWindow' | 'createSession'>; listed?: Partial<ChatConversation>[]; restoreWorktree?: (worktree: { candidates: string[]; branch: string; path: string }) => Promise<void> } = {}) {
   const conversation: ChatConversation = { provider: 'codex', sessionId: ID, cwd: folder, title: 'Old', updatedAt: 1, ...options.conversation }
-  const chats = options.chats ?? [chat()]
+  const chats = options.chats ?? options.chatStates?.map((state) => state.session) ?? [chat()]
   const creator = {
     respawnChatPane: vi.fn(async () => {}),
     createWindow: vi.fn(async () => ({ paneId: '%10' }) as never),
     createSession: vi.fn(async () => ({ created: { paneId: '%11' } }) as never),
     createPane: vi.fn(async () => ({ paneId: '%9' }) as never),
   }
+  const persistedAsides = new PersistedAsideSessions()
   const api = new ChatConversationsApi({
     index: { list: vi.fn(async () => [conversation, ...(options.listed ?? []).map((entry, index) => ({ ...conversation, sessionId: `listed-${index}`, ...entry }))]), find: vi.fn(async (provider, sessionId) => provider === conversation.provider && sessionId === conversation.sessionId ? conversation : undefined) },
     resumes: { findConversation: (provider, sessionId) => options.resumeRecord ? { targetId: 'target', provider, sessionId, path: folder, command: 'env codex resume ' + ID, serverId: 'test', updatedAt: 1, ...options.resumeRecord } : undefined },
@@ -64,6 +70,7 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
     snapshot: () => ({ sessions: options.sessions?.map((session) => ({ windowIds: ['@1'], ...session })) ?? [], panes: options.panes ?? [{ id: '%1', empty: options.empty }, { id: '%2' }] }) as unknown as CommandoSnapshot,
     chatSession: (paneId) => chats.find((session) => session.paneId === paneId),
     chatSessions: () => chats,
+    asideSessionIds: async () => asideSessionIds(options.chatStates ?? chats.map((session) => ({ paneId: session.paneId, session })), await persistedAsides.sessionIds()),
     agentSessions: () => typeof options.agentSessions === 'function' ? options.agentSessions() : options.agentSessions ?? [],
     creator: options.creator ?? creator,
     beforePaneCreated: vi.fn(async () => {}),
@@ -84,6 +91,59 @@ function setup(options: { records?: ConversationBriefRecord[]; sessions?: { id: 
 }
 
 describe('ChatConversationsApi', () => {
+  it.each(['no live host', 'cleared Main'])('hides persisted open and closed asides with %s', async (scenario) => {
+    await new AsideStore().save(ID, [
+      { id: 'abcd1234', title: 'Open', mode: 'read-only', method: 'fork', readOnlyEnforced: true,
+        sessionId: 'saved-open', status: 'open', forkedFrom: { sessionId: ID }, createdAt: 1 },
+      { id: 'abcd5678', title: 'Closed', mode: 'read-only', method: 'fork', readOnlyEnforced: true,
+        sessionId: 'saved-closed', status: 'closed', forkedFrom: { sessionId: ID }, createdAt: 1, closedAt: 2 },
+    ])
+    const { list, resume, conversation } = setup({
+      chats: scenario === 'no live host' ? [] : [chat({ sessionId: undefined })],
+      listed: [{ sessionId: 'saved-open' }, { sessionId: 'saved-closed' }],
+    })
+    expect(await list()).toMatchObject({ status: 200, body: { conversations: [conversation] } })
+    expect(await resume({})).toMatchObject({ status: 200 })
+  })
+
+  it.each(['claude', 'codex', 'cursor', 'muse', 'deepseek'] as const)('hides a live %s aside without a saved record and refuses to resume it in any placement', async (provider) => {
+    const { list, resume, creator } = setup({
+      conversation: { provider },
+      chats: [chat(), chat({ paneId: '%2~abcd1234', provider, sessionId: ID })],
+    })
+    expect(await list()).toMatchObject({ status: 200, body: { conversations: [] } })
+    for (const input of [{ placement: 'replace' }, { placement: 'split' }, { placement: 'session' }, { placement: 'session', paneId: undefined }]) {
+      expect(await resume({ provider, ...input })).toMatchObject({
+        status: 409, body: { error: 'That conversation is already open in pane %2' },
+      })
+    }
+    expect(creator.respawnChatPane).not.toHaveBeenCalled()
+    expect(creator.createPane).not.toHaveBeenCalled()
+    expect(creator.createWindow).not.toHaveBeenCalled()
+    expect(creator.createSession).not.toHaveBeenCalled()
+  })
+
+  it('hides open and closed aside records while keeping ordinary conversations listed and resumable', async () => {
+    const { list, resume, conversation } = setup({
+      chatStates: [
+        { paneId: '%1', session: chat(), asides: [{
+          id: 'abcd1234', title: 'Open aside', mode: 'read-only', method: 'fork', readOnlyEnforced: true,
+          sessionId: 'open-aside', status: 'open', forkedFrom: { sessionId: ID }, createdAt: 1,
+        }] },
+        { paneId: '%2', session: chat({ paneId: '%2', provider: 'codex', sessionId: 'normal-open' }), asides: [{
+          id: 'abcd5678', title: 'Closed aside', mode: 'read-only', method: 'fork', readOnlyEnforced: true,
+          sessionId: 'closed-aside', status: 'closed', forkedFrom: { sessionId: ID }, createdAt: 1, closedAt: 2,
+        }] },
+      ],
+      listed: [{ sessionId: 'open-aside' }, { sessionId: 'closed-aside' }, { sessionId: 'normal-open' }],
+    })
+    expect(await list()).toMatchObject({ status: 200, body: { conversations: [
+      conversation, { ...conversation, sessionId: 'normal-open', openPaneId: '%2' },
+    ] } })
+    expect(await resume({ sessionId: 'normal-open' })).toMatchObject({ status: 409 })
+    expect(await resume({})).toMatchObject({ status: 200 })
+  })
+
   it.each([
     ['live TUI after a completed turn', '2.1.295', false, 409],
     ['pane back at zsh before registry reconciliation', 'zsh', false, 200],

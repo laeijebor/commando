@@ -6,6 +6,10 @@ import { Component, useCallback, useEffect, useMemo, useLayoutEffect, useRef, us
 import { Bot, PlugZap, RefreshCw, SquareTerminal } from 'lucide-react'
 import {
   hostTakesTurnFlow,
+  hostTakesAsides,
+  asideKey,
+  type ChatAsideAction,
+  type ChatAsideResult,
   planImplementationPrompt,
   type ExternalAgentRun,
   type ChatAnswer,
@@ -42,6 +46,7 @@ import { Button } from './ui/button'
 import { latestTodos, pendingRequests, withExternalAgentRuns, type SubagentItem } from '../../shared/chat-timeline'
 import { withTileEvents, type ChatCardEvent } from '../../shared/chat-tile-events'
 import { findSubagent, implementPermissionMode, planAwaitingFollowUp, subagentLabel, switcherSubagents } from './turnFlow'
+import { AsideTabs, AsideBanner } from './AsideTabs'
 import './chat.css'
 
 /** What a chat pane asks of the app for queueing, subagents and plans. */
@@ -88,9 +93,107 @@ export class ChatErrorBoundary extends Component<{ children: ReactNode }, { erro
 }
 
 /** A chat pane: the agent host's turns as a narrow, readable column. */
-export function ChatPane(props: Parameters<typeof ChatColumn>[0]) {
-  const column = <ChatErrorBoundary><ChatColumn {...props} /></ChatErrorBoundary>
-  // Commander's pane always renders its split, so opening a chat beside it keeps Commander's draft.
+export type ChatThreadBindings = Pick<Parameters<typeof ChatColumn>[0],
+  'onSend' | 'onInterrupt' | 'onAnswer' | 'onConfigure' | 'onRestart' | 'services' | 'flow' |
+  'sendError' | 'onDismissSendError' | 'actionError' | 'onDismissActionError'>
+
+export interface ChatAsideServices {
+  chats: Readonly<Record<string, ChatState>>
+  selected: string | undefined
+  select: (id: string | undefined) => void
+  request: (action: ChatAsideAction) => Promise<ChatAsideResult>
+  bindings: (key: string) => ChatThreadBindings
+}
+
+export function ChatPane({ asides, ...props }: Parameters<typeof ChatColumn>[0] & { asides?: ChatAsideServices }) {
+  const shell = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!props.paneId || !props.registerFocusable) return
+    props.registerFocusable(props.paneId, shell.current)
+    return () => props.registerFocusable?.(props.paneId!, null)
+  }, [props.paneId, props.registerFocusable])
+  const [error, setError] = useState<string>()
+  const [busy, setBusy] = useState(false)
+  const [pendingAction, setPendingAction] = useState<ChatAsideAction>()
+  const beforeOpen = useRef(new Set<string>())
+  const [reforks, setReforks] = useState<Record<string, number>>({})
+  const available = asides && hostTakesAsides(props.chat.session)
+  const selected = available ? asides.selected : undefined
+  const latestSelected = useRef(selected)
+  latestSelected.current = selected
+  const awaitingRecord = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (selected === 'new') shell.current?.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
+  }, [selected])
+  const record = props.chat.asides?.find((aside) => aside.id === selected && aside.status === 'open')
+  const selectedChat = record && asides?.chats[asideKey(props.chat.paneId, record.id)]
+  const lastRecord = useRef<string | undefined>(undefined)
+  // A result may beat its broadcast. Wait for a newly opened record, but leave a closed/removed one.
+  useEffect(() => {
+    if (record) { lastRecord.current = record.id; awaitingRecord.current = undefined }
+    else if (selected && selected !== 'new' && !busy && awaitingRecord.current !== selected &&
+      (lastRecord.current === selected || props.chat.asides?.some((aside) => aside.id === selected && aside.status === 'closed'))) {
+      lastRecord.current = undefined
+      asides?.select(undefined)
+    }
+  }, [selected, record, busy, asides, props.chat.asides])
+  const request = async (action: ChatAsideAction) => {
+    if (!asides || busy) return false
+    setBusy(true)
+    beforeOpen.current = new Set(props.chat.asides?.map((aside) => aside.id))
+    setPendingAction(action)
+    setError(undefined)
+    try {
+      const result = await asides.request(action)
+      if (!result.ok) { setError(result.error || 'The aside operation failed'); return false }
+      if (action.action === 'open' || action.action === 'reopen') {
+        const id = result.asideId ?? (action.action === 'reopen' ? action.asideId : undefined)
+        awaitingRecord.current = id
+        asides.select(id)
+      } else if (action.action === 'close' && action.asideId === latestSelected.current) asides.select(undefined)
+      else if (action.action === 'refork') setReforks((current) => ({ ...current, [action.asideId]: (current[action.asideId] ?? 0) + 1 }))
+      return true
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+      return false
+    } finally { setBusy(false); setPendingAction(undefined) }
+  }
+  const pending = (id: string) => busy && (pendingAction?.action === 'open' ? !beforeOpen.current.has(id) : pendingAction?.asideId === id)
+  const open = available ? (text: string, images?: ChatImageRef[]) => request({ action: 'open', text, ...(images?.length ? { images } : {}), mode: 'read-only' }) : undefined
+  const showStrip = available && (Boolean(props.chat.asides?.length) || Boolean(props.chat.asidesError) || Boolean(selected) || busy)
+  const columnProps = selectedChat && asides ? {
+    ...props, ...asides.bindings(selectedChat.paneId), chat: selectedChat,
+    externalRuns: EMPTY_EXTERNAL_RUNS, tileEvents: EMPTY_TILE_EVENTS, asks: NO_ASKS,
+    commander: undefined, prsApi: undefined, focusMessage: undefined,
+  } : props
+  const column = <ChatErrorBoundary>
+    <div ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat chat-aside-column" onFocus={(event) => {
+      if (event.target === event.currentTarget) shell.current?.querySelector<HTMLTextAreaElement>('textarea[data-chat-composer]')?.focus()
+    }} onMouseDown={() => { if (selected === 'new' || (selected && !selectedChat)) props.onFocus() }} onKeyDown={(event) => {
+      if (event.key !== 'Escape' || !selected || event.defaultPrevented) return
+      if (event.target instanceof HTMLTextAreaElement && (event.target.value || selectedChat?.session.status === 'running')) return
+      event.preventDefault()
+      asides?.select(undefined)
+    }}>
+      {showStrip ? <AsideTabs main={props.chat} chats={asides.chats} selected={selected} onSelect={asides.select} onAction={(action) => { void request(action) }} pending={pending} disabled={busy || !props.connected || !props.chat.hostConnected} /> : null}
+      {record ? <AsideBanner aside={record} disabled={busy || !props.connected || !props.chat.hostConnected} onAction={(action) => { void request(action) }} /> : null}
+      {error ? <div role="alert" className="px-3 py-2 text-xs text-destructive">{error}<Button size="xs" variant="ghost-muted" onClick={() => setError(undefined)}>Dismiss</Button></div> : null}
+      {selected === 'new' ? <>
+        <div className="chat-aside-banner">New aside · fresh context from Main’s latest finished turn · Read-only</div>
+        <div className="min-h-0 flex-1" />
+        <ChatComposer
+          session={{ ...props.chat.session, sessionId: `${props.chat.session.sessionId ?? props.chat.paneId}:new-aside`, status: 'idle', queue: [], claudeCodeSwitch: undefined }}
+          hostConnected={props.connected && props.chat.hostConnected && !busy}
+          requests={[]} services={props.services} onOpenAside={open} newAside
+          onSend={() => {}} onInterrupt={() => {}} onAnswer={() => {}} onConfigure={() => {}}
+        />
+      </> : selected && !selectedChat ? record && !pending(record.id) ? <div role="alert" className="p-4 text-sm text-destructive">
+        This aside stopped: {record.lastError ?? 'The aside session closed unexpectedly'}
+        <Button size="xs" variant="outline" disabled={!props.connected || !props.chat.hostConnected} onClick={() => { void request({ action: 'reopen', asideId: record.id }) }}>Reopen</Button>
+      </div> : <div role="status" className="p-4 text-sm text-muted-foreground">Loading aside…</div>
+        : <ChatColumn key={selectedChat ? `${selectedChat.paneId}:${reforks[record!.id] ?? 0}` : props.chat.paneId} {...columnProps} registerFocusable={undefined} {...(open ? { onOpenAside: open } : {})} />}
+    </div>
+  </ChatErrorBoundary>
   return props.paneId && props.commander?.state.paneId === props.paneId
     ? <CommanderSplit {...(props.commander.peek ? { peek: props.commander.peek } : {})}>{column}</CommanderSplit>
     : column
@@ -130,7 +233,9 @@ function ChatColumn({
   asks = NO_ASKS,
   focusMessage,
   onFocusMessageHandled,
+  onOpenAside,
 }: {
+  onOpenAside?: (text: string, images?: ChatImageRef[]) => Promise<boolean>
   chat: ChatState
   externalRuns?: readonly ExternalAgentRun[]
   /** Redline/canvas cards for this chat, from the daemon. */
@@ -369,7 +474,7 @@ function ChatColumn({
     return next
   })
   return (
-    <section ref={shell} tabIndex={-1} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onFocus={(event) => {
+    <section ref={shell} tabIndex={-1} style={{ height: 'auto', flex: '1 1 0%' }} className="terminal-chat-shell commando-chat flex min-h-0 min-w-0 flex-col outline-none" onFocus={(event) => {
       // A pane jump focuses the shell; hand the caret to the composer.
       if (event.target === event.currentTarget && !pressing.current) focusComposer()
     }} onMouseDown={(event) => {
@@ -459,6 +564,7 @@ function ChatColumn({
       <AskTray asks={asks} disabled={asksDisabled} anchored={anchored} openSignal={askTraySignal} onAnswer={answerAsk} onReply={replyToAsk} onJump={jumpToAsk} />
       {prsApi ? <PrStrip key={paneId ?? chat.paneId} paneId={paneId ?? chat.paneId} api={prsApi} connected={connected} onSend={onSend} agentConnected={chat.hostConnected} sendError={sendError} {...(onOpenPr ? { onOpenPr } : {})} {...(onDismissPrs ? { onDismissPrs } : {})} /> : null}
       <ChatComposer
+        {...(onOpenAside ? { onOpenAside } : {})}
         session={chat.session}
         hostConnected={connected && chat.hostConnected}
         requests={requests}

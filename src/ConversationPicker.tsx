@@ -4,7 +4,7 @@ import { usePaletteDismiss } from './usePaletteDismiss'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { History, LoaderCircle, Search } from 'lucide-react'
 import { PaletteBack } from './PanePalette'
-import type { ChatState } from '../shared/agent-chat'
+import { parseAsideKey, type ChatState } from '../shared/agent-chat'
 import {
   chatConversationProviderLabel,
   chatConversationKey,
@@ -23,10 +23,10 @@ export function openConversationPanes(
   const open = new Map<string, { paneId: string; label: string }>()
   for (const conversation of conversations) {
     const paneId = conversation.openPaneId
-    if (paneId) open.set(chatConversationKey(conversation.provider, conversation.sessionId), { paneId, label: label(paneId) })
+    if (paneId && !parseAsideKey(paneId)) open.set(chatConversationKey(conversation.provider, conversation.sessionId), { paneId, label: label(paneId) })
   }
   for (const [paneId, chat] of Object.entries(chats)) {
-    if (chat.session.sessionId) open.set(chatConversationKey(chat.session.provider, chat.session.sessionId), { paneId, label: label(paneId) })
+    if (!parseAsideKey(paneId) && chat.session.sessionId) open.set(chatConversationKey(chat.session.provider, chat.session.sessionId), { paneId, label: label(paneId) })
   }
   return open
 }

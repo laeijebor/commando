@@ -13,6 +13,8 @@ import {
   stripAttachmentNotesFromSummary,
   RETURNED_FROM_CLAUDE_CODE,
   type ChatAnswer,
+  type ChatAsideInfo,
+  type ChatForkPoint,
   type ChatCommand,
   type ChatContextUsage,
   type ChatEffort,
@@ -37,6 +39,8 @@ import { runClaudeMcp, type ClaudeMcpHandle } from './claude-mcp.js'
 import type { ChatMcpRequest, ChatMcpResult } from '../../shared/chat-mcp.js'
 import { shellQuote } from '../agent-resume-command.js'
 import { commanderAllowedTools } from '../commander-tools.js'
+import { asideEnv, asideInstructions } from './aside-brief.js'
+import { AsideTimeline, countTimelineMessages } from './aside-timeline.js'
 import { DEEPSEEK_MODELS, DEEPSEEK_RUNTIME_ENV } from './deepseek.js'
 import type { ChatProviderSession, ChatProviderSessionEvents, ChatProviderTui } from './provider.js'
 import { NO_PLAN_LIMITS, applyRateLimitEvent, toPlanUsage } from './plan-usage.js'
@@ -49,6 +53,9 @@ export interface AgentSessionSpec {
   /** Claude config dir; picks the login (`~/.claudep`, `~/.claudew`). */
   configDir?: string
   resume?: string
+  fork?: ChatForkPoint
+  aside?: ChatAsideInfo
+  readOnly?: boolean
   model?: string
   effort?: ChatEffort
   /** Fast mode: quicker output on a model that offers it. */
@@ -122,7 +129,7 @@ export function claudeCodeSwitchCommand(args: ClaudeCodeSettings, claudePath: st
   return `exec /bin/bash -c ${shellQuote(`set -m; ${tui}; ${back}`)}`
 }
 
-type TranscriptMessage = { type: string; message: unknown; parent_tool_use_id: string | null }
+type TranscriptMessage = { uuid?: string; type: string; message: unknown; parent_tool_use_id: string | null }
 
 /** Reads saved transcripts and titles; swapped out in tests. */
 export interface SessionStore {
@@ -341,7 +348,10 @@ export class AgentSession implements ChatProviderSession {
     handOver: () => this.handOver(),
     endSwitch: (notice) => this.endSwitch(notice),
   }
+  private lastAssistant?: string
+  private finishedAssistant?: string
   private readonly mapper: ClaudeItemMapper
+  private readonly asideTimeline: AsideTimeline
   private readonly input = new InputQueue<SDKUserMessage>()
   private readonly pending = new Map<string, PendingRequest>()
   private readonly listeners: { [K in keyof AgentSessionEvents]: AgentSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], switchReady: [], restart: [] }
@@ -409,9 +419,11 @@ export class AgentSession implements ChatProviderSession {
     }
     if (spec.configDir && this.tui) this.tui.env.CLAUDE_CONFIG_DIR = spec.configDir
     this.mapper = new ClaudeItemMapper(now, spec.images)
+    this.asideTimeline = new AsideTimeline(spec.aside)
     this.heldSends = spec.resume ? [] : null
     this.imageSessionId = spec.resume ?? randomUUID()
     this.info = {
+      ...(spec.aside ? { aside: spec.aside } : {}),
       paneId: spec.paneId,
       provider: spec.claudeProvider ?? 'claude',
       ...(spec.claudeProvider === 'deepseek' ? { models: DEEPSEEK_MODELS } : {}),
@@ -440,8 +452,12 @@ export class AgentSession implements ChatProviderSession {
     return this.spec.paneId
   }
 
+  forkPoint(): ChatForkPoint | null {
+    return this.info.sessionId && this.finishedAssistant ? { sessionId: this.info.sessionId, at: this.finishedAssistant } : null
+  }
+
   snapshot(): { session: ChatSessionInfo; items: ChatItem[] } {
-    return { session: { ...this.info }, items: this.mapper.list() }
+    return { session: { ...this.info }, items: this.asideTimeline.snapshot(this.mapper.list()) }
   }
 
   /** The `/` menu's list, once Claude has reported it. */
@@ -455,6 +471,7 @@ export class AgentSession implements ChatProviderSession {
   }
 
   async start(): Promise<void> {
+    this.emitItems([])
     if (this.spec.claudeProvider === 'deepseek' && !this.spec.env.ANTHROPIC_AUTH_TOKEN) {
       const error = `DeepSeek needs an API key. Add {"env":{"DEEPSEEK_API_KEY":"your-key"}} to ${this.spec.configDir}/settings.json, then restart this chat. Get a key at https://platform.deepseek.com/api_keys.`
       this.info = { ...this.info, error }
@@ -463,17 +480,26 @@ export class AgentSession implements ChatProviderSession {
       return
     }
     let notedSessions: string[] = []
-    if (this.spec.resume) {
+    const historySession = this.spec.resume ?? (this.spec.aside ? this.spec.fork?.sessionId : undefined)
+    if (historySession) {
       // Show the conversation so far before Claude continues it.
       try {
-        const history = await this.store.messages(this.spec.resume, this.spec.cwd)
-        const items = this.mapper.replay(history)
-        if (items.length) this.emitItems(items)
-        notedSessions = await this.restageNotedImages(history)
+        const history = await this.store.messages(historySession, this.spec.cwd)
+        if (this.spec.resume) {
+          const last = [...history].reverse().find((entry) => entry.type === 'assistant' && entry.uuid && (entry.message as { stop_reason?: string })?.stop_reason === 'end_turn')
+          this.finishedAssistant = last?.uuid
+        }
+        const visible = this.asideTimeline.cut(history, (entry) => entry.uuid,
+          (hidden) => countTimelineMessages(new ClaudeItemMapper().replay(hidden)))
+        // A fresh fork has no aside turns yet; the source may already have newer main turns.
+        const items = this.mapper.replay(this.spec.resume ? visible : [])
+        this.emitItems(items)
+        if (this.spec.resume) notedSessions = await this.restageNotedImages(history)
       } catch (error) {
-        this.emitItems(this.mapper.notice('error', `Couldn't load earlier turns: ${error instanceof Error ? error.message : String(error)}`))
+        // Counting a fresh fork's hidden messages is optional; the SDK can still fork it.
+        if (this.spec.resume) this.emitItems(this.mapper.notice('error', `Couldn't load earlier turns: ${error instanceof Error ? error.message : String(error)}`))
       }
-      void this.refreshTitle()
+      if (this.spec.resume) void this.refreshTitle()
     }
     if (this.spec.returnedFromClaudeCode) this.emitItems(this.mapper.notice('info', RETURNED_FROM_CLAUDE_CODE))
     const canUseTool: CanUseTool = (toolName, input, options) => this.requestPermission(toolName, input, options)
@@ -484,15 +510,15 @@ export class AgentSession implements ChatProviderSession {
       options: {
         cwd: this.spec.cwd,
         env: {
-          ...this.spec.env,
+          ...(this.spec.aside ? asideEnv(this.spec.env, this.spec.aside.id) : this.spec.env),
           ...(this.spec.configDir ? { CLAUDE_CONFIG_DIR: this.spec.configDir } : {}),
           // Commando's SessionStart hook pins this as the pane's resume command.
-          ...(this.spec.resumeCommand ? { COMMANDO_CHAT_RESUME: this.spec.resumeCommand } : {}),
+          ...(!this.spec.aside && this.spec.resumeCommand ? { COMMANDO_CHAT_RESUME: this.spec.resumeCommand } : {}),
           // Idle and running come from Claude itself, so queued or folded-in sends never leave the chat stuck.
           CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         },
         ...(this.spec.claudePath ? { pathToClaudeCodeExecutable: this.spec.claudePath } : {}),
-        ...(this.spec.resume ? { resume: this.spec.resume } : this.spec.images ? { sessionId: this.imageSessionId } : {}),
+        ...(this.spec.fork ? { resume: this.spec.fork.sessionId, forkSession: true, ...(this.spec.fork.at ? { resumeSessionAt: this.spec.fork.at } : {}) } : this.spec.resume ? { resume: this.spec.resume } : this.spec.images ? { sessionId: this.imageSessionId } : {}),
         // Claude's tools can open this chat's attached images (and the plan it was started with)
         // without asking, and no other chat's.
         ...(readableDirs.length ? { additionalDirectories: readableDirs } : {}),
@@ -505,13 +531,15 @@ export class AgentSession implements ChatProviderSession {
         } } : this.spec.fast ? { settings: { fastMode: true } } : {}),
         // Summaries make the reasoning rows readable; Claude omits thinking text otherwise.
         thinking: { type: 'adaptive', display: 'summarized' },
-        permissionMode: this.spec.permissionMode,
+        // Read-only blocks edit tools and drops bypass/acceptEdits to default; Bash still follows the user's permission rules and prompts.
+        permissionMode: this.spec.readOnly && this.spec.permissionMode !== 'plan' ? 'default' : this.spec.permissionMode,
+        ...(this.spec.readOnly ? { disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] } : {}),
         // Commander may run its own CLI without asking; nothing else is pre-approved.
         ...(commanderAllowedTools(this.spec.cwd).length ? { allowedTools: commanderAllowedTools(this.spec.cwd) } : {}),
         ...(this.info.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
         // Load the same settings, skills, CLAUDE.md and hooks the TUI would.
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        systemPrompt: { type: 'preset', preset: 'claude_code', ...(this.spec.aside ? { append: asideInstructions(this.spec.aside.mode) } : {}) },
         includePartialMessages: true,
         // Subagents' own text and thinking, so a subagent's transcript can be shown live.
         forwardSubagentText: true,
@@ -924,6 +952,7 @@ export class AgentSession implements ChatProviderSession {
 
   /** Switches model, effort, speed or permission mode for the rest of the session. */
   async configure(change: ChatSettingsChange): Promise<void> {
+    if (this.spec.readOnly && change.permissionMode) change = { ...change, permissionMode: 'default' }
     const handle = this.queryHandle
     if (!handle || this.info.status === 'closed' || this.info.status === 'error') {
       this.emitItems(this.mapper.notice('error', "This session isn't running, so its settings can't change."))
@@ -1267,6 +1296,8 @@ export class AgentSession implements ChatProviderSession {
 
   private handleMessage(message: SDKMessage): void {
     if ('session_id' in message && typeof message.session_id === 'string' && message.session_id && message.session_id !== this.info.sessionId) {
+      this.finishedAssistant = undefined
+      this.lastAssistant = undefined
       this.info = { ...this.info, sessionId: message.session_id }
       this.emitSession()
     }
@@ -1301,7 +1332,10 @@ export class AgentSession implements ChatProviderSession {
         this.emitSession()
       }
     }
+    if (message.type === 'assistant' && !message.parent_tool_use_id) this.lastAssistant = message.uuid
     if (message.type === 'result') {
+      if (message.subtype === 'success' && this.lastAssistant && !this.interruptRequested && !ABORTED_REASONS.has(message.terminal_reason ?? '')) this.finishedAssistant = this.lastAssistant
+      this.lastAssistant = undefined
       const interrupted = this.interruptRequested
       this.interruptRequested = false
       this.reportFastMode(message.fast_mode_state, message.fast_mode_disabled_reason)
@@ -1383,6 +1417,7 @@ export class AgentSession implements ChatProviderSession {
   }
 
   private emitItems(items: ChatItem[], replace?: true): void {
+    items = this.asideTimeline.updates(items, replace)
     if (!items.length && !replace) return
     for (const listener of this.listeners.items) listener(items, replace)
   }

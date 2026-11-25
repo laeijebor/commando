@@ -7,6 +7,7 @@ import type { AgentSessionSpec } from '../session.js'
 import { museServeArgs, uuidv7, type MuseMethods, type MuseTransport } from './client.js'
 import { MuseItemMapper } from './items.js'
 import { MuseChatSession, imageMediaType, museAnswers, museApprovalMode, museChoice, museModels, museTuiSwitchCommand } from './session.js'
+import { asideBrief, asideInstructions } from '../aside-brief.js'
 
 const SESSION = '01a14dc2-082e-7781-9892-8b5bc1fea332'
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -68,6 +69,49 @@ async function running() {
   result.client.emit('turn/started', { turnId })
   return { ...result, turnId }
 }
+
+describe('Muse brief aside timeline', () => {
+  const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'brief' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1 }
+  const question = 'Side question\n---\nMore detail'
+  const prompt = `${asideBrief([{ id: 'u', turnId: 't', kind: 'user_message', text: 'Main question', status: 'completed', createdAt: 1, updatedAt: 1 }], aside.mode)}\n---\n${question}`
+
+  it.each(['inline', 'snapshot'] as const)('shows only the question live and on %s replay after close', async (historyMode) => {
+    const first = harness({ aside })
+    await first.session.start()
+    first.session.send(prompt)
+    await tick()
+    expect(first.client.sent('turn/start')[0].input).toEqual([{ type: 'text', text: asideInstructions(aside.mode) }, { type: 'text', text: prompt }])
+    const user = { itemId: 'u0', kind: 'userMessage', turnId: 't0', revision: 1, status: 'completed', text: `${asideInstructions(aside.mode)}\n\n${prompt}` }
+    first.client.emit('item/completed', { item: user })
+    first.client.emit('item/updated', { item: { ...user, revision: 2, displayText: prompt } })
+    expect(first.session.snapshot().items).toMatchObject([
+      { kind: 'notice', level: 'info', text: 'Started from a summary of Main' }, { kind: 'user_message', text: question },
+    ])
+    first.session.close()
+
+    const { session, client } = harness({ aside, resume: SESSION })
+    const history = [user,
+      { itemId: 'a0', kind: 'agentMessage', turnId: 't0', revision: 1, status: 'completed', text: 'Side answer' },
+      { itemId: 'u1', kind: 'userMessage', turnId: 't1', revision: 1, status: 'completed', text: 'Follow-up\n---\nKeep this' },
+    ]
+    client.history = historyMode === 'inline' ? { items: history } : { snapshot: { state: { items: history } } }
+    const emitted = new Map<string, unknown>()
+    session.on('items', (items) => items.forEach((item) => emitted.set(item.id, item)))
+    await session.start()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Started from a summary of Main', question, 'Side answer', 'Follow-up\n---\nKeep this'])
+    expect([...emitted.values()]).toEqual(session.snapshot().items)
+    expect(user.text).toContain(prompt)
+    session.close()
+  })
+
+  it('keeps resumed user text if there is no brief delimiter', async () => {
+    const { session, client } = harness({ aside, resume: SESSION })
+    client.history = { items: [{ itemId: 'u0', kind: 'userMessage', text: 'An ordinary question\n---\nKeep this' }] }
+    await session.start()
+    expect(session.snapshot().items.at(-1)).toMatchObject({ text: 'An ordinary question\n---\nKeep this' })
+    session.close()
+  })
+})
 
 describe('MuseChatSession', () => {
   it('starts a session in the pane folder with the chat\'s approval mode, then lists models and skills', async () => {
@@ -412,5 +456,12 @@ describe('MuseItemMapper', () => {
     expect(mapper.list().find((item) => item.id === 'muse:s')).toMatchObject({ text: 'Streamed' })
     mapper.item({ itemId: 'c', kind: 'toolCall', revision: 1, status: 'inProgress', tool: 'bash', args: '{"command":"ls"}' })
     expect(mapper.delta({ itemId: 'c', field: 'output', delta: 'a.txt' })).toMatchObject([{ kind: 'command', output: 'a.txt' }])
+  })
+})
+
+describe('Muse aside read-only posture', () => {
+  it('disables filesystem writes and shell execution with real serve flags', () => {
+    expect(museServeArgs(true, true)).toEqual(['serve', '--trust-workspace', '--sandbox-network', 'enabled', '--disable-write', '--disable-shell'])
+    expect(museServeArgs(true)).not.toContain('--disable-write')
   })
 })

@@ -1,5 +1,5 @@
 import { useRef, useState, type KeyboardEvent } from 'react'
-import type { ChatImageRef, ChatSessionInfo } from '../../shared/agent-chat'
+import { parseAsideKey, type ChatImageRef, type ChatSessionInfo } from '../../shared/agent-chat'
 import type { ChatStashEntry, ChatStashSource } from '../../shared/chat-stash'
 import { useChatStash, type ChatStash } from './chatStash'
 
@@ -7,7 +7,8 @@ export type StashedDraft = { text: string; images: ChatImageRef[] }
 
 function sourceOf(session: ChatSessionInfo): ChatStashSource {
   return {
-    paneId: session.paneId,
+    // Stash source is pane provenance; sessionId still identifies the aside conversation.
+    paneId: parseAsideKey(session.paneId)?.paneId ?? session.paneId,
     ...(session.sessionId ? { sessionId: session.sessionId } : {}),
     ...(session.title ? { title: session.title } : {}),
     ...(session.cwd ? { cwd: session.cwd } : {}),
