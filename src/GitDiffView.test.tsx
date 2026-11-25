@@ -1130,6 +1130,34 @@ describe('GitDiffView code navigation', () => {
     expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
   })
 
+  it('drops the peek when the diff it was opened on changes', async () => {
+    const api = navApi()
+    const comparison = { base: 'base-oid', head: 'head-1', baseLabel: 'main', headLabel: 'feature' }
+    const { rerender } = render(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} comparison={comparison} />)
+    await screen.findByTestId('pierre-diff')
+    clickToken('additions', 3, 4, 'needle')
+    await screen.findByRole('region', { name: 'Navigation for needle' })
+    rerender(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} comparison={{ ...comparison, head: 'head-2' }} />)
+    expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument()
+
+    // A new target or another repository drops it too.
+    cleanup()
+    const live = navApi()
+    const view = render(<GitDiffView paneId="%1" panePath="/repo" api={live} initialSummary={navSummary} />)
+    await screen.findByTestId('pierre-diff')
+    clickToken('additions', 3, 4, 'needle')
+    await screen.findByRole('region', { name: 'Navigation for needle' })
+    const target = screen.getByRole('combobox', { name: 'Diff target branch' })
+    fireEvent.change(target, { target: { value: 'origin/main' } })
+    fireEvent.blur(target)
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument())
+    clickToken('additions', 3, 4, 'needle')
+    await screen.findByRole('region', { name: 'Navigation for needle' })
+    vi.mocked(live.summary).mockResolvedValue({ ...navSummary, root: '/other-repo' })
+    view.rerender(<GitDiffView paneId="%1" panePath="/other-repo" api={live} initialSummary={{ ...navSummary, root: '/other-repo' }} />)
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Navigation for needle' })).not.toBeInTheDocument())
+  })
+
   it('closes on Esc and unmounts with the rich view while hidden', async () => {
     const api = navApi()
     const { rerender } = render(<GitDiffView paneId="%1" panePath="/repo" api={api} initialSummary={navSummary} />)
