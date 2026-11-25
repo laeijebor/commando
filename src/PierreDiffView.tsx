@@ -38,6 +38,9 @@ type BlameHover = {
   /** Position relative to the view, which scrolls with the diff. */
   rowTop: number
   rowBottom: number
+  /** The hint sits after the text on the row's last visual line (long lines wrap). */
+  hintTop: number
+  hintHeight: number
   hintLeft: number
   hintMaxWidth: number
   cardLeft: number
@@ -58,6 +61,8 @@ const BASE_CSS = `:host {
 
 /** The worker pool lives as long as any provider is mounted; keep one around the whole diff output. */
 export function PierreWorkerPool({ children }: { children: ReactNode }) {
+  // Without workers (old runtimes, tests) Pierre highlights on the main thread instead.
+  if (typeof Worker === 'undefined') return <>{children}</>
   return (
     <WorkerPoolContextProvider poolOptions={pierrePoolOptions} highlighterOptions={pierreHighlighterOptions}>
       {children}
@@ -115,14 +120,17 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     const base = wrapper.getBoundingClientRect()
     const row = props.lineElement.getBoundingClientRect()
     // Syntax tokens are spans, so the last one ends where the line's text does.
-    const lastToken = props.lineElement.lastElementChild
-    const textRight = Math.min(row.right, lastToken ? lastToken.getBoundingClientRect().right : row.left)
+    const tokenRects = props.lineElement.lastElementChild?.getClientRects()
+    const lastLine = tokenRects?.length ? tokenRects[tokenRects.length - 1] : null
+    const textRight = lastLine ? Math.min(row.right, Math.max(row.left, lastLine.right)) : row.left
     const hintLeft = textRight + 28 - base.left
     const pointerX = props.event?.clientX ?? row.left
     setHover({
       commit,
       rowTop: row.top - base.top,
       rowBottom: row.bottom - base.top,
+      hintTop: (lastLine?.top ?? row.top) - base.top,
+      hintHeight: lastLine?.height || Math.min(row.height, 18),
       hintLeft,
       hintMaxWidth: row.right - base.left - hintLeft - 8,
       cardLeft: Math.max(8, Math.min(pointerX - base.left - 24, base.width - CARD_WIDTH - 8)),
@@ -153,7 +161,8 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
     diffIndicators: 'bars',
     lineDiffType: 'word-alt',
     hunkSeparators: 'line-info',
-    overflow: 'scroll',
+    // The side panel is narrow; wrapping keeps whole lines (and search matches) in view.
+    overflow: 'wrap',
     unsafeCSS: `${BASE_CSS}\n${searchHighlightCSS(highlightNames)}`,
     onPostRender,
     onLineEnter,
@@ -210,7 +219,7 @@ export function PierreDiffView({ contents, display, query, activeMatch, onMatchC
           {hover.hintMaxWidth >= 80 ? (
             <div
               className="pierre-blame-hint"
-              style={{ top: hover.rowTop, left: hover.hintLeft, maxWidth: hover.hintMaxWidth, height: hover.rowBottom - hover.rowTop, lineHeight: `${hover.rowBottom - hover.rowTop}px` }}
+              style={{ top: hover.hintTop, left: hover.hintLeft, maxWidth: hover.hintMaxWidth, height: hover.hintHeight, lineHeight: `${hover.hintHeight}px` }}
             >
               {hintText}
             </div>
