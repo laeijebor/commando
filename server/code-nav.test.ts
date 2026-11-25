@@ -148,8 +148,8 @@ describe('CodeNavService (fake executor)', () => {
     await service('', calls).navigate('/repo', query({ rev: SHA }))
     const greps = calls.filter((args) => args[0] === 'grep')
     expect(greps).toEqual([
-      ['grep', '--no-color', '-n', '--column', '-w', '-I', '-F', '-z', '--untracked', '-e', 'greet', '--'],
-      ['grep', '--no-color', '-n', '--column', '-w', '-I', '-F', '-z', '-e', 'greet', SHA, '--'],
+      ['grep', '--no-color', '--no-recurse-submodules', '-n', '--column', '-w', '-I', '-F', '-z', '--untracked', '-e', 'greet', '--'],
+      ['grep', '--no-color', '--no-recurse-submodules', '-n', '--column', '-w', '-I', '-F', '-z', '-e', 'greet', SHA, '--'],
     ])
   })
 
@@ -223,6 +223,16 @@ describe('CodeNavService (real repository)', () => {
     } finally {
       run('config', '--unset', 'color.ui')
       run('config', '--unset', 'color.grep')
+    }
+  })
+
+  it('works when the user\'s git config recurses into submodules', async () => {
+    // git refuses --untracked together with (inherited) submodule recursion.
+    run('config', 'submodule.recurse', 'true')
+    try {
+      expect((await nav({})).locations.length).toBeGreaterThan(0)
+    } finally {
+      run('config', '--unset', 'submodule.recurse')
     }
   })
 
