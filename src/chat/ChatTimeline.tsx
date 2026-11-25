@@ -12,6 +12,8 @@ import { MarkdownPre } from '../MarkdownCode'
 import { PlanCard, type SavePlan } from './PlanCard'
 import type { ResourceActionHandler } from '../paneManagementApi'
 import { ResourceChip, ResourceCardList } from './ResourceChip'
+import { RichLinkCardList, RichLinkChip } from './RichLinks'
+import { parseRichLink } from '../../shared/rich-links'
 import { ReplyImage } from './ReplyImage'
 import { SubagentGroup, useNow } from './Subagents'
 import { TileEventCard } from './TileEventCard'
@@ -67,11 +69,15 @@ const InlineResourceContext = createContext(true)
 function resourceForHref(resources: readonly ChatReplyResource[] | undefined, href: string | undefined) {
   return resources?.find((resource) => resource.ref === href || encodeURI(resource.ref) === href)
 }
-function MarkdownLink({ href, children, node: _node, ...props }: ComponentProps<'a'> & ExtraProps) {
+type HastNode = NonNullable<ExtraProps['node']>['children'][number]
+const hastText = (node: HastNode | NonNullable<ExtraProps['node']>): string => node.type === 'text' ? node.value : 'children' in node ? node.children.map(hastText).join('') : ''
+function MarkdownLink({ href, children, node, ...props }: ComponentProps<'a'> & ExtraProps) {
   const { resources, onAction } = use(ReplyResourcesContext)
   const resource = resourceForHref(resources, href)
-  return resource ? <ResourceChip resource={resource} onAction={onAction}><InlineResourceContext value={false}>{children}</InlineResourceContext></ResourceChip>
-    : <a {...props} href={href} target="_blank" rel="noreferrer"><InlineResourceContext value={false}>{children}</InlineResourceContext></a>
+  if (resource) return <ResourceChip resource={resource} onAction={onAction}><InlineResourceContext value={false}>{children}</InlineResourceContext></ResourceChip>
+  const rich = parseRichLink(href)
+  if (rich) return <RichLinkChip link={rich} label={node ? hastText(node) : undefined} />
+  return <a {...props} href={href} target="_blank" rel="noreferrer"><InlineResourceContext value={false}>{children}</InlineResourceContext></a>
 }
 function MarkdownCode({ children, node, ...props }: ComponentProps<'code'> & ExtraProps) {
   const { resources, onAction, text } = use(ReplyResourcesContext)
@@ -97,11 +103,14 @@ function resourceDescription(children: ReactNode): ReactNode {
 function MarkdownResourceList({ ordered, node, children, ...props }: ExtraProps & { ordered?: boolean; children?: ReactNode; className?: string; start?: number }) {
   const { resources, cwd, onAction, text: replyText } = use(ReplyResourcesContext)
   const listItems = node?.children.filter((child) => child.type === 'element' && child.tagName === 'li') ?? []
-  const matches = listItems.map((item) => {
+  const firsts = listItems.map((item) => {
     if (item.type !== 'element') return undefined
     let first = item.children.find((child) => child.type !== 'text' || child.value.trim())
     if (first?.type === 'element' && first.tagName === 'p') first = first.children.find((child) => child.type !== 'text' || child.value.trim())
-    if (first?.type !== 'element') return undefined
+    return first?.type === 'element' ? first : undefined
+  })
+  const matches = firsts.map((first) => {
+    if (!first) return undefined
     if (first.tagName === 'a') return resourceForHref(resources, String(first.properties.href ?? ''))
     if (first.tagName === 'code' && first.children[0]?.type === 'text') {
       const raw = replyText.slice(first.position?.start.offset, first.position?.end.offset)
@@ -111,8 +120,14 @@ function MarkdownResourceList({ ordered, node, children, ...props }: ExtraProps 
     return undefined
   })
   const rendered = Children.toArray(children).filter((child) => isValidElement(child))
-  if (matches.length >= 2 && matches.every((match) => match !== undefined) && rendered.length === matches.length) {
-    return <ResourceCardList cwd={cwd} onAction={onAction} rows={matches.map((resource, index) => ({ resource: resource!, description: isValidElement<{ children?: ReactNode }>(rendered[index]) ? resourceDescription(rendered[index].props.children) : null }))} />
+  const description = (index: number) => isValidElement<{ children?: ReactNode }>(rendered[index]) ? resourceDescription(rendered[index].props.children) : null
+  // One deck alone still earns its slides card.
+  if ((matches.length >= 2 || (matches.length === 1 && matches[0] && 'deck' in matches[0])) && matches.every((match) => match !== undefined) && rendered.length === matches.length) {
+    return <ResourceCardList cwd={cwd} onAction={onAction} rows={matches.map((resource, index) => ({ resource: resource!, description: description(index) }))} />
+  }
+  const links = firsts.map((first) => first?.tagName === 'a' ? parseRichLink(String(first.properties.href ?? '')) : null)
+  if (links.length >= 2 && links.every((link) => link !== null) && rendered.length === links.length) {
+    return <RichLinkCardList rows={links.map((link, index) => ({ link: link!, label: hastText(firsts[index]!), description: description(index) }))} />
   }
   return ordered ? <ol {...props}>{children}</ol> : <ul {...props}>{children}</ul>
 }

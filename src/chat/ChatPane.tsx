@@ -34,6 +34,7 @@ import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from
 import type { PrQuickLookTab } from '../PrQuickLook'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
+import { RichLinksContext, type RichLinkServices } from './RichLinks'
 import { AskTray } from './AskTray'
 import { askAnchors, askMarkerCounts } from './sessionAsks'
 import { askAnswerText } from '../../shared/session-asks'
@@ -293,6 +294,15 @@ function ChatColumn({
     return result
   }, [paneManagementApi, resourcePaneId])
   const onResourceAction = paneManagementApi ? resourceAction : undefined
+  const openPrRef = useRef(onOpenPr)
+  openPrRef.current = onOpenPr
+  const canOpenPr = Boolean(onOpenPr)
+  // Stable across renders, so reply chips don't refetch or re-render as the chat streams.
+  const richLinks = useMemo<RichLinkServices>(() => ({
+    ...(prsApi ? { prSummary: prsApi.summary } : {}),
+    ...(services?.linearIssue ? { linearIssue: services.linearIssue } : {}),
+    ...(canOpenPr ? { openPr: (repo: string, number: number, tab: PrQuickLookTab) => openPrRef.current?.(repo, number, tab) } : {}),
+  }), [prsApi, services?.linearIssue, canOpenPr])
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
   // Cards only join the timeline; plan follow-ups and the opening task read the conversation itself.
@@ -485,6 +495,7 @@ function ChatColumn({
       }
       onFocus()
     }} onKeyDown={onKeyDown} aria-label="Agent chat" data-testid="chat-pane">
+      <RichLinksContext value={richLinks}>
       {!connected ? (
         <div className="flex items-center gap-1.5 border-b border-border bg-warning-surface px-3 py-1.5 text-xs text-warning" role="status">
           <PlugZap className="size-3.5" aria-hidden="true" />
@@ -588,6 +599,7 @@ function ChatColumn({
         {...(flow?.setUploading ? { onUploadingChange: flow.setUploading } : {})}
         {...(composerInsert ? { insert: composerInsert } : {})}
       />
+      </RichLinksContext>
     </section>
   )
 }

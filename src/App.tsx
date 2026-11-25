@@ -119,6 +119,7 @@ import { useChatPaneMeasurement } from './chatPaneMeasurement'
 import { TerminalPaneRenderer, type TerminalRendererKind } from './TerminalPaneRenderer'
 import { PaneShellTab } from './PaneShellTab'
 import { LinearSection } from './LinearSection'
+import { lookUpLinearIssue } from './linearApi'
 import { PrsSection } from './PrsSection'
 import { GitDiffView } from './GitDiffView'
 import { ResizablePaneLayout } from './ResizablePaneLayout'
@@ -2890,6 +2891,7 @@ function HostApp() {
         pullRequests: () => openPullRequestsForPane(latestChatDeps.current.prsApi, parseAsideKey(paneId)?.paneId ?? paneId),
         uploadImage: (image) => uploadChatImage(latestChatDeps.current.token, image, daemonFetch),
         uploadVideo: (file, signal) => uploadChatVideo(latestChatDeps.current.token, file, signal, daemonFetch),
+        linearIssue: (url) => lookUpLinearIssue(latestChatDeps.current.token, url, daemonFetch),
       }
       chatServiceCache.current.set(paneId, services)
     }
