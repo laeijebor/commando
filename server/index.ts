@@ -1963,7 +1963,7 @@ async function main(): Promise<void> {
     paneTargetId: (paneId) => paneForId(paneId)?.targetId,
     screenshots: paneScreenshots,
     artifacts: redlineArtifacts,
-    openResourceTile: (paneId, url) => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, engine: 'webkit' }, 'owner').pane.id,
+    openResourceTile: (paneId, url, content) => webPanesApi.open({ url: `http://127.0.0.1:${port}${url}`, anchor: paneId, engine: 'webkit', ...(content ? { content } : {}) }, 'owner').pane.id,
     setPaneMark: (targetId, input) => paneMarks.set(targetId, input),
     acknowledgePaneMark: (targetId) => paneMarks.acknowledge(targetId),
     clearPaneMark: (targetId) => paneMarks.remove(targetId),

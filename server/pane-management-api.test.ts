@@ -598,6 +598,43 @@ describe('resource actions', () => {
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
+  it('presents a slides deck folder or a page in it as a canvas tile, and nothing else', async () => {
+    const { mkdir, realpath } = await import('node:fs/promises')
+    const { dir, home, cwd, request, register, openResourceTile } = await setup()
+    try {
+      const deck = join(cwd, 'talk')
+      await mkdir(deck)
+      const page = '<main class="deck"><section class="slide" id="intro"><h1>Hi</h1></section></main>'
+      await writeFile(join(deck, 'deck.html'), page)
+      await writeFile(join(deck, 'onepager.html'), page)
+      await writeFile(join(deck, 'plain.html'), '<p>no slides</p>')
+      const real = await realpath(deck)
+      expect(await (await request({ path: deck, action: 'slides' })).json()).toEqual({ ok: true, performed: 'slides', webPaneId: 'w-12345678' })
+      expect(register).toHaveBeenLastCalledWith(real)
+      expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', { kind: 'canvas', artifactId: '0123456789abcdef', manifest: 'deck.html' })
+      expect((await request({ path: join(deck, 'onepager.html'), action: 'slides' })).status).toBe(200)
+      expect(openResourceTile).toHaveBeenLastCalledWith('%12', '/redline/artifacts/0123456789abcdef/', expect.objectContaining({ manifest: 'onepager.html' }))
+      const calls = register.mock.calls.length
+      // Not a deck: no slides, no deck.html beside it, or not HTML.
+      expect((await request({ path: join(deck, 'plain.html'), action: 'slides' })).status).toBe(400)
+      await writeFile(join(cwd, 'loose.html'), page)
+      expect((await request({ path: join(cwd, 'loose.html'), action: 'slides' })).status).toBe(400)
+      await writeFile(join(deck, 'notes.txt'), 'x')
+      expect((await request({ path: join(deck, 'notes.txt'), action: 'slides' })).status).toBe(400)
+      // A broad or daemon-state folder is never served, even holding a deck.
+      await writeFile(join(home, 'deck.html'), page)
+      expect((await request({ path: home, action: 'slides' })).status).toBe(403)
+      await mkdir(join(home, '.commando', 'deck'), { recursive: true })
+      await writeFile(join(home, '.commando', 'deck', 'deck.html'), page)
+      expect((await request({ path: join(home, '.commando', 'deck'), action: 'slides' })).status).toBe(403)
+      // Outside the allowed roots.
+      await mkdir(join(dir, 'elsewhere'))
+      await writeFile(join(dir, 'elsewhere', 'deck.html'), page)
+      expect((await request({ path: join(dir, 'elsewhere'), action: 'slides' })).status).toBe(403)
+      expect(register).toHaveBeenCalledTimes(calls)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
   it('rejects Markdown tiles without registering their folder', async () => {
     const { dir, home, request, register, openResourceTile } = await setup()
     try {

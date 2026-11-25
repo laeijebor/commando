@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { copyFile, mkdir, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, relative, isAbsolute, join, sep } from 'node:path'
 import { REDLINE_ARTIFACT_TTL_MS, type RedlineArtifactRegistry } from './redline-artifacts.js'
@@ -14,9 +14,11 @@ import type { PaneScreenshotRegistry } from './pane-screenshots.js'
 import { runCommand, validateRunCommand } from './run-command.js'
 import { validatePaneMarkInput, type PaneMarkInput } from './pane-marks.js'
 import type { PaneMark } from '../shared/protocol.js'
+import { parseDeck } from '../shared/deck.js'
 
 const API_ROOT = '/api/pane-management'
 const MAX_REQUEST_BYTES = 16 * 1024
+const MAX_DECK_BYTES = 2 * 1024 * 1024
 
 type PaneManagementDependencies = {
   actions?: TmuxPaneActions
@@ -36,7 +38,8 @@ type PaneManagementDependencies = {
   resourceTileRoot?: string
   resourceNow?: () => number
   artifacts?: Pick<RedlineArtifactRegistry, 'register' | 'hasDirectory'>
-  openResourceTile?: (paneId: string, url: string) => string
+  /** Opens a tile beside the pane; `content` makes it a canvas, as slides decks are. */
+  openResourceTile?: (paneId: string, url: string, content?: { kind: 'canvas'; artifactId: string; manifest: string }) => string
   screenshots?: PaneScreenshotRegistry
   runCommand?: (command: string, cwd: string) => Promise<void>
   beforePaneDeleted?: (paneId: string) => void | Promise<void>
@@ -159,7 +162,7 @@ export class PaneManagementApi {
 
   private async resource(paneId: string, body: Record<string, unknown>) {
     if (!validResourcePath(body.path)) throw new HttpError(400, 'path must be absolute, at most 4096 bytes, and contain no control characters')
-    if (!['open', 'reveal', 'editor', 'tile'].includes(body.action as string)) throw new HttpError(400, 'Invalid resource action')
+    if (!['open', 'reveal', 'editor', 'tile', 'slides'].includes(body.action as string)) throw new HttpError(400, 'Invalid resource action')
     if (body.line !== undefined && (typeof body.line !== 'number' || !Number.isSafeInteger(body.line) || body.line < 1)) throw new HttpError(400, 'line must be a positive integer')
     const platform = this.dependencies.platform ?? process.platform
     if (platform !== 'darwin') throw new HttpError(501, 'Resource actions are only available on macOS')
@@ -183,6 +186,7 @@ export class PaneManagementApi {
       if (!stats.isFile()) throw new HttpError(400, 'Only files can be opened in an editor')
       await openResourceInEditor(path, body.line as number | undefined, execute, platform)
     }
+    if (body.action === 'slides') return this.presentSlides(paneId, path, stats.isDirectory())
     if (body.action === 'tile') {
       if (!stats.isFile() || !/\.(?:html?|svg|png|jpe?g|gif|webp|pdf)$/i.test(extname(path))) throw new HttpError(400, 'This resource cannot be opened as a tile')
       const parent = await realpath(dirname(path))
@@ -245,6 +249,39 @@ export class PaneManagementApi {
       }
     }
     return { ok: true, performed: body.action }
+  }
+
+  /** Opens a slides deck as a canvas tile, as `scripts/commando-slides` does. `path` is a real path inside an allowed root. */
+  private async presentSlides(paneId: string, path: string, directory: boolean) {
+    const folder = directory ? path : dirname(path)
+    const manifest = directory ? 'deck.html' : basename(path)
+    const notDeck = new HttpError(400, 'Only a slides deck can be presented')
+    if (!/\.html?$/i.test(manifest) || manifest.startsWith('.')) throw notDeck
+    let text: string
+    try {
+      if (!(await stat(join(folder, 'deck.html'))).isFile()) throw notDeck
+      const page = await stat(join(folder, manifest))
+      if (!page.isFile() || page.size > MAX_DECK_BYTES) throw notDeck
+      text = await readFile(join(folder, manifest), 'utf8')
+    } catch { throw notDeck }
+    if (!parseDeck(text, manifest).deck.slides.length) throw notDeck
+    // The whole folder is served to the tile, so it must not be a broad or daemon-state directory.
+    const home = await realpath(this.dependencies.resourceHome ?? homedir()).catch(() => undefined)
+    const broad = await Promise.all([home, home ? dirname(home) : undefined, '/', '/Users', '/Volumes', tmpdir(), '/tmp', '/private/tmp',
+      ...(this.dependencies.resourceTempRoots ?? [])].map((entry) => entry ? realpath(entry).catch(() => undefined) : undefined))
+    const statePath = join(this.dependencies.resourceHome ?? homedir(), '.commando')
+    const state = await realpath(statePath).catch(() => home ? join(home, '.commando') : statePath)
+    if (broad.includes(folder) || containsPath(state, folder) || containsPath(folder, state)) throw new HttpError(403, 'This folder cannot be presented')
+    if (!this.dependencies.artifacts || !this.dependencies.openResourceTile) throw new HttpError(503, 'Slides tiles are unavailable')
+    const { id } = this.dependencies.artifacts.register(folder)
+    try {
+      const webPaneId = this.dependencies.openResourceTile(paneId, `/redline/artifacts/${id}/`, { kind: 'canvas', artifactId: id, manifest })
+      return { ok: true, performed: 'slides', webPaneId }
+    } catch (error) {
+      const status = (error as { status?: number }).status
+      if (status && status >= 400 && status <= 599) throw new HttpError(status, error instanceof Error ? error.message : 'Unable to open the slides')
+      throw error
+    }
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
