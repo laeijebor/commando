@@ -8,8 +8,16 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from './ui/menu'
 export type RichLinkServices = {
   prSummary?: (repo: string, number: number) => Promise<PrChipSummary | null>
   linearIssue?: (url: string) => Promise<LinearChipIssue | null>
-  /** Opens PR Quick Look in the pane's side panel. */
+  /** Opens PR Quick Look in the pane's side panel, for a PR `hasQuickLook` accepts. */
   openPr?: (repo: string, number: number, tab: PrLinkTab) => void
+  /** Only PRs linked to the pane have a side-panel tab; chips link to GitHub for the rest. */
+  hasQuickLook?: (repo: string, number: number) => boolean
+}
+
+/** Opens this PR's Quick Look, when it has one here. */
+function useQuickLook(link: RichLink): (() => void) | undefined {
+  const { openPr, hasQuickLook } = use(RichLinksContext)
+  return link.kind === 'pr' && openPr && hasQuickLook?.(link.repo, link.number) ? () => openPr(link.repo, link.number, link.tab) : undefined
 }
 export const RichLinksContext = createContext<RichLinkServices>({})
 
@@ -120,8 +128,8 @@ function ownLabel(link: RichLink, label: string | undefined): string | undefined
   return text
 }
 
-function Chip({ link, icon, name, title, badge, label, onOpen }: { link: RichLink; icon: ReactNode; name: string; title?: string; badge?: ReactNode; label?: string; onOpen?: () => void }) {
-  const { openPr } = use(RichLinksContext)
+function Chip({ link, icon, name, title, badge, label }: { link: RichLink; icon: ReactNode; name: string; title?: string; badge?: ReactNode; label?: string }) {
+  const onOpen = useQuickLook(link)
   const [menu, setMenu] = useState(false)
   const { notice, copy } = useCopied()
   const text = title ?? ownLabel(link, label)
@@ -132,7 +140,7 @@ function Chip({ link, icon, name, title, badge, label, onOpen }: { link: RichLin
         : <a className="chat-resource-label" href={link.url} target="_blank" rel="noreferrer">{content}</a>}
       <Menu open={menu} onOpenChange={setMenu}>
         <MenuTrigger className="chat-resource-chevron" aria-label="Link actions"><ChevronDown className="size-3" /></MenuTrigger>
-        <LinkActions link={link} copy={copy} {...(link.kind === 'pr' && openPr ? { openPr: () => openPr(link.repo, link.number, link.tab) } : {})} />
+        <LinkActions link={link} copy={copy} {...(onOpen ? { openPr: onOpen } : {})} />
       </Menu>
     </span>
     {notice ? <span role="status" className="chat-resource-notice text-xs text-muted-foreground">{notice}</span> : null}
@@ -140,11 +148,9 @@ function Chip({ link, icon, name, title, badge, label, onOpen }: { link: RichLin
 }
 
 function PrChip({ link, label }: { link: Extract<RichLink, { kind: 'pr' }>; label?: string }) {
-  const { openPr } = use(RichLinksContext)
   const summary = usePrSummary(link)
   return <Chip link={link} name={`${link.repo}#${link.number}`} label={label} icon={<PrIcon state={summary?.state} />}
-    {...(summary ? { title: summary.title, badge: <PrState state={summary.state} /> } : {})}
-    {...(openPr ? { onOpen: () => openPr(link.repo, link.number, link.tab) } : {})} />
+    {...(summary ? { title: summary.title, badge: <PrState state={summary.state} /> } : {})} />
 }
 
 function LinearChip({ link, label }: { link: Extract<RichLink, { kind: 'linear' }>; label?: string }) {
@@ -168,11 +174,12 @@ export function RichLinkCardList({ rows }: { rows: RichLinkCardRow[] }) {
   </div>
 }
 
-function Card({ link, icon, title, detail, meta, description, onOpen, openLabel, OpenIcon }: {
+function Card({ link, icon, title, detail, meta, description }: {
   link: RichLink; icon: ReactNode; title: string; detail: ReactNode; meta?: ReactNode; description?: ReactNode
-  onOpen?: () => void; openLabel: string; OpenIcon: typeof ExternalLink
 }) {
-  const { openPr } = use(RichLinksContext)
+  const onOpen = useQuickLook(link)
+  const OpenIcon = onOpen ? PanelRight : ExternalLink
+  const openLabel = onOpen ? 'Quick Look' : link.kind === 'pr' ? 'GitHub' : 'Linear'
   const [menu, setMenu] = useState(false)
   const { notice, copy } = useCopied()
   const rest = cardDescription(description)
@@ -193,27 +200,24 @@ function Card({ link, icon, title, detail, meta, description, onOpen, openLabel,
       <button type="button" className="chat-resource-ghost" title="Copy link" aria-label="Copy link" onClick={() => copy(link.url)}><Copy className="size-3.5" aria-hidden="true" /></button>
       <Menu open={menu} onOpenChange={setMenu}>
         <MenuTrigger className="chat-resource-ghost" aria-label="Link actions"><ChevronDown className="size-3" aria-hidden="true" /></MenuTrigger>
-        <LinkActions link={link} copy={copy} {...(link.kind === 'pr' && openPr ? { openPr: () => openPr(link.repo, link.number, link.tab) } : {})} />
+        <LinkActions link={link} copy={copy} {...(onOpen ? { openPr: onOpen } : {})} />
       </Menu>
     </div>
   </div>
 }
 
 function PrCard({ link, label, description }: RichLinkCardRow & { link: Extract<RichLink, { kind: 'pr' }> }) {
-  const { openPr } = use(RichLinksContext)
   const summary = usePrSummary(link)
   const name = `${link.repo}#${link.number}`
   const by = [summary?.author, summary?.branch].filter(Boolean).join(' · ')
   return <Card link={link} icon={<PrIcon state={summary?.state} />} title={summary?.title ?? ownLabel(link, label) ?? name}
     detail={<>{name}{by ? <> · {by}</> : null}</>} description={description}
-    {...(summary ? { meta: <PrState state={summary.state} /> } : {})}
-    {...(openPr ? { onOpen: () => openPr(link.repo, link.number, link.tab), openLabel: 'Quick Look', OpenIcon: PanelRight } : { openLabel: 'GitHub', OpenIcon: ExternalLink })} />
+    {...(summary ? { meta: <PrState state={summary.state} /> } : {})} />
 }
 
 function LinearCard({ link, label, description }: RichLinkCardRow & { link: Extract<RichLink, { kind: 'linear' }> }) {
   const issue = useLinearIssue(link)
   return <Card link={link} icon={<LinearIcon issue={issue} className="chat-linear-icon-large" />} title={issue?.title ?? ownLabel(link, label) ?? link.identifier}
     detail={<>{link.identifier}{issue?.assignee ? <> · {issue.assignee}</> : null}</>} description={description}
-    {...(issue?.state ? { meta: <LinearState state={issue.state} /> } : {})}
-    openLabel="Linear" OpenIcon={ExternalLink} />
+    {...(issue?.state ? { meta: <LinearState state={issue.state} /> } : {})} />
 }

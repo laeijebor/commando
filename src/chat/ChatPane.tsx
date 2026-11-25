@@ -34,7 +34,8 @@ import { chatParent, parentLabel, stripTaskPreamble, type LineageSnapshot } from
 import type { PrQuickLookTab } from '../PrQuickLook'
 import type { PanePrSummary, PrsApiClient } from '../prsApi'
 import { PrStrip } from './PrStrip'
-import { RichLinksContext, type RichLinkServices } from './RichLinks'
+import { RichLinksContext } from './RichLinks'
+import { useRichLinkServices } from './useRichLinkServices'
 import { AskTray } from './AskTray'
 import { askAnchors, askMarkerCounts } from './sessionAsks'
 import { askAnswerText } from '../../shared/session-asks'
@@ -294,15 +295,7 @@ function ChatColumn({
     return result
   }, [paneManagementApi, resourcePaneId])
   const onResourceAction = paneManagementApi ? resourceAction : undefined
-  const openPrRef = useRef(onOpenPr)
-  openPrRef.current = onOpenPr
-  const canOpenPr = Boolean(onOpenPr)
-  // Stable across renders, so reply chips don't refetch or re-render as the chat streams.
-  const richLinks = useMemo<RichLinkServices>(() => ({
-    ...(prsApi ? { prSummary: prsApi.summary } : {}),
-    ...(services?.linearIssue ? { linearIssue: services.linearIssue } : {}),
-    ...(canOpenPr ? { openPr: (repo: string, number: number, tab: PrQuickLookTab) => openPrRef.current?.(repo, number, tab) } : {}),
-  }), [prsApi, services?.linearIssue, canOpenPr])
+  const richLinks = useRichLinkServices({ prsApi, paneId: resourcePaneId, connected, linearIssue: services?.linearIssue, onOpenPr })
   const items = useMemo(() => externalRuns.length ? withExternalAgentRuns(hostChat.items, externalRuns) : hostChat.items, [hostChat.items, externalRuns])
   const chat = useMemo(() => items === hostChat.items ? hostChat : { ...hostChat, items }, [hostChat, items])
   // Cards only join the timeline; plan follow-ups and the opening task read the conversation itself.

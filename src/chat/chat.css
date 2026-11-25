@@ -193,6 +193,7 @@
 /* PR and Linear chips, and the slides chip's count, extend the resource chip. */
 .chat-rich-chip { max-width: min(100%, 560px); }
 .chat-rich-chip .chat-resource-label { gap: 5px; }
+.chat-markdown a.chat-resource-label, .chat-markdown a.chat-resource-primary { color: inherit; text-decoration: none; }
 .chat-rich-name { flex-shrink: 0; }
 .chat-rich-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: var(--font-sans); }
 .chat-rich-badge { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; border-radius: 999px; padding: 0 6px; font: 500 10.5px/16px var(--font-sans); white-space: nowrap; color: var(--muted); background: color-mix(in srgb, currentColor 12%, transparent); }

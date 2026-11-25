@@ -21,7 +21,7 @@ describe('PR links in replies', () => {
   it('shows a bare PR address as a chip with its title and state, opening Quick Look', async () => {
     const prSummary = vi.fn().mockResolvedValue({ title: 'feat: add thing', state: 'merged', author: 'leo' })
     const openPr = vi.fn()
-    renderReply(`Opened ${PR}/files and [the PR](${PR}).`, { prSummary, openPr })
+    renderReply(`Opened ${PR}/files and [the PR](${PR}).`, { prSummary, openPr, hasQuickLook: () => true })
     const chips = await screen.findAllByRole('button', { name: /acme\/widgets#12.*feat: add thing.*Merged/ })
     expect(chips).toHaveLength(2)
     // One request for both chips of the same PR.
@@ -44,13 +44,21 @@ describe('PR links in replies', () => {
     expect(screen.queryByText('Open')).toBeNull()
   })
 
+  it('links a PR without a Quick Look tab in this pane to GitHub', () => {
+    const openPr = vi.fn()
+    renderReply(PR.replace('12', '15'), { openPr, hasQuickLook: () => false })
+    expect(screen.getByRole('link', { name: 'acme/widgets#15' })).toHaveAttribute('href', PR.replace('12', '15'))
+    fireEvent.click(screen.getByRole('button', { name: 'Link actions' }))
+    expect(screen.queryByRole('menuitem', { name: 'Open in Quick Look' })).toBeNull()
+  })
+
   it('offers Quick Look, GitHub and Copy link in its menu', async () => {
     const open = vi.fn()
     vi.stubGlobal('open', open)
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     const openPr = vi.fn()
-    renderReply(`${PR.replace('12', '14')}`, { openPr })
+    renderReply(`${PR.replace('12', '14')}`, { openPr, hasQuickLook: () => true })
     fireEvent.click(screen.getByRole('button', { name: 'Link actions' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Open in Quick Look' }))
     expect(openPr).toHaveBeenCalledWith('acme/widgets', 14, 'Description')
@@ -65,7 +73,7 @@ describe('PR links in replies', () => {
   it('turns a list of PRs into cards with author and branch, and leaves other links alone', async () => {
     const prSummary = vi.fn(async (_repo: string, number: number) => ({ title: `PR ${number}`, state: number === 20 ? 'open' as const : 'draft' as const, author: 'leo', branch: `branch-${number}` }))
     const openPr = vi.fn()
-    renderReply(`- ${PR.replace('12', '20')} — the API\n- ${PR.replace('12', '21')} — the UI\n\n[docs](https://example.com/pull/1)`, { prSummary, openPr })
+    renderReply(`- ${PR.replace('12', '20')} — the API\n- ${PR.replace('12', '21')} — the UI\n\n[docs](https://example.com/pull/1)`, { prSummary, openPr, hasQuickLook: (_repo, number) => number === 21 })
     const list = screen.getByRole('list')
     const rows = within(list).getAllByRole('listitem')
     expect(rows).toHaveLength(2)
@@ -76,6 +84,8 @@ describe('PR links in replies', () => {
     expect(rows[1]).toHaveTextContent('Draft')
     fireEvent.click(within(rows[1]).getByRole('button', { name: 'Quick Look' }))
     expect(openPr).toHaveBeenCalledWith('acme/widgets', 21, 'Description')
+    // PR 20 isn't linked to this pane, so it has no Quick Look tab and links to GitHub.
+    expect(within(rows[0]).getByRole('link', { name: 'GitHub' })).toHaveAttribute('href', PR.replace('12', '20'))
     expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('href', 'https://example.com/pull/1')
   })
 })
