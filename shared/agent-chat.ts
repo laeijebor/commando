@@ -91,6 +91,22 @@ export interface ChatAsideResult { ok: boolean; asideId?: string; error?: string
 export function asideKey(paneId: string, asideId: string): string {
   return `${paneId}~${asideId}`
 }
+
+export interface AsideReport { asideId: string; title: string; body: string }
+
+/** Keep the envelope on two lines even when a title contains newlines or quotes. */
+export function asideReportText({ asideId, title, body }: AsideReport): string {
+  const heading = title.replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n')
+  return `**From aside “${heading}”**\n<!-- commando-aside:${encodeURIComponent(asideId)} -->\n\n${body}`
+}
+
+export function parseAsideReport(text: string): AsideReport | null {
+  const match = /^\*\*From aside “([^\n]*)”\*\*\n<!-- commando-aside:([^\s]+) -->\n\n([\s\S]*)$/.exec(text)
+  if (!match) return null
+  try {
+    return { asideId: decodeURIComponent(match[2]!), title: match[1]!.replace(/\\(\\|n|r)/g, (_, char: string) => char === 'n' ? '\n' : char === 'r' ? '\r' : '\\'), body: match[3]! }
+  } catch { return null }
+}
 export function parseAsideKey(key: string): { paneId: string; asideId: string } | null {
   const match = /^(%\d+)~([a-z0-9]{8})$/.exec(key)
   return match ? { paneId: match[1]!, asideId: match[2]! } : null
