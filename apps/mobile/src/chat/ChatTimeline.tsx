@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Image, Platform, Pressable, ScrollView, St
 import Feather from '@expo/vector-icons/Feather'
 import * as Clipboard from 'expo-clipboard'
 
-import { PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, isChatVideoId, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
+import { parseAsideReport, type AsideReport, PLAN_IMPLEMENTATION_PREFIX, chatPlanTitle, isChatVideoId, type ChatImageRef, type ChatItem } from '@commando/agent-chat'
 import {
   canCollapsePlan,
   collapsedPlanPreview,
@@ -42,6 +42,7 @@ const TimelineContext = createContext<{
   cwd: string
   provider: string
   onOpenTile?: ((webPaneId: string) => void) | undefined
+  onOpenReport?: ((report: AsideReport) => void) | undefined
   openTileIds?: ReadonlySet<string> | undefined
 }>({ baseUrl: '', cwd: '', provider: 'Agent' })
 
@@ -67,7 +68,7 @@ type Entry = QuietTimelineRow | { kind: 'working'; id: 'working' }
  * follows the newest turn on open/send and while already near the bottom.
  * A reader who scrolls up keeps their place while the agent streams.
  */
-export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled, onOpenTile, openTileIds }: {
+export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersion = 0, omittedItems = 0, onLoadEarlier, scope, header, footer, emptyText, onOpenSubagent, onTask, controlsDisabled, onOpenTile, openTileIds, onOpenReport }: {
   sendVersion?: number
   /** Older items the daemon left on the Mac (a bounded replay), and how to fetch them. */
   omittedItems?: number
@@ -89,6 +90,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
   controlsDisabled?: boolean | undefined
   /** Opens a redline or canvas tile from its chat card; only tiles in `openTileIds` still exist. */
   onOpenTile?: ((webPaneId: string) => void) | undefined
+  onOpenReport?: ((report: AsideReport) => void) | undefined
   openTileIds?: ReadonlySet<string> | undefined
 }): React.JSX.Element {
   const theme = useTheme()
@@ -101,7 +103,7 @@ export function ChatTimeline({ items, cwd, baseUrl, working, provider, sendVersi
     const entries: Entry[] = rows.slice()
     return working && !streaming && !liveWork ? [...entries, { kind: 'working', id: 'working' }] : entries
   }, [rows, working, streaming, liveWork])
-  const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name, onOpenTile, openTileIds }), [baseUrl, cwd, provider, onOpenTile, openTileIds])
+  const context = useMemo(() => ({ baseUrl, cwd, provider: providerPresentation(provider).name, onOpenTile, openTileIds, onOpenReport }), [baseUrl, cwd, provider, onOpenTile, openTileIds, onOpenReport])
   const now = useNow(rows.some((row) => row.kind === 'subagents' && row.live))
   const subagents = useMemo(() => ({ items, now, provider: context.provider, onOpenSubagent, onTask, controlsDisabled }), [items, now, context.provider, onOpenSubagent, onTask, controlsDisabled])
   const list = useRef<FlatList<Entry>>(null)
@@ -251,7 +253,8 @@ const Row = memo(function Row({ entry }: { entry: Entry }) {
 
 function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }): React.JSX.Element {
   const theme = useTheme()
-  const { provider, onOpenTile, openTileIds } = use(TimelineContext)
+  const { provider, onOpenTile, openTileIds, onOpenReport } = use(TimelineContext)
+  const report = parseAsideReport(item.text)
   // A message Commando sent for a redline, canvas or auto-fix is its card, not the prompt it typed.
   if (item.tileEvents?.length) {
     return (
@@ -279,7 +282,11 @@ function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }
       {item.images?.length ? <ImageStrip images={item.images} /> : null}
       {item.text ? (
         <View style={[styles.bubble, { backgroundColor: theme.surfaceSoft, borderColor: theme.border }]}>
-          <UserText text={item.text} />
+          {report ? <>
+            <Text style={[styles.userTagText, { color: theme.muted }]}>From aside “{report.title}”</Text>
+            <Markdown text={report.body} />
+            {onOpenReport ? <Pressable accessibilityRole="button" accessibilityLabel={`Open aside ${report.title}`} onPress={() => onOpenReport(report)} style={{ paddingVertical: 8 }}><Text style={{ color: theme.accent }}>Open aside</Text></Pressable> : null}
+          </> : <UserText text={item.text} />}
         </View>
       ) : null}
     </View>

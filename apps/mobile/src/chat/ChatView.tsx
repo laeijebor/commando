@@ -19,6 +19,7 @@ import { ChatTimeline } from './ChatTimeline'
 import { Markdown } from './Markdown'
 import { RequestCard } from './RequestCard'
 import { useExternalRuns, useTileEvents } from './store'
+import { AsideThreads, type ThreadOptions } from './AsideThreads'
 import { AgentSwitcher, SubagentHeader, useNow } from './Subagents'
 
 type TranscriptState = { loading: true } | ({ loading: false } & ChatSubagentTranscript)
@@ -54,7 +55,14 @@ export function chatStatusWord(status: ChatSessionStatus): string {
  * request, and the composer. The phone's pane screen and the iPad cockpit's
  * centre column both show it, through `PaneView`.
  */
-export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }: {
+export function ChatView(props: React.ComponentProps<typeof ChatThread>): React.JSX.Element {
+  return <AsideThreads host={props.host} main={props.chat} client={props.client} phase={props.phase}
+    renderThread={(chat, options) => <ChatThread {...props} key={options.threadKey ?? chat.paneId} chat={chat} threadOptions={options}
+      onOpenTile={chat.session.aside ? undefined : props.onOpenTile} openTileIds={chat.session.aside ? undefined : props.openTileIds} />} />
+}
+
+function ChatThread({ host, chat, client, phase, onOpenTile, openTileIds, threadOptions }: {
+  threadOptions?: ThreadOptions
   host: Host
   chat: ChatState
   client: DaemonClient | undefined
@@ -129,6 +137,7 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
           cwd={chat.session.cwd}
           items={timelineItems}
           onOpenSubagent={view.turnFlow ? view.select : undefined}
+          onOpenReport={threadOptions?.onOpenReport}
           onOpenTile={onOpenTile}
           onTask={view.task}
           openTileIds={openTileIds}
@@ -170,6 +179,10 @@ export function ChatView({ host, chat, client, phase, onOpenTile, openTileIds }:
       ) : null}
       {channel ? (
         <View testID="chat-composer-dock" style={styles.composerDock}><ChatComposer
+          newAside={threadOptions?.newAside}
+          onStartAside={threadOptions?.onStartAside}
+          reportDraft={threadOptions?.reportDraft}
+          onReportDraftTaken={threadOptions?.onReportDraftTaken}
           actionError={actionError}
           carried={chat.carried}
           channel={channel}
