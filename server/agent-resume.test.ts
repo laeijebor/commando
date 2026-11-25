@@ -336,27 +336,47 @@ describe('AgentResumeService', () => {
       expect(sent).toHaveLength(3)
     })
 
-    it('does not resume them again when they go down soon after their resume, but does after a later crash', async () => {
-      const resume = await recordAll()
+    /** Crashes all three and lets their resumes start and report in, so each resume is confirmed. */
+    async function crashAndResume(resume: AgentResumeService): Promise<void> {
       exit(resume, ...targets)
-      await advance(30_000)
+      await advance(15_000)
       expect(sent).toHaveLength(3)
-      const running = () => {
-        for (const target of targets) panes.set(target.targetId, target)
-        resume.reconcile([...panes.values()], OLD_SERVER)
+      for (const target of targets) {
+        panes.set(target.targetId, target)
+        await resume.observeHookStatus(hookStatus({ paneId: target.id }), target, OLD_SERVER)
       }
-      running()
+      await advance(30_000)
+      expect(resumes.get(TARGET)?.state).toBe('resumed')
+    }
+
+    it('does not resume them again when they go down soon after their resume', async () => {
+      const resume = await recordAll()
+      await crashAndResume(resume)
       await advance(60_000)
       exit(resume, ...targets)
       await advance(30_000)
       expect(sent).toHaveLength(3)
+      expect(targets.map((target) => resume.get(target.targetId))).toEqual([undefined, undefined, undefined])
+    })
 
-      // Started again by hand, then taken down together long after Commando's resume.
-      for (const target of targets) await recordOn(OLD_SERVER, resume, target)
+    it('resumes them again after a later crash, once the grace has passed', async () => {
+      const resume = await recordAll()
+      await crashAndResume(resume)
       await advance(10 * 60_000)
       exit(resume, ...targets)
       await advance(30_000)
       expect(sent).toHaveLength(6)
+    })
+
+    it('keeps the grace after a resume across a daemon restart', async () => {
+      const resume = await recordAll()
+      await crashAndResume(resume)
+      await resume.flush()
+      const restarted = service()
+      await restarted.load()
+      exit(restarted, ...targets)
+      await advance(30_000)
+      expect(sent).toHaveLength(3)
     })
 
     it('does not type over input the user started after the exit', async () => {

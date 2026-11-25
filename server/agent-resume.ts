@@ -33,6 +33,8 @@ export type AgentResumeRecord = {
   serverId: string
   /** tmux server a resume was last attempted on, so each restore is tried once. */
   attemptedServerId?: string
+  /** When Commando last typed this conversation's resume; saved so the crash grace outlives a daemon restart. */
+  resumedAt?: number
   updatedAt: number
 }
 
@@ -117,6 +119,7 @@ function validRecord(value: unknown): value is AgentResumeRecord {
     && !/[\u0000-\u001f\u007f]/u.test(record.command)
     && typeof record.serverId === 'string' && record.serverId.length > 0
     && (record.attemptedServerId === undefined || typeof record.attemptedServerId === 'string')
+    && (record.resumedAt === undefined || Number.isFinite(record.resumedAt))
     && Number.isFinite(record.updatedAt)
 }
 
@@ -198,8 +201,6 @@ export class AgentResumeService {
   private readonly failedRecords = new Map<string, FailedResume>()
   /** Exits within the crash window, kept until it passes. */
   private readonly recentExits = new Map<string, RecentExit>()
-  /** When this daemon last typed each pane's resume. */
-  private readonly resumedAt = new Map<string, number>()
   private queue: Job[] = []
   private draining = false
   private lastSentAt = 0
@@ -296,6 +297,8 @@ export class AgentResumeService {
         path: pane.path,
         command,
         serverId,
+        // The same conversation keeps its resume time, so the crash grace still covers it.
+        ...(existing?.sessionId === status.agentSessionId && existing.resumedAt !== undefined ? { resumedAt: existing.resumedAt } : {}),
         updatedAt: this.now(),
       } : null
       if (!record || !validRecord(record)) return
@@ -348,7 +351,7 @@ export class AgentResumeService {
         // first discovery after a daemon restart count too, since a kill that takes down the
         // agents often takes the daemon with it.
         this.records.delete(pane.targetId)
-        if (!this.resumedRecently(pane.targetId)) {
+        if (!this.resumedRecently(record)) {
           this.recentExits.set(pane.targetId, { record, at: this.now(), active: pane.active, resumed: false })
         }
         changed = true
@@ -384,12 +387,8 @@ export class AgentResumeService {
     return jobs
   }
 
-  private resumedRecently(targetId: string): boolean {
-    const at = this.resumedAt.get(targetId)
-    if (at === undefined) return false
-    if (this.now() - at < CRASH_RESUME_GRACE_MS) return true
-    this.resumedAt.delete(targetId)
-    return false
+  private resumedRecently(record: AgentResumeRecord): boolean {
+    return record.resumedAt !== undefined && this.now() - record.resumedAt < CRASH_RESUME_GRACE_MS
   }
 
   /** The agents an archive should keep for these targets. */
@@ -564,11 +563,11 @@ export class AgentResumeService {
       return this.fail(resume, 'The pane has unsent input, so nothing was typed. Clear it, then retry.')
     }
     record.attemptedServerId = job.serverId
+    record.resumedAt = this.now()
     this.persist()
     this.lastSentAt = this.now()
     try {
       await this.deps.sendCommand(pane, record.command)
-      this.resumedAt.set(job.targetId, this.now())
     } catch (error) {
       return this.fail(resume, `Could not type into the pane: ${error instanceof Error ? error.message : String(error)}`)
     }
