@@ -1,4 +1,5 @@
 import { asideEnv, asideInstructions } from '../aside-brief.js'
+import { AsideTimeline, countTimelineMessages } from '../aside-timeline.js'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_ITEMS,
@@ -135,6 +136,7 @@ export class CodexChatSession implements ChatProviderSession {
   private info: ChatSessionInfo
   private startPromise?: Promise<void>
   private lastCompletedTurn?: string
+  private readonly asideTimeline: AsideTimeline
   private activeTurn?: string
   private readonly endedTurns = new Set<string>()
   private sending = 0
@@ -150,6 +152,7 @@ export class CodexChatSession implements ChatProviderSession {
   private interrupting = false
 
   constructor(private readonly spec: AgentSessionSpec, client?: CodexTransport, executable = 'codex') {
+    this.asideTimeline = new AsideTimeline(spec.aside)
     codexPermissions(spec.permissionMode, spec.cwd)
     this.client = client ?? new CodexRpcClient({ cwd: spec.cwd, env: { ...(spec.aside ? asideEnv(spec.env, spec.aside.id) : spec.env), ...(!spec.aside && spec.resumeCommand ? { COMMANDO_CHAT_RESUME: spec.resumeCommand } : {}) }, executable, log: spec.log })
     this.mapper = new CodexItemMapper(Date.now, (path) => {
@@ -201,13 +204,14 @@ export class CodexChatSession implements ChatProviderSession {
   get busy(): boolean { return Boolean(this.activeTurn || this.sending || this.pending.size || this.queue.length || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
-  private emitItems(items: ChatItem[]): void { if (items.length) this.listeners.items.forEach((listener) => listener(items)) }
+  private emitItems(items: ChatItem[]): void { items = this.asideTimeline.updates(items); if (items.length) this.listeners.items.forEach((listener) => listener(items)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
-  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
+  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.asideTimeline.snapshot(this.mapper.list()) } }
   setResumeCommand(command: string): void { this.tui.env.COMMANDO_CHAT_RESUME = command; if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
   forkPoint() { return this.info.sessionId && this.lastCompletedTurn ? { sessionId: this.info.sessionId, at: this.lastCompletedTurn } : null }
   start(): Promise<void> { return this.startPromise ??= this.initialize() }
   private async initialize(): Promise<void> {
+    this.emitItems([])
     try {
       await this.client.start()
       void this.readPlanUsage()
@@ -263,13 +267,11 @@ export class CodexChatSession implements ChatProviderSession {
           } while (cursor && itemCount < MAX_CHAT_ITEMS && !this.closing)
           if (this.closing) return
           const ordered = history.reverse()
-          this.lastCompletedTurn = [...ordered].reverse().find((turn) => turn.status === 'completed')?.id
-          this.emitItems(ordered.flatMap((turn) => this.mapper.replay(turn)))
+          this.replay(ordered)
         } else {
-          const read = record(await this.client.request('thread/read', { threadId: thread.id, includeTurns: true }))
-          const history = parseThread(read.thread)
-          this.lastCompletedTurn = [...history.turns].reverse().find((turn) => turn.status === 'completed')?.id
-          this.emitItems(history.turns.flatMap((turn) => this.mapper.replay(turn)))
+          // Fork/resume can return inline turns; older servers require a separate read.
+          const history = thread.turns.length ? thread : parseThread(record(await this.client.request('thread/read', { threadId: thread.id, includeTurns: true })).thread)
+          this.replay(history.turns)
           if (history.name) this.update({ title: history.name })
         }
       }
@@ -283,6 +285,14 @@ export class CodexChatSession implements ChatProviderSession {
       if (!this.closing) { this.emitItems(this.mapper.notice('error', `Couldn't start Codex: ${errorText(error)}`)); this.update({ status: 'error', error: errorText(error) }) }
       this.close()
     }
+  }
+  private replay(history: CodexTurn[]): void {
+    this.lastCompletedTurn = [...history].reverse().find((turn) => turn.status === 'completed')?.id
+    const visible = this.asideTimeline.cut(history, (turn) => turn.id, (hidden) => {
+      const counter = new CodexItemMapper()
+      return countTimelineMessages(hidden.flatMap((turn) => counter.replay(turn)))
+    })
+    this.emitItems(visible.flatMap((turn) => this.mapper.replay(turn)))
   }
   send(text: string, images: ChatImageRef[] = [], options: ChatSendOptions = {}): void {
     const trimmed = text.trim()

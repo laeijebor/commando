@@ -1,4 +1,5 @@
 import { asideEnv, asideInstructions } from '../aside-brief.js'
+import { AsideTimeline } from '../aside-timeline.js'
 import {
   AGENT_HOST_PROTOCOL_VERSION,
   MAX_CHAT_IMAGES,
@@ -115,6 +116,7 @@ export class MuseChatSession implements ChatProviderSession {
   readonly tui: ChatProviderTui
   private readonly client: MuseTransport
   private readonly mapper = new MuseItemMapper()
+  private readonly asideTimeline: AsideTimeline
   private readonly files: WorkspaceFileIndex
   private readonly listeners: { [K in keyof ChatProviderSessionEvents]: ChatProviderSessionEvents[K][] } = { items: [], session: [], commands: [], closed: [], restart: [] }
   private readonly readyListeners: (() => void)[] = []
@@ -138,6 +140,7 @@ export class MuseChatSession implements ChatProviderSession {
   private readonly fullAccess: boolean
 
   constructor(private readonly spec: AgentSessionSpec, client?: MuseTransport, private readonly executable = 'muse') {
+    this.asideTimeline = new AsideTimeline(spec.aside)
     museApprovalMode(spec.permissionMode)
     // Full access needs both: bypassPermissions alone, from before --yolo existed, meant approve-everything inside the sandbox.
     this.fullAccess = !spec.readOnly && spec.permissionMode === 'bypassPermissions' && spec.fullAccess === true
@@ -195,9 +198,9 @@ export class MuseChatSession implements ChatProviderSession {
   get busy(): boolean { return Boolean(this.activeTurn || this.sending || this.pending.size || this.queue.length || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
-  private emitItems(items: ChatItem[]): void { if (items.length) this.listeners.items.forEach((listener) => listener(items)) }
+  private emitItems(items: ChatItem[]): void { items = this.asideTimeline.updates(items); if (items.length) this.listeners.items.forEach((listener) => listener(items)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
-  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
+  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.asideTimeline.snapshot(this.mapper.list()) } }
   setResumeCommand(command: string): void { Object.assign(this.tui.env, resumeEnv(command)); if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
   private call<M extends keyof MuseMethods & string>(method: M, params: MuseMethods[M]): Promise<Record<string, unknown>> {
     return this.client.request(method, params).then(record)
@@ -205,6 +208,7 @@ export class MuseChatSession implements ChatProviderSession {
 
   start(): Promise<void> { return this.startPromise ??= this.initialize() }
   private async initialize(): Promise<void> {
+    this.emitItems([])
     try {
       await this.client.start()
       this.update({ models: museModels(await this.call('model/list', {}).catch(() => ({}))) })

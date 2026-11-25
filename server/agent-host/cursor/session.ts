@@ -1,4 +1,5 @@
 import { asideEnv, asideInstructions } from '../aside-brief.js'
+import { AsideTimeline } from '../aside-timeline.js'
 import { randomUUID } from 'node:crypto'
 import type { AgentOptions, ModelListItem, ModelSelection, SDKImage, SettingSource } from '@cursor/sdk'
 import {
@@ -65,6 +66,7 @@ export class CursorChatSession implements ChatProviderSession {
   private sdk?: CursorSdk
   private agent?: CursorAgent
   private readonly mapper = new CursorItemMapper()
+  private readonly asideTimeline: AsideTimeline
   /** The folder attached videos are copied to; Cursor's agent id isn't known before its first run. */
   private readonly attachmentFolder = randomUUID()
   private readonly files: WorkspaceFileIndex
@@ -94,6 +96,7 @@ export class CursorChatSession implements ChatProviderSession {
   private initialSent = false
 
   constructor(private readonly spec: AgentSessionSpec, sdk?: CursorSdk, mcpCli?: CursorMcpCli | null) {
+    this.asideTimeline = new AsideTimeline(spec.aside)
     cursorPermissions(spec.permissionMode, spec.prePlanPermissionMode)
     this.apiKey = spec.env.CURSOR_API_KEY
     this.sdk = sdk
@@ -121,9 +124,9 @@ export class CursorChatSession implements ChatProviderSession {
   get busy(): boolean { return Boolean(this.active || this.sending || this.queue.length || this.loginController || this.info.status === 'starting') }
   get queued(): ChatQueuedMessage[] { return [...this.queue] }
   on<K extends keyof ChatProviderSessionEvents>(event: K, listener: ChatProviderSessionEvents[K]): void { this.listeners[event].push(listener) }
-  private emitItems(items: ChatItem[]): void { if (!this.closing && items.length) this.listeners.items.forEach((listener) => listener(items)) }
+  private emitItems(items: ChatItem[]): void { items = this.asideTimeline.updates(items); if (!this.closing && items.length) this.listeners.items.forEach((listener) => listener(items)) }
   private update(change: Partial<ChatSessionInfo>): void { this.info = { ...this.info, ...change }; this.listeners.session.forEach((listener) => listener(this.info)) }
-  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.mapper.list() } }
+  snapshot(): { session: ChatSessionInfo; items: ChatItem[] } { return { session: { ...this.info }, items: this.asideTimeline.snapshot(this.mapper.list()) } }
   setResumeCommand(command: string): void { if (this.info.resumeCommand !== command) this.update({ resumeCommand: command }) }
   private safeError(error: unknown): string {
     const message = errorText(error)
@@ -132,6 +135,7 @@ export class CursorChatSession implements ChatProviderSession {
   }
   start(): Promise<void> { return this.startPromise ??= this.initialize() }
   private async initialize(): Promise<void> {
+    this.emitItems([])
     try {
       this.sdk ??= await loadCursorSdk((message) => this.spec.log?.(this.safeError(message)))
       if (this.closing) return

@@ -493,6 +493,68 @@ describe('Codex paginated history and request validation', () => {
 })
 
 describe('Codex aside forks', () => {
+  const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
+  const messageTurn = (id: string, question: string, answer: string) => turn(id, 'completed', [
+    { type: 'userMessage', id: `${id}-user`, content: [{ type: 'text', text: question }] },
+    { type: 'agentMessage', id: `${id}-reply`, text: answer },
+  ])
+  const inherited = [messageTurn('older', 'Old question', 'Old answer'), messageTurn('finished', 'Main question', 'Main answer')]
+  const own = messageTurn('aside-turn', 'Side question', 'Side answer')
+
+  for (const source of ['inline', 'read', 'paginated'] as const) {
+    function withHistory(resume: boolean, at: string | undefined) {
+      const info = { ...aside, forkedFrom: { sessionId: 'main', at } }
+      const result = harness({ aside: info, ...(resume ? { resume: thread.id } : { fork: info.forkedFrom }) })
+      const original = result.client.request.getMockImplementation()!
+      const turns = [...inherited, ...(resume ? [own] : [])]
+      result.client.request.mockImplementation(async (method, params) => {
+        if (method === 'thread/fork' || method === 'thread/resume') {
+          result.client.requests.push({ method, params })
+          return { thread: { ...thread, historyMode: source === 'paginated' ? 'paginated' : 'legacy', turns: source === 'inline' ? turns : [] } }
+        }
+        if (method === 'thread/read') return { thread: { ...thread, turns } }
+        if (method === 'thread/turns/list') {
+          const second = 'cursor' in params
+          return { data: second ? [...inherited].reverse() : resume ? [own] : [], nextCursor: second ? null : 'older' }
+        }
+        return original(method, params)
+      })
+      return result
+    }
+
+    it(`hides inherited turns on fresh fork and reopen using ${source} history`, async () => {
+      const first = withHistory(false, 'finished')
+      await first.session.start()
+      expect(first.client.request.mock.calls.find(([method]) => method === 'thread/fork')?.[1]).toMatchObject({ threadId: 'main', lastTurnId: 'finished' })
+      expect(first.client.request.mock.calls.some(([method]) => method === 'thread/read')).toBe(source === 'read')
+      expect(first.session.snapshot().items).toMatchObject([{ kind: 'notice', text: 'Forked from Main · 4 earlier messages hidden' }])
+      expect(first.session.forkPoint()?.at).toBe('finished')
+      first.session.send('Side question')
+      await tick()
+      expect(first.session.snapshot().items.at(-1)).toMatchObject({ kind: 'user_message', text: 'Side question' })
+      first.session.close()
+
+      const { session, client } = withHistory(true, 'finished')
+      const emitted = new Map<string, unknown>()
+      session.on('items', (items) => items.forEach((item) => emitted.set(item.id, item)))
+      await session.start()
+      expect(client.request.mock.calls.find(([method]) => method === 'thread/resume')?.[1]).toMatchObject({ threadId: thread.id })
+      expect(client.request.mock.calls.some(([method]) => method === 'thread/read')).toBe(source === 'read')
+      expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Forked from Main · 4 earlier messages hidden', 'Side question', 'Side answer'])
+      expect([...emitted.values()]).toEqual(session.snapshot().items)
+      expect(session.forkPoint()?.at).toBe('aside-turn')
+      session.close()
+    })
+
+    it.each(['missing', undefined])(`keeps all turns when the fork point is %s using ${source} history`, async (at) => {
+      const { session } = withHistory(true, at)
+      await session.start()
+      expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Forked from Main', 'Old question', 'Old answer', 'Main question', 'Main answer', 'Side question', 'Side answer'])
+      expect(session.forkPoint()?.at).toBe('aside-turn')
+      session.close()
+    })
+  }
+
   it.each(['read-only', 'inherit'] as const)('resumes an aside with instructions matching its current %s mode', async (mode) => {
     const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main' }, createdAt: 1 }
     const { session, client } = harness({ paneId: '%3~abcd1234', aside, resume: 'saved-aside', readOnly: mode === 'read-only' })

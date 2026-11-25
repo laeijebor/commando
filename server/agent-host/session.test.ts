@@ -1676,6 +1676,60 @@ describe('DeepSeek through Claude Code', () => {
 })
 
 describe('Claude aside forks', () => {
+  const aside = { parentPaneId: '%3', id: 'abcd1234', title: 'Side', mode: 'read-only' as const, method: 'fork' as const, readOnlyEnforced: true, forkedFrom: { sessionId: 'main', at: 'finished' }, createdAt: 1 }
+  const inherited = [
+    { type: 'user', uuid: 'main-user', message: { role: 'user', content: 'Main question' }, parent_tool_use_id: null },
+    { type: 'assistant', uuid: 'finished', message: { id: 'main-reply', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Main answer' }] }, parent_tool_use_id: null },
+  ]
+  const own = [
+    { type: 'user', uuid: 'aside-user', message: { role: 'user', content: 'Side question' }, parent_tool_use_id: null },
+    { type: 'assistant', uuid: 'aside-finished', message: { id: 'aside-reply', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Side answer' }] }, parent_tool_use_id: null },
+  ]
+
+  it('starts a fresh fork with one origin notice and only its own live messages', async () => {
+    const { session, fake, items } = started({ aside, fork: aside.forkedFrom }, { messages: async () => [...inherited, ...own], title: async () => undefined })
+    await tick()
+    expect(session.snapshot().items).toMatchObject([{ kind: 'notice', level: 'info', text: 'Forked from Main · 2 earlier messages hidden' }])
+    session.send('Side question')
+    await tick()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Forked from Main · 2 earlier messages hidden', 'Side question'])
+    expect([...items.values()]).toEqual(session.snapshot().items)
+    expect(fake.options).toMatchObject({ resume: 'main', forkSession: true, resumeSessionAt: 'finished' })
+    session.close()
+  })
+
+  it('can start a fresh SDK fork even when its optional hidden-message count cannot be loaded', async () => {
+    const { session, fake } = started({ aside, fork: aside.forkedFrom }, { messages: async () => { throw new Error('source transcript unavailable') }, title: async () => undefined })
+    await tick()
+    expect(session.snapshot().items).toMatchObject([{ kind: 'notice', level: 'info', text: 'Forked from Main' }])
+    expect(fake.options).toMatchObject({ resume: 'main', forkSession: true })
+    expect(session.snapshot().session.status).toBe('idle')
+    session.close()
+  })
+
+  it.each([false, true])('cuts inherited transcript on reopen, preserving full-history fork tracking (has aside reply: %s)', async (hasReply) => {
+    const store = { messages: async () => [...inherited, ...(hasReply ? own : [])], title: async () => undefined }
+    const first = started({ aside, fork: aside.forkedFrom }, store)
+    await tick()
+    first.session.close()
+    const { session, items } = started({ aside, resume: 'saved-aside' }, store)
+    await tick()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual([
+      'Forked from Main · 2 earlier messages hidden', ...(hasReply ? ['Side question', 'Side answer'] : []),
+    ])
+    expect([...items.values()]).toEqual(session.snapshot().items)
+    expect(session.forkPoint()).toEqual({ sessionId: 'saved-aside', at: hasReply ? 'aside-finished' : 'finished' })
+    session.close()
+  })
+
+  it.each([undefined, 'missing'])('keeps all resumed aside messages when the fork uuid is %s', async (at) => {
+    const { session } = started({ aside: { ...aside, forkedFrom: { sessionId: 'main', at } }, resume: 'saved-aside' }, { messages: async () => own, title: async () => undefined })
+    await tick()
+    expect(session.snapshot().items.map((item) => 'text' in item ? item.text : '')).toEqual(['Forked from Main', 'Side question', 'Side answer'])
+    expect(session.forkPoint()?.at).toBe('aside-finished')
+    session.close()
+  })
+
   it.each(['bypassPermissions', 'acceptEdits'] as const)('keeps read-only edit blocks and Bash approval prompts with %s', async (permissionMode) => {
     const { fake, session, items } = started({ readOnly: true, permissionMode })
     await tick()
