@@ -1,8 +1,15 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   GitCommandFailure,
   GitDiffError,
   GitDiffInspector,
+  MAX_FILE_CONTENTS_BYTES,
+  parseBlamePorcelain,
+  validateBlameRev,
   validateDiffDisplay,
   validateDiffEngine,
   validateDiffSearchQuery,
@@ -10,6 +17,8 @@ import {
   validateGitTarget,
   type GitExecutorOptions,
   type GitProcessExecutor,
+  type WorktreeEntry,
+  type WorktreeFiles,
 } from './git-diff.js'
 
 const NUL = String.fromCharCode(0)
@@ -825,5 +834,371 @@ describe('GitDiffInspector.search', () => {
       ],
       files: [{ file: 'notes.md', matches: 2 }],
     })
+  })
+})
+
+const BASE_SHA = 'b'.repeat(40)
+const HEAD_SHA = 'c'.repeat(40)
+const OTHER_SHA = 'd'.repeat(40)
+const ZERO_SHA = '0'.repeat(40)
+
+type TreeFile = string | { size: number }
+
+type ContentsRepoOptions = FakeRepoOptions & {
+  /** Commit trees by full SHA: path -> contents (or just a size, for oversize blobs). */
+  trees?: Record<string, Record<string, TreeFile>>
+  blameOutput?: string
+  blameFailure?: GitCommandFailure
+}
+
+/** fakeRepo plus the commands fileContents and blame run. */
+function contentsRepo(options: ContentsRepoOptions = {}) {
+  const { trees = {}, blameOutput = '', blameFailure, ...repoOptions } = options
+  const repo = fakeRepo(repoOptions)
+  const shas: Record<string, string> = { [BASE]: BASE_SHA, 'head-tip': HEAD_SHA }
+  const blobs = new Map<string, string>()
+  const execute: GitProcessExecutor = async (file, args, executorOptions) => {
+    if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--verify' && shas[args[3].replace(/\^\{commit\}$/u, '')]) {
+      repo.calls.push({ file, args: [...args], options: executorOptions })
+      return { stdout: `${shas[args[3].replace(/\^\{commit\}$/u, '')]}\n`, stderr: '' }
+    }
+    if (file === 'git' && args[0] === 'ls-tree') {
+      repo.calls.push({ file, args: [...args], options: executorOptions })
+      const [, , , sha, , relative] = args
+      const entry = trees[sha]?.[relative]
+      if (entry === undefined) return { stdout: '', stderr: '' }
+      const object = `blob-${sha.slice(0, 1)}-${relative}`
+      const size = typeof entry === 'string' ? Buffer.byteLength(entry) : entry.size
+      if (typeof entry === 'string') blobs.set(object, entry)
+      return { stdout: `100644 blob ${object} ${String(size).padStart(7)}\t${relative}${NUL}`, stderr: '' }
+    }
+    if (file === 'git' && args[0] === 'cat-file') {
+      repo.calls.push({ file, args: [...args], options: executorOptions })
+      return { stdout: blobs.get(args[2]) ?? '', stderr: '' }
+    }
+    if (file === 'git' && args[0] === 'blame') {
+      repo.calls.push({ file, args: [...args], options: executorOptions })
+      if (blameFailure) throw blameFailure
+      return { stdout: blameOutput, stderr: '' }
+    }
+    return repo.execute(file, args, executorOptions)
+  }
+  return { calls: repo.calls, execute }
+}
+
+type DiskFile = string | { symlink: string } | { size: number } | 'directory'
+
+/** An in-memory working tree under ROOT; `links` maps directories to their real paths. */
+function fakeDisk(files: Record<string, DiskFile>, links: Record<string, string> = {}) {
+  const absolute = (relative: string) => `${ROOT}/${relative}`
+  const lookup = (file: string) => Object.entries(files).find(([relative]) => absolute(relative) === file)?.[1]
+  const reads: string[] = []
+  const worktree: WorktreeFiles = {
+    async entry(file): Promise<WorktreeEntry | undefined> {
+      const value = lookup(file)
+      if (value === undefined) return undefined
+      if (value === 'directory') return { kind: 'directory', size: 0 }
+      if (typeof value === 'string') return { kind: 'file', size: Buffer.byteLength(value) }
+      if ('symlink' in value) return { kind: 'symlink', size: value.symlink.length }
+      return { kind: 'file', size: value.size }
+    },
+    async readlink(file) {
+      const value = lookup(file)
+      if (typeof value === 'object' && 'symlink' in value) return value.symlink
+      throw new Error('not a symlink')
+    },
+    async realpath(file) {
+      return links[file] ?? file
+    },
+  }
+  const readTextFile = async (file: string) => {
+    reads.push(file)
+    const value = lookup(file)
+    if (typeof value !== 'string') throw new Error(`cannot read ${file}`)
+    return value
+  }
+  return { worktree, readTextFile, reads }
+}
+
+function contentsInspector(repo: { execute: GitProcessExecutor }, disk = fakeDisk({}), now: () => number = Date.now) {
+  return new GitDiffInspector(repo.execute, {}, now, disk.readTextFile, undefined, disk.worktree)
+}
+
+describe('GitDiffInspector.fileContents', () => {
+  it('reads the base side from the resolved base commit and the new side from disk', async () => {
+    const repo = contentsRepo({ trees: { [BASE_SHA]: { 'src/app.ts': 'old\n' } } })
+    const disk = fakeDisk({ 'src/app.ts': 'new\n' })
+
+    await expect(contentsInspector(repo, disk).fileContents('/repo', 'src/app.ts')).resolves.toEqual({
+      file: 'src/app.ts',
+      old: { path: 'src/app.ts', contents: 'old\n', rev: BASE_SHA },
+      new: { path: 'src/app.ts', contents: 'new\n', rev: 'worktree' },
+    })
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['rev-parse', '--verify', '--quiet', `${BASE}^{commit}`] }))
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['ls-tree', '-l', '-z', BASE_SHA, '--', 'src/app.ts'] }))
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['cat-file', 'blob', 'blob-b-src/app.ts'] }))
+    expect(disk.reads).toEqual([`${ROOT}/src/app.ts`])
+  })
+
+  it('reads both sides from commits for an explicit base and head, never the disk', async () => {
+    const repo = contentsRepo({
+      refs: ['base-tip', 'head-tip'],
+      trees: { [BASE_SHA]: { 'src/app.ts': 'old' }, [HEAD_SHA]: { 'src/app.ts': 'pr' } },
+    })
+    const disk = fakeDisk({ 'src/app.ts': 'local edits' })
+
+    await expect(contentsInspector(repo, disk).fileContents('/repo', 'src/app.ts', 'base-tip', 'head-tip')).resolves.toEqual({
+      file: 'src/app.ts',
+      old: { path: 'src/app.ts', contents: 'old', rev: BASE_SHA },
+      new: { path: 'src/app.ts', contents: 'pr', rev: HEAD_SHA },
+    })
+    expect(repo.calls).toContainEqual(expect.objectContaining({ args: ['merge-base', 'base-tip', 'head-tip'] }))
+    expect(disk.reads).toEqual([])
+  })
+
+  it('reports added and untracked files with no old side', async () => {
+    const repo = contentsRepo()
+    const disk = fakeDisk({ 'notes.md': 'hello' })
+    await expect(contentsInspector(repo, disk).fileContents('/repo', 'notes.md')).resolves.toMatchObject({
+      old: null,
+      new: { contents: 'hello', rev: 'worktree' },
+    })
+  })
+
+  it('reports deleted files with no new side', async () => {
+    const repo = contentsRepo({ refs: ['base-tip', 'head-tip'], trees: { [BASE_SHA]: { 'gone.ts': 'bye' } } })
+    await expect(contentsInspector(repo).fileContents('/repo', 'gone.ts', 'base-tip', 'head-tip')).resolves.toMatchObject({
+      old: { contents: 'bye', rev: BASE_SHA },
+      new: null,
+    })
+    await expect(contentsInspector(repo).fileContents('/repo', 'gone.ts')).resolves.toMatchObject({ new: null })
+  })
+
+  it('rejects a file that exists on neither side', async () => {
+    await expect(contentsInspector(contentsRepo()).fileContents('/repo', 'missing.ts')).rejects.toMatchObject({ kind: 'bad-file' })
+  })
+
+  it('marks binary files unavailable instead of sending either side', async () => {
+    const repo = contentsRepo({ trees: { [BASE_SHA]: { 'logo.png': `PNG${NUL}data` } } })
+    const disk = fakeDisk({ 'logo.png': 'text now' })
+    await expect(contentsInspector(repo, disk).fileContents('/repo', 'logo.png')).resolves.toEqual({
+      file: 'logo.png', old: null, new: null, unavailable: 'binary',
+    })
+  })
+
+  it('marks oversize files unavailable without reading them', async () => {
+    const repo = contentsRepo({ trees: { [BASE_SHA]: { 'big.json': { size: MAX_FILE_CONTENTS_BYTES + 1 } } } })
+    const disk = fakeDisk({ 'big.json': 'small' })
+    await expect(contentsInspector(repo, disk).fileContents('/repo', 'big.json')).resolves.toEqual({
+      file: 'big.json', old: null, new: null, unavailable: 'too-large',
+    })
+    expect(repo.calls.some((call) => call.args[0] === 'cat-file')).toBe(false)
+    expect(disk.reads).toEqual([])
+
+    const onDisk = fakeDisk({ 'big.json': { size: MAX_FILE_CONTENTS_BYTES + 1 } })
+    await expect(contentsInspector(contentsRepo(), onDisk).fileContents('/repo', 'big.json'))
+      .resolves.toMatchObject({ unavailable: 'too-large' })
+    expect(onDisk.reads).toEqual([])
+  })
+
+  it('reads blobs with a buffer that fits the size limit', async () => {
+    const repo = contentsRepo({ trees: { [BASE_SHA]: { 'a.ts': 'a' } } })
+    await contentsInspector(repo, fakeDisk({ 'a.ts': 'b' })).fileContents('/repo', 'a.ts')
+    expect(repo.calls.find((call) => call.args[0] === 'cat-file')?.options.maxBuffer).toBeGreaterThan(MAX_FILE_CONTENTS_BYTES)
+  })
+
+  it('uses the link target text for a symlink on disk without following it', async () => {
+    const repo = contentsRepo({ trees: { [BASE_SHA]: { link: 'old-target' } } })
+    const disk = fakeDisk({ link: { symlink: '/etc/passwd' } })
+    await expect(contentsInspector(repo, disk).fileContents('/repo', 'link')).resolves.toMatchObject({
+      old: { contents: 'old-target' },
+      new: { contents: '/etc/passwd', rev: 'worktree' },
+    })
+    expect(disk.reads).toEqual([])
+  })
+
+  it('refuses a path whose parent directory is a symlink out of the repository', async () => {
+    const disk = fakeDisk({ 'escape/passwd': 'root:x:0:0' }, { [`${ROOT}/escape`]: '/etc' })
+    await expect(contentsInspector(contentsRepo(), disk).fileContents('/repo', 'escape/passwd'))
+      .rejects.toMatchObject({ kind: 'bad-file' })
+    expect(disk.reads).toEqual([])
+  })
+
+  it('rejects paths that escape the repository', async () => {
+    await expect(contentsInspector(contentsRepo()).fileContents('/repo', '../secret')).rejects.toMatchObject({ kind: 'bad-file' })
+    await expect(contentsInspector(contentsRepo()).fileContents('/repo', '/etc/passwd')).rejects.toMatchObject({ kind: 'bad-file' })
+  })
+
+  it('maps git failures to exec errors', async () => {
+    const repo = fakeRepo()
+    const execute: GitProcessExecutor = async (file, args, options) => {
+      if (args[0] === 'rev-parse' && args[1] === '--verify') return { stdout: `${BASE_SHA}\n`, stderr: '' }
+      if (args[0] === 'ls-tree') throw failure('fatal: bad object')
+      return repo.execute(file, args, options)
+    }
+    await expect(contentsInspector({ execute }).fileContents('/repo', 'a.ts')).rejects.toMatchObject({
+      kind: 'exec', message: expect.stringContaining('fatal: bad object'),
+    })
+  })
+})
+
+const BLAME_PORCELAIN = [
+  `${BASE_SHA} 1 1 2`,
+  'author Ada Lovelace',
+  'author-mail <ada@example.com>',
+  'author-time 1700000000',
+  'author-tz +0000',
+  'summary Add the engine',
+  'filename src/app.ts',
+  '\tline one',
+  `${BASE_SHA} 2 2`,
+  '\tline two',
+  `${OTHER_SHA} 5 3 1`,
+  'author Grace Hopper',
+  'author-time 1710000000',
+  'summary Fix a bug',
+  'previous 1111111111111111111111111111111111111111 src/app.ts',
+  'filename src/app.ts',
+  '\tline three',
+  `${BASE_SHA} 3 4 1`,
+  'filename src/app.ts',
+  '\tline four',
+  `${ZERO_SHA} 5 5 1`,
+  'author Not Committed Yet',
+  'author-time 1800000000',
+  'summary Version of src/app.ts from src/app.ts',
+  'filename src/app.ts',
+  '\tline five',
+  '',
+].join('\n')
+
+describe('validateBlameRev', () => {
+  it('accepts worktree and full SHAs only', () => {
+    expect(validateBlameRev('worktree')).toBe('worktree')
+    expect(validateBlameRev(BASE_SHA)).toBe(BASE_SHA)
+    expect(validateBlameRev('e'.repeat(64))).toBe('e'.repeat(64))
+  })
+
+  it.each([null, '', 'HEAD', 'main', 'abc1234', 'B'.repeat(40), `${'b'.repeat(39)}g`, 'b'.repeat(41), '--worktree'])('rejects %j', (value) => {
+    expect(() => validateBlameRev(value)).toThrow(expect.objectContaining({ kind: 'bad-param' }))
+  })
+})
+
+describe('parseBlamePorcelain', () => {
+  it('maps every final line to its commit, reusing metadata for repeated SHAs', () => {
+    const result = parseBlamePorcelain(BLAME_PORCELAIN, () => 1_234_000)
+    expect(result.lines).toEqual([BASE_SHA, BASE_SHA, OTHER_SHA, BASE_SHA, ZERO_SHA])
+    expect(result.commits).toEqual({
+      [BASE_SHA]: { sha: BASE_SHA, author: 'Ada Lovelace', authorTime: 1700000000, summary: 'Add the engine', uncommitted: false },
+      [OTHER_SHA]: { sha: OTHER_SHA, author: 'Grace Hopper', authorTime: 1710000000, summary: 'Fix a bug', uncommitted: false },
+      [ZERO_SHA]: { sha: ZERO_SHA, author: 'You', authorTime: 1234, summary: 'Not committed yet', uncommitted: true },
+    })
+  })
+})
+
+describe('GitDiffInspector.blame', () => {
+  it('blames the file at a commit SHA', async () => {
+    const repo = contentsRepo({ blameOutput: BLAME_PORCELAIN })
+    const blame = await contentsInspector(repo).blame('/repo', 'src/app.ts', BASE_SHA)
+    expect(blame).toMatchObject({ file: 'src/app.ts', rev: BASE_SHA, lines: [BASE_SHA, BASE_SHA, OTHER_SHA, BASE_SHA, ZERO_SHA] })
+    expect(repo.calls.find((call) => call.args[0] === 'blame')?.args).toEqual(['blame', '--porcelain', BASE_SHA, '--', 'src/app.ts'])
+  })
+
+  it('blames the working tree without a revision', async () => {
+    const repo = contentsRepo({ blameOutput: BLAME_PORCELAIN })
+    await contentsInspector(repo).blame('/repo', 'src/app.ts', 'worktree')
+    expect(repo.calls.find((call) => call.args[0] === 'blame')?.args).toEqual(['blame', '--porcelain', '--', 'src/app.ts'])
+  })
+
+  it('caches SHA blames but always re-runs worktree blames', async () => {
+    const repo = contentsRepo({ blameOutput: BLAME_PORCELAIN })
+    const inspector = contentsInspector(repo)
+    const blameCalls = () => repo.calls.filter((call) => call.args[0] === 'blame').length
+
+    const first = await inspector.blame('/repo', 'src/app.ts', BASE_SHA)
+    await expect(inspector.blame('/repo/sub', 'src/app.ts', BASE_SHA)).resolves.toEqual(first)
+    expect(blameCalls()).toBe(1)
+    await inspector.blame('/repo', 'src/other.ts', BASE_SHA)
+    await inspector.blame('/repo', 'src/app.ts', OTHER_SHA)
+    expect(blameCalls()).toBe(3)
+
+    await inspector.blame('/repo', 'src/app.ts', 'worktree')
+    await inspector.blame('/repo', 'src/app.ts', 'worktree')
+    expect(blameCalls()).toBe(5)
+  })
+
+  it('does not cache a failed SHA blame', async () => {
+    const repo = contentsRepo({ blameFailure: failure('fatal: something transient') })
+    const inspector = contentsInspector(repo)
+    await expect(inspector.blame('/repo', 'a.ts', BASE_SHA)).rejects.toMatchObject({ kind: 'exec' })
+    await expect(inspector.blame('/repo', 'a.ts', BASE_SHA)).rejects.toMatchObject({ kind: 'exec' })
+    expect(repo.calls.filter((call) => call.args[0] === 'blame')).toHaveLength(2)
+  })
+
+  it('reports every line of an untracked file as one uncommitted commit', async () => {
+    const repo = contentsRepo({ blameFailure: failure("fatal: no such path 'notes.md' in HEAD") })
+    const disk = fakeDisk({ 'notes.md': 'one\ntwo\nthree\n' })
+    await expect(contentsInspector(repo, disk, () => 5_000_000).blame('/repo', 'notes.md', 'worktree')).resolves.toEqual({
+      file: 'notes.md',
+      rev: 'worktree',
+      commits: { [ZERO_SHA]: { sha: ZERO_SHA, author: 'You', authorTime: 5000, summary: 'Not committed yet', uncommitted: true } },
+      lines: [ZERO_SHA, ZERO_SHA, ZERO_SHA],
+    })
+  })
+
+  it('maps a path missing at a SHA to bad-file and other git failures to exec', async () => {
+    const missing = contentsRepo({ blameFailure: failure(`fatal: no such path 'a.ts' in ${BASE_SHA}`) })
+    await expect(contentsInspector(missing).blame('/repo', 'a.ts', BASE_SHA)).rejects.toMatchObject({ kind: 'bad-file' })
+    const broken = contentsRepo({ blameFailure: failure('fatal: corrupt object') })
+    await expect(contentsInspector(broken).blame('/repo', 'a.ts', 'worktree')).rejects.toMatchObject({ kind: 'exec' })
+  })
+
+  it('rejects an invalid rev before running git', async () => {
+    const repo = contentsRepo()
+    await expect(contentsInspector(repo).blame('/repo', 'a.ts', 'HEAD~1')).rejects.toMatchObject({ kind: 'bad-param' })
+    expect(repo.calls).toEqual([])
+  })
+})
+
+describe('GitDiffInspector file contents and blame in a real repository', () => {
+  it('reads committed, modified, untracked and symlinked files and blames them', async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'commando-git-diff-')))
+    const env = { ...process.env, GIT_AUTHOR_NAME: 'Ada', GIT_AUTHOR_EMAIL: 'a@a', GIT_COMMITTER_NAME: 'Ada', GIT_COMMITTER_EMAIL: 'a@a' }
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', env })
+    try {
+      run('init', '-q', '-b', 'main')
+      await writeFile(path.join(root, 'app.ts'), 'one\ntwo\n')
+      await symlink('app.ts', path.join(root, 'link'))
+      run('add', '.')
+      run('commit', '-q', '-m', 'First commit')
+      const first = run('rev-parse', 'HEAD').trim()
+      await writeFile(path.join(root, 'app.ts'), 'one\ntwo\nthree\n')
+      await writeFile(path.join(root, 'notes.md'), 'draft\n')
+      await rm(path.join(root, 'link'))
+      await symlink('notes.md', path.join(root, 'link'))
+
+      const inspector = new GitDiffInspector(undefined, env)
+      await expect(inspector.fileContents(root, 'app.ts')).resolves.toEqual({
+        file: 'app.ts',
+        old: { path: 'app.ts', contents: 'one\ntwo\n', rev: first },
+        new: { path: 'app.ts', contents: 'one\ntwo\nthree\n', rev: 'worktree' },
+      })
+      await expect(inspector.fileContents(root, 'link')).resolves.toMatchObject({
+        old: { contents: 'app.ts' }, new: { contents: 'notes.md' },
+      })
+      await expect(inspector.fileContents(root, 'notes.md')).resolves.toMatchObject({ old: null, new: { contents: 'draft\n' } })
+
+      const committed = await inspector.blame(root, 'app.ts', first)
+      expect(committed.lines).toEqual([first, first])
+      expect(committed.commits[first]).toMatchObject({ author: 'Ada', summary: 'First commit', uncommitted: false })
+
+      const worktree = await inspector.blame(root, 'app.ts', 'worktree')
+      expect(worktree.lines).toEqual([first, first, ZERO_SHA])
+      expect(worktree.commits[ZERO_SHA]).toMatchObject({ uncommitted: true })
+
+      await expect(inspector.blame(root, 'notes.md', 'worktree')).resolves.toMatchObject({ lines: [ZERO_SHA] })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

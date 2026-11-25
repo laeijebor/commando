@@ -332,6 +332,74 @@ describe('GitDiffApi', () => {
   })
 })
 
+describe('GitDiffApi file contents and blame', () => {
+  const baseSha = 'b'.repeat(40)
+  const blameOutput = [`${baseSha} 1 1 1`, 'author Ada', 'author-time 1700000000', 'summary Add a', 'filename a.ts', '\tconst a = 1', ''].join('\n')
+
+  function contentsExecutor(): GitProcessExecutor {
+    const fallback = repoExecutor()
+    return async (file, args, options) => {
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[3] === 'head^{commit}') return { stdout: `${'c'.repeat(40)}\n`, stderr: '' }
+      if (args[0] === 'rev-parse' && args[1] === '--verify' && args[3] === 'base^{commit}') return { stdout: `${baseSha}\n`, stderr: '' }
+      if (args[0] === 'ls-tree') return { stdout: `100644 blob blobsha       6\t${args[5]}${NUL}`, stderr: '' }
+      if (args[0] === 'cat-file') return { stdout: `${args[3] ?? 'blob'}:${args[2]}`, stderr: '' }
+      if (args[0] === 'blame') return { stdout: blameOutput, stderr: '' }
+      return fallback(file, args, options)
+    }
+  }
+
+  it('returns both sides of a file for an explicit comparison', async () => {
+    const base = await startApi({ executor: contentsExecutor() })
+    const response = await fetch(`${base}/api/git/file-contents?paneId=%251&file=a.ts&target=main&head=head`)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      file: 'a.ts',
+      old: { path: 'a.ts', contents: 'blob:blobsha', rev: baseSha },
+      new: { path: 'a.ts', contents: 'blob:blobsha', rev: 'c'.repeat(40) },
+    })
+  })
+
+  it('validates file-contents parameters like file-diff', async () => {
+    const base = await startApi({ executor: contentsExecutor() })
+    expect((await fetch(`${base}/api/git/file-contents?paneId=%251`)).status).toBe(400)
+    expect((await fetch(`${base}/api/git/file-contents?paneId=%251&file=..%2Fsecret`)).status).toBe(400)
+    expect((await fetch(`${base}/api/git/file-contents?paneId=%251&file=a.ts&target=nope`)).status).toBe(400)
+    expect((await fetch(`${base}/api/git/file-contents?paneId=%2599&file=a.ts`)).status).toBe(404)
+  })
+
+  it('returns line blame for a commit SHA', async () => {
+    const base = await startApi({ executor: contentsExecutor() })
+    const response = await fetch(`${base}/api/git/blame?paneId=%251&file=a.ts&rev=${baseSha}`)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      file: 'a.ts',
+      rev: baseSha,
+      commits: { [baseSha]: { sha: baseSha, author: 'Ada', authorTime: 1700000000, summary: 'Add a', uncommitted: false } },
+      lines: [baseSha],
+    })
+  })
+
+  it('rejects a missing or non-SHA blame rev with 400', async () => {
+    const base = await startApi({ executor: contentsExecutor() })
+    expect((await fetch(`${base}/api/git/blame?paneId=%251&file=a.ts`)).status).toBe(400)
+    const response = await fetch(`${base}/api/git/blame?paneId=%251&file=a.ts&rev=HEAD`)
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'rev must be "worktree" or a full commit SHA' })
+    expect((await fetch(`${base}/api/git/blame?paneId=%251&rev=worktree`)).status).toBe(400)
+  })
+
+  it('maps blame git failures to 502', async () => {
+    const fallback = contentsExecutor()
+    const base = await startApi({
+      executor: async (file, args, options) => {
+        if (args[0] === 'blame') throw new GitCommandFailure('git failed', 'fatal: corrupt', false)
+        return fallback(file, args, options)
+      },
+    })
+    expect((await fetch(`${base}/api/git/blame?paneId=%251&file=a.ts&rev=worktree`)).status).toBe(502)
+  })
+})
+
 describe('GitDiffApi repo probe', () => {
   it('describes the repository containing an absolute path', async () => {
     const repoInfo = vi.fn(async (): Promise<GitRepoInfo> => ({
