@@ -416,7 +416,7 @@ export class CodeNavService {
     const { kind, rev, symbol, file } = request
     const sha = rev === 'worktree' ? undefined : rev
     const args = [
-      'grep', '-n', '--column', '-w', '-I', '-F', '-z',
+      'grep', '--no-color', '-n', '--column', '-w', '-I', '-F', '-z',
       ...(sha ? [] : ['--untracked']),
       '-e', symbol,
       ...(sha ? [sha] : []),

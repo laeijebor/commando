@@ -27,6 +27,7 @@ const SERVER_FLAGS = [
 
 export const STOPPED_MESSAGE = 'TypeScript server stopped'
 export const LOADING_MESSAGE = 'TypeScript server is still loading this project'
+export const INFERRED_MESSAGE = "No tsconfig.json or jsconfig.json covers this file, so TypeScript can't see every file that uses it"
 export const HUNG_MESSAGE = 'TypeScript server stopped responding; it will restart on the next lookup'
 
 /** The parts of a child process the provider uses; `spawn` returns a real one. */
@@ -411,6 +412,17 @@ export class TypeScriptNavProvider implements PreciseNavProvider {
     server.openFile = query.path
     giveUpIfTimedOut()
     const at = { file: query.path, line: query.line, offset: query.character + 1 }
+    if (query.kind !== 'definition') {
+      // Without a config file the project is inferred from the open file and what it imports, so
+      // files that use the symbol are missing: an incomplete answer would look complete.
+      const info = (await connection.request('projectInfo', { file: query.path, needFileNameList: false })) as
+        | { configFileName?: string }
+        | undefined
+      // Configured projects are named by their config file; inferred ones by a pseudo-path such as
+      // "/dev/null/inferredProject1*".
+      if (!info?.configFileName || !/\.json$/iu.test(info.configFileName)) throw new PreciseNavUnavailable(INFERRED_MESSAGE)
+      giveUpIfTimedOut()
+    }
     let locations: PreciseLocation[]
     if (query.kind === 'definition') {
       const body = (await connection.request('definition', at)) as FileSpan[] | undefined
