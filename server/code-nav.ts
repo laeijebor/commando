@@ -170,8 +170,26 @@ function joinNotes(...notes: (string | undefined)[]): string | undefined {
   return present.length > 0 ? present.join('. ') : undefined
 }
 
+const LANGUAGE_FAMILIES: Record<string, string> = {
+  ts: 'js', tsx: 'js', mts: 'js', cts: 'js', js: 'js', jsx: 'js', mjs: 'js', cjs: 'js', vue: 'js', svelte: 'js',
+  py: 'py', pyi: 'py', go: 'go', swift: 'swift', rs: 'rs', rb: 'rb', java: 'jvm', kt: 'jvm', kts: 'jvm', scala: 'jvm',
+  c: 'c', h: 'c', cc: 'c', cpp: 'c', hpp: 'c', m: 'c', mm: 'c', cs: 'cs', php: 'php',
+}
+/** Prose mentions a name without declaring or calling it. */
+const PROSE = /\.(?:md|mdx|markdown|txt|rst|adoc)$/iu
+
+function languageOf(file: string): string | undefined {
+  const extension = /\.([^./]+)$/u.exec(file)?.[1]?.toLowerCase()
+  return extension ? LANGUAGE_FAMILIES[extension] : undefined
+}
+
+/** The clicked file first, then files in its language, then the rest, each in git grep's order. */
 function clickedFileFirst<T extends { file: string }>(items: readonly T[], file: string): T[] {
-  return [...items.filter((item) => item.file === file), ...items.filter((item) => item.file !== file)]
+  const language = languageOf(file)
+  const rank = (item: T) => item.file === file ? 0 : language && languageOf(item.file) === language ? 1 : 2
+  return items.map((item, index) => ({ item, index, rank: rank(item) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ item }) => item)
 }
 
 /** Checks every parameter but the file, which needs the repository root. */
@@ -411,14 +429,14 @@ export class CodeNavService {
     if (kind === 'references') {
       selected = matches
     } else if (kind === 'definition') {
-      selected = matches.filter((match) => isDeclaration(match.text, declarations)).map((match) => {
+      selected = matches.filter((match) => !PROSE.test(match.file) && isDeclaration(match.text, declarations)).map((match) => {
         const at = new RegExp(`(?<!${WORD})${name}(?!${WORD})`, 'u').exec(match.text)
         return at ? { ...match, character: at.index } : match
       })
     } else {
       selected = []
       for (const match of matches) {
-        if (match.text.length > MAX_MATCHED_LINE_LENGTH || isDeclaration(match.text, declarations)) continue
+        if (PROSE.test(match.file) || match.text.length > MAX_MATCHED_LINE_LENGTH || isDeclaration(match.text, declarations)) continue
         const at = call.exec(match.text)
         if (at) selected.push({ ...match, character: at.index })
       }

@@ -153,6 +153,22 @@ describe('CodeNavService (fake executor)', () => {
     ])
   })
 
+  it('leaves prose out of definitions and callers, and ranks the clicked file\'s language next', async () => {
+    const output = [
+      `docs/plan.md${NUL}3${NUL}1${NUL}export function greet() is the entry point; call greet() first\n`,
+      `tool.py${NUL}1${NUL}5${NUL}def greet(name):\n`,
+      `tool.py${NUL}6${NUL}5${NUL}    greet("x")\n`,
+      `lib/greet.ts${NUL}1${NUL}17${NUL}export function greet() {}\n`,
+      `lib/use.ts${NUL}2${NUL}3${NUL}  greet()\n`,
+    ].join('')
+    const definition = await service(output).navigate('/repo', query({ kind: 'definition' }))
+    expect(definition.locations.map((location) => location.file)).toEqual(['lib/greet.ts', 'tool.py'])
+    const callers = await service(output).navigate('/repo', query({ kind: 'callers' }))
+    expect(callers.locations.map((location) => location.file)).toEqual(['lib/use.ts', 'tool.py'])
+    const references = await service(output).navigate('/repo', query())
+    expect(references.locations.map((location) => location.file)).toEqual(['lib/greet.ts', 'lib/use.ts', 'docs/plan.md', 'tool.py', 'tool.py'])
+  })
+
   it('caps results at the limit, clicked file first, and marks them truncated', async () => {
     const lines = Array.from({ length: MAX_NAV_LOCATIONS + 5 }, (_, index) => `other.ts${NUL}${index + 1}${NUL}1${NUL}greet()\n`)
     lines.push(`src/app.ts${NUL}9${NUL}12${NUL}    return greet("x")\n`)
