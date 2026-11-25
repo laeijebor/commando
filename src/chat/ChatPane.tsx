@@ -410,6 +410,8 @@ function ChatColumn({
   const answerAsk = (ask: SessionAsk, option: string) => {
     onSend(askAnswerText(ask, option), undefined, { ...(askBusy && hostTakesTurnFlow(chat.session) ? { delivery: 'queue' as const } : {}), answersAsk: ask.key })
   }
+  // A commando-ui block's answer is an ordinary message, queued like a typed one while the turn runs.
+  const answerUi = (text: string) => { onSend(text, undefined, askBusy && hostTakesTurnFlow(chat.session) ? { delivery: 'queue' as const } : undefined) }
   // An answer goes to the main agent, never to a subagent picked for a relay.
   const replyToAsk = (ask: SessionAsk) => {
     setRelay(undefined)
@@ -526,6 +528,7 @@ function ChatColumn({
         <ChatTimeline
           provider={chat.session.provider}
           onResourceAction={onResourceAction}
+          {...(asksDisabled ? {} : { onUiAnswer: answerUi })}
           items={timelineItems}
           {...(onOpenTile ? { onOpenTile } : {})}
           {...(onOpenPr ? { onOpenPr } : {})}

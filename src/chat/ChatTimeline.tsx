@@ -8,7 +8,9 @@ import { ImageStrip } from './ChatImages'
 import { cn } from './cn'
 import { Button } from './ui/button'
 import { providerLabel } from './ComposerControls'
-import { MarkdownPre } from '../MarkdownCode'
+import { MarkdownPre, fenceLanguage, textOf, type HastNode } from '../MarkdownCode'
+import { COMMANDO_UI_FENCE, type UserMessageRef } from '../../shared/commando-ui'
+import { CommandoUiActionsContext, CommandoUiFence, CommandoUiReplyContext, stableUserMessages } from './CommandoUiBlock'
 import { PlanCard, type SavePlan } from './PlanCard'
 import type { ResourceActionHandler } from '../paneManagementApi'
 import { ResourceChip, ResourceCardList } from './ResourceChip'
@@ -81,6 +83,8 @@ function MarkdownCode({ children, node, ...props }: ComponentProps<'code'> & Ext
   return resource ? <ResourceChip resource={resource} onAction={onAction}>{children}</ResourceChip> : <code {...props}>{children}</code>
 }
 function MarkdownResourcePre(props: Parameters<typeof MarkdownPre>[0]) {
+  const hast = props.node as HastNode | undefined
+  if (hast && fenceLanguage(hast) === COMMANDO_UI_FENCE) return <CommandoUiFence source={textOf(hast).trimEnd()} />
   return <InlineResourceContext value={false}><MarkdownPre {...props} /></InlineResourceContext>
 }
 
@@ -122,11 +126,13 @@ const replyComponents: Components = {
 }
 
 /** Local images and resources are attached by the daemon while a reply streams. */
-export const Markdown = memo(function Markdown({ text, images, resources, running }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean }) {
+export const Markdown = memo(function Markdown({ text, images, resources, running, createdAt = 0 }: { text: string; images?: readonly ChatReplyImage[]; resources?: readonly ChatReplyResource[]; running?: boolean; /** When the reply was written; answers to its commando-ui blocks come after it. */ createdAt?: number }) {
   const actions = use(ResourceActionsContext)
   const reply = useMemo(() => ({ images, running }), [images, running])
   const resourceReply = useMemo(() => ({ resources, text, cwd: actions.cwd, onAction: actions.onResourceAction }), [resources, text, actions])
+  const uiReply = useMemo(() => ({ createdAt, running }), [createdAt, running])
   return (
+    <CommandoUiReplyContext value={uiReply}>
     <ReplyImagesContext value={reply}>
       <ReplyResourcesContext value={resourceReply}>
         <div className="chat-markdown">
@@ -136,6 +142,7 @@ export const Markdown = memo(function Markdown({ text, images, resources, runnin
         </div>
       </ReplyResourcesContext>
     </ReplyImagesContext>
+    </CommandoUiReplyContext>
   )
 })
 
@@ -418,7 +425,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
       const asks = context.askMarkers?.get(row.item.id)
       return (
         <div className="chat-reply pb-3" {...(asks ? { 'data-ask-anchor': row.item.id } : {})}>
-          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} />
+          <Markdown text={row.item.text} images={row.item.images} resources={row.item.resources} running={row.item.status === 'running'} createdAt={row.item.createdAt} />
           {asks ? (
             <button type="button" className="chat-ask-marker" onClick={context.onShowAsks}>
               <span className="chat-ask-marker-diamond" aria-hidden="true">◆</span>
@@ -440,7 +447,7 @@ function Row({ row, cwd, highlighted }: { row: QuietTimelineRow; cwd: string; hi
   }
 }
 
-export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
+export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, header, footer, emptyText, onOpenSubagent, onSavePlan, onTask, controlsDisabled, userMessageCard, onOpenTile, onOpenPr, onResourceAction, onUiAnswer, askMarkers, onShowAsks, focusMessage, onFocusMessageHandled }: {
   provider?: ChatProvider
   items: readonly ChatItem[]
   cwd: string
@@ -459,6 +466,8 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   /** Brings a redline/canvas card's tile forward; false when it is gone. */
   onOpenTile?: (webPaneId: string) => boolean
   onResourceAction?: ResourceActionHandler
+  /** Sends a commando-ui answer as a chat message; absent while the pane can't send, which disables the blocks. */
+  onUiAnswer?: (text: string) => void
   /** Opens an auto-fix card's PR in the side panel. */
   onOpenPr?: (repo: string, number: number, tab: PrQuickLookTab) => void
   /** Replies where the agent raised asks that are still open, by item id, with how many. */
@@ -474,6 +483,9 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
   const now = useNow(live)
   const context = useMemo(() => ({ items, now, provider: providerLabel({ provider }), onTask, controlsDisabled, ...(onOpenSubagent ? { onOpenSubagent } : {}), ...(onSavePlan ? { onSavePlan } : {}), ...(onOpenTile ? { onOpenTile } : {}), ...(onOpenPr ? { onOpenPr } : {}), ...(askMarkers?.size ? { askMarkers } : {}), ...(onShowAsks ? { onShowAsks } : {}) }), [items, now, provider, onOpenSubagent, onSavePlan, onTask, controlsDisabled, onOpenTile, onOpenPr, askMarkers, onShowAsks])
   const resourceActions = useMemo(() => ({ cwd, onResourceAction }), [cwd, onResourceAction])
+  const userMessagesRef = useRef<readonly UserMessageRef[]>([])
+  const userMessages = (userMessagesRef.current = stableUserMessages(userMessagesRef.current, items.flatMap((item) => item.kind === 'user_message' ? [{ text: item.text.trim(), createdAt: item.createdAt }] : [])))
+  const uiActions = useMemo(() => ({ ...(onUiAnswer ? { onAnswer: onUiAnswer } : {}), userMessages }), [onUiAnswer, userMessages])
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const lastTop = useRef(0)
@@ -553,6 +565,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
         <div className="mx-auto w-full max-w-[var(--chat-content-max-width)]">
           {header}
           <ResourceActionsContext value={resourceActions}>
+            <CommandoUiActionsContext value={uiActions}>
             <TimelineContext value={context}>
               {rows.length === 0 && !header ? (
                 <div className="py-10 text-center text-sm text-muted-foreground">{emptyText ?? `Ask ${providerLabel({ provider })} anything about this folder.`}</div>
@@ -560,6 +573,7 @@ export function ChatTimeline({ provider = 'claude', items, cwd, working, scope, 
                 ? <div key={row.id} data-chat-item-id={row.item.id}>{userMessageCard.content}</div>
                 : <Row key={row.id} row={row} cwd={cwd} highlighted={row.kind === 'user' && row.item.id === highlightedItemId} />)}
             </TimelineContext>
+            </CommandoUiActionsContext>
           </ResourceActionsContext>
           {working && !streaming && !liveWork ? (
             <div className="flex items-center gap-1.5 pb-3 text-sm text-muted-foreground">
