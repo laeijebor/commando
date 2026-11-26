@@ -1,7 +1,7 @@
-import { FlatList } from 'react-native'
+import { FlatList, StyleSheet } from 'react-native'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
 import { asideReportText } from '@commando/agent-chat'
-import { ThemeProvider } from '../theme'
+import { THEMES, ThemeProvider } from '../theme'
 import { ChatTimeline } from './ChatTimeline'
 import { item } from './testing'
 const scrollEvent = (y: number) => ({ nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: 390, height: 1500 }, layoutMeasurement: { width: 390, height: 500 } } })
@@ -63,8 +63,8 @@ it('renders reports and typed text in order, with separate report links and a si
   const onOpenReport = jest.fn()
   render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false} onOpenReport={onOpenReport}
     items={[item('user_message', { text, images: [{ id: `${'a'.repeat(64)}.png`, name: 'pane.png' }], steered: true })]} /></ThemeProvider>)
-  const ordered = screen.getAllByText(/^(Before|Between|After|From aside “First”|From aside “Second”)$/)
-  expect(ordered.map((node) => node.props.children)).toEqual(['Before', ['From aside “', 'First', '”'], 'Between', ['From aside “', 'Second', '”'], 'After'])
+  const ordered = screen.getAllByText(/^(Before|Between|After|First|Second)$/)
+  expect(ordered.map((node) => node.props.children)).toEqual(['Before', 'First', 'Between', 'Second', 'After'])
   expect(screen.getByText('First finding')).toBeTruthy()
   expect(screen.getByText('Second finding')).toBeTruthy()
   expect(screen.getAllByLabelText('Open pane.png')).toHaveLength(1)
@@ -79,7 +79,7 @@ it('renders adjacent reports individually without an empty user bubble', () => {
   const reports = ['First', 'Second'].map((title, index) => asideReportText({ asideId: `aside00${index}`, title, body: `${title} finding` }))
   render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false}
     items={[item('user_message', { text: reports.join('\n\n') })]} /></ThemeProvider>)
-  expect(screen.getAllByText(/^From aside “/)).toHaveLength(2)
+  expect(screen.getAllByText('From aside')).toHaveLength(2)
   expect(screen.queryByText(/<!--/)).toBeNull()
 })
 it.each([
@@ -90,4 +90,32 @@ it.each([
     items={[item('user_message', { text })]} /></ThemeProvider>)
   expect(screen.getByText(text)).toBeTruthy()
   expect(screen.queryByText(/^From aside “/)).toBeNull()
+})
+
+
+it('lays out a cyan report header above its growing markdown body and keeps the link beside the title', () => {
+  const body = 'Summary\n\n- First bullet\n- Second bullet\n- Last bullet stays inside the bubble'
+  const open = jest.fn()
+  render(<ThemeProvider><ChatTimeline baseUrl="http://studio" cwd="/tmp" working={false} onOpenReport={open}
+    items={[item('user_message', { text: asideReportText({ asideId: 'aside001', title: 'Layout report', body }) })]} /></ThemeProvider>)
+  const bubble = screen.getByTestId('aside-report-bubble')
+  const header = screen.getByTestId('aside-report-header')
+  const markdown = screen.getByTestId('aside-report-body')
+  const hostParent = (node: typeof header) => {
+    let parent = node.parent
+    while (parent && typeof parent.type !== 'string') parent = parent.parent
+    return parent
+  }
+  expect(hostParent(header) === bubble).toBe(true)
+  expect(hostParent(markdown) === bubble).toBe(true)
+  const children = bubble.findAll((node) => typeof node.type === 'string' && hostParent(node) === bubble)
+  expect(children.map((child) => child.props.testID)).toEqual(['aside-report-header', 'aside-report-body'])
+  expect(StyleSheet.flatten(header.props.style).flexDirection).toBe('row')
+  expect(StyleSheet.flatten(bubble.props.style)).toMatchObject({ borderWidth: 1, flexShrink: 0, width: '88%' })
+  expect(StyleSheet.flatten(bubble.props.style).height).toBeUndefined()
+  expect(screen.getByText('From aside')).toHaveStyle({ color: THEMES.purple.cyan })
+  expect(screen.getByText('Open aside')).toHaveStyle({ color: THEMES.purple.cyan })
+  expect(screen.getByText('Last bullet stays inside the bubble')).toBeTruthy()
+  fireEvent.press(screen.getByLabelText('Open aside Layout report'))
+  expect(open).toHaveBeenCalledWith(expect.objectContaining({ body, title: 'Layout report' }))
 })

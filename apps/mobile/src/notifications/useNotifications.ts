@@ -1,3 +1,4 @@
+import { parseAsideKey } from '@commando/agent-chat'
 import { useCallback, useEffect, useRef } from 'react'
 import { usePathname, useRouter } from 'expo-router'
 import * as Haptics from 'expo-haptics'
@@ -15,6 +16,10 @@ import {
 } from './routing'
 import { usePushStore } from './store'
 
+function isAsideNotification(data: Record<string, unknown> | undefined): boolean {
+  return typeof data?.paneId === 'string' && Boolean(parseAsideKey(data.paneId))
+}
+
 /**
  * Foreground presentation: iOS hides a notification while the app is open
  * unless the handler says otherwise, and the spec asks for an in-app banner
@@ -23,8 +28,8 @@ import { usePushStore } from './store'
 export function configureNotificationHandler(): void {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => ({
-      shouldShowBanner: Boolean(parseNotificationData(notification.request.content.data)),
-      shouldShowList: Boolean(parseNotificationData(notification.request.content.data)),
+      shouldShowBanner: !isAsideNotification(notification.request.content.data),
+      shouldShowList: !isAsideNotification(notification.request.content.data),
       shouldPlaySound: false,
       shouldSetBadge: false,
     }),
@@ -87,7 +92,7 @@ export function useNotificationRouting(): void {
 
   useEffect(() => {
     const received = Notifications.addNotificationReceivedListener((notification) => {
-      if (!parseNotificationData(notification.request.content.data)) return
+      if (isAsideNotification(notification.request.content.data)) return
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
     })
     const responded = Notifications.addNotificationResponseReceivedListener((response) => {

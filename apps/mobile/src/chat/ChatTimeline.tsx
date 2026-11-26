@@ -281,11 +281,17 @@ function UserRow({ item }: { item: Extract<ChatItem, { kind: 'user_message' }> }
       ) : null}
       {item.images?.length ? <ImageStrip images={item.images} /> : null}
       {segments.map((segment, index) => (
-        <View key={index} style={[styles.bubble, { backgroundColor: theme.surfaceSoft, borderColor: theme.border }]}>
+        <View key={index} testID={segment.kind === 'report' ? 'aside-report-bubble' : undefined} style={[styles.bubble,
+          segment.kind === 'report' ? [styles.reportBubble, { backgroundColor: withAlpha(theme.cyan, 0.08), borderColor: withAlpha(theme.cyan, 0.3) }] : { backgroundColor: theme.surfaceSoft }]}>
           {segment.kind === 'report' ? <>
-            <Text style={[styles.userTagText, { color: theme.muted }]}>From aside “{segment.title}”</Text>
-            <Markdown text={segment.body} />
-            {onOpenReport ? <Pressable accessibilityRole="button" accessibilityLabel={`Open aside ${segment.title}`} onPress={() => onOpenReport(segment)} style={{ paddingVertical: 8 }}><Text style={{ color: theme.accent }}>Open aside</Text></Pressable> : null}
+            <View testID="aside-report-header" style={styles.reportHeader}>
+              <View style={styles.reportHeading}>
+                <Text style={[styles.reportTag, { color: theme.cyan, backgroundColor: withAlpha(theme.cyan, 0.12) }]}>From aside</Text>
+                <Text numberOfLines={2} style={[styles.reportTitle, { color: theme.textSoft }]}>{segment.title}</Text>
+              </View>
+              {onOpenReport ? <Pressable accessibilityRole="button" accessibilityLabel={`Open aside ${segment.title}`} onPress={() => onOpenReport(segment)} style={styles.reportLink}><Text style={{ color: theme.cyan }}>Open aside</Text></Pressable> : null}
+            </View>
+            <View testID="aside-report-body" style={styles.reportBody}><Markdown text={segment.body} /></View>
           </> : <UserText text={segment.text} />}
         </View>
       ))}
@@ -592,6 +598,13 @@ const styles = StyleSheet.create({
   userTag: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '85%' },
   userTagText: { fontSize: 11.5 },
   bubble: { maxWidth: '88%', borderWidth: 0, borderRadius: 18, borderBottomRightRadius: 5, paddingHorizontal: 12, paddingVertical: 8 },
+  reportBubble: { width: '88%', borderWidth: 1, gap: 8, flexShrink: 0 },
+  reportHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  reportHeading: { flex: 1, minWidth: 0, gap: 4 },
+  reportTag: { alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, fontSize: 10.5, fontWeight: '700' },
+  reportTitle: { fontSize: 12.5, fontWeight: '600' },
+  reportLink: { flexShrink: 0, paddingVertical: 4 },
+  reportBody: { alignSelf: 'stretch', flexShrink: 0, minWidth: 0 },
   userText: { fontSize: 15, lineHeight: 21 },
   planText: { fontSize: 13.5, lineHeight: 19, marginTop: 6 },
   imagesScroll: { flexGrow: 0, maxWidth: '85%' },

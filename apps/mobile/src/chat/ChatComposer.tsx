@@ -78,13 +78,14 @@ function menuFor(
   session: ChatSessionInfo,
   commands: readonly ChatCommand[] | undefined,
   files: { result: ChatFileSearchResult | null; loading: boolean },
+  configureAllowed: boolean,
 ): { label: string; items: MenuItem[]; status: string | null } {
   if (trigger.kind === 'slash') {
     const query = trigger.query.toLowerCase()
     const natives: MenuItem[] = [
-      ...(modelMenuAvailable(session) ? [{ key: 'native:model', type: 'native' as const, name: 'model' as const, description: 'Choose the model' }] : []),
+      ...(configureAllowed && modelMenuAvailable(session) ? [{ key: 'native:model', type: 'native' as const, name: 'model' as const, description: 'Choose the model' }] : []),
       // Muse has no plan mode.
-      ...(hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
+      ...(configureAllowed && session.aside?.mode !== 'read-only' && hostTakesSettings(session) && session.permissionMode && session.provider !== 'muse'
         ? [{ key: 'native:plan', type: 'native' as const, name: 'plan' as const, description: session.permissionMode === 'plan' ? 'Leave plan mode' : 'Switch to plan mode' }]
         : []),
     ].filter((item) => item.type === 'native' && item.name.includes(query))
@@ -112,9 +113,10 @@ function menuFor(
  * queue while Claude works), Steer and Stop, the queue, images, the `/` and
  * `@` menus and the settings pills. Open requests sit above it.
  */
-export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay, onStartAside, newAside = false, reportDraft, onReportDraftTaken }: {
+export function ChatComposer({ host, session, hostConnected, commands, carried, channel, sendError, onDismissSendError, actionError, onDismissActionError, onSend, relayTarget, onClearRelay, onStartAside, newAside = false, composerDisabled = false, reportDraft, onReportDraftTaken }: {
   onStartAside?: (text: string, images: ChatImageRef[]) => Promise<boolean>
   newAside?: boolean
+  composerDisabled?: boolean
   reportDraft?: { id: number; text: string }
   onReportDraftTaken?: () => void
   onSend?: () => void
@@ -134,7 +136,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   onDismissActionError: () => void
 }): React.JSX.Element {
   const theme = useTheme()
-  const draftKey = `${host.id}:${channel.paneId}`
+  const draftKey = `${host.id}:${channel.paneId}${newAside ? ':new-aside' : ''}`
   const [text, setText] = useState(() => drafts.get(draftKey)?.text ?? '')
   const [sendAsAside, setSendAsAside] = useState(false)
   const [openingAside, setOpeningAside] = useState(false)
@@ -158,7 +160,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   const closed = session.status === 'closed' || session.status === 'error'
   // A switch to Claude Code takes the draft as it is; answers and Stop still work.
   const switching = Boolean(session.claudeCodeSwitch)
-  const disabled = !hostConnected || closed || switching || openingAside
+  const disabled = composerDisabled || !hostConnected || closed || switching || openingAside
   const richInput = hostTakesInput(session)
   const turnFlow = hostTakesTurnFlow(session)
   const queue = turnFlow ? session.queue ?? [] : []
@@ -172,7 +174,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
   }, [dismissed, blocked])
   const trigger = !disabled && candidate && !blocked && (candidate.kind === 'slash' || (candidate.kind === 'mention' && richInput)) ? candidate : null
   const files = useFileSearch(trigger?.kind === 'mention' ? trigger.query : null, channel)
-  const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files) : null), [trigger, session, commands, files])
+  const menu = useMemo(() => (trigger ? menuFor(trigger, session, commands, files, !newAside) : null), [trigger, session, commands, files, newAside])
 
   // The draft as of the latest change, ahead of the render it causes (a dictation can start in between).
   const draftNow = useRef({ text, selection })
@@ -190,6 +192,7 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
     void Haptics.selectionAsync()
     switch (item.type) {
       case 'native':
+        if (newAside) return
         applyText(replaceRange(text, trigger.rangeStart, trigger.rangeEnd, ''))
         if (item.name === 'model') setModelSheet((count) => count + 1)
         else channel.configure({ permissionMode: session.permissionMode === 'plan' ? 'default' : 'plan' })
@@ -476,20 +479,23 @@ export function ChatComposer({ host, session, hostConnected, commands, carried, 
           testID="chat-input"
           value={text}
         />
-        <View style={styles.bar}>
-          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} ref={attachButton} /> : null}
+        <View style={styles.settingsBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pills} style={styles.pillsScroll} keyboardShouldPersistTaps="always">
-            {/* A resumed chat replays its history before Claude starts, and can't switch until then. */}
             {!newAside ? <SettingsPills
               disabled={disabled || session.status === 'starting'}
               modelSheet={modelSheet}
-              onConfigure={(change) => channel.configure(change)}
+              onConfigure={(change) => { if (!newAside) channel.configure(change) }}
               onModelSheetShown={() => input.current?.blur()}
               session={session}
             /> : null}
-            {onStartAside && !newAside && !relayTarget ? <Pill a11y="Send as aside" label="Send as aside" on={sendAsAside} disabled={disabled} onPress={() => setSendAsAside((value) => !value)} /> : null}
             {session.contextUsage ? <ContextMeter usage={session.contextUsage} /> : null}
           </ScrollView>
+        </View>
+        <View testID="chat-composer-controls" style={styles.bar}>
+          {richInput ? <IconButton disabled={disabled} icon="paperclip" label="Attach images" onPress={() => void attach()} ref={attachButton} /> : null}
+          <View style={styles.asideToggle}>
+            {onStartAside && !newAside && !relayTarget ? <Pill compact a11y="Send as aside" label="Send as aside" on={sendAsAside} tone="cyan" disabled={disabled} onPress={() => setSendAsAside((value) => !value)} /> : null}
+          </View>
           {running ? (
             <Pressable
               accessibilityLabel="Stop"
@@ -556,9 +562,11 @@ const styles = StyleSheet.create({
   hint: { fontSize: 12.5, lineHeight: 17, paddingHorizontal: 14, paddingTop: 8 },
   field: { fontSize: 15, lineHeight: 20, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4, minHeight: 40, maxHeight: 140 },
   bar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 6, paddingRight: 8, paddingBottom: 8 },
-  pillsScroll: { flex: 1 },
+  settingsBar: { paddingHorizontal: 12, paddingBottom: 6 },
+  asideToggle: { flex: 1, minWidth: 0 },
+  pillsScroll: { flexGrow: 0, minWidth: 0 },
   pills: { alignItems: 'center', gap: 6, paddingRight: 4 },
-  round: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  round: { flexShrink: 0, width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   stop: { borderWidth: 1 },
   stopGlyph: { width: 11, height: 11, borderRadius: 2 },
 })

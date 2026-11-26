@@ -173,6 +173,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
   modelSheet: number
   onModelSheetShown: () => void
 }): React.JSX.Element {
+  const theme = useTheme()
   const modelRef = useRef<View>(null)
   const effortRef = useRef<View>(null)
   const permissionRef = useRef<View>(null)
@@ -224,7 +225,11 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
           ref={effortRef}
         />
       ) : null}
-      {presentation.showPermission && session.permissionMode ? (
+      {session.aside?.mode === 'read-only' ? (
+        <View accessible accessibilityLabel={session.aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'} style={[styles.pill, { borderColor: theme.cyan }]}>
+          <Text numberOfLines={1} style={[styles.pillText, { color: theme.cyan }]}>{session.aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'}</Text>
+        </View>
+      ) : presentation.showPermission && session.permissionMode ? (
         <Pill
           a11y="Permissions"
           disabled={disabled || !modes.length}
@@ -238,7 +243,7 @@ export function SettingsPills({ session, disabled, onConfigure, modelSheet, onMo
 }
 
 /** A settings pill; `on` marks a toggle that is switched on (fast mode). */
-export function Pill({ label, a11y, disabled, onPress, ref, on }: { label: string; a11y: string; disabled: boolean; onPress: () => void; ref?: React.Ref<View>; on?: boolean }): React.JSX.Element {
+export function Pill({ label, a11y, disabled, onPress, ref, on, compact = false, tone = 'accent' }: { compact?: boolean; tone?: 'accent' | 'cyan'; label: string; a11y: string; disabled: boolean; onPress: () => void; ref?: React.Ref<View>; on?: boolean }): React.JSX.Element {
   const theme = useTheme()
   return (
     <Pressable
@@ -251,9 +256,9 @@ export function Pill({ label, a11y, disabled, onPress, ref, on }: { label: strin
         onPress()
       }}
       ref={ref}
-      style={[styles.pill, { borderColor: on ? theme.accent : theme.border, opacity: disabled ? 0.6 : 1 }]}
+      style={[styles.pill, compact && styles.compactPill, { borderColor: on ? theme[tone] : theme.border, opacity: disabled ? 0.6 : 1 }]}
     >
-      <Text numberOfLines={1} style={[styles.pillText, { color: on ? theme.text : theme.muted }]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.pillText, { color: on ? theme[tone] : theme.muted }]}>{label}</Text>
     </Pressable>
   )
 }
@@ -337,6 +342,7 @@ const styles = StyleSheet.create({
   menuTag: { fontSize: 10.5, borderWidth: 1, borderRadius: 999, paddingHorizontal: 6, paddingVertical: 1, overflow: 'hidden' },
   menuStatus: { fontSize: 12.5, paddingHorizontal: 14, paddingVertical: 8 },
   pill: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, maxWidth: 170 },
+  compactPill: { flexShrink: 1, minWidth: 0, alignSelf: 'flex-start' },
   pillText: { fontSize: 12.5 },
   meter: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   meterTrack: { width: 22, height: 4, borderRadius: 2, overflow: 'hidden' },

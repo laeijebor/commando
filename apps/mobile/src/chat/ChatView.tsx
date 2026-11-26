@@ -75,10 +75,12 @@ function ChatThread({ host, chat, client, phase, onOpenTile, openTileIds, thread
   const theme = useTheme()
   const [sendVersion, setSendVersion] = useState(0)
   const { channel, sendError, dismissSendError, actionError, dismissActionError } = useChatChannel(client, chat.paneId)
-  const externalRuns = useExternalRuns(host.id, chat.paneId)
+  // The new-aside composer uses Main's channel, with an empty timeline of its own.
+  const timelineKey = threadOptions?.newAside ? undefined : chat.paneId
+  const externalRuns = useExternalRuns(host.id, timelineKey)
   // External runs (`codex exec`, `claude -p`) join the turn that launched them, as on the web.
   const items = useMemo(() => (externalRuns.length ? withExternalAgentRuns(chat.items, externalRuns) : chat.items), [chat.items, externalRuns])
-  const tileEvents = useTileEvents(host.id, chat.paneId)
+  const tileEvents = useTileEvents(host.id, timelineKey)
   // Cards only join the main timeline; requests and subagents read the conversation itself.
   const timelineItems = useMemo(() => {
     const shown = loadedTileEvents(items, tileEvents, chat.omittedItems ?? 0)
@@ -180,6 +182,7 @@ function ChatThread({ host, chat, client, phase, onOpenTile, openTileIds, thread
       {channel ? (
         <View testID="chat-composer-dock" style={styles.composerDock}><ChatComposer
           newAside={threadOptions?.newAside}
+          composerDisabled={threadOptions?.composerDisabled}
           onStartAside={threadOptions?.onStartAside}
           reportDraft={threadOptions?.reportDraft}
           onReportDraftTaken={threadOptions?.onReportDraftTaken}

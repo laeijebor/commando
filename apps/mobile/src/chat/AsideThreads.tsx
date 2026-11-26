@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native'
+import { useShallow } from 'zustand/react/shallow'
+import { SafeAreaInsetsContext } from 'react-native-safe-area-context'
 import { asideKey, asideReportText, hostTakesAsides, type AsideReport, type ChatAsideAction, type ChatAsideRecord, type ChatImageRef, type ChatState } from '@commando/agent-chat'
 import { pendingRequests } from '@commando/chat-timeline'
 import type { DaemonClient } from '../daemon/client'
 import type { ConnectionPhase } from '../daemon/state'
 import type { Host } from '../hosts/types'
 import { useTheme } from '../theme'
+import { withAlpha } from '../ui/primitives'
 import { CHAT_SEND_REFUSAL_MS, useChatChannel } from './channel'
 import { useChatStore } from './store'
 import { useNow } from './Subagents'
@@ -15,6 +18,7 @@ import { ASIDE_REPORT_PROMPT } from './asideReport'
 export type ThreadOptions = {
   threadKey?: string
   newAside?: boolean
+  composerDisabled?: boolean
   onStartAside?: (text: string, images: ChatImageRef[]) => Promise<boolean>
   onOpenReport?: (report: AsideReport) => void
   reportDraft?: { id: number; text: string }
@@ -27,26 +31,28 @@ type Report = AsideReport & {
   before: Set<string>
   sessionId?: string
   requestId: string
-  active?: boolean
   error?: string
 }
-const EMPTY_CHATS: Record<string, ChatState> = {}
 const isSavedAside = (record: ChatAsideRecord) => !record.ephemeral && record.status !== 'discarded'
 
-function Button({ label, onPress, disabled = false, selected }: { label: string; onPress: () => void; disabled?: boolean; selected?: boolean }) {
+function Button({ label, onPress, disabled = false, selected, primary = false }: { label: string; onPress: () => void; disabled?: boolean; selected?: boolean; primary?: boolean }) {
   const theme = useTheme()
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, ...(selected === undefined ? {} : { selected }) }} disabled={disabled} onPress={onPress}
-    style={[styles.button, { borderColor: selected ? theme.accent : theme.border, backgroundColor: theme.surface, opacity: disabled ? 0.45 : 1 }]}>
-    <Text style={{ color: selected ? theme.accent : theme.textSoft, fontSize: 13 }}>{label}</Text>
+    style={[styles.button, { borderColor: selected || primary ? theme.cyan : theme.border, backgroundColor: primary ? theme.cyan : theme.surface, opacity: disabled ? 0.45 : 1 }]}>
+    <Text style={{ color: primary ? theme.accentInk : selected ? theme.cyan : theme.textSoft, fontSize: 13 }}>{label}</Text>
   </Pressable>
 }
 
 export function AsideSheet({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const theme = useTheme()
-  return <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.sheet, { backgroundColor: theme.bg }]}>
-      <View style={styles.row}><Text accessibilityRole="header" style={[styles.heading, { color: theme.text }]}>{title}</Text><Button label="Cancel" onPress={onClose} /></View>
-      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.sheetBody}>{children}</ScrollView>
+  const insets = useContext(SafeAreaInsetsContext)
+  return <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={[styles.sheetBackdrop, { paddingTop: (insets?.top ?? 24) + 16 }]}>
+      <Pressable accessibilityLabel="Dismiss sheet" accessibilityRole="button" onPress={onClose} style={StyleSheet.absoluteFill} />
+      <View testID="aside-sheet" accessibilityViewIsModal accessibilityLabel={title} style={[styles.sheet, { backgroundColor: theme.bg, paddingBottom: insets?.bottom ?? 24 }]}>
+        <View testID="aside-sheet-header" style={[styles.row, styles.sheetHeader]}><Text accessibilityRole="header" style={[styles.heading, { color: theme.text }]}>{title}</Text><Button label="Cancel" onPress={onClose} /></View>
+        <ScrollView keyboardShouldPersistTaps="handled" style={styles.sheetScroll} contentContainerStyle={styles.sheetBody}>{children}</ScrollView>
+      </View>
     </KeyboardAvoidingView>
   </Modal>
 }
@@ -56,12 +62,13 @@ export function threadStatus(chat?: ChatState): 'running' | 'idle' | 'needs answ
   if (pendingRequests(chat.items).length || chat.session.status === 'waiting') return 'needs answer'
   return chat.session.status === 'running' || chat.session.status === 'starting' ? 'running' : 'idle'
 }
-function ThreadChip({ title, chat, selected, onPress }: { title: string; chat?: ChatState; selected: boolean; onPress: () => void }) {
+function ThreadChip({ title, chat, selected, onPress, main = false }: { main?: boolean; title: string; chat?: ChatState; selected: boolean; onPress: () => void }) {
   const theme = useTheme()
+  const accent = main ? theme.accent : theme.cyan
   const status = threadStatus(chat)
-  const color = status === 'running' ? theme.accent : status === 'needs answer' ? theme.amber : status === 'stopped-error' ? theme.red : theme.green
+  const color = status === 'running' ? accent : status === 'needs answer' ? theme.amber : status === 'stopped-error' ? theme.red : theme.green
   return <Pressable accessibilityRole="tab" accessibilityLabel={`${title}, ${status}`} accessibilityState={{ selected }} onPress={onPress}
-    style={[styles.button, styles.row, { borderColor: selected ? theme.accent : theme.border, backgroundColor: theme.surface }]}>
+    style={[styles.button, styles.row, { borderColor: selected ? accent : theme.border, backgroundColor: theme.surface }]}>
     <View accessibilityLabel={status} style={[styles.dot, { backgroundColor: color }]} /><Text numberOfLines={1} style={{ color: theme.textSoft, maxWidth: 180 }}>{title}</Text>
   </Pressable>
 }
@@ -76,7 +83,7 @@ export function AsideTabs({ main, chats, selected, onSelect, onAction, disabled 
   return <View>
     {main.asidesError ? <Text accessibilityRole="alert" style={[styles.note, { color: theme.red }]}>Saved asides couldn't be read: {main.asidesError}</Text> : null}
     <ScrollView horizontal showsHorizontalScrollIndicator={false} accessibilityLabel="Chat threads" keyboardShouldPersistTaps="handled" style={styles.strip} contentContainerStyle={styles.row}>
-      <ThreadChip title="Main" chat={main} selected={!selected} onPress={() => onSelect()} />
+      <ThreadChip main title="Main" chat={main} selected={!selected} onPress={() => onSelect()} />
       {asides.filter((record) => record.status === 'open').map((record) => {
         const chat = chats[asideKey(main.paneId, record.id)]
         return <ThreadChip key={record.id} title={chat?.session.title || record.title} chat={chat} selected={selected === record.id} onPress={() => onSelect(record.id)} />
@@ -106,8 +113,8 @@ function AsideBanner({ aside, disabled, reportDisabled, onAction, onReport }: {
   const age = minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`
   const mode = aside.mode === 'inherit' ? 'Full access' : aside.readOnlyEnforced ? 'Read-only' : 'Read-only (advisory)'
   const act = (action: ChatAsideAction) => { setActions(false); void onAction(action) }
-  return <View style={[styles.banner, { borderColor: theme.border, backgroundColor: theme.surface }]}>
-    <Text style={{ color: theme.textSoft, flex: 1 }}>Aside · forked from Main {age} · {mode}</Text>
+  return <View style={[styles.banner, { borderColor: withAlpha(theme.cyan, 0.3), backgroundColor: withAlpha(theme.cyan, 0.08) }]}>
+    <Text style={{ color: theme.cyan, flex: 1 }}>Aside · forked from Main {age} · {mode}</Text>
     <Button label="Aside actions" onPress={() => setActions(true)} />
     {actions ? <AsideSheet title="Aside actions" onClose={() => setActions(false)}>
       <Button label={aside.mode === 'read-only' ? 'Allow edits' : 'Make read-only'} disabled={disabled} onPress={() => act({ action: 'mode', asideId: aside.id, mode: aside.mode === 'read-only' ? 'inherit' : 'read-only' })} />
@@ -129,7 +136,9 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
   renderThread: (chat: ChatState, options: ThreadOptions) => ReactNode
 }) {
   const theme = useTheme()
-  const chats = useChatStore((state) => state.byHost[host.id] ?? EMPTY_CHATS)
+  const chats = useChatStore(useShallow((state) => Object.fromEntries(
+    Object.entries(state.byHost[host.id] ?? {}).filter(([key]) => key.startsWith(`${main.paneId}~`)),
+  )))
   const available = hostTakesAsides(main.session)
   const [selection, setSelection] = useState<string>()
   const selected = available ? selection : undefined
@@ -201,20 +210,19 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
     const source = reportKey ? chats[reportKey] : undefined
     const refused = reportError?.refused.some((entry) => entry.requestId === report.requestId)
     const fail = (message: string) => setReport((current) => current ? { ...current, drafting: false, error: message } : current)
-    if (!connected || !source?.hostConnected || source.session.status === 'closed' || source.session.status === 'error' || source.session.sessionId !== report.sessionId || refused) {
-      fail(refused ? reportError?.message || 'The report prompt was refused' : source?.session.error || 'Drafting stopped or the aside disconnected. Write the report yourself.')
+    if (source?.session.status === 'closed' || source?.session.status === 'error' || (source && source.session.sessionId !== report.sessionId) || refused) {
+      fail(refused ? reportError?.message || 'The report prompt was refused' : source?.session.error || 'Drafting stopped. Write the report yourself.')
       return
     }
+    if (!connected || !source?.hostConnected) return
     const promptIndex = source.items.findIndex((item) => !report.before.has(item.id) && !item.parentToolUseId && item.kind === 'user_message' && item.text === ASIDE_REPORT_PROMPT)
     const prompt = source.items[promptIndex]
     const replies = prompt ? source.items.slice(promptIndex + 1).filter((item) => item.kind === 'assistant_message' && !item.parentToolUseId && item.turnId === prompt.turnId && !report.before.has(item.id)) : []
     const reply = replies.at(-1)
     const failure = source.items.find((item) => !report.before.has(item.id) && !item.parentToolUseId && item.kind === 'notice' && (item.level === 'error' || item.text === 'Interrupted'))
-    if (source.session.status === 'idle' && prompt) {
-      if (!failure && reply?.kind === 'assistant_message' && reply.status === 'completed' && reply.text.trim()) setReport((current) => current ? { ...current, drafting: false, body: reply.text } : current)
-      else if (report.active || failure || (reply && reply.status !== 'running')) fail(failure?.kind === 'notice' ? failure.text : 'Drafting failed or was interrupted. Write the report yourself.')
-    } else if (source.session.status === 'idle' && (report.active || failure)) fail('Drafting was interrupted. Write the report yourself.')
-    else if (source.session.status !== 'idle' && !report.active) setReport((current) => current ? { ...current, active: true } : current)
+    if (source.session.status === 'idle' && !failure && reply?.kind === 'assistant_message' && reply.status === 'completed' && reply.text.trim()) {
+      setReport((current) => current ? { ...current, drafting: false, body: reply.text } : current)
+    }
   }, [chats, connected, report, reportKey, reportError])
   useEffect(() => {
     if (!report?.drafting) return
@@ -242,15 +250,15 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
     ])
     else Alert.alert(`From aside “${source.title}”`, sourceRecord?.status === 'promoted' ? 'Opened as chat' : 'This aside is unavailable.')
   }
-  const newChat: ChatState = { ...main, paneId: `${main.paneId}:new-aside`, items: [], commands: [], carried: undefined, omittedItems: 0,
-    session: { ...main.session, paneId: `${main.paneId}:new-aside`, status: 'idle', queue: [], claudeCodeSwitch: undefined, contextUsage: undefined, models: [], permissionMode: undefined } }
+  const newChat: ChatState = { ...main, items: [], commands: [], carried: undefined, omittedItems: 0,
+    session: { ...main.session, status: 'idle', queue: [], claudeCodeSwitch: undefined, contextUsage: undefined, models: [], permissionMode: undefined } }
   return <View style={styles.root}>
     {available && (main.asides?.some(isSavedAside) || main.asidesError || selected || busy) ? <AsideTabs main={main} chats={chats} selected={selected} onSelect={setSelection} onAction={request} disabled={disabled} /> : null}
     {error ? <View accessibilityRole="alert" style={styles.section}><Text style={{ color: theme.red }}>{error}</Text><Button label="Dismiss aside error" onPress={() => setError(undefined)} /></View> : null}
     {record ? <AsideBanner aside={record} disabled={disabled} reportDisabled={!chat?.hostConnected || chat.session.status !== 'idle' || Boolean(report)} onAction={request} onReport={startReport} /> : null}
     {selected === 'new' ? <>
-      <Text style={[styles.note, { color: theme.muted }]}>New aside · fresh context from Main’s latest finished turn · Read-only</Text>
-      {renderThread({ ...newChat, hostConnected: connected && !busy }, { newAside: true, onStartAside: open })}
+      <Text style={[styles.note, { color: theme.cyan }]}>New aside · fresh context from Main’s latest finished turn · Read-only</Text>
+      {renderThread(newChat, { threadKey: `${main.paneId}:new-aside`, newAside: true, composerDisabled: busy, onStartAside: open })}
     </> : selected && !chat ? <View style={styles.section}>
       <Text accessibilityRole="alert" style={{ color: theme.red }}>{record && !busy ? `This aside stopped: ${record.lastError || 'The aside session closed unexpectedly'}` : 'Loading aside…'}</Text>
       {record && !busy ? <Button label="Reopen" disabled={disabled} onPress={() => { void request({ action: 'reopen', asideId: record.id }) }} /> : null}
@@ -259,12 +267,12 @@ export function AsideThreads({ host, main, client, phase, renderThread }: {
     {report ? <AsideSheet title="Report to Main" onClose={() => setReport(undefined)}>
       <Text style={{ color: theme.muted }}>From aside “{report.title}”</Text>
       {report.error ? <Text accessibilityRole="alert" style={{ color: theme.red }}>{report.error}</Text> : null}
-      {report.drafting ? <><Text accessibilityLiveRegion="polite" style={{ color: theme.text }}>Drafting…</Text><Button label="Write it myself" onPress={() => setReport({ ...report, drafting: false })} /></>
+      {report.drafting ? <><Text accessibilityLiveRegion="polite" style={{ color: theme.text }}>{!connected || !chats[asideKey(main.paneId, report.asideId)]?.hostConnected ? 'Waiting for the aside to reconnect…' : 'Drafting…'}</Text><Button label="Write it myself" onPress={() => setReport({ ...report, drafting: false })} /></>
         : <TextInput accessibilityLabel="Report text" multiline value={report.body} onChangeText={(body) => setReport({ ...report, body })} style={[styles.reportInput, { color: theme.text, borderColor: theme.border }]} />}
       <Button label="Queue for Main after its current turn" selected={report.delivery === 'queue'} onPress={() => setReport({ ...report, delivery: 'queue' })} />
       <Button label="Put in Main's composer as a draft" selected={report.delivery === 'draft'} onPress={() => setReport({ ...report, delivery: 'draft' })} />
-      <View style={styles.row}><Switch accessibilityLabel="Close aside after sending" value={report.close} onValueChange={(close) => setReport({ ...report, close })} trackColor={{ true: theme.accent }} /><Text style={{ color: theme.textSoft, flex: 1 }}>Close aside after sending</Text></View>
-      <Button label="Send to Main" disabled={disabled || report.drafting || !report.body.trim()} onPress={deliver} />
+      <View style={styles.row}><Switch accessibilityLabel="Close aside after sending" value={report.close} onValueChange={(close) => setReport({ ...report, close })} trackColor={{ true: theme.cyan }} /><Text style={{ color: theme.textSoft, flex: 1 }}>Close aside after sending</Text></View>
+      <Button label="Send to Main" primary disabled={disabled || report.drafting || !report.body.trim()} onPress={deliver} />
     </AsideSheet> : null}
   </View>
 }
@@ -278,8 +286,11 @@ const styles = StyleSheet.create({
   banner: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 10, marginHorizontal: 12, marginVertical: 4, padding: 8 },
   note: { fontSize: 12, padding: 12 },
   section: { padding: 12, gap: 8 },
-  sheet: { flex: 1, paddingTop: 20 },
+  sheetBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
+  sheet: { maxHeight: '100%', flexShrink: 1, borderTopLeftRadius: 20, borderTopRightRadius: 20, overflow: 'hidden' },
+  sheetHeader: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
+  sheetScroll: { flexGrow: 0, flexShrink: 1 },
   sheetBody: { padding: 20, gap: 16 },
-  heading: { flex: 1, padding: 16, fontSize: 18, fontWeight: '600' },
+  heading: { flex: 1, minWidth: 0, flexShrink: 1, fontSize: 18, fontWeight: '600' },
   reportInput: { minHeight: 160, maxHeight: 350, borderWidth: 1, borderRadius: 10, padding: 12, textAlignVertical: 'top', fontSize: 15 },
 })
