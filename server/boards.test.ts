@@ -233,22 +233,27 @@ describe('pure packing', () => {
 })
 
 describe('artifact lifetime, snapshot and revive', () => {
-  async function fixture() {
+  async function fixture(now: () => number = Date.now) {
     const dir = temp(), root = temp(), snapshots = temp()
     writeFileSync(join(dir, 'canvas.json'), '{"title":"Review","frames":[]}'); writeFileSync(join(dir, 'deck.html'), '<main class="deck"></main>'); writeFileSync(join(dir, 'guide.md'), '# Guide'); writeFileSync(join(dir, 'index.html'), '<h1>Redline</h1>')
     const artifacts = new RedlineArtifactRegistry(), id = artifacts.register(dir).id
     const webPanes = new WebPaneService(join(root, 'web.json'), undefined, undefined, 'board-test', () => session)
-    const s = store({ root: join(root, 'boards'), snapshotRoot: snapshots, artifacts, webPanes })
+    const s = store({ root: join(root, 'boards'), snapshotRoot: snapshots, artifacts, webPanes, now })
     webPanes.closedTabHooks = { targetIdFor: () => target, onClosed: (t, p, title) => s.snapshotOnClose(t, p, title, session) }
     return { dir, root, snapshots, artifacts, id, webPanes, s }
   }
   it.each(['canvas', 'guide', 'redline'] as const)('revives %s as a durable read-only copy and restores to an editable folder under the same id', async (kind) => {
-    const f = await fixture()
+    // Advancing on every read makes a second saved-time read fail deterministically.
+    let now = Date.UTC(2026, 10, 26)
+    const f = await fixture(() => now++)
     const content: WebPane['content'] = kind === 'canvas' ? { kind, artifactId: f.id, manifest: 'canvas.json' } : kind === 'guide' ? { kind, artifactId: f.id, file: 'guide.md' } : undefined
     const pane = f.webPanes.open({ ...anchor, url: `http://localhost/redline/artifacts/${f.id}/index.html`, content, openedBy: 'user' })
     const key = f.s.captureWebPane(target, pane)!
     f.webPanes.close(pane.id)
     const savedAt = f.s.item(target, key).updatedAt
+    expect(f.s.item(target, key).ref.snapshotAt).toBe(savedAt)
+    const persisted = JSON.parse(readFileSync(join(f.root, 'boards', `${target}.json`), 'utf8'))
+    expect(persisted.board.items.find((item: BoardItem) => item.key === key).ref.snapshotAt).toBe(savedAt)
     rmSync(f.dir, { recursive: true })
     expect(f.s.revive(target, key, anchor, 'user')).toEqual({ webPaneId: pane.id })
     const copy = f.webPanes.get(pane.id)!

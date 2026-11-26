@@ -545,10 +545,11 @@ export class BoardStore {
     if (!isReadOnlyWebPane(pane) && item.ref.path && item.ref.artifactId && this.options.snapshotRoot) {
       const snapshotId = copyBoardSnapshot(item.ref.path, this.options.snapshotRoot, item.ref.manifest ?? item.ref.file)
       if (snapshotId) {
+        const savedAt = this.now()
         const b = this.get(targetId), stored = b.items.find((i) => i.key === key)!, old = stored.ref.snapshotId
         stored.ref.snapshotId = snapshotId
-        stored.ref.snapshotAt = this.now()
-        stored.updatedAt = this.now()
+        stored.ref.snapshotAt = savedAt
+        stored.updatedAt = savedAt
         this.save(b)
         // Only delete an old folder once the replacement reference is durable.
         this.flush()
