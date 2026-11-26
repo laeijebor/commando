@@ -91,4 +91,22 @@ describe('cloud task HTTP client', () => {
     expect(new CloudTasksHttpError(401, '', 'safe').message).toBe('safe')
     expect(fetcher.mock.calls[0][1]?.headers).not.toHaveProperty('Authorization')
   })
+
+  it('calls discovery and import endpoints with owner auth and optional idempotency key', async () => {
+    const discovered = { agents: [], sources: [{ provider: 'cursor', status: 'ok' }], discoveredAt: '2026-11-24T12:00:00.000Z' }
+    const imported = { kind: 'chat', launch: { provider: 'cursor-chat', resume: 'bc-1', title: 'Agent 1' } }
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(discovered), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(imported), { status: 200 }))
+    const api = createCloudTasksApi('owner-secret', fetcher)
+    expect(await api.discoverAgents()).toEqual(discovered)
+    expect(await api.importDiscovered({ provider: 'cursor', id: 'bc-1', title: 'Agent 1' }, 'import-key')).toEqual(imported)
+    expect(fetcher.mock.calls[0][0]).toBe('/api/cloud/discovered')
+    expect(fetcher.mock.calls[1][0]).toBe('/api/cloud/discovered/import')
+    expect(fetcher.mock.calls[1][1]).toMatchObject({
+      method: 'POST',
+      headers: { Authorization: 'Bearer owner-secret', 'Idempotency-Key': 'import-key' },
+      body: JSON.stringify({ provider: 'cursor', id: 'bc-1', title: 'Agent 1' }),
+    })
+  })
 })
