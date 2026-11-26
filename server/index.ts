@@ -168,6 +168,7 @@ import { SessionBriefApi } from './session-brief-api.js'
 import { BoardChangeNotifications, BoardTileTitles } from './boards-publish.js'
 import { BoardStore, defaultBoardsPath, defaultBoardSnapshotsPath } from './boards.js'
 import { BoardThumbCache, BoardThumbWorker, BoardPreviewQueue, defaultBoardThumbsPath } from './board-thumbs.js'
+import { sweepStaleBoardCaptureProfiles } from './board-capture-profiles.js'
 import { BoardLinkPreviews, defaultBoardLinkPreviewsPath } from './board-link-previews.js'
 import { BoardLinkHarvest } from './board-link-harvest.js'
 import { BoardsApi } from './boards-api.js'
@@ -566,6 +567,8 @@ async function main(): Promise<void> {
   // Leased simulators show in Commando's tabs; agents' Argent boots them without opening Simulator.app.
   process.env.ARGENT_SIMULATOR_NO_WINDOW ??= '1'
   const port = configuredPort()
+  const captureCleanup = await sweepStaleBoardCaptureProfiles()
+  for (const error of captureCleanup.errors) console.warn('[commando] Board browser cleanup:', error)
   const networkAccess = createNetworkAccess(port)
   void pairingAddresses(port, networkAccess.listeners) // Warm optional DNS discovery without blocking startup.
   const token = authToken()

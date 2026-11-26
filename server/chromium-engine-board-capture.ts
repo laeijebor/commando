@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { BOARD_CAPTURE_OWNER_FILE } from './board-capture-profiles.js'
 import type { ChromiumLaunch, ChromiumLauncher } from './chromium-engine.js'
-import { CaptureRequestPolicy, isBoardCaptureUrl, type CaptureDestination, type CaptureResolver } from './board-capture-policy.js'
+import { CaptureRequestPolicy, isBoardCaptureUrl, registerBrowserDebuggingPort, type CaptureDestination, type CaptureResolver } from './board-capture-policy.js'
 import { fetchCaptureRequest, type CaptureFetch, type CaptureRequest } from './board-capture-network.js'
 
 type Handler = (params: Record<string, unknown>, sessionId?: string) => void
@@ -70,7 +71,9 @@ export class BoardCaptureBrowser {
     signal.addEventListener('abort', abort, { once: true })
     try {
       if (signal.aborted || this.disposed) throw new Error('Board browser launch cancelled')
+      await writeFile(join(profile, BOARD_CAPTURE_OWNER_FILE), JSON.stringify({ ownerPid: process.pid, ownerUid: process.getuid?.(), phase: 'launching' }), { mode: 0o600, flag: 'wx' })
       launch = await this.options.launcher(profile, signal, PROXY_ARGS)
+      registerBrowserDebuggingPort(launch.port, launch.exited)
       if (signal.aborted || this.disposed) throw new Error('Board browser launch cancelled')
       cdp = await this.options.connect(await this.options.endpoint(launch.port), 10_000)
       if (signal.aborted || this.disposed) throw new Error('Board browser launch cancelled')
@@ -103,6 +106,8 @@ export class BoardCaptureBrowser {
     const job = async () => {
       await policy.address(url); check()
       const browser = await this.ensure(controller.signal); check()
+      // The newly launched process may have claimed the item URL's port.
+      await policy.address(url); check()
       const cdp = browser.cdp
       let contextId: string | undefined, bytes = 0, requests = 0, activeRequests = 0
       const waiting: (() => void)[] = []

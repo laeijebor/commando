@@ -46,9 +46,10 @@ import {
   MAX_WEB_PANE_TITLE_LENGTH,
   type WebPanePendingSnapshot,
 } from '../shared/protocol.js'
+import { BOARD_CAPTURE_OWNER_FILE } from './board-capture-profiles.js'
 import { WebPaneError } from './web-panes.js'
 import { BoardCaptureBrowser, type BoardCaptureOptions } from './chromium-engine-board-capture.js'
-import type { CaptureDestination } from './board-capture-policy.js'
+import { registerBrowserDebuggingPort, type CaptureDestination } from './board-capture-policy.js'
 export { isBoardCaptureUrl } from './board-capture-policy.js'
 
 const LAUNCH_TIMEOUT_MS = 20_000
@@ -66,7 +67,7 @@ export function isDaemonCaptureUrl(url: string): boolean {
   try { parsed = new URL(url) } catch { return false }
   return parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) && parsed.pathname.startsWith('/redline/')
 }
-const PROFILE_OWNER_FILE = '.commando-browser-owner.json'
+const PROFILE_OWNER_FILE = BOARD_CAPTURE_OWNER_FILE
 const STALE_BROWSER_EXIT_TIMEOUT_MS = 2_000
 const MAX_PENDING_SNAPSHOT_EXPRESSION_BYTES = 4 * 1024 * 1024
 /**
@@ -78,6 +79,7 @@ export const MAX_LIVE_CHROMIUM_TILES = 32
 type ChromiumProfileOwner = {
   ownerPid: number
   browserPid: number
+  ownerUid?: number
 }
 
 /**
@@ -275,7 +277,8 @@ export const spawnChromiumLauncher: ChromiumLauncher = async (profileDir, signal
       try {
         writeFileSync(
           join(profileDir, PROFILE_OWNER_FILE),
-          JSON.stringify({ ownerPid: process.pid, browserPid } satisfies ChromiumProfileOwner),
+          JSON.stringify({ ownerPid: process.pid, browserPid, ownerUid: process.getuid?.() } satisfies ChromiumProfileOwner),
+          { mode: 0o600 },
         )
       } catch (error) {
         killBrowserProcessGroup(browserPid)
@@ -830,7 +833,12 @@ export class ChromiumEngine {
 
   constructor(private readonly options: ChromiumEngineOptions) {
     this.profileDir = options.profileDir ?? defaultChromiumProfileDir()
-    this.launcher = options.launcher ?? spawnChromiumLauncher
+    const launcher = options.launcher ?? spawnChromiumLauncher
+    this.launcher = async (...args) => {
+      const launch = await launcher(...args)
+      registerBrowserDebuggingPort(launch.port, launch.exited)
+      return launch
+    }
     this.httpTimeoutMs = options.httpTimeoutMs ?? CDP_CALL_TIMEOUT_MS
     this.connectTimeoutMs = options.connectTimeoutMs ?? CDP_CALL_TIMEOUT_MS
     this.screencastFallbackAfterMs = options.screencastFallbackAfterMs ?? SCREENCAST_FALLBACK_AFTER_MS

@@ -1,8 +1,10 @@
-import { access } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BoardCaptureBrowser, type CaptureCdp } from './chromium-engine-board-capture.js'
 import { resolveCaptureDestination } from './board-capture-policy.js'
-import { ChromiumEngine } from './chromium-engine.js'
+import { ChromiumEngine, type ChromiumLauncher } from './chromium-engine.js'
+import { BOARD_CAPTURE_OWNER_FILE } from './board-capture-profiles.js'
 
 const publicAnswer = [{ address: '93.184.216.34', family: 4 }]
 const resolve = vi.fn(async (_host: string) => publicAnswer)
@@ -42,6 +44,33 @@ afterEach(async () => { await Promise.all(captures.splice(0).map((b) => b.dispos
 const destination = () => resolveCaptureDestination('https://public.example/', resolve)
 
 describe('separate Board capture browser', () => {
+  it('denies the new capture browser own debugging port even when the item would otherwise have own-origin private authority', async () => {
+    const s = setup(), d = await resolveCaptureDestination('http://127.0.0.1:9223/app')
+    await expect(s.browser.capture(d.url, 1280, 800, d)).rejects.toThrow('Blocked')
+    expect(s.launcher).toHaveBeenCalledOnce(); expect(s.kills[0]).toHaveBeenCalledOnce()
+    expect(s.send.mock.calls.some(([method]) => method === 'Page.navigate')).toBe(false)
+    expect(s.fetch).not.toHaveBeenCalled()
+  })
+  it('registers live-engine debugging ports at launch before CDP connects and releases them only after exit', async () => {
+    let exit!: () => void
+    const exited = new Promise<void>((resolve) => { exit = resolve })
+    const launch = { port: 9444, exited, kill: vi.fn(() => exit()) }
+    const engine = new ChromiumEngine({ classify: () => ({ kind: 'open' }), onExternalNavigation: vi.fn(), launcher: vi.fn(async () => launch) })
+    try {
+      await (engine as unknown as { launcher: ChromiumLauncher }).launcher('/tmp/stub-only-no-browser')
+      await expect(resolveCaptureDestination('http://127.0.0.1:9444/json/version')).rejects.toThrow('debugging')
+      await expect(resolveCaptureDestination('https://public.example:9444/json/list', resolve)).rejects.toThrow('debugging')
+    } finally { launch.kill(); await exited; engine.dispose() }
+    expect(await resolveCaptureDestination('http://127.0.0.1:9444/app')).toMatchObject({ policy: 'private' })
+  })
+  it('records the launch lease before starting Chromium, so another daemon cannot sweep a live in-progress capture', async () => {
+    const s = setup(), d = await destination(); s.stall()
+    const job = s.browser.capture(d.url, 1280, 800, d)
+    await vi.waitFor(() => expect(s.send).toHaveBeenCalledWith('Page.navigate', { url: d.url }, 'root-session'))
+    const profile = s.launcher.mock.calls[0][0]
+    expect(JSON.parse(await readFile(join(profile, BOARD_CAPTURE_OWNER_FILE), 'utf8'))).toMatchObject({ ownerPid: process.pid, ownerUid: process.getuid?.(), phase: 'launching' })
+    s.load(); await job
+  })
   it('launches lazily with a temporary profile and fail-closed network flags; retires at 25 captures and 60s idle', async () => {
     const s = setup(), d = await destination()
     expect(s.launcher).not.toHaveBeenCalled()

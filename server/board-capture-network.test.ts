@@ -19,9 +19,18 @@ vi.mock('node:http', async () => {
 })
 vi.mock('node:https', async () => ({ request: (await import('node:http')).request }))
 import { fetchCaptureRequest } from './board-capture-network.js'
+import { registerBrowserDebuggingPort } from './board-capture-policy.js'
 
 beforeEach(() => { state.calls = []; state.body = Buffer.from('page') })
 describe('pinned capture transport (stub sockets)', () => {
+  it('rejects newly registered debugging ports again at transport dispatch without opening a socket', async () => {
+    let exit!: () => void
+    registerBrowserDebuggingPort(9556, new Promise<void>((resolve) => { exit = resolve }))
+    try {
+      await expect(fetchCaptureRequest({ url: 'http://127.0.0.1:9556/json/version' }, { address: '127.0.0.1', family: 4 }, new AbortController().signal)).rejects.toThrow('debugging')
+      expect(state.calls).toHaveLength(0)
+    } finally { exit(); await Promise.resolve() }
+  })
   it('keeps the original TLS host, pins lookup, preserves redirects without following them, and bounds headers/body', async () => {
     const address = { address: '93.184.216.34', family: 4 }
     const response = await fetchCaptureRequest({ url: 'https://public.example/app', method: 'POST', headers: { Host: 'spoofed', Connection: 'keep-alive', Cookie: 'capture-only=1' }, postData: 'body' }, address, new AbortController().signal)

@@ -35,6 +35,49 @@ describe('Link preview metadata', () => {
 })
 
 describe('Board link previews', () => {
+  it('persists a DNS negative cache, reapplies cached previews on other boards, and retries with backoff', async () => {
+    let now = 1000
+    const s = setup({ now: () => now }), item = add(s.store)
+    await s.previews.refresh(target, item)
+    const preview = s.store.item(target, item.key).preview
+    s.resolve.mockRejectedValue(new Error('DNS unavailable'))
+    const next = add(s.store, item.ref.url!, other)
+    await s.previews.refresh(other, next)
+    expect(s.store.item(other, next.key).preview).toEqual(preview)
+    const state = async () => JSON.parse(await readFile(s.statePath, 'utf8'))[0][1]
+    expect((await state()).dnsRetryAt).toBe(now + 15 * 60_000)
+    const calls = s.resolve.mock.calls.length
+    const reloaded = new BoardLinkPreviews(s)
+    now += 60_000; await reloaded.refresh(other, next)
+    expect(s.resolve).toHaveBeenCalledTimes(calls)
+    now = (await state()).dnsRetryAt; await reloaded.refresh(other, next)
+    expect(s.resolve).toHaveBeenCalledTimes(calls + 1)
+    expect((await state()).dnsRetryAt - now).toBe(30 * 60_000)
+    now = (await state()).dnsRetryAt
+    s.resolve.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+    await reloaded.refresh(other, next)
+    expect((await state()).dnsRetryAt).toBeUndefined()
+    expect((await state()).dnsFailures).toBeUndefined()
+    expect(s.store.item(other, next.key).preview).toEqual(preview)
+  })
+  it('negative-caches first-time DNS failure and preserves expired metadata when DNS is unavailable after restart', async () => {
+    let now = 1000
+    const s = setup({ now: () => now }), item = add(s.store)
+    s.resolve.mockRejectedValue(new Error('DNS unavailable'))
+    await s.previews.refresh(target, item)
+    const next = new BoardLinkPreviews(s)
+    await next.refresh(target, item)
+    expect(s.resolve).toHaveBeenCalledTimes(1); expect(s.fetch).not.toHaveBeenCalled()
+    now += 15 * 60_000
+    s.resolve.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+    await next.refresh(target, item)
+    expect(s.store.item(target, item.key).preview?.title).toBe('Article')
+    now += 7 * 86400_000 + 1
+    s.resolve.mockRejectedValue(new Error('DNS unavailable'))
+    const stale = add(s.store, item.ref.url!, other)
+    await new BoardLinkPreviews(s).refresh(other, stale)
+    expect(s.store.item(other, stale.key).preview?.title).toBe('Article')
+  })
   it('retries failed shots with persisted exponential backoff and advances daily expiry only on success', async () => {
     let now = 1000
     const s = setup({ now: () => now }), item = add(s.store)

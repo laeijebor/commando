@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { normalizeBoardUrl, type BoardItem } from '../shared/board.js'
 import type { BoardStore } from './boards.js'
 import type { BoardThumbCache } from './board-thumbs.js'
+import { previewRetry } from './board-preview-backoff.js'
 import { resolveCaptureDestination, type CaptureDestination, type CaptureResolver } from './board-capture-policy.js'
 
 export const defaultBoardLinkPreviewsPath = (port: number) => join(homedir(), '.commando', `board-link-previews-${port}.json`)
@@ -79,7 +80,7 @@ const pinnedFetch: PreviewFetch = (url, init, address) => new Promise((resolve, 
   req.on('error', reject); req.end()
 })
 class PrivateUrl extends Error { constructor(readonly url: string) { super('Private preview URL') } }
-type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb']; capture?: 'public' | 'private'; shotExpires?: number; shotRetryAt?: number; shotFailures?: number }
+type Entry = { expires: number; preview?: NonNullable<BoardItem['preview']>; thumb?: BoardItem['thumb']; capture?: 'public' | 'private'; shotExpires?: number; shotRetryAt?: number; shotFailures?: number; dnsRetryAt?: number; dnsFailures?: number }
 type Options = {
   store: BoardStore; thumbs: BoardThumbCache; statePath: string
   fetch?: PreviewFetch; resolve?: CaptureResolver; now?: () => number
@@ -100,17 +101,17 @@ export class BoardLinkPreviews {
       for (const row of data.slice(-2000)) {
         if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== 'string') continue
         const [url, entry] = row as [string, Entry]
-        if (normalizeBoardUrl(url) !== url || !entry || !Number.isFinite(entry.expires) || entry.expires <= this.now()) continue
+        if (normalizeBoardUrl(url) !== url || !entry || !Number.isFinite(entry.expires) || (entry.expires + 7 * DAY <= this.now() && !(entry.dnsRetryAt && entry.dnsRetryAt > this.now()))) continue
         if (entry.preview && (typeof entry.preview !== 'object' || Object.entries(entry.preview).some(([k, v]) => !['title', 'description', 'siteName', 'image', 'favicon'].includes(k) || typeof v !== 'string' || v.length > 2000 || (['image', 'favicon'].includes(k) && !/^[0-9a-f]{64}$/.test(v))))) continue
         if (entry.thumb && (!/^[0-9a-f]{64}$/.test(entry.thumb.hash) || ![entry.thumb.w, entry.thumb.h].every((n) => Number.isFinite(n) && n > 0 && n <= 16384))) continue
         if (entry.capture !== undefined && !['public', 'private'].includes(entry.capture)) continue
-        if ([entry.shotExpires, entry.shotRetryAt, entry.shotFailures].some((n) => n !== undefined && (!Number.isFinite(n) || n < 0))) continue
+        if ([entry.shotExpires, entry.shotRetryAt, entry.shotFailures, entry.dnsRetryAt, entry.dnsFailures].some((n) => n !== undefined && (!Number.isFinite(n) || n < 0))) continue
         this.entries.set(url, entry)
       }
     } catch { /* No preview cache, or corrupt state: start empty. */ }
   }
   private async save(): Promise<void> {
-    for (const [url, entry] of this.entries) if (entry.expires <= this.now()) this.entries.delete(url)
+    for (const [url, entry] of this.entries) if (entry.expires + 7 * DAY <= this.now() && !(entry.dnsRetryAt && entry.dnsRetryAt > this.now())) this.entries.delete(url)
     while (this.entries.size > 2000) this.entries.delete(this.entries.keys().next().value!)
     const tmp = `${this.options.statePath}.${randomUUID()}.tmp`
     try {
@@ -170,10 +171,23 @@ export class BoardLinkPreviews {
     let url: string
     try { url = normalizeBoardUrl(item.ref.url) } catch { return }
     if (!this.options.thumbs.canCapture(url)) return
-    let destination: CaptureDestination
-    try { destination = await this.options.thumbs.destination(url, this.options.resolve) } catch { return }
     await this.load()
     let entry = this.entries.get(url)
+    if (entry?.dnsRetryAt && entry.dnsRetryAt > this.now()) { this.applyEntry(targetId, item, entry); return }
+    let destination: CaptureDestination
+    try { destination = await this.options.thumbs.destination(url, this.options.resolve) } catch {
+      entry ??= { expires: this.now() }
+      const retry = previewRetry(entry.dnsFailures ?? 0, this.now(), 15 * 60_000)
+      entry.dnsFailures = retry.failures; entry.dnsRetryAt = retry.retryAt
+      this.entries.set(url, entry)
+      await this.save().catch(() => {})
+      this.applyEntry(targetId, item, entry)
+      return
+    }
+    if (entry?.dnsRetryAt !== undefined || entry?.dnsFailures !== undefined) {
+      delete entry.dnsRetryAt; delete entry.dnsFailures
+      await this.save().catch(() => {})
+    }
     // Classification is fresh and explicit; a failed public fetch never upgrades
     // a previously public job to private-network authority.
     if (entry && (entry.capture || (entry.preview && !entry.preview.image) || destination.policy === 'private')) entry.capture = destination.policy
@@ -218,13 +232,16 @@ export class BoardLinkPreviews {
         entry.shotExpires = (Math.floor(this.now() / interval) + 1) * interval
         delete entry.shotRetryAt; delete entry.shotFailures
       } else {
-        entry.shotFailures = Math.min((entry.shotFailures ?? 0) + 1, 8)
-        entry.shotRetryAt = this.now() + Math.min(5 * 60_000 * 2 ** (entry.shotFailures - 1), 6 * 3600_000)
+        const retry = previewRetry(entry.shotFailures ?? 0, this.now())
+        entry.shotFailures = retry.failures; entry.shotRetryAt = retry.retryAt
         // Keep private entries alive long enough to preserve backoff across metadata retries.
         if (destination.policy === 'private') entry.expires = Math.max(entry.expires, entry.shotRetryAt + 1)
       }
       await this.save().catch(() => {})
     }
+    this.applyEntry(targetId, item, entry)
+  }
+  private applyEntry(targetId: string, item: BoardItem, entry: Entry): void {
     if (entry.preview || entry.thumb) this.apply(targetId, item, { ...(entry.preview ? { preview: entry.preview } : {}), ...(entry.thumb ? { thumb: entry.thumb } : {}) })
   }
   private apply(target: string, item: BoardItem, patch: Pick<Partial<BoardItem>, 'preview' | 'thumb'>): void {

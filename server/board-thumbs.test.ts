@@ -37,6 +37,40 @@ describe('BoardPreviewQueue', () => {
 })
 
 describe('Board thumbnails', () => {
+  it('persists page failure backoff across reads, restarts and hourly hash changes, then clears it on success', async () => {
+    let now = 0
+    const capturePage = vi.fn(async (): Promise<Buffer> => { throw new Error('Browser unavailable') })
+    const options = { capturePage, now: () => now }, c = cache(options), store = new BoardStore(), queue = new BoardPreviewQueue()
+    const worker = new BoardThumbWorker(store, c, queue)
+    const url = 'http://127.0.0.1:5273/app'
+    store.upsert(target, { key: `page:${url}`, kind: 'page', title: 'Dev', ref: { url }, source: 'agent' })
+    worker.enqueue(target); await queue.idle()
+    worker.enqueue(target); await queue.idle(); expect(capturePage).toHaveBeenCalledTimes(1)
+    const reloaded = cache(options)
+    now = 299_999; expect(await reloaded.page(url)).toBeUndefined(); expect(capturePage).toHaveBeenCalledTimes(1)
+    now = 300_000; await reloaded.page(url); expect(capturePage).toHaveBeenCalledTimes(2)
+    const key = thumbHash(['page-retry', url, 'private'])
+    const state = async () => new Map<string, { failures: number; retryAt: number }>(JSON.parse(await readFile(join(root, 'cache', 'page-retries.json'), 'utf8'))).get(key)!
+    expect(await state()).toEqual({ failures: 2, retryAt: 900_000 })
+    now = 900_000; await reloaded.page(url)
+    now = 2100_000; await reloaded.page(url)
+    const beforeRollover = (await reloaded.source(store.item(target, `page:${url}`)))!.hash
+    now = 3600_000
+    expect((await reloaded.source(store.item(target, `page:${url}`)))!.hash).not.toBe(beforeRollover)
+    await reloaded.page(url); expect(capturePage).toHaveBeenCalledTimes(4)
+    for (let i = 0; i < 8; i++) {
+      now = (await state()).retryAt; await reloaded.page(url)
+      expect((await state()).retryAt - now).toBeLessThanOrEqual(6 * 3600_000)
+    }
+    expect((await state()).retryAt - now).toBe(6 * 3600_000)
+    // Another destination does not inherit this page's backoff.
+    await reloaded.page('http://127.0.0.1:5273/other')
+    capturePage.mockResolvedValue(png())
+    now = (await state()).retryAt
+    expect(await reloaded.page(url)).toBeDefined()
+    expect(await state()).toBeUndefined()
+    worker.stop()
+  })
   it('schedules individual items round-robin across targets and deduplicates pending item jobs', async () => {
     const store = new BoardStore(), queue = new BoardPreviewQueue(), c = cache(), events: string[] = []
     let release!: () => void

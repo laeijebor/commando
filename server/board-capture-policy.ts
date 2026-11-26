@@ -5,6 +5,28 @@ export type CaptureAddress = { address: string; family: number }
 export type CaptureResolver = (host: string) => Promise<CaptureAddress[]>
 export type CaptureDestination = { url: string; origin: string; policy: 'public' | 'private'; addresses: CaptureAddress[] }
 export const captureLookup: CaptureResolver = (host) => lookup(host, { all: true })
+const debuggingPorts = new Map<number, number>()
+/** Track live and retiring browser processes across engine/capture instances.
+ * Removing ports only after exit also closes the timeout/relaunch window. */
+export function registerBrowserDebuggingPort(port: number, exited: Promise<void>): void {
+  debuggingPorts.set(port, (debuggingPorts.get(port) ?? 0) + 1)
+  const remove = () => {
+    const remaining = (debuggingPorts.get(port) ?? 1) - 1
+    if (remaining) debuggingPorts.set(port, remaining)
+    else debuggingPorts.delete(port)
+  }
+  void exited.then(remove, remove)
+}
+export function isLinkLocalCaptureHost(host: string): boolean {
+  host = host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  if (isIP(host) === 4) return host.startsWith('169.254.')
+  if (isIP(host) !== 6) return false
+  host = new URL(`http://[${host}]/`).hostname.slice(1, -1)
+  if ((parseInt(host.split(':')[0] || '0', 16) & 0xffc0) === 0xfe80) return true
+  // IPv4-mapped/compatible addresses must not turn metadata IPv4 into an
+  // allowed private IPv6 destination (WHATWG URLs canonicalize dotted tails).
+  return /^::(?:ffff:)?a9fe:[0-9a-f]+$/.test(host)
+}
 
 /** Non-global addresses, including mapped IPv4, link-local and documentation ranges. */
 export function isPrivatePreviewHost(host: string): boolean {
@@ -35,10 +57,11 @@ const hostOf = (url: URL) => url.hostname.replace(/^\[|\]$/g, '')
 const portOf = (url: URL) => Number(url.port || (url.protocol === 'https:' ? 443 : 80))
 export function isCaptureControlUrl(value: string, origins: readonly string[], ports: readonly number[]): boolean {
   const url = new URL(value)
-  return origins.some((origin) => new URL(origin).origin === url.origin) || ports.includes(portOf(url))
+  return origins.some((origin) => new URL(origin).origin === url.origin) || ports.includes(portOf(url)) || debuggingPorts.has(portOf(url))
 }
 export async function resolveCaptureDestination(value: string, resolve: CaptureResolver = captureLookup): Promise<CaptureDestination> {
   if (!isBoardCaptureUrl(value)) throw new Error('Unsafe Board capture URL')
+  if (isCaptureControlUrl(value, [], [])) throw new Error('Blocked browser debugging port')
   const url = new URL(value), host = hostOf(url)
   let addresses: CaptureAddress[]
   if (isIP(host)) addresses = [{ address: host, family: isIP(host) }]
@@ -52,7 +75,9 @@ export async function resolveCaptureDestination(value: string, resolve: CaptureR
     try { addresses = await Promise.race([resolve(host), timedOut]) }
     finally { signal.removeEventListener('abort', abort) }
   }
+  if (isCaptureControlUrl(value, [], [])) throw new Error('Blocked browser debugging port')
   if (!addresses.length || addresses.some((a) => !isIP(a.address))) throw new Error('No usable capture DNS answer')
+  if (isLinkLocalCaptureHost(host) || addresses.some((a) => isLinkLocalCaptureHost(a.address))) throw new Error('Blocked link-local capture destination')
   const privateAnswers = addresses.filter((a) => isPrivatePreviewHost(a.address)).length
   if (privateAnswers && privateAnswers !== addresses.length) throw new Error('Mixed public/private capture DNS answers')
   return { url: url.href, origin: url.origin, addresses, policy: isPrivatePreviewHost(host) || privateAnswers ? 'private' : 'public' }
@@ -74,7 +99,10 @@ export class CaptureRequestPolicy {
       this.dns.set(host, answers)
     }
     const addresses = await answers
+    // Browser launches can publish new control ports while DNS is pending.
+    if (isCaptureControlUrl(value, this.origins, this.ports)) throw new Error('Blocked capture URL')
     if (!addresses.length || addresses.some((a) => !isIP(a.address))) throw new Error('No usable capture DNS answer')
+    if (isLinkLocalCaptureHost(host) || addresses.some((a) => isLinkLocalCaptureHost(a.address))) throw new Error('Blocked link-local capture destination')
     if ((isPrivatePreviewHost(host) || addresses.some((a) => isPrivatePreviewHost(a.address)))
       && !(this.destination.policy === 'private' && url.origin === this.destination.origin && addresses.every((a) => isPrivatePreviewHost(a.address)))) {
       throw new Error('Blocked private capture destination')

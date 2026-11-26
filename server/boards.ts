@@ -120,6 +120,7 @@ export class BoardStore {
   private readonly boards = new Map<string, Board>()
   private readonly observed = new Map<string, Record<string, string>>()
   private readonly folderScans = new Map<string, number>()
+  private readonly folderErrors = new Map<string, Set<string>>()
   private readonly dirty = new Set<string>()
   private timer: ReturnType<typeof setTimeout> | undefined
   private readonly now: () => number
@@ -440,9 +441,14 @@ export class BoardStore {
     const result = { captured: 0, errors: [] as string[] }
     const scanKey = `${targetId}:${dir}`
     if (!group && this.folderScans.get(scanKey) === stamp) return result
-    const report = (error: unknown) => {
+    // Automatic briefs do not repeatedly rescan permanently bad files. Explicit
+    // grouped requests may retry the scan, but each file is logged once per stamp.
+    if (this.folderScans.get(scanKey) !== stamp) this.folderErrors.delete(scanKey)
+    this.folderScans.set(scanKey, stamp)
+    const report = (error: unknown, file = dir) => {
       result.errors.push(error instanceof Error ? error.message : String(error))
-      this.options.onError?.(error)
+      const logged = this.folderErrors.get(scanKey) ?? new Set<string>()
+      if (!logged.has(file)) { logged.add(file); this.folderErrors.set(scanKey, logged); this.options.onError?.(error) }
     }
     try {
       const root = realpathSync(dir), entries = opendirSync(root)
@@ -461,10 +467,9 @@ export class BoardStore {
             if (!board.items.some((i) => i.key === key)) continue // Previously removed and unchanged.
             if (group && !placement?.fixed && placement?.group !== group) this.place(targetId, key, { group }, 'agent')
             result.captured++
-          } catch (error) { report(error) }
+          } catch (error) { report(error, entry.name) }
         }
       } finally { entries.closeSync() }
-      if (!result.errors.length) this.folderScans.set(scanKey, stamp)
     } catch (error) { report(error) }
     return result
   }

@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { CaptureAddress } from './board-capture-policy.js'
+import { isCaptureControlUrl } from './board-capture-policy.js'
 
 export type CaptureRequest = { url: string; method?: string; headers?: Record<string, string>; postData?: string; hasPostData?: boolean }
 export type CaptureResponse = { status: number; headers: { name: string; value: string }[]; body: Buffer }
@@ -9,6 +10,8 @@ const HOP_HEADERS = /^(?:connection|proxy-connection|proxy-authorization|transfe
 /** Never follow redirects or re-resolve a validated host. Browser requests are fulfilled
  * from this transport; Chromium's own network path is sent to an unusable proxy. */
 export const fetchCaptureRequest: CaptureFetch = (request, address, signal) => new Promise((resolve, reject) => {
+  // Recheck at dispatch as well as during asynchronous policy/DNS validation.
+  if (isCaptureControlUrl(request.url, [], [])) { reject(new Error('Blocked browser debugging port')); return }
   if ((request.hasPostData && request.postData === undefined) || Buffer.byteLength(request.postData ?? '') > 1024 * 1024) {
     reject(new Error('Unsupported/oversized capture request body')); return
   }

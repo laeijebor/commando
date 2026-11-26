@@ -8,6 +8,7 @@ import { parseCanvasSource } from '../shared/deck.js'
 import { canvasRelativePath, encodeCanvasPath } from '../shared/canvas-manifest.js'
 import type { BoardItem } from '../shared/board.js'
 import type { BoardStore } from './boards.js'
+import { BoardPageRetries } from './board-preview-backoff.js'
 import { isBoardCaptureUrl, isCaptureControlUrl, resolveCaptureDestination, type CaptureDestination, type CaptureResolver } from './board-capture-policy.js'
 
 export const BOARD_THUMB_HASH = /^[0-9a-f]{64}$/
@@ -67,7 +68,11 @@ export function pngDimensions(bytes: Buffer): { w: number; h: number } | undefin
 
 export class BoardThumbCache {
   private readonly run: Run
-  constructor(private readonly options: Options) { this.run = options.run ?? runTool }
+  private readonly pageRetries: BoardPageRetries
+  constructor(private readonly options: Options) {
+    this.run = options.run ?? runTool
+    this.pageRetries = new BoardPageRetries(join(options.root, 'page-retries.json'), options.now ?? Date.now)
+  }
   private path(hash: string, width: number): string { return join(this.options.root, `${hash}-${width}.png`) }
   async read(hash: string, width: number): Promise<Buffer | undefined> {
     if (!BOARD_THUMB_HASH.test(hash) || !BOARD_THUMB_WIDTHS.includes(width as 320 | 960)) return
@@ -147,8 +152,13 @@ export class BoardThumbCache {
     await visit(root); return entries
   }
   async render(item: BoardItem, source: NonNullable<Awaited<ReturnType<BoardThumbCache['source']>>>): Promise<BoardItem['thumb']> {
+    const retryKey = item.kind === 'page' && source.destination ? thumbHash(['page-retry', source.destination.url, source.destination.policy]) : undefined
     const cached = await this.read(source.hash, 960)
-    if (cached && await this.has(source.hash)) return { hash: source.hash, ...(pngDimensions(cached) ?? { w: 960, h: 600 }) }
+    if (cached && await this.has(source.hash)) {
+      if (retryKey) await this.pageRetries.succeeded(retryKey)
+      return { hash: source.hash, ...(pngDimensions(cached) ?? { w: 960, h: 600 }) }
+    }
+    if (retryKey && await this.pageRetries.blocked(retryKey)) return
     if ((this.options.platform ?? process.platform) !== 'darwin') return // TODO: portable image resampling through managed Chromium.
     try {
       await this.withTemp(async (dir) => {
@@ -172,8 +182,12 @@ export class BoardThumbCache {
         }
       })
       const bytes = await this.read(source.hash, 960)
-      if (bytes && await this.has(source.hash)) return { hash: source.hash, ...(pngDimensions(bytes) ?? { w: 960, h: 600 }) }
+      if (bytes && await this.has(source.hash)) {
+        if (retryKey) await this.pageRetries.succeeded(retryKey)
+        return { hash: source.hash, ...(pngDimensions(bytes) ?? { w: 960, h: 600 }) }
+      }
     } catch { await this.remove(source.hash) } // Missing sips/QuickLook/Chromium means the UI keeps its kind icon.
+    if (retryKey) await this.pageRetries.failed(retryKey)
     return undefined
   }
   canCapture(url: string): boolean {
