@@ -34,7 +34,8 @@ export class CursorCloudEnvironmentsApi {
 
   list(refresh = false): Promise<CursorCloudEnvironmentsResponse> {
     if (this.flight) return this.flight
-    if (this.cache && ((!refresh && this.now() - this.cache.at < 300_000) || (refresh && this.now() - this.lastFetch < 5_000))) return Promise.resolve(this.cache.value)
+    const ttl = this.cache?.value.login === 'ok' && !this.cache.value.error ? 300_000 : 5_000
+    if (this.cache && ((!refresh && this.now() - this.cache.at < ttl) || (refresh && this.now() - this.lastFetch < 5_000))) return Promise.resolve(this.cache.value)
     this.lastFetch = this.now()
     this.flight = this.load().then((value) => {
       this.cache = { at: this.now(), value }

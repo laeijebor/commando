@@ -50,3 +50,12 @@ it('remembers valid Cursor environments per repo and host, and clears the defaul
   saveChatLaunch('/repo', { permissionMode: 'plan', cursorEnvironment: 'bad\nname' }, 'cursor-chat')
   expect(loadChatLaunch('/repo', 'cursor-chat').cursorEnvironment).toBeUndefined()
 })
+
+
+it('restores Cursor environments only from a per-repo key, while retaining other last-used settings', () => {
+  saveChatLaunch('/repo', { permissionMode: 'plan', cursorRuntime: 'cloud', cursorEnvironment: 'Repo Dev' }, 'cursor-chat')
+  expect(loadChatLaunch('/repo', 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud', cursorEnvironment: 'Repo Dev' })
+  expect(loadChatLaunch('/new-repo', 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud' })
+  expect(loadChatLaunch(undefined, 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud' })
+  expect(loadChatLaunch('*', 'cursor-chat')).toEqual({ permissionMode: 'plan', cursorRuntime: 'cloud' })
+})

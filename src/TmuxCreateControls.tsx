@@ -329,6 +329,7 @@ export function TmuxCreateControls({
   const repo = repoProbe && repoProbe.directory === workingDirectory && repoProbe.info.isRepo && repoProbe.info.mainRoot
     ? repoProbe.info
     : null
+  const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
   const unavailable = disabled || pending || namingWith !== null || (probing && (!repo || (agentProvider === 'cursor-chat' && chatLaunch.cursorRuntime === 'cloud')))
   const notRepo = Boolean(probeRepo && workingDirectory && repoProbe && repoProbe.directory === workingDirectory && !repoProbe.info.isRepo)
   const promptAccepted = takesPrompt(agentProvider)
@@ -340,11 +341,13 @@ export function TmuxCreateControls({
   const previewWorktreePath = worktreePath ?? (repo?.mainRoot ? defaultWorktreePath(repo.mainRoot, effectiveBranch || '<branch>', repo.worktreesParent) : '')
   const cursorCloud = agentProvider === 'cursor-chat' && chatLaunch.cursorRuntime === 'cloud' && Boolean(repo?.github)
   const [cloudEnvironments, setCloudEnvironments] = useState<CursorCloudEnvironmentsResponse | null>(null)
+  const [environmentRefresh, setEnvironmentRefresh] = useState(0)
+  const [environmentPick, setEnvironmentPick] = useState<{ repoKey: string | undefined; name: string | undefined } | null>(null)
   useEffect(() => {
-    if (!cursorCloud) { setCloudEnvironments(null); return }
+    if (!cursorCloud) { setCloudEnvironments(null); setEnvironmentRefresh(0); return }
     let cancelled = false
     setCloudEnvironments(null)
-    void daemonFetch(CURSOR_CLOUD_ENVIRONMENTS_ROUTE, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    void daemonFetch(`${CURSOR_CLOUD_ENVIRONMENTS_ROUTE}${environmentRefresh ? '?refresh=1' : ''}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
       .then(async (response) => {
         if (!response.ok) throw new Error('Environment request failed')
         const value = await response.json() as CursorCloudEnvironmentsResponse
@@ -354,9 +357,15 @@ export function TmuxCreateControls({
         if (!cancelled) setCloudEnvironments({ login: 'ok', environments: [], error: 'Unable to load environments.' })
       })
     return () => { cancelled = true }
-  }, [cursorCloud, daemonFetch, token])
-  const cursorEnvironment = cloudEnvironments?.environments.some((environment) => environment.name === chatLaunch.cursorEnvironment)
-    ? chatLaunch.cursorEnvironment : undefined
+  }, [cursorCloud, daemonFetch, token, environmentRefresh])
+  const environmentsResolved = cloudEnvironments?.login === 'ok' && !cloudEnvironments.error
+  const explicitEnvironment = environmentPick?.repoKey === repoKey ? environmentPick : null
+  const requestedEnvironment = explicitEnvironment ? explicitEnvironment.name : chatLaunch.cursorEnvironment
+  const cursorEnvironment = environmentsResolved
+    ? cloudEnvironments.environments.find((environment) => environment.name === requestedEnvironment
+      && (explicitEnvironment || environment.repoUrls.some((url) => url.toLowerCase() === repo?.github?.repoUrl.toLowerCase())))?.name
+    : requestedEnvironment
+  const cursorEnvironmentPending = Boolean(cursorCloud && cursorEnvironment && !environmentsResolved)
   const rememberedCursorEnvironment = cursorCloud ? cursorEnvironment : chatLaunch.cursorEnvironment
   const environmentMessage = !cloudEnvironments ? 'Loading environments…'
     : cloudEnvironments.login === 'required' ? 'Log in to Cursor from a Cursor chat to see environments.'
@@ -384,7 +393,6 @@ export function TmuxCreateControls({
   }, [repo?.mainRoot, sessionCreateRequest?.id, openVersion, token])
 
   // The starting agent is remembered per repository; each chat provider keeps its own settings.
-  const repoKey = repo?.mainRoot ?? (workingDirectory.trim() || undefined)
   const preferenceProvider = isChatLaunchProvider(agentProvider) ? agentProvider : 'claude-chat'
   useEffect(() => {
     setAgentProvider(loadStartWith(repoKey))
@@ -394,6 +402,7 @@ export function TmuxCreateControls({
   }, [repoKey])
   useEffect(() => {
     setChatLaunch(loadChatLaunch(repoKey, preferenceProvider, host))
+    setEnvironmentPick(null)
   }, [repoKey, preferenceProvider])
 
   // Profiles name the Claude rows of the Agent menu. The last list shows straight away and
@@ -631,7 +640,7 @@ export function TmuxCreateControls({
       return
     }
     // ⌘↵ submits without the button, so its disabled state is checked here too.
-    if (partialCreationRef.current || attachments.uploading || unavailable || chatProfilesLoading) return
+    if (partialCreationRef.current || attachments.uploading || unavailable || chatProfilesLoading || cursorEnvironmentPending) return
     const formElement = event.currentTarget
     setError('')
     setStatus('')
@@ -859,10 +868,15 @@ export function TmuxCreateControls({
         {cursorCloud && repo?.github ? <NewSessionEnvironmentPicker
           environments={cloudEnvironments?.environments ?? []}
           selected={cursorEnvironment}
+          pending={cursorEnvironmentPending}
+          onRefresh={cloudEnvironments && (cloudEnvironments.error || cloudEnvironments.login === 'required') ? () => setEnvironmentRefresh((version) => version + 1) : undefined}
           repoUrl={repo.github.repoUrl}
           message={environmentMessage}
           disabled={unavailable}
-          onPick={(cursorEnvironment) => setChatLaunch((current) => ({ ...current, cursorEnvironment }))}
+          onPick={(cursorEnvironment) => {
+            setEnvironmentPick({ repoKey, name: cursorEnvironment })
+            setChatLaunch((current) => ({ ...current, cursorEnvironment }))
+          }}
         /> : null}
         {fastAvailable ? (
           <NewSessionFastToggle on={fast} disabled={unavailable} onToggle={() => setFastPick(!fast)} />
@@ -1141,7 +1155,7 @@ export function TmuxCreateControls({
             Open created session {partialCreation.response.created.paneId}
           </button>
         ) : null}
-        <button ref={submitRef} className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading}>
+        <button ref={submitRef} className="tmux-create__submit" type="submit" disabled={(unavailable && !namingWith) || Boolean(partialCreation) || chatProfilesLoading || attachments.uploading || cursorEnvironmentPending}>
           {submitLabel}
           {namingWith ? <kbd aria-hidden="true">⌘↵ to skip</kbd> : pending || attachments.uploading ? null : <kbd aria-hidden="true">⌘↵</kbd>}
         </button>

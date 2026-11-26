@@ -374,9 +374,20 @@ export function buildChatResumeCommand(
     const at = rest.indexOf('--cloud-env')
     const words = name.split(/\s+/u)
     const count = rest[at + 1] === name ? 1 : words.length
-    if (at >= 0 && (rest[at + 1] === name || rest.slice(at + 1, at + 1 + count).join(' ') === words.join(' '))) {
+    const promptAt = rest.indexOf('--prompt')
+    if (at >= 0 && (promptAt < 0 || at < promptAt) && (rest[at + 1] === name || rest.slice(at + 1, at + 1 + count).join(' ') === words.join(' '))) {
       environment = name
       rest.splice(at + 1, count, 'commando-cursor-environment')
+    }
+  }
+  if (provider === 'cursor' && !environment) {
+    const at = rest.indexOf('--cloud-env')
+    const promptAt = rest.indexOf('--prompt')
+    if (at >= 0 && (promptAt < 0 || at < promptAt)) {
+      // Process argv cannot identify the end of a free-text environment name.
+      // The launcher puts this flag last, before the prompt: omit that uncertain
+      // tail rather than save a truncated name or treat its words as flags.
+      rest.splice(at)
     }
   }
   const promptAt = rest.indexOf('--prompt')

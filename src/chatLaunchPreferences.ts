@@ -34,7 +34,8 @@ export function loadChatLaunch(repoKey: string | undefined, provider: ChatLaunch
   const { key, lastKey } = storageKeys(repoKey, provider)
   const all = readAll(host)
   const stored = (key && all[key]) || all[lastKey]
-  if (provider !== 'claude-chat') return { ...(provider === 'cursor-chat' && isCursorEnvironmentName(stored?.cursorEnvironment) ? { cursorEnvironment: stored.cursorEnvironment } : {}), ...(provider === 'cursor-chat' && (stored?.cursorRuntime === 'local' || stored?.cursorRuntime === 'cloud') ? { cursorRuntime: stored.cursorRuntime } : {}), permissionMode: chatPermissionModes(provider).some((mode) => mode.value === stored?.permissionMode) ? stored.permissionMode : provider === 'cursor-chat' ? 'bypassPermissions' : 'default' }
+  const cursorEnvironment = repoKey && key !== lastKey && key ? all[key]?.cursorEnvironment : undefined
+  if (provider !== 'claude-chat') return { ...(provider === 'cursor-chat' && isCursorEnvironmentName(cursorEnvironment) ? { cursorEnvironment } : {}), ...(provider === 'cursor-chat' && (stored?.cursorRuntime === 'local' || stored?.cursorRuntime === 'cloud') ? { cursorRuntime: stored.cursorRuntime } : {}), permissionMode: chatPermissionModes(provider).some((mode) => mode.value === stored?.permissionMode) ? stored.permissionMode : provider === 'cursor-chat' ? 'bypassPermissions' : 'default' }
   return stored && typeof stored === 'object' ? { ...DEFAULT_PREFERENCE, ...stored } : DEFAULT_PREFERENCE
 }
 

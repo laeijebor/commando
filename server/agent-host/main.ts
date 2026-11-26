@@ -111,7 +111,7 @@ export function parseHostArgs(argv: string[], env: Record<string, string | undef
         case '--cloud-env':
         case '--cloud-ref': {
           if (provider !== 'cursor') return `${flag} is only for cursor\n\n${USAGE}`
-          const input = needValue()
+          const input = flag === '--cloud-env' ? needValue(true) : needValue()
           if (flag === '--cloud-repo') {
             if (!/^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/.test(input) || input !== input.trim() || input.endsWith('.git') || /\/(?:\.|\.\.)$/.test(input)) return `Invalid cloud repository: ${input}\n\n${USAGE}`
             args.cloudRepo = input

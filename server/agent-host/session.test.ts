@@ -1723,8 +1723,16 @@ describe('Cursor cloud host flags', () => {
 })
 
 describe('Cursor cloud environment host flags', () => {
+  it('parses and resumes an environment name starting with double dashes as free text', () => {
+    const flags = ['cursor', '--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app', '--cloud-env', '--Dev Environment', '--resume', 'bc-cloud123']
+    const args = parseHostArgs(flags, {})
+    expect(args).toMatchObject({ cloudEnv: '--Dev Environment', resume: 'bc-cloud123' })
+    if (typeof args === 'string') throw new Error(args)
+    expect(parseHostArgs(['cursor', ...sessionFlags(args), '--resume', 'bc-cloud123'], {})).toMatchObject({ cloudEnv: '--Dev Environment' })
+  })
+
   const cloud = ['cursor', '--runtime', 'cloud', '--cloud-repo', 'https://github.com/acme/app']
-  it.each(['App Dev', 'x', 'x'.repeat(200)])('preserves valid environment %j in session flags', (name) => {
+  it.each(['App Dev', '--App Dev', '--prompt', 'x', 'x'.repeat(200)])('preserves valid environment %j in session flags', (name) => {
     const args = parseHostArgs([...cloud, '--cloud-env', name], {})
     expect(args).toMatchObject({ cloudEnv: name })
     if (typeof args === 'string') throw new Error(args)

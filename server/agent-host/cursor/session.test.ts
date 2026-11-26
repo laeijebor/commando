@@ -1248,6 +1248,22 @@ describe('Cursor cloud chats', () => {
 })
 
 describe('Cursor cloud environment metadata', () => {
+  it.each([undefined, 'Truncated'])('loads resumed history while metadata is still pending (flag=%j)', async (environment) => {
+    const { session, sdk } = harness({ cursorCloud: { ...cloudSpec.cursorCloud, ...(environment ? { environment } : {}) }, resume: 'bc-cloud123' })
+    const metadata = deferred<Awaited<ReturnType<CursorSdk['get']>>>()
+    sdk.get.mockReturnValue(metadata.promise)
+    sdk.cloudHistory.mockResolvedValue({ turns: [cloudTurn('Earlier prompt', 'Earlier reply')], skipped: 0 })
+    await session.start()
+    expect(sdk.get).toHaveBeenCalledOnce()
+    expect(sdk.cloudHistory).toHaveBeenCalledOnce()
+    expect(session.snapshot().session.status).toBe('idle')
+    expect(session.snapshot().items).toEqual(expect.arrayContaining([expect.objectContaining({ text: 'Earlier reply' })]))
+    expect(session.snapshot().session.cloud?.environment).toBe(environment)
+    metadata.resolve({ env: { name: 'Full SDK Environment' }, repos: ['git@github.com:actual/environment.git'] }); await tick()
+    expect(session.snapshot().session.cloud).toMatchObject({ environment: 'Full SDK Environment', repoUrl: 'https://github.com/actual/environment' })
+    session.close()
+  })
+
   it.each([undefined, 'App Dev'])('creates with environment only when selected: %j', async (environment) => {
     const { session, sdk } = harness({ cursorCloud: { ...cloudSpec.cursorCloud, ...(environment ? { environment } : {}) } })
     expect(session.snapshot().session.cloud?.environment).toBe(environment)
@@ -1272,12 +1288,12 @@ describe('Cursor cloud environment metadata', () => {
     expect(parseChatSessionInfo(session.snapshot().session)?.cloud?.environment).toBe('Recovered Dev')
     session.close()
   })
-  it('keeps the explicit environment and loads its actual repo on resume', async () => {
+  it('prefers the SDK environment over a resume flag and loads its actual repo', async () => {
     const { session, sdk } = harness({ cursorCloud: { ...cloudSpec.cursorCloud, environment: 'Explicit Dev' }, resume: 'bc-cloud123' })
     sdk.get.mockResolvedValue({ env: { name: 'Other Dev' }, repos: ['https://github.com/actual/environment.git'] })
     await session.start()
     expect(sdk.get).toHaveBeenCalledExactlyOnceWith(sdk.agent.agentId)
-    expect(session.snapshot().session.cloud).toMatchObject({ environment: 'Explicit Dev', repoUrl: 'https://github.com/actual/environment' })
+    expect(session.snapshot().session.cloud).toMatchObject({ environment: 'Other Dev', repoUrl: 'https://github.com/actual/environment' })
     session.close()
   })
   it('keeps the probed repo until the agent exists, then discovers its repo without delaying the prompt', async () => {

@@ -208,7 +208,7 @@ export class CursorChatSession implements ChatProviderSession {
     try {
       const details = await this.sdk!.get(this.agent.agentId)
       if (this.closing) return
-      const environment = this.info.cloud.environment ?? (isCursorEnvironmentName(details.env?.name) ? details.env.name : undefined)
+      const environment = isCursorEnvironmentName(details.env?.name) ? details.env.name : this.info.cloud.environment
       const repoUrl = environment && details.repos?.[0] ? normaliseGithubUrl(details.repos[0]) : undefined
       this.update({ cloud: { ...this.info.cloud, ...(environment ? { environment } : {}), ...(repoUrl ? { repoUrl } : {}) } })
     } catch { /* Cloud metadata is optional; keep the chat usable. */ }
@@ -224,7 +224,7 @@ export class CursorChatSession implements ChatProviderSession {
       this.agent = agent
       this.agentId(agent.agentId)
     }
-    if (id) await this.loadCloudMetadata()
+    if (id) void this.loadCloudMetadata()
     if (this.closing) return
     this.stale = false
     if (this.spec.resume && !this.historyLoaded) {

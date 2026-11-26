@@ -166,9 +166,11 @@ export function NewSessionPermissionPicker({ modes, selected, disabled, onPick }
   )
 }
 
-export function NewSessionEnvironmentPicker({ environments, selected, repoUrl, message, disabled, onPick }: {
+export function NewSessionEnvironmentPicker({ environments, selected, repoUrl, message, disabled, pending, onRefresh, onPick }: {
   environments: readonly CursorCloudEnvironment[]
   selected?: string
+  pending?: boolean
+  onRefresh?: () => void
   repoUrl: string
   message?: string
   disabled: boolean
@@ -183,8 +185,8 @@ export function NewSessionEnvironmentPicker({ environments, selected, repoUrl, m
   ]
   const pick = (name?: string) => { setOpen(false); onPick(name) }
   return <Popover open={open} onOpenChange={setOpen}>
-    <PopoverTrigger disabled={disabled} className={cn(PILL, open && 'is-open')} aria-label={`Environment: ${selected ?? 'Cursor default for this repo'}`} title={selected ?? 'Cursor default for this repo'}>
-      <span className="tmux-create__pill-text min-w-0 truncate">{selected ?? 'Environment'}</span><ChevronDown aria-hidden="true" />
+    <PopoverTrigger disabled={disabled} className={cn(PILL, open && 'is-open')} aria-label={`Environment: ${selected ?? 'Cursor default for this repo'}${pending ? ' (pending)' : ''}`} aria-busy={pending} title={selected ?? 'Cursor default for this repo'}>
+      <span className="tmux-create__pill-text min-w-0 truncate">{selected ?? 'Environment'}{pending ? ' · pending' : null}</span><ChevronDown aria-hidden="true" />
     </PopoverTrigger>
     <PopoverPopup className="w-[300px]" side="bottom" aria-label="Environment">
       <div role="menu" aria-label="Environment">
@@ -195,6 +197,7 @@ export function NewSessionEnvironmentPicker({ environments, selected, repoUrl, m
         </div> : null)}
       </div>
       {message ? <p className="tmux-create__menu-foot" role="status">{message}</p> : null}
+      {onRefresh ? <button type="button" className="tmux-create__link" onClick={onRefresh}>Refresh</button> : null}
     </PopoverPopup>
   </Popover>
 }
