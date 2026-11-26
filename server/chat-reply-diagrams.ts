@@ -94,7 +94,8 @@ export async function prDiagramRendererVersion(bin: string): Promise<string> {
 
 const parser = unified().use(remarkParse).use(remarkGfm)
 type Node = { type: string; lang?: string | null; value?: string; children?: Node[]; position?: { start: { offset?: number }; end: { offset?: number } } }
-const CLOSING_FENCE = /\n[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*$/
+/** A closing fence line, after any blockquote markers and list indentation in front of it. */
+const CLOSING_FENCE = /^[ \t>]*(?:`{3,}|~{3,})[ \t]*$/
 const OPENING_FENCE = /(?:`{3,}|~{3,})[ \t]*pr-diagram/
 
 /** The sources of the closed ```pr-diagram fences in a reply, in order, each once. A fence still streaming is skipped. */
@@ -104,7 +105,9 @@ export function prDiagramFences(text: string): string[] {
   const visit = (node: Node) => {
     if (node.type === 'code') {
       const raw = text.slice(node.position?.start.offset, node.position?.end.offset)
-      if (node.lang === 'pr-diagram' && node.value?.trim() && CLOSING_FENCE.test(raw.trimEnd())) sources.push(node.value)
+      // Closed only by its own fence line; one that runs to the end of a streaming reply is still being written.
+      const lines = raw.trimEnd().split('\n')
+      if (node.lang === 'pr-diagram' && node.value?.trim() && lines.length > 1 && CLOSING_FENCE.test(lines.at(-1)!)) sources.push(node.value)
       return
     }
     node.children?.forEach(visit)

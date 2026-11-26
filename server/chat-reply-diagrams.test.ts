@@ -19,6 +19,14 @@ describe('prDiagramFences', () => {
     expect(prDiagramFences('mentions pr-diagram but has no fence')).toEqual([])
     expect(prDiagramFences('```pr-diagram\n```')).toEqual([])
   })
+
+  it('finds fences inside a blockquote and a list, and still skips one there that is streaming', () => {
+    expect(prDiagramFences('> Quoted:\n>\n> ```pr-diagram\n> {"q":1}\n> ```\n')).toEqual(['{"q":1}'])
+    expect(prDiagramFences('> ```pr-diagram\n> {"q":1}')).toEqual([])
+    expect(prDiagramFences('- First\n\n  ```pr-diagram\n  {"l":1}\n  ```\n- Second\n')).toEqual(['{"l":1}'])
+    expect(prDiagramFences('1. One\n   > ```pr-diagram\n   > {"n":1}\n   > ```\n')).toEqual(['{"n":1}'])
+    expect(prDiagramFences('- Item\n\n  ```pr-diagram\n  {"l":1}')).toEqual([])
+  })
 })
 
 describe('preparePrDiagram', () => {
