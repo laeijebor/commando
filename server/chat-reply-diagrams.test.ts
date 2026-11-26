@@ -33,9 +33,9 @@ describe('preparePrDiagram', () => {
   it('anchors relative screen-flow screenshots to the chat folder and leaves absolute ones', () => {
     const source = JSON.stringify({ type: 'screen-flow', screens: [{ id: 'a', image: 'shots/a.png' }, { id: 'b', image: '/abs/b.png' }, { id: 'c', image: '~/c.png' }, { id: 'd' }] })
     const prepared = preparePrDiagram(source, '/work', '/home/me')
-    expect(prepared).toMatchObject({ hash: prDiagramHash(source), relative: true })
+    expect(prepared).toMatchObject({ hash: prDiagramHash(source), relative: true, assets: ['/work/shots/a.png', '/abs/b.png', '/home/me/c.png'] })
     expect(JSON.parse((prepared as { document: string }).document).screens.map((screen: { image?: string }) => screen.image)).toEqual(['/work/shots/a.png', '/abs/b.png', '/home/me/c.png', undefined])
-    expect(preparePrDiagram(DOC, '/work')).toEqual({ hash: prDiagramHash(DOC), relative: false, document: DOC })
+    expect(preparePrDiagram(DOC, '/work')).toEqual({ hash: prDiagramHash(DOC), relative: false, assets: [], document: DOC })
   })
 
   it('reports invalid JSON, a non-object and an oversized document', () => {
@@ -176,6 +176,22 @@ describe('ChatReplyDiagrams', () => {
     await settled(renderer, [reply(fence(DOC))], '/one')
     expect((await renderer.attach([reply(fence(DOC))], '/two'))[0]).toMatchObject({ diagrams: [{ id: SVG_ID }] })
     expect(calls).toHaveLength(3)
+  })
+
+  it('renders a screen flow again when a screenshot it shows is written again', async () => {
+    const { calls, execute } = stub()
+    const folder = join(temp, 'chat')
+    await mkdir(folder)
+    await writeFile(join(folder, 'a.png'), 'first')
+    const source = JSON.stringify({ type: 'screen-flow', title: 'Flow', screens: [{ id: 'a', image: 'a.png' }] })
+    const renderer = diagrams({ execute })
+    await settled(renderer, [reply(fence(source))], folder)
+    expect((await renderer.attach([reply(fence(source))], folder))[0]).toMatchObject({ diagrams: [{ id: SVG_ID }] })
+    expect(calls).toHaveLength(1)
+    await writeFile(join(folder, 'a.png'), 'second, longer')
+    const [changed] = await renderer.attach([reply(fence(source))], folder, { onRendered: () => {} })
+    expect(changed).not.toHaveProperty('diagrams')
+    await expect.poll(() => calls.length).toBe(2)
   })
 
   it('reports precheck errors at once, without running the renderer', async () => {
